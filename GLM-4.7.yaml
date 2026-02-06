@@ -1,0 +1,140 @@
+x-logging-conf: &logging-conf
+  driver: "json-file"
+  options:
+    max-size: "100m"
+    max-file: "10"
+    labels: "com.datadoghq.ad.logs"
+
+x-vllm-healthcheck: &vllm-healthcheck
+  test: ["CMD", "curl", "-f", "http://localhost:8000/v1/models"]
+  interval: 10s
+  timeout: 10s
+  retries: 100
+  start_period: 3600s
+
+x-nvidia: &nvidia
+  runtime: nvidia
+  ipc: host
+  privileged: true
+  ulimits:
+    memlock: -1
+    nofile:
+      soft: 65535
+      hard: 65535
+
+x-vllm-common: &vllm-common
+  <<: *nvidia
+  volumes:
+    - hugginface_cache:/root/.cache/huggingface
+    - vllm_cache:/root/.cache/vllm
+  healthcheck: *vllm-healthcheck
+  restart: unless-stopped
+  logging: *logging-conf
+
+x-vllm-proxy-common: &vllm-proxy-common
+  image: nearaidev/vllm-proxy@sha256:7fff3d0446a01609e6a45105ef60777bb6038805161793b50c2d8e4a34ac537b
+  user: root
+  <<: *nvidia
+  volumes:
+    - /var/run/dstack.sock:/var/run/dstack.sock
+  restart: unless-stopped
+  environment:
+    - NVIDIA_VISIBLE_DEVICES=all
+  logging: *logging-conf
+
+services:
+  datadog-agent:
+    image: datadog/agent@sha256:0920550d798e459025620e6c3f9b0e857db94b9f29762a4e194a4a3967037498
+    container_name: datadog-agent
+    environment:
+      - DD_API_KEY=${DD_API_KEY}
+      - DD_SITE=us3.datadoghq.com
+      - DD_ENV=prod
+      - DD_LOGS_ENABLED=true
+      - DD_LOGS_CONFIG_CONTAINER_COLLECT_ALL=true
+      - DD_CONTAINER_EXCLUDE_LOGS="name:datadog-agent"
+      - DD_PROCESS_AGENT_ENABLED=true
+      - DD_DOGSTATSD_NON_LOCAL_TRAFFIC=true
+      - DD_HOSTNAME=$DD_HOSTNAME
+      - DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_ENDPOINT=0.0.0.0:4317
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /proc/:/host/proc/:ro
+      - /sys/fs/cgroup/:/host/sys/fs/cgroup:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /run/log/journal:/run/log/journal:ro
+      - /run/systemd/:/host/run/systemd/:ro
+    configs:
+      - source: journald_config_file
+        target: /etc/datadog-agent/conf.d/journald.d/conf.yaml
+        mode: 0755
+    restart: unless-stopped
+    logging: *logging-conf
+
+  vllm-proxy-glm:
+    <<: *vllm-proxy-common
+    container_name: vllm-proxy-glm
+    ports:
+      - "8000:8000"
+    environment:
+      - MODEL_NAME=zai-org/GLM-4.7
+      - TOKEN=${PROXY_TOKEN}
+      - VLLM_BASE_URL=http://vllm-glm:8000
+    labels:
+      com.datadoghq.ad.logs: '[{"source": "vllm-proxy", "service": "vllm-proxy", "tags": ["model:zai-org/GLM-4.7", "ip:${HOST_IP}", "port:8000"]}]'
+
+  vllm-glm:
+    <<: *vllm-common
+    image: lmcache/vllm-openai@sha256:03a8cbda016be1ab5660d1e2910549cbadea85b1111a34572544c1e180538e8b
+    container_name: vllm-glm
+    command: >
+        zai-org/GLM-4.7
+        --tensor-parallel-size 8
+        --speculative-config '{"method":"mtp","num_speculative_tokens":1}'
+        --kv-transfer-config '{"kv_connector":"LMCacheConnectorV1","kv_role":"kv_both"}'
+        --max-model-len 128K
+        --max-num-batched-tokens 32K
+        --max-num-seqs 128
+        --stream-interval 6
+        --reasoning-parser glm45
+        --tool-call-parser glm47
+        --enable-auto-tool-choice
+    volumes:
+      - hugginface_cache:/root/.cache/huggingface
+      - vllm_cache:/root/.cache/vllm
+    environment:
+      - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+      - VLLM_LOGGING_LEVEL=INFO
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - OPENBLAS_L2_SIZE=2097152
+      - NCCL_DEBUG=INFO
+      - VLLM_CACHE_ROOT=/root/.cache/vllm
+      - TORCH_FLOAT32_MATMUL_PRECISION=high
+      - LMCACHE_CHUNK_SIZE=256
+      - LMCACHE_LOCAL_CPU=True
+      - LMCACHE_MAX_LOCAL_CPU_SIZE=100
+      - PYTHONHASHSEED=0
+      - VLLM_RPC_TIMEOUT=60000
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["0","1","2","3","4","5","6","7"]
+              capabilities: [gpu]
+    labels:
+      com.datadoghq.ad.check_names: '["vllm"]'
+      com.datadoghq.ad.init_configs: "[{}]"
+      com.datadoghq.ad.logs: '[{"source": "vllm", "service": "vllm", "tags":["model:zai-org/GLM-4.7","ip:${HOST_IP}", "port:8000"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-glm:8000/metrics", "service": "vllm-glm", "tags":["model:zai-org/GLM-4.7","ip:${HOST_IP}", "port:8000"]}]'
+
+volumes:
+  hugginface_cache:
+  vllm_cache:
+
+configs:
+  journald_config_file:
+    content: |
+      logs:
+        - type: journald
+          container_mode: true

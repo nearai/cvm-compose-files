@@ -1,0 +1,26 @@
+name: Validate Compose Files
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate docker compose files
+        run: |
+          exit_code=0
+          for file in *.yaml; do
+            echo "Validating $file..."
+            if ! docker compose -f "$file" config --format=yaml > /dev/null 2>&1; then
+              echo "::error file=$file::Invalid compose file"
+              docker compose -f "$file" config --format=yaml
+              exit_code=1
+            else
+              echo "$file OK"
+            fi
+          done
+          exit $exit_code
