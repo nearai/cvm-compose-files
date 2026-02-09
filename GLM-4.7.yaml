@@ -43,39 +43,26 @@ x-vllm-proxy-common: &vllm-proxy-common
   logging: *logging-conf
 
 services:
-  datadog-agent:
-    image: datadog/agent@sha256:0920550d798e459025620e6c3f9b0e857db94b9f29762a4e194a4a3967037498
-    container_name: datadog-agent
-    environment:
-      - DD_API_KEY=${DD_API_KEY}
-      - DD_SITE=us3.datadoghq.com
-      - DD_ENV=prod
-      - DD_LOGS_ENABLED=true
-      - DD_LOGS_CONFIG_CONTAINER_COLLECT_ALL=true
-      - DD_CONTAINER_EXCLUDE_LOGS="name:datadog-agent"
-      - DD_PROCESS_AGENT_ENABLED=true
-      - DD_DOGSTATSD_NON_LOCAL_TRAFFIC=true
-      - DD_HOSTNAME=$DD_HOSTNAME
-      - DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_ENDPOINT=0.0.0.0:4317
+  nginx:
+    image: nginx:alpine
+    container_name: nginx
+    ports:
+      - "80:80"
+      - "443:443"
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-      - /proc/:/host/proc/:ro
-      - /sys/fs/cgroup/:/host/sys/fs/cgroup:ro
-      - /var/lib/docker/containers:/var/lib/docker/containers:ro
-      - /run/log/journal:/run/log/journal:ro
-      - /run/systemd/:/host/run/systemd/:ro
+      - /etc/letsencrypt:/etc/letsencrypt:ro
     configs:
-      - source: journald_config_file
-        target: /etc/datadog-agent/conf.d/journald.d/conf.yaml
-        mode: 0755
+      - source: nginx_conf
+        target: /etc/nginx/conf.d/default.conf
+        mode: 0644
+    depends_on:
+      - vllm-proxy-glm
     restart: unless-stopped
     logging: *logging-conf
 
   vllm-proxy-glm:
     <<: *vllm-proxy-common
     container_name: vllm-proxy-glm
-    ports:
-      - "8000:8000"
     environment:
       - MODEL_NAME=zai-org/GLM-4.7
       - TOKEN=${PROXY_TOKEN}
@@ -133,6 +120,31 @@ volumes:
   vllm_cache:
 
 configs:
+  nginx_conf:
+    content: |
+      server {
+          listen 80;
+          listen 443 ssl;
+
+          ssl_certificate /etc/letsencrypt/live/completions.near.ai/fullchain.pem;
+          ssl_certificate_key /etc/letsencrypt/live/completions.near.ai/privkey.pem;
+          ssl_protocols TLSv1.2 TLSv1.3;
+
+          client_max_body_size 100m;
+
+          location / {
+              proxy_pass http://vllm-proxy-glm:8000;
+              proxy_http_version 1.1;
+              proxy_set_header Host $host;
+              proxy_set_header X-Real-IP $remote_addr;
+              proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+              proxy_set_header X-Forwarded-Proto $scheme;
+              proxy_set_header Connection '';
+              proxy_buffering off;
+              proxy_cache off;
+              proxy_read_timeout 300s;
+          }
+      }
   journald_config_file:
     content: |
       logs:
