@@ -63,6 +63,8 @@ services:
   vllm-proxy-glm:
     <<: *vllm-proxy-common
     container_name: vllm-proxy-glm
+    ports:
+      - "8000:8000"
     environment:
       - MODEL_NAME=zai-org/GLM-4.7
       - TOKEN=${PROXY_TOKEN}
@@ -136,9 +138,9 @@ configs:
               proxy_pass http://vllm-proxy-glm:8000;
               proxy_http_version 1.1;
               proxy_set_header Host $host;
-              proxy_set_header X-Real-IP $remote_addr;
-              proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-              proxy_set_header X-Forwarded-Proto $scheme;
+              proxy_set_header X-Real-IP $$remote_addr;
+              proxy_set_header X-Forwarded-For $$proxy_add_x_forwarded_for;
+              proxy_set_header X-Forwarded-Proto $$scheme;
               proxy_set_header Connection '';
               proxy_buffering off;
               proxy_cache off;
