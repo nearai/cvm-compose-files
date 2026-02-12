@@ -75,8 +75,6 @@ services:
     command: >
         zai-org/GLM-4.7
         --tensor-parallel-size 8
-        --speculative-config '{"method":"mtp","num_speculative_tokens":1}'
-        --kv-transfer-config '{"kv_connector":"LMCacheConnectorV1","kv_role":"kv_both"}'
         --max-model-len 128K
         --max-num-batched-tokens 32K
         --max-num-seqs 128
@@ -95,9 +93,7 @@ services:
       - NCCL_DEBUG=INFO
       - VLLM_CACHE_ROOT=/root/.cache/vllm
       - TORCH_FLOAT32_MATMUL_PRECISION=high
-      - LMCACHE_CHUNK_SIZE=256
-      - LMCACHE_LOCAL_CPU=True
-      - LMCACHE_MAX_LOCAL_CPU_SIZE=100
+      - LMCACHE_LOCAL_CPU=False
       - PYTHONHASHSEED=0
       - VLLM_RPC_TIMEOUT=60000
     deploy:
