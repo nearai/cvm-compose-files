@@ -139,7 +139,8 @@ services:
     container_name: nginx
     command: /bin/sh -c 'while :; do sleep 6h; nginx -s reload; done & nginx -g "daemon off;"'
     ports:
-      - "8000:80"
+      - "80:80"
+      - "8000:8000"
       - "8001:8001"
       - "8002:8002"
       - "8003:8003"
@@ -526,7 +527,7 @@ configs:
 
       # :8000 - Qwen3-30B
       server {
-          listen 80;
+          listen 8000;
           location / { proxy_pass http://vllm-proxy-qwen3-30b:8000; }
       }
 
@@ -589,8 +590,3 @@ configs:
           listen 8010;
           location / { proxy_pass http://vllm-proxy-whisper3-large:8000; }
       }
-  journald_config_file:
-    content: |
-      logs:
-        - type: journald
-          container_mode: true
