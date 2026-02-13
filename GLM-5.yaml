@@ -67,14 +67,16 @@ services:
     image: lmsysorg/sglang:glm5-hopper
     container_name: glm
     command: >
-        zai-org/GLM-5-FP8
-        --tensor-parallel-size 8
-        --gpu-memory-utilization 0.85
-        --speculative-config.method mtp
-        --speculative-config.num_speculative_tokens 1
-        --tool-call-parser glm47
-        --reasoning-parser glm45
-        --enable-auto-tool-choice
+      sglang serve
+      --model-path zai-org/GLM-5-FP8
+      --tp 8
+      --reasoning-parser glm45
+      --tool-call-parser glm47
+      --speculative-algorithm EAGLE
+      --speculative-num-steps 3
+      --speculative-eagle-topk 1
+      --speculative-num-draft-tokens 4
+      --mem-fraction-static 0.85
     volumes:
       - hugginface_cache:/root/.cache/huggingface
     environment:
