@@ -61,10 +61,14 @@ services:
   vllm-proxy-glm:
     <<: *vllm-proxy-common
     container_name: vllm-proxy-glm
+    volumes:
+      - /var/run/dstack.sock:/var/run/dstack.sock
+      - certs:/etc/letsencrypt:ro
     environment:
       - MODEL_NAME=zai-org/GLM-4.7
       - TOKEN=${PROXY_TOKEN}
       - VLLM_BASE_URL=http://vllm-glm:8000
+      - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
     labels:
       com.datadoghq.ad.logs: '[{"source": "vllm-proxy", "service": "vllm-proxy", "tags": ["model:zai-org/GLM-4.7", "ip:${HOST_IP}", "port:8000"]}]'
 
@@ -143,8 +147,8 @@ configs:
           listen 443 ssl;
           server_name glm-47.completions.near.ai;
 
-          ssl_certificate /etc/letsencrypt/completions.near.ai/fullchain.pem;
-          ssl_certificate_key /etc/letsencrypt/completions.near.ai/privkey.pem;
+          ssl_certificate /etc/letsencrypt/live/completions.near.ai/fullchain.pem;
+          ssl_certificate_key /etc/letsencrypt/live/completions.near.ai/privkey.pem;
           ssl_protocols TLSv1.2 TLSv1.3;
 
           client_max_body_size 100m;
