@@ -32,7 +32,6 @@ x-vllm-common: &vllm-common
   logging: *logging-conf
 
 x-vllm-proxy-common: &vllm-proxy-common
-  image: nearaidev/vllm-proxy-rs@sha256:11494e75b77588a877931f4da2b5b6143c174ae1696bb0a2517bfba055fdb288
   user: root
   <<: *nvidia
   volumes:
@@ -61,6 +60,7 @@ services:
 
   vllm-proxy-glm:
     <<: *vllm-proxy-common
+    image: nearaidev/vllm-proxy-rs@sha256:11494e75b77588a877931f4da2b5b6143c174ae1696bb0a2517bfba055fdb288
     container_name: vllm-proxy-glm
     volumes:
       - /var/run/dstack.sock:/var/run/dstack.sock
