@@ -8,7 +8,6 @@ x-logging-conf: &logging-conf
 x-nvidia: &nvidia
   runtime: nvidia
   ipc: host
-  privileged: true
   ulimits:
     memlock: -1
     nofile:
@@ -23,8 +22,9 @@ x-vllm-common: &vllm-common
   logging: *logging-conf
 
 x-vllm-proxy-common: &vllm-proxy-common
-  image: nearaidev/vllm-proxy-rs@sha256:11494e75b77588a877931f4da2b5b6143c174ae1696bb0a2517bfba055fdb288
+  image: nearaidev/vllm-proxy@sha256:0b1c4d010cd189c694650cce8f437734e2005ea65955797561d36710210eb4c2
   user: root
+  privileged: true
   <<: *nvidia
   volumes:
     - /var/run/dstack.sock:/var/run/dstack.sock
