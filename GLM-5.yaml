@@ -98,6 +98,11 @@ services:
     labels:
       com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://glm:8000/metrics", "service": "glm-5"]'
 
+networks:
+  default:
+    external: true
+    name: dstack_default
+
 volumes:
   hugginface_cache:
   certs:

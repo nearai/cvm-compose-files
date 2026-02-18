@@ -503,6 +503,11 @@ services:
       com.datadoghq.ad.logs: '[{"source": "vllm", "service": "vllm", "tags":["model:openai/whisper-large-v3","ip:${HOST_IP}", "port:8010"]}]'
       com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-whisper3-large:8000/metrics", "service": "vllm-whisper3-large", "tags":["model:openai/whisper-large-v3","ip:${HOST_IP}", "port:8010"]}]'
 
+networks:
+  default:
+    external: true
+    name: dstack_default
+
 volumes:
   hugginface_cache:
   vllm_cache:

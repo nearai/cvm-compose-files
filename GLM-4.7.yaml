@@ -114,6 +114,11 @@ services:
       com.datadoghq.ad.logs: '[{"source": "vllm", "service": "vllm", "tags":["model:zai-org/GLM-4.7","ip:${HOST_IP}", "port:8000"]}]'
       com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-glm:8000/metrics", "service": "vllm-glm", "tags":["model:zai-org/GLM-4.7","ip:${HOST_IP}", "port:8000"]}]'
 
+networks:
+  default:
+    external: true
+    name: dstack_default
+
 volumes:
   hugginface_cache:
   vllm_cache:

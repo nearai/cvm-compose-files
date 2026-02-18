@@ -126,6 +126,11 @@ services:
       com.datadoghq.ad.logs: '[{"source": "vllm", "service": "vllm", "tags":["model:deepseek-ai/DeepSeek-V3.1","ip:${HOST_IP}", "port:8000"]}]'
       com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-deepseek:8000/metrics", "service": "vllm-deepseek", "tags":["model:deepseek-ai/DeepSeek-V3.1","ip:${HOST_IP}", "port:8000"]}]'
 
+networks:
+  default:
+    external: true
+    name: dstack_default
+
 volumes:
   hugginface_cache:
   vllm_cache:
