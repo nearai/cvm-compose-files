@@ -595,3 +595,65 @@ configs:
           listen 8010;
           location / { proxy_pass http://vllm-proxy-whisper3-large:8000; }
       }
+
+      # ── TLS server blocks (port 443 = host 8444) ──
+
+      ssl_certificate /etc/letsencrypt/live/completions.near.ai/fullchain.pem;
+      ssl_certificate_key /etc/letsencrypt/live/completions.near.ai/privkey.pem;
+      ssl_protocols TLSv1.2 TLSv1.3;
+
+      server {
+          listen 443 ssl;
+          server_name qwen3-30b.completions.near.ai;
+          location / { proxy_pass http://vllm-proxy-qwen3-30b:8000; }
+      }
+
+      server {
+          listen 443 ssl;
+          server_name gpt-oss-120b.completions.near.ai;
+          # Round-robin between the two GPT-OSS instances
+          location / { proxy_pass http://gpt-oss-upstream; }
+      }
+
+      upstream gpt-oss-upstream {
+          server vllm-proxy-gpt-oss-1:8000;
+          server vllm-proxy-gpt-oss-2:8000;
+      }
+
+      server {
+          listen 443 ssl;
+          server_name flux2-klein.completions.near.ai;
+          # Round-robin between the four FLUX instances
+          location / { proxy_pass http://flux-upstream; }
+      }
+
+      upstream flux-upstream {
+          server vllm-proxy-flux-2-klein-4b-1:8000;
+          server vllm-proxy-flux-2-klein-4b-2:8000;
+          server vllm-proxy-flux-2-klein-4b-3:8000;
+          server vllm-proxy-flux-2-klein-4b-4:8000;
+      }
+
+      server {
+          listen 443 ssl;
+          server_name qwen3-vl-30b.completions.near.ai;
+          location / { proxy_pass http://vllm-proxy-qwen3-vl:8000; }
+      }
+
+      server {
+          listen 443 ssl;
+          server_name qwen3-embedding.completions.near.ai;
+          location / { proxy_pass http://vllm-proxy-qwen3-embeddings:8000; }
+      }
+
+      server {
+          listen 443 ssl;
+          server_name qwen3-reranker.completions.near.ai;
+          location / { proxy_pass http://vllm-proxy-qwen3-reranker:8000; }
+      }
+
+      server {
+          listen 443 ssl;
+          server_name whisper-large-v3.completions.near.ai;
+          location / { proxy_pass http://vllm-proxy-whisper3-large:8000; }
+      }
