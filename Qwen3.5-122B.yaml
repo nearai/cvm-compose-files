@@ -1,0 +1,191 @@
+x-logging-conf: &logging-conf
+  driver: "json-file"
+  options:
+    max-size: "100m"
+    max-file: "10"
+    labels: "com.datadoghq.ad.logs"
+
+x-nvidia: &nvidia
+  runtime: nvidia
+  ipc: host
+  ulimits:
+    memlock: -1
+    nofile:
+      soft: 65535
+      hard: 65535
+
+x-vllm-proxy-common: &vllm-proxy-common
+  image: nearaidev/vllm-proxy@sha256:0b1c4d010cd189c694650cce8f437734e2005ea65955797561d36710210eb4c2
+  user: root
+  privileged: true
+  <<: *nvidia
+  volumes:
+    - /var/run/dstack.sock:/var/run/dstack.sock
+    - certs:/etc/letsencrypt:ro
+  restart: unless-stopped
+  environment:
+    - NVIDIA_VISIBLE_DEVICES=all
+  logging: *logging-conf
+
+x-sglang-healthcheck: &sglang-healthcheck
+  test: ["CMD", "curl", "-f", "http://localhost:8000/v1/models"]
+  interval: 10s
+  timeout: 10s
+  retries: 100
+  start_period: 3600s
+
+x-sglang-qwen35-122b-common: &sglang-qwen35-122b-common
+  <<: *nvidia
+  image: lmsysorg/sglang@sha256:b2947675b7736f6e51b18d0f1ef248fba904058b3c5340b2cf69db8b60f5a346  # v0.5.9-cu130
+  volumes:
+    - huggingface_cache:/root/.cache/huggingface
+  environment:
+    - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+    - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    - TORCH_FLOAT32_MATMUL_PRECISION=high
+    - OPENBLAS_L2_SIZE=2097152
+    - NCCL_DEBUG=INFO
+  command: >
+    sglang serve
+    --model-path Qwen/Qwen3.5-122B-A10B
+    --tp 4
+    --mem-fraction-static 0.80
+    --context-length 131072
+    --reasoning-parser qwen3
+    --tool-call-parser qwen3_coder
+    --log-requests-level 0
+    --enable-cache-report
+    --port 8000
+    --host 0.0.0.0
+  healthcheck: *sglang-healthcheck
+  restart: unless-stopped
+  logging: *logging-conf
+
+services:
+  nginx:
+    image: nginx@sha256:1d13701a5f9f3fb01aaa88cef2344d65b6b5bf6b7d9fa4cf0dca557a8d7702ba
+    container_name: nginx
+    command: /bin/sh -c 'while :; do sleep 6h; nginx -s reload; done & nginx -g "daemon off;"'
+    ports:
+      - "80:80"
+      - "8000:8000"
+      - "8001:8001"
+      - "8444:443"
+    volumes:
+      - certs:/etc/letsencrypt:ro
+    configs:
+      - source: nginx_conf
+        target: /etc/nginx/conf.d/default.conf
+        mode: 0644
+    restart: unless-stopped
+    logging: *logging-conf
+
+  # --- Qwen3.5-122B-A10B instance 1 (GPUs 0-3) ---
+
+  sglang-qwen35-122b-1:
+    <<: *sglang-qwen35-122b-common
+    container_name: sglang-qwen35-122b-1
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["0","1","2","3"]
+              capabilities: [gpu]
+    labels:
+      com.datadoghq.ad.check_names: '["openmetrics"]'
+      com.datadoghq.ad.init_configs: "[{}]"
+      com.datadoghq.ad.logs: '[{"source": "sglang", "service": "sglang", "tags":["model:Qwen/Qwen3.5-122B-A10B","ip:${HOST_IP}","port:8000","instance:1"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://sglang-qwen35-122b-1:8000/metrics", "service": "sglang-qwen35-122b-1", "tags":["model:Qwen/Qwen3.5-122B-A10B","ip:${HOST_IP}","port:8000"]}]'
+
+  vllm-proxy-qwen35-122b-1:
+    <<: *vllm-proxy-common
+    container_name: vllm-proxy-qwen35-122b-1
+    environment:
+      - MODEL_NAME=Qwen/Qwen3.5-122B-A10B
+      - TOKEN=${PROXY_TOKEN}
+      - VLLM_BASE_URL=http://sglang-qwen35-122b-1:8000
+      - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
+    labels:
+      com.datadoghq.ad.logs: '[{"source": "vllm-proxy", "service": "vllm-proxy", "tags": ["model:Qwen/Qwen3.5-122B-A10B","ip:${HOST_IP}","port:8000","instance:1"]}]'
+
+  # --- Qwen3.5-122B-A10B instance 2 (GPUs 4-7) ---
+
+  sglang-qwen35-122b-2:
+    <<: *sglang-qwen35-122b-common
+    container_name: sglang-qwen35-122b-2
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["4","5","6","7"]
+              capabilities: [gpu]
+    labels:
+      com.datadoghq.ad.check_names: '["openmetrics"]'
+      com.datadoghq.ad.init_configs: "[{}]"
+      com.datadoghq.ad.logs: '[{"source": "sglang", "service": "sglang", "tags":["model:Qwen/Qwen3.5-122B-A10B","ip:${HOST_IP}","port:8001","instance:2"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://sglang-qwen35-122b-2:8000/metrics", "service": "sglang-qwen35-122b-2", "tags":["model:Qwen/Qwen3.5-122B-A10B","ip:${HOST_IP}","port:8001"]}]'
+
+  vllm-proxy-qwen35-122b-2:
+    <<: *vllm-proxy-common
+    container_name: vllm-proxy-qwen35-122b-2
+    environment:
+      - MODEL_NAME=Qwen/Qwen3.5-122B-A10B
+      - TOKEN=${PROXY_TOKEN}
+      - VLLM_BASE_URL=http://sglang-qwen35-122b-2:8000
+      - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
+    labels:
+      com.datadoghq.ad.logs: '[{"source": "vllm-proxy", "service": "vllm-proxy", "tags": ["model:Qwen/Qwen3.5-122B-A10B","ip:${HOST_IP}","port:8001","instance:2"]}]'
+
+networks:
+  default:
+    external: true
+    name: dstack_default
+
+volumes:
+  huggingface_cache:
+  certs:
+    external: true
+    name: certs
+
+configs:
+  nginx_conf:
+    content: |
+      proxy_http_version 1.1;
+      proxy_set_header Host $host;
+      proxy_set_header X-Real-IP $remote_addr;
+      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+      proxy_set_header X-Forwarded-Proto $scheme;
+      proxy_set_header Connection '';
+      proxy_buffering off;
+      proxy_cache off;
+      proxy_read_timeout 300s;
+      client_max_body_size 100m;
+
+      # :8000 - Qwen3.5-122B instance 1
+      server {
+        listen 8000;
+        location / { proxy_pass http://vllm-proxy-qwen35-122b-1:8000; }
+      }
+
+      # :8001 - Qwen3.5-122B instance 2
+      server {
+        listen 8001;
+        location / { proxy_pass http://vllm-proxy-qwen35-122b-2:8000; }
+      }
+
+      upstream qwen35-122b-upstream {
+        server vllm-proxy-qwen35-122b-1:8000;
+        server vllm-proxy-qwen35-122b-2:8000;
+      }
+
+      ssl_certificate /etc/letsencrypt/live/completions.near.ai/fullchain.pem;
+      ssl_certificate_key /etc/letsencrypt/live/completions.near.ai/privkey.pem;
+      ssl_protocols TLSv1.2 TLSv1.3;
+
+      server {
+        listen 443 ssl;
+        server_name qwen35-122b.completions.near.ai;
+        location / { proxy_pass http://qwen35-122b-upstream; }
+      }
