@@ -65,7 +65,7 @@ services:
 
   glm:
     <<: *vllm-common
-    image: lmsysorg/sglang:glm5-hopper@sha256:e1876a9b43494fa8e0205f420db71e0e263081ed6da7173b30647d238a429bac
+    image: lmsysorg/sglang:glm5-hopper-patched@sha256:abf8deb5e81cd7f942be8be10b1a92d4360d2f0a245b50ca8d9e27e9c05a98d6
     container_name: glm
     command: >
       sglang serve
@@ -79,6 +79,7 @@ services:
       --speculative-eagle-topk 1
       --speculative-num-draft-tokens 4
       --mem-fraction-static 0.90
+      --max-running-requests 16
       --port 8000
       --host 0.0.0.0
       --enable-cache-report
