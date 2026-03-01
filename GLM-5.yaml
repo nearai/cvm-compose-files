@@ -83,11 +83,14 @@ services:
       --speculative-num-draft-tokens 4
       --mem-fraction-static 0.90
       --max-running-requests 16
+      --context-length 202000
+      --model-loader-extra-config '{"enable_multithread_load": "true", "num_threads": 64}'
       --port 8000
       --host 0.0.0.0
       --enable-cache-report
     volumes:
       - hugginface_cache:/root/.cache/huggingface
+      - deepgemm_cache:/root/.deep_gemm
     environment:
       - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN}
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
@@ -111,6 +114,7 @@ networks:
 
 volumes:
   hugginface_cache:
+  deepgemm_cache:
   certs:
     external: true
     name: certs
