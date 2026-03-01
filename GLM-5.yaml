@@ -68,7 +68,7 @@ services:
     build:
       dockerfile_inline: |
         FROM lmsysorg/sglang:glm5-hopper-patched@sha256:abf8deb5e81cd7f942be8be10b1a92d4360d2f0a245b50ca8d9e27e9c05a98d6
-        RUN uv pip install git+https://github.com/huggingface/transformers.git --system --break-system-packages -i https://mirrors.aliyun.com/pypi/simple/ 2>/dev/null || true
+        RUN pip install --no-cache-dir git+https://github.com/huggingface/transformers.git
     container_name: glm
     command: >
       sglang serve
