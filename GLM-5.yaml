@@ -31,6 +31,7 @@ x-vllm-proxy-common: &vllm-proxy-common
   restart: unless-stopped
   environment:
     - NVIDIA_VISIBLE_DEVICES=all
+    - LOG_FORMAT=json
   logging: *logging-conf
 
 services:
@@ -57,7 +58,7 @@ services:
       - /var/run/dstack.sock:/var/run/dstack.sock
       - certs:/etc/letsencrypt:ro
     environment:
-      - MODEL_NAME=zai-org/GLM-5
+      - MODEL_NAME=zai-org/GLM-5-FP8
       - TOKEN=${PROXY_TOKEN}
       - VLLM_BASE_URL=http://glm:8000
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem

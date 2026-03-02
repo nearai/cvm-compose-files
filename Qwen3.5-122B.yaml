@@ -25,6 +25,8 @@ x-vllm-proxy-common: &vllm-proxy-common
   restart: unless-stopped
   environment:
     - NVIDIA_VISIBLE_DEVICES=all
+    - CLOUD_API_URL=https://cloud-api.near.ai
+    - LOG_FORMAT=json
   logging: *logging-conf
 
 x-sglang-healthcheck: &sglang-healthcheck
