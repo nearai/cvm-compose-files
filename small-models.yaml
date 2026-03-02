@@ -54,20 +54,6 @@ x-vllm-env:
     - NCCL_DEBUG=INFO
     - VLLM_CACHE_ROOT=/root/.cache/vllm
 
-x-vllm-lmcache-env:
-  environment: &vllm-lmcache-env
-    - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN}
-    - VLLM_LOGGING_LEVEL=INFO
-    - NVIDIA_DRIVER_CAPABILITIES=compute,utility
-    - OPENBLAS_L2_SIZE=2097152
-    - NCCL_DEBUG=INFO
-    - VLLM_CACHE_ROOT=/root/.cache/vllm
-    - TORCH_FLOAT32_MATMUL_PRECISION=high
-    - LMCACHE_CHUNK_SIZE=256
-    - LMCACHE_LOCAL_CPU=True
-    - LMCACHE_MAX_LOCAL_CPU_SIZE=100
-    - PYTHONHASHSEED=0
-
 x-sglang-env:
   environment: &sglang-env
     - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN}
@@ -80,28 +66,27 @@ x-sglang-env:
 
 x-gpt-oss-common: &gpt-oss-common
   <<: *vllm-common
-  image: lmcache/vllm-openai@sha256:03a8cbda016be1ab5660d1e2910549cbadea85b1111a34572544c1e180538e8b
+  image: vllm/vllm-openai@sha256:4801151759655c57606c844662e5213403c032a62d149c7ce61d615759a821ef
   command: >
       openai/gpt-oss-120b
       --tensor-parallel-size 1
       --gpu-memory-utilization 0.95
       --enable-prefix-caching
       --async-scheduling
-      --max-num-seqs 128
+      --max-num-seqs 64
       --max-cudagraph-capture-size 2048
       --tool-call-parser openai
       --enable-auto-tool-choice
       --max-model-len 128K
-      --max-num-batched-tokens 8K
+      --max-num-batched-tokens 16K
       --stream-interval 20
-      --kv-transfer-config '{"kv_connector":"LMCacheConnectorV1","kv_role":"kv_both"}'
       --speculative-config '{"model":"nvidia/gpt-oss-120b-Eagle3-v2","num_speculative_tokens":3,"method":"eagle3","draft_tensor_parallel_size":1}'
       --load-format runai_streamer
       --model-loader-extra-config '{"distributed":true, "concurrency":48}'
   volumes:
     - hugginface_cache:/root/.cache/huggingface
     - vllm_cache:/root/.cache/vllm
-  environment: *vllm-lmcache-env
+  environment: *vllm-env
 
 x-flux-common: &flux-common
   <<: *vllm-common
@@ -178,7 +163,7 @@ services:
 
   vllm-qwen3-30b:
     <<: *vllm-common
-    image: lmcache/vllm-openai@sha256:03a8cbda016be1ab5660d1e2910549cbadea85b1111a34572544c1e180538e8b
+    image: vllm/vllm-openai@sha256:4801151759655c57606c844662e5213403c032a62d149c7ce61d615759a821ef
     container_name: vllm-qwen3-30b
     command: >
         Qwen/Qwen3-30B-A3B-Instruct-2507
@@ -189,8 +174,7 @@ services:
         --max-num-seqs 128
         --enable-auto-tool-choice
         --max-model-len 256K
-        --max-num-batched-tokens 16K
-        --kv-transfer-config '{"kv_connector":"LMCacheConnectorV1","kv_role":"kv_both"}'
+        --max-num-batched-tokens 24K
         --stream-interval 10
         --load-format runai_streamer
         --dtype float16
@@ -199,7 +183,7 @@ services:
     volumes:
       - hugginface_cache:/root/.cache/huggingface
       - vllm_cache:/root/.cache/vllm
-    environment: *vllm-lmcache-env
+    environment: *vllm-env
     deploy:
       resources:
         reservations:
@@ -366,12 +350,16 @@ services:
 
   vllm-qwen3-vl:
     <<: *vllm-common
-    image: vllm/vllm-openai@sha256:6db075215c521851270a0517818122c4e89fa4d1d0c192b4a71851593e84a03c
+    image: vllm/vllm-openai@sha256:4801151759655c57606c844662e5213403c032a62d149c7ce61d615759a821ef
     container_name: vllm-qwen3-vl
     command: >
         Qwen/Qwen3-VL-30B-A3B-Instruct
         --enable-prefix-caching
         --tensor-parallel-size 2
+        --gpu-memory-utilization 0.95
+        --max-model-len 32768
+        --max-num-seqs 64
+        --max-num-batched-tokens 16K
         --mm-encoder-tp-mode data
         --async-scheduling
     volumes:
@@ -406,7 +394,7 @@ services:
 
   vllm-qwen3-embeddings:
     <<: *vllm-common
-    image: vllm/vllm-openai@sha256:6db075215c521851270a0517818122c4e89fa4d1d0c192b4a71851593e84a03c
+    image: vllm/vllm-openai@sha256:4801151759655c57606c844662e5213403c032a62d149c7ce61d615759a821ef
     container_name: vllm-qwen3-embeddings
     command: >
         Qwen/Qwen3-Embedding-0.6B
@@ -442,7 +430,7 @@ services:
 
   vllm-qwen3-reranker:
     <<: *vllm-common
-    image: vllm/vllm-openai@sha256:6db075215c521851270a0517818122c4e89fa4d1d0c192b4a71851593e84a03c
+    image: vllm/vllm-openai@sha256:4801151759655c57606c844662e5213403c032a62d149c7ce61d615759a821ef
     container_name: vllm-qwen3-reranker
     command: >
         Qwen/Qwen3-Reranker-0.6B
@@ -482,7 +470,7 @@ services:
     build:
       context: .
       dockerfile_inline: |
-        FROM vllm/vllm-openai@sha256:6db075215c521851270a0517818122c4e89fa4d1d0c192b4a71851593e84a03c
+        FROM vllm/vllm-openai@sha256:4801151759655c57606c844662e5213403c032a62d149c7ce61d615759a821ef
         RUN pip install openai-whisper torchaudio librosa vllm[audio]
     container_name: vllm-whisper3-large
     command: >
