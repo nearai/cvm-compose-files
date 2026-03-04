@@ -66,7 +66,7 @@ x-sglang-env:
 
 x-gpt-oss-common: &gpt-oss-common
   <<: *vllm-common
-  image: vllm/vllm-openai@sha256:4801151759655c57606c844662e5213403c032a62d149c7ce61d615759a821ef
+  image: vllm/vllm-openai@sha256:ccd6a6dbf4aba4e94c6f7052d1835d6e742082b6a5095276552e9b7a5a47c2e5
   command: >
       openai/gpt-oss-120b
       --tensor-parallel-size 1
@@ -177,7 +177,7 @@ services:
 
   vllm-qwen3-30b:
     <<: *vllm-common
-    image: vllm/vllm-openai@sha256:4801151759655c57606c844662e5213403c032a62d149c7ce61d615759a821ef
+    image: vllm/vllm-openai@sha256:ccd6a6dbf4aba4e94c6f7052d1835d6e742082b6a5095276552e9b7a5a47c2e5
     container_name: vllm-qwen3-30b
     command: >
         Qwen/Qwen3-30B-A3B-Instruct-2507
@@ -364,7 +364,7 @@ services:
 
   vllm-qwen3-vl:
     <<: *vllm-common
-    image: vllm/vllm-openai@sha256:4801151759655c57606c844662e5213403c032a62d149c7ce61d615759a821ef
+    image: vllm/vllm-openai@sha256:ccd6a6dbf4aba4e94c6f7052d1835d6e742082b6a5095276552e9b7a5a47c2e5
     container_name: vllm-qwen3-vl
     command: >
         Qwen/Qwen3-VL-30B-A3B-Instruct
@@ -408,7 +408,7 @@ services:
 
   vllm-qwen3-embeddings:
     <<: *vllm-common
-    image: vllm/vllm-openai@sha256:4801151759655c57606c844662e5213403c032a62d149c7ce61d615759a821ef
+    image: vllm/vllm-openai@sha256:ccd6a6dbf4aba4e94c6f7052d1835d6e742082b6a5095276552e9b7a5a47c2e5
     container_name: vllm-qwen3-embeddings
     command: >
         Qwen/Qwen3-Embedding-0.6B
@@ -444,7 +444,7 @@ services:
 
   vllm-qwen3-reranker:
     <<: *vllm-common
-    image: vllm/vllm-openai@sha256:4801151759655c57606c844662e5213403c032a62d149c7ce61d615759a821ef
+    image: vllm/vllm-openai@sha256:ccd6a6dbf4aba4e94c6f7052d1835d6e742082b6a5095276552e9b7a5a47c2e5
     container_name: vllm-qwen3-reranker
     command: >
         Qwen/Qwen3-Reranker-0.6B
@@ -484,7 +484,7 @@ services:
     build:
       context: .
       dockerfile_inline: |
-        FROM vllm/vllm-openai@sha256:4801151759655c57606c844662e5213403c032a62d149c7ce61d615759a821ef
+        FROM vllm/vllm-openai@sha256:ccd6a6dbf4aba4e94c6f7052d1835d6e742082b6a5095276552e9b7a5a47c2e5
         RUN pip install openai-whisper torchaudio librosa vllm[audio]
     container_name: vllm-whisper3-large
     command: >
