@@ -148,6 +148,20 @@ services:
     restart: unless-stopped
     logging: *logging-conf
 
+  model-proxy-registrar:
+    image: curlimages/curl@sha256:d94d07ba9e7d6de898b6d96c1a072f6f8266c687af78a74f380087a0addf5d17
+    container_name: model-proxy-registrar
+    entrypoint: ["sh", "/register.sh"]
+    restart: unless-stopped
+    environment:
+      - HOST_IP=${HOST_IP}
+      - MODEL_PROXY_TOKEN=${MODEL_PROXY_TOKEN}
+    configs:
+      - source: registrar_script
+        target: /register.sh
+        mode: 0755
+    logging: *logging-conf
+
   # --- Qwen3-30B (GPUs 0-1) ---
 
   vllm-proxy-qwen3-30b:
@@ -179,7 +193,7 @@ services:
         --load-format runai_streamer
         --dtype float16
         --model-loader-extra-config '{"distributed":true, "concurrency":48}'
-        --speculative-config '{"method":"eagle3","model":"lmsys/SGLang-EAGLE3-Qwen3-30B-A3B-Instruct-2507-SpecForge-Nex","prefill_token_shift":false,"num_speculative_tokens":3,"draft_tensor_parallel_size":1, "num_draft_tokens":4}'
+        --speculative-config '{"method":"eagle3","model":"lmsys/SGLang-EAGLE3-Qwen3-30B-A3B-Instruct-2507-SpecForge-Nex","num_speculative_tokens":3,"draft_tensor_parallel_size":1}'
     volumes:
       - hugginface_cache:/root/.cache/huggingface
       - vllm_cache:/root/.cache/vllm
@@ -506,6 +520,51 @@ volumes:
     name: certs
 
 configs:
+  registrar_script:
+    content: |
+      #!/bin/sh
+      PROXY_URL="https://completions.near.ai"
+      TOKEN="$${MODEL_PROXY_TOKEN}"
+      TLS_PORT=8444
+
+      register_endpoint() {
+        curl -sS -X POST "$$PROXY_URL/register/endpoint" \
+          -H "Authorization: Bearer $$TOKEN" \
+          -H "Content-Type: application/json" \
+          -d "{\"endpoint\":\"$$1\",\"routing_port\":$$TLS_PORT}" || true
+      }
+
+      register_model() {
+        curl -sS -X POST "$$PROXY_URL/register/model" \
+          -H "Authorization: Bearer $$TOKEN" \
+          -H "Content-Type: application/json" \
+          -d "{\"model\":\"$$1\",\"domain\":\"$$2\"}" || true
+      }
+
+      echo "Waiting for first model to be ready..."
+      until curl -sf http://nginx:8000/v1/models > /dev/null 2>&1; do sleep 30; done
+      echo "First model ready, starting registration loop"
+
+      while true; do
+        # Register each endpoint if healthy
+        for port in 8000 8001 8002 8003 8004 8005 8006 8007 8008 8009 8010; do
+          if curl -sf "http://nginx:$$port/v1/models" > /dev/null 2>&1; then
+            register_endpoint "$${HOST_IP}:$$port" "$$TLS_PORT"
+          fi
+        done
+
+        # Model-to-domain mappings
+        register_model "Qwen/Qwen3-30B-A3B-Instruct-2507" "qwen3-30b.completions.near.ai"
+        register_model "openai/gpt-oss-120b" "gpt-oss-120b.completions.near.ai"
+        register_model "black-forest-labs/FLUX.2-klein-4B" "flux2-klein.completions.near.ai"
+        register_model "Qwen/Qwen3-VL-30B-A3B-Instruct" "qwen3-vl-30b.completions.near.ai"
+        register_model "Qwen/Qwen3-Embedding-0.6B" "qwen3-embedding.completions.near.ai"
+        register_model "Qwen/Qwen3-Reranker-0.6B" "qwen3-reranker.completions.near.ai"
+        register_model "openai/whisper-large-v3" "whisper-large-v3.completions.near.ai"
+
+        echo "Registration cycle complete for $${HOST_IP}"
+        sleep 300
+      done
   nginx_conf:
     content: |
       # Common proxy settings

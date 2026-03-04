@@ -82,6 +82,21 @@ services:
     restart: unless-stopped
     logging: *logging-conf
 
+  model-proxy-registrar:
+    image: curlimages/curl@sha256:d94d07ba9e7d6de898b6d96c1a072f6f8266c687af78a74f380087a0addf5d17
+    container_name: model-proxy-registrar
+    entrypoint: ["sh", "/register.sh"]
+    restart: unless-stopped
+    environment:
+      - HOST_IP=${HOST_IP}
+      - TLS_PORT=${TLS_PORT:-8444}
+      - MODEL_PROXY_TOKEN=${MODEL_PROXY_TOKEN}
+    configs:
+      - source: registrar_script
+        target: /register.sh
+        mode: 0755
+    logging: *logging-conf
+
   # --- Qwen3.5-122B-A10B instance 1 (GPUs 0-3) ---
 
   sglang-qwen35-122b-1:
@@ -152,6 +167,39 @@ volumes:
     name: certs
 
 configs:
+  registrar_script:
+    content: |
+      #!/bin/sh
+      PROXY_URL="https://completions.near.ai"
+      TOKEN="$${MODEL_PROXY_TOKEN}"
+
+      register_endpoint() {
+        curl -sS -X POST "$$PROXY_URL/register/endpoint" \
+          -H "Authorization: Bearer $$TOKEN" \
+          -H "Content-Type: application/json" \
+          -d "{\"endpoint\":\"$$1\",\"routing_port\":$$2}" || true
+      }
+
+      register_model() {
+        curl -sS -X POST "$$PROXY_URL/register/model" \
+          -H "Authorization: Bearer $$TOKEN" \
+          -H "Content-Type: application/json" \
+          -d "{\"model\":\"$$1\",\"domain\":\"$$2\"}" || true
+      }
+
+      echo "Waiting for models to be ready..."
+      until curl -sf http://nginx:8000/v1/models > /dev/null 2>&1; do sleep 30; done
+      echo "Instance 1 ready, starting registration loop"
+
+      while true; do
+        register_endpoint "$${HOST_IP}:8000" "$${TLS_PORT}"
+        if curl -sf http://nginx:8001/v1/models > /dev/null 2>&1; then
+          register_endpoint "$${HOST_IP}:8001" "$${TLS_PORT}"
+        fi
+        register_model "Qwen/Qwen3.5-122B-A10B" "qwen35-122b.completions.near.ai"
+        echo "Registered Qwen/Qwen3.5-122B-A10B at $${HOST_IP}:8000,8001"
+        sleep 300
+      done
   nginx_conf:
     content: |
       proxy_http_version 1.1;

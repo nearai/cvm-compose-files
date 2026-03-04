@@ -51,6 +51,22 @@ services:
     restart: unless-stopped
     logging: *logging-conf
 
+  model-proxy-registrar:
+    image: curlimages/curl@sha256:d94d07ba9e7d6de898b6d96c1a072f6f8266c687af78a74f380087a0addf5d17
+    container_name: model-proxy-registrar
+    entrypoint: ["sh", "/register.sh"]
+    restart: unless-stopped
+    environment:
+      - HOST_IP=${HOST_IP}
+      - HTTP_PORT=${HTTP_PORT:-8000}
+      - TLS_PORT=${TLS_PORT:-8444}
+      - MODEL_PROXY_TOKEN=${MODEL_PROXY_TOKEN}
+    configs:
+      - source: registrar_script
+        target: /register.sh
+        mode: 0755
+    logging: *logging-conf
+
   proxy-glm:
     <<: *vllm-proxy-common
     container_name: proxy-glm
@@ -122,6 +138,36 @@ volumes:
 
 
 configs:
+  registrar_script:
+    content: |
+      #!/bin/sh
+      PROXY_URL="https://completions.near.ai"
+      TOKEN="$${MODEL_PROXY_TOKEN}"
+
+      register_endpoint() {
+        curl -sS -X POST "$$PROXY_URL/register/endpoint" \
+          -H "Authorization: Bearer $$TOKEN" \
+          -H "Content-Type: application/json" \
+          -d "{\"endpoint\":\"$$1\",\"routing_port\":$$2}" || true
+      }
+
+      register_model() {
+        curl -sS -X POST "$$PROXY_URL/register/model" \
+          -H "Authorization: Bearer $$TOKEN" \
+          -H "Content-Type: application/json" \
+          -d "{\"model\":\"$$1\",\"domain\":\"$$2\"}" || true
+      }
+
+      echo "Waiting for model to be ready..."
+      until curl -sf http://nginx:80/v1/models > /dev/null 2>&1; do sleep 30; done
+      echo "Model ready, starting registration loop"
+
+      while true; do
+        register_endpoint "$${HOST_IP}:$${HTTP_PORT}" "$${TLS_PORT}"
+        register_model "zai-org/GLM-5-FP8" "glm-5.completions.near.ai"
+        echo "Registered zai-org/GLM-5-FP8 at $${HOST_IP}:$${HTTP_PORT}"
+        sleep 300
+      done
   nginx_conf:
     content: |
       server {
