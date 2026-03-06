@@ -66,7 +66,7 @@ x-sglang-env:
 
 x-gpt-oss-common: &gpt-oss-common
   <<: *vllm-common
-  image: vllm/vllm-openai@sha256:014a95f21c9edf6abe0aea6b07353f96baa4ec291c427bb1176dc7c93a85845c
+  image: vllm/vllm-openai@sha256:6766ce0c459e24b76f3e9ba14ffc0442131ef4248c904efdcbf0d89e38be01fe
   command: >
       openai/gpt-oss-120b
       --tensor-parallel-size 1
@@ -77,8 +77,6 @@ x-gpt-oss-common: &gpt-oss-common
       --max-cudagraph-capture-size 2048
       --tool-call-parser openai
       --enable-auto-tool-choice
-      --enable-reasoning
-      --reasoning-parser openai_gptoss
       --max-model-len 128K
       --max-num-batched-tokens 16K
       --stream-interval 20
