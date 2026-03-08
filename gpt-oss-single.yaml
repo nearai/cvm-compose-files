@@ -1,0 +1,54 @@
+services:
+  vllm-gpt-oss:
+    image: vllm/vllm-openai@sha256:6766ce0c459e24b76f3e9ba14ffc0442131ef4248c904efdcbf0d89e38be01fe
+    runtime: nvidia
+    ipc: host
+    ulimits:
+      memlock: -1
+      nofile:
+        soft: 65535
+        hard: 65535
+    volumes:
+      - hugginface_cache:/root/.cache/huggingface
+      - vllm_cache:/root/.cache/vllm
+    environment:
+      - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+      - VLLM_LOGGING_LEVEL=INFO
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - NVIDIA_VISIBLE_DEVICES=all
+      - VLLM_MXFP4_USE_MARLIN=1
+      - VLLM_CACHE_ROOT=/root/.cache/vllm
+      - HF_HUB_DISABLE_XET=1
+      - HF_HUB_OFFLINE=1
+    command:
+      - openai/gpt-oss-120b
+      - --tensor-parallel-size=1
+      - --gpu-memory-utilization=0.95
+      - --max-num-seqs=32
+      - --max-num-batched-tokens=8192
+      - --max-model-len=32768
+      - --no-enable-prefix-caching
+      - --speculative-config={"method":"eagle3","model":"nvidia/gpt-oss-120b-Eagle3-v2","num_speculative_tokens":3}
+      - --async-scheduling
+      - --tool-call-parser=openai
+      - --enable-auto-tool-choice
+    ports:
+      - "8000:8000"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/v1/models"]
+      interval: 10s
+      timeout: 10s
+      retries: 100
+      start_period: 3600s
+    restart: unless-stopped
+
+volumes:
+  hugginface_cache:
+  vllm_cache:

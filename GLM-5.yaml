@@ -28,10 +28,8 @@ x-vllm-proxy-common: &vllm-proxy-common
   <<: *nvidia
   volumes:
     - /var/run/dstack.sock:/var/run/dstack.sock
+    - certs:/etc/letsencrypt:ro
   restart: unless-stopped
-  environment:
-    - NVIDIA_VISIBLE_DEVICES=all
-    - LOG_FORMAT=json
   logging: *logging-conf
 
 services:
@@ -70,15 +68,14 @@ services:
   proxy-glm:
     <<: *vllm-proxy-common
     container_name: proxy-glm
-    volumes:
-      - /var/run/dstack.sock:/var/run/dstack.sock
-      - certs:/etc/letsencrypt:ro
     environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - CLOUD_API_URL=https://cloud-api.near.ai
+      - LOG_FORMAT=json
       - MODEL_NAME=zai-org/GLM-5-FP8
       - TOKEN=${PROXY_TOKEN}
       - VLLM_BASE_URL=http://glm:8000
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
-      - CLOUD_API_URL=https://cloud-api.near.ai 
 
   glm:
     <<: *vllm-common

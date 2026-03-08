@@ -31,15 +31,14 @@ x-vllm-common: &vllm-common
   logging: *logging-conf
 
 x-vllm-proxy-common: &vllm-proxy-common
-  image: nearaidev/vllm-proxy@sha256:0b1c4d010cd189c694650cce8f437734e2005ea65955797561d36710210eb4c2
+  image: nearaidev/vllm-proxy-rs@sha256:10403ec7daf927509a6dc5ed732f8c5e925fecf336eb58b7b89ad5a39777c10a
   user: root
   privileged: true
   <<: *nvidia
   volumes:
     - /var/run/dstack.sock:/var/run/dstack.sock
+    - certs:/etc/letsencrypt:ro
   restart: unless-stopped
-  environment:
-    - NVIDIA_VISIBLE_DEVICES=all
   logging: *logging-conf
 
 services:
@@ -78,10 +77,10 @@ services:
   vllm-proxy-deepseek:
     <<: *vllm-proxy-common
     container_name: vllm-proxy-deepseek
-    volumes:
-      - /var/run/dstack.sock:/var/run/dstack.sock
-      - certs:/etc/letsencrypt:ro
     environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - CLOUD_API_URL=https://cloud-api.near.ai
+      - LOG_FORMAT=json
       - MODEL_NAME=deepseek-ai/DeepSeek-V3.1
       - TOKEN=${PROXY_TOKEN}
       - VLLM_BASE_URL=http://vllm-deepseek:8000

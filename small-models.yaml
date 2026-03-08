@@ -39,10 +39,6 @@ x-vllm-proxy-common: &vllm-proxy-common
     - /var/run/dstack.sock:/var/run/dstack.sock
     - certs:/etc/letsencrypt:ro
   restart: unless-stopped
-  environment:
-    - NVIDIA_VISIBLE_DEVICES=all
-    - CLOUD_API_URL=https://cloud-api.near.ai
-    - LOG_FORMAT=json
   logging: *logging-conf
 
 x-vllm-env:
@@ -166,6 +162,9 @@ services:
     <<: *vllm-proxy-common
     container_name: vllm-proxy-qwen3-30b
     environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - CLOUD_API_URL=https://cloud-api.near.ai
+      - LOG_FORMAT=json
       - MODEL_NAME=Qwen/Qwen3-30B-A3B-Instruct-2507
       - TOKEN=${PROXY_TOKEN}
       - VLLM_BASE_URL=http://vllm-qwen3-30b:8000
@@ -215,6 +214,9 @@ services:
     <<: *vllm-proxy-common
     container_name: vllm-proxy-gpt-oss-1
     environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - CLOUD_API_URL=https://cloud-api.near.ai
+      - LOG_FORMAT=json
       - MODEL_NAME=openai/gpt-oss-120b
       - TOKEN=${PROXY_TOKEN}
       - VLLM_BASE_URL=http://vllm-gpt-oss-1:8000
@@ -242,6 +244,9 @@ services:
     <<: *vllm-proxy-common
     container_name: vllm-proxy-gpt-oss-2
     environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - CLOUD_API_URL=https://cloud-api.near.ai
+      - LOG_FORMAT=json
       - MODEL_NAME=openai/gpt-oss-120b
       - TOKEN=${PROXY_TOKEN}
       - VLLM_BASE_URL=http://vllm-gpt-oss-2:8000
@@ -271,6 +276,9 @@ services:
     <<: *vllm-proxy-common
     container_name: vllm-proxy-flux-2-klein-4b-1
     environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - CLOUD_API_URL=https://cloud-api.near.ai
+      - LOG_FORMAT=json
       - MODEL_NAME=black-forest-labs/FLUX.2-klein-4B
       - TOKEN=${PROXY_TOKEN}
       - VLLM_BASE_URL=http://vllm-flux-2-klein-4b-1:8000
@@ -291,6 +299,9 @@ services:
     <<: *vllm-proxy-common
     container_name: vllm-proxy-flux-2-klein-4b-2
     environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - CLOUD_API_URL=https://cloud-api.near.ai
+      - LOG_FORMAT=json
       - MODEL_NAME=black-forest-labs/FLUX.2-klein-4B
       - TOKEN=${PROXY_TOKEN}
       - VLLM_BASE_URL=http://vllm-flux-2-klein-4b-2:8000
@@ -311,6 +322,9 @@ services:
     <<: *vllm-proxy-common
     container_name: vllm-proxy-flux-2-klein-4b-3
     environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - CLOUD_API_URL=https://cloud-api.near.ai
+      - LOG_FORMAT=json
       - MODEL_NAME=black-forest-labs/FLUX.2-klein-4B
       - TOKEN=${PROXY_TOKEN}
       - VLLM_BASE_URL=http://vllm-flux-2-klein-4b-3:8000
@@ -331,6 +345,9 @@ services:
     <<: *vllm-proxy-common
     container_name: vllm-proxy-flux-2-klein-4b-4
     environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - CLOUD_API_URL=https://cloud-api.near.ai
+      - LOG_FORMAT=json
       - MODEL_NAME=black-forest-labs/FLUX.2-klein-4B
       - TOKEN=${PROXY_TOKEN}
       - VLLM_BASE_URL=http://vllm-flux-2-klein-4b-4:8000
@@ -353,6 +370,9 @@ services:
     <<: *vllm-proxy-common
     container_name: vllm-proxy-qwen3-vl
     environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - CLOUD_API_URL=https://cloud-api.near.ai
+      - LOG_FORMAT=json
       - MODEL_NAME=Qwen/Qwen3-VL-30B-A3B-Instruct
       - TOKEN=${PROXY_TOKEN}
       - VLLM_BASE_URL=http://vllm-qwen3-vl:8000
@@ -397,6 +417,9 @@ services:
     <<: *vllm-proxy-common
     container_name: vllm-proxy-qwen3-embeddings
     environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - CLOUD_API_URL=https://cloud-api.near.ai
+      - LOG_FORMAT=json
       - MODEL_NAME=Qwen/Qwen3-Embedding-0.6B
       - TOKEN=${PROXY_TOKEN}
       - VLLM_BASE_URL=http://vllm-qwen3-embeddings:8000
@@ -433,6 +456,9 @@ services:
     <<: *vllm-proxy-common
     container_name: vllm-proxy-qwen3-reranker
     environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - CLOUD_API_URL=https://cloud-api.near.ai
+      - LOG_FORMAT=json
       - MODEL_NAME=Qwen/Qwen3-Reranker-0.6B
       - TOKEN=${PROXY_TOKEN}
       - VLLM_BASE_URL=http://vllm-qwen3-reranker:8000
@@ -469,6 +495,9 @@ services:
     <<: *vllm-proxy-common
     container_name: vllm-proxy-whisper3-large
     environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - CLOUD_API_URL=https://cloud-api.near.ai
+      - LOG_FORMAT=json
       - MODEL_NAME=openai/whisper-large-v3
       - TOKEN=${PROXY_TOKEN}
       - VLLM_BASE_URL=http://vllm-whisper3-large:8000
