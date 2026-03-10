@@ -13,7 +13,7 @@ services:
       - vllm_cache:/root/.cache/vllm
     environment:
       - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN}
-      - VLLM_LOGGING_LEVEL=INFO
+      - VLLM_LOGGING_LEVEL=WARNING
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
       - NVIDIA_VISIBLE_DEVICES=all
       - VLLM_MXFP4_USE_MARLIN=1
@@ -43,7 +43,7 @@ services:
               capabilities: [gpu]
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/v1/models"]
-      interval: 10s
+      interval: 30s
       timeout: 10s
       retries: 100
       start_period: 3600s

@@ -7,7 +7,7 @@ x-logging-conf: &logging-conf
 
 x-vllm-healthcheck: &vllm-healthcheck
   test: ["CMD", "curl", "-f", "http://localhost:8000/v1/models"]
-  interval: 10s
+  interval: 30s
   timeout: 10s
   retries: 100
   start_period: 3600s
@@ -117,10 +117,10 @@ services:
         mode: 0644
     environment:
       - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN}
-      - VLLM_LOGGING_LEVEL=INFO
+      - VLLM_LOGGING_LEVEL=WARNING
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
       - OPENBLAS_L2_SIZE=2097152
-      - NCCL_DEBUG=INFO
+      - NCCL_DEBUG=WARN
       - VLLM_CACHE_ROOT=/root/.cache/vllm
       - TORCH_FLOAT32_MATMUL_PRECISION=high
       - LMCACHE_CHUNK_SIZE=256
