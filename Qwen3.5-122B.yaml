@@ -82,22 +82,34 @@ services:
     <<: *nvidia
     image: vllm/vllm-openai@sha256:0dc46f74eb0e630675d83101dc66c6441c4475cceedcf9235ee42b87c3affd23  # v0.17.1
     container_name: vllm-qwen35-122b
-    command: >
-        Qwen/Qwen3.5-122B-A10B
-        --data-parallel-size 2
-        --tensor-parallel-size 4
-        --gpu-memory-utilization 0.88
-        --max-model-len 1010000
-        --kv-cache-dtype fp8_e4m3
-        --enable-chunked-prefill
-        --max-num-batched-tokens 8192
-        --reasoning-parser qwen3
-        --enable-auto-tool-choice
-        --tool-call-parser qwen3_coder
-        --speculative-config '{"method": "mtp", "num_speculative_tokens": 1}'
-        --hf-overrides '{"text_config": {"rope_parameters": {"mrope_interleaved": true, "mrope_section": [11, 11, 10], "rope_type": "yarn", "rope_theta": 10000000, "partial_rotary_factor": 0.25, "factor": 4.0, "original_max_position_embeddings": 262144}}}'
-        --port 8000
-        --host 0.0.0.0
+    command:
+      - Qwen/Qwen3.5-122B-A10B
+      - --data-parallel-size
+      - "2"
+      - --tensor-parallel-size
+      - "4"
+      - --gpu-memory-utilization
+      - "0.88"
+      - --max-model-len
+      - "1010000"
+      - --kv-cache-dtype
+      - fp8_e4m3
+      - --enable-chunked-prefill
+      - --max-num-batched-tokens
+      - "8192"
+      - --reasoning-parser
+      - qwen3
+      - --enable-auto-tool-choice
+      - --tool-call-parser
+      - qwen3_coder
+      - --speculative-config
+      - '{"method": "mtp", "num_speculative_tokens": 1}'
+      - --hf-overrides
+      - '{"text_config": {"rope_parameters": {"mrope_interleaved": true, "mrope_section": [11, 11, 10], "rope_type": "yarn", "rope_theta": 10000000, "partial_rotary_factor": 0.25, "factor": 4.0, "original_max_position_embeddings": 262144}}}'
+      - --port
+      - "8000"
+      - --host
+      - 0.0.0.0
     volumes:
       - huggingface_cache:/root/.cache/huggingface
     environment:
