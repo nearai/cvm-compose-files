@@ -14,13 +14,6 @@ x-nvidia: &nvidia
       soft: 65535
       hard: 65535
 
-x-vllm-common: &vllm-common
-  <<: *nvidia
-  volumes:
-    - hugginface_cache:/root/.cache/huggingface
-  restart: unless-stopped
-  logging: *logging-conf
-
 x-vllm-proxy-common: &vllm-proxy-common
   image: nearaidev/vllm-proxy-rs@sha256:e37275db8d782d5641327dbebf365416995700643ddaecc245cd34af094dbe5f
   user: root
@@ -78,11 +71,11 @@ services:
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
 
   glm:
-    <<: *vllm-common
+    <<: *nvidia
     build:
       dockerfile_inline: |
         FROM lmsysorg/sglang:glm5-hopper-patched@sha256:abf8deb5e81cd7f942be8be10b1a92d4360d2f0a245b50ca8d9e27e9c05a98d6
-        RUN pip install --no-cache-dir git+https://github.com/huggingface/transformers.git
+        RUN pip install --no-cache-dir "transformers>=5.2,<5.3"
     container_name: glm
     command: >
       sglang serve
@@ -95,22 +88,23 @@ services:
       --speculative-num-steps 3
       --speculative-eagle-topk 1
       --speculative-num-draft-tokens 4
-      --mem-fraction-static 0.90
-      --max-running-requests 16
+      --mem-fraction-static 0.88
+      --max-running-requests 24
       --context-length 202000
       --model-loader-extra-config '{"enable_multithread_load": "true", "num_threads": 64}'
       --port 8000
       --host 0.0.0.0
       --enable-cache-report
     volumes:
-      - hugginface_cache:/root/.cache/huggingface
-      - deepgemm_cache:/root/.deep_gemm
+      - huggingface_cache:/root/.cache/huggingface
+      - kernel_cache:/root/.cache/deep_gemm
     environment:
       - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+      - HF_HUB_DISABLE_XET=1
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
       - OPENBLAS_L2_SIZE=2097152
       - NCCL_DEBUG=WARN
-      - TORCH_FLOAT32_MATMUL_PRECISION=high
+      - SGLANG_JIT_DEEPGEMM_FAST_WARMUP=1
     deploy:
       resources:
         reservations:
@@ -118,8 +112,19 @@ services:
             - driver: nvidia
               device_ids: ["0","1","2","3","4","5","6","7"]
               capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/v1/models"]
+      interval: 30s
+      timeout: 10s
+      retries: 100
+      start_period: 3600s
+    restart: unless-stopped
+    logging: *logging-conf
     labels:
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://glm:8000/metrics", "service": "glm-5"]'
+      com.datadoghq.ad.check_names: '["openmetrics"]'
+      com.datadoghq.ad.init_configs: "[{}]"
+      com.datadoghq.ad.logs: '[{"source": "sglang", "service": "sglang", "tags":["model:zai-org/GLM-5-FP8","ip:${HOST_IP}","port:8000"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://glm:8000/metrics", "service": "glm-5", "tags":["model:zai-org/GLM-5-FP8","ip:${HOST_IP}","port:8000"]}]'
 
   dcgm-exporter:
     image: nvcr.io/nvidia/k8s/dcgm-exporter:4.5.2-4.8.1-distroless
@@ -152,8 +157,8 @@ networks:
     name: dstack_default
 
 volumes:
-  hugginface_cache:
-  deepgemm_cache:
+  huggingface_cache:
+  kernel_cache:
   certs:
     external: true
     name: certs
