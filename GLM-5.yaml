@@ -70,8 +70,31 @@ services:
       - VLLM_BASE_URL=http://glm:8000
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
 
+  volume-migration:
+    image: busybox
+    container_name: volume-migration
+    command: >
+      sh -c '
+      echo "Migrating hugginface_cache -> huggingface_cache...";
+      cp -a /old-hf/. /new-hf/ 2>/dev/null && echo "HF cache migrated" || echo "HF cache empty or already migrated";
+      echo "Migrating deepgemm_cache -> kernel_cache...";
+      cp -a /old-dg/. /new-dg/ 2>/dev/null && echo "DeepGemm cache migrated" || echo "DeepGemm cache empty or already migrated";
+      echo "Cleaning up old volumes...";
+      rm -rf /old-hf/* 2>/dev/null; rm -rf /old-dg/* 2>/dev/null;
+      echo "Migration complete"'
+    volumes:
+      - hugginface_cache:/old-hf
+      - huggingface_cache:/new-hf
+      - deepgemm_cache:/old-dg
+      - kernel_cache:/new-dg
+    restart: "no"
+    logging: *logging-conf
+
   glm:
     <<: *nvidia
+    depends_on:
+      volume-migration:
+        condition: service_completed_successfully
     build:
       dockerfile_inline: |
         FROM lmsysorg/sglang:glm5-hopper-patched@sha256:abf8deb5e81cd7f942be8be10b1a92d4360d2f0a245b50ca8d9e27e9c05a98d6
@@ -156,7 +179,9 @@ networks:
     name: dstack_default
 
 volumes:
+  hugginface_cache:
   huggingface_cache:
+  deepgemm_cache:
   kernel_cache:
   certs:
     external: true
