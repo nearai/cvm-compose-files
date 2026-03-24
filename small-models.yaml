@@ -78,6 +78,7 @@ x-gpt-oss-common: &gpt-oss-common
       --max-num-batched-tokens 8192
       --load-format runai_streamer
       --model-loader-extra-config '{"distributed":true, "concurrency":48}'
+      --enable-prompt-tokens-details
   volumes:
     - hugginface_cache:/root/.cache/huggingface
     - vllm_cache:/root/.cache/vllm
@@ -198,6 +199,7 @@ services:
         --dtype float16
         --model-loader-extra-config '{"distributed":true, "concurrency":48}'
         --speculative-config '{"method":"eagle3","model":"lmsys/SGLang-EAGLE3-Qwen3-30B-A3B-Instruct-2507-SpecForge-Nex","num_speculative_tokens":3,"draft_tensor_parallel_size":1}'
+        --enable-prompt-tokens-details
     volumes:
       - hugginface_cache:/root/.cache/huggingface
       - vllm_cache:/root/.cache/vllm
@@ -401,6 +403,7 @@ services:
         --max-num-batched-tokens 16K
         --mm-encoder-tp-mode data
         --async-scheduling
+        --enable-prompt-tokens-details
     volumes:
       - hugginface_cache:/root/.cache/huggingface
       - vllm_cache:/root/.cache/vllm
