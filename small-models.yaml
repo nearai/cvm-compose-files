@@ -589,18 +589,59 @@ configs:
       TOKEN="$${MODEL_PROXY_TOKEN}"
       TLS_PORT=8444
 
+      # Track registration state per port (0=unregistered, 1=registered)
+      for port in 8000 8001 8002 8003 8004 8005 8006 8007 8008 8009 8010; do
+        eval "REG_$$port=false"
+      done
+
       register_endpoint() {
-        curl -sS -X POST "$$PROXY_URL/register/endpoint" \
+        curl -sS --max-time 10 -X POST "$$PROXY_URL/register/endpoint" \
           -H "Authorization: Bearer $$TOKEN" \
           -H "Content-Type: application/json" \
           -d "{\"endpoint\":\"$$1\",\"routing_port\":$$TLS_PORT}" || true
       }
 
+      unregister_endpoint() {
+        curl -sS --max-time 10 -X POST "$$PROXY_URL/unregister/endpoint" \
+          -H "Authorization: Bearer $$TOKEN" \
+          -H "Content-Type: application/json" \
+          -d "{\"endpoint\":\"$$1\"}" || true
+      }
+
       register_model() {
-        curl -sS -X POST "$$PROXY_URL/register/model" \
+        curl -sS --max-time 10 -X POST "$$PROXY_URL/register/model" \
           -H "Authorization: Bearer $$TOKEN" \
           -H "Content-Type: application/json" \
           -d "{\"model\":\"$$1\",\"domain\":\"$$2\"}" || true
+      }
+
+      cleanup() {
+        echo "SIGTERM received, unregistering all endpoints"
+        for port in 8000 8001 8002 8003 8004 8005 8006 8007 8008 8009 8010; do
+          unregister_endpoint "$${HOST_IP}:$$port"
+        done
+        exit 0
+      }
+      trap cleanup TERM INT
+
+      # 1-token completion check for chat-capable models (no auth needed on backend)
+      check_chat() {
+        curl -sf --max-time 10 -X POST "http://$$1:8000/v1/chat/completions" \
+          -H "Content-Type: application/json" \
+          -d "{\"model\":\"$$2\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":1}" \
+          > /dev/null 2>&1
+      }
+
+      # Port -> backend container and model for chat-capable services
+      # Non-chat ports (8003-8006=FLUX, 8008=embed, 8009=reranker, 8010=whisper) use /v1/models
+      check_port() {
+        case $$1 in
+          8000) check_chat vllm-qwen3-30b "Qwen/Qwen3-30B-A3B-Instruct-2507" ;;
+          8001) check_chat vllm-gpt-oss-1 "openai/gpt-oss-120b" ;;
+          8002) check_chat vllm-gpt-oss-2 "openai/gpt-oss-120b" ;;
+          8007) check_chat vllm-qwen3-vl "Qwen/Qwen3-VL-30B-A3B-Instruct" ;;
+          *)    curl -sf --max-time 10 "http://nginx:$$1/v1/models" > /dev/null 2>&1 ;;
+        esac
       }
 
       echo "Waiting for first model to be ready..."
@@ -608,10 +649,20 @@ configs:
       echo "First model ready, starting registration loop"
 
       while true; do
-        # Register each endpoint if healthy
         for port in 8000 8001 8002 8003 8004 8005 8006 8007 8008 8009 8010; do
-          if curl -sf "http://nginx:$$port/v1/models" > /dev/null 2>&1; then
+          eval "was_reg=\$$REG_$$port"
+          if check_port $$port; then
             register_endpoint "$${HOST_IP}:$$port" "$$TLS_PORT"
+            if [ "$$was_reg" = false ]; then
+              echo "Registered $${HOST_IP}:$$port"
+            fi
+            eval "REG_$$port=true"
+          else
+            if [ "$$was_reg" = true ]; then
+              echo "Health check failed for $${HOST_IP}:$$port, unregistering"
+              unregister_endpoint "$${HOST_IP}:$$port"
+            fi
+            eval "REG_$$port=false"
           fi
         done
 
@@ -623,9 +674,7 @@ configs:
         register_model "Qwen/Qwen3-Embedding-0.6B" "qwen3-embedding.completions.near.ai"
         register_model "Qwen/Qwen3-Reranker-0.6B" "qwen3-reranker.completions.near.ai"
         register_model "openai/whisper-large-v3" "whisper-large-v3.completions.near.ai"
-
-        echo "Registration cycle complete for $${HOST_IP}"
-        sleep 300
+        sleep 60
       done
   nginx_conf:
     content: |

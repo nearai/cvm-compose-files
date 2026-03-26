@@ -216,19 +216,43 @@ configs:
       #!/bin/sh
       PROXY_URL="https://completions.near.ai"
       TOKEN="$${MODEL_PROXY_TOKEN}"
+      ENDPOINT="$${HOST_IP}:$${HTTP_PORT}"
+      REGISTERED=false
 
       register_endpoint() {
-        curl -sS -X POST "$$PROXY_URL/register/endpoint" \
+        curl -sS --max-time 10 -X POST "$$PROXY_URL/register/endpoint" \
           -H "Authorization: Bearer $$TOKEN" \
           -H "Content-Type: application/json" \
           -d "{\"endpoint\":\"$$1\",\"routing_port\":$$2}" || true
       }
 
+      unregister_endpoint() {
+        curl -sS --max-time 10 -X POST "$$PROXY_URL/unregister/endpoint" \
+          -H "Authorization: Bearer $$TOKEN" \
+          -H "Content-Type: application/json" \
+          -d "{\"endpoint\":\"$$1\"}" || true
+      }
+
       register_model() {
-        curl -sS -X POST "$$PROXY_URL/register/model" \
+        curl -sS --max-time 10 -X POST "$$PROXY_URL/register/model" \
           -H "Authorization: Bearer $$TOKEN" \
           -H "Content-Type: application/json" \
           -d "{\"model\":\"$$1\",\"domain\":\"$$2\"}" || true
+      }
+
+      cleanup() {
+        echo "SIGTERM received, unregistering $$ENDPOINT"
+        unregister_endpoint "$$ENDPOINT"
+        REGISTERED=false
+        exit 0
+      }
+      trap cleanup TERM INT
+
+      check_inference() {
+        curl -sf --max-time 10 -X POST "http://vllm-deepseek:8000/v1/chat/completions" \
+          -H "Content-Type: application/json" \
+          -d '{"model":"deepseek-ai/DeepSeek-V3.1","messages":[{"role":"user","content":"hi"}],"max_tokens":1}' \
+          > /dev/null 2>&1
       }
 
       echo "Waiting for model to be ready..."
@@ -236,8 +260,19 @@ configs:
       echo "Model ready, starting registration loop"
 
       while true; do
-        register_endpoint "$${HOST_IP}:$${HTTP_PORT}" "$${TLS_PORT}"
-        register_model "deepseek-ai/DeepSeek-V3.1" "deepseek-v31.completions.near.ai"
-        echo "Registered deepseek-ai/DeepSeek-V3.1 at $${HOST_IP}:$${HTTP_PORT}"
-        sleep 300
+        if check_inference; then
+          register_endpoint "$$ENDPOINT" "$${TLS_PORT}"
+          register_model "deepseek-ai/DeepSeek-V3.1" "deepseek-v31.completions.near.ai"
+          if [ "$$REGISTERED" = false ]; then
+            echo "Registered deepseek-ai/DeepSeek-V3.1 at $$ENDPOINT"
+          fi
+          REGISTERED=true
+        else
+          if [ "$$REGISTERED" = true ]; then
+            echo "Health check failed, unregistering $$ENDPOINT"
+            unregister_endpoint "$$ENDPOINT"
+            REGISTERED=false
+          fi
+        fi
+        sleep 60
       done

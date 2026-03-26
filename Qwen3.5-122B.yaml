@@ -215,19 +215,45 @@ configs:
       #!/bin/sh
       PROXY_URL="https://completions.near.ai"
       TOKEN="$${MODEL_PROXY_TOKEN}"
+      EP1="$${HOST_IP}:8000"
+      EP2="$${HOST_IP}:8001"
+      REG1=false
+      REG2=false
 
       register_endpoint() {
-        curl -sS -X POST "$$PROXY_URL/register/endpoint" \
+        curl -sS --max-time 10 -X POST "$$PROXY_URL/register/endpoint" \
           -H "Authorization: Bearer $$TOKEN" \
           -H "Content-Type: application/json" \
           -d "{\"endpoint\":\"$$1\",\"routing_port\":$$2}" || true
       }
 
+      unregister_endpoint() {
+        curl -sS --max-time 10 -X POST "$$PROXY_URL/unregister/endpoint" \
+          -H "Authorization: Bearer $$TOKEN" \
+          -H "Content-Type: application/json" \
+          -d "{\"endpoint\":\"$$1\"}" || true
+      }
+
       register_model() {
-        curl -sS -X POST "$$PROXY_URL/register/model" \
+        curl -sS --max-time 10 -X POST "$$PROXY_URL/register/model" \
           -H "Authorization: Bearer $$TOKEN" \
           -H "Content-Type: application/json" \
           -d "{\"model\":\"$$1\",\"domain\":\"$$2\"}" || true
+      }
+
+      cleanup() {
+        echo "SIGTERM received, unregistering endpoints"
+        unregister_endpoint "$$EP1"
+        unregister_endpoint "$$EP2"
+        exit 0
+      }
+      trap cleanup TERM INT
+
+      check_inference() {
+        curl -sf --max-time 10 -X POST "http://$$1:8000/v1/chat/completions" \
+          -H "Content-Type: application/json" \
+          -d '{"model":"Qwen/Qwen3.5-122B-A10B","messages":[{"role":"user","content":"hi"}],"max_tokens":1}' \
+          > /dev/null 2>&1
       }
 
       echo "Waiting for models to be ready..."
@@ -235,13 +261,32 @@ configs:
       echo "Instance 1 ready, starting registration loop"
 
       while true; do
-        register_endpoint "$${HOST_IP}:8000" "$${TLS_PORT}"
-        if curl -sf http://nginx:8001/v1/models > /dev/null 2>&1; then
-          register_endpoint "$${HOST_IP}:8001" "$${TLS_PORT}"
+        if check_inference vllm-qwen35-122b-1; then
+          register_endpoint "$$EP1" "$${TLS_PORT}"
+          if [ "$$REG1" = false ]; then echo "Registered $$EP1"; fi
+          REG1=true
+        else
+          if [ "$$REG1" = true ]; then
+            echo "Health check failed for $$EP1, unregistering"
+            unregister_endpoint "$$EP1"
+            REG1=false
+          fi
         fi
+
+        if check_inference vllm-qwen35-122b-2; then
+          register_endpoint "$$EP2" "$${TLS_PORT}"
+          if [ "$$REG2" = false ]; then echo "Registered $$EP2"; fi
+          REG2=true
+        else
+          if [ "$$REG2" = true ]; then
+            echo "Health check failed for $$EP2, unregistering"
+            unregister_endpoint "$$EP2"
+            REG2=false
+          fi
+        fi
+
         register_model "Qwen/Qwen3.5-122B-A10B" "qwen35-122b.completions.near.ai"
-        echo "Registered Qwen/Qwen3.5-122B-A10B at $${HOST_IP}:8000,8001"
-        sleep 300
+        sleep 60
       done
   nginx_conf:
     content: |
