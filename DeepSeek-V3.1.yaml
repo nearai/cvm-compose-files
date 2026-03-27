@@ -6,10 +6,10 @@ x-logging-conf: &logging-conf
     labels: "com.datadoghq.ad.logs"
 
 x-vllm-healthcheck: &vllm-healthcheck
-  test: ["CMD", "curl", "-f", "http://localhost:8000/v1/models"]
-  interval: 30s
-  timeout: 10s
-  retries: 100
+  test: ["CMD-SHELL", "curl -sf --max-time 10 -X POST http://localhost:8000/v1/chat/completions -H 'Content-Type: application/json' -d '{\"model\":\"deepseek-ai/DeepSeek-V3.1\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":1}'"]
+  interval: 60s
+  timeout: 15s
+  retries: 5
   start_period: 3600s
 
 x-nvidia: &nvidia
@@ -23,6 +23,7 @@ x-nvidia: &nvidia
 
 x-vllm-common: &vllm-common
   <<: *nvidia
+  init: true
   volumes:
     - hugginface_cache:/root/.cache/huggingface
     - vllm_cache:/root/.cache/vllm
@@ -42,6 +43,24 @@ x-vllm-proxy-common: &vllm-proxy-common
   logging: *logging-conf
 
 services:
+  model-downloader:
+    image: python:3.11-slim
+    container_name: model-downloader
+    restart: "no"
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        pip install -q huggingface_hub[hf_xet] 2>/dev/null
+        echo "Downloading deepseek-ai/DeepSeek-V3.1..."
+        huggingface-cli download deepseek-ai/DeepSeek-V3.1
+        echo "Download complete."
+    volumes:
+      - hugginface_cache:/root/.cache/huggingface
+    environment:
+      - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+      - HF_HUB_DISABLE_XET=1
+    logging: *logging-conf
+
   nginx:
     image: nginx@sha256:1d13701a5f9f3fb01aaa88cef2344d65b6b5bf6b7d9fa4cf0dca557a8d7702ba
     container_name: nginx
@@ -74,6 +93,19 @@ services:
         mode: 0755
     logging: *logging-conf
 
+  autoheal:
+    image: willfarrell/autoheal@sha256:4f7e11814c41ca47c3a3f38544875bc5bf1ed383e12b86047250e6dd7f7153a4
+    container_name: autoheal
+    restart: unless-stopped
+    environment:
+      - AUTOHEAL_CONTAINER_LABEL=all
+      - AUTOHEAL_INTERVAL=30
+      - AUTOHEAL_START_PERIOD=3600
+      - AUTOHEAL_DEFAULT_STOP_TIMEOUT=30
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    logging: *logging-conf
+
   vllm-proxy-deepseek:
     <<: *vllm-proxy-common
     container_name: vllm-proxy-deepseek
@@ -92,6 +124,9 @@ services:
     <<: *vllm-common
     image: vllm/vllm-openai@sha256:0dc46f74eb0e630675d83101dc66c6441c4475cceedcf9235ee42b87c3affd23  # v0.17.1
     container_name: vllm-deepseek
+    depends_on:
+      model-downloader:
+        condition: service_completed_successfully
     command: >
         deepseek-ai/DeepSeek-V3.1
         --tensor-parallel-size 8

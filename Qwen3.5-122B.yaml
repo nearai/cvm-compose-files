@@ -26,14 +26,15 @@ x-vllm-proxy-common: &vllm-proxy-common
   logging: *logging-conf
 
 x-vllm-healthcheck: &vllm-healthcheck
-  test: ["CMD", "curl", "-f", "http://localhost:8000/v1/models"]
-  interval: 30s
-  timeout: 10s
-  retries: 100
+  test: ["CMD-SHELL", "curl -sf --max-time 10 -X POST http://localhost:8000/v1/chat/completions -H 'Content-Type: application/json' -d '{\"model\":\"Qwen/Qwen3.5-122B-A10B\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":1}'"]
+  interval: 60s
+  timeout: 15s
+  retries: 5
   start_period: 3600s
 
 x-vllm-qwen35-122b-common: &vllm-qwen35-122b-common
   <<: *nvidia
+  init: true
   image: vllm/vllm-openai@sha256:96c7e88811a07030f27bc44cd71b9007258a15f130cfec2bb4ab057512238b05  # v0.18.0
   volumes:
     - huggingface_cache:/root/.cache/huggingface
@@ -76,6 +77,37 @@ x-vllm-qwen35-122b-common: &vllm-qwen35-122b-common
   logging: *logging-conf
 
 services:
+  model-downloader:
+    image: python:3.11-slim
+    container_name: model-downloader
+    restart: "no"
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        pip install -q huggingface_hub[hf_xet] 2>/dev/null
+        echo "Downloading Qwen/Qwen3.5-122B-A10B..."
+        huggingface-cli download Qwen/Qwen3.5-122B-A10B
+        echo "Download complete."
+    volumes:
+      - huggingface_cache:/root/.cache/huggingface
+    environment:
+      - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+      - HF_HUB_DISABLE_XET=1
+    logging: *logging-conf
+
+  autoheal:
+    image: willfarrell/autoheal@sha256:4f7e11814c41ca47c3a3f38544875bc5bf1ed383e12b86047250e6dd7f7153a4
+    container_name: autoheal
+    restart: unless-stopped
+    environment:
+      - AUTOHEAL_CONTAINER_LABEL=all
+      - AUTOHEAL_INTERVAL=30
+      - AUTOHEAL_START_PERIOD=3600
+      - AUTOHEAL_DEFAULT_STOP_TIMEOUT=30
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    logging: *logging-conf
+
   nginx:
     image: nginx@sha256:1d13701a5f9f3fb01aaa88cef2344d65b6b5bf6b7d9fa4cf0dca557a8d7702ba
     container_name: nginx
@@ -114,6 +146,9 @@ services:
   vllm-qwen35-122b-1:
     <<: *vllm-qwen35-122b-common
     container_name: vllm-qwen35-122b-1
+    depends_on:
+      model-downloader:
+        condition: service_completed_successfully
     deploy:
       resources:
         reservations:
@@ -122,7 +157,7 @@ services:
               device_ids: ["0","1","2","3"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.check_names: '["openmetrics"]'
+      com.datadoghq.ad.check_names: '["vllm"]'
       com.datadoghq.ad.init_configs: "[{}]"
       com.datadoghq.ad.logs: '[{"source": "vllm", "service": "vllm", "tags":["model:Qwen/Qwen3.5-122B-A10B","ip:${HOST_IP}","port:8000","instance:1"]}]'
       com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-qwen35-122b-1:8000/metrics", "service": "vllm-qwen35-122b-1", "tags":["model:Qwen/Qwen3.5-122B-A10B","ip:${HOST_IP}","port:8000"]}]'
@@ -146,6 +181,9 @@ services:
   vllm-qwen35-122b-2:
     <<: *vllm-qwen35-122b-common
     container_name: vllm-qwen35-122b-2
+    depends_on:
+      model-downloader:
+        condition: service_completed_successfully
     deploy:
       resources:
         reservations:
