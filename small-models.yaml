@@ -846,6 +846,7 @@ configs:
       }
 
       upstream gpt-oss-upstream {
+          hash $$connection consistent;
           server vllm-proxy-gpt-oss-1:8000;
           server vllm-proxy-gpt-oss-2:8000;
       }
@@ -858,6 +859,7 @@ configs:
       }
 
       upstream flux-upstream {
+          hash $$connection consistent;
           server vllm-proxy-flux-2-klein-4b-1:8000;
           server vllm-proxy-flux-2-klein-4b-2:8000;
           server vllm-proxy-flux-2-klein-4b-3:8000;
