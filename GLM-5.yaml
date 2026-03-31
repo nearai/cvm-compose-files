@@ -209,14 +209,13 @@ configs:
       log() { echo "[$$( date -u '+%Y-%m-%dT%H:%M:%SZ' )] $$*"; }
 
       timed_curl() {
-        # Run curl with timing, log duration and exit code on failure
         local label="$$1"; shift
         local start=$$(date +%s)
-        curl "$$@" 2>&1
+        local output; output=$$(curl "$$@" 2>&1)
         local rc=$$?
         local dur=$$(( $$(date +%s) - start ))
         if [ $$rc -ne 0 ]; then
-          log "WARN $$label failed: curl exit=$$rc duration=$${dur}s"
+          log "WARN $$label failed: curl exit=$$rc duration=$${dur}s output=$$output"
         elif [ $$dur -gt 5 ]; then
           log "SLOW $$label took $${dur}s"
         fi
@@ -224,21 +223,21 @@ configs:
       }
 
       register_endpoint() {
-        timed_curl "register_endpoint($$1)" -sS --max-time 10 -X POST "$$PROXY_URL/register/endpoint" \
+        timed_curl "register_endpoint($$1)" -sS -f --max-time 10 -X POST "$$PROXY_URL/register/endpoint" \
           -H "Authorization: Bearer $$TOKEN" \
           -H "Content-Type: application/json" \
           -d "{\"endpoint\":\"$$1\",\"routing_port\":$$2}" || true
       }
 
       unregister_endpoint() {
-        timed_curl "unregister_endpoint($$1)" -sS --max-time 10 -X POST "$$PROXY_URL/unregister/endpoint" \
+        timed_curl "unregister_endpoint($$1)" -sS -f --max-time 10 -X POST "$$PROXY_URL/unregister/endpoint" \
           -H "Authorization: Bearer $$TOKEN" \
           -H "Content-Type: application/json" \
           -d "{\"endpoint\":\"$$1\"}" || true
       }
 
       register_model() {
-        timed_curl "register_model($$1)" -sS --max-time 10 -X POST "$$PROXY_URL/register/model" \
+        timed_curl "register_model($$1)" -sS -f --max-time 10 -X POST "$$PROXY_URL/register/model" \
           -H "Authorization: Bearer $$TOKEN" \
           -H "Content-Type: application/json" \
           -d "{\"model\":\"$$1\",\"domain\":\"$$2\"}" || true
@@ -262,7 +261,7 @@ configs:
       # --- Startup diagnostics ---
       log "Starting registrar for $$ENDPOINT"
       log "PROXY_URL=$$PROXY_URL TOKEN_SET=$$([ -n \"$$TOKEN\" ] && echo yes || echo NO)"
-      log "DNS: $$(nslookup completions.near.ai 2>&1 | grep -i address || echo 'nslookup not available')"
+      log "DNS: $$(nslookup completions.near.ai 2>&1 || echo 'DNS lookup failed')"
 
       log "Waiting for model to be ready..."
       until curl -sf --max-time 5 http://nginx:80/v1/models > /dev/null 2>&1; do sleep 30; done
@@ -270,7 +269,7 @@ configs:
 
       # Test proxy connectivity once at startup
       log "Testing proxy connectivity..."
-      timed_curl "startup_health" -sS --max-time 15 "$$PROXY_URL/health" || true
+      timed_curl "startup_health" -sS -f --max-time 15 "$$PROXY_URL/health" || true
 
       while true; do
         if check_inference; then
