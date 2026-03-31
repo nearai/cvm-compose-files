@@ -659,34 +659,50 @@ configs:
       TOKEN="$${MODEL_PROXY_TOKEN}"
       TLS_PORT=8444
 
-      # Track registration state per port (0=unregistered, 1=registered)
+      log() { echo "[$$( date -u '+%Y-%m-%dT%H:%M:%SZ' )] $$*"; }
+
+      timed_curl() {
+        local label="$$1"; shift
+        local start=$$(date +%s)
+        curl "$$@" 2>&1
+        local rc=$$?
+        local dur=$$(( $$(date +%s) - start ))
+        if [ $$rc -ne 0 ]; then
+          log "WARN $$label failed: curl exit=$$rc duration=$${dur}s"
+        elif [ $$dur -gt 5 ]; then
+          log "SLOW $$label took $${dur}s"
+        fi
+        return $$rc
+      }
+
+      # Track registration state per port
       for port in 8000 8001 8002 8003 8004 8005 8006 8007 8008 8009 8010; do
         eval "REG_$$port=false"
       done
 
       register_endpoint() {
-        curl -sS --max-time 10 -X POST "$$PROXY_URL/register/endpoint" \
+        timed_curl "register_endpoint($$1)" -sS --max-time 10 -X POST "$$PROXY_URL/register/endpoint" \
           -H "Authorization: Bearer $$TOKEN" \
           -H "Content-Type: application/json" \
           -d "{\"endpoint\":\"$$1\",\"routing_port\":$$TLS_PORT}" || true
       }
 
       unregister_endpoint() {
-        curl -sS --max-time 10 -X POST "$$PROXY_URL/unregister/endpoint" \
+        timed_curl "unregister_endpoint($$1)" -sS --max-time 10 -X POST "$$PROXY_URL/unregister/endpoint" \
           -H "Authorization: Bearer $$TOKEN" \
           -H "Content-Type: application/json" \
           -d "{\"endpoint\":\"$$1\"}" || true
       }
 
       register_model() {
-        curl -sS --max-time 10 -X POST "$$PROXY_URL/register/model" \
+        timed_curl "register_model($$1)" -sS --max-time 10 -X POST "$$PROXY_URL/register/model" \
           -H "Authorization: Bearer $$TOKEN" \
           -H "Content-Type: application/json" \
           -d "{\"model\":\"$$1\",\"domain\":\"$$2\"}" || true
       }
 
       cleanup() {
-        echo "SIGTERM received, unregistering all endpoints"
+        log "SIGTERM received, unregistering all endpoints"
         for port in 8000 8001 8002 8003 8004 8005 8006 8007 8008 8009 8010; do
           unregister_endpoint "$${HOST_IP}:$$port"
         done
@@ -694,12 +710,11 @@ configs:
       }
       trap cleanup TERM INT
 
-      # 1-token completion check for chat-capable models (no auth needed on backend)
       check_chat() {
-        curl -sf --max-time 10 -X POST "http://$$1:8000/v1/chat/completions" \
+        timed_curl "check_chat($$1,$$2)" -sf --max-time 15 -X POST "http://$$1:8000/v1/chat/completions" \
           -H "Content-Type: application/json" \
           -d "{\"model\":\"$$2\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":1}" \
-          > /dev/null 2>&1
+          > /dev/null
       }
 
       # Port -> backend container and model for chat-capable services
@@ -710,13 +725,20 @@ configs:
           8001) check_chat vllm-gpt-oss-1 "openai/gpt-oss-120b" ;;
           8002) check_chat vllm-gpt-oss-2 "openai/gpt-oss-120b" ;;
           8007) check_chat vllm-qwen3-vl "Qwen/Qwen3-VL-30B-A3B-Instruct" ;;
-          *)    curl -sf --max-time 10 "http://nginx:$$1/v1/models" > /dev/null 2>&1 ;;
+          *)    timed_curl "check_models(:$$1)" -sf --max-time 10 "http://nginx:$$1/v1/models" > /dev/null ;;
         esac
       }
 
-      echo "Waiting for first model to be ready..."
-      until curl -sf http://nginx:8000/v1/models > /dev/null 2>&1; do sleep 30; done
-      echo "First model ready, starting registration loop"
+      log "Starting registrar for $${HOST_IP} (11 ports)"
+      log "PROXY_URL=$$PROXY_URL TOKEN_SET=$$([ -n \"$$TOKEN\" ] && echo yes || echo NO)"
+      log "DNS: $$(nslookup completions.near.ai 2>&1 | grep -i address || echo 'nslookup not available')"
+
+      log "Waiting for first model to be ready..."
+      until curl -sf --max-time 5 http://nginx:8000/v1/models > /dev/null 2>&1; do sleep 30; done
+      log "First model ready, starting registration loop"
+
+      log "Testing proxy connectivity..."
+      timed_curl "startup_health" -sS --max-time 15 "$$PROXY_URL/health" || true
 
       while true; do
         for port in 8000 8001 8002 8003 8004 8005 8006 8007 8008 8009 8010; do
@@ -724,12 +746,12 @@ configs:
           if check_port $$port; then
             register_endpoint "$${HOST_IP}:$$port" "$$TLS_PORT"
             if [ "$$was_reg" = false ]; then
-              echo "Registered $${HOST_IP}:$$port"
+              log "Registered $${HOST_IP}:$$port"
             fi
             eval "REG_$$port=true"
           else
             if [ "$$was_reg" = true ]; then
-              echo "Health check failed for $${HOST_IP}:$$port, unregistering"
+              log "Health check failed for $${HOST_IP}:$$port, unregistering"
               unregister_endpoint "$${HOST_IP}:$$port"
             fi
             eval "REG_$$port=false"

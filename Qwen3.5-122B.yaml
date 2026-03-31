@@ -257,29 +257,45 @@ configs:
       REG1=false
       REG2=false
 
+      log() { echo "[$$( date -u '+%Y-%m-%dT%H:%M:%SZ' )] $$*"; }
+
+      timed_curl() {
+        local label="$$1"; shift
+        local start=$$(date +%s)
+        curl "$$@" 2>&1
+        local rc=$$?
+        local dur=$$(( $$(date +%s) - start ))
+        if [ $$rc -ne 0 ]; then
+          log "WARN $$label failed: curl exit=$$rc duration=$${dur}s"
+        elif [ $$dur -gt 5 ]; then
+          log "SLOW $$label took $${dur}s"
+        fi
+        return $$rc
+      }
+
       register_endpoint() {
-        curl -sS --max-time 10 -X POST "$$PROXY_URL/register/endpoint" \
+        timed_curl "register_endpoint($$1)" -sS --max-time 10 -X POST "$$PROXY_URL/register/endpoint" \
           -H "Authorization: Bearer $$TOKEN" \
           -H "Content-Type: application/json" \
           -d "{\"endpoint\":\"$$1\",\"routing_port\":$$2}" || true
       }
 
       unregister_endpoint() {
-        curl -sS --max-time 10 -X POST "$$PROXY_URL/unregister/endpoint" \
+        timed_curl "unregister_endpoint($$1)" -sS --max-time 10 -X POST "$$PROXY_URL/unregister/endpoint" \
           -H "Authorization: Bearer $$TOKEN" \
           -H "Content-Type: application/json" \
           -d "{\"endpoint\":\"$$1\"}" || true
       }
 
       register_model() {
-        curl -sS --max-time 10 -X POST "$$PROXY_URL/register/model" \
+        timed_curl "register_model($$1)" -sS --max-time 10 -X POST "$$PROXY_URL/register/model" \
           -H "Authorization: Bearer $$TOKEN" \
           -H "Content-Type: application/json" \
           -d "{\"model\":\"$$1\",\"domain\":\"$$2\"}" || true
       }
 
       cleanup() {
-        echo "SIGTERM received, unregistering endpoints"
+        log "SIGTERM received, unregistering endpoints"
         unregister_endpoint "$$EP1"
         unregister_endpoint "$$EP2"
         exit 0
@@ -287,24 +303,31 @@ configs:
       trap cleanup TERM INT
 
       check_inference() {
-        curl -sf --max-time 10 -X POST "http://$$1:8000/v1/chat/completions" \
+        timed_curl "check_inference($$1)" -sf --max-time 15 -X POST "http://$$1:8000/v1/chat/completions" \
           -H "Content-Type: application/json" \
           -d '{"model":"Qwen/Qwen3.5-122B-A10B","messages":[{"role":"user","content":"hi"}],"max_tokens":1}' \
-          > /dev/null 2>&1
+          > /dev/null
       }
 
-      echo "Waiting for models to be ready..."
-      until curl -sf http://nginx:8000/v1/models > /dev/null 2>&1; do sleep 30; done
-      echo "Instance 1 ready, starting registration loop"
+      log "Starting registrar for $$EP1, $$EP2"
+      log "PROXY_URL=$$PROXY_URL TOKEN_SET=$$([ -n \"$$TOKEN\" ] && echo yes || echo NO)"
+      log "DNS: $$(nslookup completions.near.ai 2>&1 | grep -i address || echo 'nslookup not available')"
+
+      log "Waiting for models to be ready..."
+      until curl -sf --max-time 5 http://nginx:8000/v1/models > /dev/null 2>&1; do sleep 30; done
+      log "Models ready, starting registration loop"
+
+      log "Testing proxy connectivity..."
+      timed_curl "startup_health" -sS --max-time 15 "$$PROXY_URL/health" || true
 
       while true; do
         if check_inference vllm-qwen35-122b-1; then
           register_endpoint "$$EP1" "$${TLS_PORT}"
-          if [ "$$REG1" = false ]; then echo "Registered $$EP1"; fi
+          if [ "$$REG1" = false ]; then log "Registered $$EP1"; fi
           REG1=true
         else
           if [ "$$REG1" = true ]; then
-            echo "Health check failed for $$EP1, unregistering"
+            log "Health check failed for $$EP1, unregistering"
             unregister_endpoint "$$EP1"
             REG1=false
           fi
@@ -312,11 +335,11 @@ configs:
 
         if check_inference vllm-qwen35-122b-2; then
           register_endpoint "$$EP2" "$${TLS_PORT}"
-          if [ "$$REG2" = false ]; then echo "Registered $$EP2"; fi
+          if [ "$$REG2" = false ]; then log "Registered $$EP2"; fi
           REG2=true
         else
           if [ "$$REG2" = true ]; then
-            echo "Health check failed for $$EP2, unregistering"
+            log "Health check failed for $$EP2, unregistering"
             unregister_endpoint "$$EP2"
             REG2=false
           fi

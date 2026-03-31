@@ -254,29 +254,45 @@ configs:
       ENDPOINT="$${HOST_IP}:$${HTTP_PORT}"
       REGISTERED=false
 
+      log() { echo "[$$( date -u '+%Y-%m-%dT%H:%M:%SZ' )] $$*"; }
+
+      timed_curl() {
+        local label="$$1"; shift
+        local start=$$(date +%s)
+        curl "$$@" 2>&1
+        local rc=$$?
+        local dur=$$(( $$(date +%s) - start ))
+        if [ $$rc -ne 0 ]; then
+          log "WARN $$label failed: curl exit=$$rc duration=$${dur}s"
+        elif [ $$dur -gt 5 ]; then
+          log "SLOW $$label took $${dur}s"
+        fi
+        return $$rc
+      }
+
       register_endpoint() {
-        curl -sS --max-time 10 -X POST "$$PROXY_URL/register/endpoint" \
+        timed_curl "register_endpoint($$1)" -sS --max-time 10 -X POST "$$PROXY_URL/register/endpoint" \
           -H "Authorization: Bearer $$TOKEN" \
           -H "Content-Type: application/json" \
           -d "{\"endpoint\":\"$$1\",\"routing_port\":$$2}" || true
       }
 
       unregister_endpoint() {
-        curl -sS --max-time 10 -X POST "$$PROXY_URL/unregister/endpoint" \
+        timed_curl "unregister_endpoint($$1)" -sS --max-time 10 -X POST "$$PROXY_URL/unregister/endpoint" \
           -H "Authorization: Bearer $$TOKEN" \
           -H "Content-Type: application/json" \
           -d "{\"endpoint\":\"$$1\"}" || true
       }
 
       register_model() {
-        curl -sS --max-time 10 -X POST "$$PROXY_URL/register/model" \
+        timed_curl "register_model($$1)" -sS --max-time 10 -X POST "$$PROXY_URL/register/model" \
           -H "Authorization: Bearer $$TOKEN" \
           -H "Content-Type: application/json" \
           -d "{\"model\":\"$$1\",\"domain\":\"$$2\"}" || true
       }
 
       cleanup() {
-        echo "SIGTERM received, unregistering $$ENDPOINT"
+        log "SIGTERM received, unregistering $$ENDPOINT"
         unregister_endpoint "$$ENDPOINT"
         REGISTERED=false
         exit 0
@@ -284,27 +300,34 @@ configs:
       trap cleanup TERM INT
 
       check_inference() {
-        curl -sf --max-time 10 -X POST "http://vllm-deepseek:8000/v1/chat/completions" \
+        timed_curl "check_inference(deepseek)" -sf --max-time 15 -X POST "http://vllm-deepseek:8000/v1/chat/completions" \
           -H "Content-Type: application/json" \
           -d '{"model":"deepseek-ai/DeepSeek-V3.1","messages":[{"role":"user","content":"hi"}],"max_tokens":1}' \
-          > /dev/null 2>&1
+          > /dev/null
       }
 
-      echo "Waiting for model to be ready..."
-      until curl -sf http://nginx:80/v1/models > /dev/null 2>&1; do sleep 30; done
-      echo "Model ready, starting registration loop"
+      log "Starting registrar for $$ENDPOINT"
+      log "PROXY_URL=$$PROXY_URL TOKEN_SET=$$([ -n \"$$TOKEN\" ] && echo yes || echo NO)"
+      log "DNS: $$(nslookup completions.near.ai 2>&1 | grep -i address || echo 'nslookup not available')"
+
+      log "Waiting for model to be ready..."
+      until curl -sf --max-time 5 http://nginx:80/v1/models > /dev/null 2>&1; do sleep 30; done
+      log "Model ready, starting registration loop"
+
+      log "Testing proxy connectivity..."
+      timed_curl "startup_health" -sS --max-time 15 "$$PROXY_URL/health" || true
 
       while true; do
         if check_inference; then
           register_endpoint "$$ENDPOINT" "$${TLS_PORT}"
           register_model "deepseek-ai/DeepSeek-V3.1" "deepseek-v31.completions.near.ai"
           if [ "$$REGISTERED" = false ]; then
-            echo "Registered deepseek-ai/DeepSeek-V3.1 at $$ENDPOINT"
+            log "Registered deepseek-ai/DeepSeek-V3.1 at $$ENDPOINT"
           fi
           REGISTERED=true
         else
           if [ "$$REGISTERED" = true ]; then
-            echo "Health check failed, unregistering $$ENDPOINT"
+            log "Health check failed, unregistering $$ENDPOINT"
             unregister_endpoint "$$ENDPOINT"
             REGISTERED=false
           fi
