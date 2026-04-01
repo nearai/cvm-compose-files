@@ -48,7 +48,7 @@ x-vllm-proxy-common: &vllm-proxy-common
 
 x-vllm-env:
   environment: &vllm-env
-    - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+    - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
     - VLLM_LOGGING_LEVEL=INFO
     - NVIDIA_DRIVER_CAPABILITIES=compute,utility
     - OPENBLAS_L2_SIZE=2097152
@@ -57,7 +57,7 @@ x-vllm-env:
 
 x-sglang-env:
   environment: &sglang-env
-    - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+    - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
     - VLLM_LOGGING_LEVEL=INFO
     - NVIDIA_DRIVER_CAPABILITIES=compute,utility
     - OPENBLAS_L2_SIZE=2097152
@@ -86,7 +86,7 @@ x-gpt-oss-common: &gpt-oss-common
     - hugginface_cache:/root/.cache/huggingface
     - vllm_cache:/root/.cache/vllm
   environment:
-    - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+    - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
     - VLLM_LOGGING_LEVEL=INFO
     - NVIDIA_DRIVER_CAPABILITIES=compute,utility
     - VLLM_MXFP4_USE_MARLIN=1
@@ -149,7 +149,7 @@ services:
     volumes:
       - hugginface_cache:/root/.cache/huggingface
     environment:
-      - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+      - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
     logging: *logging-conf
 
   autoheal:
