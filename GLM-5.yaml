@@ -90,19 +90,6 @@ services:
       - VLLM_BASE_URL=http://glm:8000
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
 
-  autoheal:
-    image: willfarrell/autoheal@sha256:4f7e11814c41ca47c3a3f38544875bc5bf1ed383e12b86047250e6dd7f7153a4
-    container_name: autoheal
-    restart: unless-stopped
-    environment:
-      - AUTOHEAL_CONTAINER_LABEL=all
-      - AUTOHEAL_INTERVAL=30
-      - AUTOHEAL_START_PERIOD=3600
-      - AUTOHEAL_DEFAULT_STOP_TIMEOUT=30
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-    logging: *logging-conf
-
   glm:
     <<: *nvidia
     init: true
@@ -144,12 +131,6 @@ services:
             - driver: nvidia
               device_ids: ["0","1","2","3","4","5","6","7"]
               capabilities: [gpu]
-    healthcheck:
-      test: ["CMD-SHELL", "curl -sf --max-time 10 -X POST http://localhost:8000/v1/chat/completions -H 'Content-Type: application/json' -d '{\"model\":\"zai-org/GLM-5-FP8\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":1}'"]
-      interval: 60s
-      timeout: 15s
-      retries: 5
-      start_period: 3600s
     restart: unless-stopped
     logging: *logging-conf
     labels:
@@ -204,6 +185,8 @@ configs:
       TOKEN="$${MODEL_PROXY_TOKEN}"
       ENDPOINT="$${HOST_IP}:$${HTTP_PORT}"
       REGISTERED=false
+      FAILURE_COUNT=0
+      MAX_RETRIES=3
 
       register_endpoint() {
         curl -sS --max-time 10 -X POST "$$PROXY_URL/register/endpoint" \
@@ -236,7 +219,7 @@ configs:
 
       # 1-token completion health check directly to model container (no auth needed)
       check_inference() {
-        curl -sf --max-time 10 -X POST "http://glm:8000/v1/chat/completions" \
+        curl -sf --max-time 45 -X POST "http://glm:8000/v1/chat/completions" \
           -H "Content-Type: application/json" \
           -d '{"model":"zai-org/GLM-5-FP8","messages":[{"role":"user","content":"hi"}],"max_tokens":1}' \
           > /dev/null 2>&1
@@ -248,6 +231,7 @@ configs:
 
       while true; do
         if check_inference; then
+          FAILURE_COUNT=0
           register_endpoint "$$ENDPOINT" "$${TLS_PORT}"
           register_model "zai-org/GLM-5-FP8" "glm-5.completions.near.ai"
           if [ "$$REGISTERED" = false ]; then
@@ -255,8 +239,10 @@ configs:
           fi
           REGISTERED=true
         else
-          if [ "$$REGISTERED" = true ]; then
-            echo "Health check failed, unregistering $$ENDPOINT"
+          FAILURE_COUNT=$$((FAILURE_COUNT + 1))
+          echo "Health check failed ($$FAILURE_COUNT/$$MAX_RETRIES)"
+          if [ "$$REGISTERED" = true ] && [ "$$FAILURE_COUNT" -ge "$$MAX_RETRIES" ]; then
+            echo "Health check failed and Retry limit reached, unregistering $$ENDPOINT"
             unregister_endpoint "$$ENDPOINT"
             REGISTERED=false
           fi
