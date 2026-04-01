@@ -663,7 +663,7 @@ configs:
 
       # 1-token completion check for chat-capable models (no auth needed on backend)
       check_chat() {
-        curl -sf --max-time 10 -X POST "http://$$1:8000/v1/chat/completions" \
+        curl -sf --max-time 45 -X POST "http://$$1:8000/v1/chat/completions" \
           -H "Content-Type: application/json" \
           -d "{\"model\":\"$$2\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":1}" \
           > /dev/null 2>&1
