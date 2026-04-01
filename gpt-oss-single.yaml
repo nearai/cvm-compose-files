@@ -12,14 +12,12 @@ services:
       - hugginface_cache:/root/.cache/huggingface
       - vllm_cache:/root/.cache/vllm
     environment:
-      - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+      - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
       - VLLM_LOGGING_LEVEL=WARNING
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
       - NVIDIA_VISIBLE_DEVICES=all
       - VLLM_MXFP4_USE_MARLIN=1
       - VLLM_CACHE_ROOT=/root/.cache/vllm
-      - HF_HUB_DISABLE_XET=1
-      - HF_HUB_OFFLINE=1
     command:
       - openai/gpt-oss-120b
       - --tensor-parallel-size=1

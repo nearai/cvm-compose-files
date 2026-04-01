@@ -41,7 +41,6 @@ x-vllm-qwen35-122b-common: &vllm-qwen35-122b-common
   environment:
     - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN}
     - VLLM_ALLOW_LONG_MAX_MODEL_LEN=1
-    - HF_HUB_DISABLE_XET=1
     - NVIDIA_DRIVER_CAPABILITIES=compute,utility
     - OPENBLAS_L2_SIZE=2097152
     - NCCL_DEBUG=WARN
@@ -91,7 +90,6 @@ services:
       - huggingface_cache:/root/.cache/huggingface
     environment:
       - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN}
-      - HF_HUB_DISABLE_XET=1
     logging: *logging-conf
 
   autoheal:

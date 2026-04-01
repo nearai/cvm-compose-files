@@ -44,8 +44,7 @@ services:
     volumes:
       - huggingface_cache:/root/.cache/huggingface
     environment:
-      - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN}
-      - HF_HUB_DISABLE_XET=1
+      - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
 
   nginx:
     image: nginx@sha256:1d13701a5f9f3fb01aaa88cef2344d65b6b5bf6b7d9fa4cf0dca557a8d7702ba
@@ -132,12 +131,11 @@ services:
       - huggingface_cache:/root/.cache/huggingface
       - kernel_cache:/root/.cache/deep_gemm
     environment:
-      - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+      - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
       - OPENBLAS_L2_SIZE=2097152
       - NCCL_DEBUG=WARN
       - SGLANG_JIT_DEEPGEMM_FAST_WARMUP=1
-      - HF_HUB_DISABLE_XET=1
     deploy:
       resources:
         reservations:
