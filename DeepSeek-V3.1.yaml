@@ -44,21 +44,20 @@ x-vllm-proxy-common: &vllm-proxy-common
 
 services:
   model-downloader:
-    image: python:3.11-slim
+    image: ghcr.io/astral-sh/uv:python3.11-bookworm-slim@sha256:4f5d923c9dcea037f57bda425dd209f3ec643da2f0b74227f68d09dab0b3bb36
     container_name: model-downloader
     restart: "no"
     entrypoint: ["sh", "-c"]
     command:
       - |
-        pip install -q huggingface_hub[hf_xet] 2>/dev/null
+        set -e
         echo "Downloading deepseek-ai/DeepSeek-V3.1..."
-        huggingface-cli download deepseek-ai/DeepSeek-V3.1
+        uvx --from 'huggingface_hub[hf_xet]' hf download deepseek-ai/DeepSeek-V3.1
         echo "Download complete."
     volumes:
       - hugginface_cache:/root/.cache/huggingface
     environment:
-      - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN}
-      - HF_HUB_DISABLE_XET=1
+      - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
     logging: *logging-conf
 
   nginx:
@@ -144,7 +143,7 @@ services:
         --host 0.0.0.0
         --enable-prompt-tokens-details
     environment:
-      - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+      - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
       - VLLM_LOGGING_LEVEL=WARNING
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
       - OPENBLAS_L2_SIZE=2097152

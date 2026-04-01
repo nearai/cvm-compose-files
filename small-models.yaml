@@ -126,13 +126,13 @@ x-flux-common: &flux-common
 
 services:
   model-downloader:
-    image: python:3.11-slim
+    image: ghcr.io/astral-sh/uv:python3.11-bookworm-slim@sha256:4f5d923c9dcea037f57bda425dd209f3ec643da2f0b74227f68d09dab0b3bb36
     container_name: model-downloader
     restart: "no"
     entrypoint: ["sh", "-c"]
     command:
       - |
-        pip install -q huggingface_hub[hf_xet] 2>/dev/null
+        set -e
         for model in \
           "Qwen/Qwen3-30B-A3B-Instruct-2507" \
           "lmsys/SGLang-EAGLE3-Qwen3-30B-A3B-Instruct-2507-SpecForge-Nex" \
@@ -143,7 +143,7 @@ services:
           "Qwen/Qwen3-Reranker-0.6B" \
           "openai/whisper-large-v3"; do
           echo "Downloading $$model..."
-          huggingface-cli download "$$model" || echo "WARN: failed to download $$model"
+          uvx --from 'huggingface_hub[hf_xet]' hf download "$$model" || echo "WARN: failed to download $$model"
         done
         echo "All downloads complete."
     volumes:

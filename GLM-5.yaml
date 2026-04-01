@@ -26,7 +26,8 @@ x-vllm-proxy-common: &vllm-proxy-common
   logging: *logging-conf
 
 x-downloader-common: &downloader-common
-  image: python:3.11-slim
+  image: ghcr.io/astral-sh/uv:python3.11-bookworm-slim@sha256:4f5d923c9dcea037f57bda425dd209f3ec643da2f0b74227f68d09dab0b3bb36
+  entrypoint: ["sh", "-c"]
   restart: "no"
   logging: *logging-conf
 
@@ -34,12 +35,11 @@ services:
   model-downloader:
     <<: *downloader-common
     container_name: model-downloader
-    entrypoint: ["sh", "-c"]
     command:
       - |
-        pip install -q huggingface_hub[hf_xet] 2>/dev/null
+        set -e
         echo "Downloading zai-org/GLM-5-FP8..."
-        huggingface-cli download zai-org/GLM-5-FP8
+        uvx --from 'huggingface_hub[hf_xet]' hf download zai-org/GLM-5-FP8
         echo "Download complete."
     volumes:
       - huggingface_cache:/root/.cache/huggingface
