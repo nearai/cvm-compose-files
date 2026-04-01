@@ -235,14 +235,14 @@ configs:
           register_endpoint "$$ENDPOINT" "$${TLS_PORT}"
           register_model "zai-org/GLM-5-FP8" "glm-5.completions.near.ai"
           if [ "$$REGISTERED" = false ]; then
-            echo "Registered zai-org/GLM-5-FP8 at $$ENDPOINT"
+            echo "[GLM-5] Registered zai-org/GLM-5-FP8 at $$ENDPOINT"
           fi
           REGISTERED=true
         else
           FAILURE_COUNT=$$((FAILURE_COUNT + 1))
-          echo "Health check failed ($$FAILURE_COUNT/$$MAX_RETRIES)"
+          echo "[GLM-5] Health check failed ($$FAILURE_COUNT/$$MAX_RETRIES)"
           if [ "$$REGISTERED" = true ] && [ "$$FAILURE_COUNT" -ge "$$MAX_RETRIES" ]; then
-            echo "Health check failed and Retry limit reached, unregistering $$ENDPOINT"
+            echo "[GLM-5] Health check failed and Retry limit reached, unregistering $$ENDPOINT"
             unregister_endpoint "$$ENDPOINT"
             REGISTERED=false
           fi
