@@ -25,13 +25,6 @@ x-vllm-proxy-common: &vllm-proxy-common
   restart: unless-stopped
   logging: *logging-conf
 
-x-vllm-healthcheck: &vllm-healthcheck
-  test: ["CMD-SHELL", "curl -sf --max-time 10 -X POST http://localhost:8000/v1/chat/completions -H 'Content-Type: application/json' -d '{\"model\":\"Qwen/Qwen3.5-122B-A10B\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":1}'"]
-  interval: 60s
-  timeout: 15s
-  retries: 5
-  start_period: 3600s
-
 x-vllm-qwen35-122b-common: &vllm-qwen35-122b-common
   <<: *nvidia
   init: true
@@ -70,7 +63,6 @@ x-vllm-qwen35-122b-common: &vllm-qwen35-122b-common
     - --host
     - 0.0.0.0
     - --enable-prompt-tokens-details
-  healthcheck: *vllm-healthcheck
   restart: unless-stopped
   logging: *logging-conf
 
@@ -254,6 +246,9 @@ configs:
       EP2="$${HOST_IP}:8001"
       REG1=false
       REG2=false
+      FAIL_COUNT1=0
+      FAIL_COUNT2=0
+      MAX_RETRIES=3
 
       register_endpoint() {
         curl -sS --max-time 10 -X POST "$$PROXY_URL/register/endpoint" \
@@ -285,7 +280,7 @@ configs:
       trap cleanup TERM INT
 
       check_inference() {
-        curl -sf --max-time 10 -X POST "http://$$1:8000/v1/chat/completions" \
+        curl -sf --max-time 45 -X POST "http://$$1:8000/v1/chat/completions" \
           -H "Content-Type: application/json" \
           -d '{"model":"Qwen/Qwen3.5-122B-A10B","messages":[{"role":"user","content":"hi"}],"max_tokens":1}' \
           > /dev/null 2>&1
@@ -297,24 +292,30 @@ configs:
 
       while true; do
         if check_inference vllm-qwen35-122b-1; then
+          FAIL_COUNT1=0
           register_endpoint "$$EP1" "$${TLS_PORT}"
-          if [ "$$REG1" = false ]; then echo "Registered $$EP1"; fi
+          if [ "$$REG1" = false ]; then echo "[Qwen3.5-122B] Registered $$EP1"; fi
           REG1=true
         else
-          if [ "$$REG1" = true ]; then
-            echo "Health check failed for $$EP1, unregistering"
+          FAIL_COUNT1=$((FAIL_COUNT1 + 1))
+          echo "[Qwen3.5-122B] Health check failed for $$EP1 (Attempt $$FAIL_COUNT1/$$MAX_RETRIES)"
+          if [ "$$REG1" = true ] && [ "$$FAIL_COUNT1" -ge "$$MAX_RETRIES" ]; then
+            echo "[Qwen3.5-122B] Health check failed and Retry limit reached, unregistering $$EP1"
             unregister_endpoint "$$EP1"
             REG1=false
           fi
         fi
 
         if check_inference vllm-qwen35-122b-2; then
+          FAIL_COUNT2=0
           register_endpoint "$$EP2" "$${TLS_PORT}"
-          if [ "$$REG2" = false ]; then echo "Registered $$EP2"; fi
+          if [ "$$REG2" = false ]; then echo "[Qwen3.5-122B] Registered $$EP2"; fi
           REG2=true
         else
-          if [ "$$REG2" = true ]; then
-            echo "Health check failed for $$EP2, unregistering"
+          FAIL_COUNT2=$((FAIL_COUNT2 + 1))
+          echo "[Qwen3.5-122B] Health check failed for $$EP2 (Attempt $$FAIL_COUNT2/$$MAX_RETRIES)"
+          if [ "$$REG2" = true ] && [ "$$FAIL_COUNT2" -ge "$$MAX_RETRIES" ]; then
+            echo "[Qwen3.5-122B] Health check failed and Retry limit reached, unregistering $$EP2"
             unregister_endpoint "$$EP2"
             REG2=false
           fi

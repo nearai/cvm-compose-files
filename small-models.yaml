@@ -6,12 +6,6 @@ x-logging-conf: &logging-conf
     labels: "com.datadoghq.ad.logs"
 
 # Non-chat models (FLUX, embedding, reranker, whisper) use /v1/models
-x-vllm-healthcheck: &vllm-healthcheck
-  test: ["CMD", "curl", "-sf", "http://localhost:8000/v1/models"]
-  interval: 60s
-  timeout: 10s
-  retries: 5
-  start_period: 3600s
 
 x-nvidia: &nvidia
   runtime: nvidia
@@ -31,7 +25,6 @@ x-vllm-common: &vllm-common
   volumes:
     - hugginface_cache:/root/.cache/huggingface
     - vllm_cache:/root/.cache/vllm
-  healthcheck: *vllm-healthcheck
   restart: unless-stopped
   logging: *logging-conf
 
@@ -226,12 +219,6 @@ services:
     <<: *vllm-common
     image: vllm/vllm-openai@sha256:ccd6a6dbf4aba4e94c6f7052d1835d6e742082b6a5095276552e9b7a5a47c2e5
     container_name: vllm-qwen3-30b
-    healthcheck:
-      test: ["CMD-SHELL", "curl -sf --max-time 10 -X POST http://localhost:8000/v1/chat/completions -H 'Content-Type: application/json' -d '{\"model\":\"Qwen/Qwen3-30B-A3B-Instruct-2507\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":1}'"]
-      interval: 60s
-      timeout: 15s
-      retries: 5
-      start_period: 3600s
     command: >
         Qwen/Qwen3-30B-A3B-Instruct-2507
         --tensor-parallel-size 2
@@ -284,12 +271,6 @@ services:
   vllm-gpt-oss-1:
     <<: *gpt-oss-common
     container_name: vllm-gpt-oss-1
-    healthcheck:
-      test: ["CMD-SHELL", "curl -sf --max-time 10 -X POST http://localhost:8000/v1/chat/completions -H 'Content-Type: application/json' -d '{\"model\":\"openai/gpt-oss-120b\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":1}'"]
-      interval: 60s
-      timeout: 15s
-      retries: 5
-      start_period: 3600s
     deploy:
       resources:
         reservations:
@@ -320,12 +301,6 @@ services:
   vllm-gpt-oss-2:
     <<: *gpt-oss-common
     container_name: vllm-gpt-oss-2
-    healthcheck:
-      test: ["CMD-SHELL", "curl -sf --max-time 10 -X POST http://localhost:8000/v1/chat/completions -H 'Content-Type: application/json' -d '{\"model\":\"openai/gpt-oss-120b\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":1}'"]
-      interval: 60s
-      timeout: 15s
-      retries: 5
-      start_period: 3600s
     deploy:
       resources:
         reservations:
@@ -453,12 +428,6 @@ services:
     <<: *vllm-common
     image: vllm/vllm-openai@sha256:ccd6a6dbf4aba4e94c6f7052d1835d6e742082b6a5095276552e9b7a5a47c2e5
     container_name: vllm-qwen3-vl
-    healthcheck:
-      test: ["CMD-SHELL", "curl -sf --max-time 10 -X POST http://localhost:8000/v1/chat/completions -H 'Content-Type: application/json' -d '{\"model\":\"Qwen/Qwen3-VL-30B-A3B-Instruct\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":1}'"]
-      interval: 60s
-      timeout: 15s
-      retries: 5
-      start_period: 3600s
     command: >
         Qwen/Qwen3-VL-30B-A3B-Instruct
         --enable-prefix-caching
@@ -654,10 +623,12 @@ configs:
       PROXY_URL="https://completions.near.ai"
       TOKEN="$${MODEL_PROXY_TOKEN}"
       TLS_PORT=8444
+      MAX_RETRIES=3
 
       # Track registration state per port (0=unregistered, 1=registered)
       for port in 8000 8001 8002 8003 8004 8005 8006 8007 8008 8009 8010; do
         eval "REG_$$port=false"
+        eval "FAIL_COUNT_$port=0"
       done
 
       register_endpoint() {
@@ -692,7 +663,7 @@ configs:
 
       # 1-token completion check for chat-capable models (no auth needed on backend)
       check_chat() {
-        curl -sf --max-time 10 -X POST "http://$$1:8000/v1/chat/completions" \
+        curl -sf --max-time 45 -X POST "http://$$1:8000/v1/chat/completions" \
           -H "Content-Type: application/json" \
           -d "{\"model\":\"$$2\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":1}" \
           > /dev/null 2>&1
@@ -717,15 +688,19 @@ configs:
       while true; do
         for port in 8000 8001 8002 8003 8004 8005 8006 8007 8008 8009 8010; do
           eval "was_reg=\$$REG_$$port"
+          eval "fails=\$FAIL_COUNT_$port"
           if check_port $$port; then
+            eval "FAIL_COUNT_$port=0"
             register_endpoint "$${HOST_IP}:$$port" "$$TLS_PORT"
             if [ "$$was_reg" = false ]; then
               echo "Registered $${HOST_IP}:$$port"
             fi
             eval "REG_$$port=true"
           else
-            if [ "$$was_reg" = true ]; then
-              echo "Health check failed for $${HOST_IP}:$$port, unregistering"
+            fails=$((fails + 1))
+            eval "FAIL_COUNT_$port=$fails"
+            if [ "$$was_reg" = true ] && [ "$$fails" -ge "$$MAX_RETRIES" ]; then
+              echo "Health check failed and have reached max retries for $${HOST_IP}:$$port, unregistering"
               unregister_endpoint "$${HOST_IP}:$$port"
             fi
             eval "REG_$$port=false"
