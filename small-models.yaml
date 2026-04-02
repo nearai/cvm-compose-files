@@ -145,19 +145,6 @@ services:
       - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
     logging: *logging-conf
 
-  autoheal:
-    image: willfarrell/autoheal@sha256:4f7e11814c41ca47c3a3f38544875bc5bf1ed383e12b86047250e6dd7f7153a4
-    container_name: autoheal
-    restart: unless-stopped
-    environment:
-      - AUTOHEAL_CONTAINER_LABEL=all
-      - AUTOHEAL_INTERVAL=30
-      - AUTOHEAL_START_PERIOD=3600
-      - AUTOHEAL_DEFAULT_STOP_TIMEOUT=30
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-    logging: *logging-conf
-
   nginx:
     image: nginx@sha256:1d13701a5f9f3fb01aaa88cef2344d65b6b5bf6b7d9fa4cf0dca557a8d7702ba
     container_name: nginx
