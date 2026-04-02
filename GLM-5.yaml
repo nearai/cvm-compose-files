@@ -192,21 +192,20 @@ configs:
         curl -sS --max-time 10 -X POST "$$PROXY_URL/register/endpoint" \
           -H "Authorization: Bearer $$TOKEN" \
           -H "Content-Type: application/json" \
-          -d "{\"endpoint\":\"$$1\",\"routing_port\":$$2}" || true
-      }
+          -d "{\"endpoint\":\"$$1\",\"routing_port\":$$2}" 
 
       unregister_endpoint() {
         curl -sS --max-time 10 -X POST "$$PROXY_URL/unregister/endpoint" \
           -H "Authorization: Bearer $$TOKEN" \
           -H "Content-Type: application/json" \
-          -d "{\"endpoint\":\"$$1\"}" || true
+          -d "{\"endpoint\":\"$$1\"}" 
       }
 
       register_model() {
         curl -sS --max-time 10 -X POST "$$PROXY_URL/register/model" \
           -H "Authorization: Bearer $$TOKEN" \
           -H "Content-Type: application/json" \
-          -d "{\"model\":\"$$1\",\"domain\":\"$$2\"}" || true
+          -d "{\"model\":\"$$1\",\"domain\":\"$$2\"}"
       }
 
       cleanup() {
@@ -221,8 +220,7 @@ configs:
       check_inference() {
         curl -sf --max-time 45 -X POST "http://glm:8000/v1/chat/completions" \
           -H "Content-Type: application/json" \
-          -d '{"model":"zai-org/GLM-5-FP8","messages":[{"role":"user","content":"hi"}],"max_tokens":1}' \
-          > /dev/null 2>&1
+          -d '{"model":"zai-org/GLM-5-FP8","messages":[{"role":"user","content":"hi"}],"max_tokens":1}'
       }
 
       echo "Waiting for model to be ready..."
