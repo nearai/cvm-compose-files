@@ -189,14 +189,14 @@
         MAX_RETRIES=3
 
         register_endpoint() {
-          echo "Registering $$ENDPOINT curl"
+          echo "[GLM-5] Registering $$ENDPOINT curl"
           curl -sS --max-time 10 -X POST "$$PROXY_URL/register/endpoint" \
             -H "Authorization: Bearer $$TOKEN" \
             -H "Content-Type: application/json" \
             -d "{\"endpoint\":\"$$1\",\"routing_port\":$$2}" 
 
         unregister_endpoint() {
-          echo "Unregistering $$ENDPOINT curl"
+          echo "[GLM-5] Unregistering $$ENDPOINT curl"
           curl -sS --max-time 10 -X POST "$$PROXY_URL/unregister/endpoint" \
             -H "Authorization: Bearer $$TOKEN" \
             -H "Content-Type: application/json" \
@@ -211,7 +211,7 @@
         }
 
         cleanup() {
-          echo "SIGTERM received, unregistering $$ENDPOINT"
+          echo "[GLM-5] SIGTERM received, unregistering $$ENDPOINT"
           unregister_endpoint "$$ENDPOINT"
           REGISTERED=false
           exit 0
@@ -220,7 +220,7 @@
 
         # 1-token completion health check directly to model container (no auth needed)
         check_inference() {
-          echo "Checking inference for $$ENDPOINT"
+          echo "[GLM-5] Checking inference for $$ENDPOINT"
           curl -sS --max-time 45 -X POST "http://glm:8000/v1/chat/completions" \
             -H "Content-Type: application/json" \
             -d '{"model":"zai-org/GLM-5-FP8","messages":[{"role":"user","content":"hi"}],"max_tokens":1}'
