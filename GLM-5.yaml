@@ -222,7 +222,7 @@ configs:
       # 1-token completion health check directly to model container (no auth needed)
       check_inference() {
         echo "Performing health check on model endpoint..."
-        curl -sS --max-time 45 -X POST "http://glm:8000/v1/chat/completions" \
+        curl -sSf --max-time 45 -X POST "http://glm:8000/v1/chat/completions" \
           -H "Content-Type: application/json" \
           -d '{"model":"zai-org/GLM-5-FP8","messages":[{"role":"user","content":"hi"}],"max_tokens":1}'
       }
