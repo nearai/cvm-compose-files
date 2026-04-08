@@ -189,24 +189,26 @@ configs:
       MAX_RETRIES=3
 
       register_endpoint() {
+        echo "Registering endpoint $$1 with routing port $$2"
         curl -sS --max-time 10 -X POST "$$PROXY_URL/register/endpoint" \
           -H "Authorization: Bearer $$TOKEN" \
           -H "Content-Type: application/json" \
-          -d "{\"endpoint\":\"$$1\",\"routing_port\":$$2}" || true
+          -d "{\"endpoint\":\"$$1\",\"routing_port\":$$2}"
       }
 
       unregister_endpoint() {
+        echo "Unregistering endpoint $$1"
         curl -sS --max-time 10 -X POST "$$PROXY_URL/unregister/endpoint" \
           -H "Authorization: Bearer $$TOKEN" \
           -H "Content-Type: application/json" \
-          -d "{\"endpoint\":\"$$1\"}" || true
+          -d "{\"endpoint\":\"$$1\"}" 
       }
 
       register_model() {
         curl -sS --max-time 10 -X POST "$$PROXY_URL/register/model" \
           -H "Authorization: Bearer $$TOKEN" \
           -H "Content-Type: application/json" \
-          -d "{\"model\":\"$$1\",\"domain\":\"$$2\"}" || true
+          -d "{\"model\":\"$$1\",\"domain\":\"$$2\"}"
       }
 
       cleanup() {
@@ -219,10 +221,10 @@ configs:
 
       # 1-token completion health check directly to model container (no auth needed)
       check_inference() {
-        curl -sf --max-time 45 -X POST "http://glm:8000/v1/chat/completions" \
+        echo "Performing health check on model endpoint..."
+        curl -sSf --max-time 45 -X POST "http://glm:8000/v1/chat/completions" \
           -H "Content-Type: application/json" \
-          -d '{"model":"zai-org/GLM-5-FP8","messages":[{"role":"user","content":"hi"}],"max_tokens":1}' \
-          > /dev/null 2>&1
+          -d '{"model":"zai-org/GLM-5-FP8","messages":[{"role":"user","content":"hi"}],"max_tokens":1}'
       }
 
       echo "Waiting for model to be ready..."
