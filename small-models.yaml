@@ -804,7 +804,7 @@ configs:
       }
 
       upstream gpt-oss-upstream {
-          hash $$connection consistent;
+          least_conn;
           server vllm-proxy-gpt-oss-1:8000;
           server vllm-proxy-gpt-oss-2:8000;
       }
