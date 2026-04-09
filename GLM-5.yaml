@@ -219,8 +219,9 @@ configs:
       }
       trap cleanup TERM INT
 
+      #GET Health check for inference service
       check_inference() {
-        curl -sf --max-time 10 "http://glm:8000/v1/models" > /dev/null 2>&1
+        curl -sSf --max-time 10 "http://glm:8000/v1/models" 
       }
 
       echo "Waiting for model to be ready..."
