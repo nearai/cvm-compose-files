@@ -238,7 +238,7 @@ configs:
           fi
           REGISTERED=true
         else
-          FAILURE_COUNT=$((FAILURE_COUNT + 1))
+          FAILURE_COUNT=$$((FAILURE_COUNT + 1))
           echo "[GLM-5] Health check failed ($$FAILURE_COUNT/$$MAX_RETRIES)"
           if [ "$$REGISTERED" = true ] && [ "$$FAILURE_COUNT" -ge "$$MAX_RETRIES" ]; then
             echo "[GLM-5] Retry limit reached, unregistering $$ENDPOINT"
