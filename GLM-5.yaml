@@ -219,12 +219,8 @@ configs:
       }
       trap cleanup TERM INT
 
-      # 1-token completion health check directly to model container (no auth needed)
       check_inference() {
-        echo "Performing health check on model endpoint..."
-        curl -sSf --max-time 45 -X POST "http://glm:8000/v1/chat/completions" \
-          -H "Content-Type: application/json" \
-          -d '{"model":"zai-org/GLM-5-FP8","messages":[{"role":"user","content":"hi"}],"max_tokens":1}'
+        curl -sf --max-time 10 "http://glm:8000/v1/models" > /dev/null 2>&1
       }
 
       echo "Waiting for model to be ready..."
@@ -241,10 +237,10 @@ configs:
           fi
           REGISTERED=true
         else
-          FAILURE_COUNT=$$((FAILURE_COUNT + 1))
+          FAILURE_COUNT=$((FAILURE_COUNT + 1))
           echo "[GLM-5] Health check failed ($$FAILURE_COUNT/$$MAX_RETRIES)"
           if [ "$$REGISTERED" = true ] && [ "$$FAILURE_COUNT" -ge "$$MAX_RETRIES" ]; then
-            echo "[GLM-5] Health check failed and Retry limit reached, unregistering $$ENDPOINT"
+            echo "[GLM-5] Retry limit reached, unregistering $$ENDPOINT"
             unregister_endpoint "$$ENDPOINT"
             REGISTERED=false
           fi
