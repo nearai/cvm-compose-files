@@ -114,7 +114,10 @@ services:
       --host 0.0.0.0
       --enable-cache-report
       --enable-metrics
-      --enable-dp-attention
+      --speculative-algorithm EAGLE
+      --speculative-num-steps 3
+      --speculative-eagle-topk 1
+      --speculative-num-draft-tokens 4
     volumes:
       - huggingface_cache:/root/.cache/huggingface
       - kernel_cache:/root/.cache/deep_gemm
