@@ -527,7 +527,7 @@ configs:
       # Track registration state per port
       for port in 8000 8001 8002 8003 8004 8005; do
         eval "REG_$$port=false"
-        eval "FAIL_COUNT_$port=0"
+        eval "FAIL_COUNT_$$port=0"
       done
 
       register_endpoint() {
@@ -586,17 +586,17 @@ configs:
       while true; do
         for port in 8000 8001 8002 8003 8004 8005; do
           eval "was_reg=\$$REG_$$port"
-          eval "fails=\$FAIL_COUNT_$port"
+          eval "fails=\$$FAIL_COUNT_$$port"
           if check_port $$port; then
-            eval "FAIL_COUNT_$port=0"
+            eval "FAIL_COUNT_$$port=0"
             register_endpoint "$${HOST_IP}:$$port" "$$TLS_PORT"
             if [ "$$was_reg" = false ]; then
               echo "Registered $${HOST_IP}:$$port"
             fi
             eval "REG_$$port=true"
           else
-            fails=$((fails + 1))
-            eval "FAIL_COUNT_$port=$fails"
+            fails=$$((fails + 1))
+            eval "FAIL_COUNT_$$port=$$fails"
             if [ "$$was_reg" = true ] && [ "$$fails" -ge "$$MAX_RETRIES" ]; then
               echo "Health check failed and have reached max retries for $${HOST_IP}:$$port, unregistering"
               unregister_endpoint "$${HOST_IP}:$$port"
