@@ -132,6 +132,7 @@ services:
       - "8003:8003"
       - "8004:8004"
       - "8005:8005"
+      - "8006:8006"
       - "8444:443"
     volumes:
       - certs:/etc/letsencrypt:ro
@@ -534,7 +535,7 @@ configs:
       MAX_RETRIES=3
 
       # Track registration state per port
-      for port in 8000 8001 8002 8003 8004 8005; do
+      for port in 8000 8001 8002 8003 8004 8005 8006; do
         eval "REG_$$port=false"
         eval "FAIL_COUNT_$$port=0"
       done
@@ -562,7 +563,7 @@ configs:
 
       cleanup() {
         echo "SIGTERM received, unregistering all endpoints"
-        for port in 8000 8001 8002 8003 8004 8005; do
+        for port in 8000 8001 8002 8003 8004 8005 8006; do
           unregister_endpoint "$${HOST_IP}:$$port"
         done
         exit 0
@@ -585,6 +586,7 @@ configs:
           8003) check_chat vllm-qwen3-vl "Qwen/Qwen3-VL-30B-A3B-Instruct" ;;
           8004) curl -sf --max-time 10 "http://vllm-qwen3-embeddings:8000/v1/models" > /dev/null 2>&1 ;;
           8005) curl -sf --max-time 10 "http://vllm-qwen3-reranker:8000/v1/models" > /dev/null 2>&1 ;;
+          8006) curl -sf --max-time 10 "http://vllm-whisper3-large:8000/v1/models" > /dev/null 2>&1 ;;
         esac
       }
 
@@ -593,7 +595,7 @@ configs:
       echo "First model ready, starting registration loop"
 
       while true; do
-        for port in 8000 8001 8002 8003 8004 8005; do
+        for port in 8000 8001 8002 8003 8004 8005 8006; do
           eval "was_reg=\$$REG_$$port"
           eval "fails=\$$FAIL_COUNT_$$port"
           if check_port $$port; then
@@ -668,10 +670,16 @@ configs:
           location / { proxy_pass http://vllm-proxy-qwen3-embeddings:8000; }
       }
 
-      # :8005 - Reranker + Whisper
+      # :8005 - Reranker
       server {
           listen 8005;
           location / { proxy_pass http://vllm-proxy-qwen3-reranker:8000; }
+      }
+
+      # :8006 - Whisper
+      server {
+          listen 8006;
+          location / { proxy_pass http://vllm-proxy-whisper3-large:8000; }
       }
 
       # ── TLS server blocks (port 443 = host 8444) ──
