@@ -89,9 +89,7 @@ services:
     container_name: nginx
     command: /bin/sh -c 'while :; do sleep 6h; nginx -s reload; done & nginx -g "daemon off;"'
     ports:
-      - "80:80"
-      - "8000:8000"
-      - "8001:8001"
+      - "8000:80"
       - "8444:443"
     volumes:
       - certs:/etc/letsencrypt:ro
@@ -109,6 +107,7 @@ services:
     restart: unless-stopped
     environment:
       - HOST_IP=${HOST_IP}
+      - HTTP_PORT=${HTTP_PORT:-8000}
       - TLS_PORT=${TLS_PORT:-8444}
       - MODEL_PROXY_TOKEN=${MODEL_PROXY_TOKEN}
     configs:
@@ -116,6 +115,22 @@ services:
         target: /register.sh
         mode: 0755
     logging: *logging-conf
+
+  # --- Single proxy for both backends ---
+
+  vllm-proxy-qwen35:
+    <<: *vllm-proxy-common
+    container_name: vllm-proxy-qwen35
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - CLOUD_API_URL=https://cloud-api.near.ai
+      - LOG_FORMAT=json
+      - MODEL_NAME=Qwen/Qwen3.5-122B-A10B
+      - TOKEN=${PROXY_TOKEN}
+      - VLLM_BACKEND_URLS=http://vllm-qwen35-122b-1:8000,http://vllm-qwen35-122b-2:8000
+      - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
+    labels:
+      com.datadoghq.ad.logs: '[{"source": "vllm-proxy", "service": "vllm-proxy", "tags": ["model:Qwen/Qwen3.5-122B-A10B","ip:${HOST_IP}","port:8000"]}]'
 
   # --- Qwen3.5-122B-A10B instance 1 (GPUs 0-3) ---
 
@@ -138,20 +153,6 @@ services:
       com.datadoghq.ad.logs: '[{"source": "vllm", "service": "vllm", "tags":["model:Qwen/Qwen3.5-122B-A10B","ip:${HOST_IP}","port:8000","instance:1"]}]'
       com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-qwen35-122b-1:8000/metrics", "service": "vllm-qwen35-122b-1", "tags":["model:Qwen/Qwen3.5-122B-A10B","ip:${HOST_IP}","port:8000"]}]'
 
-  vllm-proxy-qwen35-122b-1:
-    <<: *vllm-proxy-common
-    container_name: vllm-proxy-qwen35-122b-1
-    environment:
-      - NVIDIA_VISIBLE_DEVICES=all
-      - CLOUD_API_URL=https://cloud-api.near.ai
-      - LOG_FORMAT=json
-      - MODEL_NAME=Qwen/Qwen3.5-122B-A10B
-      - TOKEN=${PROXY_TOKEN}
-      - VLLM_BASE_URL=http://vllm-qwen35-122b-1:8000
-      - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
-    labels:
-      com.datadoghq.ad.logs: '[{"source": "vllm-proxy", "service": "vllm-proxy", "tags": ["model:Qwen/Qwen3.5-122B-A10B","ip:${HOST_IP}","port:8000","instance:1"]}]'
-
   # --- Qwen3.5-122B-A10B instance 2 (GPUs 4-7) ---
 
   vllm-qwen35-122b-2:
@@ -172,20 +173,6 @@ services:
       com.datadoghq.ad.init_configs: "[{}]"
       com.datadoghq.ad.logs: '[{"source": "vllm", "service": "vllm", "tags":["model:Qwen/Qwen3.5-122B-A10B","ip:${HOST_IP}","port:8001","instance:2"]}]'
       com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-qwen35-122b-2:8000/metrics", "service": "vllm-qwen35-122b-2", "tags":["model:Qwen/Qwen3.5-122B-A10B","ip:${HOST_IP}","port:8001"]}]'
-
-  vllm-proxy-qwen35-122b-2:
-    <<: *vllm-proxy-common
-    container_name: vllm-proxy-qwen35-122b-2
-    environment:
-      - NVIDIA_VISIBLE_DEVICES=all
-      - CLOUD_API_URL=https://cloud-api.near.ai
-      - LOG_FORMAT=json
-      - MODEL_NAME=Qwen/Qwen3.5-122B-A10B
-      - TOKEN=${PROXY_TOKEN}
-      - VLLM_BASE_URL=http://vllm-qwen35-122b-2:8000
-      - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
-    labels:
-      com.datadoghq.ad.logs: '[{"source": "vllm-proxy", "service": "vllm-proxy", "tags": ["model:Qwen/Qwen3.5-122B-A10B","ip:${HOST_IP}","port:8001","instance:2"]}]'
 
   dcgm-exporter:
     image: nvcr.io/nvidia/k8s/dcgm-exporter:4.5.2-4.8.1-distroless
@@ -229,86 +216,73 @@ configs:
       #!/bin/sh
       PROXY_URL="https://completions.near.ai"
       TOKEN="$${MODEL_PROXY_TOKEN}"
-      EP1="$${HOST_IP}:8000"
-      EP2="$${HOST_IP}:8001"
-      REG1=false
-      REG2=false
-      FAIL_COUNT1=0
-      FAIL_COUNT2=0
+      ENDPOINT="$${HOST_IP}:$${HTTP_PORT}"
+      REGISTERED=false
+      FAILURE_COUNT=0
       MAX_RETRIES=3
 
       register_endpoint() {
+        echo "Registering endpoint $$1 with routing port $$2"
         curl -sS --max-time 10 -X POST "$$PROXY_URL/register/endpoint" \
           -H "Authorization: Bearer $$TOKEN" \
           -H "Content-Type: application/json" \
-          -d "{\"endpoint\":\"$$1\",\"routing_port\":$$2}" || true
+          -d "{\"endpoint\":\"$$1\",\"routing_port\":$$2}"
       }
 
       unregister_endpoint() {
+        echo "Unregistering endpoint $$1"
         curl -sS --max-time 10 -X POST "$$PROXY_URL/unregister/endpoint" \
           -H "Authorization: Bearer $$TOKEN" \
           -H "Content-Type: application/json" \
-          -d "{\"endpoint\":\"$$1\"}" || true
+          -d "{\"endpoint\":\"$$1\"}"
       }
 
       register_model() {
         curl -sS --max-time 10 -X POST "$$PROXY_URL/register/model" \
           -H "Authorization: Bearer $$TOKEN" \
           -H "Content-Type: application/json" \
-          -d "{\"model\":\"$$1\",\"domain\":\"$$2\"}" || true
+          -d "{\"model\":\"$$1\",\"domain\":\"$$2\"}"
       }
 
       cleanup() {
-        echo "SIGTERM received, unregistering endpoints"
-        unregister_endpoint "$$EP1"
-        unregister_endpoint "$$EP2"
+        echo "SIGTERM received, unregistering $$ENDPOINT"
+        unregister_endpoint "$$ENDPOINT"
+        REGISTERED=false
         exit 0
       }
       trap cleanup TERM INT
 
+      # Health check via the proxy (covers both backends)
       check_inference() {
-        curl -sf --max-time 45 -X POST "http://$$1:8000/v1/chat/completions" \
+        echo "Performing health check on proxy..."
+        curl -sSf --max-time 45 -X POST "http://vllm-proxy-qwen35:8000/v1/chat/completions" \
+          -H "Authorization: Bearer $${TOKEN}" \
           -H "Content-Type: application/json" \
-          -d '{"model":"Qwen/Qwen3.5-122B-A10B","messages":[{"role":"user","content":"hi"}],"max_tokens":1}' \
-          > /dev/null 2>&1
+          -d '{"model":"Qwen/Qwen3.5-122B-A10B","messages":[{"role":"user","content":"hi"}],"max_tokens":1}'
       }
 
-      echo "Waiting for models to be ready..."
-      until curl -sf http://nginx:8000/v1/models > /dev/null 2>&1; do sleep 30; done
-      echo "Instance 1 ready, starting registration loop"
+      echo "Waiting for model to be ready..."
+      until curl -sf http://nginx:80/v1/models > /dev/null 2>&1; do sleep 30; done
+      echo "Model ready, starting registration loop"
 
       while true; do
-        if check_inference vllm-qwen35-122b-1; then
-          FAIL_COUNT1=0
-          register_endpoint "$$EP1" "$${TLS_PORT}"
-          if [ "$$REG1" = false ]; then echo "[Qwen3.5-122B] Registered $$EP1"; fi
-          REG1=true
+        if check_inference; then
+          FAILURE_COUNT=0
+          register_endpoint "$$ENDPOINT" "$${TLS_PORT}"
+          register_model "Qwen/Qwen3.5-122B-A10B" "qwen35-122b.completions.near.ai"
+          if [ "$$REGISTERED" = false ]; then
+            echo "[Qwen3.5-122B] Registered Qwen/Qwen3.5-122B-A10B at $$ENDPOINT"
+          fi
+          REGISTERED=true
         else
-          FAIL_COUNT1=$((FAIL_COUNT1 + 1))
-          echo "[Qwen3.5-122B] Health check failed for $$EP1 (Attempt $$FAIL_COUNT1/$$MAX_RETRIES)"
-          if [ "$$REG1" = true ] && [ "$$FAIL_COUNT1" -ge "$$MAX_RETRIES" ]; then
-            echo "[Qwen3.5-122B] Health check failed and Retry limit reached, unregistering $$EP1"
-            unregister_endpoint "$$EP1"
-            REG1=false
+          FAILURE_COUNT=$$((FAILURE_COUNT + 1))
+          echo "[Qwen3.5-122B] Health check failed ($$FAILURE_COUNT/$$MAX_RETRIES)"
+          if [ "$$REGISTERED" = true ] && [ "$$FAILURE_COUNT" -ge "$$MAX_RETRIES" ]; then
+            echo "[Qwen3.5-122B] Health check failed and Retry limit reached, unregistering $$ENDPOINT"
+            unregister_endpoint "$$ENDPOINT"
+            REGISTERED=false
           fi
         fi
-
-        if check_inference vllm-qwen35-122b-2; then
-          FAIL_COUNT2=0
-          register_endpoint "$$EP2" "$${TLS_PORT}"
-          if [ "$$REG2" = false ]; then echo "[Qwen3.5-122B] Registered $$EP2"; fi
-          REG2=true
-        else
-          FAIL_COUNT2=$((FAIL_COUNT2 + 1))
-          echo "[Qwen3.5-122B] Health check failed for $$EP2 (Attempt $$FAIL_COUNT2/$$MAX_RETRIES)"
-          if [ "$$REG2" = true ] && [ "$$FAIL_COUNT2" -ge "$$MAX_RETRIES" ]; then
-            echo "[Qwen3.5-122B] Health check failed and Retry limit reached, unregistering $$EP2"
-            unregister_endpoint "$$EP2"
-            REG2=false
-          fi
-        fi
-
-        register_model "Qwen/Qwen3.5-122B-A10B" "qwen35-122b.completions.near.ai"
         sleep 60
       done
   nginx_conf:
@@ -324,22 +298,10 @@ configs:
       proxy_read_timeout 3600s;
       client_max_body_size 100m;
 
-      # :8000 - Qwen3.5-122B instance 1
+      # :80 — single proxy handles both backends
       server {
-        listen 8000;
-        location / { proxy_pass http://vllm-proxy-qwen35-122b-1:8000; }
-      }
-
-      # :8001 - Qwen3.5-122B instance 2
-      server {
-        listen 8001;
-        location / { proxy_pass http://vllm-proxy-qwen35-122b-2:8000; }
-      }
-
-      upstream qwen35-122b-upstream {
-        hash $$connection consistent;
-        server vllm-proxy-qwen35-122b-1:8000;
-        server vllm-proxy-qwen35-122b-2:8000;
+        listen 80 default_server;
+        location / { proxy_pass http://vllm-proxy-qwen35:8000; }
       }
 
       ssl_certificate /etc/letsencrypt/live/completions.near.ai/fullchain.pem;
@@ -349,5 +311,5 @@ configs:
       server {
         listen 443 ssl;
         server_name qwen35-122b.completions.near.ai;
-        location / { proxy_pass http://qwen35-122b-upstream; }
+        location / { proxy_pass http://vllm-proxy-qwen35:8000; }
       }
