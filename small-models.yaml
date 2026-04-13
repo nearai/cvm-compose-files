@@ -19,9 +19,6 @@ x-nvidia: &nvidia
 x-vllm-common: &vllm-common
   <<: *nvidia
   init: true
-  depends_on:
-    model-downloader:
-      condition: service_completed_successfully
   volumes:
     - hugginface_cache:/root/.cache/huggingface
     - vllm_cache:/root/.cache/vllm
@@ -42,6 +39,7 @@ x-vllm-proxy-common: &vllm-proxy-common
 x-vllm-env:
   environment: &vllm-env
     - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+    - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0}
     - VLLM_LOGGING_LEVEL=INFO
     - NVIDIA_DRIVER_CAPABILITIES=compute,utility
     - OPENBLAS_L2_SIZE=2097152
@@ -51,6 +49,7 @@ x-vllm-env:
 x-sglang-env:
   environment: &sglang-env
     - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+    - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0}
     - VLLM_LOGGING_LEVEL=INFO
     - NVIDIA_DRIVER_CAPABILITIES=compute,utility
     - OPENBLAS_L2_SIZE=2097152
@@ -80,6 +79,7 @@ x-gpt-oss-common: &gpt-oss-common
     - vllm_cache:/root/.cache/vllm
   environment:
     - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+    - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0}
     - VLLM_LOGGING_LEVEL=INFO
     - NVIDIA_DRIVER_CAPABILITIES=compute,utility
     - VLLM_MXFP4_USE_MARLIN=1
@@ -118,33 +118,6 @@ x-flux-common: &flux-common
             capabilities: [gpu]
 
 services:
-  model-downloader:
-    image: ghcr.io/astral-sh/uv:python3.11-bookworm-slim@sha256:4f5d923c9dcea037f57bda425dd209f3ec643da2f0b74227f68d09dab0b3bb36
-    container_name: model-downloader
-    restart: "no"
-    entrypoint: ["sh", "-c"]
-    command:
-      - |
-        set -e
-        for model in \
-          "Qwen/Qwen3-30B-A3B-Instruct-2507" \
-          "lmsys/SGLang-EAGLE3-Qwen3-30B-A3B-Instruct-2507-SpecForge-Nex" \
-          "openai/gpt-oss-120b" \
-          "black-forest-labs/FLUX.2-klein-4B" \
-          "Qwen/Qwen3-VL-30B-A3B-Instruct" \
-          "Qwen/Qwen3-Embedding-0.6B" \
-          "Qwen/Qwen3-Reranker-0.6B" \
-          "openai/whisper-large-v3"; do
-          echo "Downloading $$model..."
-          uvx --from 'huggingface_hub[hf_xet]' hf download "$$model" || echo "WARN: failed to download $$model"
-        done
-        echo "All downloads complete."
-    volumes:
-      - hugginface_cache:/root/.cache/huggingface
-    environment:
-      - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
-    logging: *logging-conf
-
   nginx:
     image: nginx@sha256:1d13701a5f9f3fb01aaa88cef2344d65b6b5bf6b7d9fa4cf0dca557a8d7702ba
     container_name: nginx
