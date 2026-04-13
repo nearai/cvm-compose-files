@@ -561,21 +561,19 @@ configs:
       trap cleanup TERM INT
 
       # Health check directly on backends (no auth needed on raw vLLM/SGLang containers)
+      check_chat() {
+        curl -sf --max-time 45 -X POST "http://$$1:8000/v1/chat/completions" \
+          -H "Content-Type: application/json" \
+          -d "{\"model\":\"$$2\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":1}" \
+          > /dev/null 2>&1
+      }
+
       check_port() {
         case $$1 in
-          8000) curl -sf --max-time 45 -X POST "http://vllm-qwen3-30b:8000/v1/chat/completions" \
-                  -H "Content-Type: application/json" \
-                  -d '{"model":"Qwen/Qwen3-30B-A3B-Instruct-2507","messages":[{"role":"user","content":"hi"}],"max_tokens":1}' \
-                  > /dev/null 2>&1 ;;
-          8001) curl -sf --max-time 45 -X POST "http://vllm-gpt-oss-1:8000/v1/chat/completions" \
-                  -H "Content-Type: application/json" \
-                  -d '{"model":"openai/gpt-oss-120b","messages":[{"role":"user","content":"hi"}],"max_tokens":1}' \
-                  > /dev/null 2>&1 ;;
+          8000) check_chat vllm-qwen3-30b "Qwen/Qwen3-30B-A3B-Instruct-2507" ;;
+          8001) check_chat vllm-gpt-oss-1 "openai/gpt-oss-120b" ;;
           8002) curl -sf --max-time 10 "http://vllm-flux-2-klein-4b-1:8000/v1/models" > /dev/null 2>&1 ;;
-          8003) curl -sf --max-time 45 -X POST "http://vllm-qwen3-vl:8000/v1/chat/completions" \
-                  -H "Content-Type: application/json" \
-                  -d '{"model":"Qwen/Qwen3-VL-30B-A3B-Instruct","messages":[{"role":"user","content":"hi"}],"max_tokens":1}' \
-                  > /dev/null 2>&1 ;;
+          8003) check_chat vllm-qwen3-vl "Qwen/Qwen3-VL-30B-A3B-Instruct" ;;
           8004) curl -sf --max-time 10 "http://vllm-qwen3-embeddings:8000/v1/models" > /dev/null 2>&1 ;;
           8005) curl -sf --max-time 10 "http://vllm-qwen3-reranker:8000/v1/models" > /dev/null 2>&1 ;;
         esac
