@@ -30,6 +30,8 @@ x-vllm-proxy-common: &vllm-proxy-common
   user: root
   privileged: true
   <<: *nvidia
+  extra_hosts:
+    - "compose-manager:host-gateway"
   volumes:
     - /var/run/dstack.sock:/var/run/dstack.sock
     - certs:/etc/letsencrypt:ro
@@ -162,6 +164,7 @@ services:
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - CLOUD_API_URL=https://cloud-api.near.ai
+      - COMPOSE_MANAGER_URL=http://compose-manager:8080
       - LOG_FORMAT=json
       - MODEL_NAME=Qwen/Qwen3-30B-A3B-Instruct-2507
       - TOKEN=${PROXY_TOKEN}
@@ -215,6 +218,7 @@ services:
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - CLOUD_API_URL=https://cloud-api.near.ai
+      - COMPOSE_MANAGER_URL=http://compose-manager:8080
       - LOG_FORMAT=json
       - MODEL_NAME=openai/gpt-oss-120b
       - TOKEN=${PROXY_TOKEN}
@@ -263,6 +267,7 @@ services:
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - CLOUD_API_URL=https://cloud-api.near.ai
+      - COMPOSE_MANAGER_URL=http://compose-manager:8080
       - LOG_FORMAT=json
       - MODEL_NAME=black-forest-labs/FLUX.2-klein-4B
       - TOKEN=${PROXY_TOKEN}
@@ -315,6 +320,7 @@ services:
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - CLOUD_API_URL=https://cloud-api.near.ai
+      - COMPOSE_MANAGER_URL=http://compose-manager:8080
       - LOG_FORMAT=json
       - MODEL_NAME=Qwen/Qwen3-VL-30B-A3B-Instruct
       - TOKEN=${PROXY_TOKEN}
@@ -363,6 +369,7 @@ services:
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - CLOUD_API_URL=https://cloud-api.near.ai
+      - COMPOSE_MANAGER_URL=http://compose-manager:8080
       - LOG_FORMAT=json
       - MODEL_NAME=Qwen/Qwen3-Embedding-0.6B
       - TOKEN=${PROXY_TOKEN}
@@ -402,6 +409,7 @@ services:
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - CLOUD_API_URL=https://cloud-api.near.ai
+      - COMPOSE_MANAGER_URL=http://compose-manager:8080
       - LOG_FORMAT=json
       - MODEL_NAME=Qwen/Qwen3-Reranker-0.6B
       - TOKEN=${PROXY_TOKEN}
@@ -441,6 +449,7 @@ services:
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - CLOUD_API_URL=https://cloud-api.near.ai
+      - COMPOSE_MANAGER_URL=http://compose-manager:8080
       - LOG_FORMAT=json
       - MODEL_NAME=openai/whisper-large-v3
       - TOKEN=${PROXY_TOKEN}

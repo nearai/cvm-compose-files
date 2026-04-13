@@ -36,6 +36,8 @@ x-vllm-proxy-common: &vllm-proxy-common
   user: root
   privileged: true
   <<: *nvidia
+  extra_hosts:
+    - "compose-manager:host-gateway"
   volumes:
     - /var/run/dstack.sock:/var/run/dstack.sock
     - certs:/etc/letsencrypt:ro
@@ -111,6 +113,7 @@ services:
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - CLOUD_API_URL=https://cloud-api.near.ai
+      - COMPOSE_MANAGER_URL=http://compose-manager:8080
       - LOG_FORMAT=json
       - MODEL_NAME=deepseek-ai/DeepSeek-V3.1
       - TOKEN=${PROXY_TOKEN}
