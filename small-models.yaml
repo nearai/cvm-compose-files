@@ -611,6 +611,11 @@ configs:
             if [ "$$was_reg" = true ] && [ "$$fails" -ge "$$MAX_RETRIES" ]; then
               echo "Health check failed and have reached max retries for $${HOST_IP}:$$port, unregistering"
               unregister_endpoint "$${HOST_IP}:$$port"
+              # Exit so Docker restarts us with fresh DNS state.
+              # Stale Docker DNS after container recreation causes persistent
+              # health check timeouts that only a process restart can fix.
+              echo "Exiting to refresh DNS (container will auto-restart)"
+              exit 1
             fi
             eval "REG_$$port=false"
           fi

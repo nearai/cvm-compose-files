@@ -255,6 +255,8 @@ configs:
             echo "[GLM-5.1] Health check failed and Retry limit reached, unregistering $$ENDPOINT"
             unregister_endpoint "$$ENDPOINT"
             REGISTERED=false
+            echo "[GLM-5.1] Exiting to refresh DNS (container will auto-restart)"
+            exit 1
           fi
         fi
         sleep 60
