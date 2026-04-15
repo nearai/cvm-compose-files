@@ -283,6 +283,8 @@ configs:
             echo "[Qwen3.5-122B] Health check failed and Retry limit reached, unregistering $$ENDPOINT"
             unregister_endpoint "$$ENDPOINT"
             REGISTERED=false
+            echo "[Qwen3.5-122B] Exiting to refresh DNS (container will auto-restart)"
+            exit 1
           fi
         fi
         sleep 60

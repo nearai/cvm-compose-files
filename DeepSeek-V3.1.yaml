@@ -309,6 +309,8 @@ configs:
             echo "Health check failed, unregistering $$ENDPOINT"
             unregister_endpoint "$$ENDPOINT"
             REGISTERED=false
+            echo "Exiting to refresh DNS (container will auto-restart)"
+            exit 1
           fi
         fi
         sleep 60
