@@ -99,39 +99,18 @@ services:
     depends_on:
       model-downloader:
         condition: service_completed_successfully
-    image: lmsysorg/sglang:glm5-hopper@sha256:4680bebe1b0bdfa5a16bcb8ae410e8fc6e21c64f2b6e446e5b6d01f52347d3e9
+    image: nearaidev/sglang:glm5.1-slim@sha256:fd06e72d3e738982b705d2e877eeb2cd4ae290a6aaa7938f1df2579f23545ae9
     container_name: glm51
-    command: >
-      sglang serve
-      --model-path zai-org/GLM-5.1-FP8
-      --tp 8
-      --reasoning-parser glm45
-      --log-requests-level 0
-      --tool-call-parser glm47
-      --mem-fraction-static 0.85
-      --max-running-requests 55
-      --context-length 200000
-      --num-continuous-decode-steps 5
-      --model-loader-extra-config '{"enable_multithread_load": "true", "num_threads": 64}'
-      --port 8000
-      --host 0.0.0.0
-      --enable-cache-report
-      --enable-metrics
-      --enable-dp-attention
-      --speculative-algorithm EAGLE
-      --speculative-num-steps 3
-      --speculative-eagle-topk 1
-      --speculative-num-draft-tokens 4
+    # entrypoint.sh reads tuned_config.json baked into image (mem_frac=0.88, mrr=55, ncd=5)
+    # Override any param via env: SGLANG_MEM_FRACTION, SGLANG_MAX_RUNNING, SGLANG_TP, etc.
     volumes:
       - huggingface_cache:/root/.cache/huggingface
-      - kernel_cache:/root/.cache/deep_gemm
     environment:
+      - SGLANG_MODEL_PATH=zai-org/GLM-5.1-FP8
       - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
       - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0}
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
-      - OPENBLAS_L2_SIZE=2097152
       - NCCL_DEBUG=WARN
-      - SGLANG_JIT_DEEPGEMM_FAST_WARMUP=1
     deploy:
       resources:
         reservations:
@@ -267,6 +246,7 @@ configs:
           listen 80 default_server;
 
           client_max_body_size 100m;
+          client_body_buffer_size 1m;
 
           location / {
               proxy_pass http://proxy-glm51:8000;
@@ -291,6 +271,7 @@ configs:
           ssl_protocols TLSv1.2 TLSv1.3;
 
           client_max_body_size 100m;
+          client_body_buffer_size 1m;
 
           location / {
               proxy_pass http://proxy-glm51:8000;

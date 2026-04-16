@@ -4,23 +4,34 @@
 set -euo pipefail
 
 CONFIG="/sgl-workspace/tuned_config.json"
-MODEL_PATH=$(cat /models/.model_path 2>/dev/null || echo "")
 
+# Model path: env var > baked-in > default
+MODEL_PATH="${SGLANG_MODEL_PATH:-$(cat /models/.model_path 2>/dev/null || echo "")}"
 if [ -z "$MODEL_PATH" ]; then
-    echo "[entrypoint] ERROR: /models/.model_path not found. Was the model baked in?" >&2
-    exit 1
+    MODEL_PATH="zai-org/GLM-5.1-FP8"
 fi
 
 # Read tuned config or use defaults
 if [ -f "$CONFIG" ]; then
     echo "[entrypoint] Loading tuned config from $CONFIG"
-    MEM_FRACTION=$(python3 -c "import json; print(json.load(open('$CONFIG'))['mem_fraction_static'])")
-    MAX_RUNNING=$(python3 -c "import json; print(json.load(open('$CONFIG'))['max_running_requests'])")
-    DECODE_STEPS=$(python3 -c "import json; print(json.load(open('$CONFIG'))['num_continuous_decode_steps'])")
-    TP=$(python3 -c "import json; print(json.load(open('$CONFIG'))['tp'])")
+    eval "$(python3 << 'PYEOF'
+import json, sys
+try:
+    c = json.load(open("/sgl-workspace/tuned_config.json"))
+    print(f"MEM_FRACTION={c.get('mem_fraction_static', 0.88)}")
+    print(f"MAX_RUNNING={c.get('max_running_requests', 55)}")
+    print(f"DECODE_STEPS={c.get('num_continuous_decode_steps', 5)}")
+    print(f"TP={c.get('tp', 8)}")
+except Exception as e:
+    print(f"MEM_FRACTION=0.88", file=sys.stderr)
+    print(f"MAX_RUNNING=55")
+    print(f"DECODE_STEPS=5")
+    print(f"TP=8")
+PYEOF
+)"
 else
     echo "[entrypoint] No tuned config found, using defaults"
-    MEM_FRACTION=0.85
+    MEM_FRACTION=0.88
     MAX_RUNNING=55
     DECODE_STEPS=5
     TP=8
@@ -34,15 +45,15 @@ TP="${SGLANG_TP:-$TP}"
 PORT="${SGLANG_PORT:-8000}"
 HOST="${SGLANG_HOST:-0.0.0.0}"
 
-echo "[entrypoint] Model:       /models/$MODEL_PATH"
-echo "[entrypoint] TP:          $TP"
-echo "[entrypoint] mem_frac:    $MEM_FRACTION"
-echo "[entrypoint] max_running: $MAX_RUNNING"
+echo "[entrypoint] Model:        $MODEL_PATH"
+echo "[entrypoint] TP:           $TP"
+echo "[entrypoint] mem_frac:     $MEM_FRACTION"
+echo "[entrypoint] max_running:  $MAX_RUNNING"
 echo "[entrypoint] decode_steps: $DECODE_STEPS"
-echo "[entrypoint] port:        $PORT"
+echo "[entrypoint] port:         $PORT"
 
 exec python3 -m sglang.launch_server \
-    --model-path "/models/$MODEL_PATH" \
+    --model-path "$MODEL_PATH" \
     --tp "$TP" \
     --mem-fraction-static "$MEM_FRACTION" \
     --max-running-requests "$MAX_RUNNING" \
