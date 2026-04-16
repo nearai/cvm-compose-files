@@ -615,7 +615,7 @@ configs:
           else
             fails=$$((fails + 1))
             eval "FAIL_COUNT_$$port=$$fails"
-            if [ "$$was_reg" = true ] && [ "$$fails" -ge "$$MAX_RETRIES" ]; then
+            if [ "$$was_reg" = true ] && [ "$$fails" -ge "$$MAX_RETRIES" ] && [ "$$port" != "8001" ]; then
               echo "Health check failed and have reached max retries for $${HOST_IP}:$$port, unregistering"
               unregister_endpoint "$${HOST_IP}:$$port"
               # Exit so Docker restarts us with fresh DNS state.
