@@ -694,43 +694,43 @@ configs:
       ssl_protocols TLSv1.2 TLSv1.3;
 
       server {
-          listen 443 ssl;
+          listen 443 ssl http2;
           server_name qwen3-30b.completions.near.ai;
           location / { proxy_pass http://vllm-proxy-qwen3-30b:8000; }
       }
 
       server {
-          listen 443 ssl;
+          listen 443 ssl http2;
           server_name gpt-oss-120b.completions.near.ai;
           location / { proxy_pass http://vllm-proxy-gpt-oss:8000; }
       }
 
       server {
-          listen 443 ssl;
+          listen 443 ssl http2;
           server_name flux2-klein.completions.near.ai;
           location / { proxy_pass http://vllm-proxy-flux:8000; }
       }
 
       server {
-          listen 443 ssl;
+          listen 443 ssl http2;
           server_name qwen3-vl-30b.completions.near.ai;
           location / { proxy_pass http://vllm-proxy-qwen3-vl:8000; }
       }
 
       server {
-          listen 443 ssl;
+          listen 443 ssl http2;
           server_name qwen3-embedding.completions.near.ai;
           location / { proxy_pass http://vllm-proxy-qwen3-embeddings:8000; }
       }
 
       server {
-          listen 443 ssl;
+          listen 443 ssl http2;
           server_name qwen3-reranker.completions.near.ai;
           location / { proxy_pass http://vllm-proxy-qwen3-reranker:8000; }
       }
 
       server {
-          listen 443 ssl;
+          listen 443 ssl http2;
           server_name whisper-large-v3.completions.near.ai;
           location / { proxy_pass http://vllm-proxy-whisper3-large:8000; }
       }

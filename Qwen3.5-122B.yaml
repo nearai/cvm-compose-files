@@ -313,7 +313,7 @@ configs:
       ssl_protocols TLSv1.2 TLSv1.3;
 
       server {
-        listen 443 ssl;
+        listen 443 ssl http2;
         server_name qwen35-122b.completions.near.ai;
         location / { proxy_pass http://vllm-proxy-qwen35:8000; }
       }
