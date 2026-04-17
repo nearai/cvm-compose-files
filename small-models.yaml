@@ -539,7 +539,6 @@ configs:
       PROXY_URL="https://completions.near.ai"
       TOKEN="$${MODEL_PROXY_TOKEN}"
       TLS_PORT=8444
-      MAX_RETRIES=3
 
       # Track registration state per port
       for port in 8000 8001 8002 8003 8004 8005 8006; do
@@ -615,15 +614,7 @@ configs:
           else
             fails=$$((fails + 1))
             eval "FAIL_COUNT_$$port=$$fails"
-            if [ "$$was_reg" = true ] && [ "$$fails" -ge "$$MAX_RETRIES" ]; then
-              echo "Health check failed and have reached max retries for $${HOST_IP}:$$port, unregistering"
-              unregister_endpoint "$${HOST_IP}:$$port"
-              # Exit so Docker restarts us with fresh DNS state.
-              # Stale Docker DNS after container recreation causes persistent
-              # health check timeouts that only a process restart can fix.
-              echo "Exiting to refresh DNS (container will auto-restart)"
-              exit 1
-            fi
+            echo "Health check failed for $${HOST_IP}:$$port (fail count: $$fails)"
             eval "REG_$$port=false"
           fi
         done
