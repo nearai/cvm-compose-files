@@ -102,8 +102,6 @@ services:
         condition: service_completed_successfully
     image: lmsysorg/sglang:glm5-hopper@sha256:4680bebe1b0bdfa5a16bcb8ae410e8fc6e21c64f2b6e446e5b6d01f52347d3e9
     container_name: glm51
-    # entrypoint.sh reads tuned_config.json baked into image (mem_frac=0.88, mrr=55, ncd=5)
-    # Override any param via env: SGLANG_MEM_FRACTION, SGLANG_MAX_RUNNING, SGLANG_TP, etc.
     command: >
       sglang serve
       --model-path zai-org/GLM-5.1-FP8
