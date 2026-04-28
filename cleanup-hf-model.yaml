@@ -1,0 +1,63 @@
+x-logging-conf: &logging-conf
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "3"
+    labels: "com.datadoghq.ad.logs"
+
+# One-shot cleanup: removes a specific model from the shared `huggingface_cache`
+# volume on a CVM.
+#
+# Usage (compose-manager `compose/up`):
+#   curl -sS 'http://<host_ip>:8080/compose/up' \
+#     -H 'Authorization: Bearer <CM_TOKEN>' \
+#     -H 'Content-Type: application/json' \
+#     -d '{"tag":"<tag>","file":"cleanup-hf-model.yaml","force_recreate":true,
+#          "env":{"MODEL_NAME":"zai-org/GLM-5-FP8"}}'
+#
+# Notes:
+# - Maps `org/repo` to the on-disk `models--org--repo` directory.
+# - The `huggingface_cache:` volume name MUST match the inference compose files
+#   so it resolves to the same `<project>_huggingface_cache` Docker volume.
+# - Safe to run while inference is up: weights are already loaded into GPU
+#   memory; only a future restart would need to re-download.
+# - `force_recreate:true` is required to re-run on the same instance with a
+#   different MODEL_NAME (otherwise the previous Exited container is reused).
+services:
+  hf-cleanup:
+    image: alpine:3.20
+    container_name: hf-cleanup
+    restart: "no"
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        set -eu
+        : "$${MODEL_NAME:?MODEL_NAME env var is required (e.g. zai-org/GLM-5-FP8)}"
+        SAFE=$$(printf '%s' "$$MODEL_NAME" | sed 's|/|--|g')
+        TARGET="/root/.cache/huggingface/hub/models--$$SAFE"
+        echo "MODEL_NAME=$$MODEL_NAME"
+        echo "TARGET=$$TARGET"
+        if [ ! -d "$$TARGET" ]; then
+          echo "Not found. Existing model dirs:"
+          ls /root/.cache/huggingface/hub/ 2>/dev/null | grep '^models--' || echo "(none)"
+          exit 1
+        fi
+        echo "Size before:"
+        du -sh "$$TARGET"
+        rm -rf "$$TARGET"
+        echo "Removed $$TARGET"
+        echo "Volume size after:"
+        du -sh /root/.cache/huggingface/hub 2>/dev/null || true
+    volumes:
+      - huggingface_cache:/root/.cache/huggingface
+    environment:
+      - MODEL_NAME=${MODEL_NAME}
+    logging: *logging-conf
+
+networks:
+  default:
+    external: true
+    name: dstack_default
+
+volumes:
+  huggingface_cache:
