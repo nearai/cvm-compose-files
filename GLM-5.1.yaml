@@ -100,16 +100,18 @@ services:
     depends_on:
       model-downloader:
         condition: service_completed_successfully
-    image: lmsysorg/sglang:glm5-hopper@sha256:4680bebe1b0bdfa5a16bcb8ae410e8fc6e21c64f2b6e446e5b6d01f52347d3e9
+    image: lmsysorg/sglang:dev@sha256:9f51ee8f927a2480401b0613c73ca98219737e4deb287cd3a4223dd3e53c5672
     container_name: glm51
     command: >
       sglang serve
       --model-path zai-org/GLM-5.1-FP8
       --tp 8
+      --dp 8
+      --enable-dp-attention
       --reasoning-parser glm45
       --log-requests-level 0
       --tool-call-parser glm47
-      --mem-fraction-static 0.85
+      --mem-fraction-static 0.86
       --max-running-requests 55
       --context-length 200000
       --num-continuous-decode-steps 5
@@ -118,7 +120,7 @@ services:
       --host 0.0.0.0
       --enable-cache-report
       --enable-metrics
-      --enable-dp-attention
+      --json-model-override-args '{"index_topk_pattern": "FFSFSSSFSSFFFSSSFFFSFSSSSSSFFSFFSFFSSFFFFFFSFFFFFSFFSSSSSSFSFFFSFSSSFSFFSFFSSS"}'
     volumes:
       - huggingface_cache:/root/.cache/huggingface
       - kernel_cache:/root/.cache/deep_gemm
