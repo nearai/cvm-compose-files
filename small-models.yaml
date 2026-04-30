@@ -210,7 +210,7 @@ services:
       com.datadoghq.ad.check_names: '["vllm"]'
       com.datadoghq.ad.init_configs: "[{}]"
       com.datadoghq.ad.logs: '[{"source": "vllm", "service": "vllm", "tags":["model:Qwen/Qwen3-30B-A3B-Instruct-2507","ip:${HOST_IP}", "port:8000"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-qwen3-30b:8000/metrics", "service": "vllm-qwen3-30b", "tags":["model:Qwen/Qwen3-30B-A3B-Instruct-2507","ip:${HOST_IP}", "port:8000"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-qwen3-30b:8000/metrics", "histogram_buckets_as_distributions": true, "service": "vllm-qwen3-30b", "tags":["model:Qwen/Qwen3-30B-A3B-Instruct-2507","ip:${HOST_IP}", "port:8000"]}]'
 
   # --- GPT-OSS x2 (GPUs 2, 3) — single proxy, multi-backend ---
 
@@ -244,7 +244,7 @@ services:
       com.datadoghq.ad.check_names: '["vllm"]'
       com.datadoghq.ad.init_configs: "[{}]"
       com.datadoghq.ad.logs: '[{"source": "vllm", "service": "vllm", "tags":["model:openai/gpt-oss-120b","ip:${HOST_IP}", "port:8001","instance:1"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-gpt-oss-1:8000/metrics", "service": "vllm-gpt-oss-1", "tags":["model:openai/gpt-oss-120b","ip:${HOST_IP}", "port:8001"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-gpt-oss-1:8000/metrics", "histogram_buckets_as_distributions": true, "service": "vllm-gpt-oss-1", "tags":["model:openai/gpt-oss-120b","ip:${HOST_IP}", "port:8001"]}]'
 
   vllm-gpt-oss-2:
     <<: *gpt-oss-common
@@ -260,7 +260,7 @@ services:
       com.datadoghq.ad.check_names: '["vllm"]'
       com.datadoghq.ad.init_configs: "[{}]"
       com.datadoghq.ad.logs: '[{"source": "vllm", "service": "vllm", "tags":["model:openai/gpt-oss-120b","ip:${HOST_IP}", "port:8001","instance:2"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-gpt-oss-2:8000/metrics", "service": "vllm-gpt-oss-2", "tags":["model:openai/gpt-oss-120b","ip:${HOST_IP}", "port:8001"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-gpt-oss-2:8000/metrics", "histogram_buckets_as_distributions": true, "service": "vllm-gpt-oss-2", "tags":["model:openai/gpt-oss-120b","ip:${HOST_IP}", "port:8001"]}]'
 
   # --- FLUX x4 (GPU 4, 20% mem each) — single proxy, multi-backend ---
 
@@ -287,7 +287,7 @@ services:
       com.datadoghq.ad.check_names: '["vllm"]'
       com.datadoghq.ad.init_configs: "[{}]"
       com.datadoghq.ad.logs: '[{"source": "vllm", "service": "vllm", "tags":["model:black-forest-labs/FLUX.2-klein-4B","ip:${HOST_IP}", "port:8002","instance:1"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-flux-2-klein-4b-1:8000/metrics", "service": "vllm-flux-2-klein-4b-1", "tags":["model:black-forest-labs/FLUX.2-klein-4B","ip:${HOST_IP}", "port:8002"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-flux-2-klein-4b-1:8000/metrics", "histogram_buckets_as_distributions": true, "service": "vllm-flux-2-klein-4b-1", "tags":["model:black-forest-labs/FLUX.2-klein-4B","ip:${HOST_IP}", "port:8002"]}]'
 
   vllm-flux-2-klein-4b-2:
     <<: *flux-common
@@ -296,7 +296,7 @@ services:
       com.datadoghq.ad.check_names: '["vllm"]'
       com.datadoghq.ad.init_configs: "[{}]"
       com.datadoghq.ad.logs: '[{"source": "vllm", "service": "vllm", "tags":["model:black-forest-labs/FLUX.2-klein-4B","ip:${HOST_IP}", "port:8002","instance:2"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-flux-2-klein-4b-2:8000/metrics", "service": "vllm-flux-2-klein-4b-2", "tags":["model:black-forest-labs/FLUX.2-klein-4B","ip:${HOST_IP}", "port:8002"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-flux-2-klein-4b-2:8000/metrics", "histogram_buckets_as_distributions": true, "service": "vllm-flux-2-klein-4b-2", "tags":["model:black-forest-labs/FLUX.2-klein-4B","ip:${HOST_IP}", "port:8002"]}]'
 
   vllm-flux-2-klein-4b-3:
     <<: *flux-common
@@ -305,7 +305,7 @@ services:
       com.datadoghq.ad.check_names: '["vllm"]'
       com.datadoghq.ad.init_configs: "[{}]"
       com.datadoghq.ad.logs: '[{"source": "vllm", "service": "vllm", "tags":["model:black-forest-labs/FLUX.2-klein-4B","ip:${HOST_IP}", "port:8002","instance:3"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-flux-2-klein-4b-3:8000/metrics", "service": "vllm-flux-2-klein-4b-3", "tags":["model:black-forest-labs/FLUX.2-klein-4B","ip:${HOST_IP}", "port:8002"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-flux-2-klein-4b-3:8000/metrics", "histogram_buckets_as_distributions": true, "service": "vllm-flux-2-klein-4b-3", "tags":["model:black-forest-labs/FLUX.2-klein-4B","ip:${HOST_IP}", "port:8002"]}]'
 
   vllm-flux-2-klein-4b-4:
     <<: *flux-common
@@ -314,7 +314,7 @@ services:
       com.datadoghq.ad.check_names: '["vllm"]'
       com.datadoghq.ad.init_configs: "[{}]"
       com.datadoghq.ad.logs: '[{"source": "vllm", "service": "vllm", "tags":["model:black-forest-labs/FLUX.2-klein-4B","ip:${HOST_IP}", "port:8002","instance:4"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-flux-2-klein-4b-4:8000/metrics", "service": "vllm-flux-2-klein-4b-4", "tags":["model:black-forest-labs/FLUX.2-klein-4B","ip:${HOST_IP}", "port:8002"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-flux-2-klein-4b-4:8000/metrics", "histogram_buckets_as_distributions": true, "service": "vllm-flux-2-klein-4b-4", "tags":["model:black-forest-labs/FLUX.2-klein-4B","ip:${HOST_IP}", "port:8002"]}]'
 
   # --- Qwen3-VL (GPUs 5-6) — single instance, single proxy ---
 
@@ -364,7 +364,7 @@ services:
       com.datadoghq.ad.check_names: '["vllm"]'
       com.datadoghq.ad.init_configs: "[{}]"
       com.datadoghq.ad.logs: '[{"source": "vllm", "service": "vllm", "tags":["model:Qwen/Qwen3-VL-30B-A3B-Instruct","ip:${HOST_IP}", "port:8003"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-qwen3-vl:8000/metrics", "service": "vllm-qwen3-vl", "tags":["model:Qwen/Qwen3-VL-30B-A3B-Instruct","ip:${HOST_IP}", "port:8003"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-qwen3-vl:8000/metrics", "histogram_buckets_as_distributions": true, "service": "vllm-qwen3-vl", "tags":["model:Qwen/Qwen3-VL-30B-A3B-Instruct","ip:${HOST_IP}", "port:8003"]}]'
 
   # --- Embeddings, Reranker, Whisper (GPU 7) — single instance each ---
 
@@ -407,7 +407,7 @@ services:
       com.datadoghq.ad.check_names: '["vllm"]'
       com.datadoghq.ad.init_configs: "[{}]"
       com.datadoghq.ad.logs: '[{"source": "vllm", "service": "vllm", "tags":["model:Qwen/Qwen3-Embedding-0.6B","ip:${HOST_IP}", "port:8004"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-qwen3-embeddings:8000/metrics", "service": "vllm-qwen3-embeddings", "tags":["model:Qwen/Qwen3-Embedding-0.6B","ip:${HOST_IP}", "port:8004"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-qwen3-embeddings:8000/metrics", "histogram_buckets_as_distributions": true, "service": "vllm-qwen3-embeddings", "tags":["model:Qwen/Qwen3-Embedding-0.6B","ip:${HOST_IP}", "port:8004"]}]'
 
   vllm-proxy-qwen3-reranker:
     <<: *vllm-proxy-common
@@ -448,7 +448,7 @@ services:
       com.datadoghq.ad.check_names: '["vllm"]'
       com.datadoghq.ad.init_configs: "[{}]"
       com.datadoghq.ad.logs: '[{"source": "vllm", "service": "vllm", "tags":["model:Qwen/Qwen3-Reranker-0.6B","ip:${HOST_IP}", "port:8005"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-qwen3-reranker:8000/metrics", "service": "vllm-qwen3-reranker", "tags":["model:Qwen/Qwen3-Reranker-0.6B","ip:${HOST_IP}", "port:8005"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-qwen3-reranker:8000/metrics", "histogram_buckets_as_distributions": true, "service": "vllm-qwen3-reranker", "tags":["model:Qwen/Qwen3-Reranker-0.6B","ip:${HOST_IP}", "port:8005"]}]'
 
   vllm-proxy-whisper3-large:
     <<: *vllm-proxy-common
@@ -493,7 +493,7 @@ services:
       com.datadoghq.ad.check_names: '["vllm"]'
       com.datadoghq.ad.init_configs: "[{}]"
       com.datadoghq.ad.logs: '[{"source": "vllm", "service": "vllm", "tags":["model:openai/whisper-large-v3","ip:${HOST_IP}", "port:8005"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-whisper3-large:8000/metrics", "service": "vllm-whisper3-large", "tags":["model:openai/whisper-large-v3","ip:${HOST_IP}", "port:8005"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-whisper3-large:8000/metrics", "histogram_buckets_as_distributions": true, "service": "vllm-whisper3-large", "tags":["model:openai/whisper-large-v3","ip:${HOST_IP}", "port:8005"]}]'
 
   dcgm-exporter:
     image: nvcr.io/nvidia/k8s/dcgm-exporter:4.5.2-4.8.1-distroless

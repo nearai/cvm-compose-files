@@ -155,7 +155,7 @@ services:
       com.datadoghq.ad.check_names: '["vllm"]'
       com.datadoghq.ad.init_configs: "[{}]"
       com.datadoghq.ad.logs: '[{"source": "vllm", "service": "vllm", "tags":["model:Qwen/Qwen3.5-122B-A10B","ip:${HOST_IP}","port:8000","instance:1"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-qwen35-122b-1:8000/metrics", "service": "vllm-qwen35-122b-1", "tags":["model:Qwen/Qwen3.5-122B-A10B","ip:${HOST_IP}","port:8000"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-qwen35-122b-1:8000/metrics", "histogram_buckets_as_distributions": true, "service": "vllm-qwen35-122b-1", "tags":["model:Qwen/Qwen3.5-122B-A10B","ip:${HOST_IP}","port:8000"]}]'
 
   # --- Qwen3.5-122B-A10B instance 2 (GPUs 4-7) ---
 
@@ -176,7 +176,7 @@ services:
       com.datadoghq.ad.check_names: '["vllm"]'
       com.datadoghq.ad.init_configs: "[{}]"
       com.datadoghq.ad.logs: '[{"source": "vllm", "service": "vllm", "tags":["model:Qwen/Qwen3.5-122B-A10B","ip:${HOST_IP}","port:8001","instance:2"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-qwen35-122b-2:8000/metrics", "service": "vllm-qwen35-122b-2", "tags":["model:Qwen/Qwen3.5-122B-A10B","ip:${HOST_IP}","port:8001"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-qwen35-122b-2:8000/metrics", "histogram_buckets_as_distributions": true, "service": "vllm-qwen35-122b-2", "tags":["model:Qwen/Qwen3.5-122B-A10B","ip:${HOST_IP}","port:8001"]}]'
 
   dcgm-exporter:
     image: nvcr.io/nvidia/k8s/dcgm-exporter:4.5.2-4.8.1-distroless

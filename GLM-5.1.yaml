@@ -142,7 +142,7 @@ services:
       com.datadoghq.ad.check_names: '["openmetrics"]'
       com.datadoghq.ad.init_configs: "[{}]"
       com.datadoghq.ad.logs: '[{"source": "sglang", "service": "sglang", "tags":["model:zai-org/GLM-5.1-FP8","ip:${HOST_IP}","port:8000"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://glm51:8000/metrics", "metrics":["sglang:*"], "service": "glm-5.1", "tags":["model:zai-org/GLM-5.1-FP8","ip:${HOST_IP}","port:8000"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://glm51:8000/metrics", "histogram_buckets_as_distributions": true, "metrics":["sglang:*"], "service": "glm-5.1", "tags":["model:zai-org/GLM-5.1-FP8","ip:${HOST_IP}","port:8000"]}]'
 
   dcgm-exporter:
     image: nvcr.io/nvidia/k8s/dcgm-exporter:4.5.2-4.8.1-distroless
