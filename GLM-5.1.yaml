@@ -100,45 +100,16 @@ services:
     depends_on:
       model-downloader:
         condition: service_completed_successfully
-    # Build on top of lmsysorg/sglang:dev. We stay on :dev (rather than
-    # falling back to :glm5-hopper, which is what GLM-5 uses) because GLM-5.1
-    # needs --enable-dp-attention, only available in post-v0.5.10 SGLang.
-    #
-    # Comparison summary (glm5-hopper vs current sglang:dev main):
-    #   - SGLang version: glm5-hopper is pinned pre-v0.5.10 (older, stable);
-    #     :dev tracks main (newer, has DP-attention + GLM-5.1 fixes).
-    #   - transformers: glm5-hopper pins 5.2.0 (CLAUDE.md notes 5.3+ breaks
-    #     GLM-5). Newer SGLang requires 5.3+, so we cannot pin downward here
-    #     without breaking SGLang itself.
-    #   - NCCL/cuDNN/FlashInfer/sgl-kernel: current :dev main is at the same
-    #     or newer versions as glm5-hopper.
-    #   - DeepEP: glm5-hopper builds DeepEP from source with 10x timeouts
-    #     (NUM_CPU_TIMEOUT_SECS 100→1000, NUM_TIMEOUT_CYCLES 2e11→2e12). This
-    #     is NOT portable to a binary :dev image — it needs a source rebuild
-    #     of the DeepEP wheel. See docker/sglang-glm5/Dockerfile for the full
-    #     source-build path if those timeouts ever bite us in production.
-    #
-    # The only portable, non-version-pinning improvement we can apply on top
-    # of :dev is pre-downloading FlashInfer cubins so the first request does
-    # not pay the JIT compile cost.
-    build:
-      context: .
-      dockerfile_inline: |
-        FROM lmsysorg/sglang:dev@sha256:9f51ee8f927a2480401b0613c73ca98219737e4deb287cd3a4223dd3e53c5672
-        RUN FLASHINFER_CUBIN_DOWNLOAD_THREADS=8 FLASHINFER_LOGGING_LEVEL=warning \
-                python3 -m flashinfer --download-cubin
-    image: nearaidev/sglang-glm51:dev-cubin-baked
+    image: lmsysorg/sglang:dev@sha256:e1eee3f75e62827dbfa29994a260934c2bc7e5adfb047170576f1676b436b926
     container_name: glm51
     command: >
       sglang serve
       --model-path zai-org/GLM-5.1-FP8
       --tp 8
-      --dp 8
-      --enable-dp-attention
       --reasoning-parser glm45
       --log-requests-level 0
       --tool-call-parser glm47
-      --mem-fraction-static 0.86
+      --mem-fraction-static 0.85
       --max-running-requests 55
       --context-length 200000
       --num-continuous-decode-steps 5
