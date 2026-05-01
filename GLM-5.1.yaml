@@ -289,6 +289,15 @@ configs:
           ssl_certificate_key /etc/letsencrypt/live/completions.near.ai/privkey.pem;
           ssl_protocols TLSv1.2 TLSv1.3;
 
+          # Keep H2 connections from cloud-api alive across long idle gaps so the
+          # bucket-pinned TCP connection survives between chats. Without this,
+          # nginx defaults (75s idle, 1000 req/conn) close the connection and the
+          # next request opens a new TCP via model-proxy's L4 LB → may land on a
+          # different backend → signature 404. Pairs with cloud-api H2 keepalive
+          # PINGs (http2_keep_alive_while_idle).
+          keepalive_timeout 1h;
+          keepalive_requests 1000000;
+
           client_max_body_size 100m;
           client_body_buffer_size 1m;
 

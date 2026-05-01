@@ -317,5 +317,13 @@ configs:
       server {
         listen 443 ssl http2;
         server_name qwen35-122b.completions.near.ai;
+        # Keep H2 connections from cloud-api alive across long idle gaps so the
+        # bucket-pinned TCP connection survives between chats. Without this,
+        # nginx defaults (75s idle, 1000 req/conn) close the connection and the
+        # next request opens a new TCP via model-proxy's L4 LB → may land on a
+        # different backend → signature 404. Pairs with cloud-api H2 keepalive
+        # PINGs (http2_keep_alive_while_idle).
+        keepalive_timeout 1h;
+        keepalive_requests 1000000;
         location / { proxy_pass http://vllm-proxy-qwen35:8000; }
       }
