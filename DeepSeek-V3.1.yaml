@@ -165,7 +165,7 @@ services:
       com.datadoghq.ad.check_names: '["vllm"]'
       com.datadoghq.ad.init_configs: "[{}]"
       com.datadoghq.ad.logs: '[{"source": "vllm", "service": "vllm", "tags":["model:deepseek-ai/DeepSeek-V3.1","ip:${HOST_IP}", "port:8000"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-deepseek:8000/metrics", "service": "vllm-deepseek", "tags":["model:deepseek-ai/DeepSeek-V3.1","ip:${HOST_IP}", "port:8000"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-deepseek:8000/metrics", "histogram_buckets_as_distributions": true, "service": "vllm-deepseek", "tags":["model:deepseek-ai/DeepSeek-V3.1","ip:${HOST_IP}", "port:8000"]}]'
 
   dcgm-exporter:
     image: nvcr.io/nvidia/k8s/dcgm-exporter:4.5.2-4.8.1-distroless
