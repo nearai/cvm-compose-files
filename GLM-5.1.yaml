@@ -41,12 +41,13 @@ services:
       - |
         set -e
         echo "Downloading zai-org/GLM-5.1-FP8..."
-        uvx --from 'huggingface_hub[hf_xet]' hf download zai-org/GLM-5.1-FP8
+        uvx --from 'huggingface_hub[hf_xet]' hf download zai-org/GLM-5.1-FP8 --revision f396cf805182f4ca10fa675e1a99815b3ca384db
         echo "Download complete."
     volumes:
       - huggingface_cache:/root/.cache/huggingface
     environment:
       - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+      - HF_ENDPOINT=https://huggingface.co
 
   nginx:
     image: nginx@sha256:1d13701a5f9f3fb01aaa88cef2344d65b6b5bf6b7d9fa4cf0dca557a8d7702ba
@@ -105,6 +106,7 @@ services:
     command: >
       sglang serve
       --model-path zai-org/GLM-5.1-FP8
+      --revision f396cf805182f4ca10fa675e1a99815b3ca384db
       --tp 8
       --enable-dp-attention
       --reasoning-parser glm45
@@ -125,6 +127,7 @@ services:
       - kernel_cache:/root/.cache/deep_gemm
     environment:
       - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+      - HF_ENDPOINT=https://huggingface.co
       - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0}
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
       - OPENBLAS_L2_SIZE=2097152

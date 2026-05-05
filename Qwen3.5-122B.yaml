@@ -35,12 +35,15 @@ x-vllm-qwen35-122b-common: &vllm-qwen35-122b-common
     - huggingface_cache:/root/.cache/huggingface
   environment:
     - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+    - HF_ENDPOINT=https://huggingface.co
     - VLLM_ALLOW_LONG_MAX_MODEL_LEN=1
     - NVIDIA_DRIVER_CAPABILITIES=compute,utility
     - OPENBLAS_L2_SIZE=2097152
     - NCCL_DEBUG=WARN
   command:
     - Qwen/Qwen3.5-122B-A10B
+    - --revision
+    - dc4d348443bc740c68e2d77492492c11606384d5
     - --tensor-parallel-size
     - "4"
     - --gpu-memory-utilization
@@ -78,12 +81,13 @@ services:
       - |
         set -e
         echo "Downloading Qwen/Qwen3.5-122B-A10B..."
-        uvx --from 'huggingface_hub[hf_xet]' hf download Qwen/Qwen3.5-122B-A10B
+        uvx --from 'huggingface_hub[hf_xet]' hf download Qwen/Qwen3.5-122B-A10B --revision dc4d348443bc740c68e2d77492492c11606384d5
         echo "Download complete."
     volumes:
       - huggingface_cache:/root/.cache/huggingface
     environment:
       - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+      - HF_ENDPOINT=https://huggingface.co
     logging: *logging-conf
 
   nginx:
