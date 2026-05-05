@@ -1,0 +1,304 @@
+x-logging-conf: &logging-conf
+  driver: "json-file"
+  options:
+    max-size: "100m"
+    max-file: "10"
+    labels: "com.datadoghq.ad.logs"
+
+x-nvidia: &nvidia
+  runtime: nvidia
+  ipc: host
+  ulimits:
+    memlock: -1
+    nofile:
+      soft: 65535
+      hard: 65535
+
+x-vllm-proxy-common: &vllm-proxy-common
+  image: nearaidev/vllm-proxy-rs@sha256:d5260525b72bfddcc046842de176bde64ed2deec5e43a626adf044f276a40598
+  user: root
+  privileged: true
+  <<: *nvidia
+  extra_hosts:
+    - "compose-manager:host-gateway"
+  volumes:
+    - /var/run/dstack.sock:/var/run/dstack.sock
+    - certs:/etc/letsencrypt:ro
+  restart: unless-stopped
+  logging: *logging-conf
+
+x-downloader-common: &downloader-common
+  image: ghcr.io/astral-sh/uv:python3.11-bookworm-slim@sha256:4f5d923c9dcea037f57bda425dd209f3ec643da2f0b74227f68d09dab0b3bb36
+  entrypoint: ["sh", "-c"]
+  restart: "no"
+  logging: *logging-conf
+
+services:
+  model-downloader:
+    <<: *downloader-common
+    container_name: model-downloader
+    command:
+      - |
+        set -e
+        echo "Downloading deepseek-ai/DeepSeek-V4..."
+        uvx --from 'huggingface_hub[hf_xet]' hf download deepseek-ai/DeepSeek-V4
+        echo "Download complete."
+    volumes:
+      - huggingface_cache:/root/.cache/huggingface
+    environment:
+      - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+
+  nginx:
+    image: nginx@sha256:1d13701a5f9f3fb01aaa88cef2344d65b6b5bf6b7d9fa4cf0dca557a8d7702ba
+    container_name: nginx
+    command: /bin/sh -c 'while :; do sleep 6h; nginx -s reload; done & nginx -g "daemon off;"'
+    ports:
+      - "8000:80"
+      - "8444:443"
+    volumes:
+      - certs:/etc/letsencrypt:ro
+    configs:
+      - source: nginx_conf
+        target: /etc/nginx/conf.d/default.conf
+        mode: 0644
+    restart: unless-stopped
+    logging: *logging-conf
+
+  model-proxy-registrar:
+    image: curlimages/curl@sha256:d94d07ba9e7d6de898b6d96c1a072f6f8266c687af78a74f380087a0addf5d17
+    container_name: model-proxy-registrar
+    entrypoint: ["sh", "/register.sh"]
+    restart: unless-stopped
+    environment:
+      - HOST_IP=${HOST_IP}
+      - HTTP_PORT=${HTTP_PORT:-8000}
+      - TLS_PORT=${TLS_PORT:-8444}
+      - MODEL_PROXY_TOKEN=${MODEL_PROXY_TOKEN}
+    configs:
+      - source: registrar_script
+        target: /register.sh
+        mode: 0755
+    logging: *logging-conf
+
+  proxy-deepseek-v4:
+    <<: *vllm-proxy-common
+    container_name: proxy-deepseek-v4
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - CLOUD_API_URL=https://cloud-api.near.ai
+      - COMPOSE_MANAGER_URL=http://compose-manager:8080
+      - LOG_FORMAT=json
+      - MODEL_NAME=deepseek-ai/DeepSeek-V4
+      - OHTTP_ENABLED=true
+      - TOKEN=${PROXY_TOKEN}
+      - VLLM_BASE_URL=http://deepseek-v4:8000
+      - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
+
+  deepseek-v4:
+    <<: *nvidia
+    init: true
+    depends_on:
+      model-downloader:
+        condition: service_completed_successfully
+    image: lmsysorg/sglang:dev@sha256:e1eee3f75e62827dbfa29994a260934c2bc7e5adfb047170576f1676b436b926
+    container_name: deepseek-v4
+    command: >
+      sglang serve
+      --model-path deepseek-ai/DeepSeek-V4
+      --tp 8
+      --reasoning-parser deepseek_v3
+      --tool-call-parser deepseek_v3
+      --log-requests-level 0
+      --mem-fraction-static 0.85
+      --max-running-requests 32
+      --context-length 131072
+      --num-continuous-decode-steps 5
+      --model-loader-extra-config '{"enable_multithread_load": "true", "num_threads": 64}'
+      --port 8000
+      --host 0.0.0.0
+      --enable-cache-report
+      --enable-metrics
+      --trust-remote-code
+    volumes:
+      - huggingface_cache:/root/.cache/huggingface
+      - kernel_cache:/root/.cache/deep_gemm
+    environment:
+      - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+      - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0}
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - OPENBLAS_L2_SIZE=2097152
+      - NCCL_DEBUG=WARN
+      - SGLANG_JIT_DEEPGEMM_FAST_WARMUP=1
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["0","1","2","3","4","5","6","7"]
+              capabilities: [gpu]
+    restart: unless-stopped
+    logging: *logging-conf
+    labels:
+      com.datadoghq.ad.check_names: '["openmetrics"]'
+      com.datadoghq.ad.init_configs: "[{}]"
+      com.datadoghq.ad.logs: '[{"source": "sglang", "service": "sglang", "tags":["model:deepseek-ai/DeepSeek-V4","ip:${HOST_IP}","port:8000"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://deepseek-v4:8000/metrics", "histogram_buckets_as_distributions": true, "metrics":["sglang:*"], "service": "deepseek-v4", "tags":["model:deepseek-ai/DeepSeek-V4","ip:${HOST_IP}","port:8000"]}]'
+
+  dcgm-exporter:
+    image: nvcr.io/nvidia/k8s/dcgm-exporter:4.5.2-4.8.1-distroless
+    container_name: dcgm-exporter
+    runtime: nvidia
+    cap_add:
+      - SYS_ADMIN
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+    ports:
+      - "9400:9400"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+    logging: *logging-conf
+    labels:
+      com.datadoghq.ad.check_names: '["dcgm"]'
+      com.datadoghq.ad.init_configs: "[{}]"
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint": "http://%%host%%:9400/metrics", "tags":["model:deepseek-ai/DeepSeek-V4","deployment:DeepSeek-V4","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.logs: '[{"source": "dcgm-exporter", "service": "dcgm-exporter", "tags":["model:deepseek-ai/DeepSeek-V4","deployment:DeepSeek-V4","ip:${HOST_IP}"]}]'
+
+networks:
+  default:
+    external: true
+    name: dstack_default
+
+volumes:
+  huggingface_cache:
+  kernel_cache:
+  certs:
+    external: true
+    name: certs
+
+configs:
+  registrar_script:
+    content: |
+      #!/bin/sh
+      PROXY_URL="https://completions.near.ai"
+      TOKEN="$${MODEL_PROXY_TOKEN}"
+      ENDPOINT="$${HOST_IP}:$${HTTP_PORT}"
+      REGISTERED=false
+      FAILURE_COUNT=0
+      MAX_RETRIES=3
+
+      register_endpoint() {
+        echo "Registering endpoint $$1 with routing port $$2"
+        curl -sS --max-time 10 -X POST "$$PROXY_URL/register/endpoint" \
+          -H "Authorization: Bearer $$TOKEN" \
+          -H "Content-Type: application/json" \
+          -d "{\"endpoint\":\"$$1\",\"routing_port\":$$2}"
+      }
+
+      unregister_endpoint() {
+        echo "Unregistering endpoint $$1"
+        curl -sS --max-time 10 -X POST "$$PROXY_URL/unregister/endpoint" \
+          -H "Authorization: Bearer $$TOKEN" \
+          -H "Content-Type: application/json" \
+          -d "{\"endpoint\":\"$$1\"}"
+      }
+
+      register_model() {
+        curl -sS --max-time 10 -X POST "$$PROXY_URL/register/model" \
+          -H "Authorization: Bearer $$TOKEN" \
+          -H "Content-Type: application/json" \
+          -d "{\"model\":\"$$1\",\"domain\":\"$$2\"}"
+      }
+
+      cleanup() {
+        echo "SIGTERM received, unregistering $$ENDPOINT"
+        unregister_endpoint "$$ENDPOINT"
+        REGISTERED=false
+        exit 0
+      }
+      trap cleanup TERM INT
+
+      check_inference() {
+        curl -sSf --max-time 10 "http://deepseek-v4:8000/v1/models"
+      }
+
+      echo "Waiting for model to be ready..."
+      until curl -sf http://nginx:80/v1/models > /dev/null 2>&1; do sleep 30; done
+      echo "Model ready, starting registration loop"
+
+      while true; do
+        if check_inference; then
+          FAILURE_COUNT=0
+          register_endpoint "$$ENDPOINT" "$${TLS_PORT}"
+          register_model "deepseek-ai/DeepSeek-V4" "deepseek-v4.completions.near.ai"
+          if [ "$$REGISTERED" = false ]; then
+            echo "[DeepSeek-V4] Registered deepseek-ai/DeepSeek-V4 at $$ENDPOINT"
+          fi
+          REGISTERED=true
+        else
+          FAILURE_COUNT=$$((FAILURE_COUNT + 1))
+          echo "[DeepSeek-V4] Health check failed ($$FAILURE_COUNT/$$MAX_RETRIES)"
+          if [ "$$REGISTERED" = true ] && [ "$$FAILURE_COUNT" -ge "$$MAX_RETRIES" ]; then
+            echo "[DeepSeek-V4] Retry limit reached, unregistering $$ENDPOINT"
+            unregister_endpoint "$$ENDPOINT"
+            REGISTERED=false
+            echo "[DeepSeek-V4] Exiting to refresh DNS (container will auto-restart)"
+            exit 1
+          fi
+        fi
+        sleep 60
+      done
+  nginx_conf:
+    content: |
+      server {
+          listen 80 default_server;
+
+          client_max_body_size 100m;
+          client_body_buffer_size 1m;
+
+          location / {
+              proxy_pass http://proxy-deepseek-v4:8000;
+              proxy_http_version 1.1;
+              proxy_set_header Host $$host;
+              proxy_set_header X-Real-IP $$remote_addr;
+              proxy_set_header X-Forwarded-For $$proxy_add_x_forwarded_for;
+              proxy_set_header X-Forwarded-Proto $$scheme;
+              proxy_set_header Connection '';
+              proxy_buffering off;
+              proxy_cache off;
+              proxy_read_timeout 3600s;
+          }
+      }
+
+      server {
+          listen 443 ssl http2;
+          server_name deepseek-v4.completions.near.ai;
+
+          ssl_certificate /etc/letsencrypt/live/completions.near.ai/fullchain.pem;
+          ssl_certificate_key /etc/letsencrypt/live/completions.near.ai/privkey.pem;
+          ssl_protocols TLSv1.2 TLSv1.3;
+
+          keepalive_timeout 1h;
+          keepalive_requests 1000000;
+
+          client_max_body_size 100m;
+          client_body_buffer_size 1m;
+
+          location / {
+              proxy_pass http://proxy-deepseek-v4:8000;
+              proxy_http_version 1.1;
+              proxy_set_header Host $$host;
+              proxy_set_header X-Real-IP $$remote_addr;
+              proxy_set_header X-Forwarded-For $$proxy_add_x_forwarded_for;
+              proxy_set_header X-Forwarded-Proto $$scheme;
+              proxy_set_header Connection '';
+              proxy_buffering off;
+              proxy_cache off;
+              proxy_read_timeout 3600s;
+          }
+      }
