@@ -41,7 +41,6 @@ x-vllm-proxy-common: &vllm-proxy-common
 x-vllm-env:
   environment: &vllm-env
     - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
-    - HF_ENDPOINT=https://huggingface.co
     - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0}
     - VLLM_LOGGING_LEVEL=INFO
     - NVIDIA_DRIVER_CAPABILITIES=compute,utility
@@ -52,7 +51,6 @@ x-vllm-env:
 x-sglang-env:
   environment: &sglang-env
     - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
-    - HF_ENDPOINT=https://huggingface.co
     - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0}
     - VLLM_LOGGING_LEVEL=INFO
     - NVIDIA_DRIVER_CAPABILITIES=compute,utility
@@ -84,7 +82,6 @@ x-gpt-oss-common: &gpt-oss-common
     - vllm_cache:/root/.cache/vllm
   environment:
     - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
-    - HF_ENDPOINT=https://huggingface.co
     - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0}
     - VLLM_LOGGING_LEVEL=INFO
     - NVIDIA_DRIVER_CAPABILITIES=compute,utility

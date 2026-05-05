@@ -35,7 +35,6 @@ x-vllm-qwen35-122b-common: &vllm-qwen35-122b-common
     - huggingface_cache:/root/.cache/huggingface
   environment:
     - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
-    - HF_ENDPOINT=https://huggingface.co
     - VLLM_ALLOW_LONG_MAX_MODEL_LEN=1
     - NVIDIA_DRIVER_CAPABILITIES=compute,utility
     - OPENBLAS_L2_SIZE=2097152
@@ -87,7 +86,6 @@ services:
       - huggingface_cache:/root/.cache/huggingface
     environment:
       - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
-      - HF_ENDPOINT=https://huggingface.co
     logging: *logging-conf
 
   nginx:
