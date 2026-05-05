@@ -40,8 +40,8 @@ services:
     command:
       - |
         set -e
-        echo "Downloading deepseek-ai/DeepSeek-V4..."
-        uvx --from 'huggingface_hub[hf_xet]' hf download deepseek-ai/DeepSeek-V4
+        echo "Downloading deepseek-ai/DeepSeek-V4-Pro-FP8..."
+        uvx --from 'huggingface_hub[hf_xet]' hf download deepseek-ai/DeepSeek-V4-Pro-FP8
         echo "Download complete."
     volumes:
       - huggingface_cache:/root/.cache/huggingface
@@ -88,7 +88,7 @@ services:
       - CLOUD_API_URL=https://cloud-api.near.ai
       - COMPOSE_MANAGER_URL=http://compose-manager:8080
       - LOG_FORMAT=json
-      - MODEL_NAME=deepseek-ai/DeepSeek-V4
+      - MODEL_NAME=deepseek-ai/DeepSeek-V4-Pro-FP8
       - OHTTP_ENABLED=true
       - TOKEN=${PROXY_TOKEN}
       - VLLM_BASE_URL=http://deepseek-v4:8000
@@ -100,19 +100,27 @@ services:
     depends_on:
       model-downloader:
         condition: service_completed_successfully
-    image: lmsysorg/sglang:dev@sha256:e1eee3f75e62827dbfa29994a260934c2bc7e5adfb047170576f1676b436b926
+    image: lmsysorg/sglang:deepseek-v4-hopper@sha256:10f3cfc75e2e0b9eb7ee82d3259c0172f5c29dd58246ef27bcaf5ba8a0c67e8b
     container_name: deepseek-v4
     command: >
       sglang serve
-      --model-path deepseek-ai/DeepSeek-V4
+      --model-path deepseek-ai/DeepSeek-V4-Pro-FP8
       --tp 8
+      --dp 8
+      --enable-dp-attention
+      --moe-a2a-backend deepep
+      --deepep-config '{"normal_dispatch":{"num_sms":96},"normal_combine":{"num_sms":96}}'
+      --speculative-algo EAGLE
+      --speculative-num-steps 3
+      --speculative-eagle-topk 1
+      --speculative-num-draft-tokens 4
+      --cuda-graph-max-bs 8
+      --max-running-requests 32
+      --mem-fraction-static 0.88
+      --context-length 131072
       --reasoning-parser deepseek_v3
       --tool-call-parser deepseek_v3
       --log-requests-level 0
-      --mem-fraction-static 0.85
-      --max-running-requests 32
-      --context-length 131072
-      --num-continuous-decode-steps 5
       --model-loader-extra-config '{"enable_multithread_load": "true", "num_threads": 64}'
       --port 8000
       --host 0.0.0.0
@@ -129,6 +137,8 @@ services:
       - OPENBLAS_L2_SIZE=2097152
       - NCCL_DEBUG=WARN
       - SGLANG_JIT_DEEPGEMM_FAST_WARMUP=1
+      - SGLANG_DSV4_FP4_EXPERTS=0
+      - SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK=128
     deploy:
       resources:
         reservations:
@@ -141,8 +151,8 @@ services:
     labels:
       com.datadoghq.ad.check_names: '["openmetrics"]'
       com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.logs: '[{"source": "sglang", "service": "sglang", "tags":["model:deepseek-ai/DeepSeek-V4","ip:${HOST_IP}","port:8000"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://deepseek-v4:8000/metrics", "histogram_buckets_as_distributions": true, "metrics":["sglang:*"], "service": "deepseek-v4", "tags":["model:deepseek-ai/DeepSeek-V4","ip:${HOST_IP}","port:8000"]}]'
+      com.datadoghq.ad.logs: '[{"source": "sglang", "service": "sglang", "tags":["model:deepseek-ai/DeepSeek-V4-Pro-FP8","ip:${HOST_IP}","port:8000"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://deepseek-v4:8000/metrics", "histogram_buckets_as_distributions": true, "metrics":["sglang:*"], "service": "deepseek-v4", "tags":["model:deepseek-ai/DeepSeek-V4-Pro-FP8","ip:${HOST_IP}","port:8000"]}]'
 
   dcgm-exporter:
     image: nvcr.io/nvidia/k8s/dcgm-exporter:4.5.2-4.8.1-distroless
@@ -166,8 +176,8 @@ services:
     labels:
       com.datadoghq.ad.check_names: '["dcgm"]'
       com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint": "http://%%host%%:9400/metrics", "tags":["model:deepseek-ai/DeepSeek-V4","deployment:DeepSeek-V4","ip:${HOST_IP}"]}]'
-      com.datadoghq.ad.logs: '[{"source": "dcgm-exporter", "service": "dcgm-exporter", "tags":["model:deepseek-ai/DeepSeek-V4","deployment:DeepSeek-V4","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint": "http://%%host%%:9400/metrics", "tags":["model:deepseek-ai/DeepSeek-V4-Pro-FP8","deployment:DeepSeek-V4","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.logs: '[{"source": "dcgm-exporter", "service": "dcgm-exporter", "tags":["model:deepseek-ai/DeepSeek-V4-Pro-FP8","deployment:DeepSeek-V4","ip:${HOST_IP}"]}]'
 
 networks:
   default:
@@ -235,9 +245,9 @@ configs:
         if check_inference; then
           FAILURE_COUNT=0
           register_endpoint "$$ENDPOINT" "$${TLS_PORT}"
-          register_model "deepseek-ai/DeepSeek-V4" "deepseek-v4.completions.near.ai"
+          register_model "deepseek-ai/DeepSeek-V4-Pro-FP8" "deepseek-v4.completions.near.ai"
           if [ "$$REGISTERED" = false ]; then
-            echo "[DeepSeek-V4] Registered deepseek-ai/DeepSeek-V4 at $$ENDPOINT"
+            echo "[DeepSeek-V4] Registered deepseek-ai/DeepSeek-V4-Pro-FP8 at $$ENDPOINT"
           fi
           REGISTERED=true
         else
