@@ -54,7 +54,7 @@ services:
       - |
         set -e
         echo "Downloading deepseek-ai/DeepSeek-V3.1..."
-        uvx --from 'huggingface_hub[hf_xet]' hf download deepseek-ai/DeepSeek-V3.1
+        uvx --from 'huggingface_hub[hf_xet]' hf download deepseek-ai/DeepSeek-V3.1 --revision c0781d039fb7a1ba2abc4add0bdc293e92d2b8db
         echo "Download complete."
     volumes:
       - hugginface_cache:/root/.cache/huggingface
@@ -132,6 +132,7 @@ services:
         condition: service_completed_successfully
     command: >
         deepseek-ai/DeepSeek-V3.1
+        --revision c0781d039fb7a1ba2abc4add0bdc293e92d2b8db
         --tensor-parallel-size 8
         --max-model-len 131072
         --max-num-batched-tokens 32768
