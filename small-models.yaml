@@ -119,6 +119,96 @@ x-flux-common: &flux-common
             device_ids: ["4"]
             capabilities: [gpu]
 
+x-privacy-filter-common: &privacy-filter-common
+  <<: *nvidia
+  init: true
+  image: privacy-filter-hf
+  build:
+    context: .
+    dockerfile_inline: |
+      # syntax=docker/dockerfile:1.4
+      FROM pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime
+      RUN pip install --no-cache-dir \
+          "transformers>=4.46" \
+          accelerate \
+          fastapi \
+          "uvicorn[standard]"
+      WORKDIR /app
+      COPY <<'PYEOF' /app/server.py
+      import torch
+      from fastapi import FastAPI, HTTPException
+      from pydantic import BaseModel, Field
+      from transformers import AutoTokenizer, pipeline
+
+      MODEL_ID = "openai/privacy-filter"
+
+      clf = pipeline(
+          "token-classification",
+          model=MODEL_ID,
+          aggregation_strategy="simple",
+          device_map="auto",
+          torch_dtype=torch.bfloat16,
+          trust_remote_code=True,
+      )
+      tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, trust_remote_code=True)
+
+      app = FastAPI()
+
+
+      class ClassifyRequest(BaseModel):
+          input: str | list[str]
+          threshold: float = Field(default=0.0, ge=0.0, le=1.0)
+
+
+      @app.get("/v1/models")
+      def models():
+          return {"object": "list", "data": [{"id": MODEL_ID, "object": "model"}]}
+
+
+      @app.post("/v1/privacy/classify")
+      def classify(req: ClassifyRequest):
+          texts = [req.input] if isinstance(req.input, str) else req.input
+          if not texts or any(not isinstance(t, str) for t in texts):
+              raise HTTPException(400, "input must be a non-empty string or list of strings")
+
+          raw = clf(texts)
+
+          data = []
+          for i, spans in enumerate(raw):
+              kept = [
+                  {
+                      "category": s["entity_group"],
+                      "score": float(s["score"]),
+                      "text": s["word"],
+                      "start": int(s["start"]),
+                      "end": int(s["end"]),
+                  }
+                  for s in spans
+                  if float(s["score"]) >= req.threshold
+              ]
+              n_tok = len(tokenizer(texts[i]).input_ids)
+              data.append({"index": i, "spans": kept, "usage": {"input_tokens": n_tok}})
+
+          return {"model": MODEL_ID, "data": data}
+      PYEOF
+      EXPOSE 8000
+      CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8000"]
+  volumes:
+    - hugginface_cache:/root/.cache/huggingface
+  environment:
+    - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+    - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0}
+    - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+  restart: unless-stopped
+  logging: *logging-conf
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            device_ids: ["7"]
+            capabilities: [gpu]
+
 services:
   nginx:
     image: nginx@sha256:1d13701a5f9f3fb01aaa88cef2344d65b6b5bf6b7d9fa4cf0dca557a8d7702ba
@@ -133,6 +223,7 @@ services:
       - "8004:8004"
       - "8005:8005"
       - "8006:8006"
+      - "8007:8007"
       - "8444:443"
     volumes:
       - certs:/etc/letsencrypt:ro
@@ -495,6 +586,30 @@ services:
       com.datadoghq.ad.logs: '[{"source": "vllm", "service": "vllm", "tags":["model:openai/whisper-large-v3","ip:${HOST_IP}", "port:8005"]}]'
       com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-whisper3-large:8000/metrics", "histogram_buckets_as_distributions": true, "service": "vllm-whisper3-large", "tags":["model:openai/whisper-large-v3","ip:${HOST_IP}", "port:8005"]}]'
 
+  # --- Privacy filter (GPU 7) — HF transformers token-classification ---
+
+  vllm-proxy-privacy-filter:
+    <<: *vllm-proxy-common
+    container_name: vllm-proxy-privacy-filter
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - CLOUD_API_URL=https://cloud-api.near.ai
+      - COMPOSE_MANAGER_URL=http://compose-manager:8080
+      - LOG_FORMAT=json
+      - MODEL_NAME=openai/privacy-filter
+      - OHTTP_ENABLED=true
+      - TOKEN=${PROXY_TOKEN}
+      - VLLM_BASE_URL=http://privacy-filter:8000
+      - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
+    labels:
+      com.datadoghq.ad.logs: '[{"source": "vllm-proxy", "service": "vllm-proxy", "tags": ["model:openai/privacy-filter", "ip:${HOST_IP}", "port:8007"]}]'
+
+  privacy-filter:
+    <<: *privacy-filter-common
+    container_name: privacy-filter
+    labels:
+      com.datadoghq.ad.logs: '[{"source": "privacy-filter", "service": "privacy-filter", "tags":["model:openai/privacy-filter","ip:${HOST_IP}", "port:8007"]}]'
+
   dcgm-exporter:
     image: nvcr.io/nvidia/k8s/dcgm-exporter:4.5.2-4.8.1-distroless
     container_name: dcgm-exporter
@@ -541,7 +656,7 @@ configs:
       TLS_PORT=8444
 
       # Track registration state per port
-      for port in 8000 8001 8002 8003 8004 8005 8006; do
+      for port in 8000 8001 8002 8003 8004 8005 8006 8007; do
         eval "REG_$$port=false"
         eval "FAIL_COUNT_$$port=0"
       done
@@ -569,7 +684,7 @@ configs:
 
       cleanup() {
         echo "SIGTERM received, unregistering all endpoints"
-        for port in 8000 8001 8002 8003 8004 8005 8006; do
+        for port in 8000 8001 8002 8003 8004 8005 8006 8007; do
           unregister_endpoint "$${HOST_IP}:$$port"
         done
         exit 0
@@ -593,6 +708,7 @@ configs:
           8004) curl -sf --max-time 10 "http://vllm-qwen3-embeddings:8000/v1/models" > /dev/null 2>&1 ;;
           8005) curl -sf --max-time 10 "http://vllm-qwen3-reranker:8000/v1/models" > /dev/null 2>&1 ;;
           8006) curl -sf --max-time 10 "http://vllm-whisper3-large:8000/v1/models" > /dev/null 2>&1 ;;
+          8007) curl -sf --max-time 10 "http://privacy-filter:8000/v1/models" > /dev/null 2>&1 ;;
         esac
       }
 
@@ -601,7 +717,7 @@ configs:
       echo "First model ready, starting registration loop"
 
       while true; do
-        for port in 8000 8001 8002 8003 8004 8005 8006; do
+        for port in 8000 8001 8002 8003 8004 8005 8006 8007; do
           eval "was_reg=\$$REG_$$port"
           eval "fails=\$$FAIL_COUNT_$$port"
           if check_port $$port; then
@@ -627,6 +743,7 @@ configs:
         register_model "Qwen/Qwen3-Embedding-0.6B" "qwen3-embedding.completions.near.ai"
         register_model "Qwen/Qwen3-Reranker-0.6B" "qwen3-reranker.completions.near.ai"
         register_model "openai/whisper-large-v3" "whisper-large-v3.completions.near.ai"
+        register_model "openai/privacy-filter" "privacy-filter.completions.near.ai"
         sleep 60
       done
   nginx_conf:
@@ -686,6 +803,12 @@ configs:
           location / { proxy_pass http://vllm-proxy-whisper3-large:8000; }
       }
 
+      # :8007 - Privacy-filter
+      server {
+          listen 8007;
+          location / { proxy_pass http://vllm-proxy-privacy-filter:8000; }
+      }
+
       # ── TLS server blocks (port 443 = host 8444) ──
 
       ssl_certificate /etc/letsencrypt/live/completions.near.ai/fullchain.pem;
@@ -732,4 +855,10 @@ configs:
           listen 443 ssl http2;
           server_name whisper-large-v3.completions.near.ai;
           location / { proxy_pass http://vllm-proxy-whisper3-large:8000; }
+      }
+
+      server {
+          listen 443 ssl http2;
+          server_name privacy-filter.completions.near.ai;
+          location / { proxy_pass http://vllm-proxy-privacy-filter:8000; }
       }
