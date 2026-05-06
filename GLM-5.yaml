@@ -41,7 +41,7 @@ services:
       - |
         set -e
         echo "Downloading zai-org/GLM-5-FP8..."
-        uvx --from 'huggingface_hub[hf_xet]' hf download zai-org/GLM-5-FP8
+        uvx --from 'huggingface_hub[hf_xet]' hf download zai-org/GLM-5-FP8 --revision 4f96cc5eec29dcee5d6ded54f7ffe889438f9516
         echo "Download complete."
     volumes:
       - huggingface_cache:/root/.cache/huggingface
@@ -105,6 +105,7 @@ services:
     command: >
       sglang serve
       --model-path zai-org/GLM-5-FP8
+      --revision 4f96cc5eec29dcee5d6ded54f7ffe889438f9516
       --tp 8
       --reasoning-parser glm45
       --log-requests-level 0
