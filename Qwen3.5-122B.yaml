@@ -87,9 +87,9 @@ services:
       - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
     logging: *logging-conf
 
-  nginx:
+  proxy-nginx:
     image: nginx@sha256:1d13701a5f9f3fb01aaa88cef2344d65b6b5bf6b7d9fa4cf0dca557a8d7702ba
-    container_name: nginx
+    container_name: proxy-nginx
     command: /bin/sh -c 'while :; do sleep 6h; nginx -s reload; done & nginx -g "daemon off;"'
     ports:
       - "8000:80"
@@ -121,9 +121,9 @@ services:
 
   # --- Single proxy for both backends ---
 
-  vllm-proxy-qwen35:
+  proxy-qwen35:
     <<: *vllm-proxy-common
-    container_name: vllm-proxy-qwen35
+    container_name: proxy-qwen35
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - CLOUD_API_URL=https://cloud-api.near.ai
@@ -132,16 +132,16 @@ services:
       - MODEL_NAME=Qwen/Qwen3.5-122B-A10B
       - OHTTP_ENABLED=true
       - TOKEN=${PROXY_TOKEN}
-      - VLLM_BACKEND_URLS=http://vllm-qwen35-122b-1:8000,http://vllm-qwen35-122b-2:8000
+      - VLLM_BACKEND_URLS=http://model-vllm-qwen35-122b-1:8000,http://model-vllm-qwen35-122b-2:8000
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
     labels:
       com.datadoghq.ad.logs: '[{"source": "vllm-proxy", "service": "vllm-proxy", "tags": ["model:Qwen/Qwen3.5-122B-A10B","ip:${HOST_IP}","port:8000"]}]'
 
   # --- Qwen3.5-122B-A10B instance 1 (GPUs 0-3) ---
 
-  vllm-qwen35-122b-1:
+  model-vllm-qwen35-122b-1:
     <<: *vllm-qwen35-122b-common
-    container_name: vllm-qwen35-122b-1
+    container_name: model-vllm-qwen35-122b-1
     depends_on:
       model-downloader:
         condition: service_completed_successfully
@@ -156,13 +156,13 @@ services:
       com.datadoghq.ad.check_names: '["vllm"]'
       com.datadoghq.ad.init_configs: "[{}]"
       com.datadoghq.ad.logs: '[{"source": "vllm", "service": "vllm", "tags":["model:Qwen/Qwen3.5-122B-A10B","ip:${HOST_IP}","port:8000","instance:1"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-qwen35-122b-1:8000/metrics", "histogram_buckets_as_distributions": true, "service": "vllm-qwen35-122b-1", "tags":["model:Qwen/Qwen3.5-122B-A10B","ip:${HOST_IP}","port:8000"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-qwen35-122b-1:8000/metrics", "histogram_buckets_as_distributions": true, "service": "model-vllm-qwen35-122b-1", "tags":["model:Qwen/Qwen3.5-122B-A10B","ip:${HOST_IP}","port:8000"]}]'
 
   # --- Qwen3.5-122B-A10B instance 2 (GPUs 4-7) ---
 
-  vllm-qwen35-122b-2:
+  model-vllm-qwen35-122b-2:
     <<: *vllm-qwen35-122b-common
-    container_name: vllm-qwen35-122b-2
+    container_name: model-vllm-qwen35-122b-2
     depends_on:
       model-downloader:
         condition: service_completed_successfully
@@ -177,7 +177,7 @@ services:
       com.datadoghq.ad.check_names: '["vllm"]'
       com.datadoghq.ad.init_configs: "[{}]"
       com.datadoghq.ad.logs: '[{"source": "vllm", "service": "vllm", "tags":["model:Qwen/Qwen3.5-122B-A10B","ip:${HOST_IP}","port:8001","instance:2"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-qwen35-122b-2:8000/metrics", "histogram_buckets_as_distributions": true, "service": "vllm-qwen35-122b-2", "tags":["model:Qwen/Qwen3.5-122B-A10B","ip:${HOST_IP}","port:8001"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-qwen35-122b-2:8000/metrics", "histogram_buckets_as_distributions": true, "service": "model-vllm-qwen35-122b-2", "tags":["model:Qwen/Qwen3.5-122B-A10B","ip:${HOST_IP}","port:8001"]}]'
 
   dcgm-exporter:
     image: nvcr.io/nvidia/k8s/dcgm-exporter:4.5.2-4.8.1-distroless
@@ -260,13 +260,13 @@ configs:
       # Health check directly on backend (no auth needed on raw vLLM container)
       check_inference() {
         echo "Performing health check on backend..."
-        curl -sSf --max-time 45 -X POST "http://vllm-qwen35-122b-1:8000/v1/chat/completions" \
+        curl -sSf --max-time 45 -X POST "http://model-vllm-qwen35-122b-1:8000/v1/chat/completions" \
           -H "Content-Type: application/json" \
           -d '{"model":"Qwen/Qwen3.5-122B-A10B","messages":[{"role":"user","content":"hi"}],"max_tokens":1}'
       }
 
       echo "Waiting for model to be ready..."
-      until curl -sf http://nginx:80/v1/models > /dev/null 2>&1; do sleep 30; done
+      until curl -sf http://proxy-nginx:80/v1/models > /dev/null 2>&1; do sleep 30; done
       echo "Model ready, starting registration loop"
 
       while true; do
@@ -308,7 +308,7 @@ configs:
       # :80 — single proxy handles both backends
       server {
         listen 80 default_server;
-        location / { proxy_pass http://vllm-proxy-qwen35:8000; }
+        location / { proxy_pass http://proxy-qwen35:8000; }
       }
 
       ssl_certificate /etc/letsencrypt/live/completions.near.ai/fullchain.pem;
@@ -326,5 +326,5 @@ configs:
         # PINGs (http2_keep_alive_while_idle).
         keepalive_timeout 1h;
         keepalive_requests 1000000;
-        location / { proxy_pass http://vllm-proxy-qwen35:8000; }
+        location / { proxy_pass http://proxy-qwen35:8000; }
       }
