@@ -62,9 +62,9 @@ services:
       - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
     logging: *logging-conf
 
-  nginx:
+  proxy-nginx:
     image: nginx@sha256:1d13701a5f9f3fb01aaa88cef2344d65b6b5bf6b7d9fa4cf0dca557a8d7702ba
-    container_name: nginx
+    container_name: proxy-nginx
     command: /bin/sh -c 'while :; do sleep 6h; nginx -s reload; done & nginx -g "daemon off;"'
     ports:
       - "8000:80"
@@ -107,9 +107,9 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
     logging: *logging-conf
 
-  vllm-proxy-deepseek:
+  proxy-deepseek:
     <<: *vllm-proxy-common
-    container_name: vllm-proxy-deepseek
+    container_name: proxy-deepseek
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - CLOUD_API_URL=https://cloud-api.near.ai
@@ -118,15 +118,15 @@ services:
       - MODEL_NAME=deepseek-ai/DeepSeek-V3.1
       - OHTTP_ENABLED=true
       - TOKEN=${PROXY_TOKEN}
-      - VLLM_BASE_URL=http://vllm-deepseek:8000
+      - VLLM_BASE_URL=http://model-vllm-deepseek:8000
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
     labels:
-      com.datadoghq.ad.logs: '[{"source": "vllm-proxy", "service": "vllm-proxy", "tags": ["model:deepseek-ai/DeepSeek-V3.1", "ip:${HOST_IP}", "port:8000"]}]'
+      com.datadoghq.ad.logs: '[{"source": "vllm-proxy", "service": "proxy-deepseek", "tags": ["model:deepseek-ai/DeepSeek-V3.1", "ip:${HOST_IP}", "port:8000"]}]'
 
-  vllm-deepseek:
+  model-vllm-deepseek:
     <<: *vllm-common
     image: vllm/vllm-openai@sha256:0dc46f74eb0e630675d83101dc66c6441c4475cceedcf9235ee42b87c3affd23  # v0.17.1
-    container_name: vllm-deepseek
+    container_name: model-vllm-deepseek
     depends_on:
       model-downloader:
         condition: service_completed_successfully
@@ -166,7 +166,7 @@ services:
       com.datadoghq.ad.check_names: '["vllm"]'
       com.datadoghq.ad.init_configs: "[{}]"
       com.datadoghq.ad.logs: '[{"source": "vllm", "service": "vllm", "tags":["model:deepseek-ai/DeepSeek-V3.1","ip:${HOST_IP}", "port:8000"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-deepseek:8000/metrics", "histogram_buckets_as_distributions": true, "service": "vllm-deepseek", "tags":["model:deepseek-ai/DeepSeek-V3.1","ip:${HOST_IP}", "port:8000"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-deepseek:8000/metrics", "histogram_buckets_as_distributions": true, "service": "model-vllm-deepseek", "tags":["model:deepseek-ai/DeepSeek-V3.1","ip:${HOST_IP}", "port:8000"]}]'
 
   dcgm-exporter:
     image: nvcr.io/nvidia/k8s/dcgm-exporter:4.5.2-4.8.1-distroless
@@ -215,7 +215,7 @@ configs:
           client_body_buffer_size 1m;
 
           location / {
-              proxy_pass http://vllm-proxy-deepseek:8000;
+              proxy_pass http://proxy-deepseek:8000;
               proxy_http_version 1.1;
               proxy_set_header Host $$host;
               proxy_set_header X-Real-IP $$remote_addr;
@@ -240,7 +240,7 @@ configs:
           client_body_buffer_size 1m;
 
           location / {
-              proxy_pass http://vllm-proxy-deepseek:8000;
+              proxy_pass http://proxy-deepseek:8000;
               proxy_http_version 1.1;
               proxy_set_header Host $$host;
               proxy_set_header X-Real-IP $$remote_addr;
@@ -290,14 +290,14 @@ configs:
       trap cleanup TERM INT
 
       check_inference() {
-        curl -sf --max-time 10 -X POST "http://vllm-deepseek:8000/v1/chat/completions" \
+        curl -sf --max-time 10 -X POST "http://model-vllm-deepseek:8000/v1/chat/completions" \
           -H "Content-Type: application/json" \
           -d '{"model":"deepseek-ai/DeepSeek-V3.1","messages":[{"role":"user","content":"hi"}],"max_tokens":1}' \
           > /dev/null 2>&1
       }
 
       echo "Waiting for model to be ready..."
-      until curl -sf http://nginx:80/v1/models > /dev/null 2>&1; do sleep 30; done
+      until curl -sf http://proxy-nginx:80/v1/models > /dev/null 2>&1; do sleep 30; done
       echo "Model ready, starting registration loop"
 
       while true; do
