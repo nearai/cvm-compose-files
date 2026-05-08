@@ -93,10 +93,11 @@ services:
       - TOKEN=${PROXY_TOKEN}
       - VLLM_BASE_URL=http://glm:8000
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
-      # Default off; set to "true" via compose/up env to canary one host
-      # at a time. Switches GPU evidence collection from the Python
-      # subprocess (cc_admin) to the libnvat-based Rust SDK.
-      - USE_NV_ATTESTATION_SDK=${USE_NV_ATTESTATION_SDK:-false}
+      # Switches GPU evidence collection from the Python cc_admin
+      # subprocess to the libnvat-based Rust SDK. Fleet-wide flip
+      # 2026-05-08 after Phase 4 canary on gpu07 + qwen3-vl ran
+      # clean for ~24h.
+      - USE_NV_ATTESTATION_SDK=true
 
   glm:
     <<: *nvidia

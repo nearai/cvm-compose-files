@@ -15,7 +15,7 @@ x-nvidia: &nvidia
       hard: 65535
 
 x-vllm-proxy-common: &vllm-proxy-common
-  image: nearaidev/vllm-proxy-rs@sha256:d5260525b72bfddcc046842de176bde64ed2deec5e43a626adf044f276a40598
+  image: nearaidev/vllm-proxy-rs@sha256:99ca5c49a79c922dbda337b853bcbdb60525588c38aabeeb80f3bd75dfeb125e
   user: root
   privileged: true
   <<: *nvidia
@@ -133,7 +133,9 @@ services:
       - OHTTP_ENABLED=true
       - TOKEN=${PROXY_TOKEN}
       - VLLM_BACKEND_URLS=http://vllm-qwen35-122b-1:8000,http://vllm-qwen35-122b-2:8000
+      - VLLM_PROXY_MAX_REQUEST_SIZE=104857600
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
+      - USE_NV_ATTESTATION_SDK=true
     labels:
       com.datadoghq.ad.logs: '[{"source": "vllm-proxy", "service": "vllm-proxy", "tags": ["model:Qwen/Qwen3.5-122B-A10B","ip:${HOST_IP}","port:8000"]}]'
 

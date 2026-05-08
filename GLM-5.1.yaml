@@ -15,7 +15,7 @@ x-nvidia: &nvidia
       hard: 65535
 
 x-vllm-proxy-common: &vllm-proxy-common
-  image: nearaidev/vllm-proxy-rs@sha256:a2630087d4bfaa67a84f5948595b7e8eb33d031e12f8bbb4e4f49ac0420a3d9e
+  image: nearaidev/vllm-proxy-rs@sha256:99ca5c49a79c922dbda337b853bcbdb60525588c38aabeeb80f3bd75dfeb125e
   user: root
   privileged: true
   <<: *nvidia
@@ -93,6 +93,7 @@ services:
       - TOKEN=${PROXY_TOKEN}
       - VLLM_BASE_URL=http://glm51:8000
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
+      - USE_NV_ATTESTATION_SDK=true
 
   glm51:
     <<: *nvidia

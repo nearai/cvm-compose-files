@@ -266,6 +266,7 @@ services:
       - TOKEN=${PROXY_TOKEN}
       - VLLM_BASE_URL=http://vllm-qwen3-30b:8000
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
+      - USE_NV_ATTESTATION_SDK=true
     labels:
       com.datadoghq.ad.logs: '[{"source": "vllm-proxy", "service": "vllm-proxy", "tags": ["model:Qwen/Qwen3-30B-A3B-Instruct-2507", "ip:${HOST_IP}", "port:8000"]}]'
 
@@ -321,6 +322,7 @@ services:
       - TOKEN=${PROXY_TOKEN}
       - VLLM_BACKEND_URLS=http://vllm-gpt-oss-1:8000,http://vllm-gpt-oss-2:8000
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
+      - USE_NV_ATTESTATION_SDK=true
     labels:
       com.datadoghq.ad.logs: '[{"source": "vllm-proxy", "service": "vllm-proxy", "tags": ["model:openai/gpt-oss-120b", "ip:${HOST_IP}", "port:8001"]}]'
 
@@ -371,6 +373,7 @@ services:
       - TOKEN=${PROXY_TOKEN}
       - VLLM_BACKEND_URLS=http://vllm-flux-2-klein-4b-1:8000,http://vllm-flux-2-klein-4b-2:8000,http://vllm-flux-2-klein-4b-3:8000,http://vllm-flux-2-klein-4b-4:8000
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
+      - USE_NV_ATTESTATION_SDK=true
     labels:
       com.datadoghq.ad.logs: '[{"source": "vllm-proxy", "service": "vllm-proxy", "tags": ["model:black-forest-labs/FLUX.2-klein-4B", "ip:${HOST_IP}", "port:8002"]}]'
 
@@ -425,10 +428,6 @@ services:
       - TOKEN=${PROXY_TOKEN}
       - VLLM_BASE_URL=http://vllm-qwen3-vl:8000
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
-      # Phase 4 canary: route GPU evidence collection through NVIDIA's
-      # Rust SDK (libnvat FFI) instead of the Python cc_admin subprocess.
-      # Other proxies on this host stay on the Python path; if Qwen3-VL
-      # comes back clean for ~24h we extend to gpt-oss-120b next.
       - USE_NV_ATTESTATION_SDK=true
     labels:
       com.datadoghq.ad.logs: '[{"source": "vllm-proxy", "service": "vllm-proxy", "tags": ["model:Qwen/Qwen3-VL-30B-A3B-Instruct", "ip:${HOST_IP}", "port:8003"]}]'
@@ -481,6 +480,7 @@ services:
       - TOKEN=${PROXY_TOKEN}
       - VLLM_BASE_URL=http://vllm-qwen3-embeddings:8000
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
+      - USE_NV_ATTESTATION_SDK=true
     labels:
       com.datadoghq.ad.logs: '[{"source": "vllm-proxy", "service": "vllm-proxy", "tags": ["model:Qwen/Qwen3-Embedding-0.6B", "ip:${HOST_IP}", "port:8004"]}]'
 
@@ -523,6 +523,7 @@ services:
       - TOKEN=${PROXY_TOKEN}
       - VLLM_BASE_URL=http://vllm-qwen3-reranker:8000
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
+      - USE_NV_ATTESTATION_SDK=true
     labels:
       com.datadoghq.ad.logs: '[{"source": "vllm-proxy", "service": "vllm-proxy", "tags": ["model:Qwen/Qwen3-Reranker-0.6B", "ip:${HOST_IP}", "port:8005"]}]'
 
@@ -565,6 +566,7 @@ services:
       - TOKEN=${PROXY_TOKEN}
       - VLLM_BASE_URL=http://vllm-whisper3-large:8000
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
+      - USE_NV_ATTESTATION_SDK=true
     labels:
       com.datadoghq.ad.logs: '[{"source": "vllm-proxy", "service": "vllm-proxy", "tags": ["model:openai/whisper-large-v3", "ip:${HOST_IP}", "port:8005"]}]'
 
@@ -613,6 +615,7 @@ services:
       - TOKEN=${PROXY_TOKEN}
       - VLLM_BASE_URL=http://privacy-filter:8000
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
+      - USE_NV_ATTESTATION_SDK=true
     labels:
       com.datadoghq.ad.logs: '[{"source": "vllm-proxy", "service": "vllm-proxy", "tags": ["model:openai/privacy-filter", "ip:${HOST_IP}", "port:8007"]}]'
 
