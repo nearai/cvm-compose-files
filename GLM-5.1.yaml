@@ -108,15 +108,16 @@ services:
       --model-path zai-org/GLM-5.1-FP8
       --revision f396cf805182f4ca10fa675e1a99815b3ca384db
       --tp 8
-      --enable-dp-attention
       --reasoning-parser glm45
       --log-requests-level 0
       --tool-call-parser glm47
       --mem-fraction-static 0.85
-      --max-running-requests 55
+      --max-running-requests 128
       --context-length 200000
       --num-continuous-decode-steps 5
       --model-loader-extra-config '{"enable_multithread_load": "true", "num_threads": 64}'
+      --enable-mixed-chunk
+      --chunked-prefill-size 16384
       --port 8000
       --host 0.0.0.0
       --enable-cache-report
