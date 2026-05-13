@@ -117,7 +117,7 @@ x-flux-common: &flux-common
       reservations:
         devices:
           - driver: nvidia
-            device_ids: ["4"]
+            device_ids: ["7"]
             capabilities: [gpu]
 
 x-privacy-filter-common: &privacy-filter-common
@@ -227,6 +227,8 @@ services:
       - "8005:8005"
       - "8006:8006"
       - "8007:8007"
+      - "8008:8008"
+      - "8009:8009"
       - "8444:443"
     volumes:
       - certs:/etc/letsencrypt:ro
@@ -359,7 +361,111 @@ services:
       com.datadoghq.ad.logs: '[{"source": "vllm", "service": "vllm", "tags":["model:openai/gpt-oss-120b","ip:${HOST_IP}", "port:8001","instance:2"]}]'
       com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-gpt-oss-2:8000/metrics", "histogram_buckets_as_distributions": true, "service": "vllm-gpt-oss-2", "tags":["model:openai/gpt-oss-120b","ip:${HOST_IP}", "port:8001"]}]'
 
-  # --- FLUX x4 (GPU 4, 20% mem each) — single proxy, multi-backend ---
+  # --- Qwen3.6-35B-A3B-FP8 (GPU 4) — single instance, single proxy ---
+
+  vllm-proxy-qwen3-6-35b:
+    <<: *vllm-proxy-common
+    container_name: vllm-proxy-qwen3-6-35b
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - CLOUD_API_URL=https://cloud-api.near.ai
+      - COMPOSE_MANAGER_URL=http://compose-manager:8080
+      - LOG_FORMAT=json
+      - MODEL_NAME=Qwen/Qwen3.6-35B-A3B-FP8
+      - OHTTP_ENABLED=true
+      - TOKEN=${PROXY_TOKEN}
+      - VLLM_BASE_URL=http://vllm-qwen3-6-35b:8000
+      - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
+      - USE_NV_ATTESTATION_SDK=true
+    labels:
+      com.datadoghq.ad.logs: '[{"source": "vllm-proxy", "service": "vllm-proxy", "tags": ["model:Qwen/Qwen3.6-35B-A3B-FP8", "ip:${HOST_IP}", "port:8008"]}]'
+
+  vllm-qwen3-6-35b:
+    <<: *vllm-common
+    image: vllm/vllm-openai@sha256:ccd6a6dbf4aba4e94c6f7052d1835d6e742082b6a5095276552e9b7a5a47c2e5
+    container_name: vllm-qwen3-6-35b
+    command: >
+        Qwen/Qwen3.6-35B-A3B-FP8
+        --revision 95a723d08a9490559dae23d0cff1d9466213d989
+        --tensor-parallel-size 1
+        --enable-prefix-caching
+        --gpu-memory-utilization 0.90
+        --tool-call-parser hermes
+        --enable-auto-tool-choice
+        --max-num-seqs 32
+        --max-model-len 32768
+        --max-num-batched-tokens 16K
+        --async-scheduling
+        --enable-prompt-tokens-details
+    volumes:
+      - hugginface_cache:/root/.cache/huggingface
+      - vllm_cache:/root/.cache/vllm
+    environment: *vllm-env
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["4"]
+              capabilities: [gpu]
+    labels:
+      com.datadoghq.ad.check_names: '["vllm"]'
+      com.datadoghq.ad.init_configs: "[{}]"
+      com.datadoghq.ad.logs: '[{"source": "vllm", "service": "vllm", "tags":["model:Qwen/Qwen3.6-35B-A3B-FP8","ip:${HOST_IP}", "port:8008"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-qwen3-6-35b:8000/metrics", "histogram_buckets_as_distributions": true, "service": "vllm-qwen3-6-35b", "tags":["model:Qwen/Qwen3.6-35B-A3B-FP8","ip:${HOST_IP}", "port:8008"]}]'
+
+  # --- Gemma-4-31B-it (GPUs 5-6 TP=2, BF16) — single instance, single proxy ---
+
+  vllm-proxy-gemma-4-31b:
+    <<: *vllm-proxy-common
+    container_name: vllm-proxy-gemma-4-31b
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - CLOUD_API_URL=https://cloud-api.near.ai
+      - COMPOSE_MANAGER_URL=http://compose-manager:8080
+      - LOG_FORMAT=json
+      - MODEL_NAME=google/gemma-4-31B-it
+      - OHTTP_ENABLED=true
+      - TOKEN=${PROXY_TOKEN}
+      - VLLM_BASE_URL=http://vllm-gemma-4-31b:8000
+      - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
+      - USE_NV_ATTESTATION_SDK=true
+    labels:
+      com.datadoghq.ad.logs: '[{"source": "vllm-proxy", "service": "vllm-proxy", "tags": ["model:google/gemma-4-31B-it", "ip:${HOST_IP}", "port:8009"]}]'
+
+  vllm-gemma-4-31b:
+    <<: *vllm-common
+    image: vllm/vllm-openai@sha256:ccd6a6dbf4aba4e94c6f7052d1835d6e742082b6a5095276552e9b7a5a47c2e5
+    container_name: vllm-gemma-4-31b
+    command: >
+        google/gemma-4-31B-it
+        --revision ba74f5b6c647c0911554e50278d6f6f4477f9010
+        --tensor-parallel-size 2
+        --enable-prefix-caching
+        --gpu-memory-utilization 0.90
+        --max-num-seqs 64
+        --max-model-len 32768
+        --max-num-batched-tokens 16K
+        --async-scheduling
+        --enable-prompt-tokens-details
+    volumes:
+      - hugginface_cache:/root/.cache/huggingface
+      - vllm_cache:/root/.cache/vllm
+    environment: *vllm-env
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["5","6"]
+              capabilities: [gpu]
+    labels:
+      com.datadoghq.ad.check_names: '["vllm"]'
+      com.datadoghq.ad.init_configs: "[{}]"
+      com.datadoghq.ad.logs: '[{"source": "vllm", "service": "vllm", "tags":["model:google/gemma-4-31B-it","ip:${HOST_IP}", "port:8009"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-gemma-4-31b:8000/metrics", "histogram_buckets_as_distributions": true, "service": "vllm-gemma-4-31b", "tags":["model:google/gemma-4-31B-it","ip:${HOST_IP}", "port:8009"]}]'
+
+  # --- FLUX x1 (GPU 7, shared with small models) ---
 
   vllm-proxy-flux:
     <<: *vllm-proxy-common
@@ -372,7 +478,7 @@ services:
       - MODEL_NAME=black-forest-labs/FLUX.2-klein-4B
       - OHTTP_ENABLED=true
       - TOKEN=${PROXY_TOKEN}
-      - VLLM_BACKEND_URLS=http://vllm-flux-2-klein-4b-1:8000,http://vllm-flux-2-klein-4b-2:8000,http://vllm-flux-2-klein-4b-3:8000,http://vllm-flux-2-klein-4b-4:8000
+      - VLLM_BASE_URL=http://vllm-flux-2-klein-4b-1:8000
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
     labels:
@@ -387,34 +493,7 @@ services:
       com.datadoghq.ad.logs: '[{"source": "vllm", "service": "vllm", "tags":["model:black-forest-labs/FLUX.2-klein-4B","ip:${HOST_IP}", "port:8002","instance:1"]}]'
       com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-flux-2-klein-4b-1:8000/metrics", "histogram_buckets_as_distributions": true, "service": "vllm-flux-2-klein-4b-1", "tags":["model:black-forest-labs/FLUX.2-klein-4B","ip:${HOST_IP}", "port:8002"]}]'
 
-  vllm-flux-2-klein-4b-2:
-    <<: *flux-common
-    container_name: vllm-flux-2-klein-4b-2
-    labels:
-      com.datadoghq.ad.check_names: '["vllm"]'
-      com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.logs: '[{"source": "vllm", "service": "vllm", "tags":["model:black-forest-labs/FLUX.2-klein-4B","ip:${HOST_IP}", "port:8002","instance:2"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-flux-2-klein-4b-2:8000/metrics", "histogram_buckets_as_distributions": true, "service": "vllm-flux-2-klein-4b-2", "tags":["model:black-forest-labs/FLUX.2-klein-4B","ip:${HOST_IP}", "port:8002"]}]'
-
-  vllm-flux-2-klein-4b-3:
-    <<: *flux-common
-    container_name: vllm-flux-2-klein-4b-3
-    labels:
-      com.datadoghq.ad.check_names: '["vllm"]'
-      com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.logs: '[{"source": "vllm", "service": "vllm", "tags":["model:black-forest-labs/FLUX.2-klein-4B","ip:${HOST_IP}", "port:8002","instance:3"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-flux-2-klein-4b-3:8000/metrics", "histogram_buckets_as_distributions": true, "service": "vllm-flux-2-klein-4b-3", "tags":["model:black-forest-labs/FLUX.2-klein-4B","ip:${HOST_IP}", "port:8002"]}]'
-
-  vllm-flux-2-klein-4b-4:
-    <<: *flux-common
-    container_name: vllm-flux-2-klein-4b-4
-    labels:
-      com.datadoghq.ad.check_names: '["vllm"]'
-      com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.logs: '[{"source": "vllm", "service": "vllm", "tags":["model:black-forest-labs/FLUX.2-klein-4B","ip:${HOST_IP}", "port:8002","instance:4"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-flux-2-klein-4b-4:8000/metrics", "histogram_buckets_as_distributions": true, "service": "vllm-flux-2-klein-4b-4", "tags":["model:black-forest-labs/FLUX.2-klein-4B","ip:${HOST_IP}", "port:8002"]}]'
-
-  # --- Qwen3-VL (GPUs 5-6) — single instance, single proxy ---
+  # --- Qwen3-VL FP8 (GPU 7, shared with small models) ---
 
   vllm-proxy-qwen3-vl:
     <<: *vllm-proxy-common
@@ -438,15 +517,15 @@ services:
     image: vllm/vllm-openai@sha256:ccd6a6dbf4aba4e94c6f7052d1835d6e742082b6a5095276552e9b7a5a47c2e5
     container_name: vllm-qwen3-vl
     command: >
-        Qwen/Qwen3-VL-30B-A3B-Instruct
-        --revision 9c4b90e1e4ba969fd3b5378b57d966d725f1b86c
+        Qwen/Qwen3-VL-30B-A3B-Instruct-FP8
+        --revision d9748a51ae66354c4dad665aab2c71f26cf2c8cd
+        --served-model-name Qwen/Qwen3-VL-30B-A3B-Instruct
         --enable-prefix-caching
-        --tensor-parallel-size 2
-        --gpu-memory-utilization 0.95
-        --max-model-len 32768
-        --max-num-seqs 64
-        --max-num-batched-tokens 16K
-        --mm-encoder-tp-mode data
+        --tensor-parallel-size 1
+        --gpu-memory-utilization 0.40
+        --max-model-len 16384
+        --max-num-seqs 16
+        --max-num-batched-tokens 8K
         --async-scheduling
         --enable-prompt-tokens-details
     volumes:
@@ -458,7 +537,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["5","6"]
+              device_ids: ["7"]
               capabilities: [gpu]
     labels:
       com.datadoghq.ad.check_names: '["vllm"]'
@@ -672,7 +751,7 @@ configs:
       TLS_PORT=8444
 
       # Track registration state per port
-      for port in 8000 8001 8002 8003 8004 8005 8006 8007; do
+      for port in 8000 8001 8002 8003 8004 8005 8006 8007 8008 8009; do
         eval "REG_$$port=false"
         eval "FAIL_COUNT_$$port=0"
       done
@@ -700,7 +779,7 @@ configs:
 
       cleanup() {
         echo "SIGTERM received, unregistering all endpoints"
-        for port in 8000 8001 8002 8003 8004 8005 8006 8007; do
+        for port in 8000 8001 8002 8003 8004 8005 8006 8007 8008 8009; do
           unregister_endpoint "$${HOST_IP}:$$port"
         done
         exit 0
@@ -725,6 +804,8 @@ configs:
           8005) curl -sf --max-time 10 "http://vllm-qwen3-reranker:8000/v1/models" > /dev/null 2>&1 ;;
           8006) curl -sf --max-time 10 "http://vllm-whisper3-large:8000/v1/models" > /dev/null 2>&1 ;;
           8007) curl -sf --max-time 10 "http://privacy-filter:8000/v1/models" > /dev/null 2>&1 ;;
+          8008) check_chat vllm-qwen3-6-35b "Qwen/Qwen3.6-35B-A3B-FP8" ;;
+          8009) check_chat vllm-gemma-4-31b "google/gemma-4-31B-it" ;;
         esac
       }
 
@@ -733,7 +814,7 @@ configs:
       echo "First model ready, starting registration loop"
 
       while true; do
-        for port in 8000 8001 8002 8003 8004 8005 8006 8007; do
+        for port in 8000 8001 8002 8003 8004 8005 8006 8007 8008 8009; do
           eval "was_reg=\$$REG_$$port"
           eval "fails=\$$FAIL_COUNT_$$port"
           if check_port $$port; then
@@ -760,6 +841,8 @@ configs:
         register_model "Qwen/Qwen3-Reranker-0.6B" "qwen3-reranker.completions.near.ai"
         register_model "openai/whisper-large-v3" "whisper-large-v3.completions.near.ai"
         register_model "openai/privacy-filter" "privacy-filter.completions.near.ai"
+        register_model "Qwen/Qwen3.6-35B-A3B-FP8" "qwen3-6-35b.completions.near.ai"
+        register_model "google/gemma-4-31B-it" "gemma-4-31b.completions.near.ai"
         sleep 60
       done
   nginx_conf:
@@ -825,6 +908,18 @@ configs:
           location / { proxy_pass http://vllm-proxy-privacy-filter:8000; }
       }
 
+      # :8008 - Qwen3.6-35B-A3B-FP8
+      server {
+          listen 8008;
+          location / { proxy_pass http://vllm-proxy-qwen3-6-35b:8000; }
+      }
+
+      # :8009 - Gemma-4-31B-it
+      server {
+          listen 8009;
+          location / { proxy_pass http://vllm-proxy-gemma-4-31b:8000; }
+      }
+
       # ── TLS server blocks (port 443 = host 8444) ──
 
       ssl_certificate /etc/letsencrypt/live/completions.near.ai/fullchain.pem;
@@ -877,4 +972,16 @@ configs:
           listen 443 ssl http2;
           server_name privacy-filter.completions.near.ai;
           location / { proxy_pass http://vllm-proxy-privacy-filter:8000; }
+      }
+
+      server {
+          listen 443 ssl http2;
+          server_name qwen3-6-35b.completions.near.ai;
+          location / { proxy_pass http://vllm-proxy-qwen3-6-35b:8000; }
+      }
+
+      server {
+          listen 443 ssl http2;
+          server_name gemma-4-31b.completions.near.ai;
+          location / { proxy_pass http://vllm-proxy-gemma-4-31b:8000; }
       }
