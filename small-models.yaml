@@ -106,7 +106,7 @@ x-flux-common: &flux-common
       --trust-remote-code
       --log-requests-level 0
       --enable-torch-compile
-      --mem-fraction-static 0.2
+      --mem-fraction-static 0.15
       --enable-metrics
   volumes:
     - hugginface_cache:/root/.cache/huggingface
@@ -382,7 +382,7 @@ services:
 
   vllm-qwen3-6-35b:
     <<: *vllm-common
-    image: vllm/vllm-openai@sha256:ccd6a6dbf4aba4e94c6f7052d1835d6e742082b6a5095276552e9b7a5a47c2e5
+    image: vllm/vllm-openai@sha256:518c1dc54c87d1320d969c6b827d75300ea2cca6908420c0ea5d221c38a6665d  # v0.20.2-cu129-ubuntu2404 — required for qwen3_5_moe
     container_name: vllm-qwen3-6-35b
     command: >
         Qwen/Qwen3.6-35B-A3B-FP8
@@ -435,7 +435,7 @@ services:
 
   vllm-gemma-4-31b:
     <<: *vllm-common
-    image: vllm/vllm-openai@sha256:ccd6a6dbf4aba4e94c6f7052d1835d6e742082b6a5095276552e9b7a5a47c2e5
+    image: vllm/vllm-openai@sha256:518c1dc54c87d1320d969c6b827d75300ea2cca6908420c0ea5d221c38a6665d  # v0.20.2-cu129-ubuntu2404 — required for gemma4
     container_name: vllm-gemma-4-31b
     command: >
         google/gemma-4-31B-it
@@ -522,7 +522,7 @@ services:
         --served-model-name Qwen/Qwen3-VL-30B-A3B-Instruct
         --enable-prefix-caching
         --tensor-parallel-size 1
-        --gpu-memory-utilization 0.40
+        --gpu-memory-utilization 0.35
         --max-model-len 16384
         --max-num-seqs 16
         --max-num-batched-tokens 8K
@@ -572,7 +572,7 @@ services:
         Qwen/Qwen3-Embedding-0.6B
         --revision 97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3
         --runner pooling
-        --gpu-memory-utilization 0.1
+        --gpu-memory-utilization 0.06
     volumes:
       - hugginface_cache:/root/.cache/huggingface
       - vllm_cache:/root/.cache/vllm
@@ -615,7 +615,7 @@ services:
         Qwen/Qwen3-Reranker-0.6B
         --revision e61197ed45024b0ed8a2d74b80b4d909f1255473
         --runner pooling
-        --gpu-memory-utilization 0.1
+        --gpu-memory-utilization 0.06
     volumes:
       - hugginface_cache:/root/.cache/huggingface
       - vllm_cache:/root/.cache/vllm
@@ -662,7 +662,7 @@ services:
     command: >
         openai/whisper-large-v3
         --revision 06f233fe06e710322aca913c1bc4249a0d71fce1
-        --gpu-memory-utilization 0.1
+        --gpu-memory-utilization 0.06
     volumes:
       - hugginface_cache:/root/.cache/huggingface
       - vllm_cache:/root/.cache/vllm
