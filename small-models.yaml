@@ -62,6 +62,11 @@ x-sglang-env:
 x-gpt-oss-common: &gpt-oss-common
   <<: *vllm-common
   image: vllm/vllm-openai@sha256:6766ce0c459e24b76f3e9ba14ffc0442131ef4248c904efdcbf0d89e38be01fe
+  # Cache subpath is configurable so a corrupted torch.compile artifact in the
+  # shared vllm_cache volume can be sidestepped without a new tag: pass
+  # env={"GPT_OSS_CACHE_SUBPATH":"v3"} to /compose/up to force a fresh cache.
+  # Default is "v2" because v1 (the original /root/.cache/vllm root) holds the
+  # corrupted 1603e894a6/... artifact from a prior interrupted compile.
   command: >
       openai/gpt-oss-120b
       --revision b5c939de8f754692c1647ca79fbf85e8c1e70f8a
@@ -86,7 +91,7 @@ x-gpt-oss-common: &gpt-oss-common
     - VLLM_LOGGING_LEVEL=INFO
     - NVIDIA_DRIVER_CAPABILITIES=compute,utility
     - VLLM_MXFP4_USE_MARLIN=1
-    - VLLM_CACHE_ROOT=/root/.cache/vllm
+    - VLLM_CACHE_ROOT=/root/.cache/vllm/${GPT_OSS_CACHE_SUBPATH:-v2}
 
 x-flux-common: &flux-common
   <<: *vllm-common
