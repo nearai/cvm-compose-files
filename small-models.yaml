@@ -400,6 +400,7 @@ services:
         --async-scheduling
         --enable-prompt-tokens-details
         --model-loader-extra-config '{"distributed":true, "concurrency":48}'
+        --override-generation-config '{"temperature":0.7,"top_p":0.8,"top_k":20}'
     volumes:
       - hugginface_cache:/root/.cache/huggingface
       - vllm_cache:/root/.cache/vllm
