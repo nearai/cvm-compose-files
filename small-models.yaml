@@ -279,18 +279,17 @@ services:
     command: >
         Qwen/Qwen3-30B-A3B-Instruct-2507
         --revision 0d7cf23991f47feeb3a57ecb4c9cee8ea4a17bfe
-        --tensor-parallel-size 2
+        --tensor-parallel-size 1
         --enable-prefix-caching
         --gpu-memory-utilization 0.95
         --tool-call-parser hermes
-        --max-num-seqs 128
         --enable-auto-tool-choice
         --max-model-len 256K
-        --max-num-batched-tokens 24K
+        --max-num-batched-tokens 16K
         --stream-interval 10
         --load-format runai_streamer
         --dtype float16
-        --model-loader-extra-config '{"distributed":true, "concurrency":48}'
+        --model-loader-extra-config '{"concurrency":48}'
         --enable-prompt-tokens-details
         --speculative-config '{"method":"eagle3","model":"lmsys/SGLang-EAGLE3-Qwen3-30B-A3B-Instruct-2507-SpecForge-Nex","num_speculative_tokens":3,"draft_tensor_parallel_size":1}'
     volumes:
@@ -302,7 +301,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["0","1"]
+              device_ids: ["0"]
               capabilities: [gpu]
     labels:
       com.datadoghq.ad.check_names: '["vllm"]'
@@ -388,19 +387,19 @@ services:
         Qwen/Qwen3.6-35B-A3B-FP8
         --revision 95a723d08a9490559dae23d0cff1d9466213d989
         --trust-remote-code
-        --tensor-parallel-size 1
+        --tensor-parallel-size 2
         --enable-prefix-caching
         --gpu-memory-utilization 0.93
         --tool-call-parser qwen3_coder
         --reasoning-parser qwen3
         --enable-auto-tool-choice
-        --max-num-seqs 32
         --max-model-len 262144
-        --max-num-batched-tokens 8192
+        --max-num-batched-tokens 16384
         --speculative-config '{"method":"mtp","num_speculative_tokens":2}'
         --language-model-only
         --async-scheduling
         --enable-prompt-tokens-details
+        --model-loader-extra-config '{"distributed":true, "concurrency":48}'
     volumes:
       - hugginface_cache:/root/.cache/huggingface
       - vllm_cache:/root/.cache/vllm
@@ -410,7 +409,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["4"]
+              device_ids: ["1","4"]
               capabilities: [gpu]
     labels:
       com.datadoghq.ad.check_names: '["vllm"]'
