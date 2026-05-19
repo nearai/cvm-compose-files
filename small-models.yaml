@@ -93,6 +93,51 @@ x-gpt-oss-common: &gpt-oss-common
     - VLLM_MXFP4_USE_MARLIN=1
     - VLLM_CACHE_ROOT=/root/.cache/vllm/${GPT_OSS_CACHE_SUBPATH:-v2}
 
+x-qwen3-6-common: &qwen3-6-common
+  <<: *nvidia
+  init: true
+  # SGLang dev image, matched to GLM-5.1's pin. ≥ 0.5.10 required for the
+  # Qwen3.6 recipe (--speculative-algorithm EAGLE v2 + qwen3 parsers).
+  # https://lmsysorg.mintlify.app/cookbook/autoregressive/Qwen/Qwen3.6
+  image: lmsysorg/sglang:dev@sha256:e1eee3f75e62827dbfa29994a260934c2bc7e5adfb047170576f1676b436b926
+  command: >
+      sglang serve
+      --model-path Qwen/Qwen3.6-35B-A3B-FP8
+      --revision 95a723d08a9490559dae23d0cff1d9466213d989
+      --tp 1
+      --reasoning-parser qwen3
+      --tool-call-parser qwen3_coder
+      --speculative-algorithm EAGLE
+      --speculative-num-steps 3
+      --speculative-eagle-topk 1
+      --speculative-num-draft-tokens 4
+      --mem-fraction-static 0.85
+      --max-running-requests 128
+      --context-length 262144
+      --num-continuous-decode-steps 5
+      --model-loader-extra-config '{"enable_multithread_load": "true", "num_threads": 64}'
+      --enable-mixed-chunk
+      --chunked-prefill-size 16384
+      --port 8000
+      --host 0.0.0.0
+      --enable-cache-report
+      --enable-metrics
+      --trust-remote-code
+      --log-requests-level 0
+      --served-model-name Qwen/Qwen3.6-35B-A3B-FP8
+  volumes:
+    - hugginface_cache:/root/.cache/huggingface
+    - kernel_cache:/root/.cache/deep_gemm
+  environment:
+    - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+    - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0}
+    - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    - OPENBLAS_L2_SIZE=2097152
+    - NCCL_DEBUG=WARN
+    - SGLANG_ENABLE_SPEC_V2=1
+  restart: unless-stopped
+  logging: *logging-conf
+
 x-flux-common: &flux-common
   <<: *vllm-common
   image: sglang-diffusion
@@ -365,7 +410,7 @@ services:
       com.datadoghq.ad.logs: '[{"source": "vllm", "service": "vllm", "tags":["model:openai/gpt-oss-120b","ip:${HOST_IP}", "port:8001","instance:2"]}]'
       com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-gpt-oss-2:8000/metrics", "histogram_buckets_as_distributions": true, "service": "vllm-gpt-oss-2", "tags":["model:openai/gpt-oss-120b","ip:${HOST_IP}", "port:8001"]}]'
 
-  # --- Qwen3.6-35B-A3B-FP8 (GPU 4) — single instance, single proxy ---
+  # --- Qwen3.6-35B-A3B-FP8 x2 (GPUs 1, 4) — SGLang, TP=1, EAGLE-v2 spec, single proxy multi-backend ---
 
   vllm-proxy-qwen3-6-35b:
     <<: *vllm-proxy-common
@@ -378,51 +423,43 @@ services:
       - MODEL_NAME=Qwen/Qwen3.6-35B-A3B-FP8
       - OHTTP_ENABLED=true
       - TOKEN=${PROXY_TOKEN}
-      - VLLM_BASE_URL=http://vllm-qwen3-6-35b:8000
+      - VLLM_BACKEND_URLS=http://vllm-qwen3-6-35b-1:8000,http://vllm-qwen3-6-35b-2:8000
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
     labels:
       com.datadoghq.ad.logs: '[{"source": "vllm-proxy", "service": "vllm-proxy", "tags": ["model:Qwen/Qwen3.6-35B-A3B-FP8", "ip:${HOST_IP}", "port:8008"]}]'
 
-  vllm-qwen3-6-35b:
-    <<: *vllm-common
-    image: vllm/vllm-openai@sha256:518c1dc54c87d1320d969c6b827d75300ea2cca6908420c0ea5d221c38a6665d  # v0.20.2-cu129-ubuntu2404 — required for qwen3_5_moe
-    container_name: vllm-qwen3-6-35b
-    command: >
-        Qwen/Qwen3.6-35B-A3B-FP8
-        --revision 95a723d08a9490559dae23d0cff1d9466213d989
-        --trust-remote-code
-        --tensor-parallel-size 2
-        --enable-prefix-caching
-        --gpu-memory-utilization 0.93
-        --tool-call-parser qwen3_coder
-        --reasoning-parser qwen3
-        --enable-auto-tool-choice
-        --max-model-len 262144
-        --max-num-batched-tokens 16384
-        --speculative-config '{"method":"mtp","num_speculative_tokens":2}'
-        --language-model-only
-        --async-scheduling
-        --enable-prompt-tokens-details
-        --load-format runai_streamer
-        --model-loader-extra-config '{"distributed":true, "concurrency":48}'
-        --override-generation-config '{"temperature":0.7,"top_p":0.8,"top_k":20}'
-    volumes:
-      - hugginface_cache:/root/.cache/huggingface
-      - vllm_cache:/root/.cache/vllm
-    environment: *vllm-env
+  vllm-qwen3-6-35b-1:
+    <<: *qwen3-6-common
+    container_name: vllm-qwen3-6-35b-1
     deploy:
       resources:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["1","4"]
+              device_ids: ["1"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.check_names: '["vllm"]'
+      com.datadoghq.ad.check_names: '["openmetrics"]'
       com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.logs: '[{"source": "vllm", "service": "vllm", "tags":["model:Qwen/Qwen3.6-35B-A3B-FP8","ip:${HOST_IP}", "port:8008"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-qwen3-6-35b:8000/metrics", "histogram_buckets_as_distributions": true, "service": "vllm-qwen3-6-35b", "tags":["model:Qwen/Qwen3.6-35B-A3B-FP8","ip:${HOST_IP}", "port:8008"]}]'
+      com.datadoghq.ad.logs: '[{"source": "sglang", "service": "sglang", "tags":["model:Qwen/Qwen3.6-35B-A3B-FP8","ip:${HOST_IP}", "port:8008","instance:1"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-qwen3-6-35b-1:8000/metrics", "histogram_buckets_as_distributions": true, "metrics":["sglang:*"], "service": "vllm-qwen3-6-35b-1", "tags":["model:Qwen/Qwen3.6-35B-A3B-FP8","ip:${HOST_IP}", "port:8008"]}]'
+
+  vllm-qwen3-6-35b-2:
+    <<: *qwen3-6-common
+    container_name: vllm-qwen3-6-35b-2
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["4"]
+              capabilities: [gpu]
+    labels:
+      com.datadoghq.ad.check_names: '["openmetrics"]'
+      com.datadoghq.ad.init_configs: "[{}]"
+      com.datadoghq.ad.logs: '[{"source": "sglang", "service": "sglang", "tags":["model:Qwen/Qwen3.6-35B-A3B-FP8","ip:${HOST_IP}", "port:8008","instance:2"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-qwen3-6-35b-2:8000/metrics", "histogram_buckets_as_distributions": true, "metrics":["sglang:*"], "service": "vllm-qwen3-6-35b-2", "tags":["model:Qwen/Qwen3.6-35B-A3B-FP8","ip:${HOST_IP}", "port:8008"]}]'
 
   # --- Gemma-4-31B-it (GPUs 5-6 TP=2, BF16) — single instance, single proxy ---
 
@@ -751,6 +788,7 @@ networks:
 volumes:
   hugginface_cache:
   vllm_cache:
+  kernel_cache:
   certs:
     external: true
     name: certs
@@ -817,7 +855,7 @@ configs:
           8005) curl -sf --max-time 10 "http://vllm-qwen3-reranker:8000/v1/models" > /dev/null 2>&1 ;;
           8006) curl -sf --max-time 10 "http://vllm-whisper3-large:8000/v1/models" > /dev/null 2>&1 ;;
           8007) curl -sf --max-time 10 "http://privacy-filter:8000/v1/models" > /dev/null 2>&1 ;;
-          8008) check_chat vllm-qwen3-6-35b "Qwen/Qwen3.6-35B-A3B-FP8" ;;
+          8008) check_chat vllm-qwen3-6-35b-1 "Qwen/Qwen3.6-35B-A3B-FP8" ;;
           8009) check_chat vllm-gemma-4-31b "google/gemma-4-31B-it" ;;
         esac
       }
