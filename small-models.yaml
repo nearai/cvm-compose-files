@@ -791,6 +791,8 @@ services:
       - MODEL_NAME=openai/privacy-filter
       - OHTTP_ENABLED=true
       - TOKEN=${PROXY_TOKEN}
+      # Temporary debug logging to diagnose why routing isn't picking CPU.
+      - RUST_LOG=vllm_proxy_rs=debug,info
       # CPU listed FIRST. Rust's Iterator::min_by_key returns the FIRST
       # element on ties (despite what the docs say — verified empirically;
       # the stdlib impl only swaps on Ordering::Less). So under tied 0
