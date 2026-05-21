@@ -791,12 +791,12 @@ services:
       - MODEL_NAME=openai/privacy-filter
       - OHTTP_ENABLED=true
       - TOKEN=${PROXY_TOKEN}
-      # CPU listed FIRST so vllm-proxy-rs's tie-broken least-connections
-      # picks it when both backends are at 0 active conns (the common case
-      # between sequential requests). GPU becomes the overflow target only
-      # once the CPU instance has in-flight work — which keeps GPU-7
-      # contention out of the typical request path.
-      - VLLM_BACKEND_URLS=http://privacy-filter-cpu:8000,http://privacy-filter:8000
+      # CPU listed LAST: vllm-proxy-rs uses Iterator::min_by_key which returns
+      # the LAST element on ties, so under tied 0 active_conns (the common
+      # case between sequential requests) CPU wins. GPU becomes the overflow
+      # target only once CPU has in-flight work, keeping GPU-7 contention out
+      # of the typical request path.
+      - VLLM_BACKEND_URLS=http://privacy-filter:8000,http://privacy-filter-cpu:8000
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
     labels:
