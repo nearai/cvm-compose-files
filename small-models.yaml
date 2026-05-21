@@ -26,7 +26,7 @@ x-vllm-common: &vllm-common
   logging: *logging-conf
 
 x-vllm-proxy-common: &vllm-proxy-common
-  image: nearaidev/vllm-proxy-rs@sha256:8fdbd1d931629dedc1bc714dd7d3b4c216bca4a1e09d56bed48bac2ebd2b60cb
+  image: nearaidev/vllm-proxy-rs@sha256:020e01d49347d2d239d42f954404c37548eefc54ea3889dfb1494809333aa2e7
   user: root
   privileged: true
   <<: *nvidia
@@ -171,9 +171,13 @@ x-flux-common: &flux-common
             device_ids: ["7"]
             capabilities: [gpu]
 
-x-privacy-filter-build: &privacy-filter-build
-  context: .
-  dockerfile_inline: |
+x-privacy-filter-common: &privacy-filter-common
+  <<: *nvidia
+  init: true
+  image: privacy-filter-hf
+  build:
+    context: .
+    dockerfile_inline: |
       # syntax=docker/dockerfile:1.4
       FROM pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime
       RUN pip install --no-cache-dir \
@@ -183,7 +187,6 @@ x-privacy-filter-build: &privacy-filter-build
           "uvicorn[standard]"
       WORKDIR /app
       COPY <<'PYEOF' /app/server.py
-      import os
       import torch
       from fastapi import FastAPI, HTTPException
       from pydantic import BaseModel, Field
@@ -192,21 +195,15 @@ x-privacy-filter-build: &privacy-filter-build
       MODEL_ID = "openai/privacy-filter"
       MODEL_REVISION = "7ffa9a043d54d1be65afb281eddf0ffbe629385b"
 
-      # PRIVACY_FILTER_DEVICE: "cpu" forces CPU + float32; anything else (default
-      # "auto") uses the first visible GPU + bfloat16. Two service variants
-      # share this image so vllm-proxy-rs can least-connections across them.
-      _device = os.environ.get("PRIVACY_FILTER_DEVICE", "auto").lower()
-      _kwargs = dict(
+      clf = pipeline(
+          "token-classification",
           model=MODEL_ID,
           revision=MODEL_REVISION,
           aggregation_strategy="simple",
+          device_map="auto",
+          torch_dtype=torch.bfloat16,
           trust_remote_code=True,
       )
-      if _device == "cpu":
-          _kwargs.update(device=-1, torch_dtype=torch.float32)
-      else:
-          _kwargs.update(device_map="auto", torch_dtype=torch.bfloat16)
-      clf = pipeline("token-classification", **_kwargs)
       tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, revision=MODEL_REVISION, trust_remote_code=True)
 
       app = FastAPI()
@@ -220,15 +217,6 @@ x-privacy-filter-build: &privacy-filter-build
       @app.get("/v1/models")
       def models():
           return {"object": "list", "data": [{"id": MODEL_ID, "object": "model"}]}
-
-
-      # vllm-proxy-rs probes /health to mark a backend healthy. Without this,
-      # both privacy-filter and privacy-filter-cpu return 404 → both flagged
-      # unhealthy → proxy falls back to least-connections among all (which
-      # still works, but spams the log and disables the "healthy first" path).
-      @app.get("/health")
-      def health():
-          return {"status": "ok"}
 
 
       @app.post("/v1/privacy/classify")
@@ -263,12 +251,6 @@ x-privacy-filter-build: &privacy-filter-build
       PYEOF
       EXPOSE 8000
       CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8000"]
-
-x-privacy-filter-common: &privacy-filter-common
-  <<: *nvidia
-  init: true
-  image: privacy-filter-hf
-  build: *privacy-filter-build
   volumes:
     - hugginface_cache:/root/.cache/huggingface
   environment:
@@ -284,31 +266,6 @@ x-privacy-filter-common: &privacy-filter-common
           - driver: nvidia
             device_ids: ["7"]
             capabilities: [gpu]
-
-# CPU-only sibling of x-privacy-filter-common. Same image (so the build is
-# shared and dockerfile_inline stays in one place), but no nvidia runtime,
-# no GPU reservation, and PRIVACY_FILTER_DEVICE=cpu so the pipeline loads
-# on CPU with float32. Routed alongside the GPU instance via vllm-proxy-rs
-# least-connections so requests dodge GPU-7 contention spikes.
-x-privacy-filter-cpu-common: &privacy-filter-cpu-common
-  init: true
-  # Distinct image tag (vs privacy-filter-hf) so compose-manager's
-  # `docker compose pull --ignore-buildable` doesn't see two services sharing
-  # one image name and try to pull this one as a registry image. The build
-  # content is identical, so docker reuses cached layers — it's only a tag
-  # alias, not a second build pass.
-  image: privacy-filter-hf-cpu
-  build: *privacy-filter-build
-  volumes:
-    - hugginface_cache:/root/.cache/huggingface
-  environment:
-    - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
-    - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0}
-    - PRIVACY_FILTER_DEVICE=cpu
-    - OMP_NUM_THREADS=4
-    - MKL_NUM_THREADS=4
-  restart: unless-stopped
-  logging: *logging-conf
 
 services:
   nginx:
@@ -402,10 +359,10 @@ services:
               device_ids: ["0"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.check_names: '["openmetrics"]'
+      com.datadoghq.ad.check_names: '["vllm"]'
       com.datadoghq.ad.init_configs: "[{}]"
       com.datadoghq.ad.logs: '[{"source": "vllm", "service": "vllm", "tags":["model:Qwen/Qwen3-30B-A3B-Instruct-2507","ip:${HOST_IP}", "port:8000"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-qwen3-30b:8000/metrics", "metrics":["vllm:.*"], "histogram_buckets_as_distributions": true, "service": "vllm-qwen3-30b", "tags":["model:Qwen/Qwen3-30B-A3B-Instruct-2507","ip:${HOST_IP}", "port:8000"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-qwen3-30b:8000/metrics", "histogram_buckets_as_distributions": true, "service": "vllm-qwen3-30b", "tags":["model:Qwen/Qwen3-30B-A3B-Instruct-2507","ip:${HOST_IP}", "port:8000"]}]'
 
   # --- GPT-OSS x2 (GPUs 2, 3) — single proxy, multi-backend ---
 
@@ -437,10 +394,10 @@ services:
               device_ids: ["2"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.check_names: '["openmetrics"]'
+      com.datadoghq.ad.check_names: '["vllm"]'
       com.datadoghq.ad.init_configs: "[{}]"
       com.datadoghq.ad.logs: '[{"source": "vllm", "service": "vllm", "tags":["model:openai/gpt-oss-120b","ip:${HOST_IP}", "port:8001","instance:1"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-gpt-oss-1:8000/metrics", "metrics":["vllm:.*"], "histogram_buckets_as_distributions": true, "service": "vllm-gpt-oss-1", "tags":["model:openai/gpt-oss-120b","ip:${HOST_IP}", "port:8001"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-gpt-oss-1:8000/metrics", "histogram_buckets_as_distributions": true, "service": "vllm-gpt-oss-1", "tags":["model:openai/gpt-oss-120b","ip:${HOST_IP}", "port:8001"]}]'
 
   vllm-gpt-oss-2:
     <<: *gpt-oss-common
@@ -453,10 +410,10 @@ services:
               device_ids: ["3"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.check_names: '["openmetrics"]'
+      com.datadoghq.ad.check_names: '["vllm"]'
       com.datadoghq.ad.init_configs: "[{}]"
       com.datadoghq.ad.logs: '[{"source": "vllm", "service": "vllm", "tags":["model:openai/gpt-oss-120b","ip:${HOST_IP}", "port:8001","instance:2"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-gpt-oss-2:8000/metrics", "metrics":["vllm:.*"], "histogram_buckets_as_distributions": true, "service": "vllm-gpt-oss-2", "tags":["model:openai/gpt-oss-120b","ip:${HOST_IP}", "port:8001"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-gpt-oss-2:8000/metrics", "histogram_buckets_as_distributions": true, "service": "vllm-gpt-oss-2", "tags":["model:openai/gpt-oss-120b","ip:${HOST_IP}", "port:8001"]}]'
 
   # --- Qwen3.6-35B-A3B-FP8 x2 (GPUs 1, 4) — SGLang, TP=1, EAGLE-v2 spec, single proxy multi-backend ---
 
@@ -558,10 +515,10 @@ services:
               device_ids: ["5","6"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.check_names: '["openmetrics"]'
+      com.datadoghq.ad.check_names: '["vllm"]'
       com.datadoghq.ad.init_configs: "[{}]"
       com.datadoghq.ad.logs: '[{"source": "vllm", "service": "vllm", "tags":["model:google/gemma-4-31B-it","ip:${HOST_IP}", "port:8009"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-gemma-4-31b:8000/metrics", "metrics":["vllm:.*"], "histogram_buckets_as_distributions": true, "service": "vllm-gemma-4-31b", "tags":["model:google/gemma-4-31B-it","ip:${HOST_IP}", "port:8009"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-gemma-4-31b:8000/metrics", "histogram_buckets_as_distributions": true, "service": "vllm-gemma-4-31b", "tags":["model:google/gemma-4-31B-it","ip:${HOST_IP}", "port:8009"]}]'
 
   # --- FLUX x1 (GPU 7, shared with small models) ---
 
@@ -586,10 +543,10 @@ services:
     <<: *flux-common
     container_name: vllm-flux-2-klein-4b-1
     labels:
-      com.datadoghq.ad.check_names: '["openmetrics"]'
+      com.datadoghq.ad.check_names: '["vllm"]'
       com.datadoghq.ad.init_configs: "[{}]"
       com.datadoghq.ad.logs: '[{"source": "vllm", "service": "vllm", "tags":["model:black-forest-labs/FLUX.2-klein-4B","ip:${HOST_IP}", "port:8002","instance:1"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-flux-2-klein-4b-1:8000/metrics", "metrics":["vllm:.*"], "histogram_buckets_as_distributions": true, "service": "vllm-flux-2-klein-4b-1", "tags":["model:black-forest-labs/FLUX.2-klein-4B","ip:${HOST_IP}", "port:8002"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-flux-2-klein-4b-1:8000/metrics", "histogram_buckets_as_distributions": true, "service": "vllm-flux-2-klein-4b-1", "tags":["model:black-forest-labs/FLUX.2-klein-4B","ip:${HOST_IP}", "port:8002"]}]'
 
   # --- Qwen3-VL FP8 (GPU 7, shared with small models) ---
 
@@ -638,10 +595,10 @@ services:
               device_ids: ["7"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.check_names: '["openmetrics"]'
+      com.datadoghq.ad.check_names: '["vllm"]'
       com.datadoghq.ad.init_configs: "[{}]"
       com.datadoghq.ad.logs: '[{"source": "vllm", "service": "vllm", "tags":["model:Qwen/Qwen3-VL-30B-A3B-Instruct","ip:${HOST_IP}", "port:8003"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-qwen3-vl:8000/metrics", "metrics":["vllm:.*"], "histogram_buckets_as_distributions": true, "service": "vllm-qwen3-vl", "tags":["model:Qwen/Qwen3-VL-30B-A3B-Instruct","ip:${HOST_IP}", "port:8003"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-qwen3-vl:8000/metrics", "histogram_buckets_as_distributions": true, "service": "vllm-qwen3-vl", "tags":["model:Qwen/Qwen3-VL-30B-A3B-Instruct","ip:${HOST_IP}", "port:8003"]}]'
 
   # --- Embeddings, Reranker, Whisper (GPU 7) — single instance each ---
 
@@ -683,10 +640,10 @@ services:
               device_ids: ["7"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.check_names: '["openmetrics"]'
+      com.datadoghq.ad.check_names: '["vllm"]'
       com.datadoghq.ad.init_configs: "[{}]"
       com.datadoghq.ad.logs: '[{"source": "vllm", "service": "vllm", "tags":["model:Qwen/Qwen3-Embedding-0.6B","ip:${HOST_IP}", "port:8004"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-qwen3-embeddings:8000/metrics", "metrics":["vllm:.*"], "histogram_buckets_as_distributions": true, "service": "vllm-qwen3-embeddings", "tags":["model:Qwen/Qwen3-Embedding-0.6B","ip:${HOST_IP}", "port:8004"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-qwen3-embeddings:8000/metrics", "histogram_buckets_as_distributions": true, "service": "vllm-qwen3-embeddings", "tags":["model:Qwen/Qwen3-Embedding-0.6B","ip:${HOST_IP}", "port:8004"]}]'
 
   vllm-proxy-qwen3-reranker:
     <<: *vllm-proxy-common
@@ -726,10 +683,10 @@ services:
               device_ids: ["7"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.check_names: '["openmetrics"]'
+      com.datadoghq.ad.check_names: '["vllm"]'
       com.datadoghq.ad.init_configs: "[{}]"
       com.datadoghq.ad.logs: '[{"source": "vllm", "service": "vllm", "tags":["model:Qwen/Qwen3-Reranker-0.6B","ip:${HOST_IP}", "port:8005"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-qwen3-reranker:8000/metrics", "metrics":["vllm:.*"], "histogram_buckets_as_distributions": true, "service": "vllm-qwen3-reranker", "tags":["model:Qwen/Qwen3-Reranker-0.6B","ip:${HOST_IP}", "port:8005"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-qwen3-reranker:8000/metrics", "histogram_buckets_as_distributions": true, "service": "vllm-qwen3-reranker", "tags":["model:Qwen/Qwen3-Reranker-0.6B","ip:${HOST_IP}", "port:8005"]}]'
 
   vllm-proxy-whisper3-large:
     <<: *vllm-proxy-common
@@ -773,10 +730,10 @@ services:
               device_ids: ["7"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.check_names: '["openmetrics"]'
+      com.datadoghq.ad.check_names: '["vllm"]'
       com.datadoghq.ad.init_configs: "[{}]"
       com.datadoghq.ad.logs: '[{"source": "vllm", "service": "vllm", "tags":["model:openai/whisper-large-v3","ip:${HOST_IP}", "port:8005"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-whisper3-large:8000/metrics", "metrics":["vllm:.*"], "histogram_buckets_as_distributions": true, "service": "vllm-whisper3-large", "tags":["model:openai/whisper-large-v3","ip:${HOST_IP}", "port:8005"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-whisper3-large:8000/metrics", "histogram_buckets_as_distributions": true, "service": "vllm-whisper3-large", "tags":["model:openai/whisper-large-v3","ip:${HOST_IP}", "port:8005"]}]'
 
   # --- Privacy filter (GPU 7) — HF transformers token-classification ---
 
@@ -791,15 +748,7 @@ services:
       - MODEL_NAME=openai/privacy-filter
       - OHTTP_ENABLED=true
       - TOKEN=${PROXY_TOKEN}
-      # Temporary debug logging to diagnose why routing isn't picking CPU.
-      - RUST_LOG=vllm_proxy_rs=debug,info
-      # CPU listed FIRST. Rust's Iterator::min_by_key returns the FIRST
-      # element on ties (despite what the docs say — verified empirically;
-      # the stdlib impl only swaps on Ordering::Less). So under tied 0
-      # active_conns (the common case between sequential requests) CPU
-      # wins. GPU becomes the overflow target only once CPU has in-flight
-      # work, keeping GPU-7 contention out of the typical request path.
-      - VLLM_BACKEND_URLS=http://privacy-filter-cpu:8000,http://privacy-filter:8000
+      - VLLM_BASE_URL=http://privacy-filter:8000
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
     labels:
@@ -810,12 +759,6 @@ services:
     container_name: privacy-filter
     labels:
       com.datadoghq.ad.logs: '[{"source": "privacy-filter", "service": "privacy-filter", "tags":["model:openai/privacy-filter","ip:${HOST_IP}", "port:8007"]}]'
-
-  privacy-filter-cpu:
-    <<: *privacy-filter-cpu-common
-    container_name: privacy-filter-cpu
-    labels:
-      com.datadoghq.ad.logs: '[{"source": "privacy-filter", "service": "privacy-filter-cpu", "tags":["model:openai/privacy-filter","ip:${HOST_IP}", "port:8007", "device:cpu"]}]'
 
   dcgm-exporter:
     image: nvcr.io/nvidia/k8s/dcgm-exporter:4.5.2-4.8.1-distroless
