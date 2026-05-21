@@ -171,13 +171,9 @@ x-flux-common: &flux-common
             device_ids: ["7"]
             capabilities: [gpu]
 
-x-privacy-filter-common: &privacy-filter-common
-  <<: *nvidia
-  init: true
-  image: privacy-filter-hf
-  build:
-    context: .
-    dockerfile_inline: |
+x-privacy-filter-build: &privacy-filter-build
+  context: .
+  dockerfile_inline: |
       # syntax=docker/dockerfile:1.4
       FROM pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime
       RUN pip install --no-cache-dir \
@@ -187,6 +183,7 @@ x-privacy-filter-common: &privacy-filter-common
           "uvicorn[standard]"
       WORKDIR /app
       COPY <<'PYEOF' /app/server.py
+      import os
       import torch
       from fastapi import FastAPI, HTTPException
       from pydantic import BaseModel, Field
@@ -195,15 +192,21 @@ x-privacy-filter-common: &privacy-filter-common
       MODEL_ID = "openai/privacy-filter"
       MODEL_REVISION = "7ffa9a043d54d1be65afb281eddf0ffbe629385b"
 
-      clf = pipeline(
-          "token-classification",
+      # PRIVACY_FILTER_DEVICE: "cpu" forces CPU + float32; anything else (default
+      # "auto") uses the first visible GPU + bfloat16. Two service variants
+      # share this image so vllm-proxy-rs can least-connections across them.
+      _device = os.environ.get("PRIVACY_FILTER_DEVICE", "auto").lower()
+      _kwargs = dict(
           model=MODEL_ID,
           revision=MODEL_REVISION,
           aggregation_strategy="simple",
-          device_map="auto",
-          torch_dtype=torch.bfloat16,
           trust_remote_code=True,
       )
+      if _device == "cpu":
+          _kwargs.update(device=-1, torch_dtype=torch.float32)
+      else:
+          _kwargs.update(device_map="auto", torch_dtype=torch.bfloat16)
+      clf = pipeline("token-classification", **_kwargs)
       tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, revision=MODEL_REVISION, trust_remote_code=True)
 
       app = FastAPI()
@@ -251,6 +254,12 @@ x-privacy-filter-common: &privacy-filter-common
       PYEOF
       EXPOSE 8000
       CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8000"]
+
+x-privacy-filter-common: &privacy-filter-common
+  <<: *nvidia
+  init: true
+  image: privacy-filter-hf
+  build: *privacy-filter-build
   volumes:
     - hugginface_cache:/root/.cache/huggingface
   environment:
@@ -266,6 +275,31 @@ x-privacy-filter-common: &privacy-filter-common
           - driver: nvidia
             device_ids: ["7"]
             capabilities: [gpu]
+
+# CPU-only sibling of x-privacy-filter-common. Same image (so the build is
+# shared and dockerfile_inline stays in one place), but no nvidia runtime,
+# no GPU reservation, and PRIVACY_FILTER_DEVICE=cpu so the pipeline loads
+# on CPU with float32. Routed alongside the GPU instance via vllm-proxy-rs
+# least-connections so requests dodge GPU-7 contention spikes.
+x-privacy-filter-cpu-common: &privacy-filter-cpu-common
+  init: true
+  # Distinct image tag (vs privacy-filter-hf) so compose-manager's
+  # `docker compose pull --ignore-buildable` doesn't see two services sharing
+  # one image name and try to pull this one as a registry image. The build
+  # content is identical, so docker reuses cached layers — it's only a tag
+  # alias, not a second build pass.
+  image: privacy-filter-hf-cpu
+  build: *privacy-filter-build
+  volumes:
+    - hugginface_cache:/root/.cache/huggingface
+  environment:
+    - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+    - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0}
+    - PRIVACY_FILTER_DEVICE=cpu
+    - OMP_NUM_THREADS=4
+    - MKL_NUM_THREADS=4
+  restart: unless-stopped
+  logging: *logging-conf
 
 services:
   nginx:
@@ -748,7 +782,7 @@ services:
       - MODEL_NAME=openai/privacy-filter
       - OHTTP_ENABLED=true
       - TOKEN=${PROXY_TOKEN}
-      - VLLM_BASE_URL=http://privacy-filter:8000
+      - VLLM_BACKEND_URLS=http://privacy-filter:8000,http://privacy-filter-cpu:8000
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
     labels:
@@ -759,6 +793,12 @@ services:
     container_name: privacy-filter
     labels:
       com.datadoghq.ad.logs: '[{"source": "privacy-filter", "service": "privacy-filter", "tags":["model:openai/privacy-filter","ip:${HOST_IP}", "port:8007"]}]'
+
+  privacy-filter-cpu:
+    <<: *privacy-filter-cpu-common
+    container_name: privacy-filter-cpu
+    labels:
+      com.datadoghq.ad.logs: '[{"source": "privacy-filter", "service": "privacy-filter-cpu", "tags":["model:openai/privacy-filter","ip:${HOST_IP}", "port:8007", "device:cpu"]}]'
 
   dcgm-exporter:
     image: nvcr.io/nvidia/k8s/dcgm-exporter:4.5.2-4.8.1-distroless
