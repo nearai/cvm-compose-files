@@ -268,9 +268,9 @@ x-privacy-filter-common: &privacy-filter-common
             capabilities: [gpu]
 
 services:
-  nginx:
+  proxy-nginx:
     image: nginx@sha256:1d13701a5f9f3fb01aaa88cef2344d65b6b5bf6b7d9fa4cf0dca557a8d7702ba
-    container_name: nginx
+    container_name: proxy-nginx
     command: /bin/sh -c 'while :; do sleep 6h; nginx -s reload; done & nginx -g "daemon off;"'
     ports:
       - "80:80"
@@ -310,9 +310,9 @@ services:
 
   # --- Qwen3-30B (GPUs 0-1) — single instance, single proxy ---
 
-  vllm-proxy-qwen3-30b:
+  proxy-qwen3-30b:
     <<: *vllm-proxy-common
-    container_name: vllm-proxy-qwen3-30b
+    container_name: proxy-qwen3-30b
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - CLOUD_API_URL=https://cloud-api.near.ai
@@ -321,16 +321,16 @@ services:
       - MODEL_NAME=Qwen/Qwen3-30B-A3B-Instruct-2507
       - OHTTP_ENABLED=true
       - TOKEN=${PROXY_TOKEN}
-      - VLLM_BASE_URL=http://vllm-qwen3-30b:8000
+      - VLLM_BASE_URL=http://model-vllm-qwen3-30b:8000
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
     labels:
       com.datadoghq.ad.logs: '[{"source": "vllm-proxy", "service": "vllm-proxy", "tags": ["model:Qwen/Qwen3-30B-A3B-Instruct-2507", "ip:${HOST_IP}", "port:8000"]}]'
 
-  vllm-qwen3-30b:
+  model-vllm-qwen3-30b:
     <<: *vllm-common
     image: vllm/vllm-openai@sha256:ccd6a6dbf4aba4e94c6f7052d1835d6e742082b6a5095276552e9b7a5a47c2e5
-    container_name: vllm-qwen3-30b
+    container_name: model-vllm-qwen3-30b
     command: >
         Qwen/Qwen3-30B-A3B-Instruct-2507
         --revision 0d7cf23991f47feeb3a57ecb4c9cee8ea4a17bfe
@@ -362,13 +362,13 @@ services:
       com.datadoghq.ad.check_names: '["vllm"]'
       com.datadoghq.ad.init_configs: "[{}]"
       com.datadoghq.ad.logs: '[{"source": "vllm", "service": "vllm", "tags":["model:Qwen/Qwen3-30B-A3B-Instruct-2507","ip:${HOST_IP}", "port:8000"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-qwen3-30b:8000/metrics", "histogram_buckets_as_distributions": true, "service": "vllm-qwen3-30b", "tags":["model:Qwen/Qwen3-30B-A3B-Instruct-2507","ip:${HOST_IP}", "port:8000"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-qwen3-30b:8000/metrics", "histogram_buckets_as_distributions": true, "service": "model-vllm-qwen3-30b", "tags":["model:Qwen/Qwen3-30B-A3B-Instruct-2507","ip:${HOST_IP}", "port:8000"]}]'
 
   # --- GPT-OSS x2 (GPUs 2, 3) — single proxy, multi-backend ---
 
-  vllm-proxy-gpt-oss:
+  proxy-gpt-oss:
     <<: *vllm-proxy-common
-    container_name: vllm-proxy-gpt-oss
+    container_name: proxy-gpt-oss
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - CLOUD_API_URL=https://cloud-api.near.ai
@@ -377,15 +377,15 @@ services:
       - MODEL_NAME=openai/gpt-oss-120b
       - OHTTP_ENABLED=true
       - TOKEN=${PROXY_TOKEN}
-      - VLLM_BACKEND_URLS=http://vllm-gpt-oss-1:8000,http://vllm-gpt-oss-2:8000
+      - VLLM_BACKEND_URLS=http://model-vllm-gpt-oss-1:8000,http://model-vllm-gpt-oss-2:8000
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
     labels:
       com.datadoghq.ad.logs: '[{"source": "vllm-proxy", "service": "vllm-proxy", "tags": ["model:openai/gpt-oss-120b", "ip:${HOST_IP}", "port:8001"]}]'
 
-  vllm-gpt-oss-1:
+  model-vllm-gpt-oss-1:
     <<: *gpt-oss-common
-    container_name: vllm-gpt-oss-1
+    container_name: model-vllm-gpt-oss-1
     deploy:
       resources:
         reservations:
@@ -397,11 +397,11 @@ services:
       com.datadoghq.ad.check_names: '["vllm"]'
       com.datadoghq.ad.init_configs: "[{}]"
       com.datadoghq.ad.logs: '[{"source": "vllm", "service": "vllm", "tags":["model:openai/gpt-oss-120b","ip:${HOST_IP}", "port:8001","instance:1"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-gpt-oss-1:8000/metrics", "histogram_buckets_as_distributions": true, "service": "vllm-gpt-oss-1", "tags":["model:openai/gpt-oss-120b","ip:${HOST_IP}", "port:8001"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-gpt-oss-1:8000/metrics", "histogram_buckets_as_distributions": true, "service": "model-vllm-gpt-oss-1", "tags":["model:openai/gpt-oss-120b","ip:${HOST_IP}", "port:8001"]}]'
 
-  vllm-gpt-oss-2:
+  model-vllm-gpt-oss-2:
     <<: *gpt-oss-common
-    container_name: vllm-gpt-oss-2
+    container_name: model-vllm-gpt-oss-2
     deploy:
       resources:
         reservations:
@@ -413,13 +413,13 @@ services:
       com.datadoghq.ad.check_names: '["vllm"]'
       com.datadoghq.ad.init_configs: "[{}]"
       com.datadoghq.ad.logs: '[{"source": "vllm", "service": "vllm", "tags":["model:openai/gpt-oss-120b","ip:${HOST_IP}", "port:8001","instance:2"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-gpt-oss-2:8000/metrics", "histogram_buckets_as_distributions": true, "service": "vllm-gpt-oss-2", "tags":["model:openai/gpt-oss-120b","ip:${HOST_IP}", "port:8001"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-gpt-oss-2:8000/metrics", "histogram_buckets_as_distributions": true, "service": "model-vllm-gpt-oss-2", "tags":["model:openai/gpt-oss-120b","ip:${HOST_IP}", "port:8001"]}]'
 
   # --- Qwen3.6-35B-A3B-FP8 x2 (GPUs 1, 4) — SGLang, TP=1, EAGLE-v2 spec, single proxy multi-backend ---
 
-  vllm-proxy-qwen3-6-35b:
+  proxy-qwen3-6-35b:
     <<: *vllm-proxy-common
-    container_name: vllm-proxy-qwen3-6-35b
+    container_name: proxy-qwen3-6-35b
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - CLOUD_API_URL=https://cloud-api.near.ai
@@ -428,15 +428,15 @@ services:
       - MODEL_NAME=Qwen/Qwen3.6-35B-A3B-FP8
       - OHTTP_ENABLED=true
       - TOKEN=${PROXY_TOKEN}
-      - VLLM_BACKEND_URLS=http://vllm-qwen3-6-35b-1:8000,http://vllm-qwen3-6-35b-2:8000
+      - VLLM_BACKEND_URLS=http://model-sg-qwen3-6-35b-1:8000,http://model-sg-qwen3-6-35b-2:8000
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
     labels:
       com.datadoghq.ad.logs: '[{"source": "vllm-proxy", "service": "vllm-proxy", "tags": ["model:Qwen/Qwen3.6-35B-A3B-FP8", "ip:${HOST_IP}", "port:8008"]}]'
 
-  vllm-qwen3-6-35b-1:
+  model-sg-qwen3-6-35b-1:
     <<: *qwen3-6-common
-    container_name: vllm-qwen3-6-35b-1
+    container_name: model-sg-qwen3-6-35b-1
     deploy:
       resources:
         reservations:
@@ -448,11 +448,11 @@ services:
       com.datadoghq.ad.check_names: '["openmetrics"]'
       com.datadoghq.ad.init_configs: "[{}]"
       com.datadoghq.ad.logs: '[{"source": "sglang", "service": "sglang", "tags":["model:Qwen/Qwen3.6-35B-A3B-FP8","ip:${HOST_IP}", "port:8008","instance:1"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-qwen3-6-35b-1:8000/metrics", "histogram_buckets_as_distributions": true, "metrics":["sglang:*"], "service": "vllm-qwen3-6-35b-1", "tags":["model:Qwen/Qwen3.6-35B-A3B-FP8","ip:${HOST_IP}", "port:8008"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-sg-qwen3-6-35b-1:8000/metrics", "histogram_buckets_as_distributions": true, "metrics":["sglang:*"], "service": "model-sg-qwen3-6-35b-1", "tags":["model:Qwen/Qwen3.6-35B-A3B-FP8","ip:${HOST_IP}", "port:8008"]}]'
 
-  vllm-qwen3-6-35b-2:
+  model-sg-qwen3-6-35b-2:
     <<: *qwen3-6-common
-    container_name: vllm-qwen3-6-35b-2
+    container_name: model-sg-qwen3-6-35b-2
     deploy:
       resources:
         reservations:
@@ -464,13 +464,13 @@ services:
       com.datadoghq.ad.check_names: '["openmetrics"]'
       com.datadoghq.ad.init_configs: "[{}]"
       com.datadoghq.ad.logs: '[{"source": "sglang", "service": "sglang", "tags":["model:Qwen/Qwen3.6-35B-A3B-FP8","ip:${HOST_IP}", "port:8008","instance:2"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-qwen3-6-35b-2:8000/metrics", "histogram_buckets_as_distributions": true, "metrics":["sglang:*"], "service": "vllm-qwen3-6-35b-2", "tags":["model:Qwen/Qwen3.6-35B-A3B-FP8","ip:${HOST_IP}", "port:8008"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-sg-qwen3-6-35b-2:8000/metrics", "histogram_buckets_as_distributions": true, "metrics":["sglang:*"], "service": "model-sg-qwen3-6-35b-2", "tags":["model:Qwen/Qwen3.6-35B-A3B-FP8","ip:${HOST_IP}", "port:8008"]}]'
 
   # --- Gemma-4-31B-it (GPUs 5-6 TP=2, BF16) — single instance, single proxy ---
 
-  vllm-proxy-gemma-4-31b:
+  proxy-gemma-4-31b:
     <<: *vllm-proxy-common
-    container_name: vllm-proxy-gemma-4-31b
+    container_name: proxy-gemma-4-31b
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - CLOUD_API_URL=https://cloud-api.near.ai
@@ -479,16 +479,16 @@ services:
       - MODEL_NAME=google/gemma-4-31B-it
       - OHTTP_ENABLED=true
       - TOKEN=${PROXY_TOKEN}
-      - VLLM_BASE_URL=http://vllm-gemma-4-31b:8000
+      - VLLM_BASE_URL=http://model-vllm-gemma-4-31b:8000
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
     labels:
       com.datadoghq.ad.logs: '[{"source": "vllm-proxy", "service": "vllm-proxy", "tags": ["model:google/gemma-4-31B-it", "ip:${HOST_IP}", "port:8009"]}]'
 
-  vllm-gemma-4-31b:
+  model-vllm-gemma-4-31b:
     <<: *vllm-common
     image: vllm/vllm-openai@sha256:518c1dc54c87d1320d969c6b827d75300ea2cca6908420c0ea5d221c38a6665d  # v0.20.2-cu129-ubuntu2404 — required for gemma4
-    container_name: vllm-gemma-4-31b
+    container_name: model-vllm-gemma-4-31b
     command: >
         google/gemma-4-31B-it
         --revision ba74f5b6c647c0911554e50278d6f6f4477f9010
@@ -518,13 +518,13 @@ services:
       com.datadoghq.ad.check_names: '["vllm"]'
       com.datadoghq.ad.init_configs: "[{}]"
       com.datadoghq.ad.logs: '[{"source": "vllm", "service": "vllm", "tags":["model:google/gemma-4-31B-it","ip:${HOST_IP}", "port:8009"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-gemma-4-31b:8000/metrics", "histogram_buckets_as_distributions": true, "service": "vllm-gemma-4-31b", "tags":["model:google/gemma-4-31B-it","ip:${HOST_IP}", "port:8009"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-gemma-4-31b:8000/metrics", "histogram_buckets_as_distributions": true, "service": "model-vllm-gemma-4-31b", "tags":["model:google/gemma-4-31B-it","ip:${HOST_IP}", "port:8009"]}]'
 
   # --- FLUX x1 (GPU 7, shared with small models) ---
 
-  vllm-proxy-flux:
+  proxy-flux:
     <<: *vllm-proxy-common
-    container_name: vllm-proxy-flux
+    container_name: proxy-flux
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - CLOUD_API_URL=https://cloud-api.near.ai
@@ -533,26 +533,26 @@ services:
       - MODEL_NAME=black-forest-labs/FLUX.2-klein-4B
       - OHTTP_ENABLED=true
       - TOKEN=${PROXY_TOKEN}
-      - VLLM_BASE_URL=http://vllm-flux-2-klein-4b-1:8000
+      - VLLM_BASE_URL=http://model-sg-flux-2-klein-4b-1:8000
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
     labels:
       com.datadoghq.ad.logs: '[{"source": "vllm-proxy", "service": "vllm-proxy", "tags": ["model:black-forest-labs/FLUX.2-klein-4B", "ip:${HOST_IP}", "port:8002"]}]'
 
-  vllm-flux-2-klein-4b-1:
+  model-sg-flux-2-klein-4b-1:
     <<: *flux-common
-    container_name: vllm-flux-2-klein-4b-1
+    container_name: model-sg-flux-2-klein-4b-1
     labels:
-      com.datadoghq.ad.check_names: '["vllm"]'
+      com.datadoghq.ad.check_names: '["openmetrics"]'
       com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.logs: '[{"source": "vllm", "service": "vllm", "tags":["model:black-forest-labs/FLUX.2-klein-4B","ip:${HOST_IP}", "port:8002","instance:1"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-flux-2-klein-4b-1:8000/metrics", "histogram_buckets_as_distributions": true, "service": "vllm-flux-2-klein-4b-1", "tags":["model:black-forest-labs/FLUX.2-klein-4B","ip:${HOST_IP}", "port:8002"]}]'
+      com.datadoghq.ad.logs: '[{"source": "sglang", "service": "sglang", "tags":["model:black-forest-labs/FLUX.2-klein-4B","ip:${HOST_IP}", "port:8002","instance:1"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-sg-flux-2-klein-4b-1:8000/metrics", "histogram_buckets_as_distributions": true, "metrics":["sglang:*"], "service": "model-sg-flux-2-klein-4b-1", "tags":["model:black-forest-labs/FLUX.2-klein-4B","ip:${HOST_IP}", "port:8002"]}]'
 
   # --- Qwen3-VL FP8 (GPU 7, shared with small models) ---
 
-  vllm-proxy-qwen3-vl:
+  proxy-qwen3-vl:
     <<: *vllm-proxy-common
-    container_name: vllm-proxy-qwen3-vl
+    container_name: proxy-qwen3-vl
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - CLOUD_API_URL=https://cloud-api.near.ai
@@ -561,16 +561,16 @@ services:
       - MODEL_NAME=Qwen/Qwen3-VL-30B-A3B-Instruct
       - OHTTP_ENABLED=true
       - TOKEN=${PROXY_TOKEN}
-      - VLLM_BASE_URL=http://vllm-qwen3-vl:8000
+      - VLLM_BASE_URL=http://model-vllm-qwen3-vl:8000
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
     labels:
       com.datadoghq.ad.logs: '[{"source": "vllm-proxy", "service": "vllm-proxy", "tags": ["model:Qwen/Qwen3-VL-30B-A3B-Instruct", "ip:${HOST_IP}", "port:8003"]}]'
 
-  vllm-qwen3-vl:
+  model-vllm-qwen3-vl:
     <<: *vllm-common
     image: vllm/vllm-openai@sha256:ccd6a6dbf4aba4e94c6f7052d1835d6e742082b6a5095276552e9b7a5a47c2e5
-    container_name: vllm-qwen3-vl
+    container_name: model-vllm-qwen3-vl
     command: >
         Qwen/Qwen3-VL-30B-A3B-Instruct-FP8
         --revision d9748a51ae66354c4dad665aab2c71f26cf2c8cd
@@ -598,13 +598,13 @@ services:
       com.datadoghq.ad.check_names: '["vllm"]'
       com.datadoghq.ad.init_configs: "[{}]"
       com.datadoghq.ad.logs: '[{"source": "vllm", "service": "vllm", "tags":["model:Qwen/Qwen3-VL-30B-A3B-Instruct","ip:${HOST_IP}", "port:8003"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-qwen3-vl:8000/metrics", "histogram_buckets_as_distributions": true, "service": "vllm-qwen3-vl", "tags":["model:Qwen/Qwen3-VL-30B-A3B-Instruct","ip:${HOST_IP}", "port:8003"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-qwen3-vl:8000/metrics", "histogram_buckets_as_distributions": true, "service": "model-vllm-qwen3-vl", "tags":["model:Qwen/Qwen3-VL-30B-A3B-Instruct","ip:${HOST_IP}", "port:8003"]}]'
 
   # --- Embeddings, Reranker, Whisper (GPU 7) — single instance each ---
 
-  vllm-proxy-qwen3-embeddings:
+  proxy-qwen3-embeddings:
     <<: *vllm-proxy-common
-    container_name: vllm-proxy-qwen3-embeddings
+    container_name: proxy-qwen3-embeddings
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - CLOUD_API_URL=https://cloud-api.near.ai
@@ -613,16 +613,16 @@ services:
       - MODEL_NAME=Qwen/Qwen3-Embedding-0.6B
       - OHTTP_ENABLED=true
       - TOKEN=${PROXY_TOKEN}
-      - VLLM_BASE_URL=http://vllm-qwen3-embeddings:8000
+      - VLLM_BASE_URL=http://model-vllm-qwen3-embeddings:8000
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
     labels:
       com.datadoghq.ad.logs: '[{"source": "vllm-proxy", "service": "vllm-proxy", "tags": ["model:Qwen/Qwen3-Embedding-0.6B", "ip:${HOST_IP}", "port:8004"]}]'
 
-  vllm-qwen3-embeddings:
+  model-vllm-qwen3-embeddings:
     <<: *vllm-common
     image: vllm/vllm-openai@sha256:ccd6a6dbf4aba4e94c6f7052d1835d6e742082b6a5095276552e9b7a5a47c2e5
-    container_name: vllm-qwen3-embeddings
+    container_name: model-vllm-qwen3-embeddings
     command: >
         Qwen/Qwen3-Embedding-0.6B
         --revision 97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3
@@ -643,11 +643,11 @@ services:
       com.datadoghq.ad.check_names: '["vllm"]'
       com.datadoghq.ad.init_configs: "[{}]"
       com.datadoghq.ad.logs: '[{"source": "vllm", "service": "vllm", "tags":["model:Qwen/Qwen3-Embedding-0.6B","ip:${HOST_IP}", "port:8004"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-qwen3-embeddings:8000/metrics", "histogram_buckets_as_distributions": true, "service": "vllm-qwen3-embeddings", "tags":["model:Qwen/Qwen3-Embedding-0.6B","ip:${HOST_IP}", "port:8004"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-qwen3-embeddings:8000/metrics", "histogram_buckets_as_distributions": true, "service": "model-vllm-qwen3-embeddings", "tags":["model:Qwen/Qwen3-Embedding-0.6B","ip:${HOST_IP}", "port:8004"]}]'
 
-  vllm-proxy-qwen3-reranker:
+  proxy-qwen3-reranker:
     <<: *vllm-proxy-common
-    container_name: vllm-proxy-qwen3-reranker
+    container_name: proxy-qwen3-reranker
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - CLOUD_API_URL=https://cloud-api.near.ai
@@ -656,16 +656,16 @@ services:
       - MODEL_NAME=Qwen/Qwen3-Reranker-0.6B
       - OHTTP_ENABLED=true
       - TOKEN=${PROXY_TOKEN}
-      - VLLM_BASE_URL=http://vllm-qwen3-reranker:8000
+      - VLLM_BASE_URL=http://model-vllm-qwen3-reranker:8000
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
     labels:
       com.datadoghq.ad.logs: '[{"source": "vllm-proxy", "service": "vllm-proxy", "tags": ["model:Qwen/Qwen3-Reranker-0.6B", "ip:${HOST_IP}", "port:8005"]}]'
 
-  vllm-qwen3-reranker:
+  model-vllm-qwen3-reranker:
     <<: *vllm-common
     image: vllm/vllm-openai@sha256:ccd6a6dbf4aba4e94c6f7052d1835d6e742082b6a5095276552e9b7a5a47c2e5
-    container_name: vllm-qwen3-reranker
+    container_name: model-vllm-qwen3-reranker
     command: >
         Qwen/Qwen3-Reranker-0.6B
         --revision e61197ed45024b0ed8a2d74b80b4d909f1255473
@@ -686,11 +686,11 @@ services:
       com.datadoghq.ad.check_names: '["vllm"]'
       com.datadoghq.ad.init_configs: "[{}]"
       com.datadoghq.ad.logs: '[{"source": "vllm", "service": "vllm", "tags":["model:Qwen/Qwen3-Reranker-0.6B","ip:${HOST_IP}", "port:8005"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-qwen3-reranker:8000/metrics", "histogram_buckets_as_distributions": true, "service": "vllm-qwen3-reranker", "tags":["model:Qwen/Qwen3-Reranker-0.6B","ip:${HOST_IP}", "port:8005"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-qwen3-reranker:8000/metrics", "histogram_buckets_as_distributions": true, "service": "model-vllm-qwen3-reranker", "tags":["model:Qwen/Qwen3-Reranker-0.6B","ip:${HOST_IP}", "port:8005"]}]'
 
-  vllm-proxy-whisper3-large:
+  proxy-whisper3-large:
     <<: *vllm-proxy-common
-    container_name: vllm-proxy-whisper3-large
+    container_name: proxy-whisper3-large
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - CLOUD_API_URL=https://cloud-api.near.ai
@@ -699,13 +699,13 @@ services:
       - MODEL_NAME=openai/whisper-large-v3
       - OHTTP_ENABLED=true
       - TOKEN=${PROXY_TOKEN}
-      - VLLM_BASE_URL=http://vllm-whisper3-large:8000
+      - VLLM_BASE_URL=http://model-vllm-whisper3-large:8000
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
     labels:
       com.datadoghq.ad.logs: '[{"source": "vllm-proxy", "service": "vllm-proxy", "tags": ["model:openai/whisper-large-v3", "ip:${HOST_IP}", "port:8005"]}]'
 
-  vllm-whisper3-large:
+  model-vllm-whisper3-large:
     <<: *vllm-common
     image: vllm-with-audio
     build:
@@ -713,7 +713,7 @@ services:
       dockerfile_inline: |
         FROM vllm/vllm-openai@sha256:ccd6a6dbf4aba4e94c6f7052d1835d6e742082b6a5095276552e9b7a5a47c2e5
         RUN pip install openai-whisper torchaudio librosa vllm[audio]
-    container_name: vllm-whisper3-large
+    container_name: model-vllm-whisper3-large
     command: >
         openai/whisper-large-v3
         --revision 06f233fe06e710322aca913c1bc4249a0d71fce1
@@ -733,13 +733,13 @@ services:
       com.datadoghq.ad.check_names: '["vllm"]'
       com.datadoghq.ad.init_configs: "[{}]"
       com.datadoghq.ad.logs: '[{"source": "vllm", "service": "vllm", "tags":["model:openai/whisper-large-v3","ip:${HOST_IP}", "port:8005"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-whisper3-large:8000/metrics", "histogram_buckets_as_distributions": true, "service": "vllm-whisper3-large", "tags":["model:openai/whisper-large-v3","ip:${HOST_IP}", "port:8005"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-whisper3-large:8000/metrics", "histogram_buckets_as_distributions": true, "service": "model-vllm-whisper3-large", "tags":["model:openai/whisper-large-v3","ip:${HOST_IP}", "port:8005"]}]'
 
   # --- Privacy filter (GPU 7) — HF transformers token-classification ---
 
-  vllm-proxy-privacy-filter:
+  proxy-privacy-filter:
     <<: *vllm-proxy-common
-    container_name: vllm-proxy-privacy-filter
+    container_name: proxy-privacy-filter
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - CLOUD_API_URL=https://cloud-api.near.ai
@@ -748,17 +748,17 @@ services:
       - MODEL_NAME=openai/privacy-filter
       - OHTTP_ENABLED=true
       - TOKEN=${PROXY_TOKEN}
-      - VLLM_BASE_URL=http://privacy-filter:8000
+      - VLLM_BASE_URL=http://model-privacy-filter:8000
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
     labels:
       com.datadoghq.ad.logs: '[{"source": "vllm-proxy", "service": "vllm-proxy", "tags": ["model:openai/privacy-filter", "ip:${HOST_IP}", "port:8007"]}]'
 
-  privacy-filter:
+  model-privacy-filter:
     <<: *privacy-filter-common
-    container_name: privacy-filter
+    container_name: model-privacy-filter
     labels:
-      com.datadoghq.ad.logs: '[{"source": "privacy-filter", "service": "privacy-filter", "tags":["model:openai/privacy-filter","ip:${HOST_IP}", "port:8007"]}]'
+      com.datadoghq.ad.logs: '[{"source": "privacy-filter", "service": "model-privacy-filter", "tags":["model:openai/privacy-filter","ip:${HOST_IP}", "port:8007"]}]'
 
   dcgm-exporter:
     image: nvcr.io/nvidia/k8s/dcgm-exporter:4.5.2-4.8.1-distroless
@@ -852,21 +852,21 @@ configs:
 
       check_port() {
         case $$1 in
-          8000) check_chat vllm-qwen3-30b "Qwen/Qwen3-30B-A3B-Instruct-2507" ;;
-          8001) check_chat vllm-gpt-oss-1 "openai/gpt-oss-120b" ;;
-          8002) curl -sf --max-time 10 "http://vllm-flux-2-klein-4b-1:8000/v1/models" > /dev/null 2>&1 ;;
-          8003) check_chat vllm-qwen3-vl "Qwen/Qwen3-VL-30B-A3B-Instruct" ;;
-          8004) curl -sf --max-time 10 "http://vllm-qwen3-embeddings:8000/v1/models" > /dev/null 2>&1 ;;
-          8005) curl -sf --max-time 10 "http://vllm-qwen3-reranker:8000/v1/models" > /dev/null 2>&1 ;;
-          8006) curl -sf --max-time 10 "http://vllm-whisper3-large:8000/v1/models" > /dev/null 2>&1 ;;
-          8007) curl -sf --max-time 10 "http://privacy-filter:8000/v1/models" > /dev/null 2>&1 ;;
-          8008) check_chat vllm-qwen3-6-35b-1 "Qwen/Qwen3.6-35B-A3B-FP8" ;;
-          8009) check_chat vllm-gemma-4-31b "google/gemma-4-31B-it" ;;
+          8000) check_chat model-vllm-qwen3-30b "Qwen/Qwen3-30B-A3B-Instruct-2507" ;;
+          8001) check_chat model-vllm-gpt-oss-1 "openai/gpt-oss-120b" ;;
+          8002) curl -sf --max-time 10 "http://model-sg-flux-2-klein-4b-1:8000/v1/models" > /dev/null 2>&1 ;;
+          8003) check_chat model-vllm-qwen3-vl "Qwen/Qwen3-VL-30B-A3B-Instruct" ;;
+          8004) curl -sf --max-time 10 "http://model-vllm-qwen3-embeddings:8000/v1/models" > /dev/null 2>&1 ;;
+          8005) curl -sf --max-time 10 "http://model-vllm-qwen3-reranker:8000/v1/models" > /dev/null 2>&1 ;;
+          8006) curl -sf --max-time 10 "http://model-vllm-whisper3-large:8000/v1/models" > /dev/null 2>&1 ;;
+          8007) curl -sf --max-time 10 "http://model-privacy-filter:8000/v1/models" > /dev/null 2>&1 ;;
+          8008) check_chat model-sg-qwen3-6-35b-1 "Qwen/Qwen3.6-35B-A3B-FP8" ;;
+          8009) check_chat model-vllm-gemma-4-31b "google/gemma-4-31B-it" ;;
         esac
       }
 
       echo "Waiting for first model to be ready..."
-      until curl -sf http://nginx:8000/v1/models > /dev/null 2>&1; do sleep 30; done
+      until curl -sf http://proxy-nginx:8000/v1/models > /dev/null 2>&1; do sleep 30; done
       echo "First model ready, starting registration loop"
 
       while true; do
@@ -919,61 +919,61 @@ configs:
       # :8000 - Qwen3-30B
       server {
           listen 8000;
-          location / { proxy_pass http://vllm-proxy-qwen3-30b:8000; }
+          location / { proxy_pass http://proxy-qwen3-30b:8000; }
       }
 
       # :8001 - GPT-OSS (single proxy, 2 backends)
       server {
           listen 8001;
-          location / { proxy_pass http://vllm-proxy-gpt-oss:8000; }
+          location / { proxy_pass http://proxy-gpt-oss:8000; }
       }
 
       # :8002 - FLUX (single proxy, 4 backends)
       server {
           listen 8002;
-          location / { proxy_pass http://vllm-proxy-flux:8000; }
+          location / { proxy_pass http://proxy-flux:8000; }
       }
 
       # :8003 - Qwen3-VL
       server {
           listen 8003;
-          location / { proxy_pass http://vllm-proxy-qwen3-vl:8000; }
+          location / { proxy_pass http://proxy-qwen3-vl:8000; }
       }
 
       # :8004 - Embeddings
       server {
           listen 8004;
-          location / { proxy_pass http://vllm-proxy-qwen3-embeddings:8000; }
+          location / { proxy_pass http://proxy-qwen3-embeddings:8000; }
       }
 
       # :8005 - Reranker
       server {
           listen 8005;
-          location / { proxy_pass http://vllm-proxy-qwen3-reranker:8000; }
+          location / { proxy_pass http://proxy-qwen3-reranker:8000; }
       }
 
       # :8006 - Whisper
       server {
           listen 8006;
-          location / { proxy_pass http://vllm-proxy-whisper3-large:8000; }
+          location / { proxy_pass http://proxy-whisper3-large:8000; }
       }
 
       # :8007 - Privacy-filter
       server {
           listen 8007;
-          location / { proxy_pass http://vllm-proxy-privacy-filter:8000; }
+          location / { proxy_pass http://proxy-privacy-filter:8000; }
       }
 
       # :8008 - Qwen3.6-35B-A3B-FP8
       server {
           listen 8008;
-          location / { proxy_pass http://vllm-proxy-qwen3-6-35b:8000; }
+          location / { proxy_pass http://proxy-qwen3-6-35b:8000; }
       }
 
       # :8009 - Gemma-4-31B-it
       server {
           listen 8009;
-          location / { proxy_pass http://vllm-proxy-gemma-4-31b:8000; }
+          location / { proxy_pass http://proxy-gemma-4-31b:8000; }
       }
 
       # ── TLS server blocks (port 443 = host 8444) ──
@@ -994,68 +994,68 @@ configs:
           listen 443 ssl http2;
           server_name qwen3-30b.completions.near.ai
                       ~^qwen3-30b-i\d+\.completions\.near\.ai$$;
-          location / { proxy_pass http://vllm-proxy-qwen3-30b:8000; }
+          location / { proxy_pass http://proxy-qwen3-30b:8000; }
       }
 
       server {
           listen 443 ssl http2;
           server_name gpt-oss-120b.completions.near.ai
                       ~^gpt-oss-120b-i\d+\.completions\.near\.ai$$;
-          location / { proxy_pass http://vllm-proxy-gpt-oss:8000; }
+          location / { proxy_pass http://proxy-gpt-oss:8000; }
       }
 
       server {
           listen 443 ssl http2;
           server_name flux2-klein.completions.near.ai
                       ~^flux2-klein-i\d+\.completions\.near\.ai$$;
-          location / { proxy_pass http://vllm-proxy-flux:8000; }
+          location / { proxy_pass http://proxy-flux:8000; }
       }
 
       server {
           listen 443 ssl http2;
           server_name qwen3-vl-30b.completions.near.ai
                       ~^qwen3-vl-30b-i\d+\.completions\.near\.ai$$;
-          location / { proxy_pass http://vllm-proxy-qwen3-vl:8000; }
+          location / { proxy_pass http://proxy-qwen3-vl:8000; }
       }
 
       server {
           listen 443 ssl http2;
           server_name qwen3-embedding.completions.near.ai
                       ~^qwen3-embedding-i\d+\.completions\.near\.ai$$;
-          location / { proxy_pass http://vllm-proxy-qwen3-embeddings:8000; }
+          location / { proxy_pass http://proxy-qwen3-embeddings:8000; }
       }
 
       server {
           listen 443 ssl http2;
           server_name qwen3-reranker.completions.near.ai
                       ~^qwen3-reranker-i\d+\.completions\.near\.ai$$;
-          location / { proxy_pass http://vllm-proxy-qwen3-reranker:8000; }
+          location / { proxy_pass http://proxy-qwen3-reranker:8000; }
       }
 
       server {
           listen 443 ssl http2;
           server_name whisper-large-v3.completions.near.ai
                       ~^whisper-large-v3-i\d+\.completions\.near\.ai$$;
-          location / { proxy_pass http://vllm-proxy-whisper3-large:8000; }
+          location / { proxy_pass http://proxy-whisper3-large:8000; }
       }
 
       server {
           listen 443 ssl http2;
           server_name privacy-filter.completions.near.ai
                       ~^privacy-filter-i\d+\.completions\.near\.ai$$;
-          location / { proxy_pass http://vllm-proxy-privacy-filter:8000; }
+          location / { proxy_pass http://proxy-privacy-filter:8000; }
       }
 
       server {
           listen 443 ssl http2;
           server_name qwen3-6-35b.completions.near.ai
                       ~^qwen3-6-35b-i\d+\.completions\.near\.ai$$;
-          location / { proxy_pass http://vllm-proxy-qwen3-6-35b:8000; }
+          location / { proxy_pass http://proxy-qwen3-6-35b:8000; }
       }
 
       server {
           listen 443 ssl http2;
           server_name gemma-4-31b.completions.near.ai
                       ~^gemma-4-31b-i\d+\.completions\.near\.ai$$;
-          location / { proxy_pass http://vllm-proxy-gemma-4-31b:8000; }
+          location / { proxy_pass http://proxy-gemma-4-31b:8000; }
       }
