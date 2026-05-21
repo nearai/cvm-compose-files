@@ -225,7 +225,12 @@ x-privacy-filter-common: &privacy-filter-common
           if not texts or any(not isinstance(t, str) for t in texts):
               raise HTTPException(400, "input must be a non-empty string or list of strings")
 
-          raw = clf(texts)
+          # HF pipeline defaults batch_size=1 — pass 32 so the GPU is actually
+          # fed in parallel for list inputs.
+          raw = clf(texts, batch_size=32)
+
+          # Single batched tokenize for usage counts instead of N sequential calls.
+          tok_lens = [len(ids) for ids in tokenizer(texts).input_ids]
 
           data = []
           for i, spans in enumerate(raw):
@@ -240,8 +245,7 @@ x-privacy-filter-common: &privacy-filter-common
                   for s in spans
                   if float(s["score"]) >= req.threshold
               ]
-              n_tok = len(tokenizer(texts[i]).input_ids)
-              data.append({"index": i, "spans": kept, "usage": {"input_tokens": n_tok}})
+              data.append({"index": i, "spans": kept, "usage": {"input_tokens": tok_lens[i]}})
 
           return {"model": MODEL_ID, "data": data}
       PYEOF
