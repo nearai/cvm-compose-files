@@ -222,6 +222,15 @@ x-privacy-filter-build: &privacy-filter-build
           return {"object": "list", "data": [{"id": MODEL_ID, "object": "model"}]}
 
 
+      # vllm-proxy-rs probes /health to mark a backend healthy. Without this,
+      # both privacy-filter and privacy-filter-cpu return 404 → both flagged
+      # unhealthy → proxy falls back to least-connections among all (which
+      # still works, but spams the log and disables the "healthy first" path).
+      @app.get("/health")
+      def health():
+          return {"status": "ok"}
+
+
       @app.post("/v1/privacy/classify")
       def classify(req: ClassifyRequest):
           texts = [req.input] if isinstance(req.input, str) else req.input
@@ -782,7 +791,12 @@ services:
       - MODEL_NAME=openai/privacy-filter
       - OHTTP_ENABLED=true
       - TOKEN=${PROXY_TOKEN}
-      - VLLM_BACKEND_URLS=http://privacy-filter:8000,http://privacy-filter-cpu:8000
+      # CPU listed FIRST so vllm-proxy-rs's tie-broken least-connections
+      # picks it when both backends are at 0 active conns (the common case
+      # between sequential requests). GPU becomes the overflow target only
+      # once the CPU instance has in-flight work — which keeps GPU-7
+      # contention out of the typical request path.
+      - VLLM_BACKEND_URLS=http://privacy-filter-cpu:8000,http://privacy-filter:8000
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
     labels:
