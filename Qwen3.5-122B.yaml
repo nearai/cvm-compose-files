@@ -70,6 +70,7 @@ x-qwen35-122b-common: &qwen35-122b-common
     - NCCL_DEBUG=WARN
     - SGLANG_ENABLE_SPEC_V2=1
   restart: unless-stopped
+  stop_grace_period: 5m
   logging: *logging-conf
 
 services:

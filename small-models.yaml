@@ -23,6 +23,7 @@ x-vllm-common: &vllm-common
     - hugginface_cache:/root/.cache/huggingface
     - vllm_cache:/root/.cache/vllm
   restart: unless-stopped
+  stop_grace_period: 5m
   logging: *logging-conf
 
 x-vllm-proxy-common: &vllm-proxy-common
@@ -137,6 +138,7 @@ x-qwen3-6-common: &qwen3-6-common
     - NCCL_DEBUG=WARN
     - SGLANG_ENABLE_SPEC_V2=1
   restart: unless-stopped
+  stop_grace_period: 5m
   logging: *logging-conf
 
 x-flux-common: &flux-common
@@ -258,6 +260,7 @@ x-privacy-filter-common: &privacy-filter-common
     - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0}
     - NVIDIA_DRIVER_CAPABILITIES=compute,utility
   restart: unless-stopped
+  stop_grace_period: 5m
   logging: *logging-conf
   deploy:
     resources:
