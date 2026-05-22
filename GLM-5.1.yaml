@@ -101,7 +101,7 @@ services:
     depends_on:
       model-downloader:
         condition: service_completed_successfully
-    image: lmsysorg/sglang:dev@sha256:e1eee3f75e62827dbfa29994a260934c2bc7e5adfb047170576f1676b436b926
+    image: lmsysorg/sglang:v0.5.12-cu129@sha256:9e02c8e1fe2790a1c445bd5f6814305fe43639a4adb01c8ad1e8e21e750bf581
     container_name: glm51
     command: >
       sglang serve
@@ -111,10 +111,8 @@ services:
       --reasoning-parser glm45
       --log-requests-level 0
       --tool-call-parser glm47
-      --mem-fraction-static 0.85
-      --max-running-requests 128
+      --mem-fraction-static 0.87
       --max-queued-requests 8
-      --context-length 200000
       --num-continuous-decode-steps 5
       --model-loader-extra-config '{"enable_multithread_load": "true", "num_threads": 64}'
       --enable-mixed-chunk
@@ -124,6 +122,12 @@ services:
       --enable-cache-report
       --enable-metrics
       --trust-remote-code
+      --cuda-graph-max-bs 16
+      --speculative-algorithm EAGLE
+      --speculative-num-steps 3
+      --speculative-eagle-topk 1
+      --speculative-num-draft-tokens 4
+      --disable-custom-all-reduce
     volumes:
       - huggingface_cache:/root/.cache/huggingface
       - kernel_cache:/root/.cache/deep_gemm

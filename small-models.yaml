@@ -96,10 +96,10 @@ x-gpt-oss-common: &gpt-oss-common
 x-qwen3-6-common: &qwen3-6-common
   <<: *nvidia
   init: true
-  # SGLang dev image, matched to GLM-5.1's pin. ≥ 0.5.10 required for the
-  # Qwen3.6 recipe (--speculative-algorithm EAGLE v2 + qwen3 parsers).
+  # SGLang v0.5.12 (cu129), matched to GLM-5.1's pin. Spec V2 default since 0.5.11
+  # (SGLANG_ENABLE_SPEC_V2=1 below kept for explicitness).
   # https://lmsysorg.mintlify.app/cookbook/autoregressive/Qwen/Qwen3.6
-  image: lmsysorg/sglang:dev@sha256:e1eee3f75e62827dbfa29994a260934c2bc7e5adfb047170576f1676b436b926
+  image: lmsysorg/sglang:v0.5.12-cu129@sha256:9e02c8e1fe2790a1c445bd5f6814305fe43639a4adb01c8ad1e8e21e750bf581
   command: >
       sglang serve
       --model-path Qwen/Qwen3.6-35B-A3B-FP8
@@ -145,7 +145,7 @@ x-flux-common: &flux-common
   build:
     context: .
     dockerfile_inline: |
-      FROM lmsysorg/sglang@sha256:8ece90ad52faa8b56149f0117227d9009db34513213e35990da468aeb6fe0b75
+      FROM lmsysorg/sglang:v0.5.12-cu129@sha256:9e02c8e1fe2790a1c445bd5f6814305fe43639a4adb01c8ad1e8e21e750bf581
       RUN python3 -m pip install -e "python[diffusion]"
       RUN python3 -m pip install accelerate einops
   command: >
