@@ -27,45 +27,48 @@ x-vllm-proxy-common: &vllm-proxy-common
   restart: unless-stopped
   logging: *logging-conf
 
-x-vllm-qwen35-122b-common: &vllm-qwen35-122b-common
+x-qwen35-122b-common: &qwen35-122b-common
   <<: *nvidia
   init: true
-  image: vllm/vllm-openai@sha256:77797441eae630c2e79eefa03957b3d61a278670f2a9928d64ce102e7a0790cc  # v0.20.0
+  # SGLang v0.5.12 (cu129) — migrated off vLLM 2026-05-22.
+  # Context dropped from 1.01M (yarn rope override) to native 262144.
+  # EAGLE spec decoding enabled (Spec V2 default since 0.5.11).
+  image: lmsysorg/sglang:v0.5.12-cu129@sha256:9e02c8e1fe2790a1c445bd5f6814305fe43639a4adb01c8ad1e8e21e750bf581
+  command: >
+      sglang serve
+      --model-path Qwen/Qwen3.5-122B-A10B
+      --revision dc4d348443bc740c68e2d77492492c11606384d5
+      --tp 4
+      --reasoning-parser qwen3
+      --tool-call-parser qwen3_coder
+      --speculative-algorithm EAGLE
+      --speculative-num-steps 3
+      --speculative-eagle-topk 1
+      --speculative-num-draft-tokens 4
+      --kv-cache-dtype fp8_e4m3
+      --mem-fraction-static 0.88
+      --context-length 262144
+      --num-continuous-decode-steps 5
+      --model-loader-extra-config '{"enable_multithread_load": "true", "num_threads": 64}'
+      --enable-mixed-chunk
+      --chunked-prefill-size 16384
+      --port 8000
+      --host 0.0.0.0
+      --enable-cache-report
+      --enable-metrics
+      --trust-remote-code
+      --log-requests-level 0
+      --served-model-name Qwen/Qwen3.5-122B-A10B
   volumes:
     - huggingface_cache:/root/.cache/huggingface
+    - kernel_cache:/root/.cache/deep_gemm
   environment:
     - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
-    - VLLM_ALLOW_LONG_MAX_MODEL_LEN=1
+    - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0}
     - NVIDIA_DRIVER_CAPABILITIES=compute,utility
     - OPENBLAS_L2_SIZE=2097152
     - NCCL_DEBUG=WARN
-  command:
-    - Qwen/Qwen3.5-122B-A10B
-    - --revision=dc4d348443bc740c68e2d77492492c11606384d5
-    - --tensor-parallel-size
-    - "4"
-    - --gpu-memory-utilization
-    - "0.88"
-    - --max-model-len
-    - "1010000"
-    - --kv-cache-dtype
-    - fp8_e4m3
-    - --enable-chunked-prefill
-    - --max-num-batched-tokens
-    - "8192"
-    - --reasoning-parser
-    - qwen3
-    - --enable-auto-tool-choice
-    - --tool-call-parser
-    - qwen3_coder
-    - --enable-prefix-caching
-    - --hf-overrides
-    - '{"text_config": {"rope_parameters": {"mrope_interleaved": true, "mrope_section": [11, 11, 10], "rope_type": "yarn", "rope_theta": 10000000, "partial_rotary_factor": 0.25, "factor": 4.0, "original_max_position_embeddings": 262144}}}'
-    - --port
-    - "8000"
-    - --host
-    - 0.0.0.0
-    - --enable-prompt-tokens-details
+    - SGLANG_ENABLE_SPEC_V2=1
   restart: unless-stopped
   logging: *logging-conf
 
@@ -132,7 +135,7 @@ services:
       - MODEL_NAME=Qwen/Qwen3.5-122B-A10B
       - OHTTP_ENABLED=true
       - TOKEN=${PROXY_TOKEN}
-      - VLLM_BACKEND_URLS=http://vllm-qwen35-122b-1:8000,http://vllm-qwen35-122b-2:8000
+      - VLLM_BACKEND_URLS=http://qwen35-1:8000,http://qwen35-2:8000
       - VLLM_PROXY_MAX_REQUEST_SIZE=104857600
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
@@ -141,9 +144,9 @@ services:
 
   # --- Qwen3.5-122B-A10B instance 1 (GPUs 0-3) ---
 
-  vllm-qwen35-122b-1:
-    <<: *vllm-qwen35-122b-common
-    container_name: vllm-qwen35-122b-1
+  qwen35-1:
+    <<: *qwen35-122b-common
+    container_name: qwen35-1
     depends_on:
       model-downloader:
         condition: service_completed_successfully
@@ -157,14 +160,14 @@ services:
     labels:
       com.datadoghq.ad.check_names: '["openmetrics"]'
       com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.logs: '[{"source": "vllm", "service": "vllm", "tags":["model:Qwen/Qwen3.5-122B-A10B","ip:${HOST_IP}","port:8000","instance:1"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-qwen35-122b-1:8000/metrics", "metrics":["vllm:.*"], "histogram_buckets_as_distributions": true, "service": "vllm-qwen35-122b-1", "tags":["model:Qwen/Qwen3.5-122B-A10B","ip:${HOST_IP}","port:8000"]}]'
+      com.datadoghq.ad.logs: '[{"source": "sglang", "service": "sglang", "tags":["model:Qwen/Qwen3.5-122B-A10B","ip:${HOST_IP}","port:8000","instance:1"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://qwen35-1:8000/metrics", "metrics":["sglang:*"], "histogram_buckets_as_distributions": true, "service": "qwen35-1", "tags":["model:Qwen/Qwen3.5-122B-A10B","ip:${HOST_IP}","port:8000"]}]'
 
   # --- Qwen3.5-122B-A10B instance 2 (GPUs 4-7) ---
 
-  vllm-qwen35-122b-2:
-    <<: *vllm-qwen35-122b-common
-    container_name: vllm-qwen35-122b-2
+  qwen35-2:
+    <<: *qwen35-122b-common
+    container_name: qwen35-2
     depends_on:
       model-downloader:
         condition: service_completed_successfully
@@ -178,8 +181,8 @@ services:
     labels:
       com.datadoghq.ad.check_names: '["openmetrics"]'
       com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.logs: '[{"source": "vllm", "service": "vllm", "tags":["model:Qwen/Qwen3.5-122B-A10B","ip:${HOST_IP}","port:8001","instance:2"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-qwen35-122b-2:8000/metrics", "metrics":["vllm:.*"], "histogram_buckets_as_distributions": true, "service": "vllm-qwen35-122b-2", "tags":["model:Qwen/Qwen3.5-122B-A10B","ip:${HOST_IP}","port:8001"]}]'
+      com.datadoghq.ad.logs: '[{"source": "sglang", "service": "sglang", "tags":["model:Qwen/Qwen3.5-122B-A10B","ip:${HOST_IP}","port:8001","instance:2"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://qwen35-2:8000/metrics", "metrics":["sglang:*"], "histogram_buckets_as_distributions": true, "service": "qwen35-2", "tags":["model:Qwen/Qwen3.5-122B-A10B","ip:${HOST_IP}","port:8001"]}]'
 
   dcgm-exporter:
     image: nvcr.io/nvidia/k8s/dcgm-exporter:4.5.2-4.8.1-distroless
@@ -213,6 +216,7 @@ networks:
 
 volumes:
   huggingface_cache:
+  kernel_cache:
   certs:
     external: true
     name: certs
@@ -259,10 +263,10 @@ configs:
       }
       trap cleanup TERM INT
 
-      # Health check directly on backend (no auth needed on raw vLLM container)
+      # Health check directly on backend (no auth needed on raw sglang container)
       check_inference() {
         echo "Performing health check on backend..."
-        curl -sSf --max-time 45 -X POST "http://vllm-qwen35-122b-1:8000/v1/chat/completions" \
+        curl -sSf --max-time 45 -X POST "http://qwen35-1:8000/v1/chat/completions" \
           -H "Content-Type: application/json" \
           -d '{"model":"Qwen/Qwen3.5-122B-A10B","messages":[{"role":"user","content":"hi"}],"max_tokens":1}'
       }
