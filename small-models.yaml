@@ -147,7 +147,11 @@ x-flux-common: &flux-common
   build:
     context: .
     dockerfile_inline: |
-      FROM lmsysorg/sglang:v0.5.12-cu129@sha256:9e02c8e1fe2790a1c445bd5f6814305fe43639a4adb01c8ad1e8e21e750bf581
+      # Pinned pre-v0.5.11 because the cu129-tagged v0.5.12 image actually
+      # ships PyTorch built against CUDA 13.0, which mismatches the cu12.9
+      # torchvision pulled in by `python[diffusion]` and breaks sglang's
+      # `from torchvision.io import decode_jpeg` at import time.
+      FROM lmsysorg/sglang@sha256:8ece90ad52faa8b56149f0117227d9009db34513213e35990da468aeb6fe0b75
       RUN python3 -m pip install -e "python[diffusion]"
       RUN python3 -m pip install accelerate einops
   command: >
