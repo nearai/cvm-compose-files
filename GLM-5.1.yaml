@@ -269,9 +269,25 @@ configs:
       done
   nginx_conf:
     content: |
+      log_format json_combined escape=json
+        '{'  '"time":"$$time_iso8601"'
+        ',"request_id":"$$http_x_request_id"'
+        ',"org_id":"$$http_x_org_id"'
+        ',"workspace_id":"$$http_x_workspace_id"'
+        ',"host":"$$host"'
+        ',"method":"$$request_method"'
+        ',"uri":"$$uri"'
+        ',"status":$$status'
+        ',"request_length":$$request_length'
+        ',"bytes_sent":$$bytes_sent'
+        ',"request_time":$$request_time'
+        ',"upstream_addr":"$$upstream_addr"'
+        '}';
+
       server {
           listen 80 default_server;
 
+          access_log /var/log/nginx/access.log json_combined;
           client_max_body_size 100m;
           client_body_buffer_size 1m;
 
@@ -306,6 +322,7 @@ configs:
           keepalive_timeout 1h;
           keepalive_requests 1000000;
 
+          access_log /var/log/nginx/access.log json_combined;
           client_max_body_size 100m;
           client_body_buffer_size 1m;
 
