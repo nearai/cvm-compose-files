@@ -101,7 +101,7 @@ services:
     depends_on:
       model-downloader:
         condition: service_completed_successfully
-    image: lmsysorg/sglang:v0.5.12-cu129@sha256:9e02c8e1fe2790a1c445bd5f6814305fe43639a4adb01c8ad1e8e21e750bf581
+    image: lmsysorg/sglang:v0.5.12.post1-cu129@sha256:5d9042d249d74adcae8d653b6936c572dff5a7772778b806965f90e600361241
     container_name: glm51
     command: >
       sglang serve
@@ -122,6 +122,10 @@ services:
       --enable-cache-report
       --enable-metrics
       --trust-remote-code
+      --speculative-algorithm EAGLE
+      --speculative-num-steps 3
+      --speculative-eagle-topk 1
+      --speculative-num-draft-tokens 4
       --disable-custom-all-reduce
     volumes:
       - huggingface_cache:/root/.cache/huggingface
@@ -132,6 +136,7 @@ services:
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
       - OPENBLAS_L2_SIZE=2097152
       - NCCL_DEBUG=WARN
+      - SGLANG_ENABLE_SPEC_V2=1
     deploy:
       resources:
         reservations:
