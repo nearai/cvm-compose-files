@@ -101,7 +101,7 @@ services:
     depends_on:
       model-downloader:
         condition: service_completed_successfully
-    image: lmsysorg/sglang:v0.5.12.post1-cu129@sha256:5d9042d249d74adcae8d653b6936c572dff5a7772778b806965f90e600361241
+    image: lmsysorg/sglang:dev-cu12@sha256:aac6b242680daeb74d2ab1d85f70575357552d7d165d2e5d30eb362797db54a1
     container_name: glm51
     command: >
       sglang serve
@@ -116,7 +116,9 @@ services:
       --num-continuous-decode-steps 5
       --model-loader-extra-config '{"enable_multithread_load": "true", "num_threads": 64}'
       --enable-mixed-chunk
-      --chunked-prefill-size 16384
+      --chunked-prefill-size 8192
+      --detokenizer-worker-num 4
+      --watchdog-timeout 600
       --port 8000
       --host 0.0.0.0
       --enable-cache-report
