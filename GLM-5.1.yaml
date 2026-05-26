@@ -39,9 +39,13 @@ services:
     container_name: model-downloader
     command:
       - |
-        set -e
         echo "Downloading zai-org/GLM-5.1-FP8..."
-        uvx --with click --from 'huggingface_hub[hf_xet]' hf download zai-org/GLM-5.1-FP8 --revision f396cf805182f4ca10fa675e1a99815b3ca384db
+        SNAPSHOT=/root/.cache/huggingface/hub/models--zai-org--GLM-5.1-FP8/snapshots/f396cf805182f4ca10fa675e1a99815b3ca384db
+        # huggingface_hub's `hf` CLI raises `typer.Exit(0)` without catching it
+        # in some releases, exiting non-zero despite the download succeeding.
+        # Tolerate the spurious exit and verify success by snapshot path.
+        uvx --with click --from 'huggingface_hub[hf_xet]' hf download zai-org/GLM-5.1-FP8 --revision f396cf805182f4ca10fa675e1a99815b3ca384db || true
+        test -d "$SNAPSHOT" || { echo "Download verification failed: $SNAPSHOT missing"; exit 1; }
         echo "Download complete."
     volumes:
       - huggingface_cache:/root/.cache/huggingface

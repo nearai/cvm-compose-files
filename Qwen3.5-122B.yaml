@@ -82,9 +82,13 @@ services:
     entrypoint: ["sh", "-c"]
     command:
       - |
-        set -e
         echo "Downloading Qwen/Qwen3.5-122B-A10B..."
-        uvx --with click --from 'huggingface_hub[hf_xet]' hf download Qwen/Qwen3.5-122B-A10B --revision dc4d348443bc740c68e2d77492492c11606384d5
+        SNAPSHOT=/root/.cache/huggingface/hub/models--Qwen--Qwen3.5-122B-A10B/snapshots/dc4d348443bc740c68e2d77492492c11606384d5
+        # huggingface_hub's `hf` CLI raises `typer.Exit(0)` without catching it
+        # in some releases, exiting non-zero despite the download succeeding.
+        # Tolerate the spurious exit and verify success by snapshot path.
+        uvx --with click --from 'huggingface_hub[hf_xet]' hf download Qwen/Qwen3.5-122B-A10B --revision dc4d348443bc740c68e2d77492492c11606384d5 || true
+        test -d "$SNAPSHOT" || { echo "Download verification failed: $SNAPSHOT missing"; exit 1; }
         echo "Download complete."
     volumes:
       - huggingface_cache:/root/.cache/huggingface
