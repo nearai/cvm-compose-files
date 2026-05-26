@@ -27,7 +27,7 @@ x-vllm-common: &vllm-common
   logging: *logging-conf
 
 x-vllm-proxy-common: &vllm-proxy-common
-  image: nearaidev/vllm-proxy-rs@sha256:05ad3e830dfca99e499705deab54616db483cf0b222be83b591b6037b7fd2abc
+  image: nearaidev/vllm-proxy-rs@sha256:c1208db4a74bd5af865bb97be5e2e817d076871d753437458060608fe4fc099a
   user: root
   privileged: true
   <<: *nvidia
@@ -323,6 +323,11 @@ services:
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - CLOUD_API_URL=https://cloud-api.near.ai
+      # Shared service-token. See GLM-5.1.yaml / Qwen3.5-122B.yaml for the
+      # full explanation — empty = legacy /v1/usage path, set = new
+      # /v1/internal/usage path. Must match the value set in cloud-api's
+      # CLOUD_API_USAGE_TOKEN env on the cpu01/cpu02 CVMs.
+      - CLOUD_API_USAGE_TOKEN=${CLOUD_API_USAGE_TOKEN}
       - COMPOSE_MANAGER_URL=http://compose-manager:8080
       - LOG_FORMAT=json
       - MODEL_NAME=Qwen/Qwen3-30B-A3B-Instruct-2507
@@ -379,6 +384,11 @@ services:
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - CLOUD_API_URL=https://cloud-api.near.ai
+      # Shared service-token. See GLM-5.1.yaml / Qwen3.5-122B.yaml for the
+      # full explanation — empty = legacy /v1/usage path, set = new
+      # /v1/internal/usage path. Must match the value set in cloud-api's
+      # CLOUD_API_USAGE_TOKEN env on the cpu01/cpu02 CVMs.
+      - CLOUD_API_USAGE_TOKEN=${CLOUD_API_USAGE_TOKEN}
       - COMPOSE_MANAGER_URL=http://compose-manager:8080
       - LOG_FORMAT=json
       - MODEL_NAME=openai/gpt-oss-120b
@@ -430,6 +440,11 @@ services:
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - CLOUD_API_URL=https://cloud-api.near.ai
+      # Shared service-token. See GLM-5.1.yaml / Qwen3.5-122B.yaml for the
+      # full explanation — empty = legacy /v1/usage path, set = new
+      # /v1/internal/usage path. Must match the value set in cloud-api's
+      # CLOUD_API_USAGE_TOKEN env on the cpu01/cpu02 CVMs.
+      - CLOUD_API_USAGE_TOKEN=${CLOUD_API_USAGE_TOKEN}
       - COMPOSE_MANAGER_URL=http://compose-manager:8080
       - LOG_FORMAT=json
       - MODEL_NAME=Qwen/Qwen3.6-35B-A3B-FP8
@@ -481,6 +496,11 @@ services:
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - CLOUD_API_URL=https://cloud-api.near.ai
+      # Shared service-token. See GLM-5.1.yaml / Qwen3.5-122B.yaml for the
+      # full explanation — empty = legacy /v1/usage path, set = new
+      # /v1/internal/usage path. Must match the value set in cloud-api's
+      # CLOUD_API_USAGE_TOKEN env on the cpu01/cpu02 CVMs.
+      - CLOUD_API_USAGE_TOKEN=${CLOUD_API_USAGE_TOKEN}
       - COMPOSE_MANAGER_URL=http://compose-manager:8080
       - LOG_FORMAT=json
       - MODEL_NAME=google/gemma-4-31B-it
@@ -535,6 +555,11 @@ services:
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - CLOUD_API_URL=https://cloud-api.near.ai
+      # Shared service-token. See GLM-5.1.yaml / Qwen3.5-122B.yaml for the
+      # full explanation — empty = legacy /v1/usage path, set = new
+      # /v1/internal/usage path. Must match the value set in cloud-api's
+      # CLOUD_API_USAGE_TOKEN env on the cpu01/cpu02 CVMs.
+      - CLOUD_API_USAGE_TOKEN=${CLOUD_API_USAGE_TOKEN}
       - COMPOSE_MANAGER_URL=http://compose-manager:8080
       - LOG_FORMAT=json
       - MODEL_NAME=black-forest-labs/FLUX.2-klein-4B
@@ -563,6 +588,11 @@ services:
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - CLOUD_API_URL=https://cloud-api.near.ai
+      # Shared service-token. See GLM-5.1.yaml / Qwen3.5-122B.yaml for the
+      # full explanation — empty = legacy /v1/usage path, set = new
+      # /v1/internal/usage path. Must match the value set in cloud-api's
+      # CLOUD_API_USAGE_TOKEN env on the cpu01/cpu02 CVMs.
+      - CLOUD_API_USAGE_TOKEN=${CLOUD_API_USAGE_TOKEN}
       - COMPOSE_MANAGER_URL=http://compose-manager:8080
       - LOG_FORMAT=json
       - MODEL_NAME=Qwen/Qwen3-VL-30B-A3B-Instruct
@@ -615,6 +645,11 @@ services:
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - CLOUD_API_URL=https://cloud-api.near.ai
+      # Shared service-token. See GLM-5.1.yaml / Qwen3.5-122B.yaml for the
+      # full explanation — empty = legacy /v1/usage path, set = new
+      # /v1/internal/usage path. Must match the value set in cloud-api's
+      # CLOUD_API_USAGE_TOKEN env on the cpu01/cpu02 CVMs.
+      - CLOUD_API_USAGE_TOKEN=${CLOUD_API_USAGE_TOKEN}
       - COMPOSE_MANAGER_URL=http://compose-manager:8080
       - LOG_FORMAT=json
       - MODEL_NAME=Qwen/Qwen3-Embedding-0.6B
@@ -658,6 +693,11 @@ services:
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - CLOUD_API_URL=https://cloud-api.near.ai
+      # Shared service-token. See GLM-5.1.yaml / Qwen3.5-122B.yaml for the
+      # full explanation — empty = legacy /v1/usage path, set = new
+      # /v1/internal/usage path. Must match the value set in cloud-api's
+      # CLOUD_API_USAGE_TOKEN env on the cpu01/cpu02 CVMs.
+      - CLOUD_API_USAGE_TOKEN=${CLOUD_API_USAGE_TOKEN}
       - COMPOSE_MANAGER_URL=http://compose-manager:8080
       - LOG_FORMAT=json
       - MODEL_NAME=Qwen/Qwen3-Reranker-0.6B
@@ -701,6 +741,11 @@ services:
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - CLOUD_API_URL=https://cloud-api.near.ai
+      # Shared service-token. See GLM-5.1.yaml / Qwen3.5-122B.yaml for the
+      # full explanation — empty = legacy /v1/usage path, set = new
+      # /v1/internal/usage path. Must match the value set in cloud-api's
+      # CLOUD_API_USAGE_TOKEN env on the cpu01/cpu02 CVMs.
+      - CLOUD_API_USAGE_TOKEN=${CLOUD_API_USAGE_TOKEN}
       - COMPOSE_MANAGER_URL=http://compose-manager:8080
       - LOG_FORMAT=json
       - MODEL_NAME=openai/whisper-large-v3
@@ -750,6 +795,11 @@ services:
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - CLOUD_API_URL=https://cloud-api.near.ai
+      # Shared service-token. See GLM-5.1.yaml / Qwen3.5-122B.yaml for the
+      # full explanation — empty = legacy /v1/usage path, set = new
+      # /v1/internal/usage path. Must match the value set in cloud-api's
+      # CLOUD_API_USAGE_TOKEN env on the cpu01/cpu02 CVMs.
+      - CLOUD_API_USAGE_TOKEN=${CLOUD_API_USAGE_TOKEN}
       - COMPOSE_MANAGER_URL=http://compose-manager:8080
       - LOG_FORMAT=json
       - MODEL_NAME=openai/privacy-filter

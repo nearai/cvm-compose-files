@@ -15,7 +15,7 @@ x-nvidia: &nvidia
       hard: 65535
 
 x-vllm-proxy-common: &vllm-proxy-common
-  image: nearaidev/vllm-proxy-rs@sha256:05ad3e830dfca99e499705deab54616db483cf0b222be83b591b6037b7fd2abc
+  image: nearaidev/vllm-proxy-rs@sha256:c1208db4a74bd5af865bb97be5e2e817d076871d753437458060608fe4fc099a
   user: root
   privileged: true
   <<: *nvidia
@@ -86,6 +86,15 @@ services:
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - CLOUD_API_URL=https://cloud-api.near.ai
+      # Shared service-token. When set on BOTH inference-proxy and
+      # cloud-api CVMs, the usage reporter switches from forwarding
+      # the user's sk- on POST /v1/usage to authenticating against
+      # POST /v1/internal/usage with this token (cloud-api#665,
+      # inference-proxy#143). When empty, the reporter stays on the
+      # legacy sk- path. The compose `${VAR}` interpolation
+      # substitutes an empty string if the host's .env doesn't
+      # define the variable — so undeployed hosts behave as before.
+      - CLOUD_API_USAGE_TOKEN=${CLOUD_API_USAGE_TOKEN}
       - COMPOSE_MANAGER_URL=http://compose-manager:8080
       - LOG_FORMAT=json
       - MODEL_NAME=zai-org/GLM-5.1-FP8
