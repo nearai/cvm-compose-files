@@ -15,7 +15,7 @@ x-nvidia: &nvidia
       hard: 65535
 
 x-vllm-proxy-common: &vllm-proxy-common
-  image: nearaidev/vllm-proxy-rs@sha256:05ad3e830dfca99e499705deab54616db483cf0b222be83b591b6037b7fd2abc
+  image: nearaidev/vllm-proxy-rs@sha256:59e42dd68faa15eb0c23521029a2fc3d80d86a4143f9f766542357918be33a8c
   user: root
   privileged: true
   <<: *nvidia
@@ -132,6 +132,7 @@ services:
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - CLOUD_API_URL=https://cloud-api.near.ai
+      - CLOUD_API_USAGE_TOKEN=${CLOUD_API_USAGE_TOKEN}
       - COMPOSE_MANAGER_URL=http://compose-manager:8080
       - LOG_FORMAT=json
       - MODEL_NAME=Qwen/Qwen3.5-122B-A10B
