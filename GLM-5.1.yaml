@@ -48,9 +48,9 @@ services:
     environment:
       - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
 
-  nginx:
+  proxy-nginx:
     image: nginx@sha256:1d13701a5f9f3fb01aaa88cef2344d65b6b5bf6b7d9fa4cf0dca557a8d7702ba
-    container_name: nginx
+    container_name: proxy-nginx
     command: /bin/sh -c 'while :; do sleep 6h; nginx -s reload; done & nginx -g "daemon off;"'
     ports:
       - "8000:80"
@@ -92,20 +92,20 @@ services:
       - MODEL_NAME=zai-org/GLM-5.1-FP8
       - OHTTP_ENABLED=true
       - TOKEN=${PROXY_TOKEN}
-      - VLLM_BASE_URL=http://glm51:8000
+      - VLLM_BASE_URL=http://model-sg-glm51:8000
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
       - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
       - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
 
-  glm51:
+  model-sg-glm51:
     <<: *nvidia
     init: true
     depends_on:
       model-downloader:
         condition: service_completed_successfully
     image: lmsysorg/sglang:dev-cu12@sha256:aac6b242680daeb74d2ab1d85f70575357552d7d165d2e5d30eb362797db54a1
-    container_name: glm51
+    container_name: model-sg-glm51
     command: >
       sglang serve
       --model-path zai-org/GLM-5.1-FP8
@@ -156,7 +156,7 @@ services:
       com.datadoghq.ad.check_names: '["openmetrics"]'
       com.datadoghq.ad.init_configs: "[{}]"
       com.datadoghq.ad.logs: '[{"source": "sglang", "service": "sglang", "tags":["model:zai-org/GLM-5.1-FP8","ip:${HOST_IP}","port:8000"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://glm51:8000/metrics", "histogram_buckets_as_distributions": true, "metrics":["sglang:*"], "service": "glm-5.1", "tags":["model:zai-org/GLM-5.1-FP8","ip:${HOST_IP}","port:8000"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-sg-glm51:8000/metrics", "histogram_buckets_as_distributions": true, "metrics":["sglang:*"], "service": "glm-5.1", "tags":["model:zai-org/GLM-5.1-FP8","ip:${HOST_IP}","port:8000"]}]'
 
   dcgm-exporter:
     image: nvcr.io/nvidia/k8s/dcgm-exporter:4.5.2-4.8.1-distroless
@@ -241,13 +241,13 @@ configs:
       # 1-token completion health check directly to model container (no auth needed)
       check_inference() {
         echo "Performing health check on model endpoint..."
-        curl -sSf --max-time 45 -X POST "http://glm51:8000/v1/chat/completions" \
+        curl -sSf --max-time 45 -X POST "http://model-sg-glm51:8000/v1/chat/completions" \
           -H "Content-Type: application/json" \
           -d '{"model":"zai-org/GLM-5.1-FP8","messages":[{"role":"user","content":"hi"}],"max_tokens":1}'
       }
 
       echo "Waiting for model to be ready..."
-      until curl -sf http://nginx:80/v1/models > /dev/null 2>&1; do sleep 30; done
+      until curl -sf http://proxy-nginx:80/v1/models > /dev/null 2>&1; do sleep 30; done
       echo "Model ready, starting registration loop"
 
       while true; do
