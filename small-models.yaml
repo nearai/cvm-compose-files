@@ -23,10 +23,11 @@ x-vllm-common: &vllm-common
     - hugginface_cache:/root/.cache/huggingface
     - vllm_cache:/root/.cache/vllm
   restart: unless-stopped
+  stop_grace_period: 5m
   logging: *logging-conf
 
 x-vllm-proxy-common: &vllm-proxy-common
-  image: nearaidev/vllm-proxy-rs@sha256:8fdbd1d931629dedc1bc714dd7d3b4c216bca4a1e09d56bed48bac2ebd2b60cb
+  image: nearaidev/vllm-proxy-rs@sha256:05ad3e830dfca99e499705deab54616db483cf0b222be83b591b6037b7fd2abc
   user: root
   privileged: true
   <<: *nvidia
@@ -96,10 +97,10 @@ x-gpt-oss-common: &gpt-oss-common
 x-qwen3-6-common: &qwen3-6-common
   <<: *nvidia
   init: true
-  # SGLang dev image, matched to GLM-5.1's pin. ≥ 0.5.10 required for the
-  # Qwen3.6 recipe (--speculative-algorithm EAGLE v2 + qwen3 parsers).
+  # SGLang v0.5.12 (cu129), matched to GLM-5.1's pin. Spec V2 default since 0.5.11
+  # (SGLANG_ENABLE_SPEC_V2=1 below kept for explicitness).
   # https://lmsysorg.mintlify.app/cookbook/autoregressive/Qwen/Qwen3.6
-  image: lmsysorg/sglang:dev@sha256:e1eee3f75e62827dbfa29994a260934c2bc7e5adfb047170576f1676b436b926
+  image: lmsysorg/sglang:v0.5.12-cu129@sha256:9e02c8e1fe2790a1c445bd5f6814305fe43639a4adb01c8ad1e8e21e750bf581
   command: >
       sglang serve
       --model-path Qwen/Qwen3.6-35B-A3B-FP8
@@ -137,6 +138,7 @@ x-qwen3-6-common: &qwen3-6-common
     - NCCL_DEBUG=WARN
     - SGLANG_ENABLE_SPEC_V2=1
   restart: unless-stopped
+  stop_grace_period: 5m
   logging: *logging-conf
 
 x-flux-common: &flux-common
@@ -145,6 +147,10 @@ x-flux-common: &flux-common
   build:
     context: .
     dockerfile_inline: |
+      # Pinned pre-v0.5.11 because the cu129-tagged v0.5.12 image actually
+      # ships PyTorch built against CUDA 13.0, which mismatches the cu12.9
+      # torchvision pulled in by `python[diffusion]` and breaks sglang's
+      # `from torchvision.io import decode_jpeg` at import time.
       FROM lmsysorg/sglang@sha256:8ece90ad52faa8b56149f0117227d9009db34513213e35990da468aeb6fe0b75
       RUN python3 -m pip install -e "python[diffusion]"
       RUN python3 -m pip install accelerate einops
@@ -258,6 +264,7 @@ x-privacy-filter-common: &privacy-filter-common
     - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0}
     - NVIDIA_DRIVER_CAPABILITIES=compute,utility
   restart: unless-stopped
+  stop_grace_period: 5m
   logging: *logging-conf
   deploy:
     resources:
@@ -479,34 +486,48 @@ services:
       - MODEL_NAME=google/gemma-4-31B-it
       - OHTTP_ENABLED=true
       - TOKEN=${PROXY_TOKEN}
-      - VLLM_BASE_URL=http://model-vllm-gemma-4-31b:8000
+      - VLLM_BASE_URL=http://model-sg-gemma-4-31b:8000
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
     labels:
       com.datadoghq.ad.logs: '[{"source": "vllm-proxy", "service": "vllm-proxy", "tags": ["model:google/gemma-4-31B-it", "ip:${HOST_IP}", "port:8009"]}]'
 
-  model-vllm-gemma-4-31b:
-    <<: *vllm-common
-    image: vllm/vllm-openai@sha256:518c1dc54c87d1320d969c6b827d75300ea2cca6908420c0ea5d221c38a6665d  # v0.20.2-cu129-ubuntu2404 — required for gemma4
-    container_name: model-vllm-gemma-4-31b
+  model-sg-gemma-4-31b:
+    <<: *nvidia
+    init: true
+    # SGLang gemma4 build (CUDA 12.9). Switched off vLLM because vLLM was
+    # returning 500 for media-fetch failures (broken FB/YouTube URLs) and
+    # cloud-api was retrying them as transient errors. SGLang's gemma4 tag also
+    # auto-selects the Triton attention backend required for bidirectional
+    # image-token attention during prefill.
+    # https://lmsysorg.mintlify.app/cookbook/autoregressive/Google/Gemma4
+    image: lmsysorg/sglang:gemma4@sha256:87cecd3c9f4d17632c44b2d7cd1a20c50377c42b461d9ca39b153b4bb2b6e6ae
+    container_name: model-sg-gemma-4-31b
     command: >
-        google/gemma-4-31B-it
+        sglang serve
+        --model-path google/gemma-4-31B-it
         --revision ba74f5b6c647c0911554e50278d6f6f4477f9010
-        --tensor-parallel-size 2
-        --enable-prefix-caching
-        --gpu-memory-utilization 0.90
-        --max-num-seqs 64
-        --max-model-len 32768
-        --max-num-batched-tokens 16K
-        --async-scheduling
-        --enable-auto-tool-choice
-        --tool-call-parser gemma4
+        --tp 2
         --reasoning-parser gemma4
-        --enable-prompt-tokens-details
+        --tool-call-parser gemma4
+        --mem-fraction-static 0.85
+        --max-running-requests 64
+        --context-length 32768
+        --chunked-prefill-size 8192
+        --num-continuous-decode-steps 5
+        --enable-mixed-chunk
+        --model-loader-extra-config '{"enable_multithread_load": "true", "num_threads": 64}'
+        --port 8000
+        --host 0.0.0.0
+        --enable-cache-report
+        --enable-metrics
+        --trust-remote-code
+        --log-requests-level 0
+        --served-model-name google/gemma-4-31B-it
     volumes:
       - hugginface_cache:/root/.cache/huggingface
-      - vllm_cache:/root/.cache/vllm
-    environment: *vllm-env
+      - kernel_cache:/root/.cache/deep_gemm
+    environment: *sglang-env
     deploy:
       resources:
         reservations:
@@ -514,11 +535,14 @@ services:
             - driver: nvidia
               device_ids: ["5","6"]
               capabilities: [gpu]
+    restart: unless-stopped
+    stop_grace_period: 5m
+    logging: *logging-conf
     labels:
-      com.datadoghq.ad.check_names: '["vllm"]'
+      com.datadoghq.ad.check_names: '["openmetrics"]'
       com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.logs: '[{"source": "vllm", "service": "vllm", "tags":["model:google/gemma-4-31B-it","ip:${HOST_IP}", "port:8009"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-gemma-4-31b:8000/metrics", "histogram_buckets_as_distributions": true, "service": "model-vllm-gemma-4-31b", "tags":["model:google/gemma-4-31B-it","ip:${HOST_IP}", "port:8009"]}]'
+      com.datadoghq.ad.logs: '[{"source": "sglang", "service": "sglang", "tags":["model:google/gemma-4-31B-it","ip:${HOST_IP}", "port:8009"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-sg-gemma-4-31b:8000/metrics", "histogram_buckets_as_distributions": true, "metrics":["sglang:*"], "service": "model-sg-gemma-4-31b", "tags":["model:google/gemma-4-31B-it","ip:${HOST_IP}", "port:8009"]}]'
 
   # --- FLUX x1 (GPU 7, shared with small models) ---
 
@@ -543,9 +567,9 @@ services:
     <<: *flux-common
     container_name: model-sg-flux-2-klein-4b-1
     labels:
-      com.datadoghq.ad.check_names: '["openmetrics"]'
+      com.datadoghq.ad.check_names: '["vllm"]'
       com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.logs: '[{"source": "sglang", "service": "sglang", "tags":["model:black-forest-labs/FLUX.2-klein-4B","ip:${HOST_IP}", "port:8002","instance:1"]}]'
+      com.datadoghq.ad.logs: '[{"source": "vllm", "service": "vllm", "tags":["model:black-forest-labs/FLUX.2-klein-4B","ip:${HOST_IP}", "port:8002","instance:1"]}]'
       com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-sg-flux-2-klein-4b-1:8000/metrics", "histogram_buckets_as_distributions": true, "metrics":["sglang:*"], "service": "model-sg-flux-2-klein-4b-1", "tags":["model:black-forest-labs/FLUX.2-klein-4B","ip:${HOST_IP}", "port:8002"]}]'
 
   # --- Qwen3-VL FP8 (GPU 7, shared with small models) ---
@@ -758,7 +782,7 @@ services:
     <<: *privacy-filter-common
     container_name: model-privacy-filter
     labels:
-      com.datadoghq.ad.logs: '[{"source": "privacy-filter", "service": "model-privacy-filter", "tags":["model:openai/privacy-filter","ip:${HOST_IP}", "port:8007"]}]'
+      com.datadoghq.ad.logs: '[{"source": "privacy-filter", "service": "privacy-filter", "tags":["model:openai/privacy-filter","ip:${HOST_IP}", "port:8007"]}]'
 
   dcgm-exporter:
     image: nvcr.io/nvidia/k8s/dcgm-exporter:4.5.2-4.8.1-distroless
@@ -861,7 +885,7 @@ configs:
           8006) curl -sf --max-time 10 "http://model-vllm-whisper3-large:8000/v1/models" > /dev/null 2>&1 ;;
           8007) curl -sf --max-time 10 "http://model-privacy-filter:8000/v1/models" > /dev/null 2>&1 ;;
           8008) check_chat model-sg-qwen3-6-35b-1 "Qwen/Qwen3.6-35B-A3B-FP8" ;;
-          8009) check_chat model-vllm-gemma-4-31b "google/gemma-4-31B-it" ;;
+          8009) check_chat model-sg-gemma-4-31b "google/gemma-4-31B-it" ;;
         esac
       }
 
@@ -903,6 +927,23 @@ configs:
       done
   nginx_conf:
     content: |
+      log_format json_combined escape=json
+        '{'  '"time":"$$time_iso8601"'
+        ',"request_id":"$$http_x_request_id"'
+        ',"org_id":"$$http_x_org_id"'
+        ',"workspace_id":"$$http_x_workspace_id"'
+        ',"host":"$$host"'
+        ',"method":"$$request_method"'
+        ',"uri":"$$uri"'
+        ',"status":$$status'
+        ',"request_length":$$request_length'
+        ',"bytes_sent":$$bytes_sent'
+        ',"request_time":$$request_time'
+        ',"upstream_addr":"$$upstream_addr"'
+        '}';
+
+      access_log /var/log/nginx/access.log json_combined;
+
       # Common proxy settings
       proxy_http_version 1.1;
       proxy_set_header Host $$host;
