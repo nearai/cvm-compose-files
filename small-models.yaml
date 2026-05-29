@@ -194,6 +194,9 @@ x-privacy-filter-common: &privacy-filter-common
       WORKDIR /app
       COPY <<'PYEOF' /app/server.py
       import os
+      import sys
+      import threading
+      import time
       import torch
       from fastapi import FastAPI, HTTPException
       from pydantic import BaseModel, Field
@@ -202,26 +205,64 @@ x-privacy-filter-common: &privacy-filter-common
       MODEL_ID = "openai/privacy-filter"
       MODEL_REVISION = "7ffa9a043d54d1be65afb281eddf0ffbe629385b"
 
+
+      def _env(name, default, cast):
+          # Tolerate absent/blank/garbage env so a typo can't crash-loop the boot.
+          try:
+              return cast(os.environ[name])
+          except (KeyError, ValueError):
+              return default
+
+
       # GPU 7 is shared with Qwen3-VL / FLUX / embeddings / reranker / whisper.
-      # The HF pipeline's CUDA caching allocator ratchets its reserved memory up
-      # under traffic and never releases it, slowly hoarding the whole card and
-      # starving the co-located models until they OOM (Qwen3-VL crash-loops).
-      # Cap this process to a small fraction of the device so it is fail-safe:
-      # it self-OOMs and restarts instead of stealing VRAM from its neighbours.
-      GPU_MEM_FRACTION = float(os.environ.get("GPU_MEM_FRACTION", "0.10"))
-      if torch.cuda.is_available():
-          torch.cuda.set_per_process_memory_fraction(GPU_MEM_FRACTION, 0)
+      # Left unbounded, the HF pipeline's CUDA caching allocator ratchets its
+      # reserved memory up under traffic and never releases it, slowly hoarding the
+      # card and starving the co-located models until they OOM (Qwen3-VL crash-loops).
+      # Defence in depth (all tunable via env, no rebuild):
+      #   * PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True (set in compose) is the
+      #     root-cause fix — reserved segments can shrink again instead of ratcheting.
+      #   * A watchdog returns idle cached blocks to the driver on an interval (never
+      #     per request: empty_cache() is a synchronizing cudaFree that would stall
+      #     the shared GPU) and hard-restarts the container if this process's VRAM
+      #     ever climbs toward starving its neighbours — a real restart (clean reclaim)
+      #     rather than silently serving 500s behind a still-healthy /v1/models probe.
+      #   * An acute CUDA-OOM in a request also exits, for the same clean recycle.
+      # Inputs are deliberately NOT truncated — a privacy filter must see the whole
+      # text or it would miss PII; per-request peak is bounded by PRIVACY_BATCH_SIZE.
+      BATCH_SIZE = max(1, _env("PRIVACY_BATCH_SIZE", 32, int))
+      GPU_MEM_LIMIT_GB = max(1.0, _env("GPU_MEM_LIMIT_GB", 32.0, float))
+      WATCHDOG_INTERVAL_S = max(1.0, _env("WATCHDOG_INTERVAL_S", 30.0, float))
+
+      USE_CUDA = torch.cuda.is_available()
 
       clf = pipeline(
           "token-classification",
           model=MODEL_ID,
           revision=MODEL_REVISION,
           aggregation_strategy="simple",
-          device_map="auto",
+          device=0 if USE_CUDA else -1,
           torch_dtype=torch.bfloat16,
           trust_remote_code=True,
       )
       tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, revision=MODEL_REVISION, trust_remote_code=True)
+
+
+      def _gpu_watchdog():
+          while True:
+              time.sleep(WATCHDOG_INTERVAL_S)
+              torch.cuda.empty_cache()
+              reserved_gb = torch.cuda.memory_reserved(0) / 1024 ** 3
+              if reserved_gb > GPU_MEM_LIMIT_GB:
+                  sys.stderr.write(
+                      "privacy-filter: reserved %.1f GB > %.1f GB limit; "
+                      "exiting for a clean restart\n" % (reserved_gb, GPU_MEM_LIMIT_GB)
+                  )
+                  sys.stderr.flush()
+                  os._exit(1)
+
+
+      if USE_CUDA:
+          threading.Thread(target=_gpu_watchdog, daemon=True).start()
 
       app = FastAPI()
 
@@ -242,39 +283,34 @@ x-privacy-filter-common: &privacy-filter-common
           if not texts or any(not isinstance(t, str) for t in texts):
               raise HTTPException(400, "input must be a non-empty string or list of strings")
 
+          # The pipeline runs the forward under torch.no_grad() internally.
           try:
-              # HF pipeline defaults batch_size=1 — pass 32 so the GPU is actually
-              # fed in parallel for list inputs. inference_mode avoids retaining
-              # any autograd state across requests.
-              with torch.inference_mode():
-                  raw = clf(texts, batch_size=32)
+              raw = clf(texts, batch_size=BATCH_SIZE)
+          except torch.cuda.OutOfMemoryError:
+              # Don't 500-storm behind a healthy /v1/models probe: recycle the
+              # container so restart:unless-stopped reclaims the VRAM cleanly.
+              torch.cuda.empty_cache()
+              os._exit(1)
 
-              # Single batched tokenize for usage counts instead of N sequential calls.
-              tok_lens = [len(ids) for ids in tokenizer(texts).input_ids]
+          # Single batched tokenize for usage counts instead of N sequential calls.
+          tok_lens = [len(ids) for ids in tokenizer(texts).input_ids]
 
-              data = []
-              for i, spans in enumerate(raw):
-                  kept = [
-                      {
-                          "category": s["entity_group"],
-                          "score": float(s["score"]),
-                          "text": s["word"],
-                          "start": int(s["start"]),
-                          "end": int(s["end"]),
-                      }
-                      for s in spans
-                      if float(s["score"]) >= req.threshold
-                  ]
-                  data.append({"index": i, "spans": kept, "usage": {"input_tokens": tok_lens[i]}})
+          data = []
+          for i, spans in enumerate(raw):
+              kept = [
+                  {
+                      "category": s["entity_group"],
+                      "score": float(s["score"]),
+                      "text": s["word"],
+                      "start": int(s["start"]),
+                      "end": int(s["end"]),
+                  }
+                  for s in spans
+                  if float(s["score"]) >= req.threshold
+              ]
+              data.append({"index": i, "spans": kept, "usage": {"input_tokens": tok_lens[i]}})
 
-              return {"model": MODEL_ID, "data": data}
-          finally:
-              # Return cached-but-unused CUDA blocks to the driver after every
-              # request so reserved memory does not ratchet up over time on the
-              # shared GPU. This is the core leak fix; the fraction cap above is
-              # the fail-safe.
-              if torch.cuda.is_available():
-                  torch.cuda.empty_cache()
+          return {"model": MODEL_ID, "data": data}
       PYEOF
       EXPOSE 8000
       CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8000"]
@@ -284,10 +320,14 @@ x-privacy-filter-common: &privacy-filter-common
     - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
     - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0}
     - NVIDIA_DRIVER_CAPABILITIES=compute,utility
-    # Hard ceiling on this process's share of the shared GPU (see server.py).
-    # Tune without rebuilding the image. ~0.10 of a 140 GB H200 ≈ 14 GB, ample
-    # for the classifier and leaves the card for Qwen3-VL/FLUX/etc.
-    - GPU_MEM_FRACTION=0.10
+    # Root-cause fix for the VRAM leak: let the CUDA caching allocator shrink
+    # reserved segments instead of ratcheting them up and hoarding the shared GPU.
+    - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+    # Watchdog/batch knobs consumed by server.py — tunable per host, no rebuild.
+    # GPU_MEM_LIMIT_GB caps this process's blast radius on the 140 GB H200 (~10x
+    # the classifier's footprint), leaving the rest for Qwen3-VL/FLUX/etc.
+    - GPU_MEM_LIMIT_GB=32
+    - PRIVACY_BATCH_SIZE=32
   restart: unless-stopped
   stop_grace_period: 5m
   logging: *logging-conf
