@@ -193,6 +193,7 @@ x-privacy-filter-common: &privacy-filter-common
           "uvicorn[standard]"
       WORKDIR /app
       COPY <<'PYEOF' /app/server.py
+      import os
       import torch
       from fastapi import FastAPI, HTTPException
       from pydantic import BaseModel, Field
@@ -200,6 +201,16 @@ x-privacy-filter-common: &privacy-filter-common
 
       MODEL_ID = "openai/privacy-filter"
       MODEL_REVISION = "7ffa9a043d54d1be65afb281eddf0ffbe629385b"
+
+      # GPU 7 is shared with Qwen3-VL / FLUX / embeddings / reranker / whisper.
+      # The HF pipeline's CUDA caching allocator ratchets its reserved memory up
+      # under traffic and never releases it, slowly hoarding the whole card and
+      # starving the co-located models until they OOM (Qwen3-VL crash-loops).
+      # Cap this process to a small fraction of the device so it is fail-safe:
+      # it self-OOMs and restarts instead of stealing VRAM from its neighbours.
+      GPU_MEM_FRACTION = float(os.environ.get("GPU_MEM_FRACTION", "0.10"))
+      if torch.cuda.is_available():
+          torch.cuda.set_per_process_memory_fraction(GPU_MEM_FRACTION, 0)
 
       clf = pipeline(
           "token-classification",
@@ -231,29 +242,39 @@ x-privacy-filter-common: &privacy-filter-common
           if not texts or any(not isinstance(t, str) for t in texts):
               raise HTTPException(400, "input must be a non-empty string or list of strings")
 
-          # HF pipeline defaults batch_size=1 — pass 32 so the GPU is actually
-          # fed in parallel for list inputs.
-          raw = clf(texts, batch_size=32)
+          try:
+              # HF pipeline defaults batch_size=1 — pass 32 so the GPU is actually
+              # fed in parallel for list inputs. inference_mode avoids retaining
+              # any autograd state across requests.
+              with torch.inference_mode():
+                  raw = clf(texts, batch_size=32)
 
-          # Single batched tokenize for usage counts instead of N sequential calls.
-          tok_lens = [len(ids) for ids in tokenizer(texts).input_ids]
+              # Single batched tokenize for usage counts instead of N sequential calls.
+              tok_lens = [len(ids) for ids in tokenizer(texts).input_ids]
 
-          data = []
-          for i, spans in enumerate(raw):
-              kept = [
-                  {
-                      "category": s["entity_group"],
-                      "score": float(s["score"]),
-                      "text": s["word"],
-                      "start": int(s["start"]),
-                      "end": int(s["end"]),
-                  }
-                  for s in spans
-                  if float(s["score"]) >= req.threshold
-              ]
-              data.append({"index": i, "spans": kept, "usage": {"input_tokens": tok_lens[i]}})
+              data = []
+              for i, spans in enumerate(raw):
+                  kept = [
+                      {
+                          "category": s["entity_group"],
+                          "score": float(s["score"]),
+                          "text": s["word"],
+                          "start": int(s["start"]),
+                          "end": int(s["end"]),
+                      }
+                      for s in spans
+                      if float(s["score"]) >= req.threshold
+                  ]
+                  data.append({"index": i, "spans": kept, "usage": {"input_tokens": tok_lens[i]}})
 
-          return {"model": MODEL_ID, "data": data}
+              return {"model": MODEL_ID, "data": data}
+          finally:
+              # Return cached-but-unused CUDA blocks to the driver after every
+              # request so reserved memory does not ratchet up over time on the
+              # shared GPU. This is the core leak fix; the fraction cap above is
+              # the fail-safe.
+              if torch.cuda.is_available():
+                  torch.cuda.empty_cache()
       PYEOF
       EXPOSE 8000
       CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8000"]
@@ -263,6 +284,10 @@ x-privacy-filter-common: &privacy-filter-common
     - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
     - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0}
     - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    # Hard ceiling on this process's share of the shared GPU (see server.py).
+    # Tune without rebuilding the image. ~0.10 of a 140 GB H200 ≈ 14 GB, ample
+    # for the classifier and leaves the card for Qwen3-VL/FLUX/etc.
+    - GPU_MEM_FRACTION=0.10
   restart: unless-stopped
   stop_grace_period: 5m
   logging: *logging-conf
