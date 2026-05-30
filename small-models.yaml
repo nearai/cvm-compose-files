@@ -507,27 +507,40 @@ services:
     # https://lmsysorg.mintlify.app/cookbook/autoregressive/Google/Gemma4
     image: lmsysorg/sglang:gemma4@sha256:87cecd3c9f4d17632c44b2d7cd1a20c50377c42b461d9ca39b153b4bb2b6e6ae
     container_name: model-sg-gemma-4-31b
-    command: >
-        sglang serve
-        --model-path google/gemma-4-31B-it
-        --revision ba74f5b6c647c0911554e50278d6f6f4477f9010
-        --tp 2
-        --reasoning-parser gemma4
-        --tool-call-parser gemma4
-        --mem-fraction-static 0.85
-        --max-running-requests 64
-        --chunked-prefill-size 8192
-        --num-continuous-decode-steps 5
-        --enable-mixed-chunk
-        --disable-fast-image-processor
-        --model-loader-extra-config '{"enable_multithread_load": "true", "num_threads": 64}'
-        --port 8000
-        --host 0.0.0.0
-        --enable-cache-report
-        --enable-metrics
-        --trust-remote-code
-        --log-requests-level 0
-        --served-model-name google/gemma-4-31B-it
+    # The command wraps `sglang serve` in a shell that first hot-patches the
+    # transformers gemma4 image processor baked into the image. A bare
+    # `image.numpy()` on a CUDA tensor crashes multimodal (image) requests with
+    #   TypeError: can't convert cuda:0 device type tensor to numpy
+    # for inputs SGLang decodes to a GPU tensor (video data-URLs, broken image
+    # URLs, etc). `--disable-fast-image-processor` does NOT cover this path — the
+    # tensor is already on GPU upstream of that flag. `.cpu()` is a no-op on CPU
+    # tensors, so the patch is safe and idempotent. See nearai/infra#156.
+    command:
+      - /bin/sh
+      - -c
+      - |
+        sed -i 's/image = image\.numpy()/image = image.cpu().numpy()/' \
+          /usr/local/lib/python3.12/dist-packages/transformers/image_processing_backends.py
+        exec sglang serve \
+          --model-path google/gemma-4-31B-it \
+          --revision ba74f5b6c647c0911554e50278d6f6f4477f9010 \
+          --tp 2 \
+          --reasoning-parser gemma4 \
+          --tool-call-parser gemma4 \
+          --mem-fraction-static 0.85 \
+          --max-running-requests 64 \
+          --chunked-prefill-size 8192 \
+          --num-continuous-decode-steps 5 \
+          --enable-mixed-chunk \
+          --disable-fast-image-processor \
+          --model-loader-extra-config '{"enable_multithread_load": "true", "num_threads": 64}' \
+          --port 8000 \
+          --host 0.0.0.0 \
+          --enable-cache-report \
+          --enable-metrics \
+          --trust-remote-code \
+          --log-requests-level 0 \
+          --served-model-name google/gemma-4-31B-it
     volumes:
       - hugginface_cache:/root/.cache/huggingface
       - kernel_cache:/root/.cache/deep_gemm
