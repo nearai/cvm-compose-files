@@ -519,8 +519,15 @@ services:
       - /bin/sh
       - -c
       - |
-        sed -i 's/image = image\.numpy()/image = image.cpu().numpy()/' \
-          /usr/local/lib/python3.12/dist-packages/transformers/image_processing_backends.py
+        BACKENDS=/usr/local/lib/python3.12/dist-packages/transformers/image_processing_backends.py
+        sed -i 's/image = image\.numpy()/image = image.cpu().numpy()/' "$$BACKENDS"
+        # Fail loud if the CUDA->numpy hotfix did not land (path moved, transformers
+        # bumped, or pattern changed) instead of silently serving the crashing build.
+        # Tolerates a future image that already ships the fixed form. See nearai/infra#156.
+        if ! grep -q 'image = image\.cpu()\.numpy()' "$$BACKENDS"; then
+          echo "FATAL: gemma4 CUDA->numpy patch not present in $$BACKENDS; refusing to start" >&2
+          exit 1
+        fi
         exec sglang serve \
           --model-path google/gemma-4-31B-it \
           --revision ba74f5b6c647c0911554e50278d6f6f4477f9010 \
