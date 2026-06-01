@@ -177,6 +177,14 @@ x-flux-common: &flux-common
             device_ids: ["7"]
             capabilities: [gpu]
 
+x-dcgm-common: &dcgm-common
+  image: nvcr.io/nvidia/k8s/dcgm-exporter:4.5.2-4.8.1-distroless
+  runtime: nvidia
+  cap_add:
+    - SYS_ADMIN
+  restart: unless-stopped
+  logging: *logging-conf
+
 x-privacy-filter-common: &privacy-filter-common
   <<: *nvidia
   init: true
@@ -879,30 +887,93 @@ services:
     labels:
       com.datadoghq.ad.logs: '[{"source": "privacy-filter", "service": "privacy-filter", "tags":["model:openai/privacy-filter","ip:${HOST_IP}", "port:8007"]}]'
 
-  dcgm-exporter:
-    image: nvcr.io/nvidia/k8s/dcgm-exporter:4.5.2-4.8.1-distroless
-    container_name: dcgm-exporter
-    runtime: nvidia
-    cap_add:
-      - SYS_ADMIN
-    environment:
-      - NVIDIA_VISIBLE_DEVICES=all
-    ports:
-      - "9400:9400"
+  # Per-model dcgm-exporters: each container only sees its assigned GPUs via
+  # device_ids, so all NVML/DCGM metrics it emits are correctly attributable to
+  # one model. Filter dashboards/monitors on `model:<HF id>`.
+
+  dcgm-qwen3-30b:
+    <<: *dcgm-common
+    container_name: dcgm-qwen3-30b
     deploy:
       resources:
         reservations:
           devices:
             - driver: nvidia
-              count: all
+              device_ids: ["0"]
               capabilities: [gpu]
-    restart: unless-stopped
-    logging: *logging-conf
     labels:
       com.datadoghq.ad.check_names: '["dcgm"]'
       com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint": "http://%%host%%:9400/metrics", "tags":["deployment:small-models","ip:${HOST_IP}"]}]'
-      com.datadoghq.ad.logs: '[{"source": "dcgm-exporter", "service": "dcgm-exporter", "tags":["deployment:small-models","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint": "http://%%host%%:9400/metrics", "tags":["model:Qwen/Qwen3-30B-A3B-Instruct-2507","deployment:small-models","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.logs: '[{"source": "dcgm-exporter", "service": "dcgm-exporter", "tags":["model:Qwen/Qwen3-30B-A3B-Instruct-2507","deployment:small-models","ip:${HOST_IP}"]}]'
+
+  dcgm-gpt-oss:
+    <<: *dcgm-common
+    container_name: dcgm-gpt-oss
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["2","3"]
+              capabilities: [gpu]
+    labels:
+      com.datadoghq.ad.check_names: '["dcgm"]'
+      com.datadoghq.ad.init_configs: "[{}]"
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint": "http://%%host%%:9400/metrics", "tags":["model:openai/gpt-oss-120b","deployment:small-models","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.logs: '[{"source": "dcgm-exporter", "service": "dcgm-exporter", "tags":["model:openai/gpt-oss-120b","deployment:small-models","ip:${HOST_IP}"]}]'
+
+  dcgm-qwen3-6-35b:
+    <<: *dcgm-common
+    container_name: dcgm-qwen3-6-35b
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["1","4"]
+              capabilities: [gpu]
+    labels:
+      com.datadoghq.ad.check_names: '["dcgm"]'
+      com.datadoghq.ad.init_configs: "[{}]"
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint": "http://%%host%%:9400/metrics", "tags":["model:Qwen/Qwen3.6-35B-A3B-FP8","deployment:small-models","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.logs: '[{"source": "dcgm-exporter", "service": "dcgm-exporter", "tags":["model:Qwen/Qwen3.6-35B-A3B-FP8","deployment:small-models","ip:${HOST_IP}"]}]'
+
+  dcgm-gemma-4-31b:
+    <<: *dcgm-common
+    container_name: dcgm-gemma-4-31b
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["5","6"]
+              capabilities: [gpu]
+    labels:
+      com.datadoghq.ad.check_names: '["dcgm"]'
+      com.datadoghq.ad.init_configs: "[{}]"
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint": "http://%%host%%:9400/metrics", "tags":["model:google/gemma-4-31B-it","deployment:small-models","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.logs: '[{"source": "dcgm-exporter", "service": "dcgm-exporter", "tags":["model:google/gemma-4-31B-it","deployment:small-models","ip:${HOST_IP}"]}]'
+
+  # GPU 7 is shared across FLUX, Qwen3-VL, embedding, reranker, whisper,
+  # privacy-filter — DCGM metrics here cannot be attributed to one model, so
+  # tag with the deployment+gpu only and rely on per-model app metrics
+  # (vllm/sglang) for model-specific telemetry.
+  dcgm-shared-gpu7:
+    <<: *dcgm-common
+    container_name: dcgm-shared-gpu7
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["7"]
+              capabilities: [gpu]
+    labels:
+      com.datadoghq.ad.check_names: '["dcgm"]'
+      com.datadoghq.ad.init_configs: "[{}]"
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint": "http://%%host%%:9400/metrics", "tags":["model:shared","deployment:small-models","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.logs: '[{"source": "dcgm-exporter", "service": "dcgm-exporter", "tags":["model:shared","deployment:small-models","ip:${HOST_IP}"]}]'
 
 networks:
   default:
