@@ -58,10 +58,13 @@ x-dcgm-common: &dcgm-common
 x-dsv4-flash-common: &dsv4-flash-common
   <<: *nvidia
   init: true
-  # DeepEP + DP-attention disabled: DeepEP relies on CUDA IPC + NVSHMEM
-  # symmetric heap across ranks, which fails under TDX-confidential GPU
-  # memory (cudaIpcOpenMemHandle returns 'invalid argument' at
-  # deep_ep.cpp:230 during dispatch-buffer alloc). Plain TP=4 NCCL works.
+  # TDX-CC incompatibilities trimmed:
+  #   1. DeepEP+DP-attention: needs CUDA IPC across ranks (deep_ep.cpp:230
+  #      'invalid argument') — dropped.
+  #   2. Hierarchical cache w/ hicache_io_backend=direct + mem_layout=
+  #      page_first_direct: uses GPUDirect/unified-memory paths that hit
+  #      'cudaErrorNotSupported' on the first warmup tensor.to(non_blocking)
+  #      under TDX-confidential GPU memory — dropped.
   image: lmsysorg/sglang:v0.5.12-cu129@sha256:9e02c8e1fe2790a1c445bd5f6814305fe43639a4adb01c8ad1e8e21e750bf581
   command: >
       sglang serve
@@ -76,12 +79,6 @@ x-dsv4-flash-common: &dsv4-flash-common
       --max-running-requests 128
       --tool-call-parser deepseekv4
       --reasoning-parser deepseek-v4
-      --enable-hierarchical-cache
-      --hicache-ratio 2
-      --hicache-size 0
-      --hicache-write-policy write_through
-      --hicache-io-backend direct
-      --hicache-mem-layout page_first_direct
       --port 8000
       --host 0.0.0.0
       --enable-cache-report
