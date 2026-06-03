@@ -58,24 +58,22 @@ x-dcgm-common: &dcgm-common
 x-dsv4-flash-common: &dsv4-flash-common
   <<: *nvidia
   init: true
-  # SGLang v0.5.12 (cu129). Pinned image — confirm this tag includes DeepEP /
-  # DSV4 kernels before deploy; bump if a deepep-specific tag is required.
+  # DeepEP + DP-attention disabled: DeepEP relies on CUDA IPC + NVSHMEM
+  # symmetric heap across ranks, which fails under TDX-confidential GPU
+  # memory (cudaIpcOpenMemHandle returns 'invalid argument' at
+  # deep_ep.cpp:230 during dispatch-buffer alloc). Plain TP=4 NCCL works.
   image: lmsysorg/sglang:v0.5.12-cu129@sha256:9e02c8e1fe2790a1c445bd5f6814305fe43639a4adb01c8ad1e8e21e750bf581
   command: >
       sglang serve
       --trust-remote-code
       --model-path sgl-project/DeepSeek-V4-Flash-FP8
       --tp 4
-      --dp 4
-      --enable-dp-attention
-      --moe-a2a-backend deepep
       --speculative-algo EAGLE
       --speculative-num-steps 1
       --speculative-eagle-topk 1
       --speculative-num-draft-tokens 2
       --cuda-graph-max-bs 128
       --max-running-requests 128
-      --deepep-config '{"normal_dispatch":{"num_sms":96},"normal_combine":{"num_sms":96}}'
       --tool-call-parser deepseekv4
       --reasoning-parser deepseek-v4
       --enable-hierarchical-cache
@@ -102,7 +100,6 @@ x-dsv4-flash-common: &dsv4-flash-common
     - NCCL_DEBUG=WARN
     - SGLANG_ENABLE_SPEC_V2=1
     - SGLANG_DSV4_FP4_EXPERTS=0
-    - SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK=256
     - SGLANG_ENABLE_UNIFIED_RADIX_TREE=1
   restart: unless-stopped
   stop_grace_period: 5m
