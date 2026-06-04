@@ -113,6 +113,15 @@ services:
     container_name: model-proxy-registrar
     entrypoint: ["sh", "/register.sh"]
     restart: unless-stopped
+    healthcheck:
+      # Unhealthy if the registration loop hasn't ticked in 3m (e.g. wedged
+      # before the loop, or the loop died). Surfaces silent registrar failures
+      # in `docker ps` / Datadog. See cvm-compose-files#57.
+      test: ["CMD-SHELL", "[ $$(( $$(date +%s) - $$(cat /tmp/registrar_alive 2>/dev/null || echo 0) )) -lt 180 ]"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 900s
     environment:
       - HOST_IP=${HOST_IP}
       - HTTP_PORT=${HTTP_PORT:-8000}
@@ -274,11 +283,30 @@ configs:
           -d '{"model":"Qwen/Qwen3.5-122B-A10B","messages":[{"role":"user","content":"hi"}],"max_tokens":1}'
       }
 
-      echo "Waiting for model to be ready..."
-      until curl -sf http://proxy-nginx:80/v1/models > /dev/null 2>&1; do sleep 30; done
+      # Probe the host-published nginx port via HOST_IP instead of the
+      # "proxy-nginx" compose DNS name. A stale/abandoned docker service-name
+      # resolution (e.g. after proxy-nginx is recreated) otherwise wedges this
+      # readiness gate forever and silently drops the model to 0 backends.
+      # Bounded + loud so a persistent probe failure falls through to the
+      # registration loop (which health-checks each backend directly) instead
+      # of hanging here forever. See cvm-compose-files#57.
+      READY_URL="http://$${HOST_IP}:8000/v1/models"
+      echo "Waiting for model to be ready (probing $$READY_URL)..."
+      ready_attempts=0
+      until curl -sf "$$READY_URL" > /dev/null 2>&1; do
+        ready_attempts=$$((ready_attempts + 1))
+        if [ "$$ready_attempts" -ge 30 ]; then
+          echo "WARN: model not reachable at $$READY_URL after $$ready_attempts attempts (~15m); entering registration loop anyway (each backend is health-checked directly before registering)"
+          break
+        fi
+        echo "Model not ready yet (attempt $$ready_attempts/30), retrying in 30s..."
+        sleep 30
+      done
       echo "Model ready, starting registration loop"
 
       while true; do
+        # Liveness marker for the container healthcheck (see service def).
+        date +%s > /tmp/registrar_alive
         if check_inference; then
           FAILURE_COUNT=0
           register_endpoint "$$ENDPOINT" "$${TLS_PORT}"
