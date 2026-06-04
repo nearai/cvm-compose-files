@@ -275,12 +275,52 @@ configs:
       }
       trap cleanup TERM INT
 
-      # Health check directly on backend (no auth needed on raw sglang container)
+      mark_registered() {
+        register_endpoint "$$ENDPOINT" "$${TLS_PORT}"
+        register_model "Qwen/Qwen3.5-122B-A10B" "qwen35-122b.completions.near.ai"
+        if [ "$$REGISTERED" = false ]; then
+          echo "[Qwen3.5-122B] Registered Qwen/Qwen3.5-122B-A10B at $$ENDPOINT"
+        fi
+        REGISTERED=true
+      }
+
+      # Health check directly on backend (no auth needed on raw sglang container).
+      # Return codes:
+      #   0: backend accepted the probe
+      #   2: backend is alive but saturated/backpressuring new requests
+      #   1: backend appears unhealthy/unreachable
       check_inference() {
         echo "Performing health check on backend..."
-        curl -sSf --max-time 45 -X POST "http://model-sg-qwen35-122b-1:8000/v1/chat/completions" \
+        status=$$(curl -sS --connect-timeout 10 --max-time 45 -o /dev/null -w "%{http_code}" \
+          -X POST "http://model-sg-qwen35-122b-1:8000/v1/chat/completions" \
           -H "Content-Type: application/json" \
-          -d '{"model":"Qwen/Qwen3.5-122B-A10B","messages":[{"role":"user","content":"hi"}],"max_tokens":1}'
+          -d '{"model":"Qwen/Qwen3.5-122B-A10B","messages":[{"role":"user","content":"hi"}],"max_tokens":1}')
+        curl_status=$$?
+
+        if [ "$$curl_status" -ne 0 ]; then
+          case "$$curl_status" in
+            52|56)
+              echo "[Qwen3.5-122B] Health probe hit connection-level backpressure (curl $$curl_status); treating as alive but saturated"
+              return 2
+              ;;
+          esac
+          echo "[Qwen3.5-122B] Health probe curl failed with status $$curl_status"
+          return 1
+        fi
+
+        case "$$status" in
+          2*)
+            return 0
+            ;;
+          503)
+            echo "[Qwen3.5-122B] Backend returned 503; treating as alive but saturated"
+            return 2
+            ;;
+          *)
+            echo "[Qwen3.5-122B] Backend returned HTTP $$status"
+            return 1
+            ;;
+        esac
       }
 
       # Probe the host-published nginx port via HOST_IP instead of the
@@ -307,25 +347,30 @@ configs:
       while true; do
         # Liveness marker for the container healthcheck (see service def).
         date +%s > /tmp/registrar_alive
-        if check_inference; then
-          FAILURE_COUNT=0
-          register_endpoint "$$ENDPOINT" "$${TLS_PORT}"
-          register_model "Qwen/Qwen3.5-122B-A10B" "qwen35-122b.completions.near.ai"
-          if [ "$$REGISTERED" = false ]; then
-            echo "[Qwen3.5-122B] Registered Qwen/Qwen3.5-122B-A10B at $$ENDPOINT"
-          fi
-          REGISTERED=true
-        else
-          FAILURE_COUNT=$$((FAILURE_COUNT + 1))
-          echo "[Qwen3.5-122B] Health check failed ($$FAILURE_COUNT/$$MAX_RETRIES)"
-          if [ "$$REGISTERED" = true ] && [ "$$FAILURE_COUNT" -ge "$$MAX_RETRIES" ]; then
-            echo "[Qwen3.5-122B] Health check failed and Retry limit reached, unregistering $$ENDPOINT"
-            unregister_endpoint "$$ENDPOINT"
-            REGISTERED=false
-            echo "[Qwen3.5-122B] Exiting to refresh DNS (container will auto-restart)"
-            exit 1
-          fi
-        fi
+        check_inference
+        health_status=$$?
+        case "$$health_status" in
+          0)
+            FAILURE_COUNT=0
+            mark_registered
+            ;;
+          2)
+            FAILURE_COUNT=0
+            echo "[Qwen3.5-122B] Keeping $$ENDPOINT registered while backend is saturated"
+            mark_registered
+            ;;
+          *)
+            FAILURE_COUNT=$$((FAILURE_COUNT + 1))
+            echo "[Qwen3.5-122B] Health check failed ($$FAILURE_COUNT/$$MAX_RETRIES)"
+            if [ "$$REGISTERED" = true ] && [ "$$FAILURE_COUNT" -ge "$$MAX_RETRIES" ]; then
+              echo "[Qwen3.5-122B] Health check failed and Retry limit reached, unregistering $$ENDPOINT"
+              unregister_endpoint "$$ENDPOINT"
+              REGISTERED=false
+              echo "[Qwen3.5-122B] Exiting to refresh DNS (container will auto-restart)"
+              exit 1
+            fi
+            ;;
+        esac
         sleep 60
       done
   nginx_conf:
