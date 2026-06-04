@@ -380,12 +380,15 @@ services:
     image: otel/opentelemetry-collector-contrib:0.117.0
     container_name: otelcol-sidecar
     command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    # Required trial-vendor secrets. The `:?` form makes docker compose fail
+    # fast with a clear message if any are missing/empty instead of silently
+    # rendering a sidecar that crash-loops on startup with no telemetry.
     environment:
-      - HOST_IP=${HOST_IP}
-      - GRAFANA_OTEL_ENDPOINT=${GRAFANA_OTEL_ENDPOINT}
-      - GRAFANA_OTEL_AUTH=${GRAFANA_OTEL_AUTH}
-      - BETTERSTACK_OTEL_ENDPOINT=${BETTERSTACK_OTEL_ENDPOINT}
-      - BETTERSTACK_OTEL_TOKEN=${BETTERSTACK_OTEL_TOKEN}
+      - HOST_IP=${HOST_IP:?HOST_IP is required for the trial telemetry sidecar}
+      - GRAFANA_OTEL_ENDPOINT=${GRAFANA_OTEL_ENDPOINT:?GRAFANA_OTEL_ENDPOINT is required for the trial telemetry sidecar}
+      - GRAFANA_OTEL_AUTH=${GRAFANA_OTEL_AUTH:?GRAFANA_OTEL_AUTH is required for the trial telemetry sidecar}
+      - BETTERSTACK_OTEL_ENDPOINT=${BETTERSTACK_OTEL_ENDPOINT:?BETTERSTACK_OTEL_ENDPOINT is required for the trial telemetry sidecar}
+      - BETTERSTACK_OTEL_TOKEN=${BETTERSTACK_OTEL_TOKEN:?BETTERSTACK_OTEL_TOKEN is required for the trial telemetry sidecar}
     configs:
       - source: otelcol_config
         target: /etc/otelcol-contrib/config.yaml
@@ -460,9 +463,16 @@ configs:
           limit_mib: 512
           spike_limit_mib: 128
 
+        # host.name is hardcoded to the inventory hostname so this collector's
+        # signals correlate with the host-side collector
+        # (cvm-ansible-playbooks templates/otelcol_trial.yaml.j2 uses
+        # `{{ inventory_hostname }}` → "gpu23"). Keep the IP as a separate
+        # attribute for IP-based queries. If this compose ever moves to a
+        # different host, update host.name and trial.cohort accordingly.
         resource:
           attributes:
-            - {key: host.name,              value: "$${env:HOST_IP}",                action: insert}
+            - {key: host.name,              value: gpu23,                            action: insert}
+            - {key: host.ip,                value: "$${env:HOST_IP}",                action: insert}
             - {key: service.namespace,      value: near-ai-inference,                action: insert}
             - {key: deployment.environment, value: trial,                            action: insert}
             - {key: trial.cohort,           value: gpu23-dsv4-qwen36-gemma4,         action: insert}
