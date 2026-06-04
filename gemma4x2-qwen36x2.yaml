@@ -191,7 +191,7 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 900s
+      start_period: 1200s
     environment:
       - HOST_IP=${HOST_IP}
       - MODEL_PROXY_TOKEN=${MODEL_PROXY_TOKEN}
@@ -490,10 +490,10 @@ configs:
       READY_URL="http://$${HOST_IP}:8001/v1/models"
       echo "Waiting for first model to be ready (probing $$READY_URL)..."
       ready_attempts=0
-      until curl -sf "$$READY_URL" > /dev/null 2>&1; do
+      until curl --connect-timeout 5 --max-time 10 -sf "$$READY_URL" > /dev/null 2>&1; do
         ready_attempts=$$((ready_attempts + 1))
         if [ "$$ready_attempts" -ge 30 ]; then
-          echo "WARN: first model not reachable at $$READY_URL after $$ready_attempts attempts (~15m); entering registration loop anyway (each backend is health-checked directly before registering)"
+          echo "WARN: first model not reachable at $$READY_URL after $$ready_attempts attempts (~20m); entering registration loop anyway (each backend is health-checked directly before registering)"
           break
         fi
         echo "First model not ready yet (attempt $$ready_attempts/30), retrying in 30s..."
