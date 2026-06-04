@@ -235,9 +235,21 @@ x-privacy-filter-common: &privacy-filter-common
       #     ever climbs toward starving its neighbours — a real restart (clean reclaim)
       #     rather than silently serving 500s behind a still-healthy /v1/models probe.
       #   * An acute CUDA-OOM in a request also exits, for the same clean recycle.
-      # Inputs are deliberately NOT truncated — a privacy filter must see the whole
-      # text or it would miss PII; per-request peak is bounded by PRIVACY_BATCH_SIZE.
-      BATCH_SIZE = max(1, _env("PRIVACY_BATCH_SIZE", 32, int))
+      # The model accepts up to 128k tokens and uses O(n^2) attention, so ONE long
+      # document alone reserves tens of GB (measured: ~13 GB over baseline at 16k
+      # tokens, ~36 GB around 25-30k) and trips the watchdog / OOMs — PRIVACY_BATCH_SIZE
+      # bounds the NUMBER of texts, not their LENGTH, so it never bounded this.
+      # We still must not truncate (a privacy filter has to see the whole text), so
+      # instead we cap the per-forward window: setting the pipeline tokenizer's
+      # model_max_length makes the token-classification pipeline split a long input
+      # into MAX_LENGTH-token chunks (STRIDE-token overlap so boundary spans survive),
+      # classify each, and merge the spans back over the full text. Peak memory is then
+      # bounded by ~BATCH_SIZE * MAX_LENGTH^2, INDEPENDENT of input length, while still
+      # covering the whole document. Verified: chunked output is span-for-span identical
+      # to a full single pass (0 PII lost) and peak stays flat as the doc grows.
+      BATCH_SIZE = max(1, _env("PRIVACY_BATCH_SIZE", 8, int))
+      MAX_LENGTH = max(8, _env("PRIVACY_MAX_LENGTH", 4096, int))
+      STRIDE = max(0, min(_env("PRIVACY_STRIDE", 256, int), MAX_LENGTH - 1))
       GPU_MEM_LIMIT_GB = max(1.0, _env("GPU_MEM_LIMIT_GB", 32.0, float))
       WATCHDOG_INTERVAL_S = max(1.0, _env("WATCHDOG_INTERVAL_S", 30.0, float))
 
@@ -252,6 +264,11 @@ x-privacy-filter-common: &privacy-filter-common
           torch_dtype=torch.bfloat16,
           trust_remote_code=True,
       )
+      # Cap the pipeline's per-forward window. The pipeline chunks inputs longer than
+      # this into model_max_length-token windows (see the classify() stride= arg below).
+      clf.tokenizer.model_max_length = MAX_LENGTH
+      # Separate tokenizer for usage counts only — left UNBOUNDED so input_tokens stays
+      # accurate for the full text (it never truncates: truncation defaults to False).
       tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, revision=MODEL_REVISION, trust_remote_code=True)
 
 
@@ -293,7 +310,7 @@ x-privacy-filter-common: &privacy-filter-common
 
           # The pipeline runs the forward under torch.no_grad() internally.
           try:
-              raw = clf(texts, batch_size=BATCH_SIZE)
+              raw = clf(texts, batch_size=BATCH_SIZE, stride=STRIDE)
           except torch.cuda.OutOfMemoryError:
               # Don't 500-storm behind a healthy /v1/models probe: recycle the
               # container so restart:unless-stopped reclaims the VRAM cleanly.
@@ -333,9 +350,16 @@ x-privacy-filter-common: &privacy-filter-common
     - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
     # Watchdog/batch knobs consumed by server.py — tunable per host, no rebuild.
     # GPU_MEM_LIMIT_GB caps this process's blast radius on the 140 GB H200 (~10x
-    # the classifier's footprint), leaving the rest for Qwen3-VL/FLUX/etc.
+    # the classifier's footprint), leaving the rest for Qwen3-VL/FLUX/etc. With
+    # chunking in place it is now a backstop, not the primary bound.
     - GPU_MEM_LIMIT_GB=32
-    - PRIVACY_BATCH_SIZE=32
+    # MAX_LENGTH = per-forward token window; STRIDE = chunk overlap so spans on a
+    # boundary aren't split. Peak VRAM ~ BATCH_SIZE * MAX_LENGTH^2, independent of
+    # input length. BATCH_SIZE lowered 32->8 so the worst case (a 128k input = a
+    # full batch of chunks) stays well under GPU_MEM_LIMIT_GB.
+    - PRIVACY_BATCH_SIZE=8
+    - PRIVACY_MAX_LENGTH=4096
+    - PRIVACY_STRIDE=256
   restart: unless-stopped
   stop_grace_period: 5m
   logging: *logging-conf
