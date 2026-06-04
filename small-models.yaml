@@ -301,6 +301,22 @@ x-privacy-filter-common: &privacy-filter-common
       def models():
           return {"object": "list", "data": [{"id": MODEL_ID, "object": "model"}]}
 
+      def _merge_adjacent_spans(spans):
+          if not spans:
+              return spans
+
+          merged = [spans[0]]
+          for span in spans[1:]:
+              prev = merged[-1]
+              if span["category"] == prev["category"] and span["start"] == prev["end"]:
+                  prev["end"] = span["end"]
+                  prev["text"] = prev["text"] + span["text"]
+                  prev["score"] = min(prev["score"], span["score"])
+                  continue
+
+              merged.append(span)
+          return merged
+
 
       @app.post("/v1/privacy/classify")
       def classify(req: ClassifyRequest):
@@ -333,7 +349,13 @@ x-privacy-filter-common: &privacy-filter-common
                   for s in spans
                   if float(s["score"]) >= req.threshold
               ]
-              data.append({"index": i, "spans": kept, "usage": {"input_tokens": tok_lens[i]}})
+              data.append(
+                  {
+                      "index": i,
+                      "spans": _merge_adjacent_spans(kept),
+                      "usage": {"input_tokens": tok_lens[i]},
+                  }
+              )
 
           return {"model": MODEL_ID, "data": data}
       PYEOF
