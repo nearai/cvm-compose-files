@@ -462,7 +462,7 @@ configs:
 
         resource:
           attributes:
-            - {key: host.name,              value: "${env:HOST_IP}",                action: insert}
+            - {key: host.name,              value: "$${env:HOST_IP}",                action: insert}
             - {key: service.namespace,      value: near-ai-inference,                action: insert}
             - {key: deployment.environment, value: trial,                            action: insert}
             - {key: trial.cohort,           value: gpu23-dsv4-qwen36-gemma4,         action: insert}
@@ -473,14 +473,14 @@ configs:
 
       exporters:
         otlphttp/grafana:
-          endpoint: ${env:GRAFANA_OTEL_ENDPOINT}
+          endpoint: $${env:GRAFANA_OTEL_ENDPOINT}
           headers:
-            Authorization: ${env:GRAFANA_OTEL_AUTH}
+            Authorization: $${env:GRAFANA_OTEL_AUTH}
 
         otlphttp/betterstack:
-          endpoint: ${env:BETTERSTACK_OTEL_ENDPOINT}
+          endpoint: $${env:BETTERSTACK_OTEL_ENDPOINT}
           headers:
-            Authorization: "Bearer ${env:BETTERSTACK_OTEL_TOKEN}"
+            Authorization: "Bearer $${env:BETTERSTACK_OTEL_TOKEN}"
 
       service:
         pipelines:
