@@ -183,6 +183,15 @@ services:
     container_name: model-proxy-registrar
     entrypoint: ["sh", "/register.sh"]
     restart: unless-stopped
+    healthcheck:
+      # Unhealthy if the registration loop hasn't ticked in 3m (e.g. wedged
+      # before the loop, or the loop died). Surfaces silent registrar failures
+      # in `docker ps` / Datadog. See cvm-compose-files#57.
+      test: ["CMD-SHELL", "[ $$(( $$(date +%s) - $$(cat /tmp/registrar_alive 2>/dev/null || echo 0) )) -lt 180 ]"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 1200s
     environment:
       - HOST_IP=${HOST_IP}
       - MODEL_PROXY_TOKEN=${MODEL_PROXY_TOKEN}
@@ -471,12 +480,33 @@ configs:
         esac
       }
 
-      echo "Waiting for first model to be ready..."
-      until curl -sf http://nginx:8001/v1/models > /dev/null 2>&1; do sleep 30; done
+      # Probe the host-published nginx port via HOST_IP instead of the
+      # "nginx" compose DNS name. A stale/abandoned docker service-name
+      # resolution (e.g. after nginx is recreated) otherwise wedges this
+      # readiness gate forever and silently drops every model to 0 backends.
+      # Bounded + loud so a persistent probe failure falls through to the
+      # registration loop (which health-checks each backend directly) instead
+      # of hanging here forever. See cvm-compose-files#57.
+      READY_URL="http://$${HOST_IP}:8001/v1/models"
+      echo "Waiting for first model to be ready (probing $$READY_URL)..."
+      ready_attempts=0
+      until curl --connect-timeout 5 --max-time 10 -sf "$$READY_URL" > /dev/null 2>&1; do
+        ready_attempts=$$((ready_attempts + 1))
+        if [ "$$ready_attempts" -ge 30 ]; then
+          echo "WARN: first model not reachable at $$READY_URL after $$ready_attempts attempts (~20m); entering registration loop anyway (each backend is health-checked directly before registering)"
+          break
+        fi
+        echo "First model not ready yet (attempt $$ready_attempts/30), retrying in 30s..."
+        sleep 30
+      done
       echo "First model ready, starting registration loop"
 
       while true; do
         for port in 8001 8002 8003; do
+          # Liveness marker for the container healthcheck (see service def);
+          # refreshed each port so a slow-but-progressing serial loop is not
+          # falsely marked unhealthy. See cvm-compose-files#57.
+          date +%s > /tmp/registrar_alive
           eval "was_reg=\$$REG_$$port"
           eval "fails=\$$FAIL_COUNT_$$port"
           if check_port $$port; then
@@ -497,6 +527,8 @@ configs:
         register_model "google/gemma-4-31B-it" "gemma-4-31b.completions.near.ai"
         register_model "Qwen/Qwen3.6-35B-A3B-FP8" "qwen3-6-35b.completions.near.ai"
         register_model "Qwen/Qwen3.6-27B-FP8" "qwen3-6-27b.completions.near.ai"
+        # Refresh liveness after the register_model calls, before the long sleep.
+        date +%s > /tmp/registrar_alive
         sleep 60
       done
   nginx_conf:
