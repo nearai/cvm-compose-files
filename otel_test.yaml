@@ -389,15 +389,20 @@ services:
     image: otel/opentelemetry-collector-contrib:0.117.0
     container_name: otelcol-sidecar
     command: ["--config=/etc/otelcol-contrib/config.yaml"]
-    # Required trial-vendor secrets. The `:?` form makes docker compose fail
-    # fast with a clear message if any are missing/empty instead of silently
-    # rendering a sidecar that crash-loops on startup with no telemetry.
+    # Trial-vendor secrets. Earlier revisions used `${VAR:?required ...}` for
+    # fail-fast at `compose up` time, but that aborts the entire compose-up
+    # (all 11 inference services along with the sidecar) when any var is
+    # missing — too wide a blast radius for trial telemetry. Plain `${VAR}`
+    # lets the sidecar render with empty endpoints, otelcol-contrib then
+    # fails with a clear "endpoint must be a valid URL" in its own container
+    # logs, and `restart: unless-stopped` crash-loops only the sidecar.
+    # Inference traffic is unaffected.
     environment:
-      - HOST_IP=${HOST_IP:?HOST_IP is required for the trial telemetry sidecar}
-      - GRAFANA_OTEL_ENDPOINT=${GRAFANA_OTEL_ENDPOINT:?GRAFANA_OTEL_ENDPOINT is required for the trial telemetry sidecar}
-      - GRAFANA_OTEL_AUTH=${GRAFANA_OTEL_AUTH:?GRAFANA_OTEL_AUTH is required for the trial telemetry sidecar}
-      - BETTERSTACK_OTEL_ENDPOINT=${BETTERSTACK_OTEL_ENDPOINT:?BETTERSTACK_OTEL_ENDPOINT is required for the trial telemetry sidecar}
-      - BETTERSTACK_OTEL_TOKEN=${BETTERSTACK_OTEL_TOKEN:?BETTERSTACK_OTEL_TOKEN is required for the trial telemetry sidecar}
+      - HOST_IP=${HOST_IP}
+      - GRAFANA_OTEL_ENDPOINT=${GRAFANA_OTEL_ENDPOINT}
+      - GRAFANA_OTEL_AUTH=${GRAFANA_OTEL_AUTH}
+      - BETTERSTACK_OTEL_ENDPOINT=${BETTERSTACK_OTEL_ENDPOINT}
+      - BETTERSTACK_OTEL_TOKEN=${BETTERSTACK_OTEL_TOKEN}
     configs:
       - source: otelcol_config
         target: /etc/otelcol-contrib/config.yaml
