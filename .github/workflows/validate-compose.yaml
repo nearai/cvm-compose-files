@@ -11,6 +11,25 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Validate docker compose files
+        # Compose files reference env vars that are populated at deploy time
+        # by compose-manager (or the operator). CI doesn't have the real
+        # secrets, but we still want to validate compose syntax + structure.
+        # Provide dummy non-empty values so `${VAR:?required ...}` markers
+        # used for fail-fast at deploy time don't trip the CI check.
+        env:
+          # Common across all compose files
+          HOST_IP: 127.0.0.1
+          HUGGING_FACE_HUB_TOKEN: ci-dummy
+          CLOUD_API_USAGE_TOKEN: ci-dummy
+          MODEL_PROXY_TOKEN: ci-dummy
+          PROXY_TOKEN: ci-dummy
+          WEB_CONTEXT_SEARCH_URL: http://ci-dummy
+          WEB_CONTEXT_SEARCH_API_KEY: ci-dummy
+          # Trial telemetry sidecar (dsv4-qwen36-gemma4.yaml etc.)
+          GRAFANA_OTEL_ENDPOINT: http://ci-dummy
+          GRAFANA_OTEL_AUTH: ci-dummy
+          BETTERSTACK_OTEL_ENDPOINT: http://ci-dummy
+          BETTERSTACK_OTEL_TOKEN: ci-dummy
         run: |
           exit_code=0
           for file in *.yaml; do
