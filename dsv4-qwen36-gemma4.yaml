@@ -86,6 +86,8 @@ x-dsv4-flash-common: &dsv4-flash-common
       --enable-metrics
       --log-requests-level 0
       --served-model-name deepseek-ai/DeepSeek-V4-Flash
+      --enable-trace
+      --otlp-traces-endpoint otelcol-sidecar:4317
   volumes:
     - hugginface_cache:/root/.cache/huggingface
     - kernel_cache:/root/.cache/deep_gemm
@@ -127,6 +129,8 @@ x-qwen3-6-27b-common: &qwen3-6-27b-common
       --trust-remote-code
       --log-requests-level 0
       --served-model-name Qwen/Qwen3.6-27B-FP8
+      --enable-trace
+      --otlp-traces-endpoint otelcol-sidecar:4317
   volumes:
     - hugginface_cache:/root/.cache/huggingface
     - kernel_cache:/root/.cache/deep_gemm
@@ -161,6 +165,8 @@ x-gemma-4-31b-common: &gemma-4-31b-common
       --trust-remote-code
       --log-requests-level 0
       --served-model-name google/gemma-4-31B-it
+      --enable-trace
+      --otlp-traces-endpoint otelcol-sidecar:4317
   volumes:
     - hugginface_cache:/root/.cache/huggingface
     - kernel_cache:/root/.cache/deep_gemm
@@ -370,6 +376,37 @@ services:
       com.datadoghq.ad.instances: '[{"openmetrics_endpoint": "http://%%host%%:9400/metrics", "tags":["model:google/gemma-4-31B-it","deployment:dsv4-qwen36-gemma4","ip:${HOST_IP}"]}]'
       com.datadoghq.ad.logs: '[{"source": "dcgm-exporter", "service": "dcgm-exporter", "tags":["model:google/gemma-4-31B-it","deployment:dsv4-qwen36-gemma4","ip:${HOST_IP}"]}]'
 
+  # --- Trial telemetry sidecar (Grafana Cloud + Better Stack OTLP fanout) ---
+  # Receives SGLang request traces via OTLP/gRPC :4317, scrapes the 3 per-model
+  # SGLang :8000/metrics and 3 dcgm-exporter :9400/metrics endpoints, fans
+  # everything out to both trial vendors using the same OTLP endpoints + tokens
+  # as the host-side otelcol-contrib (cvm-ansible-playbooks PR #270/#271).
+  #
+  # Trust note: Grafana / Better Stack ingest tokens (not query) live inside
+  # this CVM as env vars. Worst case is spurious data into trial accounts; no
+  # query/admin access. Removing this service is the disable path.
+  otelcol-sidecar:
+    image: otel/opentelemetry-collector-contrib:0.117.0
+    container_name: otelcol-sidecar
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    # Required trial-vendor secrets. The `:?` form makes docker compose fail
+    # fast with a clear message if any are missing/empty instead of silently
+    # rendering a sidecar that crash-loops on startup with no telemetry.
+    environment:
+      - HOST_IP=${HOST_IP:?HOST_IP is required for the trial telemetry sidecar}
+      - GRAFANA_OTEL_ENDPOINT=${GRAFANA_OTEL_ENDPOINT:?GRAFANA_OTEL_ENDPOINT is required for the trial telemetry sidecar}
+      - GRAFANA_OTEL_AUTH=${GRAFANA_OTEL_AUTH:?GRAFANA_OTEL_AUTH is required for the trial telemetry sidecar}
+      - BETTERSTACK_OTEL_ENDPOINT=${BETTERSTACK_OTEL_ENDPOINT:?BETTERSTACK_OTEL_ENDPOINT is required for the trial telemetry sidecar}
+      - BETTERSTACK_OTEL_TOKEN=${BETTERSTACK_OTEL_TOKEN:?BETTERSTACK_OTEL_TOKEN is required for the trial telemetry sidecar}
+    configs:
+      - source: otelcol_config
+        target: /etc/otelcol-contrib/config.yaml
+        mode: 0640
+    restart: unless-stopped
+    logging: *logging-conf
+    labels:
+      com.datadoghq.ad.logs: '[{"source": "otelcol-contrib", "service": "otelcol-sidecar", "tags":["deployment:dsv4-qwen36-gemma4","ip:${HOST_IP}"]}]'
+
 networks:
   default:
     external: true
@@ -384,6 +421,104 @@ volumes:
     name: certs
 
 configs:
+  otelcol_config:
+    content: |
+      # Trial telemetry sidecar — fans SGLang traces + per-model SGLang/DCGM
+      # metrics out to Grafana Cloud + Better Stack via OTLP/HTTP. Mirrors the
+      # exporters used by the host-side otelcol-contrib (cvm-ansible-playbooks
+      # templates/otelcol_trial.yaml.j2) so both legs of the trial pipeline
+      # receive identical fanout.
+      receivers:
+        otlp:
+          protocols:
+            grpc:
+              endpoint: 0.0.0.0:4317
+            http:
+              endpoint: 0.0.0.0:4318
+
+        prometheus:
+          config:
+            scrape_configs:
+              - job_name: sglang
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['vllm-dsv4-flash:8000']
+                    labels: {model: 'deepseek-ai/DeepSeek-V4-Flash'}
+                  - targets: ['vllm-qwen3-6-27b:8000']
+                    labels: {model: 'Qwen/Qwen3.6-27B-FP8'}
+                  - targets: ['vllm-gemma-4-31b:8000']
+                    labels: {model: 'google/gemma-4-31B-it'}
+              - job_name: dcgm
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['dcgm-dsv4-flash:9400']
+                    labels: {model: 'deepseek-ai/DeepSeek-V4-Flash'}
+                  - targets: ['dcgm-qwen3-6-27b:9400']
+                    labels: {model: 'Qwen/Qwen3.6-27B-FP8'}
+                  - targets: ['dcgm-gemma-4-31b:9400']
+                    labels: {model: 'google/gemma-4-31B-it'}
+              - job_name: otel-self
+                scrape_interval: 30s
+                static_configs:
+                  - targets: ['127.0.0.1:8888']
+
+      processors:
+        # Must be first in every pipeline; protects the collector under burst
+        # traffic. Numbers mirror the host-side template.
+        memory_limiter:
+          check_interval: 1s
+          limit_mib: 512
+          spike_limit_mib: 128
+
+        # host.name is hardcoded to the inventory hostname so this collector's
+        # signals correlate with the host-side collector
+        # (cvm-ansible-playbooks templates/otelcol_trial.yaml.j2 uses
+        # `{{ inventory_hostname }}` → "gpu23"). Keep the IP as a separate
+        # attribute for IP-based queries. If this compose ever moves to a
+        # different host, update host.name and trial.cohort accordingly.
+        resource:
+          attributes:
+            - {key: host.name,              value: gpu23,                            action: insert}
+            - {key: host.ip,                value: "$${env:HOST_IP}",                action: insert}
+            - {key: service.namespace,      value: near-ai-inference,                action: insert}
+            - {key: deployment.environment, value: trial,                            action: insert}
+            - {key: trial.cohort,           value: gpu23-dsv4-qwen36-gemma4,         action: insert}
+
+        batch:
+          send_batch_size: 8192
+          timeout: 5s
+
+      exporters:
+        otlphttp/grafana:
+          endpoint: $${env:GRAFANA_OTEL_ENDPOINT}
+          headers:
+            Authorization: $${env:GRAFANA_OTEL_AUTH}
+
+        otlphttp/betterstack:
+          endpoint: $${env:BETTERSTACK_OTEL_ENDPOINT}
+          headers:
+            Authorization: "Bearer $${env:BETTERSTACK_OTEL_TOKEN}"
+
+      service:
+        pipelines:
+          traces:
+            receivers: [otlp]
+            processors: [memory_limiter, resource, batch]
+            exporters: [otlphttp/grafana, otlphttp/betterstack]
+
+          metrics:
+            receivers: [otlp, prometheus]
+            processors: [memory_limiter, resource, batch]
+            exporters: [otlphttp/grafana, otlphttp/betterstack]
+
+        telemetry:
+          metrics:
+            address: 127.0.0.1:8888
+          logs:
+            level: info
+
   registrar_script:
     content: |
       #!/bin/sh
