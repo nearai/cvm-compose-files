@@ -1,7 +1,9 @@
 name: Auto Tag on Merge
 
-# Creates an incrementing v0.0.<patch> annotated tag on every push to main
-# (i.e. every merged PR). The new tag points at the merge commit.
+# Creates incrementing v0.0.<patch> annotated tags on pushes to main (merged
+# PRs). Version-number order is kept consistent with main's first-parent
+# history: the newest commit always gets the highest number, so a deployer that
+# treats the highest v0.0.N tag as "latest" never selects an older commit.
 #
 # Note on deployment: compose-manager enforces MIN_TAG_AGE_HOURS (>2h, gated on
 # the *commit* date — see docs/deployment.md). A tag created here points at the
@@ -12,16 +14,20 @@ on:
   push:
     branches: [main]
 
-# Allow the default GITHUB_TOKEN to push the new tag.
 permissions:
   contents: write
 
-# NOTE: deliberately NO `concurrency` group here. A concurrency group only keeps
-# a single pending run, so in a burst of merges the middle run gets superseded
-# and that commit never gets tagged. Instead every run is independent and made
-# race-safe by the fetch -> compute -> push-with-retry loop below: the remote
-# rejects a duplicate tag ref (no --force), which serializes the version bump,
-# and each run keeps retrying until it lands a unique tag for its own commit.
+# NOTE: deliberately NO `concurrency` group. A concurrency group only keeps one
+# pending run, so a burst of merges drops the middle run and that commit never
+# gets tagged. Instead each run backfills *every* untagged first-parent commit
+# up to its own HEAD, oldest-first, and is made race-safe by the push-without-
+# --force retry below. Two properties follow:
+#   * completeness — every merged commit ends up tagged (a later run backfills
+#     anything an earlier/dropped run missed);
+#   * monotonic order — because commits are tagged strictly oldest->newest with
+#     an incrementing counter, an older commit can never receive a higher number
+#     than a newer one, even when runs overlap (the push lock assigns the lower
+#     number to the older commit regardless of which run wins the race).
 
 jobs:
   tag:
@@ -32,50 +38,69 @@ jobs:
           fetch-depth: 0          # need full history + all tags
           fetch-tags: true
 
-      - name: Compute and push next tag
+      - name: Tag untagged first-parent commits in order
         run: |
           set -euo pipefail
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-          # Idempotency: if this commit is already tagged (e.g. a manual
-          # workflow re-run), do nothing rather than mint a duplicate version.
           git fetch --tags --force --quiet
-          existing=$(git tag --points-at "$GITHUB_SHA" --list 'v0.0.*' | head -n1)
-          if [ -n "$existing" ]; then
-            echo "Commit $GITHUB_SHA already tagged $existing; nothing to do."
+
+          # Anchor = newest first-parent ancestor of HEAD that already carries a
+          # v0.0.* tag. Numbering resumes after it. (Guaranteed an ancestor of
+          # HEAD because we only walk HEAD's first-parent line.)
+          anchor=""
+          while read -r c; do
+            if [ -n "$(git tag --points-at "$c" --list 'v0.0.*')" ]; then
+              anchor="$c"; break
+            fi
+          done < <(git rev-list --first-parent "$GITHUB_SHA")
+
+          if [ -n "$anchor" ]; then
+            commits=$(git rev-list --first-parent --reverse "$anchor..$GITHUB_SHA")
+          else
+            # No tagged ancestor at all: tag only this commit, don't backfill all history.
+            commits="$GITHUB_SHA"
+          fi
+
+          if [ -z "$commits" ]; then
+            echo "No untagged first-parent commits up to $GITHUB_SHA; nothing to do."
             exit 0
           fi
 
-          # Race-safe bump: recompute from the freshest tag list each attempt and
-          # let the remote reject duplicates. Concurrent runs converge to distinct
-          # tags, so every merge commit ends up with exactly one tag.
-          for attempt in $(seq 1 10); do
-            git fetch --tags --force --quiet
-            latest=$(git tag --list 'v0.0.*' --sort=-v:refname | head -n1)
-            if [ -z "$latest" ]; then
-              next="v0.0.1"
-            else
-              patch=${latest##*.}
-              case "$patch" in
-                ''|*[!0-9]*) echo "::error::Unexpected latest tag '$latest'"; exit 1 ;;
-              esac
-              next="v0.0.$((patch + 1))"
-            fi
-            echo "Attempt $attempt: latest=${latest:-<none>} -> $next"
-
-            git tag -a "$next" -m "Auto-tag on merge to main ($GITHUB_SHA)"
-            if git push origin "refs/tags/$next"; then
-              echo "Pushed $next -> $GITHUB_SHA"
-              exit 0
+          # Tag each commit oldest -> newest, claiming the next free version.
+          for c in $commits; do
+            if [ -n "$(git tag --points-at "$c" --list 'v0.0.*')" ]; then
+              echo "$c already tagged ($(git tag --points-at "$c" --list 'v0.0.*' | tr '\n' ' ')); skip."
+              continue
             fi
 
-            # Another concurrent run claimed $next first; drop our local tag,
-            # refresh, and try the next number.
-            echo "Push of $next was rejected (another run claimed it); retrying."
-            git tag -d "$next" || true
-            sleep $(( (RANDOM % 5) + 1 ))
+            tagged=""
+            for attempt in $(seq 1 10); do
+              git fetch --tags --force --quiet
+              latest=$(git tag --list 'v0.0.*' --sort=-v:refname | head -n1)
+              if [ -z "$latest" ]; then
+                next="v0.0.1"
+              else
+                patch=${latest##*.}
+                case "$patch" in
+                  ''|*[!0-9]*) echo "::error::Unexpected latest tag '$latest'"; exit 1 ;;
+                esac
+                next="v0.0.$((patch + 1))"
+              fi
+
+              git tag -a "$next" "$c" -m "Auto-tag on merge to main ($c)"
+              if git push origin "refs/tags/$next"; then
+                echo "Tagged $c -> $next"
+                tagged=1
+                break
+              fi
+              echo "  $next was claimed by another run; refresh and retry."
+              git tag -d "$next" || true
+              sleep $(( (RANDOM % 5) + 1 ))
+            done
+
+            if [ -z "$tagged" ]; then
+              echo "::error::Exhausted attempts tagging $c"
+              exit 1
+            fi
           done
-
-          echo "::error::Exhausted attempts creating a unique tag for $GITHUB_SHA"
-          exit 1
