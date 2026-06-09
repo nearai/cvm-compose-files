@@ -16,10 +16,12 @@ on:
 permissions:
   contents: write
 
-# Serialize runs so two quick merges can't race on the same next version.
-concurrency:
-  group: auto-tag
-  cancel-in-progress: false
+# NOTE: deliberately NO `concurrency` group here. A concurrency group only keeps
+# a single pending run, so in a burst of merges the middle run gets superseded
+# and that commit never gets tagged. Instead every run is independent and made
+# race-safe by the fetch -> compute -> push-with-retry loop below: the remote
+# rejects a duplicate tag ref (no --force), which serializes the version bump,
+# and each run keeps retrying until it lands a unique tag for its own commit.
 
 jobs:
   tag:
@@ -33,29 +35,47 @@ jobs:
       - name: Compute and push next tag
         run: |
           set -euo pipefail
-          git fetch --tags --force
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          # Highest existing v0.0.<n> tag; bump its patch number.
-          latest=$(git tag --list 'v0.0.*' --sort=-v:refname | head -n1)
-          if [ -z "$latest" ]; then
-            next="v0.0.1"
-          else
-            patch=${latest##*.}
-            case "$patch" in
-              ''|*[!0-9]*) echo "::error::Unexpected latest tag '$latest'"; exit 1 ;;
-            esac
-            next="v0.0.$((patch + 1))"
-          fi
-          echo "Latest tag: ${latest:-<none>}  ->  new tag: $next"
-
-          # Idempotency guard (e.g. workflow re-run on the same commit).
-          if git rev-parse -q --verify "refs/tags/$next" >/dev/null; then
-            echo "Tag $next already exists; nothing to do."
+          # Idempotency: if this commit is already tagged (e.g. a manual
+          # workflow re-run), do nothing rather than mint a duplicate version.
+          git fetch --tags --force --quiet
+          existing=$(git tag --points-at "$GITHUB_SHA" --list 'v0.0.*' | head -n1)
+          if [ -n "$existing" ]; then
+            echo "Commit $GITHUB_SHA already tagged $existing; nothing to do."
             exit 0
           fi
 
-          git config user.name  "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -a "$next" -m "Auto-tag on merge to main ($GITHUB_SHA)"
-          git push origin "$next"
-          echo "Pushed $next -> $GITHUB_SHA"
+          # Race-safe bump: recompute from the freshest tag list each attempt and
+          # let the remote reject duplicates. Concurrent runs converge to distinct
+          # tags, so every merge commit ends up with exactly one tag.
+          for attempt in $(seq 1 10); do
+            git fetch --tags --force --quiet
+            latest=$(git tag --list 'v0.0.*' --sort=-v:refname | head -n1)
+            if [ -z "$latest" ]; then
+              next="v0.0.1"
+            else
+              patch=${latest##*.}
+              case "$patch" in
+                ''|*[!0-9]*) echo "::error::Unexpected latest tag '$latest'"; exit 1 ;;
+              esac
+              next="v0.0.$((patch + 1))"
+            fi
+            echo "Attempt $attempt: latest=${latest:-<none>} -> $next"
+
+            git tag -a "$next" -m "Auto-tag on merge to main ($GITHUB_SHA)"
+            if git push origin "refs/tags/$next"; then
+              echo "Pushed $next -> $GITHUB_SHA"
+              exit 0
+            fi
+
+            # Another concurrent run claimed $next first; drop our local tag,
+            # refresh, and try the next number.
+            echo "Push of $next was rejected (another run claimed it); retrying."
+            git tag -d "$next" || true
+            sleep $(( (RANDOM % 5) + 1 ))
+          done
+
+          echo "::error::Exhausted attempts creating a unique tag for $GITHUB_SHA"
+          exit 1
