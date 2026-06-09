@@ -69,14 +69,20 @@ jobs:
 
           # Tag each commit oldest -> newest, claiming the next free version.
           for c in $commits; do
-            if [ -n "$(git tag --points-at "$c" --list 'v0.0.*')" ]; then
-              echo "$c already tagged ($(git tag --points-at "$c" --list 'v0.0.*' | tr '\n' ' ')); skip."
-              continue
-            fi
-
             tagged=""
             for attempt in $(seq 1 10); do
               git fetch --tags --force --quiet
+
+              # Re-check on EVERY attempt (not just once up front): a concurrent
+              # run may have tagged this commit between attempts. If so, never
+              # mint a second (higher) tag on it — that's how an older commit
+              # could otherwise end up with a higher version than a newer one.
+              if [ -n "$(git tag --points-at "$c" --list 'v0.0.*')" ]; then
+                echo "$c already tagged ($(git tag --points-at "$c" --list 'v0.0.*' | tr '\n' ' ')) by another run; skip."
+                tagged=1
+                break
+              fi
+
               latest=$(git tag --list 'v0.0.*' --sort=-v:refname | head -n1)
               if [ -z "$latest" ]; then
                 next="v0.0.1"
@@ -94,7 +100,7 @@ jobs:
                 tagged=1
                 break
               fi
-              echo "  $next was claimed by another run; refresh and retry."
+              echo "  $next was claimed by another run; refresh, re-check, retry."
               git tag -d "$next" || true
               sleep $(( (RANDOM % 5) + 1 ))
             done
