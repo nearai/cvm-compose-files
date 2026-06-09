@@ -1,3 +1,27 @@
+# ============================================================================
+# GLM-5.1-NVFP4 — NVIDIA NVFP4 (4-bit) quant of GLM-5.1 (zai-org/GLM-5.1).
+#
+# !!! BLACKWELL-ONLY — DO NOT DEPLOY ON THE H200 (Hopper) FLEET !!!
+#
+# NVFP4 needs native FP4 tensor cores, which exist only on Blackwell
+# (B200/B300, sm_100). On Hopper (sm_90) sglang has no FP4 kernel and falls
+# back to the Marlin W4A16 path (dequant FP4 -> BF16, BF16 tensor cores):
+#   - SLOWER than the GLM-5.1-FP8 config we already run: ~2x slower prefill,
+#     ~28% slower decode on MoE; 24% vs 72% memory-bandwidth utilization.
+#     (sgl-project/sglang#22459)
+#   - CORRECTNESS RISK: the BF16 NVFP4 Marlin dequant path has produced
+#     garbled output on non-FP4 GPUs (vllm-project/vllm#34694, fixed upstream
+#     in vLLM PR #34577). GLM-5.1 is a BF16 model -> exactly the affected path;
+#     sglang's impl needs explicit output validation before any use.
+#   - On sglang < 0.5.10 / 25.10 there is no fallback at all and it hard-errors
+#     on sm_90. Verify on the box: docker exec <model-ctr> python -c
+#     "import sglang; print(sglang.__version__)".
+#
+# This file is STAGED for future Blackwell capacity only. It is NOT wired into
+# the model-proxy registry / cloud-api model list. Re-validate throughput and
+# output correctness on real Blackwell hardware before enabling.
+# ============================================================================
+
 x-logging-conf: &logging-conf
   driver: "json-file"
   options:
