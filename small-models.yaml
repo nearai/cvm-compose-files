@@ -400,7 +400,6 @@ services:
     command: /bin/sh -c 'while :; do sleep 6h; nginx -s reload; done & nginx -g "daemon off;"'
     ports:
       - "80:80"
-      - "8000:8000"
       - "8001:8001"
       - "8002:8002"
       - "8003:8003"
@@ -443,64 +442,7 @@ services:
         mode: 0755
     logging: *logging-conf
 
-  # --- Qwen3-30B (GPUs 0-1) — single instance, single proxy ---
-
-  proxy-qwen3-30b:
-    <<: *vllm-proxy-common
-    container_name: proxy-qwen3-30b
-    environment:
-      - NVIDIA_VISIBLE_DEVICES=all
-      - CLOUD_API_URL=https://cloud-api.near.ai
-      - CLOUD_API_USAGE_TOKEN=${CLOUD_API_USAGE_TOKEN}
-      - COMPOSE_MANAGER_URL=http://compose-manager:8080
-      - LOG_FORMAT=json
-      - MODEL_NAME=Qwen/Qwen3-30B-A3B-Instruct-2507
-      - OHTTP_ENABLED=true
-      - TOKEN=${PROXY_TOKEN}
-      - VLLM_BASE_URL=http://model-vllm-qwen3-30b:8000
-      - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
-      - USE_NV_ATTESTATION_SDK=true
-    labels:
-      com.datadoghq.ad.logs: '[{"source": "vllm-proxy", "service": "vllm-proxy", "tags": ["model:Qwen/Qwen3-30B-A3B-Instruct-2507", "ip:${HOST_IP}", "port:8000"]}]'
-
-  model-vllm-qwen3-30b:
-    <<: *vllm-common
-    image: vllm/vllm-openai@sha256:ccd6a6dbf4aba4e94c6f7052d1835d6e742082b6a5095276552e9b7a5a47c2e5
-    container_name: model-vllm-qwen3-30b
-    command: >
-        Qwen/Qwen3-30B-A3B-Instruct-2507
-        --revision 0d7cf23991f47feeb3a57ecb4c9cee8ea4a17bfe
-        --tensor-parallel-size 1
-        --enable-prefix-caching
-        --gpu-memory-utilization 0.95
-        --tool-call-parser hermes
-        --enable-auto-tool-choice
-        --max-model-len 256K
-        --max-num-batched-tokens 16K
-        --stream-interval 10
-        --load-format runai_streamer
-        --dtype float16
-        --model-loader-extra-config '{"concurrency":48}'
-        --enable-prompt-tokens-details
-        --speculative-config '{"method":"eagle3","model":"lmsys/SGLang-EAGLE3-Qwen3-30B-A3B-Instruct-2507-SpecForge-Nex","num_speculative_tokens":3,"draft_tensor_parallel_size":1}'
-    volumes:
-      - hugginface_cache:/root/.cache/huggingface
-      - vllm_cache:/root/.cache/vllm
-    environment: *vllm-env
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              device_ids: ["0"]
-              capabilities: [gpu]
-    labels:
-      com.datadoghq.ad.check_names: '["vllm"]'
-      com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.logs: '[{"source": "vllm", "service": "vllm", "tags":["model:Qwen/Qwen3-30B-A3B-Instruct-2507","ip:${HOST_IP}", "port:8000"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-qwen3-30b:8000/metrics", "histogram_buckets_as_distributions": true, "service": "model-vllm-qwen3-30b", "tags":["model:Qwen/Qwen3-30B-A3B-Instruct-2507","ip:${HOST_IP}", "port:8000"]}]'
-
-  # --- GPT-OSS x2 (GPUs 2, 3) — single proxy, multi-backend ---
+  # --- GPT-OSS x3 (GPUs 0, 2, 3) — single proxy, multi-backend ---
 
   proxy-gpt-oss:
     <<: *vllm-proxy-common
@@ -514,7 +456,7 @@ services:
       - MODEL_NAME=openai/gpt-oss-120b
       - OHTTP_ENABLED=true
       - TOKEN=${PROXY_TOKEN}
-      - VLLM_BACKEND_URLS=http://model-vllm-gpt-oss-1:8000,http://model-vllm-gpt-oss-2:8000
+      - VLLM_BACKEND_URLS=http://model-vllm-gpt-oss-1:8000,http://model-vllm-gpt-oss-2:8000,http://model-vllm-gpt-oss-3:8000
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
     labels:
@@ -551,6 +493,23 @@ services:
       com.datadoghq.ad.init_configs: "[{}]"
       com.datadoghq.ad.logs: '[{"source": "vllm", "service": "vllm", "tags":["model:openai/gpt-oss-120b","ip:${HOST_IP}", "port:8001","instance:2"]}]'
       com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-gpt-oss-2:8000/metrics", "histogram_buckets_as_distributions": true, "service": "model-vllm-gpt-oss-2", "tags":["model:openai/gpt-oss-120b","ip:${HOST_IP}", "port:8001"]}]'
+
+  # instance:3 — runs on GPU 0, freed by retiring Qwen/Qwen3-30B-A3B-Instruct-2507.
+  model-vllm-gpt-oss-3:
+    <<: *gpt-oss-common
+    container_name: model-vllm-gpt-oss-3
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["0"]
+              capabilities: [gpu]
+    labels:
+      com.datadoghq.ad.check_names: '["vllm"]'
+      com.datadoghq.ad.init_configs: "[{}]"
+      com.datadoghq.ad.logs: '[{"source": "vllm", "service": "vllm", "tags":["model:openai/gpt-oss-120b","ip:${HOST_IP}", "port:8001","instance:3"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-gpt-oss-3:8000/metrics", "histogram_buckets_as_distributions": true, "service": "model-vllm-gpt-oss-3", "tags":["model:openai/gpt-oss-120b","ip:${HOST_IP}", "port:8001"]}]'
 
   # --- Qwen3.6-35B-A3B-FP8 x2 (GPUs 1, 4) — SGLang, TP=1, EAGLE-v2 spec, single proxy multi-backend ---
 
@@ -946,22 +905,6 @@ services:
   # device_ids, so all NVML/DCGM metrics it emits are correctly attributable to
   # one model. Filter dashboards/monitors on `model:<HF id>`.
 
-  dcgm-qwen3-30b:
-    <<: *dcgm-common
-    container_name: dcgm-qwen3-30b
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              device_ids: ["0"]
-              capabilities: [gpu]
-    labels:
-      com.datadoghq.ad.check_names: '["dcgm"]'
-      com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint": "http://%%host%%:9400/metrics", "tags":["model:Qwen/Qwen3-30B-A3B-Instruct-2507","deployment:small-models","ip:${HOST_IP}"]}]'
-      com.datadoghq.ad.logs: '[{"source": "dcgm-exporter", "service": "dcgm-exporter", "tags":["model:Qwen/Qwen3-30B-A3B-Instruct-2507","deployment:small-models","ip:${HOST_IP}"]}]'
-
   dcgm-gpt-oss:
     <<: *dcgm-common
     container_name: dcgm-gpt-oss
@@ -970,7 +913,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["2","3"]
+              device_ids: ["0","2","3"]
               capabilities: [gpu]
     labels:
       com.datadoghq.ad.check_names: '["dcgm"]'
@@ -1052,7 +995,7 @@ configs:
       TLS_PORT=8444
 
       # Track registration state per port
-      for port in 8000 8001 8002 8003 8004 8005 8006 8007 8008 8009; do
+      for port in 8001 8002 8003 8004 8005 8006 8007 8008 8009; do
         eval "REG_$$port=false"
         eval "FAIL_COUNT_$$port=0"
       done
@@ -1080,7 +1023,7 @@ configs:
 
       cleanup() {
         echo "SIGTERM received, unregistering all endpoints"
-        for port in 8000 8001 8002 8003 8004 8005 8006 8007 8008 8009; do
+        for port in 8001 8002 8003 8004 8005 8006 8007 8008 8009; do
           unregister_endpoint "$${HOST_IP}:$$port"
         done
         exit 0
@@ -1097,7 +1040,6 @@ configs:
 
       check_port() {
         case $$1 in
-          8000) check_chat model-vllm-qwen3-30b "Qwen/Qwen3-30B-A3B-Instruct-2507" ;;
           8001) check_chat model-vllm-gpt-oss-1 "openai/gpt-oss-120b" ;;
           8002) curl -sf --max-time 10 "http://model-sg-flux-2-klein-4b-1:8000/v1/models" > /dev/null 2>&1 ;;
           8003) check_chat model-vllm-qwen3-vl "Qwen/Qwen3-VL-30B-A3B-Instruct" ;;
@@ -1117,7 +1059,7 @@ configs:
       # Bounded + loud so a persistent probe failure falls through to the
       # registration loop (which health-checks each backend directly) instead
       # of hanging here forever. See cvm-compose-files#57.
-      READY_URL="http://$${HOST_IP}:8000/v1/models"
+      READY_URL="http://$${HOST_IP}:8001/v1/models"
       echo "Waiting for first model to be ready (probing $$READY_URL)..."
       ready_attempts=0
       until curl --connect-timeout 5 --max-time 10 -sf "$$READY_URL" > /dev/null 2>&1; do
@@ -1132,7 +1074,7 @@ configs:
       echo "First model ready, starting registration loop"
 
       while true; do
-        for port in 8000 8001 8002 8003 8004 8005 8006 8007 8008 8009; do
+        for port in 8001 8002 8003 8004 8005 8006 8007 8008 8009; do
           # Liveness marker for the container healthcheck (see service def);
           # refreshed each port so a slow-but-progressing serial loop (these
           # probes can take minutes in aggregate) is not falsely marked
@@ -1156,7 +1098,6 @@ configs:
         done
 
         # Model-to-domain mappings
-        register_model "Qwen/Qwen3-30B-A3B-Instruct-2507" "qwen3-30b.completions.near.ai"
         register_model "openai/gpt-oss-120b" "gpt-oss-120b.completions.near.ai"
         register_model "black-forest-labs/FLUX.2-klein-4B" "flux2-klein.completions.near.ai"
         register_model "Qwen/Qwen3-VL-30B-A3B-Instruct" "qwen3-vl-30b.completions.near.ai"
@@ -1202,13 +1143,7 @@ configs:
       client_max_body_size 100m;
       client_body_buffer_size 1m;
 
-      # :8000 - Qwen3-30B
-      server {
-          listen 8000;
-          location / { proxy_pass http://proxy-qwen3-30b:8000; }
-      }
-
-      # :8001 - GPT-OSS (single proxy, 2 backends)
+      # :8001 - GPT-OSS (single proxy, 3 backends)
       server {
           listen 8001;
           location / { proxy_pass http://proxy-gpt-oss:8000; }
@@ -1277,14 +1212,6 @@ configs:
       # signing pubkey, breaking E2EE on staging — see nearai/infra#143
       # (rotation-SNI variant) and nearai/infra#164 (staging-SNI variant),
       # plus the L4-SNI-rewrite analysis in nearai/model-proxy#30.
-
-      server {
-          listen 443 ssl http2;
-          server_name qwen3-30b.completions.near.ai
-                      qwen3-30b.completions-stg.near.ai
-                      ~^qwen3-30b-i\d+\.completions(-stg)?\.near\.ai$$;
-          location / { proxy_pass http://proxy-qwen3-30b:8000; }
-      }
 
       server {
           listen 443 ssl http2;
