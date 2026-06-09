@@ -1,0 +1,61 @@
+name: Auto Tag on Merge
+
+# Creates an incrementing v0.0.<patch> annotated tag on every push to main
+# (i.e. every merged PR). The new tag points at the merge commit.
+#
+# Note on deployment: compose-manager enforces MIN_TAG_AGE_HOURS (>2h, gated on
+# the *commit* date — see docs/deployment.md). A tag created here points at the
+# fresh merge commit, so it only becomes deployable ~2h after merge. For an
+# immediate deploy, use the backdate-tag flow instead of this auto-tag.
+
+on:
+  push:
+    branches: [main]
+
+# Allow the default GITHUB_TOKEN to push the new tag.
+permissions:
+  contents: write
+
+# Serialize runs so two quick merges can't race on the same next version.
+concurrency:
+  group: auto-tag
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0          # need full history + all tags
+          fetch-tags: true
+
+      - name: Compute and push next tag
+        run: |
+          set -euo pipefail
+          git fetch --tags --force
+
+          # Highest existing v0.0.<n> tag; bump its patch number.
+          latest=$(git tag --list 'v0.0.*' --sort=-v:refname | head -n1)
+          if [ -z "$latest" ]; then
+            next="v0.0.1"
+          else
+            patch=${latest##*.}
+            case "$patch" in
+              ''|*[!0-9]*) echo "::error::Unexpected latest tag '$latest'"; exit 1 ;;
+            esac
+            next="v0.0.$((patch + 1))"
+          fi
+          echo "Latest tag: ${latest:-<none>}  ->  new tag: $next"
+
+          # Idempotency guard (e.g. workflow re-run on the same commit).
+          if git rev-parse -q --verify "refs/tags/$next" >/dev/null; then
+            echo "Tag $next already exists; nothing to do."
+            exit 0
+          fi
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$next" -m "Auto-tag on merge to main ($GITHUB_SHA)"
+          git push origin "$next"
+          echo "Pushed $next -> $GITHUB_SHA"
