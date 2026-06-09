@@ -400,7 +400,6 @@ services:
     command: /bin/sh -c 'while :; do sleep 6h; nginx -s reload; done & nginx -g "daemon off;"'
     ports:
       - "80:80"
-      - "8000:8000"
       - "8001:8001"
       - "8002:8002"
       - "8003:8003"
@@ -996,7 +995,7 @@ configs:
       TLS_PORT=8444
 
       # Track registration state per port
-      for port in 8000 8001 8002 8003 8004 8005 8006 8007 8008 8009; do
+      for port in 8001 8002 8003 8004 8005 8006 8007 8008 8009; do
         eval "REG_$$port=false"
         eval "FAIL_COUNT_$$port=0"
       done
@@ -1024,7 +1023,7 @@ configs:
 
       cleanup() {
         echo "SIGTERM received, unregistering all endpoints"
-        for port in 8000 8001 8002 8003 8004 8005 8006 8007 8008 8009; do
+        for port in 8001 8002 8003 8004 8005 8006 8007 8008 8009; do
           unregister_endpoint "$${HOST_IP}:$$port"
         done
         exit 0
@@ -1060,7 +1059,7 @@ configs:
       # Bounded + loud so a persistent probe failure falls through to the
       # registration loop (which health-checks each backend directly) instead
       # of hanging here forever. See cvm-compose-files#57.
-      READY_URL="http://$${HOST_IP}:8000/v1/models"
+      READY_URL="http://$${HOST_IP}:8001/v1/models"
       echo "Waiting for first model to be ready (probing $$READY_URL)..."
       ready_attempts=0
       until curl --connect-timeout 5 --max-time 10 -sf "$$READY_URL" > /dev/null 2>&1; do
@@ -1075,7 +1074,7 @@ configs:
       echo "First model ready, starting registration loop"
 
       while true; do
-        for port in 8000 8001 8002 8003 8004 8005 8006 8007 8008 8009; do
+        for port in 8001 8002 8003 8004 8005 8006 8007 8008 8009; do
           # Liveness marker for the container healthcheck (see service def);
           # refreshed each port so a slow-but-progressing serial loop (these
           # probes can take minutes in aggregate) is not falsely marked
