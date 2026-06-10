@@ -17,6 +17,9 @@
 #     on sm_90. Verify on the box: docker exec <model-ctr> python -c
 #     "import sglang; print(sglang.__version__)".
 #
+# Serving image is the CUDA 13 sglang build (lmsysorg/sglang:dev-cu13), which
+# NVIDIA's README marks as required for B300 and which also covers B200.
+#
 # This file is STAGED for future Blackwell capacity only. It is NOT wired into
 # the model-proxy registry / cloud-api model list. Re-validate throughput and
 # output correctness on real Blackwell hardware before enabling.
@@ -137,7 +140,12 @@ services:
     depends_on:
       model-downloader:
         condition: service_completed_successfully
-    image: lmsysorg/sglang:dev-cu12@sha256:aac6b242680daeb74d2ab1d85f70575357552d7d165d2e5d30eb362797db54a1
+    # CUDA 13 sglang image: NVIDIA's GLM-5.1-NVFP4 README requires the cu13
+    # build for B300 ("the cu13 variant is required for B300; for other GPUs,
+    # use the corresponding build"). cu13 also runs on B200, so this single
+    # image covers both Blackwell targets. (The FP8 config on the H200 fleet
+    # uses the cu12 build — do not copy that digest here.)
+    image: lmsysorg/sglang:dev-cu13@sha256:f99c3f3e0d6d5f25c844b34ea3bbf1c8ecee144af7a75b5c0366caf3d6249eba
     container_name: model-sg-glm51-nvfp4
     command: >
       sglang serve
