@@ -98,7 +98,7 @@ services:
       - CLOUD_API_USAGE_TOKEN=${CLOUD_API_USAGE_TOKEN}
       - COMPOSE_MANAGER_URL=http://compose-manager:8080
       - LOG_FORMAT=json
-      - MODEL_NAME=cyankiwi/GLM-5.1-AWQ-4bit
+      - MODEL_NAME=zai-org/GLM-5.1-FP8
       - OHTTP_ENABLED=true
       - TOKEN=${PROXY_TOKEN}
       - VLLM_BASE_URL=http://model-sg-glm51-awq:8000
@@ -122,10 +122,17 @@ services:
     # fleet. sglang auto-detects the scheme from config.json's quantization_config
     # (no --quantization flag needed). EAGLE speculative decoding is dropped: the
     # AWQ repo ships no draft/MTP weights.
+    #
+    # --served-model-name is zai-org/GLM-5.1-FP8 (NOT the AWQ repo id): this is a
+    # drop-in for the FP8 model, so the served/API model name stays identical and
+    # nothing downstream (cloud-api, clients) needs to change. --model-path still
+    # points at the AWQ weights. Registered to the ISOLATED glm-5-1-awq domain so
+    # it does not join the prod glm-5-1 rotation.
     command: >
       sglang serve
       --model-path cyankiwi/GLM-5.1-AWQ-4bit
       --revision bc88b0cb806ae1be882ac4135ab4a414517b054f
+      --served-model-name zai-org/GLM-5.1-FP8
       --tp 8
       --reasoning-parser glm45
       --log-requests-level 0
@@ -250,9 +257,9 @@ configs:
 
       mark_registered() {
         register_endpoint "$$ENDPOINT" "$${TLS_PORT}"
-        register_model "cyankiwi/GLM-5.1-AWQ-4bit" "glm-5-1-awq.completions.near.ai"
+        register_model "zai-org/GLM-5.1-FP8" "glm-5-1-awq.completions.near.ai"
         if [ "$$REGISTERED" = false ]; then
-          echo "[GLM-5.1-AWQ] Registered cyankiwi/GLM-5.1-AWQ-4bit at $$ENDPOINT"
+          echo "[GLM-5.1-AWQ] Registered zai-org/GLM-5.1-FP8 (AWQ weights) at $$ENDPOINT"
         fi
         REGISTERED=true
       }
@@ -267,7 +274,7 @@ configs:
         status=$$(curl -sS --connect-timeout 10 --max-time 45 -o /dev/null -w "%{http_code}" \
           -X POST "http://model-sg-glm51-awq:8000/v1/chat/completions" \
           -H "Content-Type: application/json" \
-          -d '{"model":"cyankiwi/GLM-5.1-AWQ-4bit","messages":[{"role":"user","content":"hi"}],"max_tokens":1}')
+          -d '{"model":"zai-org/GLM-5.1-FP8","messages":[{"role":"user","content":"hi"}],"max_tokens":1}')
         curl_status=$$?
 
         if [ "$$curl_status" -ne 0 ]; then
