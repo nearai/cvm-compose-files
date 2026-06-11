@@ -151,7 +151,7 @@ services:
       com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:deepseek-ai/DeepSeek-V4-Flash","model_path:nvidia/DeepSeek-V4-Flash-NVFP4","precision:nvfp4","ip:${HOST_IP}","port:8000"]}]'
       com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-dsv4-flash-nvfp4:8000/metrics","histogram_buckets_as_distributions":true,"service":"model-vllm-dsv4-flash-nvfp4","tags":["model:deepseek-ai/DeepSeek-V4-Flash","model_path:nvidia/DeepSeek-V4-Flash-NVFP4","precision:nvfp4","ip:${HOST_IP}","port:8000"]}]'
 
-  # --- Qwen3.6-35B-A3B NVFP4 (GPU 4) ---
+  # --- Qwen3.6-35B-A3B NVFP4 x2 (GPUs 4, 7) ---
 
   vllm-proxy-qwen3-6-35b-nvfp4:
     <<: *vllm-proxy-common
@@ -165,15 +165,15 @@ services:
       - MODEL_NAME=Qwen/Qwen3.6-35B-A3B
       - OHTTP_ENABLED=true
       - TOKEN=${PROXY_TOKEN}
-      - VLLM_BASE_URL=http://model-vllm-qwen3-6-35b-nvfp4:8000
+      - VLLM_BACKEND_URLS=http://model-vllm-qwen3-6-35b-nvfp4-1:8000,http://model-vllm-qwen3-6-35b-nvfp4-2:8000
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
     labels:
       com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:Qwen/Qwen3.6-35B-A3B","precision:nvfp4","ip:${HOST_IP}","port:8001"]}]'
 
-  model-vllm-qwen3-6-35b-nvfp4:
+  model-vllm-qwen3-6-35b-nvfp4-1:
     <<: *vllm-common
-    container_name: model-vllm-qwen3-6-35b-nvfp4
+    container_name: model-vllm-qwen3-6-35b-nvfp4-1
     command: >
       nvidia/Qwen3.6-35B-A3B-NVFP4
       --revision 6c7f09d4036e97393f82e9f9ecd1a5c35ca5ee92
@@ -206,8 +206,46 @@ services:
     labels:
       com.datadoghq.ad.check_names: '["vllm"]'
       com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:Qwen/Qwen3.6-35B-A3B","model_path:nvidia/Qwen3.6-35B-A3B-NVFP4","precision:nvfp4","ip:${HOST_IP}","port:8001"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-qwen3-6-35b-nvfp4:8000/metrics","histogram_buckets_as_distributions":true,"service":"model-vllm-qwen3-6-35b-nvfp4","tags":["model:Qwen/Qwen3.6-35B-A3B","model_path:nvidia/Qwen3.6-35B-A3B-NVFP4","precision:nvfp4","ip:${HOST_IP}","port:8001"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:Qwen/Qwen3.6-35B-A3B","model_path:nvidia/Qwen3.6-35B-A3B-NVFP4","precision:nvfp4","ip:${HOST_IP}","port:8001","instance:1"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-qwen3-6-35b-nvfp4-1:8000/metrics","histogram_buckets_as_distributions":true,"service":"model-vllm-qwen3-6-35b-nvfp4-1","tags":["model:Qwen/Qwen3.6-35B-A3B","model_path:nvidia/Qwen3.6-35B-A3B-NVFP4","precision:nvfp4","ip:${HOST_IP}","port:8001","instance:1"]}]'
+
+  model-vllm-qwen3-6-35b-nvfp4-2:
+    <<: *vllm-common
+    container_name: model-vllm-qwen3-6-35b-nvfp4-2
+    command: >
+      nvidia/Qwen3.6-35B-A3B-NVFP4
+      --revision 6c7f09d4036e97393f82e9f9ecd1a5c35ca5ee92
+      --served-model-name Qwen/Qwen3.6-35B-A3B
+      --tensor-parallel-size 1
+      --trust-remote-code
+      --dtype auto
+      --quantization modelopt
+      --kv-cache-dtype fp8
+      --gpu-memory-utilization 0.85
+      --max-model-len 65536
+      --max-num-seqs 4
+      --max-num-batched-tokens 8192
+      --enable-chunked-prefill
+      --async-scheduling
+      --enable-prefix-caching
+      --reasoning-parser qwen3
+      --enable-prompt-tokens-details
+    volumes:
+      - hugginface_cache:/root/.cache/huggingface
+      - vllm_cache:/root/.cache/vllm
+    environment: *vllm-env
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["7"]
+              capabilities: [gpu]
+    labels:
+      com.datadoghq.ad.check_names: '["vllm"]'
+      com.datadoghq.ad.init_configs: "[{}]"
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:Qwen/Qwen3.6-35B-A3B","model_path:nvidia/Qwen3.6-35B-A3B-NVFP4","precision:nvfp4","ip:${HOST_IP}","port:8001","instance:2"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-qwen3-6-35b-nvfp4-2:8000/metrics","histogram_buckets_as_distributions":true,"service":"model-vllm-qwen3-6-35b-nvfp4-2","tags":["model:Qwen/Qwen3.6-35B-A3B","model_path:nvidia/Qwen3.6-35B-A3B-NVFP4","precision:nvfp4","ip:${HOST_IP}","port:8001","instance:2"]}]'
 
   # --- Gemma-4-31B-it NVFP4 (GPUs 5-6) ---
 
@@ -264,7 +302,7 @@ services:
       com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:google/gemma-4-31B-it","model_path:nvidia/Gemma-4-31B-IT-NVFP4","precision:nvfp4","ip:${HOST_IP}","port:8002"]}]'
       com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-gemma-4-31b-nvfp4:8000/metrics","histogram_buckets_as_distributions":true,"service":"model-vllm-gemma-4-31b-nvfp4","tags":["model:google/gemma-4-31B-it","model_path:nvidia/Gemma-4-31B-IT-NVFP4","precision:nvfp4","ip:${HOST_IP}","port:8002"]}]'
 
-  # --- Per-model dcgm-exporters: GPU 7 intentionally left spare ---
+  # --- Per-model dcgm-exporters ---
 
   dcgm-dsv4-flash-nvfp4:
     <<: *dcgm-common
@@ -290,7 +328,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["4"]
+              device_ids: ["4","7"]
               capabilities: [gpu]
     labels:
       com.datadoghq.ad.check_names: '["dcgm"]'
@@ -379,7 +417,10 @@ configs:
       check_port() {
         case $$1 in
           8000) check_chat model-vllm-dsv4-flash-nvfp4 "deepseek-ai/DeepSeek-V4-Flash" ;;
-          8001) check_chat model-vllm-qwen3-6-35b-nvfp4 "Qwen/Qwen3.6-35B-A3B" ;;
+          8001)
+            check_chat model-vllm-qwen3-6-35b-nvfp4-1 "Qwen/Qwen3.6-35B-A3B" &&
+            check_chat model-vllm-qwen3-6-35b-nvfp4-2 "Qwen/Qwen3.6-35B-A3B"
+            ;;
           8002) check_chat model-vllm-gemma-4-31b-nvfp4 "google/gemma-4-31B-it" ;;
         esac
       }
