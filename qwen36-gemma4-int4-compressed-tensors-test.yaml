@@ -1,0 +1,485 @@
+x-logging-conf: &logging-conf
+  driver: "json-file"
+  options:
+    max-size: "100m"
+    max-file: "10"
+    labels: "com.datadoghq.ad.logs"
+
+x-nvidia: &nvidia
+  runtime: nvidia
+  ipc: host
+  ulimits:
+    memlock: -1
+    nofile:
+      soft: 65535
+      hard: 65535
+
+x-vllm-common: &vllm-common
+  <<: *nvidia
+  init: true
+  image: vllm/vllm-openai@sha256:03768d9400bf490934e5dce2e9d8ddd9e004a5054939e14641188d8a9b69db8e
+  volumes:
+    - hugginface_cache:/root/.cache/huggingface
+    - vllm_cache:/root/.cache/vllm
+  environment: &vllm-env
+    - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+    - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0}
+    - VLLM_LOGGING_LEVEL=INFO
+    - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    - OPENBLAS_L2_SIZE=2097152
+    - NCCL_DEBUG=WARN
+    - VLLM_CACHE_ROOT=/root/.cache/vllm/int4-compressed-tensors-test
+  restart: unless-stopped
+  stop_grace_period: 5m
+  logging: *logging-conf
+
+x-vllm-proxy-common: &vllm-proxy-common
+  image: nearaidev/vllm-proxy-rs@sha256:c176aeb163641f757f2a66b0e15bc4cbc2aeb6f27d6589729d03734fb4302ea8
+  user: root
+  privileged: true
+  <<: *nvidia
+  extra_hosts:
+    - "compose-manager:host-gateway"
+  volumes:
+    - /var/run/dstack.sock:/var/run/dstack.sock
+    - certs:/etc/letsencrypt:ro
+  restart: unless-stopped
+  logging: *logging-conf
+
+x-dcgm-common: &dcgm-common
+  image: nvcr.io/nvidia/k8s/dcgm-exporter:4.5.2-4.8.1-distroless
+  runtime: nvidia
+  cap_add:
+    - SYS_ADMIN
+  restart: unless-stopped
+  logging: *logging-conf
+
+x-qwen36-int4-common: &qwen36-int4-common
+  <<: *vllm-common
+  # compressed-tensors INT4 is auto-detected from quantization_config.
+  command: >
+    caiovicentino1/Qwen3.6-35B-A3B-HLWQ-CT-INT4
+    --revision 0da5307c9baa4de44f95f226e7ec410893db80a6
+    --served-model-name Qwen/Qwen3.6-35B-A3B-INT4-CT
+    --tensor-parallel-size 1
+    --trust-remote-code
+    --dtype auto
+    --kv-cache-dtype fp8
+    --gpu-memory-utilization 0.90
+    --max-model-len 65536
+    --max-num-seqs 16
+    --max-num-batched-tokens 16384
+    --enable-chunked-prefill
+    --async-scheduling
+    --enable-prefix-caching
+    --reasoning-parser qwen3
+    --enable-prompt-tokens-details
+
+x-gemma4-int4-common: &gemma4-int4-common
+  <<: *vllm-common
+  # compressed-tensors INT4 is auto-detected from quantization_config.
+  command: >
+    ebircak/gemma-4-31B-it-4bit-W4A16-AWQ
+    --revision a3b96c7a8d07cc84cae0f0261ac2574310b12d37
+    --served-model-name google/gemma-4-31B-it-INT4-CT
+    --tensor-parallel-size 2
+    --trust-remote-code
+    --dtype auto
+    --gpu-memory-utilization 0.90
+    --max-model-len 65536
+    --max-num-seqs 16
+    --max-num-batched-tokens 16384
+    --enable-chunked-prefill
+    --enable-prefix-caching
+    --async-scheduling
+    --enable-prompt-tokens-details
+
+services:
+  nginx:
+    image: nginx@sha256:1d13701a5f9f3fb01aaa88cef2344d65b6b5bf6b7d9fa4cf0dca557a8d7702ba
+    container_name: nginx
+    command: /bin/sh -c 'while :; do sleep 6h; nginx -s reload; done & nginx -g "daemon off;"'
+    ports:
+      - "8000:8000"
+      - "8001:8001"
+      - "8444:443"
+    volumes:
+      - certs:/etc/letsencrypt:ro
+    configs:
+      - source: nginx_conf
+        target: /etc/nginx/conf.d/default.conf
+        mode: 0644
+    restart: unless-stopped
+    logging: *logging-conf
+
+  model-proxy-registrar:
+    image: curlimages/curl@sha256:d94d07ba9e7d6de898b6d96c1a072f6f8266c687af78a74f380087a0addf5d17
+    container_name: model-proxy-registrar
+    entrypoint: ["sh", "/register.sh"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "[ $$(( $$(date +%s) - $$(cat /tmp/registrar_alive 2>/dev/null || echo 0) )) -lt 180 ]"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 1200s
+    environment:
+      - HOST_IP=${HOST_IP}
+      - MODEL_PROXY_TOKEN=${MODEL_PROXY_TOKEN}
+    configs:
+      - source: registrar_script
+        target: /register.sh
+        mode: 0755
+    logging: *logging-conf
+
+  # Qwen3.6-35B-A3B compressed-tensors INT4 x4 (GPUs 0-3).
+  vllm-proxy-qwen36-int4-ct:
+    <<: *vllm-proxy-common
+    container_name: vllm-proxy-qwen36-int4-ct
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - CLOUD_API_URL=https://cloud-api.near.ai
+      - CLOUD_API_USAGE_TOKEN=${CLOUD_API_USAGE_TOKEN}
+      - COMPOSE_MANAGER_URL=http://compose-manager:8080
+      - LOG_FORMAT=json
+      - MODEL_NAME=Qwen/Qwen3.6-35B-A3B-INT4-CT
+      - OHTTP_ENABLED=true
+      - TOKEN=${PROXY_TOKEN}
+      - VLLM_BACKEND_URLS=http://model-vllm-qwen36-int4-ct-1:8000,http://model-vllm-qwen36-int4-ct-2:8000,http://model-vllm-qwen36-int4-ct-3:8000,http://model-vllm-qwen36-int4-ct-4:8000
+      - VLLM_PROXY_MAX_REQUEST_SIZE=104857600
+      - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
+      - USE_NV_ATTESTATION_SDK=true
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:Qwen/Qwen3.6-35B-A3B-INT4-CT","precision:int4","deployment:qwen36-gemma4-int4-compressed-tensors-test","ip:${HOST_IP}","port:8000"]}]'
+
+  model-vllm-qwen36-int4-ct-1:
+    <<: *qwen36-int4-common
+    container_name: model-vllm-qwen36-int4-ct-1
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["0"]
+              capabilities: [gpu]
+    labels:
+      com.datadoghq.ad.check_names: '["vllm"]'
+      com.datadoghq.ad.init_configs: "[{}]"
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:Qwen/Qwen3.6-35B-A3B-INT4-CT","model_path:caiovicentino1/Qwen3.6-35B-A3B-HLWQ-CT-INT4","precision:int4","deployment:qwen36-gemma4-int4-compressed-tensors-test","ip:${HOST_IP}","port:8000","instance:1"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-qwen36-int4-ct-1:8000/metrics","histogram_buckets_as_distributions":true,"service":"model-vllm-qwen36-int4-ct-1","tags":["model:Qwen/Qwen3.6-35B-A3B-INT4-CT","model_path:caiovicentino1/Qwen3.6-35B-A3B-HLWQ-CT-INT4","precision:int4","deployment:qwen36-gemma4-int4-compressed-tensors-test","ip:${HOST_IP}","port:8000","instance:1"]}]'
+
+  model-vllm-qwen36-int4-ct-2:
+    <<: *qwen36-int4-common
+    container_name: model-vllm-qwen36-int4-ct-2
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["1"]
+              capabilities: [gpu]
+    labels:
+      com.datadoghq.ad.check_names: '["vllm"]'
+      com.datadoghq.ad.init_configs: "[{}]"
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:Qwen/Qwen3.6-35B-A3B-INT4-CT","model_path:caiovicentino1/Qwen3.6-35B-A3B-HLWQ-CT-INT4","precision:int4","deployment:qwen36-gemma4-int4-compressed-tensors-test","ip:${HOST_IP}","port:8000","instance:2"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-qwen36-int4-ct-2:8000/metrics","histogram_buckets_as_distributions":true,"service":"model-vllm-qwen36-int4-ct-2","tags":["model:Qwen/Qwen3.6-35B-A3B-INT4-CT","model_path:caiovicentino1/Qwen3.6-35B-A3B-HLWQ-CT-INT4","precision:int4","deployment:qwen36-gemma4-int4-compressed-tensors-test","ip:${HOST_IP}","port:8000","instance:2"]}]'
+
+  model-vllm-qwen36-int4-ct-3:
+    <<: *qwen36-int4-common
+    container_name: model-vllm-qwen36-int4-ct-3
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["2"]
+              capabilities: [gpu]
+    labels:
+      com.datadoghq.ad.check_names: '["vllm"]'
+      com.datadoghq.ad.init_configs: "[{}]"
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:Qwen/Qwen3.6-35B-A3B-INT4-CT","model_path:caiovicentino1/Qwen3.6-35B-A3B-HLWQ-CT-INT4","precision:int4","deployment:qwen36-gemma4-int4-compressed-tensors-test","ip:${HOST_IP}","port:8000","instance:3"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-qwen36-int4-ct-3:8000/metrics","histogram_buckets_as_distributions":true,"service":"model-vllm-qwen36-int4-ct-3","tags":["model:Qwen/Qwen3.6-35B-A3B-INT4-CT","model_path:caiovicentino1/Qwen3.6-35B-A3B-HLWQ-CT-INT4","precision:int4","deployment:qwen36-gemma4-int4-compressed-tensors-test","ip:${HOST_IP}","port:8000","instance:3"]}]'
+
+  model-vllm-qwen36-int4-ct-4:
+    <<: *qwen36-int4-common
+    container_name: model-vllm-qwen36-int4-ct-4
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["3"]
+              capabilities: [gpu]
+    labels:
+      com.datadoghq.ad.check_names: '["vllm"]'
+      com.datadoghq.ad.init_configs: "[{}]"
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:Qwen/Qwen3.6-35B-A3B-INT4-CT","model_path:caiovicentino1/Qwen3.6-35B-A3B-HLWQ-CT-INT4","precision:int4","deployment:qwen36-gemma4-int4-compressed-tensors-test","ip:${HOST_IP}","port:8000","instance:4"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-qwen36-int4-ct-4:8000/metrics","histogram_buckets_as_distributions":true,"service":"model-vllm-qwen36-int4-ct-4","tags":["model:Qwen/Qwen3.6-35B-A3B-INT4-CT","model_path:caiovicentino1/Qwen3.6-35B-A3B-HLWQ-CT-INT4","precision:int4","deployment:qwen36-gemma4-int4-compressed-tensors-test","ip:${HOST_IP}","port:8000","instance:4"]}]'
+
+  # Gemma-4-31B-it compressed-tensors INT4 x2, TP=2 per replica (GPUs 4-5, 6-7).
+  vllm-proxy-gemma4-int4-ct:
+    <<: *vllm-proxy-common
+    container_name: vllm-proxy-gemma4-int4-ct
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - CLOUD_API_URL=https://cloud-api.near.ai
+      - CLOUD_API_USAGE_TOKEN=${CLOUD_API_USAGE_TOKEN}
+      - COMPOSE_MANAGER_URL=http://compose-manager:8080
+      - LOG_FORMAT=json
+      - MODEL_NAME=google/gemma-4-31B-it-INT4-CT
+      - OHTTP_ENABLED=true
+      - TOKEN=${PROXY_TOKEN}
+      - VLLM_BACKEND_URLS=http://model-vllm-gemma4-int4-ct-1:8000,http://model-vllm-gemma4-int4-ct-2:8000
+      - VLLM_PROXY_MAX_REQUEST_SIZE=104857600
+      - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
+      - USE_NV_ATTESTATION_SDK=true
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:google/gemma-4-31B-it-INT4-CT","precision:int4","deployment:qwen36-gemma4-int4-compressed-tensors-test","ip:${HOST_IP}","port:8001"]}]'
+
+  model-vllm-gemma4-int4-ct-1:
+    <<: *gemma4-int4-common
+    container_name: model-vllm-gemma4-int4-ct-1
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["4","5"]
+              capabilities: [gpu]
+    labels:
+      com.datadoghq.ad.check_names: '["vllm"]'
+      com.datadoghq.ad.init_configs: "[{}]"
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:google/gemma-4-31B-it-INT4-CT","model_path:ebircak/gemma-4-31B-it-4bit-W4A16-AWQ","precision:int4","deployment:qwen36-gemma4-int4-compressed-tensors-test","ip:${HOST_IP}","port:8001","instance:1"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-gemma4-int4-ct-1:8000/metrics","histogram_buckets_as_distributions":true,"service":"model-vllm-gemma4-int4-ct-1","tags":["model:google/gemma-4-31B-it-INT4-CT","model_path:ebircak/gemma-4-31B-it-4bit-W4A16-AWQ","precision:int4","deployment:qwen36-gemma4-int4-compressed-tensors-test","ip:${HOST_IP}","port:8001","instance:1"]}]'
+
+  model-vllm-gemma4-int4-ct-2:
+    <<: *gemma4-int4-common
+    container_name: model-vllm-gemma4-int4-ct-2
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["6","7"]
+              capabilities: [gpu]
+    labels:
+      com.datadoghq.ad.check_names: '["vllm"]'
+      com.datadoghq.ad.init_configs: "[{}]"
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:google/gemma-4-31B-it-INT4-CT","model_path:ebircak/gemma-4-31B-it-4bit-W4A16-AWQ","precision:int4","deployment:qwen36-gemma4-int4-compressed-tensors-test","ip:${HOST_IP}","port:8001","instance:2"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-gemma4-int4-ct-2:8000/metrics","histogram_buckets_as_distributions":true,"service":"model-vllm-gemma4-int4-ct-2","tags":["model:google/gemma-4-31B-it-INT4-CT","model_path:ebircak/gemma-4-31B-it-4bit-W4A16-AWQ","precision:int4","deployment:qwen36-gemma4-int4-compressed-tensors-test","ip:${HOST_IP}","port:8001","instance:2"]}]'
+
+  dcgm-qwen36-int4-ct:
+    <<: *dcgm-common
+    container_name: dcgm-qwen36-int4-ct
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["0","1","2","3"]
+              capabilities: [gpu]
+    labels:
+      com.datadoghq.ad.check_names: '["dcgm"]'
+      com.datadoghq.ad.init_configs: "[{}]"
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://%%host%%:9400/metrics","tags":["model:Qwen/Qwen3.6-35B-A3B-INT4-CT","precision:int4","deployment:qwen36-gemma4-int4-compressed-tensors-test","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:Qwen/Qwen3.6-35B-A3B-INT4-CT","precision:int4","deployment:qwen36-gemma4-int4-compressed-tensors-test","ip:${HOST_IP}"]}]'
+
+  dcgm-gemma4-int4-ct:
+    <<: *dcgm-common
+    container_name: dcgm-gemma4-int4-ct
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["4","5","6","7"]
+              capabilities: [gpu]
+    labels:
+      com.datadoghq.ad.check_names: '["dcgm"]'
+      com.datadoghq.ad.init_configs: "[{}]"
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://%%host%%:9400/metrics","tags":["model:google/gemma-4-31B-it-INT4-CT","precision:int4","deployment:qwen36-gemma4-int4-compressed-tensors-test","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:google/gemma-4-31B-it-INT4-CT","precision:int4","deployment:qwen36-gemma4-int4-compressed-tensors-test","ip:${HOST_IP}"]}]'
+
+networks:
+  default:
+    external: true
+    name: dstack_default
+
+volumes:
+  hugginface_cache:
+  vllm_cache:
+  certs:
+    external: true
+    name: certs
+
+configs:
+  registrar_script:
+    content: |
+      #!/bin/sh
+      PROXY_URL="https://completions.near.ai"
+      TOKEN="$${MODEL_PROXY_TOKEN}"
+      TLS_PORT=8444
+
+      for port in 8000 8001; do
+        eval "REG_$$port=false"
+        eval "FAIL_COUNT_$$port=0"
+      done
+
+      register_endpoint() {
+        curl -sS --max-time 10 -X POST "$$PROXY_URL/register/endpoint" \
+          -H "Authorization: Bearer $$TOKEN" \
+          -H "Content-Type: application/json" \
+          -d "{\"endpoint\":\"$$1\",\"routing_port\":$$TLS_PORT}" || true
+      }
+
+      unregister_endpoint() {
+        curl -sS --max-time 10 -X POST "$$PROXY_URL/unregister/endpoint" \
+          -H "Authorization: Bearer $$TOKEN" \
+          -H "Content-Type: application/json" \
+          -d "{\"endpoint\":\"$$1\"}" || true
+      }
+
+      register_model() {
+        curl -sS --max-time 10 -X POST "$$PROXY_URL/register/model" \
+          -H "Authorization: Bearer $$TOKEN" \
+          -H "Content-Type: application/json" \
+          -d "{\"model\":\"$$1\",\"domain\":\"$$2\"}" || true
+      }
+
+      cleanup() {
+        echo "SIGTERM received, unregistering all endpoints"
+        for port in 8000 8001; do
+          unregister_endpoint "$${HOST_IP}:$$port"
+        done
+        exit 0
+      }
+      trap cleanup TERM INT
+
+      check_chat() {
+        curl -sf --max-time 45 -X POST "http://$$1:8000/v1/chat/completions" \
+          -H "Content-Type: application/json" \
+          -d "{\"model\":\"$$2\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":1}" \
+          > /dev/null 2>&1
+      }
+
+      check_port() {
+        case $$1 in
+          8000)
+            check_chat model-vllm-qwen36-int4-ct-1 "Qwen/Qwen3.6-35B-A3B-INT4-CT" &&
+            check_chat model-vllm-qwen36-int4-ct-2 "Qwen/Qwen3.6-35B-A3B-INT4-CT" &&
+            check_chat model-vllm-qwen36-int4-ct-3 "Qwen/Qwen3.6-35B-A3B-INT4-CT" &&
+            check_chat model-vllm-qwen36-int4-ct-4 "Qwen/Qwen3.6-35B-A3B-INT4-CT"
+            ;;
+          8001)
+            check_chat model-vllm-gemma4-int4-ct-1 "google/gemma-4-31B-it-INT4-CT" &&
+            check_chat model-vllm-gemma4-int4-ct-2 "google/gemma-4-31B-it-INT4-CT"
+            ;;
+        esac
+      }
+
+      READY_URL="http://$${HOST_IP}:8000/v1/models"
+      echo "Waiting for first model to be ready (probing $$READY_URL)..."
+      ready_attempts=0
+      until curl --connect-timeout 5 --max-time 10 -sf "$$READY_URL" > /dev/null 2>&1; do
+        ready_attempts=$$((ready_attempts + 1))
+        if [ "$$ready_attempts" -ge 30 ]; then
+          echo "WARN: first model not reachable at $$READY_URL after $$ready_attempts attempts (~20m); entering registration loop anyway"
+          break
+        fi
+        echo "First model not ready yet (attempt $$ready_attempts/30), retrying in 30s..."
+        sleep 30
+      done
+      echo "First model ready, starting registration loop"
+
+      while true; do
+        for port in 8000 8001; do
+          date +%s > /tmp/registrar_alive
+          eval "was_reg=\$$REG_$$port"
+          eval "fails=\$$FAIL_COUNT_$$port"
+          if check_port $$port; then
+            eval "FAIL_COUNT_$$port=0"
+            register_endpoint "$${HOST_IP}:$$port" "$$TLS_PORT"
+            if [ "$$was_reg" = false ]; then
+              echo "Registered $${HOST_IP}:$$port"
+            fi
+            eval "REG_$$port=true"
+          else
+            fails=$$((fails + 1))
+            eval "FAIL_COUNT_$$port=$$fails"
+            echo "Health check failed for $${HOST_IP}:$$port (fail count: $$fails)"
+            eval "REG_$$port=false"
+          fi
+        done
+
+        if [ "$$REG_8000" = true ]; then
+          register_model "Qwen/Qwen3.6-35B-A3B-INT4-CT" "qwen3-6-35b-int4-ct.completions.near.ai"
+        fi
+        if [ "$$REG_8001" = true ]; then
+          register_model "google/gemma-4-31B-it-INT4-CT" "gemma-4-31b-int4-ct.completions.near.ai"
+        fi
+        date +%s > /tmp/registrar_alive
+        sleep 60
+      done
+
+  nginx_conf:
+    content: |
+      log_format json_combined escape=json
+        '{'  '"time":"$$time_iso8601"'
+        ',"request_id":"$$http_x_request_id"'
+        ',"org_id":"$$http_x_org_id"'
+        ',"workspace_id":"$$http_x_workspace_id"'
+        ',"http_host":"$$host"'
+        ',"method":"$$request_method"'
+        ',"uri":"$$uri"'
+        ',"status":$$status'
+        ',"request_length":$$request_length'
+        ',"bytes_sent":$$bytes_sent'
+        ',"request_time":$$request_time'
+        ',"upstream_addr":"$$upstream_addr"'
+        '}';
+
+      access_log /var/log/nginx/access.log json_combined;
+
+      proxy_http_version 1.1;
+      proxy_set_header Host $$host;
+      proxy_set_header X-Real-IP $$remote_addr;
+      proxy_set_header X-Forwarded-For $$proxy_add_x_forwarded_for;
+      proxy_set_header X-Forwarded-Proto $$scheme;
+      proxy_set_header Connection '';
+      proxy_buffering off;
+      proxy_cache off;
+      proxy_read_timeout 3600s;
+      client_max_body_size 100m;
+      client_body_buffer_size 1m;
+
+      server {
+          listen 8000;
+          location / { proxy_pass http://vllm-proxy-qwen36-int4-ct:8000; }
+      }
+
+      server {
+          listen 8001;
+          location / { proxy_pass http://vllm-proxy-gemma4-int4-ct:8000; }
+      }
+
+      ssl_certificate /etc/letsencrypt/live/completions.near.ai/fullchain.pem;
+      ssl_certificate_key /etc/letsencrypt/live/completions.near.ai/privkey.pem;
+      ssl_protocols TLSv1.2 TLSv1.3;
+
+      server {
+          listen 443 ssl http2;
+          server_name qwen3-6-35b-int4-ct.completions.near.ai
+                      ~^qwen3-6-35b-int4-ct-i\d+\.completions\.near\.ai$$;
+          keepalive_timeout 1h;
+          keepalive_requests 1000000;
+          location / { proxy_pass http://vllm-proxy-qwen36-int4-ct:8000; }
+      }
+
+      server {
+          listen 443 ssl http2;
+          server_name gemma-4-31b-int4-ct.completions.near.ai
+                      ~^gemma-4-31b-int4-ct-i\d+\.completions\.near\.ai$$;
+          keepalive_timeout 1h;
+          keepalive_requests 1000000;
+          location / { proxy_pass http://vllm-proxy-gemma4-int4-ct:8000; }
+      }
