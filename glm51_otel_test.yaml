@@ -3,7 +3,10 @@ x-logging-conf: &logging-conf
   options:
     max-size: "100m"
     max-file: "10"
-    labels: "com.datadoghq.ad.logs"
+    # com.docker.compose.service is embedded so the in-CVM otel sidecar can name
+    # each container's logs by its compose service (see otelcol_config transform);
+    # com.datadoghq.ad.logs is kept for the existing Datadog autodiscovery path.
+    labels: "com.datadoghq.ad.logs,com.docker.compose.service"
 
 x-nvidia: &nvidia
   runtime: nvidia
@@ -135,6 +138,7 @@ services:
       --host 0.0.0.0
       --enable-cache-report
       --enable-metrics
+      --enable-mfu-metrics
       --trust-remote-code
       --speculative-algorithm EAGLE
       --speculative-num-steps 3
@@ -194,38 +198,47 @@ services:
       com.datadoghq.ad.instances: '[{"openmetrics_endpoint": "http://%%host%%:9400/metrics", "tags":["model:zai-org/GLM-5.1-FP8","deployment:GLM-5.1","ip:${HOST_IP}"]}]'
       com.datadoghq.ad.logs: '[{"source": "dcgm-exporter", "service": "dcgm-exporter", "tags":["model:zai-org/GLM-5.1-FP8","deployment:GLM-5.1","ip:${HOST_IP}"]}]'
 
-  # --- Trial telemetry sidecar (Grafana Cloud + Better Stack OTLP fanout) ---
-  # Receives SGLang request traces via OTLP/gRPC :4317, scrapes the SGLang
-  # :8000/metrics and dcgm-exporter :9400/metrics endpoints, fans everything
-  # out to both trial vendors using the same OTLP endpoints + tokens as the
-  # host-side otelcol-contrib (cvm-ansible-playbooks PR #270/#271).
+  # --- Phase 4 in-CVM telemetry sidecar → self-hosted OTel stack ---
+  # Ships inference-engine telemetry to the self-hosted gateway at
+  # telemetry.infra.near.ai (cvm-ansible-playbooks Phase 0/1). It:
+  #   - receives SGLang request traces via OTLP/gRPC :4317 (--otlp-traces-endpoint)
+  #   - scrapes SGLang :8000/metrics and dcgm-exporter :9400/metrics
+  #   - tails in-CVM docker container logs (named via the embedded compose/DD labels)
   #
-  # Trust note: Grafana / Better Stack ingest tokens (not query) live inside
-  # this CVM as env vars. Worst case is spurious data into trial accounts; no
-  # query/admin access. Removing this service is the disable path.
+  # Gateway-only: this inference CVM has no in-compose datadog-agent, so the
+  # existing com.datadoghq.ad.* autodiscovery path to Datadog is left untouched
+  # and runs in parallel. Removing this service is the clean disable path.
   #
-  # If trial vars are missing/blank at deploy time the sidecar will start
-  # with empty endpoints and otelcol-contrib will fail with "endpoint must
-  # be a valid URL" in its own logs — `restart: unless-stopped` crash-loops
-  # only the sidecar, the inference path is unaffected.
+  # Requires MONITORING_INGEST_TOKEN in the CVM env file. If it is missing the
+  # sidecar crash-loops in isolation (restart: unless-stopped); the inference
+  # path is unaffected.
   otelcol-sidecar:
-    image: otel/opentelemetry-collector-contrib:0.117.0
+    image: otel/opentelemetry-collector-contrib@sha256:85ac41c2db88d0df9bd6145e608a3cb023f5d8443868adbfbbf66efb51087917  # 0.120.0
     container_name: otelcol-sidecar
     command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    user: "0:0"
+    mem_limit: "768m"
     environment:
       - HOST_IP=${HOST_IP}
-      - GRAFANA_OTEL_ENDPOINT=${GRAFANA_OTEL_ENDPOINT}
-      - GRAFANA_OTEL_AUTH=${GRAFANA_OTEL_AUTH}
-      - BETTERSTACK_OTEL_ENDPOINT=${BETTERSTACK_OTEL_ENDPOINT}
-      - BETTERSTACK_OTEL_TOKEN=${BETTERSTACK_OTEL_TOKEN}
+      - MONITORING_INGEST_TOKEN=${MONITORING_INGEST_TOKEN}
+    expose:
+      - "4317"
+      - "4318"
+    volumes:
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - otelcol-storage:/var/lib/otelcol-contrib
     configs:
       - source: otelcol_config
         target: /etc/otelcol-contrib/config.yaml
-        mode: 0640
+        mode: 0444
     restart: unless-stopped
-    logging: *logging-conf
-    labels:
-      com.datadoghq.ad.logs: '[{"source": "otelcol-contrib", "service": "otelcol-sidecar", "tags":["deployment:glm-5.1","ip:${HOST_IP}"]}]'
+    # 'local' driver (not json-file) so the collector does not tail its own
+    # container log via filelog/docker_containers and create a feedback loop.
+    logging:
+      driver: "local"
+      options:
+        max-size: "20m"
+        max-file: "3"
 
 networks:
   default:
@@ -235,20 +248,19 @@ networks:
 volumes:
   huggingface_cache:
   kernel_cache:
+  otelcol-storage:
   certs:
     external: true
     name: certs
 
 
 configs:
+  # In-CVM otel sidecar config (Phase 4). Dollar signs are escaped as $$ so
+  # docker compose leaves OTel's $${env:...} references intact at render time.
   otelcol_config:
     content: |
-      # Trial telemetry sidecar — fans SGLang traces + SGLang/DCGM metrics
-      # out to Grafana Cloud + Better Stack via OTLP/HTTP. Mirrors the
-      # exporters used by the host-side otelcol-contrib (cvm-ansible-playbooks
-      # templates/otelcol_trial.yaml.j2) so both legs of the trial pipeline
-      # receive identical fanout.
       receivers:
+        # App OTLP in (SGLang traces via gRPC; room for future instrumented svcs).
         otlp:
           protocols:
             grpc:
@@ -256,6 +268,42 @@ configs:
             http:
               endpoint: 0.0.0.0:4318
 
+        # In-CVM container logs — unwrap the json-file envelope so body is the real line.
+        filelog/docker_containers:
+          include: [/var/lib/docker/containers/*/*-json.log]
+          start_at: end
+          storage: file_storage
+          include_file_path: true
+          operators:
+            - type: json_parser
+              parse_from: body
+              parse_to: attributes
+              timestamp:
+                parse_from: attributes.time
+                layout_type: gotime
+                layout: '2006-01-02T15:04:05.999999999Z07:00'
+              on_error: send_quiet
+            - type: move
+              from: attributes.log
+              to: body
+              if: 'attributes.log != nil'
+            - type: move
+              from: attributes.stream
+              to: attributes["log.iostream"]
+              if: 'attributes.stream != nil'
+            - type: remove
+              field: attributes.time
+              if: 'attributes.time != nil'
+            - type: regex_parser
+              parse_from: attributes["log.file.path"]
+              regex: '/var/lib/docker/containers/(?P<container_id>[a-f0-9]{12})[a-f0-9]*/'
+              on_error: send_quiet
+            - type: add
+              field: attributes["service.name"]
+              value: cvm-docker
+
+        # SGLang + DCGM are only reachable from inside the CVM network, so the
+        # sidecar scrapes them directly (replaces the Datadog openmetrics checks).
         prometheus:
           config:
             scrape_configs:
@@ -264,69 +312,95 @@ configs:
                 metrics_path: /metrics
                 static_configs:
                   - targets: ['model-sg-glm51:8000']
-                    labels: {model: 'zai-org/GLM-5.1-FP8'}
+                    labels: {model: 'zai-org/GLM-5.1-FP8', deployment: 'GLM-5.1'}
               - job_name: dcgm
                 scrape_interval: 15s
                 metrics_path: /metrics
                 static_configs:
                   - targets: ['dcgm-exporter:9400']
-                    labels: {model: 'zai-org/GLM-5.1-FP8'}
-              - job_name: otel-self
+                    labels: {model: 'zai-org/GLM-5.1-FP8', deployment: 'GLM-5.1'}
+              - job_name: otelcol-self
                 scrape_interval: 30s
                 static_configs:
-                  - targets: ['127.0.0.1:8888']
+                  - targets: ['localhost:8888']
 
       processors:
-        # Must be first in every pipeline; protects the collector under burst
-        # traffic. Numbers mirror the host-side template.
         memory_limiter:
           check_interval: 1s
           limit_mib: 512
           spike_limit_mib: 128
 
-        # host.name is hardcoded to match the host collector's
-        # `{{ inventory_hostname }}` (PR-A). gpu07 is the default GLM-5.1
-        # trial target per CLAUDE.md's host inventory; if deploying to a
-        # different GLM-5.1 host (gpu03, gpu04, gpu13, gpu30) update both
-        # host.name and trial.cohort accordingly.
         resource:
           attributes:
-            - {key: host.name,              value: gpu07,                            action: insert}
-            - {key: host.ip,                value: "$${env:HOST_IP}",                action: insert}
-            - {key: service.namespace,      value: near-ai-inference,                action: insert}
-            - {key: deployment.environment, value: trial,                            action: insert}
-            - {key: trial.cohort,           value: gpu07-glm5-1,                     action: insert}
+            - {key: host.ip,                value: "$${env:HOST_IP}",   action: insert}
+            - {key: service.namespace,      value: near-ai-inference,   action: insert}
+            - {key: deployment.environment, value: prod,                action: insert}
+            - {key: model,                  value: zai-org/GLM-5.1-FP8, action: insert}
+            - {key: deployment,             value: GLM-5.1,             action: insert}
+
+        # Name each container's logs by its compose service (falls back to the
+        # Datadog autodiscovery service/source labels embedded in the json-file).
+        transform/docker_metadata:
+          error_mode: ignore
+          log_statements:
+            - context: log
+              statements:
+                - set(attributes["service.name"], attributes["attrs"]["com.docker.compose.service"]) where attributes["attrs"] != nil and attributes["attrs"]["com.docker.compose.service"] != nil
+                - set(attributes["service.name"], ParseJSON(attributes["attrs"]["com.datadoghq.ad.logs"])[0]["service"]) where attributes["attrs"] != nil and attributes["attrs"]["com.datadoghq.ad.logs"] != nil
+                - set(attributes["log.source"], ParseJSON(attributes["attrs"]["com.datadoghq.ad.logs"])[0]["source"]) where attributes["attrs"] != nil and attributes["attrs"]["com.datadoghq.ad.logs"] != nil
+
+        groupbyattrs/docker_service:
+          keys:
+            - service.name
 
         batch:
-          send_batch_size: 8192
+          send_batch_size: 1024
+          send_batch_max_size: 2048
           timeout: 5s
 
       exporters:
-        otlphttp/grafana:
-          endpoint: $${env:GRAFANA_OTEL_ENDPOINT}
+        # Single fan-out point lives at the gateway (vendor-agnostic config there).
+        otlphttp/gateway:
+          endpoint: https://telemetry.infra.near.ai
           headers:
-            Authorization: $${env:GRAFANA_OTEL_AUTH}
+            Authorization: "Bearer $${env:MONITORING_INGEST_TOKEN}"
+          # Persist the send queue so a gateway outage longer than the in-memory
+          # retry window doesn't silently drop telemetry.
+          sending_queue:
+            queue_size: 128
+            storage: file_storage
 
-        otlphttp/betterstack:
-          endpoint: $${env:BETTERSTACK_OTEL_ENDPOINT}
-          headers:
-            Authorization: "Bearer $${env:BETTERSTACK_OTEL_TOKEN}"
+      extensions:
+        file_storage:
+          directory: /var/lib/otelcol-contrib/storage
+          create_directory: true
 
       service:
+        extensions: [file_storage]
         pipelines:
+          logs/cvm:
+            receivers: [filelog/docker_containers]
+            processors: [memory_limiter, resource, transform/docker_metadata, groupbyattrs/docker_service, batch]
+            exporters: [otlphttp/gateway]
+          logs/otlp:
+            receivers: [otlp]
+            processors: [memory_limiter, resource, batch]
+            exporters: [otlphttp/gateway]
+          metrics/scrape:
+            receivers: [prometheus]
+            processors: [memory_limiter, resource, batch]
+            exporters: [otlphttp/gateway]
+          metrics/otlp:
+            receivers: [otlp]
+            processors: [memory_limiter, resource, batch]
+            exporters: [otlphttp/gateway]
           traces:
             receivers: [otlp]
             processors: [memory_limiter, resource, batch]
-            exporters: [otlphttp/grafana, otlphttp/betterstack]
-
-          metrics:
-            receivers: [otlp, prometheus]
-            processors: [memory_limiter, resource, batch]
-            exporters: [otlphttp/grafana, otlphttp/betterstack]
-
+            exporters: [otlphttp/gateway]
         telemetry:
           metrics:
-            address: 127.0.0.1:8888
+            address: localhost:8888
           logs:
             level: info
 
@@ -371,12 +445,52 @@ configs:
       }
       trap cleanup TERM INT
 
-      # 1-token completion health check directly to model container (no auth needed)
+      mark_registered() {
+        register_endpoint "$$ENDPOINT" "$${TLS_PORT}"
+        register_model "zai-org/GLM-5.1-FP8" "glm-5-1.completions.near.ai"
+        if [ "$$REGISTERED" = false ]; then
+          echo "[GLM-5.1] Registered zai-org/GLM-5.1-FP8 at $$ENDPOINT"
+        fi
+        REGISTERED=true
+      }
+
+      # 1-token completion health check directly to model container (no auth needed).
+      # Return codes:
+      #   0: backend accepted the probe
+      #   2: backend is alive but saturated/backpressuring new requests
+      #   1: backend appears unhealthy/unreachable
       check_inference() {
         echo "Performing health check on model endpoint..."
-        curl -sSf --max-time 45 -X POST "http://model-sg-glm51:8000/v1/chat/completions" \
+        status=$$(curl -sS --connect-timeout 10 --max-time 45 -o /dev/null -w "%{http_code}" \
+          -X POST "http://model-sg-glm51:8000/v1/chat/completions" \
           -H "Content-Type: application/json" \
-          -d '{"model":"zai-org/GLM-5.1-FP8","messages":[{"role":"user","content":"hi"}],"max_tokens":1}'
+          -d '{"model":"zai-org/GLM-5.1-FP8","messages":[{"role":"user","content":"hi"}],"max_tokens":1}')
+        curl_status=$$?
+
+        if [ "$$curl_status" -ne 0 ]; then
+          case "$$curl_status" in
+            52|56)
+              echo "[GLM-5.1] Health probe hit connection-level backpressure (curl $$curl_status); treating as alive but saturated"
+              return 2
+              ;;
+          esac
+          echo "[GLM-5.1] Health probe curl failed with status $$curl_status"
+          return 1
+        fi
+
+        case "$$status" in
+          2*)
+            return 0
+            ;;
+          503)
+            echo "[GLM-5.1] Backend returned 503; treating as alive but saturated"
+            return 2
+            ;;
+          *)
+            echo "[GLM-5.1] Backend returned HTTP $$status"
+            return 1
+            ;;
+        esac
       }
 
       # Probe the host-published nginx port via HOST_IP instead of the
@@ -403,25 +517,30 @@ configs:
       while true; do
         # Liveness marker for the container healthcheck (see service def).
         date +%s > /tmp/registrar_alive
-        if check_inference; then
-          FAILURE_COUNT=0
-          register_endpoint "$$ENDPOINT" "$${TLS_PORT}"
-          register_model "zai-org/GLM-5.1-FP8" "glm-5-1.completions.near.ai"
-          if [ "$$REGISTERED" = false ]; then
-            echo "[GLM-5.1] Registered zai-org/GLM-5.1-FP8 at $$ENDPOINT"
-          fi
-          REGISTERED=true
-        else
-          FAILURE_COUNT=$$((FAILURE_COUNT + 1))
-          echo "[GLM-5.1] Health check failed ($$FAILURE_COUNT/$$MAX_RETRIES)"
-          if [ "$$REGISTERED" = true ] && [ "$$FAILURE_COUNT" -ge "$$MAX_RETRIES" ]; then
-            echo "[GLM-5.1] Health check failed and Retry limit reached, unregistering $$ENDPOINT"
-            unregister_endpoint "$$ENDPOINT"
-            REGISTERED=false
-            echo "[GLM-5.1] Exiting to refresh DNS (container will auto-restart)"
-            exit 1
-          fi
-        fi
+        check_inference
+        health_status=$$?
+        case "$$health_status" in
+          0)
+            FAILURE_COUNT=0
+            mark_registered
+            ;;
+          2)
+            FAILURE_COUNT=0
+            echo "[GLM-5.1] Keeping $$ENDPOINT registered while backend is saturated"
+            mark_registered
+            ;;
+          *)
+            FAILURE_COUNT=$$((FAILURE_COUNT + 1))
+            echo "[GLM-5.1] Health check failed ($$FAILURE_COUNT/$$MAX_RETRIES)"
+            if [ "$$REGISTERED" = true ] && [ "$$FAILURE_COUNT" -ge "$$MAX_RETRIES" ]; then
+              echo "[GLM-5.1] Health check failed and Retry limit reached, unregistering $$ENDPOINT"
+              unregister_endpoint "$$ENDPOINT"
+              REGISTERED=false
+              echo "[GLM-5.1] Exiting to refresh DNS (container will auto-restart)"
+              exit 1
+            fi
+            ;;
+        esac
         sleep 60
       done
   nginx_conf:
