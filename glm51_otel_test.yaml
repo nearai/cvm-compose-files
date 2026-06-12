@@ -302,8 +302,10 @@ configs:
               field: attributes["service.name"]
               value: cvm-docker
 
-        # SGLang + DCGM are only reachable from inside the CVM network, so the
-        # sidecar scrapes them directly (replaces the Datadog openmetrics checks).
+        # The whole in-CVM stack is only reachable from inside the CVM network,
+        # so the sidecar scrapes each component directly (replaces the Datadog
+        # openmetrics checks): the SGLang engine, the vllm-proxy-rs inference
+        # proxy (its own /metrics — unauthenticated), and the DCGM GPU exporter.
         prometheus:
           config:
             scrape_configs:
@@ -312,6 +314,12 @@ configs:
                 metrics_path: /metrics
                 static_configs:
                   - targets: ['model-sg-glm51:8000']
+                    labels: {model: 'zai-org/GLM-5.1-FP8', deployment: 'GLM-5.1'}
+              - job_name: inference-proxy
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['proxy-glm51:8000']
                     labels: {model: 'zai-org/GLM-5.1-FP8', deployment: 'GLM-5.1'}
               - job_name: dcgm
                 scrape_interval: 15s
