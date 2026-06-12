@@ -66,6 +66,15 @@ x-dsv4-flash-common: &dsv4-flash-common
   #      'cudaErrorNotSupported' on the first warmup tensor.to(non_blocking)
   #      under TDX-confidential GPU memory — dropped.
   image: lmsysorg/sglang:v0.5.12-cu129@sha256:9e02c8e1fe2790a1c445bd5f6814305fe43639a4adb01c8ad1e8e21e750bf581
+  # Hidden-state passthrough (cloud-api#739 / inference-proxy#163) — OFF by default.
+  # The gpu-manager toggles it at start via the DSV4_RETURN_HIDDEN_STATES env var,
+  # spliced into /compose/up like GPT_OSS_CACHE_SUBPATH (see infra-docs compose-manager.md).
+  # `${VAR:+...}` appends the flag whenever the var is set to ANY non-empty value:
+  #   DSV4_RETURN_HIDDEN_STATES=1  -> --enable-return-hidden-states present  (feature ON)
+  #   var unset / empty (default)  -> flag absent                            (feature OFF)
+  # To turn OFF, UNSET the var and redeploy — setting it to "0" still counts as ON.
+  # Only this DeepSeek service opts in; Qwen/Gemma on this host are unaffected.
+  # Carries a measured throughput cost, so keep unset outside interp-research windows.
   command: >
       sglang serve
       --trust-remote-code
@@ -86,6 +95,7 @@ x-dsv4-flash-common: &dsv4-flash-common
       --enable-metrics
       --log-requests-level 0
       --served-model-name deepseek-ai/DeepSeek-V4-Flash
+      ${DSV4_RETURN_HIDDEN_STATES:+--enable-return-hidden-states}
   volumes:
     - hugginface_cache:/root/.cache/huggingface
     - kernel_cache:/root/.cache/deep_gemm
