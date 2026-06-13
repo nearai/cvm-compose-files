@@ -158,10 +158,6 @@ services:
       --enable-metrics
       --enable-mfu-metrics
       --trust-remote-code
-      --speculative-algorithm EAGLE
-      --speculative-num-steps 3
-      --speculative-eagle-topk 1
-      --speculative-num-draft-tokens 4
       --disable-custom-all-reduce
       --enable-trace
       --otlp-traces-endpoint otelcol-contrib:4317
@@ -174,7 +170,6 @@ services:
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
       - OPENBLAS_L2_SIZE=2097152
       - NCCL_DEBUG=WARN
-      - SGLANG_ENABLE_SPEC_V2=1
     deploy:
       resources:
         reservations:
