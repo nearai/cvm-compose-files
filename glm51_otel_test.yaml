@@ -117,6 +117,16 @@ services:
       - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
     labels:
       com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:zai-org/GLM-5.1-FP8","deployment:GLM-5.1","env:prod","host:gpu26","ip:${HOST_IP}","port:8000"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "inference-proxy"
+      nearai.otel.service: "vllm-proxy"
+      nearai.otel.port: "8000"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "zai-org/GLM-5.1-FP8"
+      nearai.otel.deployment: "GLM-5.1"
+      nearai.otel.env: "prod"
+      nearai.otel.host: "gpu26"
+      nearai.otel.ip: "${HOST_IP}"
 
   model-sg-glm51:
     <<: *nvidia
@@ -180,6 +190,16 @@ services:
       com.datadoghq.ad.init_configs: "[{}]"
       com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:zai-org/GLM-5.1-FP8","deployment:GLM-5.1","env:prod","host:gpu26","ip:${HOST_IP}","port:8000"]}]'
       com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-sg-glm51:8000/metrics", "histogram_buckets_as_distributions": true, "metrics":["sglang:*"], "service": "glm-5.1", "tags":["model:zai-org/GLM-5.1-FP8","deployment:GLM-5.1","env:prod","host:gpu26","ip:${HOST_IP}","port:8000"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "sglang"
+      nearai.otel.service: "sglang"
+      nearai.otel.port: "8000"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "zai-org/GLM-5.1-FP8"
+      nearai.otel.deployment: "GLM-5.1"
+      nearai.otel.env: "prod"
+      nearai.otel.host: "gpu26"
+      nearai.otel.ip: "${HOST_IP}"
 
   dcgm-exporter:
     image: nvcr.io/nvidia/k8s/dcgm-exporter:4.5.2-4.8.1-distroless
@@ -205,6 +225,16 @@ services:
       com.datadoghq.ad.init_configs: "[{}]"
       com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://%%host%%:9400/metrics","tags":["model:zai-org/GLM-5.1-FP8","deployment:GLM-5.1","env:prod","host:gpu26","ip:${HOST_IP}"]}]'
       com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:zai-org/GLM-5.1-FP8","deployment:GLM-5.1","env:prod","host:gpu26","ip:${HOST_IP}"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "dcgm"
+      nearai.otel.service: "dcgm-exporter"
+      nearai.otel.port: "9400"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "zai-org/GLM-5.1-FP8"
+      nearai.otel.deployment: "GLM-5.1"
+      nearai.otel.env: "prod"
+      nearai.otel.host: "gpu26"
+      nearai.otel.ip: "${HOST_IP}"
 
 networks:
   default:
