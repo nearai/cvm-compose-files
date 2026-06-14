@@ -1,0 +1,445 @@
+x-logging-conf: &logging-conf
+  driver: "json-file"
+  options:
+    max-size: "100m"
+    max-file: "10"
+    labels: "com.datadoghq.ad.logs"
+
+x-nvidia: &nvidia
+  runtime: nvidia
+  ipc: host
+  ulimits:
+    memlock: -1
+    nofile:
+      soft: 65535
+      hard: 65535
+
+x-vllm-common: &vllm-common
+  <<: *nvidia
+  init: true
+  image: vllm/vllm-openai@sha256:03768d9400bf490934e5dce2e9d8ddd9e004a5054939e14641188d8a9b69db8e
+  volumes:
+    - huggingface_cache:/root/.cache/huggingface
+    - vllm_cache:/root/.cache/vllm
+  environment:
+    - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+    - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0}
+    - VLLM_LOGGING_LEVEL=INFO
+    - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    - OPENBLAS_L2_SIZE=2097152
+    - NCCL_DEBUG=WARN
+    - VLLM_CACHE_ROOT=/root/.cache/vllm/glm-5-1-awq
+    # QuantTrio's recommended vLLM env for GLM-5.1-AWQ on Hopper.
+    - VLLM_USE_DEEP_GEMM=0
+    - VLLM_USE_FLASHINFER_MOE_FP16=1
+    - VLLM_USE_FLASHINFER_SAMPLER=0
+    - OMP_NUM_THREADS=4
+  restart: unless-stopped
+  stop_grace_period: 5m
+  logging: *logging-conf
+
+# Shared model definition for the two TP4 replicas. QuantTrio/GLM-5.1-AWQ is INT4
+# AWQ (W4A16): only routed MoE experts are quantized; attention, shared experts,
+# dense MLP and lm_head stay BF16. vLLM auto-detects the scheme and runs it via
+# awq_marlin (INT4 -> BF16 dequant) on the Hopper H200 fleet — no --quantization
+# flag and NO source patch needed (unlike sglang, whose GLM weight loader needs a
+# cat-dim fix + --disable-shared-experts-fusion for this same checkpoint).
+#
+# Served as zai-org/GLM-5.1-FP8 (NOT the AWQ repo id): drop-in for the FP8 model so
+# the API model name is identical and nothing downstream changes. Registered to the
+# ISOLATED glm-5-1-awq-vllm domain (not the prod glm-5-1 rotation). No speculative
+# decoding: the AWQ repo ships no draft/MTP weights. fp8 KV cache halves KV
+# bytes/token (~1.8x token pool) — needed to fit long context at TP4. vllm_cache is
+# persisted so the torch.compile graph cache survives restarts.
+x-glm51-awq-common: &glm51-awq-common
+  <<: *vllm-common
+  depends_on:
+    model-downloader:
+      condition: service_completed_successfully
+  command: >
+    QuantTrio/GLM-5.1-AWQ
+    --revision 8f60817aa28023f2607850d1a1e51d21aa34817a
+    --served-model-name zai-org/GLM-5.1-FP8
+    --tensor-parallel-size 4
+    --enable-expert-parallel
+    --kv-cache-dtype fp8
+    --trust-remote-code
+    --dtype auto
+    --gpu-memory-utilization 0.9
+    --max-model-len 200000
+    --max-num-seqs 8
+    --max-num-batched-tokens 16384
+    --enable-prefix-caching
+    --async-scheduling
+    --reasoning-parser glm45
+    --tool-call-parser glm47
+    --enable-auto-tool-choice
+    --enable-prompt-tokens-details
+    --host 0.0.0.0
+    --port 8000
+
+services:
+  model-downloader:
+    image: ghcr.io/astral-sh/uv:python3.11-bookworm-slim@sha256:4f5d923c9dcea037f57bda425dd209f3ec643da2f0b74227f68d09dab0b3bb36
+    entrypoint: ["sh", "-c"]
+    restart: "no"
+    logging: *logging-conf
+    container_name: model-downloader
+    command:
+      - |
+        set -e
+        echo "Downloading QuantTrio/GLM-5.1-AWQ..."
+        uvx --from 'huggingface_hub[hf_xet]' hf download QuantTrio/GLM-5.1-AWQ --revision 8f60817aa28023f2607850d1a1e51d21aa34817a
+        echo "Download complete."
+    volumes:
+      - huggingface_cache:/root/.cache/huggingface
+    environment:
+      - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+
+  proxy-nginx:
+    image: nginx@sha256:1d13701a5f9f3fb01aaa88cef2344d65b6b5bf6b7d9fa4cf0dca557a8d7702ba
+    container_name: proxy-nginx
+    command: /bin/sh -c 'while :; do sleep 6h; nginx -s reload; done & nginx -g "daemon off;"'
+    ports:
+      - "8000:80"
+      - "8444:443"
+    volumes:
+      - certs:/etc/letsencrypt:ro
+    configs:
+      - source: nginx_conf
+        target: /etc/nginx/conf.d/default.conf
+        mode: 0644
+    restart: unless-stopped
+    logging: *logging-conf
+
+  model-proxy-registrar:
+    image: curlimages/curl@sha256:d94d07ba9e7d6de898b6d96c1a072f6f8266c687af78a74f380087a0addf5d17
+    container_name: model-proxy-registrar
+    entrypoint: ["sh", "/register.sh"]
+    restart: unless-stopped
+    healthcheck:
+      # Unhealthy if the registration loop hasn't ticked in 3m. See cvm-compose-files#57.
+      test: ["CMD-SHELL", "[ $$(( $$(date +%s) - $$(cat /tmp/registrar_alive 2>/dev/null || echo 0) )) -lt 180 ]"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 1200s
+    environment:
+      - HOST_IP=${HOST_IP}
+      - HTTP_PORT=${HTTP_PORT:-8000}
+      - TLS_PORT=${TLS_PORT:-8444}
+      - MODEL_PROXY_TOKEN=${MODEL_PROXY_TOKEN}
+    configs:
+      - source: registrar_script
+        target: /register.sh
+        mode: 0755
+    logging: *logging-conf
+
+  proxy-glm51-awq-vllm:
+    image: nearaidev/vllm-proxy-rs@sha256:ef446da93858b4938b90bfa0ff56f7d90d64c1c2f0e9fc8c04ad738c0fdda6c9
+    user: root
+    privileged: true
+    <<: *nvidia
+    extra_hosts:
+      - "compose-manager:host-gateway"
+    volumes:
+      - /var/run/dstack.sock:/var/run/dstack.sock
+      - certs:/etc/letsencrypt:ro
+    restart: unless-stopped
+    logging: *logging-conf
+    container_name: proxy-glm51-awq-vllm
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - CLOUD_API_URL=https://cloud-api.near.ai
+      - CLOUD_API_USAGE_TOKEN=${CLOUD_API_USAGE_TOKEN}
+      - COMPOSE_MANAGER_URL=http://compose-manager:8080
+      - LOG_FORMAT=json
+      - MODEL_NAME=zai-org/GLM-5.1-FP8
+      - OHTTP_ENABLED=true
+      - TOKEN=${PROXY_TOKEN}
+      # One proxy load-balances both TP4 replicas (repo's multi-replica pattern).
+      - VLLM_BACKEND_URLS=http://model-vllm-glm51-awq-1:8000,http://model-vllm-glm51-awq-2:8000
+      - VLLM_PROXY_MAX_REQUEST_SIZE=104857600
+      - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
+      - USE_NV_ATTESTATION_SDK=true
+      - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
+      - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:zai-org/GLM-5.1-FP8","precision:int4","deployment:GLM-5.1-AWQ-vllm","ip:${HOST_IP}","port:8000"]}]'
+
+  model-vllm-glm51-awq-1:
+    <<: *glm51-awq-common
+    container_name: model-vllm-glm51-awq-1
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["0","1","2","3"]
+              capabilities: [gpu]
+    labels:
+      com.datadoghq.ad.check_names: '["vllm"]'
+      com.datadoghq.ad.init_configs: "[{}]"
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:zai-org/GLM-5.1-FP8","model_path:QuantTrio/GLM-5.1-AWQ","precision:int4","deployment:GLM-5.1-AWQ-vllm","ip:${HOST_IP}","port:8000","instance:1"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-glm51-awq-1:8000/metrics","histogram_buckets_as_distributions":true,"service":"model-vllm-glm51-awq-1","tags":["model:zai-org/GLM-5.1-FP8","model_path:QuantTrio/GLM-5.1-AWQ","precision:int4","deployment:GLM-5.1-AWQ-vllm","ip:${HOST_IP}","port:8000","instance:1"]}]'
+
+  model-vllm-glm51-awq-2:
+    <<: *glm51-awq-common
+    container_name: model-vllm-glm51-awq-2
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["4","5","6","7"]
+              capabilities: [gpu]
+    labels:
+      com.datadoghq.ad.check_names: '["vllm"]'
+      com.datadoghq.ad.init_configs: "[{}]"
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:zai-org/GLM-5.1-FP8","model_path:QuantTrio/GLM-5.1-AWQ","precision:int4","deployment:GLM-5.1-AWQ-vllm","ip:${HOST_IP}","port:8000","instance:2"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-glm51-awq-2:8000/metrics","histogram_buckets_as_distributions":true,"service":"model-vllm-glm51-awq-2","tags":["model:zai-org/GLM-5.1-FP8","model_path:QuantTrio/GLM-5.1-AWQ","precision:int4","deployment:GLM-5.1-AWQ-vllm","ip:${HOST_IP}","port:8000","instance:2"]}]'
+
+  dcgm-exporter:
+    image: nvcr.io/nvidia/k8s/dcgm-exporter:4.5.2-4.8.1-distroless
+    container_name: dcgm-exporter
+    runtime: nvidia
+    cap_add:
+      - SYS_ADMIN
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+    ports:
+      - "9400:9400"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+    logging: *logging-conf
+    labels:
+      com.datadoghq.ad.check_names: '["dcgm"]'
+      com.datadoghq.ad.init_configs: "[{}]"
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint": "http://%%host%%:9400/metrics", "tags":["model:zai-org/GLM-5.1-FP8","deployment:GLM-5.1-AWQ-vllm","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.logs: '[{"source": "dcgm-exporter", "service": "dcgm-exporter", "tags":["model:zai-org/GLM-5.1-FP8","deployment:GLM-5.1-AWQ-vllm","ip:${HOST_IP}"]}]'
+
+networks:
+  default:
+    external: true
+    name: dstack_default
+
+volumes:
+  huggingface_cache:
+  vllm_cache:
+  certs:
+    external: true
+    name: certs
+
+
+configs:
+  registrar_script:
+    content: |
+      #!/bin/sh
+      PROXY_URL="https://completions.near.ai"
+      TOKEN="$${MODEL_PROXY_TOKEN}"
+      ENDPOINT="$${HOST_IP}:$${HTTP_PORT}"
+      REGISTERED=false
+      FAILURE_COUNT=0
+      MAX_RETRIES=3
+
+      register_endpoint() {
+        echo "Registering endpoint $$1 with routing port $$2"
+        curl -sS --max-time 10 -X POST "$$PROXY_URL/register/endpoint" \
+          -H "Authorization: Bearer $$TOKEN" \
+          -H "Content-Type: application/json" \
+          -d "{\"endpoint\":\"$$1\",\"routing_port\":$$2}"
+      }
+
+      unregister_endpoint() {
+        echo "Unregistering endpoint $$1"
+        curl -sS --max-time 10 -X POST "$$PROXY_URL/unregister/endpoint" \
+          -H "Authorization: Bearer $$TOKEN" \
+          -H "Content-Type: application/json" \
+          -d "{\"endpoint\":\"$$1\"}"
+      }
+
+      register_model() {
+        curl -sS --max-time 10 -X POST "$$PROXY_URL/register/model" \
+          -H "Authorization: Bearer $$TOKEN" \
+          -H "Content-Type: application/json" \
+          -d "{\"model\":\"$$1\",\"domain\":\"$$2\"}"
+      }
+
+      cleanup() {
+        echo "SIGTERM received, unregistering $$ENDPOINT"
+        unregister_endpoint "$$ENDPOINT"
+        REGISTERED=false
+        exit 0
+      }
+      trap cleanup TERM INT
+
+      mark_registered() {
+        register_endpoint "$$ENDPOINT" "$${TLS_PORT}"
+        register_model "zai-org/GLM-5.1-FP8" "glm-5-1-awq-vllm.completions.near.ai"
+        if [ "$$REGISTERED" = false ]; then
+          echo "[GLM-5.1-AWQ-vllm] Registered zai-org/GLM-5.1-FP8 (AWQ weights, vLLM, 2x TP4) at $$ENDPOINT"
+        fi
+        REGISTERED=true
+      }
+
+      # Per-replica 1-token probe (no auth needed). Return codes:
+      #   0: replica accepted the probe
+      #   2: replica alive but saturated/backpressuring (HTTP 503 or curl 52/56)
+      #   1: replica unhealthy/unreachable
+      check_chat() {
+        status=$$(curl -sS --connect-timeout 10 --max-time 45 -o /dev/null -w "%{http_code}" \
+          -X POST "http://$$1:8000/v1/chat/completions" \
+          -H "Content-Type: application/json" \
+          -d "{\"model\":\"$$2\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":1}")
+        curl_status=$$?
+        if [ "$$curl_status" -ne 0 ]; then
+          case "$$curl_status" in
+            52|56)
+              echo "[GLM-5.1-AWQ-vllm] $$1: connection backpressure (curl $$curl_status); alive but saturated"
+              return 2 ;;
+          esac
+          echo "[GLM-5.1-AWQ-vllm] $$1: probe curl failed (status $$curl_status)"
+          return 1
+        fi
+        case "$$status" in
+          2*) return 0 ;;
+          503)
+            echo "[GLM-5.1-AWQ-vllm] $$1: HTTP 503; alive but saturated"
+            return 2 ;;
+          *)
+            echo "[GLM-5.1-AWQ-vllm] $$1: HTTP $$status"
+            return 1 ;;
+        esac
+      }
+
+      # Aggregate both replicas: unhealthy if either is down; saturated if either
+      # is saturated (none down); otherwise ok. Saturated keeps the endpoint
+      # registered (don't drop a busy-but-healthy host).
+      check_inference() {
+        echo "Performing health check on both replicas..."
+        check_chat model-vllm-glm51-awq-1 "zai-org/GLM-5.1-FP8"; s1=$$?
+        check_chat model-vllm-glm51-awq-2 "zai-org/GLM-5.1-FP8"; s2=$$?
+        if [ "$$s1" -eq 1 ] || [ "$$s2" -eq 1 ]; then return 1; fi
+        if [ "$$s1" -eq 2 ] || [ "$$s2" -eq 2 ]; then return 2; fi
+        return 0
+      }
+
+      # Probe the host-published nginx port via HOST_IP (not the compose DNS name);
+      # bounded + loud so a persistent probe failure falls through to the loop.
+      # See cvm-compose-files#57.
+      READY_URL="http://$${HOST_IP}:8000/v1/models"
+      echo "Waiting for model to be ready (probing $$READY_URL)..."
+      ready_attempts=0
+      until curl --connect-timeout 5 --max-time 10 -sf "$$READY_URL" > /dev/null 2>&1; do
+        ready_attempts=$$((ready_attempts + 1))
+        if [ "$$ready_attempts" -ge 30 ]; then
+          echo "WARN: model not reachable at $$READY_URL after $$ready_attempts attempts (~20m); entering registration loop anyway"
+          break
+        fi
+        echo "Model not ready yet (attempt $$ready_attempts/30), retrying in 30s..."
+        sleep 30
+      done
+      echo "Model ready, starting registration loop"
+
+      while true; do
+        date +%s > /tmp/registrar_alive
+        check_inference
+        health_status=$$?
+        case "$$health_status" in
+          0)
+            FAILURE_COUNT=0
+            mark_registered
+            ;;
+          2)
+            FAILURE_COUNT=0
+            echo "[GLM-5.1-AWQ-vllm] Keeping $$ENDPOINT registered while a replica is saturated"
+            mark_registered
+            ;;
+          *)
+            FAILURE_COUNT=$$((FAILURE_COUNT + 1))
+            echo "[GLM-5.1-AWQ-vllm] Health check failed ($$FAILURE_COUNT/$$MAX_RETRIES)"
+            if [ "$$REGISTERED" = true ] && [ "$$FAILURE_COUNT" -ge "$$MAX_RETRIES" ]; then
+              echo "[GLM-5.1-AWQ-vllm] Retry limit reached, unregistering $$ENDPOINT"
+              unregister_endpoint "$$ENDPOINT"
+              REGISTERED=false
+              echo "[GLM-5.1-AWQ-vllm] Exiting to refresh DNS (container will auto-restart)"
+              exit 1
+            fi
+            ;;
+        esac
+        date +%s > /tmp/registrar_alive
+        sleep 60
+      done
+  nginx_conf:
+    content: |
+      log_format json_combined escape=json
+        '{'  '"time":"$$time_iso8601"'
+        ',"request_id":"$$http_x_request_id"'
+        ',"org_id":"$$http_x_org_id"'
+        ',"workspace_id":"$$http_x_workspace_id"'
+        ',"http_host":"$$host"'
+        ',"method":"$$request_method"'
+        ',"uri":"$$uri"'
+        ',"status":$$status'
+        ',"request_length":$$request_length'
+        ',"bytes_sent":$$bytes_sent'
+        ',"request_time":$$request_time'
+        ',"upstream_addr":"$$upstream_addr"'
+        '}';
+
+      server {
+          listen 80 default_server;
+
+          access_log /var/log/nginx/access.log json_combined;
+          client_max_body_size 100m;
+          client_body_buffer_size 1m;
+
+          location / {
+              proxy_pass http://proxy-glm51-awq-vllm:8000;
+              proxy_http_version 1.1;
+              proxy_set_header Host $$host;
+              proxy_set_header X-Real-IP $$remote_addr;
+              proxy_set_header X-Forwarded-For $$proxy_add_x_forwarded_for;
+              proxy_set_header X-Forwarded-Proto $$scheme;
+              proxy_set_header Connection '';
+              proxy_buffering off;
+              proxy_cache off;
+              proxy_read_timeout 3600s;
+          }
+      }
+
+      server {
+          listen 443 ssl http2;
+          server_name glm-5-1-awq-vllm.completions.near.ai;
+
+          ssl_certificate /etc/letsencrypt/live/completions.near.ai/fullchain.pem;
+          ssl_certificate_key /etc/letsencrypt/live/completions.near.ai/privkey.pem;
+          ssl_protocols TLSv1.2 TLSv1.3;
+
+          # Keep H2 connections from cloud-api alive across long idle gaps.
+          keepalive_timeout 1h;
+          keepalive_requests 1000000;
+
+          access_log /var/log/nginx/access.log json_combined;
+          client_max_body_size 100m;
+          client_body_buffer_size 1m;
+
+          location / {
+              proxy_pass http://proxy-glm51-awq-vllm:8000;
+              proxy_http_version 1.1;
+              proxy_set_header Host $$host;
+              proxy_set_header X-Real-IP $$remote_addr;
+              proxy_set_header X-Forwarded-For $$proxy_add_x_forwarded_for;
+              proxy_set_header X-Forwarded-Proto $$scheme;
+              proxy_set_header Connection '';
+              proxy_buffering off;
+              proxy_cache off;
+              proxy_read_timeout 3600s;
+          }
+      }
