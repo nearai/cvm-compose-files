@@ -47,10 +47,10 @@ x-vllm-common: &vllm-common
 #
 # Served as zai-org/GLM-5.1-FP8 (NOT the AWQ repo id): drop-in for the FP8 model so
 # the API model name is identical and nothing downstream changes. Registered to the
-# ISOLATED glm-5-1-awq-vllm domain (not the prod glm-5-1 rotation). No speculative
-# decoding: the AWQ repo ships no draft/MTP weights. fp8 KV cache halves KV
-# bytes/token (~1.8x token pool) — needed to fit long context at TP4. vllm_cache is
-# persisted so the torch.compile graph cache survives restarts.
+# canonical glm-5-1 domain so this deployment joins the existing GLM-5.1 backend
+# pool. No speculative decoding: the AWQ repo ships no draft/MTP weights. fp8 KV
+# cache halves KV bytes/token (~1.8x token pool) — needed to fit long context at
+# TP4. vllm_cache is persisted so the torch.compile graph cache survives restarts.
 x-glm51-awq-common: &glm51-awq-common
   <<: *vllm-common
   depends_on:
@@ -281,9 +281,9 @@ configs:
 
       mark_registered() {
         register_endpoint "$$ENDPOINT" "$${TLS_PORT}"
-        register_model "zai-org/GLM-5.1-FP8" "glm-5-1-awq-vllm.completions.near.ai"
+        register_model "zai-org/GLM-5.1-FP8" "glm-5-1.completions.near.ai"
         if [ "$$REGISTERED" = false ]; then
-          echo "[GLM-5.1-AWQ-vllm] Registered zai-org/GLM-5.1-FP8 (AWQ weights, vLLM, 2x TP4) at $$ENDPOINT"
+          echo "[GLM-5.1-AWQ-vllm] Registered zai-org/GLM-5.1-FP8 (AWQ weights, vLLM, 2x TP4) into GLM-5.1 pool at $$ENDPOINT"
         fi
         REGISTERED=true
       }
@@ -416,7 +416,7 @@ configs:
 
       server {
           listen 443 ssl http2;
-          server_name glm-5-1-awq-vllm.completions.near.ai;
+          server_name glm-5-1.completions.near.ai;
 
           ssl_certificate /etc/letsencrypt/live/completions.near.ai/fullchain.pem;
           ssl_certificate_key /etc/letsencrypt/live/completions.near.ai/privkey.pem;
