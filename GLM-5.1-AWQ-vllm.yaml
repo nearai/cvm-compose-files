@@ -67,6 +67,7 @@ x-glm51-awq-common: &glm51-awq-common
     --dtype auto
     --gpu-memory-utilization 0.9
     --max-model-len 200000
+    --max-num-seqs 8
     --max-num-batched-tokens 16384
     --enable-prefix-caching
     --async-scheduling
@@ -287,19 +288,46 @@ configs:
         REGISTERED=true
       }
 
-      # 1-token completion probe to one replica (no auth needed).
+      # Per-replica 1-token probe (no auth needed). Return codes:
+      #   0: replica accepted the probe
+      #   2: replica alive but saturated/backpressuring (HTTP 503 or curl 52/56)
+      #   1: replica unhealthy/unreachable
       check_chat() {
-        curl -sf --max-time 45 -X POST "http://$$1:8000/v1/chat/completions" \
+        status=$$(curl -sS --connect-timeout 10 --max-time 45 -o /dev/null -w "%{http_code}" \
+          -X POST "http://$$1:8000/v1/chat/completions" \
           -H "Content-Type: application/json" \
-          -d "{\"model\":\"$$2\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":1}" \
-          > /dev/null 2>&1
+          -d "{\"model\":\"$$2\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":1}")
+        curl_status=$$?
+        if [ "$$curl_status" -ne 0 ]; then
+          case "$$curl_status" in
+            52|56)
+              echo "[GLM-5.1-AWQ-vllm] $$1: connection backpressure (curl $$curl_status); alive but saturated"
+              return 2 ;;
+          esac
+          echo "[GLM-5.1-AWQ-vllm] $$1: probe curl failed (status $$curl_status)"
+          return 1
+        fi
+        case "$$status" in
+          2*) return 0 ;;
+          503)
+            echo "[GLM-5.1-AWQ-vllm] $$1: HTTP 503; alive but saturated"
+            return 2 ;;
+          *)
+            echo "[GLM-5.1-AWQ-vllm] $$1: HTTP $$status"
+            return 1 ;;
+        esac
       }
 
-      # Both replicas must answer before we (re)register the endpoint.
+      # Aggregate both replicas: unhealthy if either is down; saturated if either
+      # is saturated (none down); otherwise ok. Saturated keeps the endpoint
+      # registered (don't drop a busy-but-healthy host).
       check_inference() {
         echo "Performing health check on both replicas..."
-        check_chat model-vllm-glm51-awq-1 "zai-org/GLM-5.1-FP8" &&
-        check_chat model-vllm-glm51-awq-2 "zai-org/GLM-5.1-FP8"
+        check_chat model-vllm-glm51-awq-1 "zai-org/GLM-5.1-FP8"; s1=$$?
+        check_chat model-vllm-glm51-awq-2 "zai-org/GLM-5.1-FP8"; s2=$$?
+        if [ "$$s1" -eq 1 ] || [ "$$s2" -eq 1 ]; then return 1; fi
+        if [ "$$s1" -eq 2 ] || [ "$$s2" -eq 2 ]; then return 2; fi
+        return 0
       }
 
       # Probe the host-published nginx port via HOST_IP (not the compose DNS name);
@@ -321,20 +349,30 @@ configs:
 
       while true; do
         date +%s > /tmp/registrar_alive
-        if check_inference; then
-          FAILURE_COUNT=0
-          mark_registered
-        else
-          FAILURE_COUNT=$$((FAILURE_COUNT + 1))
-          echo "[GLM-5.1-AWQ-vllm] Health check failed ($$FAILURE_COUNT/$$MAX_RETRIES)"
-          if [ "$$REGISTERED" = true ] && [ "$$FAILURE_COUNT" -ge "$$MAX_RETRIES" ]; then
-            echo "[GLM-5.1-AWQ-vllm] Retry limit reached, unregistering $$ENDPOINT"
-            unregister_endpoint "$$ENDPOINT"
-            REGISTERED=false
-            echo "[GLM-5.1-AWQ-vllm] Exiting to refresh DNS (container will auto-restart)"
-            exit 1
-          fi
-        fi
+        check_inference
+        health_status=$$?
+        case "$$health_status" in
+          0)
+            FAILURE_COUNT=0
+            mark_registered
+            ;;
+          2)
+            FAILURE_COUNT=0
+            echo "[GLM-5.1-AWQ-vllm] Keeping $$ENDPOINT registered while a replica is saturated"
+            mark_registered
+            ;;
+          *)
+            FAILURE_COUNT=$$((FAILURE_COUNT + 1))
+            echo "[GLM-5.1-AWQ-vllm] Health check failed ($$FAILURE_COUNT/$$MAX_RETRIES)"
+            if [ "$$REGISTERED" = true ] && [ "$$FAILURE_COUNT" -ge "$$MAX_RETRIES" ]; then
+              echo "[GLM-5.1-AWQ-vllm] Retry limit reached, unregistering $$ENDPOINT"
+              unregister_endpoint "$$ENDPOINT"
+              REGISTERED=false
+              echo "[GLM-5.1-AWQ-vllm] Exiting to refresh DNS (container will auto-restart)"
+              exit 1
+            fi
+            ;;
+        esac
         date +%s > /tmp/registrar_alive
         sleep 60
       done
