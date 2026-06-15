@@ -86,7 +86,9 @@ x-dsv4-flash-common: &dsv4-flash-common
       --speculative-eagle-topk 1
       --speculative-num-draft-tokens 2
       --cuda-graph-max-bs 128
-      --max-running-requests 128
+      --mem-fraction-static 0.83
+      --max-running-requests 64
+      --schedule-conservativeness 1.3
       --tool-call-parser deepseekv4
       --reasoning-parser deepseek-v4
       --port 8000
@@ -109,6 +111,7 @@ x-dsv4-flash-common: &dsv4-flash-common
     - SGLANG_ENABLE_SPEC_V2=1
     - SGLANG_DSV4_FP4_EXPERTS=0
     - SGLANG_ENABLE_UNIFIED_RADIX_TREE=1
+    - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
   restart: unless-stopped
   stop_grace_period: 5m
   logging: *logging-conf
