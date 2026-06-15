@@ -231,6 +231,39 @@ services:
       nearai.otel.host: "gpu26"
       nearai.otel.ip: "${HOST_IP}"
 
+  otelcol-contrib:
+    image: otel/opentelemetry-collector-contrib@sha256:85ac41c2db88d0df9bd6145e608a3cb023f5d8443868adbfbbf66efb51087917
+    container_name: otelcol-contrib
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    user: "0:0"
+    mem_limit: "768m"
+    environment:
+      - MONITORING_INGEST_TOKEN=${MONITORING_INGEST_TOKEN}
+      - CVM_NAME=${CVM_NAME:-compose-manager}
+      - CVM_HOST=${CVM_HOST:-gpu26}
+      - DD_HOSTNAME=${DD_HOSTNAME:-gpu26-compose-manager}
+      - ENV=${ENV:-prod}
+      - HOST_IP=${HOST_IP}
+    expose:
+      - "4317"
+      - "4318"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - otelcol_app_storage:/var/lib/otelcol-contrib
+    configs:
+      - source: otelcol_app_config
+        target: /etc/otelcol-contrib/config.yaml
+        mode: 0444
+    restart: unless-stopped
+    logging:
+      driver: "local"
+      options:
+        max-size: "20m"
+        max-file: "3"
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"otelcol-contrib","service":"otelcol-contrib","tags":["deployment:GLM-5.1","env:prod","host:gpu26","ip:${HOST_IP}"]}]'
+
 networks:
   default:
     external: true
@@ -239,12 +272,255 @@ networks:
 volumes:
   huggingface_cache:
   kernel_cache:
+  otelcol_app_storage:
   certs:
     external: true
     name: certs
 
 
 configs:
+  otelcol_app_config:
+    content: |
+      receivers:
+        otlp:
+          protocols:
+            grpc:
+              endpoint: 0.0.0.0:4317
+            http:
+              endpoint: 0.0.0.0:4318
+
+        filelog/docker_containers:
+          include: [/var/lib/docker/containers/*/*-json.log]
+          start_at: end
+          storage: file_storage
+          include_file_path: true
+          operators:
+            - type: json_parser
+              parse_from: body
+              parse_to: attributes
+              timestamp:
+                parse_from: attributes.time
+                layout_type: gotime
+                layout: '2006-01-02T15:04:05.999999999Z07:00'
+              on_error: send_quiet
+            - type: move
+              from: attributes.log
+              to: body
+              if: 'attributes.log != nil'
+            - type: move
+              from: attributes.stream
+              to: attributes["log.iostream"]
+              if: 'attributes.stream != nil'
+            - type: remove
+              field: attributes.time
+              if: 'attributes.time != nil'
+            - type: regex_parser
+              parse_from: attributes["log.file.path"]
+              regex: '/var/lib/docker/containers/(?P<container_id>[a-f0-9]{12})[a-f0-9]*/'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'model:(?P<model>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'deployment:(?P<deployment>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'ip:(?P<ip>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'port:(?P<port>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'env:(?P<env>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'host:(?P<host>[^",\]]+)'
+              on_error: send_quiet
+            - type: add
+              field: attributes["service.name"]
+              value: cvm-docker
+
+        prometheus/apps:
+          config:
+            scrape_configs:
+              - job_name: docker-labeled-services
+                scrape_interval: 15s
+                docker_sd_configs:
+                  - host: unix:///var/run/docker.sock
+                    refresh_interval: 30s
+                relabel_configs:
+                  - source_labels: [__meta_docker_container_label_nearai_otel_scrape]
+                    regex: "true"
+                    action: keep
+                  - source_labels: [__meta_docker_network_name]
+                    regex: dstack_default
+                    action: keep
+                  - source_labels: [__meta_docker_container_label_nearai_otel_port]
+                    regex: ".+"
+                    action: keep
+                  - source_labels: [__meta_docker_network_ip, __meta_docker_container_label_nearai_otel_port]
+                    separator: ":"
+                    target_label: __address__
+                    replacement: "$$1:$$2"
+                  - source_labels: [__meta_docker_container_label_nearai_otel_path]
+                    regex: "(.+)"
+                    target_label: __metrics_path__
+                  - source_labels: [__meta_docker_container_label_nearai_otel_job]
+                    regex: "(.+)"
+                    target_label: job
+                  - source_labels: [__meta_docker_container_label_nearai_otel_service]
+                    regex: "(.+)"
+                    target_label: service
+                  - source_labels: [__meta_docker_container_label_com_docker_compose_service]
+                    regex: "(.+)"
+                    target_label: container_name
+                  - source_labels: [__meta_docker_container_label_nearai_otel_model]
+                    regex: "(.+)"
+                    target_label: model
+                  - source_labels: [__meta_docker_container_label_nearai_otel_deployment]
+                    regex: "(.+)"
+                    target_label: deployment
+                  - source_labels: [__meta_docker_container_label_nearai_otel_env]
+                    regex: "(.+)"
+                    target_label: env
+                  - source_labels: [__meta_docker_container_label_nearai_otel_host]
+                    regex: "(.+)"
+                    target_label: host
+                  - source_labels: [__meta_docker_container_label_nearai_otel_ip]
+                    regex: "(.+)"
+                    target_label: ip
+                  - source_labels: [__meta_docker_container_label_nearai_otel_port]
+                    regex: "(.+)"
+                    target_label: port
+
+        prometheus/self:
+          config:
+            scrape_configs:
+              - job_name: otelcol-app
+                scrape_interval: 30s
+                static_configs:
+                  - targets: ['localhost:8888']
+
+      processors:
+        memory_limiter:
+          check_interval: 1s
+          limit_mib: 512
+          spike_limit_mib: 128
+
+        resource:
+          attributes:
+            - key: host.name
+              value: $${env:DD_HOSTNAME}
+              action: upsert
+            - key: cvm.name
+              value: $${env:CVM_NAME}
+              action: upsert
+            - key: host.machine
+              value: $${env:CVM_HOST}
+              action: insert
+            - key: deployment.environment
+              value: $${env:ENV}
+              action: upsert
+            - key: service.namespace
+              value: near-ai
+              action: insert
+
+        transform/docker_metadata:
+          error_mode: ignore
+          log_statements:
+            - context: log
+              statements:
+                - set(attributes["service.name"], attributes["attrs"]["com.docker.compose.service"]) where attributes["attrs"] != nil and attributes["attrs"]["com.docker.compose.service"] != nil
+                - set(attributes["service.name"], ParseJSON(attributes["attrs"]["com.datadoghq.ad.logs"])[0]["service"]) where attributes["attrs"] != nil and attributes["attrs"]["com.datadoghq.ad.logs"] != nil
+                - set(attributes["log.source"], ParseJSON(attributes["attrs"]["com.datadoghq.ad.logs"])[0]["source"]) where attributes["attrs"] != nil and attributes["attrs"]["com.datadoghq.ad.logs"] != nil
+                - set(attributes["container.name"], attributes["attrs"]["com.docker.compose.service"]) where attributes["attrs"] != nil and attributes["attrs"]["com.docker.compose.service"] != nil
+
+        filter/app_logs:
+          error_mode: ignore
+          logs:
+            log_record:
+              - 'attributes["model"] == nil and attributes["deployment"] == nil'
+              - 'attributes["service.name"] == "compose-manager"'
+              - 'attributes["service.name"] == "compose-manager-launcher"'
+              - 'attributes["service.name"] == "otelcol-management"'
+              - 'attributes["service.name"] == "otelcol-contrib"'
+              - 'attributes["service.name"] == "datadog-agent"'
+
+        groupbyattrs/docker_service:
+          keys:
+            - service.name
+            - container.name
+            - log.source
+            - log.iostream
+            - model
+            - deployment
+            - env
+            - host
+            - ip
+            - port
+
+        batch:
+          send_batch_size: 1024
+          send_batch_max_size: 2048
+          timeout: 5s
+
+      exporters:
+        otlphttp/gateway:
+          endpoint: https://telemetry.infra.near.ai
+          headers:
+            Authorization: "Bearer $${env:MONITORING_INGEST_TOKEN}"
+          sending_queue:
+            queue_size: 128
+            storage: file_storage
+
+        otlp/datadog_agent:
+          endpoint: datadog-agent:4317
+          tls:
+            insecure: true
+          sending_queue:
+            queue_size: 128
+            storage: file_storage
+
+      extensions:
+        file_storage:
+          directory: /var/lib/otelcol-contrib/storage
+          create_directory: true
+
+      service:
+        extensions: [file_storage]
+        pipelines:
+          logs/app:
+            receivers: [filelog/docker_containers]
+            processors: [memory_limiter, resource, transform/docker_metadata, filter/app_logs, groupbyattrs/docker_service, batch]
+            exporters: [otlphttp/gateway]
+          logs/otlp:
+            receivers: [otlp]
+            processors: [memory_limiter, resource, batch]
+            exporters: [otlphttp/gateway]
+          metrics/app:
+            receivers: [otlp, prometheus/apps]
+            processors: [memory_limiter, resource, batch]
+            exporters: [otlphttp/gateway, otlp/datadog_agent]
+          metrics/self:
+            receivers: [prometheus/self]
+            processors: [memory_limiter, resource, batch]
+            exporters: [otlphttp/gateway]
+          traces:
+            receivers: [otlp]
+            processors: [memory_limiter, resource, batch]
+            exporters: [otlphttp/gateway, otlp/datadog_agent]
+        telemetry:
+          metrics:
+            address: localhost:8888
+          logs:
+            level: info
+
   registrar_script:
     content: |
       #!/bin/sh
