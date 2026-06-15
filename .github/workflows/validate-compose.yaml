@@ -19,6 +19,11 @@ jobs:
         env:
           # Common across all compose files
           HOST_IP: 127.0.0.1
+          MONITORING_INGEST_TOKEN: ci-dummy
+          CVM_NAME: compose-manager
+          CVM_HOST: gpu26
+          DD_HOSTNAME: gpu26-compose-manager
+          ENV: prod
           HUGGING_FACE_HUB_TOKEN: ci-dummy
           CLOUD_API_USAGE_TOKEN: ci-dummy
           MODEL_PROXY_TOKEN: ci-dummy
@@ -43,3 +48,29 @@ jobs:
             fi
           done
           exit $exit_code
+
+      - name: Validate embedded OTel collector configs
+        env:
+          HOST_IP: 127.0.0.1
+          MONITORING_INGEST_TOKEN: ci-dummy
+          CVM_NAME: compose-manager
+          CVM_HOST: gpu26
+          DD_HOSTNAME: gpu26-compose-manager
+          ENV: prod
+          HUGGING_FACE_HUB_TOKEN: ci-dummy
+          CLOUD_API_USAGE_TOKEN: ci-dummy
+          MODEL_PROXY_TOKEN: ci-dummy
+          PROXY_TOKEN: ci-dummy
+          WEB_CONTEXT_SEARCH_URL: http://ci-dummy
+          WEB_CONTEXT_SEARCH_API_KEY: ci-dummy
+        run: |
+          set -euo pipefail
+          for file in *.yaml; do
+            config="$(docker compose -f "$file" config --format=json | jq -r '.configs.otelcol_app_config.content // empty')"
+            if [ -z "$config" ]; then
+              continue
+            fi
+            image="$(docker compose -f "$file" config --format=json | jq -r '.services["otelcol-contrib"].image')"
+            echo "Validating embedded OTel config in $file with $image..."
+            printf '%s' "$config" | docker run --rm -i "$image" validate --config=/dev/stdin
+          done

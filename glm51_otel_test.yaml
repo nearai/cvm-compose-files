@@ -51,7 +51,7 @@ services:
     environment:
       - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
     labels:
-      com.datadoghq.ad.logs: '[{"source":"model-downloader","service":"model-downloader","tags":["model:zai-org/GLM-5.1-FP8","deployment:GLM-5.1","env:prod","host:gpu26","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.logs: '[{"source":"model-downloader","service":"model-downloader","tags":["model:zai-org/GLM-5.1-FP8","deployment:GLM-5.1","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
 
   proxy-nginx:
     image: nginx@sha256:1d13701a5f9f3fb01aaa88cef2344d65b6b5bf6b7d9fa4cf0dca557a8d7702ba
@@ -69,7 +69,7 @@ services:
     restart: unless-stopped
     logging: *logging-conf
     labels:
-      com.datadoghq.ad.logs: '[{"source":"nginx","service":"proxy-nginx","tags":["model:zai-org/GLM-5.1-FP8","deployment:GLM-5.1","env:prod","host:gpu26","ip:${HOST_IP}","port:8000"]}]'
+      com.datadoghq.ad.logs: '[{"source":"nginx","service":"proxy-nginx","tags":["model:zai-org/GLM-5.1-FP8","deployment:GLM-5.1","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000"]}]'
 
   model-proxy-registrar:
     image: curlimages/curl@sha256:d94d07ba9e7d6de898b6d96c1a072f6f8266c687af78a74f380087a0addf5d17
@@ -96,7 +96,7 @@ services:
         mode: 0755
     logging: *logging-conf
     labels:
-      com.datadoghq.ad.logs: '[{"source":"model-proxy-registrar","service":"model-proxy-registrar","tags":["model:zai-org/GLM-5.1-FP8","deployment:GLM-5.1","env:prod","host:gpu26","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.logs: '[{"source":"model-proxy-registrar","service":"model-proxy-registrar","tags":["model:zai-org/GLM-5.1-FP8","deployment:GLM-5.1","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
 
   proxy-glm51:
     <<: *vllm-proxy-common
@@ -116,7 +116,7 @@ services:
       - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
       - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:zai-org/GLM-5.1-FP8","deployment:GLM-5.1","env:prod","host:gpu26","ip:${HOST_IP}","port:8000"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:zai-org/GLM-5.1-FP8","deployment:GLM-5.1","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "inference-proxy"
       nearai.otel.service: "vllm-proxy"
@@ -183,8 +183,8 @@ services:
     labels:
       com.datadoghq.ad.check_names: '["openmetrics"]'
       com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:zai-org/GLM-5.1-FP8","deployment:GLM-5.1","env:prod","host:gpu26","ip:${HOST_IP}","port:8000"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-sg-glm51:8000/metrics", "histogram_buckets_as_distributions": true, "metrics":["sglang:*"], "service": "glm-5.1", "tags":["model:zai-org/GLM-5.1-FP8","deployment:GLM-5.1","env:prod","host:gpu26","ip:${HOST_IP}","port:8000"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:zai-org/GLM-5.1-FP8","deployment:GLM-5.1","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-sg-glm51:8000/metrics", "histogram_buckets_as_distributions": true, "metrics":["sglang:*"], "service": "glm-5.1", "tags":["model:zai-org/GLM-5.1-FP8","deployment:GLM-5.1","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -218,8 +218,8 @@ services:
     labels:
       com.datadoghq.ad.check_names: '["dcgm"]'
       com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://%%host%%:9400/metrics","tags":["model:zai-org/GLM-5.1-FP8","deployment:GLM-5.1","env:prod","host:gpu26","ip:${HOST_IP}"]}]'
-      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:zai-org/GLM-5.1-FP8","deployment:GLM-5.1","env:prod","host:gpu26","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://%%host%%:9400/metrics","tags":["model:zai-org/GLM-5.1-FP8","deployment:GLM-5.1","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:zai-org/GLM-5.1-FP8","deployment:GLM-5.1","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "dcgm"
       nearai.otel.service: "dcgm-exporter"
@@ -238,17 +238,16 @@ services:
     user: "0:0"
     mem_limit: "768m"
     environment:
-      - MONITORING_INGEST_TOKEN=${MONITORING_INGEST_TOKEN}
-      - CVM_NAME=${CVM_NAME:-compose-manager}
-      - CVM_HOST=${CVM_HOST:-gpu26}
-      - DD_HOSTNAME=${DD_HOSTNAME:-gpu26-compose-manager}
-      - ENV=${ENV:-prod}
-      - HOST_IP=${HOST_IP}
+      - MONITORING_INGEST_TOKEN=${MONITORING_INGEST_TOKEN:?required for app telemetry}
+      - CVM_NAME=${CVM_NAME:?required for app telemetry}
+      - CVM_HOST=${CVM_HOST:?required for app telemetry}
+      - DD_HOSTNAME=${DD_HOSTNAME:?required for app telemetry}
+      - ENV=${ENV:?required for app telemetry}
+      - HOST_IP=${HOST_IP:?required for app telemetry}
     expose:
       - "4317"
       - "4318"
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
       - /var/lib/docker/containers:/var/lib/docker/containers:ro
       - otelcol_app_storage:/var/lib/otelcol-contrib
     configs:
@@ -262,7 +261,7 @@ services:
         max-size: "20m"
         max-file: "3"
     labels:
-      com.datadoghq.ad.logs: '[{"source":"otelcol-contrib","service":"otelcol-contrib","tags":["deployment:GLM-5.1","env:prod","host:gpu26","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.logs: '[{"source":"otelcol-contrib","service":"otelcol-contrib","tags":["deployment:GLM-5.1","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
 
 networks:
   default:
@@ -349,55 +348,48 @@ configs:
         prometheus/apps:
           config:
             scrape_configs:
-              - job_name: docker-labeled-services
+              - job_name: inference-proxy
                 scrape_interval: 15s
-                docker_sd_configs:
-                  - host: unix:///var/run/docker.sock
-                    refresh_interval: 30s
-                relabel_configs:
-                  - source_labels: [__meta_docker_container_label_nearai_otel_scrape]
-                    regex: "true"
-                    action: keep
-                  - source_labels: [__meta_docker_network_name]
-                    regex: dstack_default
-                    action: keep
-                  - source_labels: [__meta_docker_container_label_nearai_otel_port]
-                    regex: ".+"
-                    action: keep
-                  - source_labels: [__meta_docker_network_ip, __meta_docker_container_label_nearai_otel_port]
-                    separator: ":"
-                    target_label: __address__
-                    replacement: "$$1:$$2"
-                  - source_labels: [__meta_docker_container_label_nearai_otel_path]
-                    regex: "(.+)"
-                    target_label: __metrics_path__
-                  - source_labels: [__meta_docker_container_label_nearai_otel_job]
-                    regex: "(.+)"
-                    target_label: job
-                  - source_labels: [__meta_docker_container_label_nearai_otel_service]
-                    regex: "(.+)"
-                    target_label: service
-                  - source_labels: [__meta_docker_container_label_com_docker_compose_service]
-                    regex: "(.+)"
-                    target_label: container_name
-                  - source_labels: [__meta_docker_container_label_nearai_otel_model]
-                    regex: "(.+)"
-                    target_label: model
-                  - source_labels: [__meta_docker_container_label_nearai_otel_deployment]
-                    regex: "(.+)"
-                    target_label: deployment
-                  - source_labels: [__meta_docker_container_label_nearai_otel_env]
-                    regex: "(.+)"
-                    target_label: env
-                  - source_labels: [__meta_docker_container_label_nearai_otel_host]
-                    regex: "(.+)"
-                    target_label: host
-                  - source_labels: [__meta_docker_container_label_nearai_otel_ip]
-                    regex: "(.+)"
-                    target_label: ip
-                  - source_labels: [__meta_docker_container_label_nearai_otel_port]
-                    regex: "(.+)"
-                    target_label: port
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['proxy-glm51:8000']
+                    labels:
+                      service: vllm-proxy
+                      container_name: proxy-glm51
+                      model: zai-org/GLM-5.1-FP8
+                      deployment: GLM-5.1
+                      env: ${ENV}
+                      host: ${CVM_HOST}
+                      ip: ${HOST_IP}
+                      port: "8000"
+              - job_name: sglang
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['model-sg-glm51:8000']
+                    labels:
+                      service: sglang
+                      container_name: model-sg-glm51
+                      model: zai-org/GLM-5.1-FP8
+                      deployment: GLM-5.1
+                      env: ${ENV}
+                      host: ${CVM_HOST}
+                      ip: ${HOST_IP}
+                      port: "8000"
+              - job_name: dcgm
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['dcgm-exporter:9400']
+                    labels:
+                      service: dcgm-exporter
+                      container_name: dcgm-exporter
+                      model: zai-org/GLM-5.1-FP8
+                      deployment: GLM-5.1
+                      env: ${ENV}
+                      host: ${CVM_HOST}
+                      ip: ${HOST_IP}
+                      port: "9400"
 
         prometheus/self:
           config:
@@ -499,12 +491,12 @@ configs:
             receivers: [filelog/docker_containers]
             processors: [memory_limiter, resource, transform/docker_metadata, filter/app_logs, groupbyattrs/docker_service, batch]
             exporters: [otlphttp/gateway]
-          logs/otlp:
-            receivers: [otlp]
+          metrics/app:
+            receivers: [prometheus/apps]
             processors: [memory_limiter, resource, batch]
             exporters: [otlphttp/gateway]
-          metrics/app:
-            receivers: [otlp, prometheus/apps]
+          metrics/otlp:
+            receivers: [otlp]
             processors: [memory_limiter, resource, batch]
             exporters: [otlphttp/gateway, otlp/datadog_agent]
           metrics/self:
