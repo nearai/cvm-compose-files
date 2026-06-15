@@ -40,8 +40,8 @@ services:
     command:
       - |
         set -e
-        echo "Downloading cyankiwi/GLM-5.1-AWQ-4bit..."
-        uvx --from 'huggingface_hub[hf_xet]' hf download cyankiwi/GLM-5.1-AWQ-4bit --revision bc88b0cb806ae1be882ac4135ab4a414517b054f
+        echo "Downloading QuantTrio/GLM-5.1-AWQ..."
+        uvx --from 'huggingface_hub[hf_xet]' hf download QuantTrio/GLM-5.1-AWQ --revision 8f60817aa28023f2607850d1a1e51d21aa34817a
         echo "Download complete."
     volumes:
       - huggingface_cache:/root/.cache/huggingface
@@ -101,43 +101,46 @@ services:
       - MODEL_NAME=zai-org/GLM-5.1-FP8
       - OHTTP_ENABLED=true
       - TOKEN=${PROXY_TOKEN}
-      - VLLM_BASE_URL=http://model-sg-glm51-awq:8000
+      # One proxy load-balances both TP4 replicas (repo's multi-replica pattern).
+      - VLLM_BACKEND_URLS=http://model-sg-glm51-awq-1:8000,http://model-sg-glm51-awq-2:8000
+      - VLLM_PROXY_MAX_REQUEST_SIZE=104857600
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
       - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
       - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
 
-  model-sg-glm51-awq:
+  # Two TP4 replicas on one node (GPUs 0-3 and 4-7), each a full GLM-5.1-AWQ on 4
+  # GPUs. The single proxy-glm51-awq load-balances both via VLLM_BACKEND_URLS, and
+  # the registrar health-checks both before registering this node's one endpoint.
+  #
+  # QuantTrio/GLM-5.1-AWQ is INT4 AWQ (W4A16) — only the routed MoE experts are
+  # quantized; attention, shared experts, dense MLP and lm_head stay BF16. Runs on
+  # Hopper via Marlin (dequant INT4 -> BF16). sglang needs --disable-shared-experts-fusion
+  # for this checkpoint's weight layout (no --quantization flag). fp8 KV cache halves
+  # KV bytes/token to fit context at TP4. No EAGLE: the AWQ repo ships no draft weights.
+  #
+  # --served-model-name is zai-org/GLM-5.1-FP8 (NOT the AWQ repo id): drop-in for the
+  # FP8 model so the API name is identical and nothing downstream changes. Registered
+  # to the ISOLATED glm-5-1-awq domain (does not join the prod glm-5-1 rotation).
+  model-sg-glm51-awq-1: &model-sg-awq
     <<: *nvidia
     init: true
     depends_on:
       model-downloader:
         condition: service_completed_successfully
     image: lmsysorg/sglang:dev-cu12@sha256:aac6b242680daeb74d2ab1d85f70575357552d7d165d2e5d30eb362797db54a1
-    container_name: model-sg-glm51-awq
-    # cyankiwi/GLM-5.1-AWQ-4bit is W4A16 INT4 (compressed-tensors, "pack-quantized",
-    # group_size 32) — only the routed MoE experts are quantized; attention,
-    # shared experts, dense MLP and lm_head stay BF16. INT4 W4A16 runs on Hopper
-    # via Marlin (dequant INT4 -> BF16), so unlike NVFP4 this works on the H200
-    # fleet. sglang auto-detects the scheme from config.json's quantization_config
-    # (no --quantization flag needed). EAGLE speculative decoding is dropped: the
-    # AWQ repo ships no draft/MTP weights.
-    #
-    # --served-model-name is zai-org/GLM-5.1-FP8 (NOT the AWQ repo id): this is a
-    # drop-in for the FP8 model, so the served/API model name stays identical and
-    # nothing downstream (cloud-api, clients) needs to change. --model-path still
-    # points at the AWQ weights. Registered to the ISOLATED glm-5-1-awq domain so
-    # it does not join the prod glm-5-1 rotation.
     command: >
       sglang serve
-      --model-path cyankiwi/GLM-5.1-AWQ-4bit
-      --revision bc88b0cb806ae1be882ac4135ab4a414517b054f
+      --model-path QuantTrio/GLM-5.1-AWQ
+      --revision 8f60817aa28023f2607850d1a1e51d21aa34817a
       --served-model-name zai-org/GLM-5.1-FP8
-      --tp 8
+      --disable-shared-experts-fusion
+      --kv-cache-dtype fp8_e4m3
+      --tp 4
       --reasoning-parser glm45
       --log-requests-level 0
       --tool-call-parser glm47
-      --mem-fraction-static 0.87
+      --mem-fraction-static 0.85
       --max-queued-requests 8
       --num-continuous-decode-steps 5
       --model-loader-extra-config '{"enable_multithread_load": "true", "num_threads": 64}'
@@ -159,21 +162,38 @@ services:
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
       - OPENBLAS_L2_SIZE=2097152
       - NCCL_DEBUG=WARN
+    restart: unless-stopped
+    stop_grace_period: 5m
+    logging: *logging-conf
+    container_name: model-sg-glm51-awq-1
     deploy:
       resources:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["0","1","2","3","4","5","6","7"]
+              device_ids: ["0","1","2","3"]
               capabilities: [gpu]
-    restart: unless-stopped
-    stop_grace_period: 5m
-    logging: *logging-conf
     labels:
       com.datadoghq.ad.check_names: '["openmetrics"]'
       com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.logs: '[{"source": "sglang", "service": "sglang", "tags":["model:cyankiwi/GLM-5.1-AWQ-4bit","ip:${HOST_IP}","port:8000"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-sg-glm51-awq:8000/metrics", "histogram_buckets_as_distributions": true, "metrics":["sglang:*"], "service": "glm-5.1-awq", "tags":["model:cyankiwi/GLM-5.1-AWQ-4bit","ip:${HOST_IP}","port:8000"]}]'
+      com.datadoghq.ad.logs: '[{"source": "sglang", "service": "sglang", "tags":["model:QuantTrio/GLM-5.1-AWQ","ip:${HOST_IP}","port:8000","instance:1"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-sg-glm51-awq-1:8000/metrics", "histogram_buckets_as_distributions": true, "metrics":["sglang:*"], "service": "glm-5.1-awq", "tags":["model:QuantTrio/GLM-5.1-AWQ","ip:${HOST_IP}","port:8000","instance:1"]}]'
+
+  model-sg-glm51-awq-2:
+    <<: *model-sg-awq
+    container_name: model-sg-glm51-awq-2
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["4","5","6","7"]
+              capabilities: [gpu]
+    labels:
+      com.datadoghq.ad.check_names: '["openmetrics"]'
+      com.datadoghq.ad.init_configs: "[{}]"
+      com.datadoghq.ad.logs: '[{"source": "sglang", "service": "sglang", "tags":["model:QuantTrio/GLM-5.1-AWQ","ip:${HOST_IP}","port:8000","instance:2"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-sg-glm51-awq-2:8000/metrics", "histogram_buckets_as_distributions": true, "metrics":["sglang:*"], "service": "glm-5.1-awq", "tags":["model:QuantTrio/GLM-5.1-AWQ","ip:${HOST_IP}","port:8000","instance:2"]}]'
 
   dcgm-exporter:
     image: nvcr.io/nvidia/k8s/dcgm-exporter:4.5.2-4.8.1-distroless
@@ -197,8 +217,8 @@ services:
     labels:
       com.datadoghq.ad.check_names: '["dcgm"]'
       com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint": "http://%%host%%:9400/metrics", "tags":["model:cyankiwi/GLM-5.1-AWQ-4bit","deployment:GLM-5.1-AWQ-4bit","ip:${HOST_IP}"]}]'
-      com.datadoghq.ad.logs: '[{"source": "dcgm-exporter", "service": "dcgm-exporter", "tags":["model:cyankiwi/GLM-5.1-AWQ-4bit","deployment:GLM-5.1-AWQ-4bit","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint": "http://%%host%%:9400/metrics", "tags":["model:QuantTrio/GLM-5.1-AWQ","deployment:GLM-5.1-AWQ-4bit","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.logs: '[{"source": "dcgm-exporter", "service": "dcgm-exporter", "tags":["model:QuantTrio/GLM-5.1-AWQ","deployment:GLM-5.1-AWQ-4bit","ip:${HOST_IP}"]}]'
 
 networks:
   default:
@@ -259,48 +279,51 @@ configs:
         register_endpoint "$$ENDPOINT" "$${TLS_PORT}"
         register_model "zai-org/GLM-5.1-FP8" "glm-5-1-awq.completions.near.ai"
         if [ "$$REGISTERED" = false ]; then
-          echo "[GLM-5.1-AWQ] Registered zai-org/GLM-5.1-FP8 (AWQ weights) at $$ENDPOINT"
+          echo "[GLM-5.1-AWQ] Registered zai-org/GLM-5.1-FP8 (AWQ weights, 2x TP4) at $$ENDPOINT"
         fi
         REGISTERED=true
       }
 
-      # 1-token completion health check directly to model container (no auth needed).
-      # Return codes:
-      #   0: backend accepted the probe
-      #   2: backend is alive but saturated/backpressuring new requests
-      #   1: backend appears unhealthy/unreachable
-      check_inference() {
-        echo "Performing health check on model endpoint..."
+      # Per-replica 1-token probe (no auth needed). Return codes:
+      #   0: replica accepted the probe
+      #   2: replica alive but saturated/backpressuring (HTTP 503 or curl 52/56)
+      #   1: replica unhealthy/unreachable
+      check_chat() {
         status=$$(curl -sS --connect-timeout 10 --max-time 45 -o /dev/null -w "%{http_code}" \
-          -X POST "http://model-sg-glm51-awq:8000/v1/chat/completions" \
+          -X POST "http://$$1:8000/v1/chat/completions" \
           -H "Content-Type: application/json" \
           -d '{"model":"zai-org/GLM-5.1-FP8","messages":[{"role":"user","content":"hi"}],"max_tokens":1}')
         curl_status=$$?
-
         if [ "$$curl_status" -ne 0 ]; then
           case "$$curl_status" in
             52|56)
-              echo "[GLM-5.1-AWQ] Health probe hit connection-level backpressure (curl $$curl_status); treating as alive but saturated"
-              return 2
-              ;;
+              echo "[GLM-5.1-AWQ] $$1: connection backpressure (curl $$curl_status); alive but saturated"
+              return 2 ;;
           esac
-          echo "[GLM-5.1-AWQ] Health probe curl failed with status $$curl_status"
+          echo "[GLM-5.1-AWQ] $$1: probe curl failed (status $$curl_status)"
           return 1
         fi
-
         case "$$status" in
-          2*)
-            return 0
-            ;;
+          2*) return 0 ;;
           503)
-            echo "[GLM-5.1-AWQ] Backend returned 503; treating as alive but saturated"
-            return 2
-            ;;
+            echo "[GLM-5.1-AWQ] $$1: HTTP 503; alive but saturated"
+            return 2 ;;
           *)
-            echo "[GLM-5.1-AWQ] Backend returned HTTP $$status"
-            return 1
-            ;;
+            echo "[GLM-5.1-AWQ] $$1: HTTP $$status"
+            return 1 ;;
         esac
+      }
+
+      # Aggregate both TP4 replicas: unhealthy if either is down; saturated if either
+      # is saturated (none down); otherwise ok. Saturated keeps the endpoint
+      # registered (don't drop a busy-but-healthy node).
+      check_inference() {
+        echo "Performing health check on both replicas..."
+        check_chat model-sg-glm51-awq-1; s1=$$?
+        check_chat model-sg-glm51-awq-2; s2=$$?
+        if [ "$$s1" -eq 1 ] || [ "$$s2" -eq 1 ]; then return 1; fi
+        if [ "$$s1" -eq 2 ] || [ "$$s2" -eq 2 ]; then return 2; fi
+        return 0
       }
 
       # Probe the host-published nginx port via HOST_IP instead of the
