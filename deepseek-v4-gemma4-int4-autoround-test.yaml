@@ -1,7 +1,7 @@
-# Two-model INT4 bring-up:
-# - DeepSeek-V4-Flash Base INT4 on GPUs 0-3, TP=4. The EnsueAI checkpoint ships
-#   TP=4 shards and is intentionally kept to a small smoke-test context.
-# - Gemma-4-31B-it INT4 on GPUs 4-5, TP=2.
+# Two-model AutoRound INT4 bring-up:
+# - DeepSeek-V4-Flash INT4 on GPUs 0-3, TP=4. The standalone INT4 file uses TP=8;
+#   this split is intentionally for side-by-side testing with Gemma 4.
+# - Gemma-4-31B-it INT4 x4, TP=1 per replica on GPUs 4-7.
 
 x-logging-conf: &logging-conf
   driver: "json-file"
@@ -33,7 +33,7 @@ x-vllm-common: &vllm-common
     - NVIDIA_DRIVER_CAPABILITIES=compute,utility
     - OPENBLAS_L2_SIZE=2097152
     - NCCL_DEBUG=WARN
-    - VLLM_CACHE_ROOT=/root/.cache/vllm/deepseek-v4-gemma4-int4-ensue-test
+    - VLLM_CACHE_ROOT=/root/.cache/vllm/deepseek-v4-gemma4-int4-autoround-test
   restart: unless-stopped
   stop_grace_period: 5m
   logging: *logging-conf
@@ -61,19 +61,19 @@ x-dcgm-common: &dcgm-common
 
 x-deepseek-v4-int4-common: &deepseek-v4-int4-common
   <<: *vllm-common
-  # EnsueAI's INT4 artifact is TP=4 sharded and nonstandard; keep this as a
-  # narrow smoke test to see whether the current vLLM image can load it.
+  # AutoRound INT4 is auto-detected from quantization_config.
   command: >
-    EnsueAI/DeepSeek-V4-Flash-Base-INT4
-    --served-model-name EnsueAI/DeepSeek-V4-Flash-Base-INT4
+    Intel/DeepSeek-V4-Flash-W4A16-AutoRound
+    --revision d8ac6c04e22da23f68f797884471dae5cb129ee0
+    --served-model-name deepseek-ai/DeepSeek-V4-Flash-INT4-AutoRound
     --tensor-parallel-size 4
     --trust-remote-code
     --dtype auto
     --kv-cache-dtype fp8
     --gpu-memory-utilization 0.88
-    --max-model-len 512
-    --max-num-seqs 1
-    --max-num-batched-tokens 512
+    --max-model-len 65536
+    --max-num-seqs 8
+    --max-num-batched-tokens 8192
     --enable-prefix-caching
     --async-scheduling
     --enable-prompt-tokens-details
@@ -85,13 +85,13 @@ x-gemma4-int4-common: &gemma4-int4-common
     Intel/gemma-4-31B-it-int4-AutoRound
     --revision a428c96a57976947b0f12735f0cf5fcae69019ad
     --served-model-name google/gemma-4-31B-it-INT4-AutoRound
-    --tensor-parallel-size 2
+    --tensor-parallel-size 1
     --trust-remote-code
     --dtype auto
     --gpu-memory-utilization 0.90
-    --max-model-len 65536
-    --max-num-seqs 16
-    --max-num-batched-tokens 16384
+    --max-model-len 32768
+    --max-num-seqs 64
+    --max-num-batched-tokens 32768
     --enable-chunked-prefill
     --enable-prefix-caching
     --async-scheduling
@@ -144,7 +144,7 @@ services:
       - CLOUD_API_USAGE_TOKEN=${CLOUD_API_USAGE_TOKEN}
       - COMPOSE_MANAGER_URL=http://compose-manager:8080
       - LOG_FORMAT=json
-      - MODEL_NAME=EnsueAI/DeepSeek-V4-Flash-Base-INT4
+      - MODEL_NAME=deepseek-ai/DeepSeek-V4-Flash-INT4-AutoRound
       - OHTTP_ENABLED=true
       - TOKEN=${PROXY_TOKEN}
       - VLLM_BASE_URL=http://model-vllm-dsv4-flash-int4:8000
@@ -152,7 +152,7 @@ services:
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:EnsueAI/DeepSeek-V4-Flash-Base-INT4","precision:int4","deployment:deepseek-v4-gemma4-int4-ensue-test","ip:${HOST_IP}","port:8000"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:deepseek-ai/DeepSeek-V4-Flash-INT4-AutoRound","precision:int4","deployment:deepseek-v4-gemma4-int4-autoround-test","ip:${HOST_IP}","port:8000"]}]'
 
   model-vllm-dsv4-flash-int4:
     <<: *deepseek-v4-int4-common
@@ -167,8 +167,8 @@ services:
     labels:
       com.datadoghq.ad.check_names: '["vllm"]'
       com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:EnsueAI/DeepSeek-V4-Flash-Base-INT4","model_path:EnsueAI/DeepSeek-V4-Flash-Base-INT4","precision:int4","deployment:deepseek-v4-gemma4-int4-ensue-test","ip:${HOST_IP}","port:8000"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-dsv4-flash-int4:8000/metrics","histogram_buckets_as_distributions":true,"service":"model-vllm-dsv4-flash-int4","tags":["model:EnsueAI/DeepSeek-V4-Flash-Base-INT4","model_path:EnsueAI/DeepSeek-V4-Flash-Base-INT4","precision:int4","deployment:deepseek-v4-gemma4-int4-ensue-test","ip:${HOST_IP}","port:8000"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:deepseek-ai/DeepSeek-V4-Flash-INT4-AutoRound","model_path:Intel/DeepSeek-V4-Flash-W4A16-AutoRound","precision:int4","deployment:deepseek-v4-gemma4-int4-autoround-test","ip:${HOST_IP}","port:8000"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-dsv4-flash-int4:8000/metrics","histogram_buckets_as_distributions":true,"service":"model-vllm-dsv4-flash-int4","tags":["model:deepseek-ai/DeepSeek-V4-Flash-INT4-AutoRound","model_path:Intel/DeepSeek-V4-Flash-W4A16-AutoRound","precision:int4","deployment:deepseek-v4-gemma4-int4-autoround-test","ip:${HOST_IP}","port:8000"]}]'
 
   vllm-proxy-gemma4-int4:
     <<: *vllm-proxy-common
@@ -182,28 +182,76 @@ services:
       - MODEL_NAME=google/gemma-4-31B-it-INT4-AutoRound
       - OHTTP_ENABLED=true
       - TOKEN=${PROXY_TOKEN}
-      - VLLM_BASE_URL=http://model-vllm-gemma4-int4:8000
+      - VLLM_BACKEND_URLS=http://model-vllm-gemma4-int4-1:8000,http://model-vllm-gemma4-int4-2:8000,http://model-vllm-gemma4-int4-3:8000,http://model-vllm-gemma4-int4-4:8000
       - VLLM_PROXY_MAX_REQUEST_SIZE=104857600
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
     labels:
       com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:google/gemma-4-31B-it-INT4-AutoRound","precision:int4","deployment:deepseek-v4-gemma4-int4-autoround-test","ip:${HOST_IP}","port:8001"]}]'
 
-  model-vllm-gemma4-int4:
+  model-vllm-gemma4-int4-1:
     <<: *gemma4-int4-common
-    container_name: model-vllm-gemma4-int4
+    container_name: model-vllm-gemma4-int4-1
     deploy:
       resources:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["4","5"]
+              device_ids: ["4"]
               capabilities: [gpu]
     labels:
       com.datadoghq.ad.check_names: '["vllm"]'
       com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:google/gemma-4-31B-it-INT4-AutoRound","model_path:Intel/gemma-4-31B-it-int4-AutoRound","precision:int4","deployment:deepseek-v4-gemma4-int4-autoround-test","ip:${HOST_IP}","port:8001"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-gemma4-int4:8000/metrics","histogram_buckets_as_distributions":true,"service":"model-vllm-gemma4-int4","tags":["model:google/gemma-4-31B-it-INT4-AutoRound","model_path:Intel/gemma-4-31B-it-int4-AutoRound","precision:int4","deployment:deepseek-v4-gemma4-int4-autoround-test","ip:${HOST_IP}","port:8001"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:google/gemma-4-31B-it-INT4-AutoRound","model_path:Intel/gemma-4-31B-it-int4-AutoRound","precision:int4","deployment:deepseek-v4-gemma4-int4-autoround-test","ip:${HOST_IP}","port:8001","instance:1"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-gemma4-int4-1:8000/metrics","histogram_buckets_as_distributions":true,"service":"model-vllm-gemma4-int4-1","tags":["model:google/gemma-4-31B-it-INT4-AutoRound","model_path:Intel/gemma-4-31B-it-int4-AutoRound","precision:int4","deployment:deepseek-v4-gemma4-int4-autoround-test","ip:${HOST_IP}","port:8001","instance:1"]}]'
+
+  model-vllm-gemma4-int4-2:
+    <<: *gemma4-int4-common
+    container_name: model-vllm-gemma4-int4-2
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["5"]
+              capabilities: [gpu]
+    labels:
+      com.datadoghq.ad.check_names: '["vllm"]'
+      com.datadoghq.ad.init_configs: "[{}]"
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:google/gemma-4-31B-it-INT4-AutoRound","model_path:Intel/gemma-4-31B-it-int4-AutoRound","precision:int4","deployment:deepseek-v4-gemma4-int4-autoround-test","ip:${HOST_IP}","port:8001","instance:2"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-gemma4-int4-2:8000/metrics","histogram_buckets_as_distributions":true,"service":"model-vllm-gemma4-int4-2","tags":["model:google/gemma-4-31B-it-INT4-AutoRound","model_path:Intel/gemma-4-31B-it-int4-AutoRound","precision:int4","deployment:deepseek-v4-gemma4-int4-autoround-test","ip:${HOST_IP}","port:8001","instance:2"]}]'
+
+  model-vllm-gemma4-int4-3:
+    <<: *gemma4-int4-common
+    container_name: model-vllm-gemma4-int4-3
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["6"]
+              capabilities: [gpu]
+    labels:
+      com.datadoghq.ad.check_names: '["vllm"]'
+      com.datadoghq.ad.init_configs: "[{}]"
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:google/gemma-4-31B-it-INT4-AutoRound","model_path:Intel/gemma-4-31B-it-int4-AutoRound","precision:int4","deployment:deepseek-v4-gemma4-int4-autoround-test","ip:${HOST_IP}","port:8001","instance:3"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-gemma4-int4-3:8000/metrics","histogram_buckets_as_distributions":true,"service":"model-vllm-gemma4-int4-3","tags":["model:google/gemma-4-31B-it-INT4-AutoRound","model_path:Intel/gemma-4-31B-it-int4-AutoRound","precision:int4","deployment:deepseek-v4-gemma4-int4-autoround-test","ip:${HOST_IP}","port:8001","instance:3"]}]'
+
+  model-vllm-gemma4-int4-4:
+    <<: *gemma4-int4-common
+    container_name: model-vllm-gemma4-int4-4
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["7"]
+              capabilities: [gpu]
+    labels:
+      com.datadoghq.ad.check_names: '["vllm"]'
+      com.datadoghq.ad.init_configs: "[{}]"
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:google/gemma-4-31B-it-INT4-AutoRound","model_path:Intel/gemma-4-31B-it-int4-AutoRound","precision:int4","deployment:deepseek-v4-gemma4-int4-autoround-test","ip:${HOST_IP}","port:8001","instance:4"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-gemma4-int4-4:8000/metrics","histogram_buckets_as_distributions":true,"service":"model-vllm-gemma4-int4-4","tags":["model:google/gemma-4-31B-it-INT4-AutoRound","model_path:Intel/gemma-4-31B-it-int4-AutoRound","precision:int4","deployment:deepseek-v4-gemma4-int4-autoround-test","ip:${HOST_IP}","port:8001","instance:4"]}]'
 
   dcgm-dsv4-flash-int4:
     <<: *dcgm-common
@@ -218,8 +266,8 @@ services:
     labels:
       com.datadoghq.ad.check_names: '["dcgm"]'
       com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://%%host%%:9400/metrics","tags":["model:EnsueAI/DeepSeek-V4-Flash-Base-INT4","precision:int4","deployment:deepseek-v4-gemma4-int4-ensue-test","ip:${HOST_IP}"]}]'
-      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:EnsueAI/DeepSeek-V4-Flash-Base-INT4","precision:int4","deployment:deepseek-v4-gemma4-int4-ensue-test","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://%%host%%:9400/metrics","tags":["model:deepseek-ai/DeepSeek-V4-Flash-INT4-AutoRound","precision:int4","deployment:deepseek-v4-gemma4-int4-autoround-test","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:deepseek-ai/DeepSeek-V4-Flash-INT4-AutoRound","precision:int4","deployment:deepseek-v4-gemma4-int4-autoround-test","ip:${HOST_IP}"]}]'
 
   dcgm-gemma4-int4:
     <<: *dcgm-common
@@ -229,7 +277,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["4","5"]
+              device_ids: ["4","5","6","7"]
               capabilities: [gpu]
     labels:
       com.datadoghq.ad.check_names: '["dcgm"]'
@@ -302,10 +350,13 @@ configs:
       check_port() {
         case $$1 in
           8000)
-            check_chat model-vllm-dsv4-flash-int4 "EnsueAI/DeepSeek-V4-Flash-Base-INT4"
+            check_chat model-vllm-dsv4-flash-int4 "deepseek-ai/DeepSeek-V4-Flash-INT4-AutoRound"
             ;;
           8001)
-            check_chat model-vllm-gemma4-int4 "google/gemma-4-31B-it-INT4-AutoRound"
+            check_chat model-vllm-gemma4-int4-1 "google/gemma-4-31B-it-INT4-AutoRound" &&
+            check_chat model-vllm-gemma4-int4-2 "google/gemma-4-31B-it-INT4-AutoRound" &&
+            check_chat model-vllm-gemma4-int4-3 "google/gemma-4-31B-it-INT4-AutoRound" &&
+            check_chat model-vllm-gemma4-int4-4 "google/gemma-4-31B-it-INT4-AutoRound"
             ;;
         esac
       }
@@ -345,7 +396,7 @@ configs:
         done
 
         if [ "$$REG_8000" = true ]; then
-          register_model "EnsueAI/DeepSeek-V4-Flash-Base-INT4" "dsv4-flash-int4-gemma-test.completions.near.ai"
+          register_model "deepseek-ai/DeepSeek-V4-Flash-INT4-AutoRound" "dsv4-flash-int4-gemma-test.completions.near.ai"
         fi
         if [ "$$REG_8001" = true ]; then
           register_model "google/gemma-4-31B-it-INT4-AutoRound" "gemma-4-31b-int4-dsv4-test.completions.near.ai"

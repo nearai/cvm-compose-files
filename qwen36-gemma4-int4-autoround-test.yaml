@@ -82,13 +82,13 @@ x-gemma4-int4-common: &gemma4-int4-common
     Intel/gemma-4-31B-it-int4-AutoRound
     --revision a428c96a57976947b0f12735f0cf5fcae69019ad
     --served-model-name google/gemma-4-31B-it-INT4-AutoRound
-    --tensor-parallel-size 2
+    --tensor-parallel-size 1
     --trust-remote-code
     --dtype auto
     --gpu-memory-utilization 0.90
-    --max-model-len 65536
-    --max-num-seqs 16
-    --max-num-batched-tokens 16384
+    --max-model-len 32768
+    --max-num-seqs 64
+    --max-num-batched-tokens 32768
     --enable-chunked-prefill
     --enable-prefix-caching
     --async-scheduling
@@ -216,7 +216,7 @@ services:
       com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:Qwen/Qwen3.6-35B-A3B-INT4-AutoRound","model_path:Intel/Qwen3.6-35B-A3B-int4-mixed-AutoRound","precision:int4","deployment:qwen36-gemma4-int4-autoround-test","ip:${HOST_IP}","port:8000","instance:4"]}]'
       com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-qwen36-int4-4:8000/metrics","histogram_buckets_as_distributions":true,"service":"model-vllm-qwen36-int4-4","tags":["model:Qwen/Qwen3.6-35B-A3B-INT4-AutoRound","model_path:Intel/Qwen3.6-35B-A3B-int4-mixed-AutoRound","precision:int4","deployment:qwen36-gemma4-int4-autoround-test","ip:${HOST_IP}","port:8000","instance:4"]}]'
 
-  # Gemma-4-31B-it Intel AutoRound INT4 x2, TP=2 per replica (GPUs 4-5, 6-7).
+  # Gemma-4-31B-it Intel AutoRound INT4 x4, TP=1 per replica (GPUs 4-7).
   vllm-proxy-gemma4-int4:
     <<: *vllm-proxy-common
     container_name: vllm-proxy-gemma4-int4
@@ -229,7 +229,7 @@ services:
       - MODEL_NAME=google/gemma-4-31B-it-INT4-AutoRound
       - OHTTP_ENABLED=true
       - TOKEN=${PROXY_TOKEN}
-      - VLLM_BACKEND_URLS=http://model-vllm-gemma4-int4-1:8000,http://model-vllm-gemma4-int4-2:8000
+      - VLLM_BACKEND_URLS=http://model-vllm-gemma4-int4-1:8000,http://model-vllm-gemma4-int4-2:8000,http://model-vllm-gemma4-int4-3:8000,http://model-vllm-gemma4-int4-4:8000
       - VLLM_PROXY_MAX_REQUEST_SIZE=104857600
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
@@ -244,7 +244,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["4","5"]
+              device_ids: ["4"]
               capabilities: [gpu]
     labels:
       com.datadoghq.ad.check_names: '["vllm"]'
@@ -260,13 +260,45 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["6","7"]
+              device_ids: ["5"]
               capabilities: [gpu]
     labels:
       com.datadoghq.ad.check_names: '["vllm"]'
       com.datadoghq.ad.init_configs: "[{}]"
       com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:google/gemma-4-31B-it-INT4-AutoRound","model_path:Intel/gemma-4-31B-it-int4-AutoRound","precision:int4","deployment:qwen36-gemma4-int4-autoround-test","ip:${HOST_IP}","port:8001","instance:2"]}]'
       com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-gemma4-int4-2:8000/metrics","histogram_buckets_as_distributions":true,"service":"model-vllm-gemma4-int4-2","tags":["model:google/gemma-4-31B-it-INT4-AutoRound","model_path:Intel/gemma-4-31B-it-int4-AutoRound","precision:int4","deployment:qwen36-gemma4-int4-autoround-test","ip:${HOST_IP}","port:8001","instance:2"]}]'
+
+  model-vllm-gemma4-int4-3:
+    <<: *gemma4-int4-common
+    container_name: model-vllm-gemma4-int4-3
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["6"]
+              capabilities: [gpu]
+    labels:
+      com.datadoghq.ad.check_names: '["vllm"]'
+      com.datadoghq.ad.init_configs: "[{}]"
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:google/gemma-4-31B-it-INT4-AutoRound","model_path:Intel/gemma-4-31B-it-int4-AutoRound","precision:int4","deployment:qwen36-gemma4-int4-autoround-test","ip:${HOST_IP}","port:8001","instance:3"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-gemma4-int4-3:8000/metrics","histogram_buckets_as_distributions":true,"service":"model-vllm-gemma4-int4-3","tags":["model:google/gemma-4-31B-it-INT4-AutoRound","model_path:Intel/gemma-4-31B-it-int4-AutoRound","precision:int4","deployment:qwen36-gemma4-int4-autoround-test","ip:${HOST_IP}","port:8001","instance:3"]}]'
+
+  model-vllm-gemma4-int4-4:
+    <<: *gemma4-int4-common
+    container_name: model-vllm-gemma4-int4-4
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["7"]
+              capabilities: [gpu]
+    labels:
+      com.datadoghq.ad.check_names: '["vllm"]'
+      com.datadoghq.ad.init_configs: "[{}]"
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:google/gemma-4-31B-it-INT4-AutoRound","model_path:Intel/gemma-4-31B-it-int4-AutoRound","precision:int4","deployment:qwen36-gemma4-int4-autoround-test","ip:${HOST_IP}","port:8001","instance:4"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-gemma4-int4-4:8000/metrics","histogram_buckets_as_distributions":true,"service":"model-vllm-gemma4-int4-4","tags":["model:google/gemma-4-31B-it-INT4-AutoRound","model_path:Intel/gemma-4-31B-it-int4-AutoRound","precision:int4","deployment:qwen36-gemma4-int4-autoround-test","ip:${HOST_IP}","port:8001","instance:4"]}]'
 
   dcgm-qwen36-int4:
     <<: *dcgm-common
@@ -372,7 +404,9 @@ configs:
             ;;
           8001)
             check_chat model-vllm-gemma4-int4-1 "google/gemma-4-31B-it-INT4-AutoRound" &&
-            check_chat model-vllm-gemma4-int4-2 "google/gemma-4-31B-it-INT4-AutoRound"
+            check_chat model-vllm-gemma4-int4-2 "google/gemma-4-31B-it-INT4-AutoRound" &&
+            check_chat model-vllm-gemma4-int4-3 "google/gemma-4-31B-it-INT4-AutoRound" &&
+            check_chat model-vllm-gemma4-int4-4 "google/gemma-4-31B-it-INT4-AutoRound"
             ;;
         esac
       }
