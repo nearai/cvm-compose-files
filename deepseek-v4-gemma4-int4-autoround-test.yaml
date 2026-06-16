@@ -1,6 +1,6 @@
-# Two-model AutoRound INT4 bring-up:
-# - DeepSeek-V4-Flash INT4 on GPUs 0-3, TP=4. The standalone INT4 file uses TP=8;
-#   this split is intentionally for side-by-side testing with Gemma 4.
+# Two-model INT4 bring-up:
+# - DeepSeek-V4-Flash Base INT4 on GPUs 0-3, TP=4. The EnsueAI checkpoint ships
+#   TP=4 shards and is intentionally kept to a small smoke-test context.
 # - Gemma-4-31B-it INT4 on GPUs 4-5, TP=2.
 
 x-logging-conf: &logging-conf
@@ -33,7 +33,7 @@ x-vllm-common: &vllm-common
     - NVIDIA_DRIVER_CAPABILITIES=compute,utility
     - OPENBLAS_L2_SIZE=2097152
     - NCCL_DEBUG=WARN
-    - VLLM_CACHE_ROOT=/root/.cache/vllm/deepseek-v4-gemma4-int4-autoround-test
+    - VLLM_CACHE_ROOT=/root/.cache/vllm/deepseek-v4-gemma4-int4-ensue-test
   restart: unless-stopped
   stop_grace_period: 5m
   logging: *logging-conf
@@ -61,19 +61,19 @@ x-dcgm-common: &dcgm-common
 
 x-deepseek-v4-int4-common: &deepseek-v4-int4-common
   <<: *vllm-common
-  # AutoRound INT4 is auto-detected from quantization_config.
+  # EnsueAI's INT4 artifact is TP=4 sharded and nonstandard; keep this as a
+  # narrow smoke test to see whether the current vLLM image can load it.
   command: >
-    Intel/DeepSeek-V4-Flash-W4A16-AutoRound
-    --revision d8ac6c04e22da23f68f797884471dae5cb129ee0
-    --served-model-name deepseek-ai/DeepSeek-V4-Flash-INT4-AutoRound
+    EnsueAI/DeepSeek-V4-Flash-Base-INT4
+    --served-model-name EnsueAI/DeepSeek-V4-Flash-Base-INT4
     --tensor-parallel-size 4
     --trust-remote-code
     --dtype auto
     --kv-cache-dtype fp8
     --gpu-memory-utilization 0.88
-    --max-model-len 65536
-    --max-num-seqs 8
-    --max-num-batched-tokens 8192
+    --max-model-len 512
+    --max-num-seqs 1
+    --max-num-batched-tokens 512
     --enable-prefix-caching
     --async-scheduling
     --enable-prompt-tokens-details
@@ -144,7 +144,7 @@ services:
       - CLOUD_API_USAGE_TOKEN=${CLOUD_API_USAGE_TOKEN}
       - COMPOSE_MANAGER_URL=http://compose-manager:8080
       - LOG_FORMAT=json
-      - MODEL_NAME=deepseek-ai/DeepSeek-V4-Flash-INT4-AutoRound
+      - MODEL_NAME=EnsueAI/DeepSeek-V4-Flash-Base-INT4
       - OHTTP_ENABLED=true
       - TOKEN=${PROXY_TOKEN}
       - VLLM_BASE_URL=http://model-vllm-dsv4-flash-int4:8000
@@ -152,7 +152,7 @@ services:
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:deepseek-ai/DeepSeek-V4-Flash-INT4-AutoRound","precision:int4","deployment:deepseek-v4-gemma4-int4-autoround-test","ip:${HOST_IP}","port:8000"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:EnsueAI/DeepSeek-V4-Flash-Base-INT4","precision:int4","deployment:deepseek-v4-gemma4-int4-ensue-test","ip:${HOST_IP}","port:8000"]}]'
 
   model-vllm-dsv4-flash-int4:
     <<: *deepseek-v4-int4-common
@@ -167,8 +167,8 @@ services:
     labels:
       com.datadoghq.ad.check_names: '["vllm"]'
       com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:deepseek-ai/DeepSeek-V4-Flash-INT4-AutoRound","model_path:Intel/DeepSeek-V4-Flash-W4A16-AutoRound","precision:int4","deployment:deepseek-v4-gemma4-int4-autoround-test","ip:${HOST_IP}","port:8000"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-dsv4-flash-int4:8000/metrics","histogram_buckets_as_distributions":true,"service":"model-vllm-dsv4-flash-int4","tags":["model:deepseek-ai/DeepSeek-V4-Flash-INT4-AutoRound","model_path:Intel/DeepSeek-V4-Flash-W4A16-AutoRound","precision:int4","deployment:deepseek-v4-gemma4-int4-autoround-test","ip:${HOST_IP}","port:8000"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:EnsueAI/DeepSeek-V4-Flash-Base-INT4","model_path:EnsueAI/DeepSeek-V4-Flash-Base-INT4","precision:int4","deployment:deepseek-v4-gemma4-int4-ensue-test","ip:${HOST_IP}","port:8000"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-dsv4-flash-int4:8000/metrics","histogram_buckets_as_distributions":true,"service":"model-vllm-dsv4-flash-int4","tags":["model:EnsueAI/DeepSeek-V4-Flash-Base-INT4","model_path:EnsueAI/DeepSeek-V4-Flash-Base-INT4","precision:int4","deployment:deepseek-v4-gemma4-int4-ensue-test","ip:${HOST_IP}","port:8000"]}]'
 
   vllm-proxy-gemma4-int4:
     <<: *vllm-proxy-common
@@ -218,8 +218,8 @@ services:
     labels:
       com.datadoghq.ad.check_names: '["dcgm"]'
       com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://%%host%%:9400/metrics","tags":["model:deepseek-ai/DeepSeek-V4-Flash-INT4-AutoRound","precision:int4","deployment:deepseek-v4-gemma4-int4-autoround-test","ip:${HOST_IP}"]}]'
-      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:deepseek-ai/DeepSeek-V4-Flash-INT4-AutoRound","precision:int4","deployment:deepseek-v4-gemma4-int4-autoround-test","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://%%host%%:9400/metrics","tags":["model:EnsueAI/DeepSeek-V4-Flash-Base-INT4","precision:int4","deployment:deepseek-v4-gemma4-int4-ensue-test","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:EnsueAI/DeepSeek-V4-Flash-Base-INT4","precision:int4","deployment:deepseek-v4-gemma4-int4-ensue-test","ip:${HOST_IP}"]}]'
 
   dcgm-gemma4-int4:
     <<: *dcgm-common
@@ -302,7 +302,7 @@ configs:
       check_port() {
         case $$1 in
           8000)
-            check_chat model-vllm-dsv4-flash-int4 "deepseek-ai/DeepSeek-V4-Flash-INT4-AutoRound"
+            check_chat model-vllm-dsv4-flash-int4 "EnsueAI/DeepSeek-V4-Flash-Base-INT4"
             ;;
           8001)
             check_chat model-vllm-gemma4-int4 "google/gemma-4-31B-it-INT4-AutoRound"
@@ -345,7 +345,7 @@ configs:
         done
 
         if [ "$$REG_8000" = true ]; then
-          register_model "deepseek-ai/DeepSeek-V4-Flash-INT4-AutoRound" "dsv4-flash-int4-gemma-test.completions.near.ai"
+          register_model "EnsueAI/DeepSeek-V4-Flash-Base-INT4" "dsv4-flash-int4-gemma-test.completions.near.ai"
         fi
         if [ "$$REG_8001" = true ]; then
           register_model "google/gemma-4-31B-it-INT4-AutoRound" "gemma-4-31b-int4-dsv4-test.completions.near.ai"
