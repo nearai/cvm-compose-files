@@ -1,0 +1,532 @@
+# GLM-5.1-SGL-AWQ-TP4 — QuantTrio/GLM-5.1-AWQ (true AWQ W4A16) on SGLang, 2x TP4.
+#
+# TOPOLOGY: two co-resident TP4 sglang backends (GPUs 0-3 and 4-7) behind a
+# SINGLE nearaidev/vllm-proxy-rs that load-balances across both via
+# VLLM_BACKEND_URLS (least-connections, per-backend health/failover in
+# backend_pool.rs). nginx -> proxy -> {model-a, model-b}.
+#
+# WHY (campaign findings, glm51_awq_comparison/):
+#   - GLM-5.1 on 8xH200 is comm/latency-bound (decode ~24x above the weight-BW
+#     roofline; util.mem ~25%), NOT bandwidth/compute-bound.
+#   - AWQ-4bit (~107 GB/GPU at TP4) UNIQUELY fits 4xH200 — FP8 (~188 GB/GPU)
+#     does not — so AWQ unlocks TP4. 2x TP4 (data-parallel, no cross-replica
+#     all-reduce) beats 1x TP8 by ~1.3-1.5x aggregate (contention-verified,
+#     99.6% co-residency retention) and uses all 8 GPUs.
+#   - fp8 KV cache: ~309k token pool/replica at ctx 32768 (quality 15/15).
+#
+# THE SGLANG PATCH (baked via the inline Dockerfile, x-awq-build below):
+#   Stock SGLang crashes loading this checkpoint:
+#     deepseek_weight_loader.py: torch.cat ... Expected size 2048 but got 576
+#   QuantTrio leaves attention a_proj unquantized via AWQ modules_to_not_convert,
+#   but the loader picks the fused-qkv concat dim from the model-level quant name
+#   (cat_dim=1 for awq) -> wrong for the bf16 a_proj tensors. Fix = derive cat_dim
+#   from the actual tensor shape. Upstream PR:
+#     https://github.com/sgl-project/sglang/pull/28305
+#   Applied in-place, whitespace-tolerant, fail-loud (build errors if the loader
+#   shifts). NOTE: uses `build:` — deploy must `docker compose build` first.
+
+x-logging-conf: &logging-conf
+  driver: "json-file"
+  options:
+    max-size: "100m"
+    max-file: "10"
+    labels: "com.datadoghq.ad.logs"
+
+x-nvidia: &nvidia
+  runtime: nvidia
+  ipc: host
+  ulimits:
+    memlock: -1
+    nofile:
+      soft: 65535
+      hard: 65535
+
+x-vllm-proxy-common: &vllm-proxy-common
+  image: nearaidev/vllm-proxy-rs@sha256:fe037f0061fc61fbdcf80efde534b8700f9f54f18b8a39e290263b3e1b0c00e1
+  user: root
+  privileged: true
+  <<: *nvidia
+  extra_hosts:
+    - "compose-manager:host-gateway"
+  volumes:
+    - /var/run/dstack.sock:/var/run/dstack.sock
+    - certs:/etc/letsencrypt:ro
+  restart: unless-stopped
+  logging: *logging-conf
+
+x-downloader-common: &downloader-common
+  image: ghcr.io/astral-sh/uv:python3.11-bookworm-slim@sha256:4f5d923c9dcea037f57bda425dd209f3ec643da2f0b74227f68d09dab0b3bb36
+  entrypoint: ["sh", "-c"]
+  restart: "no"
+  logging: *logging-conf
+
+# Shared inline Dockerfile: SGLang base + the #28305 fused-qkv cat_dim fix.
+# Both TP4 backends build/use the same tag (compose builds it once).
+x-awq-build: &awq-build
+  dockerfile_inline: |
+    FROM lmsysorg/sglang:dev-cu12@sha256:aac6b242680daeb74d2ab1d85f70575357552d7d165d2e5d30eb362797db54a1
+    RUN python3 - <<'PYEOF'
+    import re
+    f = "/sgl-workspace/sglang/python/sglang/srt/models/deepseek_common/deepseek_weight_loader.py"
+    s = open(f).read()
+    pat = re.compile(r"(?P<i> +)cat_dim = 1\n\n(?P<j> +)fused_weight = torch\.cat\(")
+    def repl(m):
+        j = m.group("j")
+        return (
+            m.group("i") + "cat_dim = 1\n\n"
+            + j + "if (\n"
+            + j + "    q_a_proj_weight.dim() == 2\n"
+            + j + "    and q_a_proj_weight.shape[1 - cat_dim]\n"
+            + j + "    != kv_a_proj_weight.shape[1 - cat_dim]\n"
+            + j + "):\n"
+            + j + "    cat_dim = 1 - cat_dim\n\n"
+            + j + "fused_weight = torch.cat("
+        )
+    s2, n = pat.subn(repl, s, count=1)
+    assert n == 1, "sglang#28305 cat_dim patch anchor not found (loader changed)"
+    open(f, "w").write(s2)
+    print("[sglang#28305] fused qkv_a_proj cat_dim fix applied")
+    PYEOF
+
+# Shared sglang args (identical across both backends — keep tuning here so the
+# two replicas never drift). QuantTrio/GLM-5.1-AWQ = true AWQ (W4A16), attention
+# a_proj left bf16 via modules_to_not_convert. Served as zai-org/GLM-5.1-FP8 (drop-in).
+#
+# EAGLE SPEC-DECODE (added 2026-06-16, glm51_awq_comparison/ spec-decode dive):
+#   GLM-5.1 SHIPS a native MTP head (config num_nextn_predict_layers=1) — the old
+#   "AWQ has no draft" note was WRONG. The AWQ checkpoint carries the full MTP layer
+#   (layers.78: eh_proj/enorm/hnorm + 256-expert MoE); under EAGLE it loads as
+#   DeepseekV3ForCausalLMNextN quant=awq (GlmMoeDsa subclasses DeepseekV2 -> mature
+#   deepseek_nextn MLA+MTP path). Net throughput win on this CC box (matched cds=1,
+#   fp8KV, in=256, vs no-EAGLE): c1=1.40x c8=1.03x c16=1.15x c32=1.23x c64=1.29x.
+#   Stable accept-len ~2.85 held c=1..64 (decode is memory-latency-bound to c=64, so
+#   the spec verify is largely free) -> EAGLE helps at ALL concurrency, no batch-gating
+#   needed. topk=1 chain only (topk>1 trees are gated on GLM-5.1's DSA backend).
+#   Quality: greedy bit-identical (MTP draft is verified by the target).
+#
+#   *** CRASH GOTCHA — why cds5/mixed-chunk/chunked-16384 are GONE: ***
+#   --num-continuous-decode-steps 5 + --enable-mixed-chunk + --chunked-prefill-size
+#   16384 TOGETHER with EAGLE = CUDA illegal-memory-access crash at c>=32 (spec+DSA
+#   path; NOT OOM). The cds=1 / default-chunk (8192) config is STABLE c=1..64. Do NOT
+#   re-add those flags while EAGLE is on. (mixed-chunk is auto-disabled by EAGLE anyway.)
+#
+#   IMAGE: stays on aac6b242. The 2026-06-16 dev-cu12 (eb4119) has the DSA+spec fixes
+#   (#28192 cheaper draft) but is ~20% SLOWER overall (decode regression) — not worth it.
+#
+#   PRE-DEPLOY GATE: validated at in=256, c<=64. Large-input (in=2000/8000) + high-conc
+#   EAGLE stability is NOT yet validated on this image; prod traffic is input-heavy, so
+#   confirm no IMA/OOM there before rolling to both prod replicas.
+#
+# TUNING (glm51_awq_comparison/CAMPAIGN.md): mem-fraction 0.85, ctx 32768 -> ~309k KV
+#   pool/replica. Large prefill chunks are the prod OOM trigger — chunked-prefill now
+#   uses the modest sglang default (8192) instead of 16384 (also part of the EAGLE crash
+#   combo above). EAGLE draft/verify buffers shrink the pool slightly vs no-EAGLE.
+x-awq-cmd: &awq-cmd >
+  sglang serve
+  --model-path QuantTrio/GLM-5.1-AWQ
+  --revision 8f60817aa28023f2607850d1a1e51d21aa34817a
+  --served-model-name zai-org/GLM-5.1-FP8
+  --tp 4
+  --disable-shared-experts-fusion
+  --kv-cache-dtype fp8_e4m3
+  --reasoning-parser glm45
+  --tool-call-parser glm47
+  --log-requests-level 0
+  --mem-fraction-static 0.85
+  --max-running-requests 128
+  --speculative-algorithm EAGLE
+  --speculative-num-steps 3
+  --speculative-eagle-topk 1
+  --speculative-num-draft-tokens 4
+  --context-length 32768
+  --watchdog-timeout 1800
+  --port 8000
+  --host 0.0.0.0
+  --enable-cache-report
+  --enable-metrics
+  --trust-remote-code
+
+x-awq-model-env: &awq-model-env
+  HF_TOKEN: ${HUGGING_FACE_HUB_TOKEN}
+  HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-0}
+  NVIDIA_DRIVER_CAPABILITIES: compute,utility
+  OPENBLAS_L2_SIZE: "2097152"
+  NCCL_DEBUG: WARN
+  # EAGLE spec-decode uses the V2 worker path (topk=1 chain). Validated config.
+  SGLANG_ENABLE_SPEC_V2: "1"
+  # Persist the inductor/triton compile caches so an UNCHANGED config skips
+  # RECOMPILE on restart (default: ephemeral /tmp/torchinductor_root + /root/.triton,
+  # wiped on container recreate). Content-addressed, so a changed config only
+  # misses the kernels that actually changed.
+  # MEASURED CAVEAT (campaign iter 7-8): this saves only the compile slice
+  # (~10-15min). The DOMINANT startup cost is weight-load (~11min) + cuda-graph
+  # capture-RECORD (~12min), both per-process and NOT file-cacheable — so restart
+  # is somewhat faster, NOT an instant warm replay (~40min cold stays ~25-30min).
+  TORCHINDUCTOR_CACHE_DIR: /root/.cache/torchinductor
+  TRITON_CACHE_DIR: /root/.cache/triton
+
+services:
+  model-downloader:
+    <<: *downloader-common
+    container_name: model-downloader
+    command:
+      - |
+        set -e
+        echo "Downloading QuantTrio/GLM-5.1-AWQ..."
+        uvx --from 'huggingface_hub[hf_xet]' hf download QuantTrio/GLM-5.1-AWQ --revision 8f60817aa28023f2607850d1a1e51d21aa34817a
+        echo "Download complete."
+    volumes:
+      - huggingface_cache:/root/.cache/huggingface
+    environment:
+      - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+
+  proxy-nginx:
+    image: nginx@sha256:1d13701a5f9f3fb01aaa88cef2344d65b6b5bf6b7d9fa4cf0dca557a8d7702ba
+    container_name: proxy-nginx
+    command: /bin/sh -c 'while :; do sleep 6h; nginx -s reload; done & nginx -g "daemon off;"'
+    ports:
+      - "8000:80"
+      - "8444:443"
+    volumes:
+      - certs:/etc/letsencrypt:ro
+    configs:
+      - source: nginx_conf
+        target: /etc/nginx/conf.d/default.conf
+        mode: 0644
+    restart: unless-stopped
+    logging: *logging-conf
+
+  model-proxy-registrar:
+    image: curlimages/curl@sha256:d94d07ba9e7d6de898b6d96c1a072f6f8266c687af78a74f380087a0addf5d17
+    container_name: model-proxy-registrar
+    entrypoint: ["sh", "/register.sh"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "[ $$(( $$(date +%s) - $$(cat /tmp/registrar_alive 2>/dev/null || echo 0) )) -lt 180 ]"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 1200s
+    environment:
+      - HOST_IP=${HOST_IP}
+      - HTTP_PORT=${HTTP_PORT:-8000}
+      - TLS_PORT=${TLS_PORT:-8444}
+      - MODEL_PROXY_TOKEN=${MODEL_PROXY_TOKEN}
+    configs:
+      - source: registrar_script
+        target: /register.sh
+        mode: 0755
+    logging: *logging-conf
+
+  # Single proxy fronting BOTH TP4 backends (VLLM_BACKEND_URLS = least-conn pool).
+  proxy-glm51-awq-tp4:
+    <<: *vllm-proxy-common
+    container_name: proxy-glm51-awq-tp4
+    depends_on:
+      - model-sg-glm51-awq-tp4-a
+      - model-sg-glm51-awq-tp4-b
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - CLOUD_API_URL=https://cloud-api.near.ai
+      - CLOUD_API_USAGE_TOKEN=${CLOUD_API_USAGE_TOKEN}
+      - COMPOSE_MANAGER_URL=http://compose-manager:8080
+      - LOG_FORMAT=json
+      - MODEL_NAME=zai-org/GLM-5.1-FP8
+      - OHTTP_ENABLED=true
+      - TOKEN=${PROXY_TOKEN}
+      - VLLM_BACKEND_URLS=http://model-sg-glm51-awq-tp4-a:8000,http://model-sg-glm51-awq-tp4-b:8000
+      - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
+      - USE_NV_ATTESTATION_SDK=true
+      - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
+      - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
+
+  model-sg-glm51-awq-tp4-a:
+    <<: *nvidia
+    init: true
+    depends_on:
+      model-downloader:
+        condition: service_completed_successfully
+    image: glm51-sgl-awq-tp4-patched:local
+    build: *awq-build
+    container_name: model-sg-glm51-awq-tp4-a
+    command: *awq-cmd
+    volumes:
+      # compile_cache_a at /root/.cache persists inductor + triton + deep_gemm +
+      # flashinfer for replica a; huggingface_cache nests under it (shared weights).
+      - compile_cache_a:/root/.cache
+      - huggingface_cache:/root/.cache/huggingface
+    environment: *awq-model-env
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["0","1","2","3"]
+              capabilities: [gpu]
+    restart: unless-stopped
+    stop_grace_period: 5m
+    logging: *logging-conf
+    labels:
+      com.datadoghq.ad.check_names: '["openmetrics"]'
+      com.datadoghq.ad.init_configs: "[{}]"
+      com.datadoghq.ad.logs: '[{"source": "sglang", "service": "sglang", "tags":["model:QuantTrio/GLM-5.1-AWQ","replica:a","ip:${HOST_IP}","port:8000"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-sg-glm51-awq-tp4-a:8000/metrics", "histogram_buckets_as_distributions": true, "metrics":["sglang:*"], "service": "glm-5.1-sgl-awq-tp4-a", "tags":["model:QuantTrio/GLM-5.1-AWQ","replica:a","ip:${HOST_IP}","port:8000"]}]'
+
+  model-sg-glm51-awq-tp4-b:
+    <<: *nvidia
+    init: true
+    depends_on:
+      model-downloader:
+        condition: service_completed_successfully
+    image: glm51-sgl-awq-tp4-patched:local
+    build: *awq-build
+    container_name: model-sg-glm51-awq-tp4-b
+    command: *awq-cmd
+    volumes:
+      - compile_cache_b:/root/.cache
+      - huggingface_cache:/root/.cache/huggingface
+    environment: *awq-model-env
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["4","5","6","7"]
+              capabilities: [gpu]
+    restart: unless-stopped
+    stop_grace_period: 5m
+    logging: *logging-conf
+    labels:
+      com.datadoghq.ad.check_names: '["openmetrics"]'
+      com.datadoghq.ad.init_configs: "[{}]"
+      com.datadoghq.ad.logs: '[{"source": "sglang", "service": "sglang", "tags":["model:QuantTrio/GLM-5.1-AWQ","replica:b","ip:${HOST_IP}","port:8000"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-sg-glm51-awq-tp4-b:8000/metrics", "histogram_buckets_as_distributions": true, "metrics":["sglang:*"], "service": "glm-5.1-sgl-awq-tp4-b", "tags":["model:QuantTrio/GLM-5.1-AWQ","replica:b","ip:${HOST_IP}","port:8000"]}]'
+
+  dcgm-exporter:
+    image: nvcr.io/nvidia/k8s/dcgm-exporter:4.5.2-4.8.1-distroless
+    container_name: dcgm-exporter
+    runtime: nvidia
+    cap_add:
+      - SYS_ADMIN
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+    ports:
+      - "9400:9400"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+    logging: *logging-conf
+    labels:
+      com.datadoghq.ad.check_names: '["dcgm"]'
+      com.datadoghq.ad.init_configs: "[{}]"
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint": "http://%%host%%:9400/metrics", "tags":["model:QuantTrio/GLM-5.1-AWQ","deployment:GLM-5.1-SGL-AWQ-TP4","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.logs: '[{"source": "dcgm-exporter", "service": "dcgm-exporter", "tags":["model:QuantTrio/GLM-5.1-AWQ","deployment:GLM-5.1-SGL-AWQ-TP4","ip:${HOST_IP}"]}]'
+
+networks:
+  default:
+    external: true
+    name: dstack_default
+
+volumes:
+  huggingface_cache:
+  compile_cache_a:   # persisted inductor/triton/deep_gemm for replica a (warm restarts)
+  compile_cache_b:
+  certs:
+    external: true
+    name: certs
+
+configs:
+  registrar_script:
+    content: |
+      #!/bin/sh
+      PROXY_URL="https://completions.near.ai"
+      TOKEN="$${MODEL_PROXY_TOKEN}"
+      ENDPOINT="$${HOST_IP}:$${HTTP_PORT}"
+      REGISTERED=false
+      FAILURE_COUNT=0
+      MAX_RETRIES=3
+
+      register_endpoint() {
+        echo "Registering endpoint $$1 with routing port $$2"
+        curl -sS --max-time 10 -X POST "$$PROXY_URL/register/endpoint" \
+          -H "Authorization: Bearer $$TOKEN" \
+          -H "Content-Type: application/json" \
+          -d "{\"endpoint\":\"$$1\",\"routing_port\":$$2}"
+      }
+
+      unregister_endpoint() {
+        echo "Unregistering endpoint $$1"
+        curl -sS --max-time 10 -X POST "$$PROXY_URL/unregister/endpoint" \
+          -H "Authorization: Bearer $$TOKEN" \
+          -H "Content-Type: application/json" \
+          -d "{\"endpoint\":\"$$1\"}"
+      }
+
+      register_model() {
+        curl -sS --max-time 10 -X POST "$$PROXY_URL/register/model" \
+          -H "Authorization: Bearer $$TOKEN" \
+          -H "Content-Type: application/json" \
+          -d "{\"model\":\"$$1\",\"domain\":\"$$2\"}"
+      }
+
+      cleanup() {
+        echo "SIGTERM received, unregistering $$ENDPOINT"
+        unregister_endpoint "$$ENDPOINT"
+        REGISTERED=false
+        exit 0
+      }
+      trap cleanup TERM INT
+
+      mark_registered() {
+        register_endpoint "$$ENDPOINT" "$${TLS_PORT}"
+        register_model "zai-org/GLM-5.1-FP8" "glm-5-1-sgl-awq-tp4.completions.near.ai"
+        if [ "$$REGISTERED" = false ]; then
+          echo "[GLM-5.1-SGL-AWQ-TP4] Registered zai-org/GLM-5.1-FP8 (2x AWQ TP4) at $$ENDPOINT"
+        fi
+        REGISTERED=true
+      }
+
+      # Readiness gate: probe the proxy pool via the host nginx port. The proxy's
+      # backend_pool health-manages a/b at runtime, so the box is "ready" once the
+      # path resolves; per-backend failover is handled downstream.
+      check_inference() {
+        echo "Performing health check on model endpoint..."
+        status=$$(curl -sS --connect-timeout 10 --max-time 45 -o /dev/null -w "%{http_code}" \
+          -X POST "http://model-sg-glm51-awq-tp4-a:8000/v1/chat/completions" \
+          -H "Content-Type: application/json" \
+          -d '{"model":"zai-org/GLM-5.1-FP8","messages":[{"role":"user","content":"hi"}],"max_tokens":1}')
+        curl_status=$$?
+
+        if [ "$$curl_status" -ne 0 ]; then
+          case "$$curl_status" in
+            52|56)
+              echo "[GLM-5.1-SGL-AWQ-TP4] Health probe hit connection-level backpressure (curl $$curl_status); treating as alive but saturated"
+              return 2
+              ;;
+          esac
+          echo "[GLM-5.1-SGL-AWQ-TP4] Health probe curl failed with status $$curl_status"
+          return 1
+        fi
+
+        case "$$status" in
+          2*)
+            return 0
+            ;;
+          503)
+            echo "[GLM-5.1-SGL-AWQ-TP4] Backend returned 503; treating as alive but saturated"
+            return 2
+            ;;
+          *)
+            echo "[GLM-5.1-SGL-AWQ-TP4] Backend returned HTTP $$status"
+            return 1
+            ;;
+        esac
+      }
+
+      READY_URL="http://$${HOST_IP}:8000/v1/models"
+      echo "Waiting for model to be ready (probing $$READY_URL)..."
+      ready_attempts=0
+      until curl --connect-timeout 5 --max-time 10 -sf "$$READY_URL" > /dev/null 2>&1; do
+        ready_attempts=$$((ready_attempts + 1))
+        if [ "$$ready_attempts" -ge 30 ]; then
+          echo "WARN: model not reachable at $$READY_URL after $$ready_attempts attempts (~20m); entering registration loop anyway"
+          break
+        fi
+        echo "Model not ready yet (attempt $$ready_attempts/30), retrying in 30s..."
+        sleep 30
+      done
+      echo "Model ready, starting registration loop"
+
+      while true; do
+        date +%s > /tmp/registrar_alive
+        check_inference
+        health_status=$$?
+        case "$$health_status" in
+          0)
+            FAILURE_COUNT=0
+            mark_registered
+            ;;
+          2)
+            FAILURE_COUNT=0
+            echo "[GLM-5.1-SGL-AWQ-TP4] Keeping $$ENDPOINT registered while backend is saturated"
+            mark_registered
+            ;;
+          *)
+            FAILURE_COUNT=$$((FAILURE_COUNT + 1))
+            echo "[GLM-5.1-SGL-AWQ-TP4] Health check failed ($$FAILURE_COUNT/$$MAX_RETRIES)"
+            if [ "$$REGISTERED" = true ] && [ "$$FAILURE_COUNT" -ge "$$MAX_RETRIES" ]; then
+              echo "[GLM-5.1-SGL-AWQ-TP4] Retry limit reached, unregistering $$ENDPOINT"
+              unregister_endpoint "$$ENDPOINT"
+              REGISTERED=false
+              echo "[GLM-5.1-SGL-AWQ-TP4] Exiting to refresh DNS (container will auto-restart)"
+              exit 1
+            fi
+            ;;
+        esac
+        sleep 60
+      done
+  nginx_conf:
+    content: |
+      log_format json_combined escape=json
+        '{'  '"time":"$$time_iso8601"'
+        ',"request_id":"$$http_x_request_id"'
+        ',"org_id":"$$http_x_org_id"'
+        ',"workspace_id":"$$http_x_workspace_id"'
+        ',"http_host":"$$host"'
+        ',"method":"$$request_method"'
+        ',"uri":"$$uri"'
+        ',"status":$$status'
+        ',"request_length":$$request_length'
+        ',"bytes_sent":$$bytes_sent'
+        ',"request_time":$$request_time'
+        ',"upstream_addr":"$$upstream_addr"'
+        '}';
+
+      server {
+          listen 80 default_server;
+          access_log /var/log/nginx/access.log json_combined;
+          client_max_body_size 100m;
+          client_body_buffer_size 1m;
+          location / {
+              proxy_pass http://proxy-glm51-awq-tp4:8000;
+              proxy_http_version 1.1;
+              proxy_set_header Host $$host;
+              proxy_set_header X-Real-IP $$remote_addr;
+              proxy_set_header X-Forwarded-For $$proxy_add_x_forwarded_for;
+              proxy_set_header X-Forwarded-Proto $$scheme;
+              proxy_set_header Connection '';
+              proxy_buffering off;
+              proxy_cache off;
+              proxy_read_timeout 3600s;
+          }
+      }
+
+      server {
+          listen 443 ssl http2;
+          server_name glm-5-1-sgl-awq-tp4.completions.near.ai;
+          ssl_certificate /etc/letsencrypt/live/completions.near.ai/fullchain.pem;
+          ssl_certificate_key /etc/letsencrypt/live/completions.near.ai/privkey.pem;
+          ssl_protocols TLSv1.2 TLSv1.3;
+          keepalive_timeout 1h;
+          keepalive_requests 1000000;
+          access_log /var/log/nginx/access.log json_combined;
+          client_max_body_size 100m;
+          client_body_buffer_size 1m;
+          location / {
+              proxy_pass http://proxy-glm51-awq-tp4:8000;
+              proxy_http_version 1.1;
+              proxy_set_header Host $$host;
+              proxy_set_header X-Real-IP $$remote_addr;
+              proxy_set_header X-Forwarded-For $$proxy_add_x_forwarded_for;
+              proxy_set_header X-Forwarded-Proto $$scheme;
+              proxy_set_header Connection '';
+              proxy_buffering off;
+              proxy_cache off;
+              proxy_read_timeout 3600s;
+          }
+      }
