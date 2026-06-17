@@ -469,15 +469,11 @@ services:
       nearai.otel.host: "${CVM_HOST}"
       nearai.otel.ip: "${HOST_IP}"
 
-  # --- Trial telemetry sidecar (Grafana Cloud + Better Stack OTLP fanout) ---
-  # Receives SGLang request traces via OTLP/gRPC :4317, scrapes the 3 per-model
-  # SGLang :8000/metrics and 3 dcgm-exporter :9400/metrics endpoints, fans
-  # everything out to both trial vendors using the same OTLP endpoints + tokens
-  # as the host-side otelcol-contrib (cvm-ansible-playbooks PR #270/#271).
-  #
-  # Trust note: Grafana / Better Stack ingest tokens (not query) live inside
-  # this CVM as env vars. Worst case is spurious data into trial accounts; no
-  # query/admin access. Removing this service is the disable path.
+  # --- App telemetry sidecar (self-hosted gateway + Datadog OTLP fanout) ---
+  # Receives request traces via OTLP/gRPC :4317, scrapes app/DCGM metrics, tails
+  # labeled Docker logs, and exports through telemetry.infra.near.ai using the
+  # compose-manager-provided MONITORING_INGEST_TOKEN while double-shipping OTLP
+  # metrics/traces to the in-CVM Datadog agent during the migration.
   otelcol-contrib:
     image: otel/opentelemetry-collector-contrib@sha256:85ac41c2db88d0df9bd6145e608a3cb023f5d8443868adbfbbf66efb51087917
     container_name: otelcol-contrib

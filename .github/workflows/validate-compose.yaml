@@ -10,6 +10,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Validate OTel label contracts
+        run: ruby scripts/validate_otel_labels.rb
+
       - name: Validate docker compose files
         # Compose files reference env vars that are populated at deploy time
         # by compose-manager (or the operator). CI doesn't have the real
