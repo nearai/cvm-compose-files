@@ -30,7 +30,7 @@ x-logging-conf: &logging-conf
   options:
     max-size: "100m"
     max-file: "10"
-    labels: "com.datadoghq.ad.logs"
+    labels: "com.datadoghq.ad.logs,com.docker.compose.service"
 
 x-nvidia: &nvidia
   runtime: nvidia
@@ -121,12 +121,20 @@ x-awq-build: &awq-build
 #   pool/replica. Large prefill chunks are the prod OOM trigger — chunked-prefill now
 #   uses the modest sglang default (8192) instead of 16384 (also part of the EAGLE crash
 #   combo above). EAGLE draft/verify buffers shrink the pool slightly vs no-EAGLE.
+#
+# *** DIST-INIT FIX (--dist-init-addr 127.0.0.1:29500): ***
+#   On the dstack bridge network, sglang's default distributed-init address resolves to
+#   0.0.0.0, which the TP worker ranks cannot connect to -> c10d TCPStore times out after
+#   600s ("client socket has timed out ... trying to connect to (0.0.0.0, <port>)"). Forcing
+#   127.0.0.1 makes the in-container loopback TP rendezvous work. Both TP4 backends are on
+#   separate net namespaces (dstack_default bridge), so the same port 29500 in each is isolated.
 x-awq-cmd: &awq-cmd >
   sglang serve
   --model-path QuantTrio/GLM-5.1-AWQ
   --revision 8f60817aa28023f2607850d1a1e51d21aa34817a
   --served-model-name zai-org/GLM-5.1-FP8
   --tp 4
+  --dist-init-addr 127.0.0.1:29500
   --disable-shared-experts-fusion
   --kv-cache-dtype fp8_e4m3
   --reasoning-parser glm45
@@ -138,7 +146,6 @@ x-awq-cmd: &awq-cmd >
   --speculative-num-steps 3
   --speculative-eagle-topk 1
   --speculative-num-draft-tokens 4
-  --context-length 32768
   --watchdog-timeout 1800
   --port 8000
   --host 0.0.0.0
@@ -179,6 +186,8 @@ services:
       - huggingface_cache:/root/.cache/huggingface
     environment:
       - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"model-downloader","service":"model-downloader","tags":["model:QuantTrio/GLM-5.1-AWQ","deployment:GLM-5.1-SGL-AWQ-TP4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
 
   proxy-nginx:
     image: nginx@sha256:1d13701a5f9f3fb01aaa88cef2344d65b6b5bf6b7d9fa4cf0dca557a8d7702ba
@@ -195,6 +204,8 @@ services:
         mode: 0644
     restart: unless-stopped
     logging: *logging-conf
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"nginx","service":"proxy-nginx","tags":["model:QuantTrio/GLM-5.1-AWQ","deployment:GLM-5.1-SGL-AWQ-TP4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000"]}]'
 
   model-proxy-registrar:
     image: curlimages/curl@sha256:d94d07ba9e7d6de898b6d96c1a072f6f8266c687af78a74f380087a0addf5d17
@@ -217,6 +228,8 @@ services:
         target: /register.sh
         mode: 0755
     logging: *logging-conf
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"model-proxy-registrar","service":"model-proxy-registrar","tags":["model:QuantTrio/GLM-5.1-AWQ","deployment:GLM-5.1-SGL-AWQ-TP4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
 
   # Single proxy fronting BOTH TP4 backends (VLLM_BACKEND_URLS = least-conn pool).
   proxy-glm51-awq-tp4:
@@ -239,6 +252,18 @@ services:
       - USE_NV_ATTESTATION_SDK=true
       - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
       - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:zai-org/GLM-5.1-FP8","deployment:GLM-5.1-SGL-AWQ-TP4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "inference-proxy"
+      nearai.otel.service: "vllm-proxy"
+      nearai.otel.port: "8000"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "zai-org/GLM-5.1-FP8"
+      nearai.otel.deployment: "GLM-5.1-SGL-AWQ-TP4"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.ip: "${HOST_IP}"
 
   model-sg-glm51-awq-tp4-a:
     <<: *nvidia
@@ -269,8 +294,18 @@ services:
     labels:
       com.datadoghq.ad.check_names: '["openmetrics"]'
       com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.logs: '[{"source": "sglang", "service": "sglang", "tags":["model:QuantTrio/GLM-5.1-AWQ","replica:a","ip:${HOST_IP}","port:8000"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:QuantTrio/GLM-5.1-AWQ","deployment:GLM-5.1-SGL-AWQ-TP4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","replica:a"]}]'
       com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-sg-glm51-awq-tp4-a:8000/metrics", "histogram_buckets_as_distributions": true, "metrics":["sglang:*"], "service": "glm-5.1-sgl-awq-tp4-a", "tags":["model:QuantTrio/GLM-5.1-AWQ","replica:a","ip:${HOST_IP}","port:8000"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "sglang"
+      nearai.otel.service: "sglang"
+      nearai.otel.port: "8000"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "QuantTrio/GLM-5.1-AWQ"
+      nearai.otel.deployment: "GLM-5.1-SGL-AWQ-TP4"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.ip: "${HOST_IP}"
 
   model-sg-glm51-awq-tp4-b:
     <<: *nvidia
@@ -299,8 +334,18 @@ services:
     labels:
       com.datadoghq.ad.check_names: '["openmetrics"]'
       com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.logs: '[{"source": "sglang", "service": "sglang", "tags":["model:QuantTrio/GLM-5.1-AWQ","replica:b","ip:${HOST_IP}","port:8000"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:QuantTrio/GLM-5.1-AWQ","deployment:GLM-5.1-SGL-AWQ-TP4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","replica:b"]}]'
       com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-sg-glm51-awq-tp4-b:8000/metrics", "histogram_buckets_as_distributions": true, "metrics":["sglang:*"], "service": "glm-5.1-sgl-awq-tp4-b", "tags":["model:QuantTrio/GLM-5.1-AWQ","replica:b","ip:${HOST_IP}","port:8000"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "sglang"
+      nearai.otel.service: "sglang"
+      nearai.otel.port: "8000"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "QuantTrio/GLM-5.1-AWQ"
+      nearai.otel.deployment: "GLM-5.1-SGL-AWQ-TP4"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.ip: "${HOST_IP}"
 
   dcgm-exporter:
     image: nvcr.io/nvidia/k8s/dcgm-exporter:4.5.2-4.8.1-distroless
@@ -325,7 +370,49 @@ services:
       com.datadoghq.ad.check_names: '["dcgm"]'
       com.datadoghq.ad.init_configs: "[{}]"
       com.datadoghq.ad.instances: '[{"openmetrics_endpoint": "http://%%host%%:9400/metrics", "tags":["model:QuantTrio/GLM-5.1-AWQ","deployment:GLM-5.1-SGL-AWQ-TP4","ip:${HOST_IP}"]}]'
-      com.datadoghq.ad.logs: '[{"source": "dcgm-exporter", "service": "dcgm-exporter", "tags":["model:QuantTrio/GLM-5.1-AWQ","deployment:GLM-5.1-SGL-AWQ-TP4","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:QuantTrio/GLM-5.1-AWQ","deployment:GLM-5.1-SGL-AWQ-TP4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "dcgm"
+      nearai.otel.service: "dcgm-exporter"
+      nearai.otel.port: "9400"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "QuantTrio/GLM-5.1-AWQ"
+      nearai.otel.deployment: "GLM-5.1-SGL-AWQ-TP4"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.ip: "${HOST_IP}"
+
+  otelcol-contrib:
+    image: otel/opentelemetry-collector-contrib@sha256:85ac41c2db88d0df9bd6145e608a3cb023f5d8443868adbfbbf66efb51087917
+    container_name: otelcol-contrib
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    user: "0:0"
+    mem_limit: "768m"
+    environment:
+      - MONITORING_INGEST_TOKEN=${MONITORING_INGEST_TOKEN:-}
+      - CVM_NAME=${CVM_NAME:-unknown}
+      - CVM_HOST=${CVM_HOST:-unknown}
+      - DD_HOSTNAME=${DD_HOSTNAME:-unknown}
+      - ENV=${ENV:-unknown}
+      - HOST_IP=${HOST_IP:-unknown}
+    expose:
+      - "4317"
+      - "4318"
+    volumes:
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - otelcol_app_storage:/var/lib/otelcol-contrib
+    configs:
+      - source: otelcol_app_config
+        target: /etc/otelcol-contrib/config.yaml
+        mode: 0444
+    restart: unless-stopped
+    logging:
+      driver: "local"
+      options:
+        max-size: "20m"
+        max-file: "3"
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"otelcol-contrib","service":"otelcol-contrib","tags":["deployment:GLM-5.1-SGL-AWQ-TP4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
 
 networks:
   default:
@@ -333,6 +420,7 @@ networks:
     name: dstack_default
 
 volumes:
+  otelcol_app_storage:
   huggingface_cache:
   compile_cache_a:   # persisted inductor/triton/deep_gemm for replica a (warm restarts)
   compile_cache_b:
@@ -341,6 +429,269 @@ volumes:
     name: certs
 
 configs:
+  otelcol_app_config:
+    content: |
+      receivers:
+        otlp:
+          protocols:
+            grpc:
+              endpoint: 0.0.0.0:4317
+            http:
+              endpoint: 0.0.0.0:4318
+
+        filelog/docker_containers:
+          include: [/var/lib/docker/containers/*/*-json.log]
+          start_at: end
+          storage: file_storage
+          include_file_path: true
+          operators:
+            - type: json_parser
+              parse_from: body
+              parse_to: attributes
+              timestamp:
+                parse_from: attributes.time
+                layout_type: gotime
+                layout: '2006-01-02T15:04:05.999999999Z07:00'
+              on_error: send_quiet
+            - type: move
+              from: attributes.log
+              to: body
+              if: 'attributes.log != nil'
+            - type: move
+              from: attributes.stream
+              to: attributes["log.iostream"]
+              if: 'attributes.stream != nil'
+            - type: remove
+              field: attributes.time
+              if: 'attributes.time != nil'
+            - type: regex_parser
+              parse_from: attributes["log.file.path"]
+              regex: '/var/lib/docker/containers/(?P<container_id>[a-f0-9]{12})[a-f0-9]*/'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'model:(?P<model>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'model_path:(?P<model_path>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'precision:(?P<precision>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'deployment:(?P<deployment>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'ip:(?P<ip>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'port:(?P<port>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'env:(?P<env>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'host:(?P<host>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'instance:(?P<instance>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'replica:(?P<replica>[^",\]]+)'
+              on_error: send_quiet
+            - type: add
+              field: attributes["service.name"]
+              value: cvm-docker
+
+        prometheus/apps:
+          config:
+            scrape_configs:
+              - job_name: sglang-model-sg-glm51-awq-tp4-a
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['model-sg-glm51-awq-tp4-a:8000']
+                    labels:
+                      service: "sglang"
+                      container_name: "model-sg-glm51-awq-tp4-a"
+                      model: "QuantTrio/GLM-5.1-AWQ"
+                      deployment: "GLM-5.1-SGL-AWQ-TP4"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      ip: "${HOST_IP}"
+                      port: "8000"
+                      replica: "a"
+              - job_name: sglang-model-sg-glm51-awq-tp4-b
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['model-sg-glm51-awq-tp4-b:8000']
+                    labels:
+                      service: "sglang"
+                      container_name: "model-sg-glm51-awq-tp4-b"
+                      model: "QuantTrio/GLM-5.1-AWQ"
+                      deployment: "GLM-5.1-SGL-AWQ-TP4"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      ip: "${HOST_IP}"
+                      port: "8000"
+                      replica: "b"
+              - job_name: dcgm-dcgm-exporter
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['dcgm-exporter:9400']
+                    labels:
+                      service: "dcgm-exporter"
+                      container_name: "dcgm-exporter"
+                      model: "QuantTrio/GLM-5.1-AWQ"
+                      deployment: "GLM-5.1-SGL-AWQ-TP4"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      ip: "${HOST_IP}"
+                      port: "9400"
+              - job_name: inference-proxy-proxy-glm51-awq-tp4
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['proxy-glm51-awq-tp4:8000']
+                    labels:
+                      service: "vllm-proxy"
+                      container_name: "proxy-glm51-awq-tp4"
+                      model: "zai-org/GLM-5.1-FP8"
+                      deployment: "GLM-5.1-SGL-AWQ-TP4"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      ip: "${HOST_IP}"
+                      port: "8000"
+
+        prometheus/self:
+          config:
+            scrape_configs:
+              - job_name: otelcol-app
+                scrape_interval: 30s
+                static_configs:
+                  - targets: ['localhost:8888']
+
+      processors:
+        memory_limiter:
+          check_interval: 1s
+          limit_mib: 512
+          spike_limit_mib: 128
+
+        resource:
+          attributes:
+            - key: host.name
+              value: $${env:DD_HOSTNAME}
+              action: upsert
+            - key: cvm.name
+              value: $${env:CVM_NAME}
+              action: upsert
+            - key: host.machine
+              value: $${env:CVM_HOST}
+              action: insert
+            - key: deployment.environment
+              value: $${env:ENV}
+              action: upsert
+            - key: service.namespace
+              value: near-ai
+              action: insert
+
+        transform/docker_metadata:
+          error_mode: ignore
+          log_statements:
+            - context: log
+              statements:
+                - set(attributes["service.name"], attributes["attrs"]["com.docker.compose.service"]) where attributes["attrs"] != nil and attributes["attrs"]["com.docker.compose.service"] != nil
+                - set(attributes["service.name"], ParseJSON(attributes["attrs"]["com.datadoghq.ad.logs"])[0]["service"]) where attributes["attrs"] != nil and attributes["attrs"]["com.datadoghq.ad.logs"] != nil
+                - set(attributes["log.source"], ParseJSON(attributes["attrs"]["com.datadoghq.ad.logs"])[0]["source"]) where attributes["attrs"] != nil and attributes["attrs"]["com.datadoghq.ad.logs"] != nil
+                - set(attributes["container.name"], attributes["attrs"]["com.docker.compose.service"]) where attributes["attrs"] != nil and attributes["attrs"]["com.docker.compose.service"] != nil
+
+        filter/app_logs:
+          error_mode: ignore
+          logs:
+            log_record:
+              - 'attributes["model"] == nil and attributes["deployment"] == nil'
+              - 'attributes["service.name"] == "compose-manager"'
+              - 'attributes["service.name"] == "compose-manager-launcher"'
+              - 'attributes["service.name"] == "otelcol-management"'
+              - 'attributes["service.name"] == "otelcol-contrib"'
+              - 'attributes["service.name"] == "datadog-agent"'
+
+        groupbyattrs/docker_service:
+          keys:
+            - service.name
+            - container.name
+            - log.source
+            - log.iostream
+            - model
+            - model_path
+            - precision
+            - deployment
+            - env
+            - host
+            - ip
+            - port
+            - instance
+            - replica
+
+        batch:
+          send_batch_size: 1024
+          send_batch_max_size: 2048
+          timeout: 5s
+
+      exporters:
+        otlphttp/gateway:
+          endpoint: https://telemetry.infra.near.ai
+          headers:
+            Authorization: "Bearer $${env:MONITORING_INGEST_TOKEN}"
+          sending_queue:
+            queue_size: 128
+            storage: file_storage
+
+      extensions:
+        file_storage:
+          directory: /var/lib/otelcol-contrib/storage
+          create_directory: true
+
+      service:
+        extensions: [file_storage]
+        pipelines:
+          logs/app:
+            receivers: [filelog/docker_containers]
+            processors: [memory_limiter, resource, transform/docker_metadata, filter/app_logs, groupbyattrs/docker_service, batch]
+            exporters: [otlphttp/gateway]
+          metrics/app:
+            receivers: [prometheus/apps]
+            processors: [memory_limiter, resource, batch]
+            exporters: [otlphttp/gateway]
+          metrics/otlp:
+            receivers: [otlp]
+            processors: [memory_limiter, resource, batch]
+            exporters: [otlphttp/gateway]
+          metrics/self:
+            receivers: [prometheus/self]
+            processors: [memory_limiter, resource, batch]
+            exporters: [otlphttp/gateway]
+          traces:
+            receivers: [otlp]
+            processors: [memory_limiter, resource, batch]
+            exporters: [otlphttp/gateway]
+        telemetry:
+          metrics:
+            address: localhost:8888
+          logs:
+            level: info
+
   registrar_script:
     content: |
       #!/bin/sh
@@ -384,7 +735,7 @@ configs:
 
       mark_registered() {
         register_endpoint "$$ENDPOINT" "$${TLS_PORT}"
-        register_model "zai-org/GLM-5.1-FP8" "glm-5-1-sgl-awq-tp4.completions.near.ai"
+        register_model "zai-org/GLM-5.1-FP8" "glm-5-1.completions.near.ai"
         if [ "$$REGISTERED" = false ]; then
           echo "[GLM-5.1-SGL-AWQ-TP4] Registered zai-org/GLM-5.1-FP8 (2x AWQ TP4) at $$ENDPOINT"
         fi
@@ -508,7 +859,7 @@ configs:
 
       server {
           listen 443 ssl http2;
-          server_name glm-5-1-sgl-awq-tp4.completions.near.ai;
+          server_name glm-5-1.completions.near.ai;
           ssl_certificate /etc/letsencrypt/live/completions.near.ai/fullchain.pem;
           ssl_certificate_key /etc/letsencrypt/live/completions.near.ai/privkey.pem;
           ssl_protocols TLSv1.2 TLSv1.3;

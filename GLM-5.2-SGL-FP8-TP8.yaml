@@ -1,3 +1,42 @@
+# GLM-5.2-SGL-FP8-TP8 — zai-org/GLM-5.2-FP8 (official FP8) on SGLang, single TP8 (all 8 GPUs).
+#
+# FIRST config for GLM-5.2 (753B glm_moe_dsa, GLM-5.1's twin: improved MTP + IndexShare,
+# 1M context). Single TP8 FP8 backend behind one nearaidev/vllm-proxy-rs (attestation/
+# signing/E2EE/auth). nginx -> proxy -> model. No 4-bit yet (no community AWQ; self-quant
+# is RAM/disk-bound on a single 8xH200 box — see glm51_awq_comparison/CAMPAIGN.md), so the
+# 2x TP4 topology that beat TP8 on 5.1 is NOT yet available for 5.2 (revisit when an AWQ exists).
+#
+# IMAGE: lmsysorg/sglang dev-cu12 @81abd2a6 (~2026-06-16). REQUIRED for GLM-5.2: it carries
+# the DSA IndexShare + spec-v2 fixes (#27114/#28192) and registers GlmMoeDsaForCausalLM.
+# The older aac6b242 (used by GLM-5.1) predates IndexShare and won't serve 5.2 correctly.
+#
+# WHY FP8 / TP8 (benchmarked under CC, glm51_awq_comparison/CAMPAIGN.md "GLM-5.2"):
+#   - FP8 (zai-org/GLM-5.2-FP8, ~704GB) fits TP8 at ~94 GB/GPU; BF16 doesn't fit even TP8;
+#     FP8 @ TP4 = 188 GB/GPU does NOT fit -> TP8 is the only FP8 topology on one box.
+#   - fp8 KV cache: ~527,936 token pool at ctx 32768.
+#   - Throughput (in=256, agg tok/s): c1=35.7 c8=222 c16=366 c64=1180 (~= GLM-5.1 TP8).
+#
+# *** DIST-INIT FIX (--dist-init-addr 127.0.0.1:29500): ***
+#   On the dstack bridge network, sglang's default distributed-init address resolves to
+#   0.0.0.0, which the TP worker ranks cannot connect to -> c10d TCPStore times out after
+#   600s ("trying to connect to (0.0.0.0, <port>)"). Forcing 127.0.0.1 makes the in-container
+#   loopback rendezvous work. (Manual --network=host launches avoid this; compose uses the
+#   bridge net, so the flag is required.)
+#
+# SPEC-DECODE (EAGLE) — documented variant, NOT enabled by default:
+#   GLM-5.2's improved MTP gives a strong SINGLE-STREAM win: EAGLE 5/1/6 + fp8 KV = 1.45x at
+#   c=1 (accept-len 3.68, held to c=64). BUT on compute-rich TP8 it TAXES concurrency
+#   (c=4..64: 0.78-0.91x) because verifying batch*6 tokens/step competes with the base decode;
+#   adaptive spec can't gate it off (floor is 1 step). So EAGLE here is a LOW-LATENCY-only win.
+#   This base config (no spec) is the THROUGHPUT-safe default. For a dedicated low-latency
+#   endpoint, add to the command below (and drop max-running-requests to ~128):
+#     --speculative-algorithm EAGLE --speculative-num-steps 5 --speculative-eagle-topk 1
+#     --speculative-num-draft-tokens 6
+#   (DO NOT add --num-continuous-decode-steps>1 / --enable-mixed-chunk / --chunked-prefill-size
+#    16384 with spec: that combo CUDA-IMA-crashed at c>=32 on the 5.1 spec+DSA path.)
+#   DeepEP + DP-attention high-throughput (sglang cookbook) is CC-INCOMPATIBLE: DeepEP's
+#   GPU-initiated all-to-all crashes under PPCIE ("deep_ep.cpp:230 invalid argument"). Do not use.
+
 x-logging-conf: &logging-conf
   driver: "json-file"
   options:
@@ -27,33 +66,48 @@ x-vllm-proxy-common: &vllm-proxy-common
   restart: unless-stopped
   logging: *logging-conf
 
-x-downloader-common: &downloader-common
-  image: ghcr.io/astral-sh/uv:python3.11-bookworm-slim@sha256:4f5d923c9dcea037f57bda425dd209f3ec643da2f0b74227f68d09dab0b3bb36
-  entrypoint: ["sh", "-c"]
-  restart: "no"
-  logging: *logging-conf
+# Shared sglang args. zai-org/GLM-5.2-FP8 = official FP8 (W8A8 block-fp8). Single TP8.
+# THROUGHPUT-safe default (no spec). See header for the EAGLE low-latency variant.
+x-glm52-cmd: &glm52-cmd >
+  sglang serve
+  --model-path zai-org/GLM-5.2-FP8
+  --revision 3722e206c8461c750e5ab73f5528eba42d0c6a37
+  --served-model-name zai-org/GLM-5.2-FP8
+  --tp 8
+  --kv-cache-dtype fp8_e4m3
+  --reasoning-parser glm45
+  --tool-call-parser glm47
+  --log-requests-level 0
+  --mem-fraction-static 0.85
+  --max-running-requests 256
+  --context-length 32768
+  --dist-init-addr 127.0.0.1:29500
+  --watchdog-timeout 1800
+  --port 8000
+  --host 0.0.0.0
+  --enable-cache-report
+  --enable-metrics
+  --trust-remote-code
+
+x-glm52-model-env: &glm52-model-env
+  HF_TOKEN: ${HUGGING_FACE_HUB_TOKEN}
+  HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-0}
+  NVIDIA_DRIVER_CAPABILITIES: compute,utility
+  OPENBLAS_L2_SIZE: "2097152"
+  NCCL_DEBUG: WARN
+  # Persist inductor/triton/deep_gemm compile caches so an unchanged config skips recompile
+  # on restart (the dominant startup cost is weight-load + cuda-graph capture, not cacheable).
+  TORCHINDUCTOR_CACHE_DIR: /root/.cache/torchinductor
+  TRITON_CACHE_DIR: /root/.cache/triton
 
 services:
-  model-downloader:
-    <<: *downloader-common
-    container_name: model-downloader
-    command:
-      - |
-        set -e
-        echo "Downloading zai-org/GLM-5.1-FP8..."
-        uvx --from 'huggingface_hub[hf_xet]' hf download zai-org/GLM-5.1-FP8 --revision f396cf805182f4ca10fa675e1a99815b3ca384db
-        echo "Download complete."
-    volumes:
-      - huggingface_cache:/root/.cache/huggingface
-    environment:
-      - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
-    labels:
-      com.datadoghq.ad.logs: '[{"source":"model-downloader","service":"model-downloader","tags":["model:zai-org/GLM-5.1-FP8","deployment:GLM-5.1","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
-
   proxy-nginx:
     image: nginx@sha256:1d13701a5f9f3fb01aaa88cef2344d65b6b5bf6b7d9fa4cf0dca557a8d7702ba
     container_name: proxy-nginx
     command: /bin/sh -c 'while :; do sleep 6h; nginx -s reload; done & nginx -g "daemon off;"'
+    depends_on:
+      proxy-glm52-fp8-tp8:
+        condition: service_started
     ports:
       - "8000:80"
       - "8444:443"
@@ -65,8 +119,6 @@ services:
         mode: 0644
     restart: unless-stopped
     logging: *logging-conf
-    labels:
-      com.datadoghq.ad.logs: '[{"source":"nginx","service":"proxy-nginx","tags":["model:zai-org/GLM-5.1-FP8","deployment:GLM-5.1","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000"]}]'
 
   model-proxy-registrar:
     image: curlimages/curl@sha256:d94d07ba9e7d6de898b6d96c1a072f6f8266c687af78a74f380087a0addf5d17
@@ -74,9 +126,6 @@ services:
     entrypoint: ["sh", "/register.sh"]
     restart: unless-stopped
     healthcheck:
-      # Unhealthy if the registration loop hasn't ticked in 3m (e.g. wedged
-      # before the loop, or the loop died). Surfaces silent registrar failures
-      # in `docker ps` / Datadog. See cvm-compose-files#57.
       test: ["CMD-SHELL", "[ $$(( $$(date +%s) - $$(cat /tmp/registrar_alive 2>/dev/null || echo 0) )) -lt 180 ]"]
       interval: 30s
       timeout: 10s
@@ -92,79 +141,48 @@ services:
         target: /register.sh
         mode: 0755
     logging: *logging-conf
-    labels:
-      com.datadoghq.ad.logs: '[{"source":"model-proxy-registrar","service":"model-proxy-registrar","tags":["model:zai-org/GLM-5.1-FP8","deployment:GLM-5.1","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
 
-  proxy-glm51:
+  # Single proxy fronting the one TP8 backend (attestation/signing/E2EE/auth + health/failover).
+  proxy-glm52-fp8-tp8:
     <<: *vllm-proxy-common
-    container_name: proxy-glm51
+    container_name: proxy-glm52-fp8-tp8
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - CLOUD_API_URL=https://cloud-api.near.ai
       - CLOUD_API_USAGE_TOKEN=${CLOUD_API_USAGE_TOKEN}
       - COMPOSE_MANAGER_URL=http://compose-manager:8080
       - LOG_FORMAT=json
-      - MODEL_NAME=zai-org/GLM-5.1-FP8
+      - MODEL_NAME=zai-org/GLM-5.2-FP8
       - OHTTP_ENABLED=true
       - TOKEN=${PROXY_TOKEN}
-      - VLLM_BASE_URL=http://model-sg-glm51:8000
+      - VLLM_BACKEND_URLS=http://model-sg-glm52-fp8-tp8:8000
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
       - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
       - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:zai-org/GLM-5.1-FP8","deployment:GLM-5.1","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:zai-org/GLM-5.2-FP8","deployment:GLM-5.2-SGL-FP8-TP8","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "inference-proxy"
       nearai.otel.service: "vllm-proxy"
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
-      nearai.otel.model: "zai-org/GLM-5.1-FP8"
-      nearai.otel.deployment: "GLM-5.1"
+      nearai.otel.model: "zai-org/GLM-5.2-FP8"
+      nearai.otel.deployment: "GLM-5.2-SGL-FP8-TP8"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
       nearai.otel.ip: "${HOST_IP}"
 
-  model-sg-glm51:
+  model-sg-glm52-fp8-tp8:
     <<: *nvidia
     init: true
-    depends_on:
-      model-downloader:
-        condition: service_completed_successfully
-    image: lmsysorg/sglang:dev-cu12@sha256:aac6b242680daeb74d2ab1d85f70575357552d7d165d2e5d30eb362797db54a1
-    container_name: model-sg-glm51
-    command: >
-      sglang serve
-      --model-path zai-org/GLM-5.1-FP8
-      --revision f396cf805182f4ca10fa675e1a99815b3ca384db
-      --tp 8
-      --reasoning-parser glm45
-      --log-requests-level 0
-      --tool-call-parser glm47
-      --kv-cache-dtype fp8_e4m3
-      --mem-fraction-static 0.83
-      --max-queued-requests 8
-      --num-continuous-decode-steps 5
-      --model-loader-extra-config '{"enable_multithread_load": "true", "num_threads": 64}'
-      --enable-mixed-chunk
-      --chunked-prefill-size 8192
-      --watchdog-timeout 600
-      --port 8000
-      --host 0.0.0.0
-      --enable-cache-report
-      --enable-metrics
-      --enable-mfu-metrics
-      --trust-remote-code
-      --disable-custom-all-reduce
+    image: lmsysorg/sglang@sha256:81abd2a6617679f0df48cb20381df68322f90b5599ae068535a493708e6ab71a
+    container_name: model-sg-glm52-fp8-tp8
+    command: *glm52-cmd
     volumes:
+      - compile_cache:/root/.cache
       - huggingface_cache:/root/.cache/huggingface
-      - kernel_cache:/root/.cache/deep_gemm
-    environment:
-      - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
-      - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0}
-      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
-      - OPENBLAS_L2_SIZE=2097152
-      - NCCL_DEBUG=WARN
+    environment: *glm52-model-env
     deploy:
       resources:
         reservations:
@@ -178,15 +196,15 @@ services:
     labels:
       com.datadoghq.ad.check_names: '["openmetrics"]'
       com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:zai-org/GLM-5.1-FP8","deployment:GLM-5.1","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-sg-glm51:8000/metrics", "histogram_buckets_as_distributions": true, "metrics":["sglang:*"], "service": "glm-5.1", "tags":["model:zai-org/GLM-5.1-FP8","ip:${HOST_IP}","port:8000"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:zai-org/GLM-5.2-FP8","deployment:GLM-5.2-SGL-FP8-TP8","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-sg-glm52-fp8-tp8:8000/metrics", "histogram_buckets_as_distributions": true, "metrics":["sglang:*"], "service": "glm-5.2-sgl-fp8-tp8", "tags":["model:zai-org/GLM-5.2-FP8","deployment:GLM-5.2-SGL-FP8-TP8","ip:${HOST_IP}","port:8000"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
-      nearai.otel.model: "zai-org/GLM-5.1-FP8"
-      nearai.otel.deployment: "GLM-5.1"
+      nearai.otel.model: "zai-org/GLM-5.2-FP8"
+      nearai.otel.deployment: "GLM-5.2-SGL-FP8-TP8"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
       nearai.otel.ip: "${HOST_IP}"
@@ -213,15 +231,15 @@ services:
     labels:
       com.datadoghq.ad.check_names: '["dcgm"]'
       com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint": "http://%%host%%:9400/metrics", "tags":["model:zai-org/GLM-5.1-FP8","deployment:GLM-5.1","ip:${HOST_IP}"]}]'
-      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:zai-org/GLM-5.1-FP8","deployment:GLM-5.1","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint": "http://%%host%%:9400/metrics", "tags":["model:zai-org/GLM-5.2-FP8","deployment:GLM-5.2-SGL-FP8-TP8","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:zai-org/GLM-5.2-FP8","deployment:GLM-5.2-SGL-FP8-TP8","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "dcgm"
       nearai.otel.service: "dcgm-exporter"
       nearai.otel.port: "9400"
       nearai.otel.path: "/metrics"
-      nearai.otel.model: "zai-org/GLM-5.1-FP8"
-      nearai.otel.deployment: "GLM-5.1"
+      nearai.otel.model: "zai-org/GLM-5.2-FP8"
+      nearai.otel.deployment: "GLM-5.2-SGL-FP8-TP8"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
       nearai.otel.ip: "${HOST_IP}"
@@ -243,7 +261,6 @@ services:
       - "4317"
       - "4318"
     volumes:
-      - /var/lib/docker/containers:/var/lib/docker/containers:ro
       - otelcol_app_storage:/var/lib/otelcol-contrib
     configs:
       - source: otelcol_app_config
@@ -256,7 +273,7 @@ services:
         max-size: "20m"
         max-file: "3"
     labels:
-      com.datadoghq.ad.logs: '[{"source":"otelcol-contrib","service":"otelcol-contrib","tags":["deployment:GLM-5.1","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.logs: '[{"source":"otelcol-contrib","service":"otelcol-contrib","tags":["deployment:GLM-5.2-SGL-FP8-TP8","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
 
 networks:
   default:
@@ -266,11 +283,10 @@ networks:
 volumes:
   otelcol_app_storage:
   huggingface_cache:
-  kernel_cache:
+  compile_cache:
   certs:
     external: true
     name: certs
-
 
 configs:
   otelcol_app_config:
@@ -283,92 +299,33 @@ configs:
             http:
               endpoint: 0.0.0.0:4318
 
-        filelog/docker_containers:
-          include: [/var/lib/docker/containers/*/*-json.log]
-          start_at: end
-          storage: file_storage
-          include_file_path: true
-          operators:
-            - type: json_parser
-              parse_from: body
-              parse_to: attributes
-              timestamp:
-                parse_from: attributes.time
-                layout_type: gotime
-                layout: '2006-01-02T15:04:05.999999999Z07:00'
-              on_error: send_quiet
-            - type: move
-              from: attributes.log
-              to: body
-              if: 'attributes.log != nil'
-            - type: move
-              from: attributes.stream
-              to: attributes["log.iostream"]
-              if: 'attributes.stream != nil'
-            - type: remove
-              field: attributes.time
-              if: 'attributes.time != nil'
-            - type: regex_parser
-              parse_from: attributes["log.file.path"]
-              regex: '/var/lib/docker/containers/(?P<container_id>[a-f0-9]{12})[a-f0-9]*/'
-              on_error: send_quiet
-            - type: regex_parser
-              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
-              regex: 'model:(?P<model>[^",\]]+)'
-              on_error: send_quiet
-            - type: regex_parser
-              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
-              regex: 'model_path:(?P<model_path>[^",\]]+)'
-              on_error: send_quiet
-            - type: regex_parser
-              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
-              regex: 'precision:(?P<precision>[^",\]]+)'
-              on_error: send_quiet
-            - type: regex_parser
-              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
-              regex: 'deployment:(?P<deployment>[^",\]]+)'
-              on_error: send_quiet
-            - type: regex_parser
-              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
-              regex: 'ip:(?P<ip>[^",\]]+)'
-              on_error: send_quiet
-            - type: regex_parser
-              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
-              regex: 'port:(?P<port>[^",\]]+)'
-              on_error: send_quiet
-            - type: regex_parser
-              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
-              regex: 'env:(?P<env>[^",\]]+)'
-              on_error: send_quiet
-            - type: regex_parser
-              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
-              regex: 'host:(?P<host>[^",\]]+)'
-              on_error: send_quiet
-            - type: regex_parser
-              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
-              regex: 'instance:(?P<instance>[^",\]]+)'
-              on_error: send_quiet
-            - type: regex_parser
-              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
-              regex: 'replica:(?P<replica>[^",\]]+)'
-              on_error: send_quiet
-            - type: add
-              field: attributes["service.name"]
-              value: cvm-docker
-
         prometheus/apps:
           config:
             scrape_configs:
-              - job_name: sglang-model-sg-glm51
+              - job_name: inference-proxy-proxy-glm52-fp8-tp8
                 scrape_interval: 15s
                 metrics_path: /metrics
                 static_configs:
-                  - targets: ['model-sg-glm51:8000']
+                  - targets: ['proxy-glm52-fp8-tp8:8000']
+                    labels:
+                      service: "vllm-proxy"
+                      container_name: "proxy-glm52-fp8-tp8"
+                      model: "zai-org/GLM-5.2-FP8"
+                      deployment: "GLM-5.2-SGL-FP8-TP8"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      ip: "${HOST_IP}"
+                      port: "8000"
+              - job_name: sglang-model-sg-glm52-fp8-tp8
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['model-sg-glm52-fp8-tp8:8000']
                     labels:
                       service: "sglang"
-                      container_name: "model-sg-glm51"
-                      model: "zai-org/GLM-5.1-FP8"
-                      deployment: "GLM-5.1"
+                      container_name: "model-sg-glm52-fp8-tp8"
+                      model: "zai-org/GLM-5.2-FP8"
+                      deployment: "GLM-5.2-SGL-FP8-TP8"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
                       ip: "${HOST_IP}"
@@ -381,26 +338,12 @@ configs:
                     labels:
                       service: "dcgm-exporter"
                       container_name: "dcgm-exporter"
-                      model: "zai-org/GLM-5.1-FP8"
-                      deployment: "GLM-5.1"
+                      model: "zai-org/GLM-5.2-FP8"
+                      deployment: "GLM-5.2-SGL-FP8-TP8"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
                       ip: "${HOST_IP}"
                       port: "9400"
-              - job_name: inference-proxy-proxy-glm51
-                scrape_interval: 15s
-                metrics_path: /metrics
-                static_configs:
-                  - targets: ['proxy-glm51:8000']
-                    labels:
-                      service: "vllm-proxy"
-                      container_name: "proxy-glm51"
-                      model: "zai-org/GLM-5.1-FP8"
-                      deployment: "GLM-5.1"
-                      env: "${ENV}"
-                      host: "${CVM_HOST}"
-                      ip: "${HOST_IP}"
-                      port: "8000"
 
         prometheus/self:
           config:
@@ -434,44 +377,6 @@ configs:
               value: near-ai
               action: insert
 
-        transform/docker_metadata:
-          error_mode: ignore
-          log_statements:
-            - context: log
-              statements:
-                - set(attributes["service.name"], attributes["attrs"]["com.docker.compose.service"]) where attributes["attrs"] != nil and attributes["attrs"]["com.docker.compose.service"] != nil
-                - set(attributes["service.name"], ParseJSON(attributes["attrs"]["com.datadoghq.ad.logs"])[0]["service"]) where attributes["attrs"] != nil and attributes["attrs"]["com.datadoghq.ad.logs"] != nil
-                - set(attributes["log.source"], ParseJSON(attributes["attrs"]["com.datadoghq.ad.logs"])[0]["source"]) where attributes["attrs"] != nil and attributes["attrs"]["com.datadoghq.ad.logs"] != nil
-                - set(attributes["container.name"], attributes["attrs"]["com.docker.compose.service"]) where attributes["attrs"] != nil and attributes["attrs"]["com.docker.compose.service"] != nil
-
-        filter/app_logs:
-          error_mode: ignore
-          logs:
-            log_record:
-              - 'attributes["model"] == nil and attributes["deployment"] == nil'
-              - 'attributes["service.name"] == "compose-manager"'
-              - 'attributes["service.name"] == "compose-manager-launcher"'
-              - 'attributes["service.name"] == "otelcol-management"'
-              - 'attributes["service.name"] == "otelcol-contrib"'
-              - 'attributes["service.name"] == "datadog-agent"'
-
-        groupbyattrs/docker_service:
-          keys:
-            - service.name
-            - container.name
-            - log.source
-            - log.iostream
-            - model
-            - model_path
-            - precision
-            - deployment
-            - env
-            - host
-            - ip
-            - port
-            - instance
-            - replica
-
         batch:
           send_batch_size: 1024
           send_batch_max_size: 2048
@@ -494,10 +399,6 @@ configs:
       service:
         extensions: [file_storage]
         pipelines:
-          logs/app:
-            receivers: [filelog/docker_containers]
-            processors: [memory_limiter, resource, transform/docker_metadata, filter/app_logs, groupbyattrs/docker_service, batch]
-            exporters: [otlphttp/gateway]
           metrics/app:
             receivers: [prometheus/apps]
             processors: [memory_limiter, resource, batch]
@@ -563,34 +464,29 @@ configs:
 
       mark_registered() {
         register_endpoint "$$ENDPOINT" "$${TLS_PORT}"
-        register_model "zai-org/GLM-5.1-FP8" "glm-5-1.completions.near.ai"
+        register_model "zai-org/GLM-5.2-FP8" "glm-5-2.completions.near.ai"
         if [ "$$REGISTERED" = false ]; then
-          echo "[GLM-5.1] Registered zai-org/GLM-5.1-FP8 at $$ENDPOINT"
+          echo "[GLM-5.2-SGL-FP8-TP8] Registered zai-org/GLM-5.2-FP8 (TP8 FP8) at $$ENDPOINT"
         fi
         REGISTERED=true
       }
 
-      # 1-token completion health check directly to model container (no auth needed).
-      # Return codes:
-      #   0: backend accepted the probe
-      #   2: backend is alive but saturated/backpressuring new requests
-      #   1: backend appears unhealthy/unreachable
       check_inference() {
         echo "Performing health check on model endpoint..."
         status=$$(curl -sS --connect-timeout 10 --max-time 45 -o /dev/null -w "%{http_code}" \
-          -X POST "http://model-sg-glm51:8000/v1/chat/completions" \
+          -X POST "http://model-sg-glm52-fp8-tp8:8000/v1/chat/completions" \
           -H "Content-Type: application/json" \
-          -d '{"model":"zai-org/GLM-5.1-FP8","messages":[{"role":"user","content":"hi"}],"max_tokens":1}')
+          -d '{"model":"zai-org/GLM-5.2-FP8","messages":[{"role":"user","content":"hi"}],"max_tokens":1}')
         curl_status=$$?
 
         if [ "$$curl_status" -ne 0 ]; then
           case "$$curl_status" in
             52|56)
-              echo "[GLM-5.1] Health probe hit connection-level backpressure (curl $$curl_status); treating as alive but saturated"
+              echo "[GLM-5.2-SGL-FP8-TP8] Health probe hit connection-level backpressure (curl $$curl_status); treating as alive but saturated"
               return 2
               ;;
           esac
-          echo "[GLM-5.1] Health probe curl failed with status $$curl_status"
+          echo "[GLM-5.2-SGL-FP8-TP8] Health probe curl failed with status $$curl_status"
           return 1
         fi
 
@@ -599,39 +495,31 @@ configs:
             return 0
             ;;
           503)
-            echo "[GLM-5.1] Backend returned 503; treating as alive but saturated"
+            echo "[GLM-5.2-SGL-FP8-TP8] Backend returned 503; treating as alive but saturated"
             return 2
             ;;
           *)
-            echo "[GLM-5.1] Backend returned HTTP $$status"
+            echo "[GLM-5.2-SGL-FP8-TP8] Backend returned HTTP $$status"
             return 1
             ;;
         esac
       }
 
-      # Probe the host-published nginx port via HOST_IP instead of the
-      # "proxy-nginx" compose DNS name. A stale/abandoned docker service-name
-      # resolution (e.g. after proxy-nginx is recreated) otherwise wedges this
-      # readiness gate forever and silently drops the model to 0 backends.
-      # Bounded + loud so a persistent probe failure falls through to the
-      # registration loop (which health-checks each backend directly) instead
-      # of hanging here forever. See cvm-compose-files#57.
       READY_URL="http://$${HOST_IP}:8000/v1/models"
       echo "Waiting for model to be ready (probing $$READY_URL)..."
       ready_attempts=0
       until curl --connect-timeout 5 --max-time 10 -sf "$$READY_URL" > /dev/null 2>&1; do
         ready_attempts=$$((ready_attempts + 1))
-        if [ "$$ready_attempts" -ge 30 ]; then
-          echo "WARN: model not reachable at $$READY_URL after $$ready_attempts attempts (~20m); entering registration loop anyway (each backend is health-checked directly before registering)"
+        if [ "$$ready_attempts" -ge 40 ]; then
+          echo "WARN: model not reachable at $$READY_URL after $$ready_attempts attempts (~20m); entering registration loop anyway"
           break
         fi
-        echo "Model not ready yet (attempt $$ready_attempts/30), retrying in 30s..."
+        echo "Model not ready yet (attempt $$ready_attempts/40), retrying in 30s..."
         sleep 30
       done
       echo "Model ready, starting registration loop"
 
       while true; do
-        # Liveness marker for the container healthcheck (see service def).
         date +%s > /tmp/registrar_alive
         check_inference
         health_status=$$?
@@ -642,17 +530,17 @@ configs:
             ;;
           2)
             FAILURE_COUNT=0
-            echo "[GLM-5.1] Keeping $$ENDPOINT registered while backend is saturated"
+            echo "[GLM-5.2-SGL-FP8-TP8] Keeping $$ENDPOINT registered while backend is saturated"
             mark_registered
             ;;
           *)
             FAILURE_COUNT=$$((FAILURE_COUNT + 1))
-            echo "[GLM-5.1] Health check failed ($$FAILURE_COUNT/$$MAX_RETRIES)"
+            echo "[GLM-5.2-SGL-FP8-TP8] Health check failed ($$FAILURE_COUNT/$$MAX_RETRIES)"
             if [ "$$REGISTERED" = true ] && [ "$$FAILURE_COUNT" -ge "$$MAX_RETRIES" ]; then
-              echo "[GLM-5.1] Health check failed and Retry limit reached, unregistering $$ENDPOINT"
+              echo "[GLM-5.2-SGL-FP8-TP8] Retry limit reached, unregistering $$ENDPOINT"
               unregister_endpoint "$$ENDPOINT"
               REGISTERED=false
-              echo "[GLM-5.1] Exiting to refresh DNS (container will auto-restart)"
+              echo "[GLM-5.2-SGL-FP8-TP8] Exiting to refresh DNS (container will auto-restart)"
               exit 1
             fi
             ;;
@@ -678,13 +566,11 @@ configs:
 
       server {
           listen 80 default_server;
-
           access_log /var/log/nginx/access.log json_combined;
           client_max_body_size 100m;
           client_body_buffer_size 1m;
-
           location / {
-              proxy_pass http://proxy-glm51:8000;
+              proxy_pass http://proxy-glm52-fp8-tp8:8000;
               proxy_http_version 1.1;
               proxy_set_header Host $$host;
               proxy_set_header X-Real-IP $$remote_addr;
@@ -698,28 +584,19 @@ configs:
       }
 
       server {
-          listen 443 ssl http2;
-          server_name glm-5-1.completions.near.ai;
-
+          listen 443 ssl;
+          http2 on;
+          server_name glm-5-2.completions.near.ai;
           ssl_certificate /etc/letsencrypt/live/completions.near.ai/fullchain.pem;
           ssl_certificate_key /etc/letsencrypt/live/completions.near.ai/privkey.pem;
           ssl_protocols TLSv1.2 TLSv1.3;
-
-          # Keep H2 connections from cloud-api alive across long idle gaps so the
-          # bucket-pinned TCP connection survives between chats. Without this,
-          # nginx defaults (75s idle, 1000 req/conn) close the connection and the
-          # next request opens a new TCP via model-proxy's L4 LB → may land on a
-          # different backend → signature 404. Pairs with cloud-api H2 keepalive
-          # PINGs (http2_keep_alive_while_idle).
           keepalive_timeout 1h;
           keepalive_requests 1000000;
-
           access_log /var/log/nginx/access.log json_combined;
           client_max_body_size 100m;
           client_body_buffer_size 1m;
-
           location / {
-              proxy_pass http://proxy-glm51:8000;
+              proxy_pass http://proxy-glm52-fp8-tp8:8000;
               proxy_http_version 1.1;
               proxy_set_header Host $$host;
               proxy_set_header X-Real-IP $$remote_addr;
