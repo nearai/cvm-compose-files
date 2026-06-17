@@ -728,7 +728,7 @@ configs:
 
       mark_registered() {
         register_endpoint "$$ENDPOINT" "$${TLS_PORT}"
-        register_model "zai-org/GLM-5.1-FP8" "glm-5-1-sgl-awq-tp4.completions.near.ai"
+        register_model "zai-org/GLM-5.1-FP8" "glm-5-1.completions.near.ai"
         if [ "$$REGISTERED" = false ]; then
           echo "[GLM-5.1-SGL-AWQ-TP4] Registered zai-org/GLM-5.1-FP8 (2x AWQ TP4) at $$ENDPOINT"
         fi
@@ -852,7 +852,7 @@ configs:
 
       server {
           listen 443 ssl http2;
-          server_name glm-5-1-sgl-awq-tp4.completions.near.ai;
+          server_name glm-5-1.completions.near.ai glm-5-1-sgl-awq-tp4.completions.near.ai;
           ssl_certificate /etc/letsencrypt/live/completions.near.ai/fullchain.pem;
           ssl_certificate_key /etc/letsencrypt/live/completions.near.ai/privkey.pem;
           ssl_protocols TLSv1.2 TLSv1.3;
