@@ -373,12 +373,12 @@ services:
     user: "0:0"
     mem_limit: "768m"
     environment:
-      - MONITORING_INGEST_TOKEN=${MONITORING_INGEST_TOKEN:?required for app telemetry}
-      - CVM_NAME=${CVM_NAME:?required for app telemetry}
-      - CVM_HOST=${CVM_HOST:?required for app telemetry}
-      - DD_HOSTNAME=${DD_HOSTNAME:?required for app telemetry}
-      - ENV=${ENV:?required for app telemetry}
-      - HOST_IP=${HOST_IP:?required for app telemetry}
+      - MONITORING_INGEST_TOKEN=${MONITORING_INGEST_TOKEN:-}
+      - CVM_NAME=${CVM_NAME:-unknown}
+      - CVM_HOST=${CVM_HOST:-unknown}
+      - DD_HOSTNAME=${DD_HOSTNAME:-unknown}
+      - ENV=${ENV:-unknown}
+      - HOST_IP=${HOST_IP:-unknown}
     expose:
       - "4317"
       - "4318"

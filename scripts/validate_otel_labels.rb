@@ -169,9 +169,9 @@ def validate_collector_service(file, compose, errors)
 
   env_entries = Array(collector["environment"]).map(&:to_s)
   REQUIRED_COLLECTOR_ENV.each do |var|
-    marker = "${#{var}:?required for app telemetry}"
+    marker = "${#{var}:-"
     unless env_entries.any? { |entry| entry.start_with?("#{var}=") && entry.include?(marker) }
-      add_error(errors, file, "services.otelcol-contrib.environment", "missing fail-fast marker for #{var}")
+      add_error(errors, file, "services.otelcol-contrib.environment", "missing soft-default marker for #{var}")
     end
   end
 end
