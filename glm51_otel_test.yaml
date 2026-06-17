@@ -124,8 +124,8 @@ services:
       nearai.otel.path: "/metrics"
       nearai.otel.model: "zai-org/GLM-5.1-FP8"
       nearai.otel.deployment: "GLM-5.1"
-      nearai.otel.env: "prod"
-      nearai.otel.host: "gpu26"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
       nearai.otel.ip: "${HOST_IP}"
 
   model-sg-glm51:
@@ -192,8 +192,8 @@ services:
       nearai.otel.path: "/metrics"
       nearai.otel.model: "zai-org/GLM-5.1-FP8"
       nearai.otel.deployment: "GLM-5.1"
-      nearai.otel.env: "prod"
-      nearai.otel.host: "gpu26"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
       nearai.otel.ip: "${HOST_IP}"
 
   dcgm-exporter:
@@ -227,8 +227,8 @@ services:
       nearai.otel.path: "/metrics"
       nearai.otel.model: "zai-org/GLM-5.1-FP8"
       nearai.otel.deployment: "GLM-5.1"
-      nearai.otel.env: "prod"
-      nearai.otel.host: "gpu26"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
       nearai.otel.ip: "${HOST_IP}"
 
   otelcol-contrib:
@@ -269,9 +269,9 @@ networks:
     name: dstack_default
 
 volumes:
+  otelcol_app_storage:
   huggingface_cache:
   kernel_cache:
-  otelcol_app_storage:
   certs:
     external: true
     name: certs
@@ -323,6 +323,14 @@ configs:
               on_error: send_quiet
             - type: regex_parser
               parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'model_path:(?P<model_path>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'precision:(?P<precision>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
               regex: 'deployment:(?P<deployment>[^",\]]+)'
               on_error: send_quiet
             - type: regex_parser
@@ -341,6 +349,14 @@ configs:
               parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
               regex: 'host:(?P<host>[^",\]]+)'
               on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'instance:(?P<instance>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'replica:(?P<replica>[^",\]]+)'
+              on_error: send_quiet
             - type: add
               field: attributes["service.name"]
               value: cvm-docker
@@ -348,48 +364,48 @@ configs:
         prometheus/apps:
           config:
             scrape_configs:
-              - job_name: inference-proxy
-                scrape_interval: 15s
-                metrics_path: /metrics
-                static_configs:
-                  - targets: ['proxy-glm51:8000']
-                    labels:
-                      service: vllm-proxy
-                      container_name: proxy-glm51
-                      model: zai-org/GLM-5.1-FP8
-                      deployment: GLM-5.1
-                      env: ${ENV}
-                      host: ${CVM_HOST}
-                      ip: ${HOST_IP}
-                      port: "8000"
-              - job_name: sglang
+              - job_name: sglang-model-sg-glm51
                 scrape_interval: 15s
                 metrics_path: /metrics
                 static_configs:
                   - targets: ['model-sg-glm51:8000']
                     labels:
-                      service: sglang
-                      container_name: model-sg-glm51
-                      model: zai-org/GLM-5.1-FP8
-                      deployment: GLM-5.1
-                      env: ${ENV}
-                      host: ${CVM_HOST}
-                      ip: ${HOST_IP}
+                      service: "sglang"
+                      container_name: "model-sg-glm51"
+                      model: "zai-org/GLM-5.1-FP8"
+                      deployment: "GLM-5.1"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      ip: "${HOST_IP}"
                       port: "8000"
-              - job_name: dcgm
+              - job_name: dcgm-dcgm-exporter
                 scrape_interval: 15s
                 metrics_path: /metrics
                 static_configs:
                   - targets: ['dcgm-exporter:9400']
                     labels:
-                      service: dcgm-exporter
-                      container_name: dcgm-exporter
-                      model: zai-org/GLM-5.1-FP8
-                      deployment: GLM-5.1
-                      env: ${ENV}
-                      host: ${CVM_HOST}
-                      ip: ${HOST_IP}
+                      service: "dcgm-exporter"
+                      container_name: "dcgm-exporter"
+                      model: "zai-org/GLM-5.1-FP8"
+                      deployment: "GLM-5.1"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      ip: "${HOST_IP}"
                       port: "9400"
+              - job_name: inference-proxy-proxy-glm51
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['proxy-glm51:8000']
+                    labels:
+                      service: "vllm-proxy"
+                      container_name: "proxy-glm51"
+                      model: "zai-org/GLM-5.1-FP8"
+                      deployment: "GLM-5.1"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      ip: "${HOST_IP}"
+                      port: "8000"
 
         prometheus/self:
           config:
@@ -451,11 +467,15 @@ configs:
             - log.source
             - log.iostream
             - model
+            - model_path
+            - precision
             - deployment
             - env
             - host
             - ip
             - port
+            - instance
+            - replica
 
         batch:
           send_batch_size: 1024

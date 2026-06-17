@@ -3,7 +3,7 @@ x-logging-conf: &logging-conf
   options:
     max-size: "100m"
     max-file: "10"
-    labels: "com.datadoghq.ad.logs"
+    labels: "com.datadoghq.ad.logs,com.docker.compose.service"
 
 x-nvidia: &nvidia
   runtime: nvidia
@@ -183,6 +183,8 @@ services:
     environment:
       - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
     logging: *logging-conf
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"model-downloader","service":"model-downloader","tags":["model:Qwen/Qwen3.5-122B-A10B","deployment:qwen35-qwen36-gemma4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
 
   nginx:
     image: nginx@sha256:1d13701a5f9f3fb01aaa88cef2344d65b6b5bf6b7d9fa4cf0dca557a8d7702ba
@@ -201,6 +203,8 @@ services:
         mode: 0644
     restart: unless-stopped
     logging: *logging-conf
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"nginx","service":"nginx","tags":["model:Qwen/Qwen3.5-122B-A10B","deployment:qwen35-qwen36-gemma4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000"]}]'
 
   model-proxy-registrar:
     image: curlimages/curl@sha256:d94d07ba9e7d6de898b6d96c1a072f6f8266c687af78a74f380087a0addf5d17
@@ -224,6 +228,8 @@ services:
         target: /register.sh
         mode: 0755
     logging: *logging-conf
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"model-proxy-registrar","service":"model-proxy-registrar","tags":["model:Qwen/Qwen3.5-122B-A10B","deployment:qwen35-qwen36-gemma4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
 
   # --- Qwen3.5-122B-A10B (GPUs 0-3) — SGLang TP=4 ---
 
@@ -244,7 +250,17 @@ services:
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
     labels:
-      com.datadoghq.ad.logs: '[{"source": "vllm-proxy", "service": "vllm-proxy", "tags": ["model:Qwen/Qwen3.5-122B-A10B","ip:${HOST_IP}","port:8001"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:Qwen/Qwen3.5-122B-A10B","deployment:qwen35-qwen36-gemma4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8001"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "inference-proxy"
+      nearai.otel.service: "vllm-proxy"
+      nearai.otel.port: "8000"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "Qwen/Qwen3.5-122B-A10B"
+      nearai.otel.deployment: "qwen35-qwen36-gemma4"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.ip: "${HOST_IP}"
 
   vllm-qwen35-122b:
     <<: *qwen35-122b-common
@@ -262,8 +278,18 @@ services:
     labels:
       com.datadoghq.ad.check_names: '["openmetrics"]'
       com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.logs: '[{"source": "sglang", "service": "sglang", "tags":["model:Qwen/Qwen3.5-122B-A10B","ip:${HOST_IP}","port:8001"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:Qwen/Qwen3.5-122B-A10B","deployment:qwen35-qwen36-gemma4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8001"]}]'
       com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-qwen35-122b:8000/metrics", "metrics":["sglang:*"], "histogram_buckets_as_distributions": true, "service": "vllm-qwen35-122b", "tags":["model:Qwen/Qwen3.5-122B-A10B","ip:${HOST_IP}","port:8001"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "sglang"
+      nearai.otel.service: "sglang"
+      nearai.otel.port: "8000"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "Qwen/Qwen3.5-122B-A10B"
+      nearai.otel.deployment: "qwen35-qwen36-gemma4"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.ip: "${HOST_IP}"
 
   # --- Gemma-4-31B-it (GPUs 4-5) — SGLang TP=2 ---
 
@@ -283,7 +309,17 @@ services:
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
     labels:
-      com.datadoghq.ad.logs: '[{"source": "vllm-proxy", "service": "vllm-proxy", "tags": ["model:google/gemma-4-31B-it", "ip:${HOST_IP}", "port:8002"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:google/gemma-4-31B-it","deployment:qwen35-qwen36-gemma4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8002"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "inference-proxy"
+      nearai.otel.service: "vllm-proxy"
+      nearai.otel.port: "8000"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "google/gemma-4-31B-it"
+      nearai.otel.deployment: "qwen35-qwen36-gemma4"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.ip: "${HOST_IP}"
 
   vllm-gemma-4-31b:
     <<: *gemma-4-31b-common
@@ -298,8 +334,18 @@ services:
     labels:
       com.datadoghq.ad.check_names: '["openmetrics"]'
       com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.logs: '[{"source": "sglang", "service": "sglang", "tags":["model:google/gemma-4-31B-it","ip:${HOST_IP}","port:8002"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:google/gemma-4-31B-it","deployment:qwen35-qwen36-gemma4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8002"]}]'
       com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-gemma-4-31b:8000/metrics", "metrics":["sglang:*"], "histogram_buckets_as_distributions": true, "service": "vllm-gemma-4-31b", "tags":["model:google/gemma-4-31B-it","ip:${HOST_IP}","port:8002"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "sglang"
+      nearai.otel.service: "sglang"
+      nearai.otel.port: "8000"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "google/gemma-4-31B-it"
+      nearai.otel.deployment: "qwen35-qwen36-gemma4"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.ip: "${HOST_IP}"
 
   # --- Qwen3.6-35B-A3B-FP8 x2 (GPUs 6, 7) — SGLang TP=1, EAGLE spec, single proxy multi-backend ---
 
@@ -319,7 +365,17 @@ services:
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
     labels:
-      com.datadoghq.ad.logs: '[{"source": "vllm-proxy", "service": "vllm-proxy", "tags": ["model:Qwen/Qwen3.6-35B-A3B-FP8", "ip:${HOST_IP}", "port:8003"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:Qwen/Qwen3.6-35B-A3B-FP8","deployment:qwen35-qwen36-gemma4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8003"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "inference-proxy"
+      nearai.otel.service: "vllm-proxy"
+      nearai.otel.port: "8000"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "Qwen/Qwen3.6-35B-A3B-FP8"
+      nearai.otel.deployment: "qwen35-qwen36-gemma4"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.ip: "${HOST_IP}"
 
   vllm-qwen3-6-35b-1:
     <<: *qwen3-6-35b-common
@@ -334,8 +390,18 @@ services:
     labels:
       com.datadoghq.ad.check_names: '["openmetrics"]'
       com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.logs: '[{"source": "sglang", "service": "sglang", "tags":["model:Qwen/Qwen3.6-35B-A3B-FP8","ip:${HOST_IP}","port:8003","instance:1"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:Qwen/Qwen3.6-35B-A3B-FP8","deployment:qwen35-qwen36-gemma4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8003","instance:1"]}]'
       com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-qwen3-6-35b-1:8000/metrics", "metrics":["sglang:*"], "histogram_buckets_as_distributions": true, "service": "vllm-qwen3-6-35b-1", "tags":["model:Qwen/Qwen3.6-35B-A3B-FP8","ip:${HOST_IP}","port:8003"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "sglang"
+      nearai.otel.service: "sglang"
+      nearai.otel.port: "8000"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "Qwen/Qwen3.6-35B-A3B-FP8"
+      nearai.otel.deployment: "qwen35-qwen36-gemma4"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.ip: "${HOST_IP}"
 
   vllm-qwen3-6-35b-2:
     <<: *qwen3-6-35b-common
@@ -350,8 +416,18 @@ services:
     labels:
       com.datadoghq.ad.check_names: '["openmetrics"]'
       com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.logs: '[{"source": "sglang", "service": "sglang", "tags":["model:Qwen/Qwen3.6-35B-A3B-FP8","ip:${HOST_IP}","port:8003","instance:2"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:Qwen/Qwen3.6-35B-A3B-FP8","deployment:qwen35-qwen36-gemma4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8003","instance:2"]}]'
       com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-qwen3-6-35b-2:8000/metrics", "metrics":["sglang:*"], "histogram_buckets_as_distributions": true, "service": "vllm-qwen3-6-35b-2", "tags":["model:Qwen/Qwen3.6-35B-A3B-FP8","ip:${HOST_IP}","port:8003"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "sglang"
+      nearai.otel.service: "sglang"
+      nearai.otel.port: "8000"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "Qwen/Qwen3.6-35B-A3B-FP8"
+      nearai.otel.deployment: "qwen35-qwen36-gemma4"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.ip: "${HOST_IP}"
 
   # Per-model dcgm-exporters: each container only sees its assigned GPUs via
   # device_ids, so all NVML/DCGM metrics it emits are correctly attributable to
@@ -371,7 +447,17 @@ services:
       com.datadoghq.ad.check_names: '["dcgm"]'
       com.datadoghq.ad.init_configs: "[{}]"
       com.datadoghq.ad.instances: '[{"openmetrics_endpoint": "http://%%host%%:9400/metrics", "tags":["model:Qwen/Qwen3.5-122B-A10B","deployment:qwen35-qwen36-gemma4","ip:${HOST_IP}"]}]'
-      com.datadoghq.ad.logs: '[{"source": "dcgm-exporter", "service": "dcgm-exporter", "tags":["model:Qwen/Qwen3.5-122B-A10B","deployment:qwen35-qwen36-gemma4","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:Qwen/Qwen3.5-122B-A10B","deployment:qwen35-qwen36-gemma4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "dcgm"
+      nearai.otel.service: "dcgm-exporter"
+      nearai.otel.port: "9400"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "Qwen/Qwen3.5-122B-A10B"
+      nearai.otel.deployment: "qwen35-qwen36-gemma4"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.ip: "${HOST_IP}"
 
   dcgm-gemma-4-31b:
     <<: *dcgm-common
@@ -387,7 +473,17 @@ services:
       com.datadoghq.ad.check_names: '["dcgm"]'
       com.datadoghq.ad.init_configs: "[{}]"
       com.datadoghq.ad.instances: '[{"openmetrics_endpoint": "http://%%host%%:9400/metrics", "tags":["model:google/gemma-4-31B-it","deployment:qwen35-qwen36-gemma4","ip:${HOST_IP}"]}]'
-      com.datadoghq.ad.logs: '[{"source": "dcgm-exporter", "service": "dcgm-exporter", "tags":["model:google/gemma-4-31B-it","deployment:qwen35-qwen36-gemma4","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:google/gemma-4-31B-it","deployment:qwen35-qwen36-gemma4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "dcgm"
+      nearai.otel.service: "dcgm-exporter"
+      nearai.otel.port: "9400"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "google/gemma-4-31B-it"
+      nearai.otel.deployment: "qwen35-qwen36-gemma4"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.ip: "${HOST_IP}"
 
   dcgm-qwen3-6-35b:
     <<: *dcgm-common
@@ -403,7 +499,49 @@ services:
       com.datadoghq.ad.check_names: '["dcgm"]'
       com.datadoghq.ad.init_configs: "[{}]"
       com.datadoghq.ad.instances: '[{"openmetrics_endpoint": "http://%%host%%:9400/metrics", "tags":["model:Qwen/Qwen3.6-35B-A3B-FP8","deployment:qwen35-qwen36-gemma4","ip:${HOST_IP}"]}]'
-      com.datadoghq.ad.logs: '[{"source": "dcgm-exporter", "service": "dcgm-exporter", "tags":["model:Qwen/Qwen3.6-35B-A3B-FP8","deployment:qwen35-qwen36-gemma4","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:Qwen/Qwen3.6-35B-A3B-FP8","deployment:qwen35-qwen36-gemma4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "dcgm"
+      nearai.otel.service: "dcgm-exporter"
+      nearai.otel.port: "9400"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "Qwen/Qwen3.6-35B-A3B-FP8"
+      nearai.otel.deployment: "qwen35-qwen36-gemma4"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.ip: "${HOST_IP}"
+
+  otelcol-contrib:
+    image: otel/opentelemetry-collector-contrib@sha256:85ac41c2db88d0df9bd6145e608a3cb023f5d8443868adbfbbf66efb51087917
+    container_name: otelcol-contrib
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    user: "0:0"
+    mem_limit: "768m"
+    environment:
+      - MONITORING_INGEST_TOKEN=${MONITORING_INGEST_TOKEN:?required for app telemetry}
+      - CVM_NAME=${CVM_NAME:?required for app telemetry}
+      - CVM_HOST=${CVM_HOST:?required for app telemetry}
+      - DD_HOSTNAME=${DD_HOSTNAME:?required for app telemetry}
+      - ENV=${ENV:?required for app telemetry}
+      - HOST_IP=${HOST_IP:?required for app telemetry}
+    expose:
+      - "4317"
+      - "4318"
+    volumes:
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - otelcol_app_storage:/var/lib/otelcol-contrib
+    configs:
+      - source: otelcol_app_config
+        target: /etc/otelcol-contrib/config.yaml
+        mode: 0444
+    restart: unless-stopped
+    logging:
+      driver: "local"
+      options:
+        max-size: "20m"
+        max-file: "3"
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"otelcol-contrib","service":"otelcol-contrib","tags":["deployment:qwen35-qwen36-gemma4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
 
 networks:
   default:
@@ -411,6 +549,7 @@ networks:
     name: dstack_default
 
 volumes:
+  otelcol_app_storage:
   hugginface_cache:
   vllm_cache:
   kernel_cache:
@@ -419,6 +558,359 @@ volumes:
     name: certs
 
 configs:
+  otelcol_app_config:
+    content: |
+      receivers:
+        otlp:
+          protocols:
+            grpc:
+              endpoint: 0.0.0.0:4317
+            http:
+              endpoint: 0.0.0.0:4318
+
+        filelog/docker_containers:
+          include: [/var/lib/docker/containers/*/*-json.log]
+          start_at: end
+          storage: file_storage
+          include_file_path: true
+          operators:
+            - type: json_parser
+              parse_from: body
+              parse_to: attributes
+              timestamp:
+                parse_from: attributes.time
+                layout_type: gotime
+                layout: '2006-01-02T15:04:05.999999999Z07:00'
+              on_error: send_quiet
+            - type: move
+              from: attributes.log
+              to: body
+              if: 'attributes.log != nil'
+            - type: move
+              from: attributes.stream
+              to: attributes["log.iostream"]
+              if: 'attributes.stream != nil'
+            - type: remove
+              field: attributes.time
+              if: 'attributes.time != nil'
+            - type: regex_parser
+              parse_from: attributes["log.file.path"]
+              regex: '/var/lib/docker/containers/(?P<container_id>[a-f0-9]{12})[a-f0-9]*/'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'model:(?P<model>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'model_path:(?P<model_path>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'precision:(?P<precision>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'deployment:(?P<deployment>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'ip:(?P<ip>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'port:(?P<port>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'env:(?P<env>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'host:(?P<host>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'instance:(?P<instance>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'replica:(?P<replica>[^",\]]+)'
+              on_error: send_quiet
+            - type: add
+              field: attributes["service.name"]
+              value: cvm-docker
+
+        prometheus/apps:
+          config:
+            scrape_configs:
+              - job_name: sglang-vllm-qwen35-122b
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['vllm-qwen35-122b:8000']
+                    labels:
+                      service: "sglang"
+                      container_name: "vllm-qwen35-122b"
+                      model: "Qwen/Qwen3.5-122B-A10B"
+                      deployment: "qwen35-qwen36-gemma4"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      ip: "${HOST_IP}"
+                      port: "8001"
+              - job_name: sglang-vllm-gemma-4-31b
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['vllm-gemma-4-31b:8000']
+                    labels:
+                      service: "sglang"
+                      container_name: "vllm-gemma-4-31b"
+                      model: "google/gemma-4-31B-it"
+                      deployment: "qwen35-qwen36-gemma4"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      ip: "${HOST_IP}"
+                      port: "8002"
+              - job_name: sglang-vllm-qwen3-6-35b-1
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['vllm-qwen3-6-35b-1:8000']
+                    labels:
+                      service: "sglang"
+                      container_name: "vllm-qwen3-6-35b-1"
+                      model: "Qwen/Qwen3.6-35B-A3B-FP8"
+                      deployment: "qwen35-qwen36-gemma4"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      ip: "${HOST_IP}"
+                      port: "8003"
+              - job_name: sglang-vllm-qwen3-6-35b-2
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['vllm-qwen3-6-35b-2:8000']
+                    labels:
+                      service: "sglang"
+                      container_name: "vllm-qwen3-6-35b-2"
+                      model: "Qwen/Qwen3.6-35B-A3B-FP8"
+                      deployment: "qwen35-qwen36-gemma4"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      ip: "${HOST_IP}"
+                      port: "8003"
+              - job_name: dcgm-dcgm-qwen35-122b
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['dcgm-qwen35-122b:9400']
+                    labels:
+                      service: "dcgm-exporter"
+                      container_name: "dcgm-qwen35-122b"
+                      model: "Qwen/Qwen3.5-122B-A10B"
+                      deployment: "qwen35-qwen36-gemma4"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      ip: "${HOST_IP}"
+                      port: "9400"
+              - job_name: dcgm-dcgm-gemma-4-31b
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['dcgm-gemma-4-31b:9400']
+                    labels:
+                      service: "dcgm-exporter"
+                      container_name: "dcgm-gemma-4-31b"
+                      model: "google/gemma-4-31B-it"
+                      deployment: "qwen35-qwen36-gemma4"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      ip: "${HOST_IP}"
+                      port: "9400"
+              - job_name: dcgm-dcgm-qwen3-6-35b
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['dcgm-qwen3-6-35b:9400']
+                    labels:
+                      service: "dcgm-exporter"
+                      container_name: "dcgm-qwen3-6-35b"
+                      model: "Qwen/Qwen3.6-35B-A3B-FP8"
+                      deployment: "qwen35-qwen36-gemma4"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      ip: "${HOST_IP}"
+                      port: "9400"
+              - job_name: inference-proxy-vllm-proxy-qwen35-122b
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['vllm-proxy-qwen35-122b:8000']
+                    labels:
+                      service: "vllm-proxy"
+                      container_name: "vllm-proxy-qwen35-122b"
+                      model: "Qwen/Qwen3.5-122B-A10B"
+                      deployment: "qwen35-qwen36-gemma4"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      ip: "${HOST_IP}"
+                      port: "8001"
+              - job_name: inference-proxy-vllm-proxy-gemma-4-31b
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['vllm-proxy-gemma-4-31b:8000']
+                    labels:
+                      service: "vllm-proxy"
+                      container_name: "vllm-proxy-gemma-4-31b"
+                      model: "google/gemma-4-31B-it"
+                      deployment: "qwen35-qwen36-gemma4"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      ip: "${HOST_IP}"
+                      port: "8002"
+              - job_name: inference-proxy-vllm-proxy-qwen3-6-35b
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['vllm-proxy-qwen3-6-35b:8000']
+                    labels:
+                      service: "vllm-proxy"
+                      container_name: "vllm-proxy-qwen3-6-35b"
+                      model: "Qwen/Qwen3.6-35B-A3B-FP8"
+                      deployment: "qwen35-qwen36-gemma4"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      ip: "${HOST_IP}"
+                      port: "8003"
+
+        prometheus/self:
+          config:
+            scrape_configs:
+              - job_name: otelcol-app
+                scrape_interval: 30s
+                static_configs:
+                  - targets: ['localhost:8888']
+
+      processors:
+        memory_limiter:
+          check_interval: 1s
+          limit_mib: 512
+          spike_limit_mib: 128
+
+        resource:
+          attributes:
+            - key: host.name
+              value: $${env:DD_HOSTNAME}
+              action: upsert
+            - key: cvm.name
+              value: $${env:CVM_NAME}
+              action: upsert
+            - key: host.machine
+              value: $${env:CVM_HOST}
+              action: insert
+            - key: deployment.environment
+              value: $${env:ENV}
+              action: upsert
+            - key: service.namespace
+              value: near-ai
+              action: insert
+
+        transform/docker_metadata:
+          error_mode: ignore
+          log_statements:
+            - context: log
+              statements:
+                - set(attributes["service.name"], attributes["attrs"]["com.docker.compose.service"]) where attributes["attrs"] != nil and attributes["attrs"]["com.docker.compose.service"] != nil
+                - set(attributes["service.name"], ParseJSON(attributes["attrs"]["com.datadoghq.ad.logs"])[0]["service"]) where attributes["attrs"] != nil and attributes["attrs"]["com.datadoghq.ad.logs"] != nil
+                - set(attributes["log.source"], ParseJSON(attributes["attrs"]["com.datadoghq.ad.logs"])[0]["source"]) where attributes["attrs"] != nil and attributes["attrs"]["com.datadoghq.ad.logs"] != nil
+                - set(attributes["container.name"], attributes["attrs"]["com.docker.compose.service"]) where attributes["attrs"] != nil and attributes["attrs"]["com.docker.compose.service"] != nil
+
+        filter/app_logs:
+          error_mode: ignore
+          logs:
+            log_record:
+              - 'attributes["model"] == nil and attributes["deployment"] == nil'
+              - 'attributes["service.name"] == "compose-manager"'
+              - 'attributes["service.name"] == "compose-manager-launcher"'
+              - 'attributes["service.name"] == "otelcol-management"'
+              - 'attributes["service.name"] == "otelcol-contrib"'
+              - 'attributes["service.name"] == "datadog-agent"'
+
+        groupbyattrs/docker_service:
+          keys:
+            - service.name
+            - container.name
+            - log.source
+            - log.iostream
+            - model
+            - model_path
+            - precision
+            - deployment
+            - env
+            - host
+            - ip
+            - port
+            - instance
+            - replica
+
+        batch:
+          send_batch_size: 1024
+          send_batch_max_size: 2048
+          timeout: 5s
+
+      exporters:
+        otlphttp/gateway:
+          endpoint: https://telemetry.infra.near.ai
+          headers:
+            Authorization: "Bearer $${env:MONITORING_INGEST_TOKEN}"
+          sending_queue:
+            queue_size: 128
+            storage: file_storage
+
+        otlp/datadog_agent:
+          endpoint: datadog-agent:4317
+          tls:
+            insecure: true
+          sending_queue:
+            queue_size: 128
+            storage: file_storage
+
+      extensions:
+        file_storage:
+          directory: /var/lib/otelcol-contrib/storage
+          create_directory: true
+
+      service:
+        extensions: [file_storage]
+        pipelines:
+          logs/app:
+            receivers: [filelog/docker_containers]
+            processors: [memory_limiter, resource, transform/docker_metadata, filter/app_logs, groupbyattrs/docker_service, batch]
+            exporters: [otlphttp/gateway]
+          metrics/app:
+            receivers: [prometheus/apps]
+            processors: [memory_limiter, resource, batch]
+            exporters: [otlphttp/gateway]
+          metrics/otlp:
+            receivers: [otlp]
+            processors: [memory_limiter, resource, batch]
+            exporters: [otlphttp/gateway, otlp/datadog_agent]
+          metrics/self:
+            receivers: [prometheus/self]
+            processors: [memory_limiter, resource, batch]
+            exporters: [otlphttp/gateway]
+          traces:
+            receivers: [otlp]
+            processors: [memory_limiter, resource, batch]
+            exporters: [otlphttp/gateway, otlp/datadog_agent]
+        telemetry:
+          metrics:
+            address: localhost:8888
+          logs:
+            level: info
+
   registrar_script:
     content: |
       #!/bin/sh
