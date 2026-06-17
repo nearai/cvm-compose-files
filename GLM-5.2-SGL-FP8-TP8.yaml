@@ -165,6 +165,9 @@ services:
     init: true
     image: lmsysorg/sglang@sha256:81abd2a6617679f0df48cb20381df68322f90b5599ae068535a493708e6ab71a
     container_name: model-sg-glm52-fp8-tp8
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
     command: *glm52-cmd
     volumes:
       - compile_cache:/root/.cache
