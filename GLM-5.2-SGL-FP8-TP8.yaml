@@ -105,6 +105,9 @@ services:
     image: nginx@sha256:1d13701a5f9f3fb01aaa88cef2344d65b6b5bf6b7d9fa4cf0dca557a8d7702ba
     container_name: proxy-nginx
     command: /bin/sh -c 'while :; do sleep 6h; nginx -s reload; done & nginx -g "daemon off;"'
+    depends_on:
+      proxy-glm52-fp8-tp8:
+        condition: service_started
     ports:
       - "8000:80"
       - "8444:443"
@@ -385,7 +388,8 @@ configs:
       }
 
       server {
-          listen 443 ssl http2;
+          listen 443 ssl;
+          http2 on;
           server_name glm-5-2.completions.near.ai;
           ssl_certificate /etc/letsencrypt/live/completions.near.ai/fullchain.pem;
           ssl_certificate_key /etc/letsencrypt/live/completions.near.ai/privkey.pem;
