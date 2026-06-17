@@ -66,12 +66,6 @@ x-vllm-proxy-common: &vllm-proxy-common
   restart: unless-stopped
   logging: *logging-conf
 
-x-downloader-common: &downloader-common
-  image: ghcr.io/astral-sh/uv:python3.11-bookworm-slim@sha256:4f5d923c9dcea037f57bda425dd209f3ec643da2f0b74227f68d09dab0b3bb36
-  entrypoint: ["sh", "-c"]
-  restart: "no"
-  logging: *logging-conf
-
 # Shared sglang args. zai-org/GLM-5.2-FP8 = official FP8 (W8A8 block-fp8). Single TP8.
 # THROUGHPUT-safe default (no spec). See header for the EAGLE low-latency variant.
 x-glm52-cmd: &glm52-cmd >
@@ -107,20 +101,6 @@ x-glm52-model-env: &glm52-model-env
   TRITON_CACHE_DIR: /root/.cache/triton
 
 services:
-  model-downloader:
-    <<: *downloader-common
-    container_name: model-downloader
-    command:
-      - |
-        set -e
-        echo "Downloading zai-org/GLM-5.2-FP8..."
-        uvx --from 'huggingface_hub[hf_xet]' hf download zai-org/GLM-5.2-FP8 --revision f6142f127a14b58dc602592e996cd7d8ff139351
-        echo "Download complete."
-    volumes:
-      - huggingface_cache:/root/.cache/huggingface
-    environment:
-      - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
-
   proxy-nginx:
     image: nginx@sha256:1d13701a5f9f3fb01aaa88cef2344d65b6b5bf6b7d9fa4cf0dca557a8d7702ba
     container_name: proxy-nginx
@@ -183,9 +163,6 @@ services:
   model-sg-glm52-fp8-tp8:
     <<: *nvidia
     init: true
-    depends_on:
-      model-downloader:
-        condition: service_completed_successfully
     image: lmsysorg/sglang@sha256:81abd2a6617679f0df48cb20381df68322f90b5599ae068535a493708e6ab71a
     container_name: model-sg-glm52-fp8-tp8
     command: *glm52-cmd
