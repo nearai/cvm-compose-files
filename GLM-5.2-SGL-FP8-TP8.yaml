@@ -72,7 +72,7 @@ x-glm52-cmd: &glm52-cmd >
   sglang serve
   --model-path zai-org/GLM-5.2-FP8
   --revision 3722e206c8461c750e5ab73f5528eba42d0c6a37
-  --served-model-name zai-org/GLM-5.2-FP8
+  --served-model-name z-ai/glm-5.2
   --tp 8
   --kv-cache-dtype fp8_e4m3
   --reasoning-parser glm45
@@ -152,7 +152,7 @@ services:
       - CLOUD_API_USAGE_TOKEN=${CLOUD_API_USAGE_TOKEN}
       - COMPOSE_MANAGER_URL=http://compose-manager:8080
       - LOG_FORMAT=json
-      - MODEL_NAME=zai-org/GLM-5.2-FP8
+      - MODEL_NAME=z-ai/glm-5.2
       - OHTTP_ENABLED=true
       - TOKEN=${PROXY_TOKEN}
       - VLLM_BACKEND_URLS=http://model-sg-glm52-fp8-tp8:8000
@@ -161,13 +161,13 @@ services:
       - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
       - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:zai-org/GLM-5.2-FP8","deployment:GLM-5.2-SGL-FP8-TP8","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:z-ai/glm-5.2","deployment:GLM-5.2-SGL-FP8-TP8","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "inference-proxy"
       nearai.otel.service: "vllm-proxy"
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
-      nearai.otel.model: "zai-org/GLM-5.2-FP8"
+      nearai.otel.model: "z-ai/glm-5.2"
       nearai.otel.deployment: "GLM-5.2-SGL-FP8-TP8"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
@@ -196,14 +196,14 @@ services:
     labels:
       com.datadoghq.ad.check_names: '["openmetrics"]'
       com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:zai-org/GLM-5.2-FP8","deployment:GLM-5.2-SGL-FP8-TP8","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-sg-glm52-fp8-tp8:8000/metrics", "histogram_buckets_as_distributions": true, "metrics":["sglang:*"], "service": "glm-5.2-sgl-fp8-tp8", "tags":["model:zai-org/GLM-5.2-FP8","deployment:GLM-5.2-SGL-FP8-TP8","ip:${HOST_IP}","port:8000"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.2","deployment:GLM-5.2-SGL-FP8-TP8","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-sg-glm52-fp8-tp8:8000/metrics", "histogram_buckets_as_distributions": true, "metrics":["sglang:*"], "service": "glm-5.2-sgl-fp8-tp8", "tags":["model:z-ai/glm-5.2","deployment:GLM-5.2-SGL-FP8-TP8","ip:${HOST_IP}","port:8000"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
-      nearai.otel.model: "zai-org/GLM-5.2-FP8"
+      nearai.otel.model: "z-ai/glm-5.2"
       nearai.otel.deployment: "GLM-5.2-SGL-FP8-TP8"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
@@ -231,14 +231,14 @@ services:
     labels:
       com.datadoghq.ad.check_names: '["dcgm"]'
       com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint": "http://%%host%%:9400/metrics", "tags":["model:zai-org/GLM-5.2-FP8","deployment:GLM-5.2-SGL-FP8-TP8","ip:${HOST_IP}"]}]'
-      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:zai-org/GLM-5.2-FP8","deployment:GLM-5.2-SGL-FP8-TP8","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint": "http://%%host%%:9400/metrics", "tags":["model:z-ai/glm-5.2","deployment:GLM-5.2-SGL-FP8-TP8","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:z-ai/glm-5.2","deployment:GLM-5.2-SGL-FP8-TP8","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "dcgm"
       nearai.otel.service: "dcgm-exporter"
       nearai.otel.port: "9400"
       nearai.otel.path: "/metrics"
-      nearai.otel.model: "zai-org/GLM-5.2-FP8"
+      nearai.otel.model: "z-ai/glm-5.2"
       nearai.otel.deployment: "GLM-5.2-SGL-FP8-TP8"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
@@ -310,7 +310,7 @@ configs:
                     labels:
                       service: "vllm-proxy"
                       container_name: "proxy-glm52-fp8-tp8"
-                      model: "zai-org/GLM-5.2-FP8"
+                      model: "z-ai/glm-5.2"
                       deployment: "GLM-5.2-SGL-FP8-TP8"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
@@ -324,7 +324,7 @@ configs:
                     labels:
                       service: "sglang"
                       container_name: "model-sg-glm52-fp8-tp8"
-                      model: "zai-org/GLM-5.2-FP8"
+                      model: "z-ai/glm-5.2"
                       deployment: "GLM-5.2-SGL-FP8-TP8"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
@@ -338,7 +338,7 @@ configs:
                     labels:
                       service: "dcgm-exporter"
                       container_name: "dcgm-exporter"
-                      model: "zai-org/GLM-5.2-FP8"
+                      model: "z-ai/glm-5.2"
                       deployment: "GLM-5.2-SGL-FP8-TP8"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
@@ -464,9 +464,9 @@ configs:
 
       mark_registered() {
         register_endpoint "$$ENDPOINT" "$${TLS_PORT}"
-        register_model "zai-org/GLM-5.2-FP8" "glm-5-2.completions.near.ai"
+        register_model "z-ai/glm-5.2" "glm-5-2.completions.near.ai"
         if [ "$$REGISTERED" = false ]; then
-          echo "[GLM-5.2-SGL-FP8-TP8] Registered zai-org/GLM-5.2-FP8 (TP8 FP8) at $$ENDPOINT"
+          echo "[GLM-5.2-SGL-FP8-TP8] Registered z-ai/glm-5.2 (TP8 FP8) at $$ENDPOINT"
         fi
         REGISTERED=true
       }
@@ -476,7 +476,7 @@ configs:
         status=$$(curl -sS --connect-timeout 10 --max-time 45 -o /dev/null -w "%{http_code}" \
           -X POST "http://model-sg-glm52-fp8-tp8:8000/v1/chat/completions" \
           -H "Content-Type: application/json" \
-          -d '{"model":"zai-org/GLM-5.2-FP8","messages":[{"role":"user","content":"hi"}],"max_tokens":1}')
+          -d '{"model":"z-ai/glm-5.2","messages":[{"role":"user","content":"hi"}],"max_tokens":1}')
         curl_status=$$?
 
         if [ "$$curl_status" -ne 0 ]; then
