@@ -35,6 +35,7 @@ x-vllm-common: &vllm-common
     - TRITON_CACHE_DIR=/workspace-cache/triton
     - XDG_CACHE_HOME=/workspace-cache
     - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    - VLLM_MEDIA_URL_ALLOW_REDIRECTS=0
     - OPENBLAS_L2_SIZE=2097152
     - NCCL_DEBUG=WARN
   restart: unless-stopped
@@ -72,6 +73,8 @@ x-gemma4-qat-common: &gemma4-qat-common
   <<: *vllm-common
   # Official Gemma 4 QAT compressed-tensors checkpoint. vLLM auto-detects
   # W4A16 quantization and infers the full 262144-token context.
+  # Limit remote media fetches so broken public social-media URLs fail
+  # validation before vLLM attempts a fetch and returns retryable 500s.
   command: >
     google/gemma-4-31B-it-qat-w4a16-ct
     --revision ca9d5250d08695be35f2d632b434938b6d4aecfe
@@ -79,6 +82,9 @@ x-gemma4-qat-common: &gemma4-qat-common
     --tensor-parallel-size 2
     --gpu-memory-utilization 0.80
     --trust-remote-code
+    --tool-call-parser gemma4
+    --enable-auto-tool-choice
+    --allowed-media-domains ${VLLM_ALLOWED_MEDIA_DOMAINS:-prod-files-secure.s3.us-west-2.amazonaws.com}
     --host 0.0.0.0
     --port 8000
 
@@ -102,8 +108,8 @@ services:
     container_name: proxy-nginx
     command: /bin/sh -c 'while :; do sleep 6h; nginx -s reload; done & nginx -g "daemon off;"'
     ports:
-      - "8000:80"
-      - "8444:443"
+      - "${HTTP_PORT:-8000}:80"
+      - "${TLS_PORT:-8444}:443"
     volumes:
       - certs:/etc/letsencrypt:ro
     configs:
@@ -153,7 +159,7 @@ services:
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:google/gemma-4-31B-it","model_path:google/gemma-4-31B-it-qat-w4a16-ct","precision:w4a16","deployment:gemma4-31b-qat-vllm","ip:${HOST_IP}","port:8000"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:google/gemma-4-31B-it","model_path:google/gemma-4-31B-it-qat-w4a16-ct","precision:w4a16","deployment:gemma4-31b-qat-vllm","ip:${HOST_IP}","port:${HTTP_PORT:-8000}"]}]'
 
   model-vllm-gemma4-qat-1:
     <<: *gemma4-qat-common
