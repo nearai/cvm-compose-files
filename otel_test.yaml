@@ -469,11 +469,11 @@ services:
       nearai.otel.host: "${CVM_HOST}"
       nearai.otel.ip: "${HOST_IP}"
 
-  # --- App telemetry sidecar (self-hosted gateway + Datadog OTLP fanout) ---
+  # --- App telemetry sidecar (self-hosted gateway) ---
   # Receives request traces via OTLP/gRPC :4317, scrapes app/DCGM metrics, tails
   # labeled Docker logs, and exports through telemetry.infra.near.ai using the
-  # compose-manager-provided MONITORING_INGEST_TOKEN while double-shipping OTLP
-  # metrics/traces to the in-CVM Datadog agent during the migration.
+  # compose-manager-provided MONITORING_INGEST_TOKEN. Datadog continues to use
+  # the existing Docker labels/autodiscovery path for inference logs and metrics.
   otelcol-contrib:
     image: otel/opentelemetry-collector-contrib@sha256:85ac41c2db88d0df9bd6145e608a3cb023f5d8443868adbfbbf66efb51087917
     container_name: otelcol-contrib
@@ -818,14 +818,6 @@ configs:
             queue_size: 128
             storage: file_storage
 
-        otlp/datadog_agent:
-          endpoint: datadog-agent:4317
-          tls:
-            insecure: true
-          sending_queue:
-            queue_size: 128
-            storage: file_storage
-
       extensions:
         file_storage:
           directory: /var/lib/otelcol-contrib/storage
@@ -845,7 +837,7 @@ configs:
           metrics/otlp:
             receivers: [otlp]
             processors: [memory_limiter, resource, batch]
-            exporters: [otlphttp/gateway, otlp/datadog_agent]
+            exporters: [otlphttp/gateway]
           metrics/self:
             receivers: [prometheus/self]
             processors: [memory_limiter, resource, batch]
@@ -853,7 +845,7 @@ configs:
           traces:
             receivers: [otlp]
             processors: [memory_limiter, resource, batch]
-            exporters: [otlphttp/gateway, otlp/datadog_agent]
+            exporters: [otlphttp/gateway]
         telemetry:
           metrics:
             address: localhost:8888

@@ -180,6 +180,10 @@ def validate_scrape_contract(file, compose, log_tags_by_service, errors)
   config = compose.dig("configs", "otelcol_app_config", "content")
   return unless config
 
+  if config.include?("datadog-agent:4317") || config.include?("otlp/datadog_agent")
+    add_error(errors, file, "configs.otelcol_app_config", "standalone inference compose files must not export OTLP to datadog-agent:4317")
+  end
+
   targets = scrape_targets(config)
   expected_ports = expected_public_ports(compose)
   scrape_services = {}

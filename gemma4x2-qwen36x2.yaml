@@ -918,14 +918,6 @@ configs:
             queue_size: 128
             storage: file_storage
 
-        otlp/datadog_agent:
-          endpoint: datadog-agent:4317
-          tls:
-            insecure: true
-          sending_queue:
-            queue_size: 128
-            storage: file_storage
-
       extensions:
         file_storage:
           directory: /var/lib/otelcol-contrib/storage
@@ -945,7 +937,7 @@ configs:
           metrics/otlp:
             receivers: [otlp]
             processors: [memory_limiter, resource, batch]
-            exporters: [otlphttp/gateway, otlp/datadog_agent]
+            exporters: [otlphttp/gateway]
           metrics/self:
             receivers: [prometheus/self]
             processors: [memory_limiter, resource, batch]
@@ -953,7 +945,7 @@ configs:
           traces:
             receivers: [otlp]
             processors: [memory_limiter, resource, batch]
-            exporters: [otlphttp/gateway, otlp/datadog_agent]
+            exporters: [otlphttp/gateway]
         telemetry:
           metrics:
             address: localhost:8888
