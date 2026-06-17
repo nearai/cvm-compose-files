@@ -143,8 +143,6 @@ services:
   proxy-glm52-fp8-tp8:
     <<: *vllm-proxy-common
     container_name: proxy-glm52-fp8-tp8
-    depends_on:
-      - model-sg-glm52-fp8-tp8
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - CLOUD_API_URL=https://cloud-api.near.ai
@@ -267,7 +265,7 @@ configs:
 
       mark_registered() {
         register_endpoint "$$ENDPOINT" "$${TLS_PORT}"
-        register_model "zai-org/GLM-5.2-FP8" "glm-5-2-sgl-fp8-tp8.completions.near.ai"
+        register_model "zai-org/GLM-5.2-FP8" "glm-5-2.completions.near.ai"
         if [ "$$REGISTERED" = false ]; then
           echo "[GLM-5.2-SGL-FP8-TP8] Registered zai-org/GLM-5.2-FP8 (TP8 FP8) at $$ENDPOINT"
         fi
@@ -388,7 +386,7 @@ configs:
 
       server {
           listen 443 ssl http2;
-          server_name glm-5-2-sgl-fp8-tp8.completions.near.ai;
+          server_name glm-5-2.completions.near.ai;
           ssl_certificate /etc/letsencrypt/live/completions.near.ai/fullchain.pem;
           ssl_certificate_key /etc/letsencrypt/live/completions.near.ai/privkey.pem;
           ssl_protocols TLSv1.2 TLSv1.3;
