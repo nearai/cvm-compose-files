@@ -79,7 +79,7 @@ x-gemma4-qat-common: &gemma4-qat-common
     google/gemma-4-31B-it-qat-w4a16-ct
     --revision ca9d5250d08695be35f2d632b434938b6d4aecfe
     --served-model-name google/gemma-4-31B-it
-    --tensor-parallel-size 2
+    --tensor-parallel-size 1
     --gpu-memory-utilization 0.80
     --trust-remote-code
     --tool-call-parser gemma4
@@ -154,7 +154,7 @@ services:
       - MODEL_NAME=google/gemma-4-31B-it
       - OHTTP_ENABLED=true
       - TOKEN=${PROXY_TOKEN}
-      - VLLM_BACKEND_URLS=http://model-vllm-gemma4-qat-1:8000,http://model-vllm-gemma4-qat-2:8000
+      - VLLM_BACKEND_URLS=http://model-vllm-gemma4-qat-1:8000,http://model-vllm-gemma4-qat-2:8000,http://model-vllm-gemma4-qat-3:8000,http://model-vllm-gemma4-qat-4:8000
       - VLLM_PROXY_MAX_REQUEST_SIZE=104857600
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
@@ -169,7 +169,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["0","1"]
+              device_ids: ["0"]
               capabilities: [gpu]
     labels:
       com.datadoghq.ad.check_names: '["vllm"]'
@@ -185,13 +185,45 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["2","3"]
+              device_ids: ["1"]
               capabilities: [gpu]
     labels:
       com.datadoghq.ad.check_names: '["vllm"]'
       com.datadoghq.ad.init_configs: "[{}]"
       com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:google/gemma-4-31B-it","model_path:google/gemma-4-31B-it-qat-w4a16-ct","precision:w4a16","deployment:gemma4-31b-qat-vllm","ip:${HOST_IP}","port:8000","instance:2"]}]'
       com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-gemma4-qat-2:8000/metrics","histogram_buckets_as_distributions":true,"service":"model-vllm-gemma4-qat-2","tags":["model:google/gemma-4-31B-it","model_path:google/gemma-4-31B-it-qat-w4a16-ct","precision:w4a16","deployment:gemma4-31b-qat-vllm","ip:${HOST_IP}","port:8000","instance:2"]}]'
+
+  model-vllm-gemma4-qat-3:
+    <<: *gemma4-qat-common
+    container_name: model-vllm-gemma4-qat-3
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["2"]
+              capabilities: [gpu]
+    labels:
+      com.datadoghq.ad.check_names: '["vllm"]'
+      com.datadoghq.ad.init_configs: "[{}]"
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:google/gemma-4-31B-it","model_path:google/gemma-4-31B-it-qat-w4a16-ct","precision:w4a16","deployment:gemma4-31b-qat-vllm","ip:${HOST_IP}","port:8000","instance:3"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-gemma4-qat-3:8000/metrics","histogram_buckets_as_distributions":true,"service":"model-vllm-gemma4-qat-3","tags":["model:google/gemma-4-31B-it","model_path:google/gemma-4-31B-it-qat-w4a16-ct","precision:w4a16","deployment:gemma4-31b-qat-vllm","ip:${HOST_IP}","port:8000","instance:3"]}]'
+
+  model-vllm-gemma4-qat-4:
+    <<: *gemma4-qat-common
+    container_name: model-vllm-gemma4-qat-4
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["3"]
+              capabilities: [gpu]
+    labels:
+      com.datadoghq.ad.check_names: '["vllm"]'
+      com.datadoghq.ad.init_configs: "[{}]"
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:google/gemma-4-31B-it","model_path:google/gemma-4-31B-it-qat-w4a16-ct","precision:w4a16","deployment:gemma4-31b-qat-vllm","ip:${HOST_IP}","port:8000","instance:4"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-gemma4-qat-4:8000/metrics","histogram_buckets_as_distributions":true,"service":"model-vllm-gemma4-qat-4","tags":["model:google/gemma-4-31B-it","model_path:google/gemma-4-31B-it-qat-w4a16-ct","precision:w4a16","deployment:gemma4-31b-qat-vllm","ip:${HOST_IP}","port:8000","instance:4"]}]'
 
   dcgm-gemma4-qat-vllm:
     <<: *dcgm-common
@@ -270,7 +302,7 @@ configs:
         register_endpoint "$$ENDPOINT" "$${TLS_PORT}"
         register_model "google/gemma-4-31B-it" "gemma-4-31b.completions.near.ai"
         if [ "$$REGISTERED" = false ]; then
-          echo "[gemma4-31b-qat-vllm] Registered google/gemma-4-31B-it (QAT W4A16 weights, vLLM, 2x TP2) at $$ENDPOINT"
+          echo "[gemma4-31b-qat-vllm] Registered google/gemma-4-31B-it (QAT W4A16 weights, vLLM, 4x TP1) at $$ENDPOINT"
         fi
         REGISTERED=true
       }
@@ -305,15 +337,17 @@ configs:
         esac
       }
 
-      # Aggregate both replicas: unhealthy if either is down; saturated if either
-      # is saturated (none down); otherwise ok. Saturated keeps the endpoint
+      # Aggregate all replicas: unhealthy if any replica is down; saturated if any
+      # replica is saturated (none down); otherwise ok. Saturated keeps the endpoint
       # registered so a busy-but-healthy host is not dropped from rotation.
       check_inference() {
-        echo "Performing health check on both replicas..."
+        echo "Performing health check on all replicas..."
         check_chat model-vllm-gemma4-qat-1 "google/gemma-4-31B-it"; s1=$$?
         check_chat model-vllm-gemma4-qat-2 "google/gemma-4-31B-it"; s2=$$?
-        if [ "$$s1" -eq 1 ] || [ "$$s2" -eq 1 ]; then return 1; fi
-        if [ "$$s1" -eq 2 ] || [ "$$s2" -eq 2 ]; then return 2; fi
+        check_chat model-vllm-gemma4-qat-3 "google/gemma-4-31B-it"; s3=$$?
+        check_chat model-vllm-gemma4-qat-4 "google/gemma-4-31B-it"; s4=$$?
+        if [ "$$s1" -eq 1 ] || [ "$$s2" -eq 1 ] || [ "$$s3" -eq 1 ] || [ "$$s4" -eq 1 ]; then return 1; fi
+        if [ "$$s1" -eq 2 ] || [ "$$s2" -eq 2 ] || [ "$$s3" -eq 2 ] || [ "$$s4" -eq 2 ]; then return 2; fi
         return 0
       }
 
