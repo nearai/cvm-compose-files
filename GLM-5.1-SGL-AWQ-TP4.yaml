@@ -121,12 +121,20 @@ x-awq-build: &awq-build
 #   pool/replica. Large prefill chunks are the prod OOM trigger — chunked-prefill now
 #   uses the modest sglang default (8192) instead of 16384 (also part of the EAGLE crash
 #   combo above). EAGLE draft/verify buffers shrink the pool slightly vs no-EAGLE.
+#
+# *** DIST-INIT FIX (--dist-init-addr 127.0.0.1:29500): ***
+#   On the dstack bridge network, sglang's default distributed-init address resolves to
+#   0.0.0.0, which the TP worker ranks cannot connect to -> c10d TCPStore times out after
+#   600s ("client socket has timed out ... trying to connect to (0.0.0.0, <port>)"). Forcing
+#   127.0.0.1 makes the in-container loopback TP rendezvous work. Both TP4 backends are on
+#   separate net namespaces (dstack_default bridge), so the same port 29500 in each is isolated.
 x-awq-cmd: &awq-cmd >
   sglang serve
   --model-path QuantTrio/GLM-5.1-AWQ
   --revision 8f60817aa28023f2607850d1a1e51d21aa34817a
   --served-model-name zai-org/GLM-5.1-FP8
   --tp 4
+  --dist-init-addr 127.0.0.1:29500
   --disable-shared-experts-fusion
   --kv-cache-dtype fp8_e4m3
   --reasoning-parser glm45
@@ -138,7 +146,6 @@ x-awq-cmd: &awq-cmd >
   --speculative-num-steps 3
   --speculative-eagle-topk 1
   --speculative-num-draft-tokens 4
-  --context-length 32768
   --watchdog-timeout 1800
   --port 8000
   --host 0.0.0.0
