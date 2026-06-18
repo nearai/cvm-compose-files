@@ -15,7 +15,7 @@ x-nvidia: &nvidia
       hard: 65535
 
 x-vllm-proxy-common: &vllm-proxy-common
-  image: nearaidev/vllm-proxy-rs@sha256:fe037f0061fc61fbdcf80efde534b8700f9f54f18b8a39e290263b3e1b0c00e1
+  image: nearaidev/vllm-proxy-rs@sha256:daaf83d5a87cdbec2399940b92cbf8d59d0a2e40e0c5f40cf0a89da1010a584f
   user: root
   privileged: true
   <<: *nvidia
@@ -107,6 +107,8 @@ services:
       - MODEL_NAME=zai-org/GLM-5.1-FP8
       - OHTTP_ENABLED=true
       - TOKEN=${PROXY_TOKEN}
+      - FUSION_ENABLED=${FUSION_ENABLED}
+      - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
       # One proxy load-balances both TP4 replicas (repo's multi-replica pattern).
       - VLLM_BACKEND_URLS=http://model-sg-glm51-awq-1:8000,http://model-sg-glm51-awq-2:8000
       - VLLM_PROXY_MAX_REQUEST_SIZE=104857600

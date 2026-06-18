@@ -38,6 +38,10 @@ jobs:
           PROXY_TOKEN: ci-dummy
           WEB_CONTEXT_SEARCH_URL: http://ci-dummy
           WEB_CONTEXT_SEARCH_API_KEY: ci-dummy
+          # Fusion (server-side multi-model deliberation); at deploy time
+          # FUSION_INTERNAL_BEARER_TOKEN mirrors PROXY_TOKEN, both from compose-manager.
+          FUSION_ENABLED: "true"
+          FUSION_INTERNAL_BEARER_TOKEN: ci-dummy
         run: |
           exit_code=0
           for file in *.yaml; do
@@ -66,6 +70,10 @@ jobs:
           PROXY_TOKEN: ci-dummy
           WEB_CONTEXT_SEARCH_URL: http://ci-dummy
           WEB_CONTEXT_SEARCH_API_KEY: ci-dummy
+          # Fusion (server-side multi-model deliberation); at deploy time
+          # FUSION_INTERNAL_BEARER_TOKEN mirrors PROXY_TOKEN, both from compose-manager.
+          FUSION_ENABLED: "true"
+          FUSION_INTERNAL_BEARER_TOKEN: ci-dummy
         run: |
           set -euo pipefail
           for file in *.yaml; do
