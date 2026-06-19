@@ -15,14 +15,16 @@
 #     4.0->5.4 (accept-rate 0.6->0.88) at c=1 -> strong single-stream decode win.
 #   - 1M CONTEXT: needle-in-haystack retrieved verbatim at 197K / 472K / 748K input tokens.
 #
-# *** KNOWN STARTUP ISSUE UNDER INVESTIGATION ***
-#   Under Confidential Computing the sglang DeepGEMM AOT pre-compile and full cudagraph capture
-#   were observed to HANG at startup (DeepGEMM precompile: 0 progress for 34 min; cudagraph
-#   capture: stuck at 0/52). A workaround (SGLANG_ENABLE_JIT_DEEPGEMM=0 + --disable-cuda-graph)
-#   boots it but de-tunes the FP8 dense GEMM kernel (a throughput floor). This config ships the
-#   OPTIMAL path (DeepGEMM + cudagraph ON); the startup hang is being investigated separately.
-#   Likely fix: an offline-built DeepGEMM cache persisted via the compile_cache volume
-#   (`python3 -m sglang.compile_deep_gemm --tp 8`) baked into the image.
+# *** CC STARTUP FIX: --disable-custom-all-reduce (REQUIRED under Confidential Computing) ***
+#   Root cause: sglang's custom all-reduce kernel fails during CUDA-graph capture under CC/PPCIE
+#   ("Capture cuda graph failed: Runtime check failed at .../distributed/custom_all_reduce.cu"
+#   -> sigquit), because it uses direct peer-GPU memory access that PPCIE memory-encryption
+#   blocks (same class as the DeepEP all-to-all PPCIE crash). --disable-custom-all-reduce falls
+#   back to NCCL all-reduce, which works under CC. VERIFIED: with this flag the OPTIMAL path
+#   (DeepGEMM + cudagraph both ON) boots end-to-end on 8xH200 CC, serves, and passes the 1M-ctx
+#   + MTP checks. Do NOT use SGLANG_ENABLE_JIT_DEEPGEMM=0 / --disable-cuda-graph (throughput
+#   floor) — they are unnecessary. Cold start is ~60 min (cudagraph capture ~840s + EAGLE
+#   draft compile); persist it via the compile_cache volume to skip recompile on restart.
 #
 # IMAGE: lmsysorg/sglang@sha256:1c64fde9... = v0.5.13.post1 (validated here; the only engine/
 # version PhalaCloud tested — carries the `w4afp8` quant path). The older 81abd2a6 image used
@@ -78,6 +80,7 @@ x-glm52-cmd: &glm52-cmd >
   --served-model-name z-ai/glm-5.2
   --quantization w4afp8
   --disable-shared-experts-fusion
+  --disable-custom-all-reduce
   --tp 8
   --kv-cache-dtype fp8_e4m3
   --reasoning-parser glm45
