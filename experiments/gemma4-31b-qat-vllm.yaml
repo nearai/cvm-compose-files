@@ -17,7 +17,7 @@ x-nvidia: &nvidia
 x-vllm-common: &vllm-common
   <<: *nvidia
   init: true
-  image: vllm/vllm-openai@sha256:953d3a06d5e64ab582985cd7401289d3abf2a2c14ef2158e9a84313daeec77d7
+  image: vllm/vllm-openai@sha256:960ac5b3fda0547c3ce64d8f69bae9fa242d5ae5382fc74a98cd8ef13950e403  # vLLM v0.23.1rc1 — FA4 gemma-4 attention (PR #42175); ~+50% prefill throughput. Repin to v0.23.1 stable when released.
   depends_on:
     model-downloader:
       condition: service_completed_successfully
@@ -71,16 +71,20 @@ x-dcgm-common: &dcgm-common
 
 x-gemma4-qat-common: &gemma4-qat-common
   <<: *vllm-common
-  # Official Gemma 4 QAT compressed-tensors checkpoint. vLLM auto-detects
-  # W4A16 quantization and infers the full 262144-token context.
+  # RedHatAI FP8-block (W8A8) on vLLM FA4 (image above) — FA4 + FP8 tensor cores make the
+  # compute-bound prefill ~1.9x faster vs the forced-Triton path (H200, internal serving
+  # benchmark), at quality identical to the W4A16 QAT checkpoint. Multimodal (image) is
+  # enabled and verified working under FA4 at no measurable throughput cost; native 262144
+  # context is inferred from config.json (no --max-model-len).
   # Limit remote media fetches so broken public social-media URLs fail
   # validation before vLLM attempts a fetch and returns retryable 500s.
   command: >
-    google/gemma-4-31B-it-qat-w4a16-ct
-    --revision ca9d5250d08695be35f2d632b434938b6d4aecfe
+    RedHatAI/gemma-4-31B-it-FP8-block
+    --revision 9a9994e657e035c1b79886566dd8dd2f6ba96d29
     --served-model-name google/gemma-4-31B-it
     --tensor-parallel-size 1
-    --gpu-memory-utilization 0.80
+    --gpu-memory-utilization 0.90
+    --max-num-batched-tokens 16384
     --trust-remote-code
     --tool-call-parser gemma4
     --enable-auto-tool-choice
@@ -95,8 +99,8 @@ services:
     command:
       - |
         set -e
-        echo "Downloading google/gemma-4-31B-it-qat-w4a16-ct..."
-        uvx --from 'huggingface_hub[hf_xet]' hf download google/gemma-4-31B-it-qat-w4a16-ct --revision ca9d5250d08695be35f2d632b434938b6d4aecfe
+        echo "Downloading RedHatAI/gemma-4-31B-it-FP8-block..."
+        uvx --from 'huggingface_hub[hf_xet]' hf download RedHatAI/gemma-4-31B-it-FP8-block --revision 9a9994e657e035c1b79886566dd8dd2f6ba96d29
         echo "Download complete."
     volumes:
       - huggingface_cache:/root/.cache/huggingface
@@ -163,7 +167,7 @@ services:
       - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
       - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:google/gemma-4-31B-it","model_path:google/gemma-4-31B-it-qat-w4a16-ct","precision:w4a16","deployment:gemma4-31b-qat-vllm","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:${HTTP_PORT:-8000}"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:google/gemma-4-31B-it","model_path:RedHatAI/gemma-4-31B-it-FP8-block","precision:fp8","deployment:gemma4-31b-qat-vllm","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:${HTTP_PORT:-8000}"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "inference-proxy"
       nearai.otel.service: "vllm-proxy"
@@ -188,8 +192,8 @@ services:
     labels:
       com.datadoghq.ad.check_names: '["vllm"]'
       com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:google/gemma-4-31B-it","model_path:google/gemma-4-31B-it-qat-w4a16-ct","precision:w4a16","deployment:gemma4-31b-qat-vllm","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:1"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-gemma4-qat-1:8000/metrics","histogram_buckets_as_distributions":true,"service":"model-vllm-gemma4-qat-1","tags":["model:google/gemma-4-31B-it","model_path:google/gemma-4-31B-it-qat-w4a16-ct","precision:w4a16","deployment:gemma4-31b-qat-vllm","ip:${HOST_IP}","port:8000","instance:1"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:google/gemma-4-31B-it","model_path:RedHatAI/gemma-4-31B-it-FP8-block","precision:fp8","deployment:gemma4-31b-qat-vllm","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:1"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-gemma4-qat-1:8000/metrics","histogram_buckets_as_distributions":true,"service":"model-vllm-gemma4-qat-1","tags":["model:google/gemma-4-31B-it","model_path:RedHatAI/gemma-4-31B-it-FP8-block","precision:fp8","deployment:gemma4-31b-qat-vllm","ip:${HOST_IP}","port:8000","instance:1"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
@@ -214,8 +218,8 @@ services:
     labels:
       com.datadoghq.ad.check_names: '["vllm"]'
       com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:google/gemma-4-31B-it","model_path:google/gemma-4-31B-it-qat-w4a16-ct","precision:w4a16","deployment:gemma4-31b-qat-vllm","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:2"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-gemma4-qat-2:8000/metrics","histogram_buckets_as_distributions":true,"service":"model-vllm-gemma4-qat-2","tags":["model:google/gemma-4-31B-it","model_path:google/gemma-4-31B-it-qat-w4a16-ct","precision:w4a16","deployment:gemma4-31b-qat-vllm","ip:${HOST_IP}","port:8000","instance:2"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:google/gemma-4-31B-it","model_path:RedHatAI/gemma-4-31B-it-FP8-block","precision:fp8","deployment:gemma4-31b-qat-vllm","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:2"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-gemma4-qat-2:8000/metrics","histogram_buckets_as_distributions":true,"service":"model-vllm-gemma4-qat-2","tags":["model:google/gemma-4-31B-it","model_path:RedHatAI/gemma-4-31B-it-FP8-block","precision:fp8","deployment:gemma4-31b-qat-vllm","ip:${HOST_IP}","port:8000","instance:2"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
@@ -240,8 +244,8 @@ services:
     labels:
       com.datadoghq.ad.check_names: '["vllm"]'
       com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:google/gemma-4-31B-it","model_path:google/gemma-4-31B-it-qat-w4a16-ct","precision:w4a16","deployment:gemma4-31b-qat-vllm","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:3"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-gemma4-qat-3:8000/metrics","histogram_buckets_as_distributions":true,"service":"model-vllm-gemma4-qat-3","tags":["model:google/gemma-4-31B-it","model_path:google/gemma-4-31B-it-qat-w4a16-ct","precision:w4a16","deployment:gemma4-31b-qat-vllm","ip:${HOST_IP}","port:8000","instance:3"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:google/gemma-4-31B-it","model_path:RedHatAI/gemma-4-31B-it-FP8-block","precision:fp8","deployment:gemma4-31b-qat-vllm","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:3"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-gemma4-qat-3:8000/metrics","histogram_buckets_as_distributions":true,"service":"model-vllm-gemma4-qat-3","tags":["model:google/gemma-4-31B-it","model_path:RedHatAI/gemma-4-31B-it-FP8-block","precision:fp8","deployment:gemma4-31b-qat-vllm","ip:${HOST_IP}","port:8000","instance:3"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
@@ -266,8 +270,8 @@ services:
     labels:
       com.datadoghq.ad.check_names: '["vllm"]'
       com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:google/gemma-4-31B-it","model_path:google/gemma-4-31B-it-qat-w4a16-ct","precision:w4a16","deployment:gemma4-31b-qat-vllm","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:4"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-gemma4-qat-4:8000/metrics","histogram_buckets_as_distributions":true,"service":"model-vllm-gemma4-qat-4","tags":["model:google/gemma-4-31B-it","model_path:google/gemma-4-31B-it-qat-w4a16-ct","precision:w4a16","deployment:gemma4-31b-qat-vllm","ip:${HOST_IP}","port:8000","instance:4"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:google/gemma-4-31B-it","model_path:RedHatAI/gemma-4-31B-it-FP8-block","precision:fp8","deployment:gemma4-31b-qat-vllm","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:4"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-gemma4-qat-4:8000/metrics","histogram_buckets_as_distributions":true,"service":"model-vllm-gemma4-qat-4","tags":["model:google/gemma-4-31B-it","model_path:RedHatAI/gemma-4-31B-it-FP8-block","precision:fp8","deployment:gemma4-31b-qat-vllm","ip:${HOST_IP}","port:8000","instance:4"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
@@ -294,8 +298,8 @@ services:
     labels:
       com.datadoghq.ad.check_names: '["dcgm"]'
       com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://%%host%%:9400/metrics","tags":["model:google/gemma-4-31B-it","model_path:google/gemma-4-31B-it-qat-w4a16-ct","precision:w4a16","deployment:gemma4-31b-qat-vllm","ip:${HOST_IP}"]}]'
-      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:google/gemma-4-31B-it","model_path:google/gemma-4-31B-it-qat-w4a16-ct","precision:w4a16","deployment:gemma4-31b-qat-vllm","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://%%host%%:9400/metrics","tags":["model:google/gemma-4-31B-it","model_path:RedHatAI/gemma-4-31B-it-FP8-block","precision:fp8","deployment:gemma4-31b-qat-vllm","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:google/gemma-4-31B-it","model_path:RedHatAI/gemma-4-31B-it-FP8-block","precision:fp8","deployment:gemma4-31b-qat-vllm","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "dcgm"
       nearai.otel.service: "dcgm-exporter"
@@ -450,8 +454,8 @@ configs:
                       host: "${CVM_HOST}"
                       ip: "${HOST_IP}"
                       port: "${HTTP_PORT:-8000}"
-                      model_path: "google/gemma-4-31B-it-qat-w4a16-ct"
-                      precision: "w4a16"
+                      model_path: "RedHatAI/gemma-4-31B-it-FP8-block"
+                      precision: "fp8"
               - job_name: vllm-model-vllm-gemma4-qat-1
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -466,8 +470,8 @@ configs:
                       host: "${CVM_HOST}"
                       ip: "${HOST_IP}"
                       port: "8000"
-                      model_path: "google/gemma-4-31B-it-qat-w4a16-ct"
-                      precision: "w4a16"
+                      model_path: "RedHatAI/gemma-4-31B-it-FP8-block"
+                      precision: "fp8"
                       instance: "1"
               - job_name: vllm-model-vllm-gemma4-qat-2
                 scrape_interval: 15s
@@ -483,8 +487,8 @@ configs:
                       host: "${CVM_HOST}"
                       ip: "${HOST_IP}"
                       port: "8000"
-                      model_path: "google/gemma-4-31B-it-qat-w4a16-ct"
-                      precision: "w4a16"
+                      model_path: "RedHatAI/gemma-4-31B-it-FP8-block"
+                      precision: "fp8"
                       instance: "2"
               - job_name: vllm-model-vllm-gemma4-qat-3
                 scrape_interval: 15s
@@ -500,8 +504,8 @@ configs:
                       host: "${CVM_HOST}"
                       ip: "${HOST_IP}"
                       port: "8000"
-                      model_path: "google/gemma-4-31B-it-qat-w4a16-ct"
-                      precision: "w4a16"
+                      model_path: "RedHatAI/gemma-4-31B-it-FP8-block"
+                      precision: "fp8"
                       instance: "3"
               - job_name: vllm-model-vllm-gemma4-qat-4
                 scrape_interval: 15s
@@ -517,8 +521,8 @@ configs:
                       host: "${CVM_HOST}"
                       ip: "${HOST_IP}"
                       port: "8000"
-                      model_path: "google/gemma-4-31B-it-qat-w4a16-ct"
-                      precision: "w4a16"
+                      model_path: "RedHatAI/gemma-4-31B-it-FP8-block"
+                      precision: "fp8"
                       instance: "4"
               - job_name: dcgm-dcgm-gemma4-qat-vllm
                 scrape_interval: 15s
@@ -534,8 +538,8 @@ configs:
                       host: "${CVM_HOST}"
                       ip: "${HOST_IP}"
                       port: "9400"
-                      model_path: "google/gemma-4-31B-it-qat-w4a16-ct"
-                      precision: "w4a16"
+                      model_path: "RedHatAI/gemma-4-31B-it-FP8-block"
+                      precision: "fp8"
 
         prometheus/self:
           config:
