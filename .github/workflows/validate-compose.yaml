@@ -52,7 +52,8 @@ jobs:
           FUSION_INTERNAL_BEARER_TOKEN: ci-dummy
         run: |
           exit_code=0
-          for file in *.yaml; do
+          for file in prod/*.yaml experiments/*.yaml *.yaml; do
+            [ -f "$file" ] || continue
             echo "Validating $file..."
             if ! docker compose -f "$file" config --format=yaml > /dev/null 2>&1; then
               echo "::error file=$file::Invalid compose file"
@@ -84,7 +85,8 @@ jobs:
           FUSION_INTERNAL_BEARER_TOKEN: ci-dummy
         run: |
           set -euo pipefail
-          for file in *.yaml; do
+          for file in prod/*.yaml experiments/*.yaml *.yaml; do
+            [ -f "$file" ] || continue
             config="$(docker compose -f "$file" config --format=json | jq -r '.configs.otelcol_app_config.content // empty')"
             if [ -z "$config" ]; then
               continue
