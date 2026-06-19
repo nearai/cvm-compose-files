@@ -18,6 +18,14 @@ jobs:
             ruby:3.3-alpine \
             ruby scripts/validate_otel_labels.rb
 
+      - name: Validate proxy dependency contracts
+        run: |
+          docker run --rm \
+            -v "$PWD:/repo" \
+            -w /repo \
+            ruby:3.3-alpine \
+            ruby scripts/validate_proxy_dependencies.rb
+
       - name: Validate docker compose files
         # Compose files reference env vars that are populated at deploy time
         # by compose-manager (or the operator). CI doesn't have the real
