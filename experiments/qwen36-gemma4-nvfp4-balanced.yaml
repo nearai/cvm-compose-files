@@ -17,15 +17,24 @@ x-nvidia: &nvidia
 x-vllm-common: &vllm-common
   <<: *nvidia
   init: true
+  image: vllm/vllm-openai@sha256:03768d9400bf490934e5dce2e9d8ddd9e004a5054939e14641188d8a9b69db8e
   volumes:
     - hugginface_cache:/root/.cache/huggingface
     - vllm_cache:/root/.cache/vllm
+  environment: &vllm-env
+    - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+    - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0}
+    - VLLM_LOGGING_LEVEL=INFO
+    - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    - OPENBLAS_L2_SIZE=2097152
+    - NCCL_DEBUG=WARN
+    - VLLM_CACHE_ROOT=/root/.cache/vllm/nvfp4-balanced
   restart: unless-stopped
   stop_grace_period: 5m
   logging: *logging-conf
 
 x-vllm-proxy-common: &vllm-proxy-common
-  image: nearaidev/vllm-proxy-rs@sha256:daaf83d5a87cdbec2399940b92cbf8d59d0a2e40e0c5f40cf0a89da1010a584f
+  image: nearaidev/vllm-proxy-rs@sha256:24536a0cee15835621fa3edea499b0cb148f6ee4f815e6296470984372cc3b64
   user: root
   privileged: true
   <<: *nvidia
@@ -37,16 +46,6 @@ x-vllm-proxy-common: &vllm-proxy-common
   restart: unless-stopped
   logging: *logging-conf
 
-x-sglang-env:
-  environment: &sglang-env
-    - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
-    - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0}
-    - VLLM_LOGGING_LEVEL=INFO
-    - NVIDIA_DRIVER_CAPABILITIES=compute,utility
-    - OPENBLAS_L2_SIZE=2097152
-    - NCCL_DEBUG=WARN
-    - SGLANG_ENABLE_SPEC_V2=1
-
 x-dcgm-common: &dcgm-common
   image: nvcr.io/nvidia/k8s/dcgm-exporter:4.5.2-4.8.1-distroless
   runtime: nvidia
@@ -55,108 +54,45 @@ x-dcgm-common: &dcgm-common
   restart: unless-stopped
   logging: *logging-conf
 
-x-gemma-4-31b-common: &gemma-4-31b-common
-  <<: *nvidia
-  init: true
-  # https://lmsysorg.mintlify.app/cookbook/autoregressive/Google/Gemma4
-  image: lmsysorg/sglang:gemma4@sha256:87cecd3c9f4d17632c44b2d7cd1a20c50377c42b461d9ca39b153b4bb2b6e6ae
+x-qwen36-nvfp4-common: &qwen36-nvfp4-common
+  <<: *vllm-common
   command: >
-      sglang serve
-      --model-path google/gemma-4-31B-it
-      --revision ba74f5b6c647c0911554e50278d6f6f4477f9010
-      --tp 2
-      --tool-call-parser gemma4
-      --mem-fraction-static 0.85
-      --max-running-requests 64
-      --chunked-prefill-size 8192
-      --num-continuous-decode-steps 5
-      --enable-mixed-chunk
-      --disable-fast-image-processor
-      --model-loader-extra-config '{"enable_multithread_load": "true", "num_threads": 64}'
-      --port 8000
-      --host 0.0.0.0
-      --enable-cache-report
-      --enable-metrics
-      --trust-remote-code
-      --log-requests-level 0
-      --served-model-name google/gemma-4-31B-it
-  volumes:
-    - hugginface_cache:/root/.cache/huggingface
-    - kernel_cache:/root/.cache/deep_gemm
-  environment: *sglang-env
-  restart: unless-stopped
-  stop_grace_period: 5m
-  logging: *logging-conf
+    nvidia/Qwen3.6-35B-A3B-NVFP4
+    --revision 6c7f09d4036e97393f82e9f9ecd1a5c35ca5ee92
+    --served-model-name Qwen/Qwen3.6-35B-A3B-NVFP4-X4
+    --tensor-parallel-size 1
+    --trust-remote-code
+    --dtype auto
+    --quantization modelopt
+    --kv-cache-dtype fp8
+    --gpu-memory-utilization 0.90
+    --max-model-len 65536
+    --max-num-seqs 16
+    --max-num-batched-tokens 16384
+    --enable-chunked-prefill
+    --async-scheduling
+    --enable-prefix-caching
+    --reasoning-parser qwen3
+    --enable-prompt-tokens-details
 
-x-qwen3-6-35b-common: &qwen3-6-35b-common
-  <<: *nvidia
-  init: true
-  image: lmsysorg/sglang:v0.5.12-cu129@sha256:9e02c8e1fe2790a1c445bd5f6814305fe43639a4adb01c8ad1e8e21e750bf581
+x-gemma4-nvfp4-common: &gemma4-nvfp4-common
+  <<: *vllm-common
   command: >
-      sglang serve
-      --model-path Qwen/Qwen3.6-35B-A3B-FP8
-      --revision 95a723d08a9490559dae23d0cff1d9466213d989
-      --tp 1
-      --reasoning-parser qwen3
-      --tool-call-parser qwen3_coder
-      --speculative-algorithm EAGLE
-      --speculative-num-steps 3
-      --speculative-eagle-topk 1
-      --speculative-num-draft-tokens 4
-      --mamba-scheduler-strategy extra_buffer
-      --mem-fraction-static 0.85
-      --max-running-requests 128
-      --context-length 262144
-      --num-continuous-decode-steps 5
-      --model-loader-extra-config '{"enable_multithread_load": "true", "num_threads": 64}'
-      --enable-mixed-chunk
-      --chunked-prefill-size 16384
-      --port 8000
-      --host 0.0.0.0
-      --enable-cache-report
-      --enable-metrics
-      --trust-remote-code
-      --log-requests-level 0
-      --served-model-name Qwen/Qwen3.6-35B-A3B-FP8
-  volumes:
-    - hugginface_cache:/root/.cache/huggingface
-    - kernel_cache:/root/.cache/deep_gemm
-  environment: *sglang-env
-  restart: unless-stopped
-  stop_grace_period: 5m
-  logging: *logging-conf
-
-x-qwen3-6-27b-common: &qwen3-6-27b-common
-  <<: *nvidia
-  init: true
-  image: lmsysorg/sglang:v0.5.12-cu129@sha256:9e02c8e1fe2790a1c445bd5f6814305fe43639a4adb01c8ad1e8e21e750bf581
-  command: >
-      sglang serve
-      --model-path Qwen/Qwen3.6-27B-FP8
-      --tp 1
-      --reasoning-parser qwen3
-      --tool-call-parser qwen3_coder
-      --mem-fraction-static 0.85
-      --max-running-requests 128
-      --context-length 262144
-      --num-continuous-decode-steps 5
-      --model-loader-extra-config '{"enable_multithread_load": "true", "num_threads": 64}'
-      --enable-mixed-chunk
-      --chunked-prefill-size 16384
-      --port 8000
-      --host 0.0.0.0
-      --enable-cache-report
-      --enable-metrics
-      --trust-remote-code
-      --log-requests-level 0
-      --served-model-name Qwen/Qwen3.6-27B-FP8
-  volumes:
-    - hugginface_cache:/root/.cache/huggingface
-    - kernel_cache:/root/.cache/deep_gemm
-  environment: *sglang-env
-  restart: unless-stopped
-  stop_grace_period: 5m
-  logging: *logging-conf
+    nvidia/Gemma-4-31B-IT-NVFP4
+    --revision e5ef03afa233c35cb000323ff098d4291e1dd07c
+    --served-model-name nvidia/Gemma-4-31B-IT-NVFP4-X2
+    --tensor-parallel-size 2
+    --trust-remote-code
+    --dtype auto
+    --quantization modelopt
+    --gpu-memory-utilization 0.90
+    --max-model-len 65536
+    --max-num-seqs 16
+    --max-num-batched-tokens 16384
+    --enable-chunked-prefill
+    --enable-prefix-caching
+    --async-scheduling
+    --enable-prompt-tokens-details
 
 services:
   nginx:
@@ -164,9 +100,8 @@ services:
     container_name: nginx
     command: /bin/sh -c 'while :; do sleep 6h; nginx -s reload; done & nginx -g "daemon off;"'
     ports:
+      - "8000:8000"
       - "8001:8001"
-      - "8002:8002"
-      - "8003:8003"
       - "8444:443"
     volumes:
       - certs:/etc/letsencrypt:ro
@@ -177,7 +112,7 @@ services:
     restart: unless-stopped
     logging: *logging-conf
     labels:
-      com.datadoghq.ad.logs: '[{"source":"nginx","service":"nginx","tags":["model:google/gemma-4-31B-it","deployment:gemma4x2-qwen36x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000"]}]'
+      com.datadoghq.ad.logs: '[{"source":"nginx","service":"nginx","tags":["model:Qwen/Qwen3.6-35B-A3B-NVFP4-X4","deployment:qwen36-gemma4-nvfp4-balanced","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000"]}]'
 
   model-proxy-registrar:
     image: curlimages/curl@sha256:d94d07ba9e7d6de898b6d96c1a072f6f8266c687af78a74f380087a0addf5d17
@@ -185,9 +120,6 @@ services:
     entrypoint: ["sh", "/register.sh"]
     restart: unless-stopped
     healthcheck:
-      # Unhealthy if the registration loop hasn't ticked in 3m (e.g. wedged
-      # before the loop, or the loop died). Surfaces silent registrar failures
-      # in `docker ps` / Datadog. See cvm-compose-files#57.
       test: ["CMD-SHELL", "[ $$(( $$(date +%s) - $$(cat /tmp/registrar_alive 2>/dev/null || echo 0) )) -lt 180 ]"]
       interval: 30s
       timeout: 10s
@@ -202,303 +134,267 @@ services:
         mode: 0755
     logging: *logging-conf
     labels:
-      com.datadoghq.ad.logs: '[{"source":"model-proxy-registrar","service":"model-proxy-registrar","tags":["model:google/gemma-4-31B-it","deployment:gemma4x2-qwen36x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.logs: '[{"source":"model-proxy-registrar","service":"model-proxy-registrar","tags":["model:Qwen/Qwen3.6-35B-A3B-NVFP4-X4","deployment:qwen36-gemma4-nvfp4-balanced","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
 
-  # --- Gemma-4-31B-it x2 (GPUs 0-1, 2-3) — SGLang TP=2, single proxy multi-backend ---
-
-  vllm-proxy-gemma-4-31b:
+  # Qwen3.6-35B-A3B NVFP4 x4, one replica per GPU (GPUs 0-3).
+  vllm-proxy-qwen36-nvfp4-x4:
     <<: *vllm-proxy-common
-    container_name: vllm-proxy-gemma-4-31b
+    container_name: vllm-proxy-qwen36-nvfp4-x4
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - CLOUD_API_URL=https://cloud-api.near.ai
       - CLOUD_API_USAGE_TOKEN=${CLOUD_API_USAGE_TOKEN}
       - COMPOSE_MANAGER_URL=http://compose-manager:8080
       - LOG_FORMAT=json
-      - MODEL_NAME=google/gemma-4-31B-it
+      - MODEL_NAME=Qwen/Qwen3.6-35B-A3B-NVFP4-X4
       - OHTTP_ENABLED=true
       - TOKEN=${PROXY_TOKEN}
       - FUSION_ENABLED=${FUSION_ENABLED}
       - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
-      - VLLM_BACKEND_URLS=http://vllm-gemma-4-31b-1:8000,http://vllm-gemma-4-31b-2:8000
+      - VLLM_BACKEND_URLS=http://model-vllm-qwen36-nvfp4-1:8000,http://model-vllm-qwen36-nvfp4-2:8000,http://model-vllm-qwen36-nvfp4-3:8000,http://model-vllm-qwen36-nvfp4-4:8000
+      - VLLM_PROXY_MAX_REQUEST_SIZE=104857600
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
+      - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
+      - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:google/gemma-4-31B-it","deployment:gemma4x2-qwen36x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8001"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:Qwen/Qwen3.6-35B-A3B-NVFP4-X4","precision:nvfp4","deployment:qwen36-gemma4-nvfp4-balanced","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "inference-proxy"
       nearai.otel.service: "vllm-proxy"
       nearai.otel.source: "vllm-proxy"
-      nearai.otel.container_name: "vllm-proxy-gemma-4-31b"
+      nearai.otel.container_name: "vllm-proxy-qwen36-nvfp4-x4"
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
-      nearai.otel.model: "google/gemma-4-31B-it"
-      nearai.otel.deployment: "gemma4x2-qwen36x2"
+      nearai.otel.model: "Qwen/Qwen3.6-35B-A3B-NVFP4-X4"
+      nearai.otel.deployment: "qwen36-gemma4-nvfp4-balanced"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
       nearai.otel.host_machine: "${CVM_HOST}"
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
-  vllm-gemma-4-31b-1:
-    <<: *gemma-4-31b-common
-    container_name: vllm-gemma-4-31b-1
+  model-vllm-qwen36-nvfp4-1:
+    <<: *qwen36-nvfp4-common
+    container_name: model-vllm-qwen36-nvfp4-1
     deploy:
       resources:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["0","1"]
+              device_ids: ["0"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.check_names: '["openmetrics"]'
+      com.datadoghq.ad.check_names: '["vllm"]'
       com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:google/gemma-4-31B-it","deployment:gemma4x2-qwen36x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8001","instance:1"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-gemma-4-31b-1:8000/metrics", "metrics":["sglang:*"], "histogram_buckets_as_distributions": true, "service": "vllm-gemma-4-31b-1", "tags":["model:google/gemma-4-31B-it","ip:${HOST_IP}","port:8001"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:Qwen/Qwen3.6-35B-A3B-NVFP4-X4","model_path:nvidia/Qwen3.6-35B-A3B-NVFP4","precision:nvfp4","deployment:qwen36-gemma4-nvfp4-balanced","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:1"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-qwen36-nvfp4-1:8000/metrics","histogram_buckets_as_distributions":true,"service":"model-vllm-qwen36-nvfp4-1","tags":["model:Qwen/Qwen3.6-35B-A3B-NVFP4-X4","model_path:nvidia/Qwen3.6-35B-A3B-NVFP4","precision:nvfp4","deployment:qwen36-gemma4-nvfp4-balanced","ip:${HOST_IP}","port:8000","instance:1"]}]'
       nearai.otel.scrape: "true"
-      nearai.otel.job: "sglang"
-      nearai.otel.service: "sglang"
-      nearai.otel.source: "sglang"
-      nearai.otel.container_name: "vllm-gemma-4-31b-1"
+      nearai.otel.job: "vllm"
+      nearai.otel.service: "vllm"
+      nearai.otel.source: "vllm"
+      nearai.otel.container_name: "model-vllm-qwen36-nvfp4-1"
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
-      nearai.otel.model: "google/gemma-4-31B-it"
-      nearai.otel.deployment: "gemma4x2-qwen36x2"
+      nearai.otel.model: "Qwen/Qwen3.6-35B-A3B-NVFP4-X4"
+      nearai.otel.deployment: "qwen36-gemma4-nvfp4-balanced"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
       nearai.otel.host_machine: "${CVM_HOST}"
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
-  vllm-gemma-4-31b-2:
-    <<: *gemma-4-31b-common
-    container_name: vllm-gemma-4-31b-2
+  model-vllm-qwen36-nvfp4-2:
+    <<: *qwen36-nvfp4-common
+    container_name: model-vllm-qwen36-nvfp4-2
     deploy:
       resources:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["2","3"]
+              device_ids: ["1"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.check_names: '["openmetrics"]'
+      com.datadoghq.ad.check_names: '["vllm"]'
       com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:google/gemma-4-31B-it","deployment:gemma4x2-qwen36x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8001","instance:2"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-gemma-4-31b-2:8000/metrics", "metrics":["sglang:*"], "histogram_buckets_as_distributions": true, "service": "vllm-gemma-4-31b-2", "tags":["model:google/gemma-4-31B-it","ip:${HOST_IP}","port:8001"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:Qwen/Qwen3.6-35B-A3B-NVFP4-X4","model_path:nvidia/Qwen3.6-35B-A3B-NVFP4","precision:nvfp4","deployment:qwen36-gemma4-nvfp4-balanced","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:2"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-qwen36-nvfp4-2:8000/metrics","histogram_buckets_as_distributions":true,"service":"model-vllm-qwen36-nvfp4-2","tags":["model:Qwen/Qwen3.6-35B-A3B-NVFP4-X4","model_path:nvidia/Qwen3.6-35B-A3B-NVFP4","precision:nvfp4","deployment:qwen36-gemma4-nvfp4-balanced","ip:${HOST_IP}","port:8000","instance:2"]}]'
       nearai.otel.scrape: "true"
-      nearai.otel.job: "sglang"
-      nearai.otel.service: "sglang"
-      nearai.otel.source: "sglang"
-      nearai.otel.container_name: "vllm-gemma-4-31b-2"
+      nearai.otel.job: "vllm"
+      nearai.otel.service: "vllm"
+      nearai.otel.source: "vllm"
+      nearai.otel.container_name: "model-vllm-qwen36-nvfp4-2"
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
-      nearai.otel.model: "google/gemma-4-31B-it"
-      nearai.otel.deployment: "gemma4x2-qwen36x2"
+      nearai.otel.model: "Qwen/Qwen3.6-35B-A3B-NVFP4-X4"
+      nearai.otel.deployment: "qwen36-gemma4-nvfp4-balanced"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
       nearai.otel.host_machine: "${CVM_HOST}"
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
-  # --- Qwen3.6-35B-A3B-FP8 x2 (GPUs 4, 5) — SGLang TP=1, EAGLE spec, single proxy multi-backend ---
+  model-vllm-qwen36-nvfp4-3:
+    <<: *qwen36-nvfp4-common
+    container_name: model-vllm-qwen36-nvfp4-3
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["2"]
+              capabilities: [gpu]
+    labels:
+      com.datadoghq.ad.check_names: '["vllm"]'
+      com.datadoghq.ad.init_configs: "[{}]"
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:Qwen/Qwen3.6-35B-A3B-NVFP4-X4","model_path:nvidia/Qwen3.6-35B-A3B-NVFP4","precision:nvfp4","deployment:qwen36-gemma4-nvfp4-balanced","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:3"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-qwen36-nvfp4-3:8000/metrics","histogram_buckets_as_distributions":true,"service":"model-vllm-qwen36-nvfp4-3","tags":["model:Qwen/Qwen3.6-35B-A3B-NVFP4-X4","model_path:nvidia/Qwen3.6-35B-A3B-NVFP4","precision:nvfp4","deployment:qwen36-gemma4-nvfp4-balanced","ip:${HOST_IP}","port:8000","instance:3"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "vllm"
+      nearai.otel.service: "vllm"
+      nearai.otel.source: "vllm"
+      nearai.otel.container_name: "model-vllm-qwen36-nvfp4-3"
+      nearai.otel.port: "8000"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "Qwen/Qwen3.6-35B-A3B-NVFP4-X4"
+      nearai.otel.deployment: "qwen36-gemma4-nvfp4-balanced"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
 
-  vllm-proxy-qwen3-6-35b:
+  model-vllm-qwen36-nvfp4-4:
+    <<: *qwen36-nvfp4-common
+    container_name: model-vllm-qwen36-nvfp4-4
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["3"]
+              capabilities: [gpu]
+    labels:
+      com.datadoghq.ad.check_names: '["vllm"]'
+      com.datadoghq.ad.init_configs: "[{}]"
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:Qwen/Qwen3.6-35B-A3B-NVFP4-X4","model_path:nvidia/Qwen3.6-35B-A3B-NVFP4","precision:nvfp4","deployment:qwen36-gemma4-nvfp4-balanced","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:4"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-qwen36-nvfp4-4:8000/metrics","histogram_buckets_as_distributions":true,"service":"model-vllm-qwen36-nvfp4-4","tags":["model:Qwen/Qwen3.6-35B-A3B-NVFP4-X4","model_path:nvidia/Qwen3.6-35B-A3B-NVFP4","precision:nvfp4","deployment:qwen36-gemma4-nvfp4-balanced","ip:${HOST_IP}","port:8000","instance:4"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "vllm"
+      nearai.otel.service: "vllm"
+      nearai.otel.source: "vllm"
+      nearai.otel.container_name: "model-vllm-qwen36-nvfp4-4"
+      nearai.otel.port: "8000"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "Qwen/Qwen3.6-35B-A3B-NVFP4-X4"
+      nearai.otel.deployment: "qwen36-gemma4-nvfp4-balanced"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
+
+  # Gemma-4-31B-IT NVFP4 x2, TP=2 per replica (GPUs 4-5, 6-7).
+  vllm-proxy-gemma4-nvfp4-x2:
     <<: *vllm-proxy-common
-    container_name: vllm-proxy-qwen3-6-35b
+    container_name: vllm-proxy-gemma4-nvfp4-x2
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - CLOUD_API_URL=https://cloud-api.near.ai
       - CLOUD_API_USAGE_TOKEN=${CLOUD_API_USAGE_TOKEN}
       - COMPOSE_MANAGER_URL=http://compose-manager:8080
       - LOG_FORMAT=json
-      - MODEL_NAME=Qwen/Qwen3.6-35B-A3B-FP8
+      - MODEL_NAME=nvidia/Gemma-4-31B-IT-NVFP4-X2
       - OHTTP_ENABLED=true
       - TOKEN=${PROXY_TOKEN}
       - FUSION_ENABLED=${FUSION_ENABLED}
       - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
-      - VLLM_BACKEND_URLS=http://vllm-qwen3-6-35b-1:8000,http://vllm-qwen3-6-35b-2:8000
+      - VLLM_BACKEND_URLS=http://model-vllm-gemma4-nvfp4-1:8000,http://model-vllm-gemma4-nvfp4-2:8000
+      - VLLM_PROXY_MAX_REQUEST_SIZE=104857600
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
+      - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
+      - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:Qwen/Qwen3.6-35B-A3B-FP8","deployment:gemma4x2-qwen36x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8002"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:nvidia/Gemma-4-31B-IT-NVFP4-X2","precision:nvfp4","deployment:qwen36-gemma4-nvfp4-balanced","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8001"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "inference-proxy"
       nearai.otel.service: "vllm-proxy"
       nearai.otel.source: "vllm-proxy"
-      nearai.otel.container_name: "vllm-proxy-qwen3-6-35b"
+      nearai.otel.container_name: "vllm-proxy-gemma4-nvfp4-x2"
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
-      nearai.otel.model: "Qwen/Qwen3.6-35B-A3B-FP8"
-      nearai.otel.deployment: "gemma4x2-qwen36x2"
+      nearai.otel.model: "nvidia/Gemma-4-31B-IT-NVFP4-X2"
+      nearai.otel.deployment: "qwen36-gemma4-nvfp4-balanced"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
       nearai.otel.host_machine: "${CVM_HOST}"
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
-  vllm-qwen3-6-35b-1:
-    <<: *qwen3-6-35b-common
-    container_name: vllm-qwen3-6-35b-1
+  model-vllm-gemma4-nvfp4-1:
+    <<: *gemma4-nvfp4-common
+    container_name: model-vllm-gemma4-nvfp4-1
     deploy:
       resources:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["4"]
+              device_ids: ["4","5"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.check_names: '["openmetrics"]'
+      com.datadoghq.ad.check_names: '["vllm"]'
       com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:Qwen/Qwen3.6-35B-A3B-FP8","deployment:gemma4x2-qwen36x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8002","instance:1"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-qwen3-6-35b-1:8000/metrics", "metrics":["sglang:*"], "histogram_buckets_as_distributions": true, "service": "vllm-qwen3-6-35b-1", "tags":["model:Qwen/Qwen3.6-35B-A3B-FP8","ip:${HOST_IP}","port:8002"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:nvidia/Gemma-4-31B-IT-NVFP4-X2","model_path:nvidia/Gemma-4-31B-IT-NVFP4","precision:nvfp4","deployment:qwen36-gemma4-nvfp4-balanced","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8001","instance:1"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-gemma4-nvfp4-1:8000/metrics","histogram_buckets_as_distributions":true,"service":"model-vllm-gemma4-nvfp4-1","tags":["model:nvidia/Gemma-4-31B-IT-NVFP4-X2","model_path:nvidia/Gemma-4-31B-IT-NVFP4","precision:nvfp4","deployment:qwen36-gemma4-nvfp4-balanced","ip:${HOST_IP}","port:8001","instance:1"]}]'
       nearai.otel.scrape: "true"
-      nearai.otel.job: "sglang"
-      nearai.otel.service: "sglang"
-      nearai.otel.source: "sglang"
-      nearai.otel.container_name: "vllm-qwen3-6-35b-1"
+      nearai.otel.job: "vllm"
+      nearai.otel.service: "vllm"
+      nearai.otel.source: "vllm"
+      nearai.otel.container_name: "model-vllm-gemma4-nvfp4-1"
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
-      nearai.otel.model: "Qwen/Qwen3.6-35B-A3B-FP8"
-      nearai.otel.deployment: "gemma4x2-qwen36x2"
+      nearai.otel.model: "nvidia/Gemma-4-31B-IT-NVFP4-X2"
+      nearai.otel.deployment: "qwen36-gemma4-nvfp4-balanced"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
       nearai.otel.host_machine: "${CVM_HOST}"
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
-  vllm-qwen3-6-35b-2:
-    <<: *qwen3-6-35b-common
-    container_name: vllm-qwen3-6-35b-2
+  model-vllm-gemma4-nvfp4-2:
+    <<: *gemma4-nvfp4-common
+    container_name: model-vllm-gemma4-nvfp4-2
     deploy:
       resources:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["5"]
+              device_ids: ["6","7"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.check_names: '["openmetrics"]'
+      com.datadoghq.ad.check_names: '["vllm"]'
       com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:Qwen/Qwen3.6-35B-A3B-FP8","deployment:gemma4x2-qwen36x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8002","instance:2"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-qwen3-6-35b-2:8000/metrics", "metrics":["sglang:*"], "histogram_buckets_as_distributions": true, "service": "vllm-qwen3-6-35b-2", "tags":["model:Qwen/Qwen3.6-35B-A3B-FP8","ip:${HOST_IP}","port:8002"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:nvidia/Gemma-4-31B-IT-NVFP4-X2","model_path:nvidia/Gemma-4-31B-IT-NVFP4","precision:nvfp4","deployment:qwen36-gemma4-nvfp4-balanced","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8001","instance:2"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-gemma4-nvfp4-2:8000/metrics","histogram_buckets_as_distributions":true,"service":"model-vllm-gemma4-nvfp4-2","tags":["model:nvidia/Gemma-4-31B-IT-NVFP4-X2","model_path:nvidia/Gemma-4-31B-IT-NVFP4","precision:nvfp4","deployment:qwen36-gemma4-nvfp4-balanced","ip:${HOST_IP}","port:8001","instance:2"]}]'
       nearai.otel.scrape: "true"
-      nearai.otel.job: "sglang"
-      nearai.otel.service: "sglang"
-      nearai.otel.source: "sglang"
-      nearai.otel.container_name: "vllm-qwen3-6-35b-2"
+      nearai.otel.job: "vllm"
+      nearai.otel.service: "vllm"
+      nearai.otel.source: "vllm"
+      nearai.otel.container_name: "model-vllm-gemma4-nvfp4-2"
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
-      nearai.otel.model: "Qwen/Qwen3.6-35B-A3B-FP8"
-      nearai.otel.deployment: "gemma4x2-qwen36x2"
+      nearai.otel.model: "nvidia/Gemma-4-31B-IT-NVFP4-X2"
+      nearai.otel.deployment: "qwen36-gemma4-nvfp4-balanced"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
       nearai.otel.host_machine: "${CVM_HOST}"
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
-  # --- Qwen3.6-27B-FP8 x2 (GPUs 6, 7) — SGLang TP=1, single proxy multi-backend ---
-
-  vllm-proxy-qwen3-6-27b:
-    <<: *vllm-proxy-common
-    container_name: vllm-proxy-qwen3-6-27b
-    environment:
-      - NVIDIA_VISIBLE_DEVICES=all
-      - CLOUD_API_URL=https://cloud-api.near.ai
-      - CLOUD_API_USAGE_TOKEN=${CLOUD_API_USAGE_TOKEN}
-      - COMPOSE_MANAGER_URL=http://compose-manager:8080
-      - LOG_FORMAT=json
-      - MODEL_NAME=Qwen/Qwen3.6-27B-FP8
-      - OHTTP_ENABLED=true
-      - TOKEN=${PROXY_TOKEN}
-      - FUSION_ENABLED=${FUSION_ENABLED}
-      - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
-      - VLLM_BACKEND_URLS=http://vllm-qwen3-6-27b-1:8000,http://vllm-qwen3-6-27b-2:8000
-      - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
-      - USE_NV_ATTESTATION_SDK=true
-    labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:Qwen/Qwen3.6-27B-FP8","deployment:gemma4x2-qwen36x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8003"]}]'
-      nearai.otel.scrape: "true"
-      nearai.otel.job: "inference-proxy"
-      nearai.otel.service: "vllm-proxy"
-      nearai.otel.source: "vllm-proxy"
-      nearai.otel.container_name: "vllm-proxy-qwen3-6-27b"
-      nearai.otel.port: "8000"
-      nearai.otel.path: "/metrics"
-      nearai.otel.model: "Qwen/Qwen3.6-27B-FP8"
-      nearai.otel.deployment: "gemma4x2-qwen36x2"
-      nearai.otel.env: "${ENV}"
-      nearai.otel.host: "${CVM_HOST}"
-      nearai.otel.host_machine: "${CVM_HOST}"
-      nearai.otel.cvm_name: "${CVM_NAME}"
-      nearai.otel.ip: "${HOST_IP}"
-
-  vllm-qwen3-6-27b-1:
-    <<: *qwen3-6-27b-common
-    container_name: vllm-qwen3-6-27b-1
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              device_ids: ["6"]
-              capabilities: [gpu]
-    labels:
-      com.datadoghq.ad.check_names: '["openmetrics"]'
-      com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:Qwen/Qwen3.6-27B-FP8","deployment:gemma4x2-qwen36x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8003","instance:1"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-qwen3-6-27b-1:8000/metrics", "metrics":["sglang:*"], "histogram_buckets_as_distributions": true, "service": "vllm-qwen3-6-27b-1", "tags":["model:Qwen/Qwen3.6-27B-FP8","ip:${HOST_IP}","port:8003"]}]'
-      nearai.otel.scrape: "true"
-      nearai.otel.job: "sglang"
-      nearai.otel.service: "sglang"
-      nearai.otel.source: "sglang"
-      nearai.otel.container_name: "vllm-qwen3-6-27b-1"
-      nearai.otel.port: "8000"
-      nearai.otel.path: "/metrics"
-      nearai.otel.model: "Qwen/Qwen3.6-27B-FP8"
-      nearai.otel.deployment: "gemma4x2-qwen36x2"
-      nearai.otel.env: "${ENV}"
-      nearai.otel.host: "${CVM_HOST}"
-      nearai.otel.host_machine: "${CVM_HOST}"
-      nearai.otel.cvm_name: "${CVM_NAME}"
-      nearai.otel.ip: "${HOST_IP}"
-
-  vllm-qwen3-6-27b-2:
-    <<: *qwen3-6-27b-common
-    container_name: vllm-qwen3-6-27b-2
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              device_ids: ["7"]
-              capabilities: [gpu]
-    labels:
-      com.datadoghq.ad.check_names: '["openmetrics"]'
-      com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:Qwen/Qwen3.6-27B-FP8","deployment:gemma4x2-qwen36x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8003","instance:2"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-qwen3-6-27b-2:8000/metrics", "metrics":["sglang:*"], "histogram_buckets_as_distributions": true, "service": "vllm-qwen3-6-27b-2", "tags":["model:Qwen/Qwen3.6-27B-FP8","ip:${HOST_IP}","port:8003"]}]'
-      nearai.otel.scrape: "true"
-      nearai.otel.job: "sglang"
-      nearai.otel.service: "sglang"
-      nearai.otel.source: "sglang"
-      nearai.otel.container_name: "vllm-qwen3-6-27b-2"
-      nearai.otel.port: "8000"
-      nearai.otel.path: "/metrics"
-      nearai.otel.model: "Qwen/Qwen3.6-27B-FP8"
-      nearai.otel.deployment: "gemma4x2-qwen36x2"
-      nearai.otel.env: "${ENV}"
-      nearai.otel.host: "${CVM_HOST}"
-      nearai.otel.host_machine: "${CVM_HOST}"
-      nearai.otel.cvm_name: "${CVM_NAME}"
-      nearai.otel.ip: "${HOST_IP}"
-
-  # Per-model dcgm-exporters: each container only sees its assigned GPUs via
-  # device_ids, so all NVML/DCGM metrics it emits are correctly attributable to
-  # one model. Filter dashboards/monitors on `model:<HF id>`.
-
-  dcgm-gemma-4-31b:
+  dcgm-qwen36-nvfp4:
     <<: *dcgm-common
-    container_name: dcgm-gemma-4-31b
+    container_name: dcgm-qwen36-nvfp4
     deploy:
       resources:
         reservations:
@@ -509,77 +405,47 @@ services:
     labels:
       com.datadoghq.ad.check_names: '["dcgm"]'
       com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint": "http://%%host%%:9400/metrics", "tags":["model:google/gemma-4-31B-it","deployment:gemma4x2-qwen36x2","ip:${HOST_IP}"]}]'
-      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:google/gemma-4-31B-it","deployment:gemma4x2-qwen36x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://%%host%%:9400/metrics","tags":["model:Qwen/Qwen3.6-35B-A3B-NVFP4-X4","precision:nvfp4","deployment:qwen36-gemma4-nvfp4-balanced","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:Qwen/Qwen3.6-35B-A3B-NVFP4-X4","precision:nvfp4","deployment:qwen36-gemma4-nvfp4-balanced","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "dcgm"
       nearai.otel.service: "dcgm-exporter"
       nearai.otel.source: "dcgm-exporter"
-      nearai.otel.container_name: "dcgm-gemma-4-31b"
+      nearai.otel.container_name: "dcgm-qwen36-nvfp4"
       nearai.otel.port: "9400"
       nearai.otel.path: "/metrics"
-      nearai.otel.model: "google/gemma-4-31B-it"
-      nearai.otel.deployment: "gemma4x2-qwen36x2"
+      nearai.otel.model: "Qwen/Qwen3.6-35B-A3B-NVFP4-X4"
+      nearai.otel.deployment: "qwen36-gemma4-nvfp4-balanced"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
       nearai.otel.host_machine: "${CVM_HOST}"
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
-  dcgm-qwen3-6-35b:
+  dcgm-gemma4-nvfp4:
     <<: *dcgm-common
-    container_name: dcgm-qwen3-6-35b
+    container_name: dcgm-gemma4-nvfp4
     deploy:
       resources:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["4","5"]
+              device_ids: ["4","5","6","7"]
               capabilities: [gpu]
     labels:
       com.datadoghq.ad.check_names: '["dcgm"]'
       com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint": "http://%%host%%:9400/metrics", "tags":["model:Qwen/Qwen3.6-35B-A3B-FP8","deployment:gemma4x2-qwen36x2","ip:${HOST_IP}"]}]'
-      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:Qwen/Qwen3.6-35B-A3B-FP8","deployment:gemma4x2-qwen36x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://%%host%%:9400/metrics","tags":["model:nvidia/Gemma-4-31B-IT-NVFP4-X2","precision:nvfp4","deployment:qwen36-gemma4-nvfp4-balanced","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:nvidia/Gemma-4-31B-IT-NVFP4-X2","precision:nvfp4","deployment:qwen36-gemma4-nvfp4-balanced","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "dcgm"
       nearai.otel.service: "dcgm-exporter"
       nearai.otel.source: "dcgm-exporter"
-      nearai.otel.container_name: "dcgm-qwen3-6-35b"
+      nearai.otel.container_name: "dcgm-gemma4-nvfp4"
       nearai.otel.port: "9400"
       nearai.otel.path: "/metrics"
-      nearai.otel.model: "Qwen/Qwen3.6-35B-A3B-FP8"
-      nearai.otel.deployment: "gemma4x2-qwen36x2"
-      nearai.otel.env: "${ENV}"
-      nearai.otel.host: "${CVM_HOST}"
-      nearai.otel.host_machine: "${CVM_HOST}"
-      nearai.otel.cvm_name: "${CVM_NAME}"
-      nearai.otel.ip: "${HOST_IP}"
-
-  dcgm-qwen3-6-27b:
-    <<: *dcgm-common
-    container_name: dcgm-qwen3-6-27b
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              device_ids: ["6","7"]
-              capabilities: [gpu]
-    labels:
-      com.datadoghq.ad.check_names: '["dcgm"]'
-      com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint": "http://%%host%%:9400/metrics", "tags":["model:Qwen/Qwen3.6-27B-FP8","deployment:gemma4x2-qwen36x2","ip:${HOST_IP}"]}]'
-      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:Qwen/Qwen3.6-27B-FP8","deployment:gemma4x2-qwen36x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
-      nearai.otel.scrape: "true"
-      nearai.otel.job: "dcgm"
-      nearai.otel.service: "dcgm-exporter"
-      nearai.otel.source: "dcgm-exporter"
-      nearai.otel.container_name: "dcgm-qwen3-6-27b"
-      nearai.otel.port: "9400"
-      nearai.otel.path: "/metrics"
-      nearai.otel.model: "Qwen/Qwen3.6-27B-FP8"
-      nearai.otel.deployment: "gemma4x2-qwen36x2"
+      nearai.otel.model: "nvidia/Gemma-4-31B-IT-NVFP4-X2"
+      nearai.otel.deployment: "qwen36-gemma4-nvfp4-balanced"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
       nearai.otel.host_machine: "${CVM_HOST}"
@@ -616,7 +482,7 @@ services:
         max-size: "20m"
         max-file: "3"
     labels:
-      com.datadoghq.ad.logs: '[{"source":"otelcol-contrib","service":"otelcol-contrib","tags":["deployment:gemma4x2-qwen36x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.logs: '[{"source":"otelcol-contrib","service":"otelcol-contrib","tags":["deployment:qwen36-gemma4-nvfp4-balanced","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
 
 networks:
   default:
@@ -627,7 +493,6 @@ volumes:
   otelcol_app_storage:
   hugginface_cache:
   vllm_cache:
-  kernel_cache:
   certs:
     external: true
     name: certs
@@ -719,216 +584,198 @@ configs:
         prometheus/apps:
           config:
             scrape_configs:
-              - job_name: sglang-vllm-gemma-4-31b-1
+              - job_name: vllm-model-vllm-qwen36-nvfp4-1
                 scrape_interval: 15s
                 metrics_path: /metrics
                 static_configs:
-                  - targets: ['vllm-gemma-4-31b-1:8000']
+                  - targets: ['model-vllm-qwen36-nvfp4-1:8000']
                     labels:
-                      service: "sglang"
-                      source: "sglang"
-                      container_name: "vllm-gemma-4-31b-1"
-                      model: "google/gemma-4-31B-it"
-                      deployment: "gemma4x2-qwen36x2"
+                      service: "vllm"
+                      source: "vllm"
+                      container_name: "model-vllm-qwen36-nvfp4-1"
+                      model: "Qwen/Qwen3.6-35B-A3B-NVFP4-X4"
+                      deployment: "qwen36-gemma4-nvfp4-balanced"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      port: "8000"
+                      model_path: "nvidia/Qwen3.6-35B-A3B-NVFP4"
+                      precision: "nvfp4"
+                      instance: "1"
+              - job_name: vllm-model-vllm-qwen36-nvfp4-2
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['model-vllm-qwen36-nvfp4-2:8000']
+                    labels:
+                      service: "vllm"
+                      source: "vllm"
+                      container_name: "model-vllm-qwen36-nvfp4-2"
+                      model: "Qwen/Qwen3.6-35B-A3B-NVFP4-X4"
+                      deployment: "qwen36-gemma4-nvfp4-balanced"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      port: "8000"
+                      model_path: "nvidia/Qwen3.6-35B-A3B-NVFP4"
+                      precision: "nvfp4"
+                      instance: "2"
+              - job_name: vllm-model-vllm-qwen36-nvfp4-3
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['model-vllm-qwen36-nvfp4-3:8000']
+                    labels:
+                      service: "vllm"
+                      source: "vllm"
+                      container_name: "model-vllm-qwen36-nvfp4-3"
+                      model: "Qwen/Qwen3.6-35B-A3B-NVFP4-X4"
+                      deployment: "qwen36-gemma4-nvfp4-balanced"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      port: "8000"
+                      model_path: "nvidia/Qwen3.6-35B-A3B-NVFP4"
+                      precision: "nvfp4"
+                      instance: "3"
+              - job_name: vllm-model-vllm-qwen36-nvfp4-4
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['model-vllm-qwen36-nvfp4-4:8000']
+                    labels:
+                      service: "vllm"
+                      source: "vllm"
+                      container_name: "model-vllm-qwen36-nvfp4-4"
+                      model: "Qwen/Qwen3.6-35B-A3B-NVFP4-X4"
+                      deployment: "qwen36-gemma4-nvfp4-balanced"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      port: "8000"
+                      model_path: "nvidia/Qwen3.6-35B-A3B-NVFP4"
+                      precision: "nvfp4"
+                      instance: "4"
+              - job_name: vllm-model-vllm-gemma4-nvfp4-1
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['model-vllm-gemma4-nvfp4-1:8000']
+                    labels:
+                      service: "vllm"
+                      source: "vllm"
+                      container_name: "model-vllm-gemma4-nvfp4-1"
+                      model: "nvidia/Gemma-4-31B-IT-NVFP4-X2"
+                      deployment: "qwen36-gemma4-nvfp4-balanced"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
                       host_machine: "${CVM_HOST}"
                       cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "8001"
+                      model_path: "nvidia/Gemma-4-31B-IT-NVFP4"
+                      precision: "nvfp4"
                       instance: "1"
-              - job_name: sglang-vllm-gemma-4-31b-2
+              - job_name: vllm-model-vllm-gemma4-nvfp4-2
                 scrape_interval: 15s
                 metrics_path: /metrics
                 static_configs:
-                  - targets: ['vllm-gemma-4-31b-2:8000']
+                  - targets: ['model-vllm-gemma4-nvfp4-2:8000']
                     labels:
-                      service: "sglang"
-                      source: "sglang"
-                      container_name: "vllm-gemma-4-31b-2"
-                      model: "google/gemma-4-31B-it"
-                      deployment: "gemma4x2-qwen36x2"
+                      service: "vllm"
+                      source: "vllm"
+                      container_name: "model-vllm-gemma4-nvfp4-2"
+                      model: "nvidia/Gemma-4-31B-IT-NVFP4-X2"
+                      deployment: "qwen36-gemma4-nvfp4-balanced"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
                       host_machine: "${CVM_HOST}"
                       cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "8001"
+                      model_path: "nvidia/Gemma-4-31B-IT-NVFP4"
+                      precision: "nvfp4"
                       instance: "2"
-              - job_name: sglang-vllm-qwen3-6-35b-1
+              - job_name: dcgm-dcgm-qwen36-nvfp4
                 scrape_interval: 15s
                 metrics_path: /metrics
                 static_configs:
-                  - targets: ['vllm-qwen3-6-35b-1:8000']
-                    labels:
-                      service: "sglang"
-                      source: "sglang"
-                      container_name: "vllm-qwen3-6-35b-1"
-                      model: "Qwen/Qwen3.6-35B-A3B-FP8"
-                      deployment: "gemma4x2-qwen36x2"
-                      env: "${ENV}"
-                      host: "${CVM_HOST}"
-                      host_machine: "${CVM_HOST}"
-                      cvm_name: "${CVM_NAME}"
-                      ip: "${HOST_IP}"
-                      port: "8002"
-                      instance: "1"
-              - job_name: sglang-vllm-qwen3-6-35b-2
-                scrape_interval: 15s
-                metrics_path: /metrics
-                static_configs:
-                  - targets: ['vllm-qwen3-6-35b-2:8000']
-                    labels:
-                      service: "sglang"
-                      source: "sglang"
-                      container_name: "vllm-qwen3-6-35b-2"
-                      model: "Qwen/Qwen3.6-35B-A3B-FP8"
-                      deployment: "gemma4x2-qwen36x2"
-                      env: "${ENV}"
-                      host: "${CVM_HOST}"
-                      host_machine: "${CVM_HOST}"
-                      cvm_name: "${CVM_NAME}"
-                      ip: "${HOST_IP}"
-                      port: "8002"
-                      instance: "2"
-              - job_name: sglang-vllm-qwen3-6-27b-1
-                scrape_interval: 15s
-                metrics_path: /metrics
-                static_configs:
-                  - targets: ['vllm-qwen3-6-27b-1:8000']
-                    labels:
-                      service: "sglang"
-                      source: "sglang"
-                      container_name: "vllm-qwen3-6-27b-1"
-                      model: "Qwen/Qwen3.6-27B-FP8"
-                      deployment: "gemma4x2-qwen36x2"
-                      env: "${ENV}"
-                      host: "${CVM_HOST}"
-                      host_machine: "${CVM_HOST}"
-                      cvm_name: "${CVM_NAME}"
-                      ip: "${HOST_IP}"
-                      port: "8003"
-                      instance: "1"
-              - job_name: sglang-vllm-qwen3-6-27b-2
-                scrape_interval: 15s
-                metrics_path: /metrics
-                static_configs:
-                  - targets: ['vllm-qwen3-6-27b-2:8000']
-                    labels:
-                      service: "sglang"
-                      source: "sglang"
-                      container_name: "vllm-qwen3-6-27b-2"
-                      model: "Qwen/Qwen3.6-27B-FP8"
-                      deployment: "gemma4x2-qwen36x2"
-                      env: "${ENV}"
-                      host: "${CVM_HOST}"
-                      host_machine: "${CVM_HOST}"
-                      cvm_name: "${CVM_NAME}"
-                      ip: "${HOST_IP}"
-                      port: "8003"
-                      instance: "2"
-              - job_name: dcgm-dcgm-gemma-4-31b
-                scrape_interval: 15s
-                metrics_path: /metrics
-                static_configs:
-                  - targets: ['dcgm-gemma-4-31b:9400']
+                  - targets: ['dcgm-qwen36-nvfp4:9400']
                     labels:
                       service: "dcgm-exporter"
                       source: "dcgm-exporter"
-                      container_name: "dcgm-gemma-4-31b"
-                      model: "google/gemma-4-31B-it"
-                      deployment: "gemma4x2-qwen36x2"
+                      container_name: "dcgm-qwen36-nvfp4"
+                      model: "Qwen/Qwen3.6-35B-A3B-NVFP4-X4"
+                      deployment: "qwen36-gemma4-nvfp4-balanced"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
                       host_machine: "${CVM_HOST}"
                       cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "9400"
-              - job_name: dcgm-dcgm-qwen3-6-35b
+                      precision: "nvfp4"
+              - job_name: dcgm-dcgm-gemma4-nvfp4
                 scrape_interval: 15s
                 metrics_path: /metrics
                 static_configs:
-                  - targets: ['dcgm-qwen3-6-35b:9400']
+                  - targets: ['dcgm-gemma4-nvfp4:9400']
                     labels:
                       service: "dcgm-exporter"
                       source: "dcgm-exporter"
-                      container_name: "dcgm-qwen3-6-35b"
-                      model: "Qwen/Qwen3.6-35B-A3B-FP8"
-                      deployment: "gemma4x2-qwen36x2"
+                      container_name: "dcgm-gemma4-nvfp4"
+                      model: "nvidia/Gemma-4-31B-IT-NVFP4-X2"
+                      deployment: "qwen36-gemma4-nvfp4-balanced"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
                       host_machine: "${CVM_HOST}"
                       cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "9400"
-              - job_name: dcgm-dcgm-qwen3-6-27b
+                      precision: "nvfp4"
+              - job_name: inference-proxy-vllm-proxy-qwen36-nvfp4-x4
                 scrape_interval: 15s
                 metrics_path: /metrics
                 static_configs:
-                  - targets: ['dcgm-qwen3-6-27b:9400']
-                    labels:
-                      service: "dcgm-exporter"
-                      source: "dcgm-exporter"
-                      container_name: "dcgm-qwen3-6-27b"
-                      model: "Qwen/Qwen3.6-27B-FP8"
-                      deployment: "gemma4x2-qwen36x2"
-                      env: "${ENV}"
-                      host: "${CVM_HOST}"
-                      host_machine: "${CVM_HOST}"
-                      cvm_name: "${CVM_NAME}"
-                      ip: "${HOST_IP}"
-                      port: "9400"
-              - job_name: inference-proxy-vllm-proxy-gemma-4-31b
-                scrape_interval: 15s
-                metrics_path: /metrics
-                static_configs:
-                  - targets: ['vllm-proxy-gemma-4-31b:8000']
+                  - targets: ['vllm-proxy-qwen36-nvfp4-x4:8000']
                     labels:
                       service: "vllm-proxy"
                       source: "vllm-proxy"
-                      container_name: "vllm-proxy-gemma-4-31b"
-                      model: "google/gemma-4-31B-it"
-                      deployment: "gemma4x2-qwen36x2"
+                      container_name: "vllm-proxy-qwen36-nvfp4-x4"
+                      model: "Qwen/Qwen3.6-35B-A3B-NVFP4-X4"
+                      deployment: "qwen36-gemma4-nvfp4-balanced"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      port: "8000"
+                      precision: "nvfp4"
+              - job_name: inference-proxy-vllm-proxy-gemma4-nvfp4-x2
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['vllm-proxy-gemma4-nvfp4-x2:8000']
+                    labels:
+                      service: "vllm-proxy"
+                      source: "vllm-proxy"
+                      container_name: "vllm-proxy-gemma4-nvfp4-x2"
+                      model: "nvidia/Gemma-4-31B-IT-NVFP4-X2"
+                      deployment: "qwen36-gemma4-nvfp4-balanced"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
                       host_machine: "${CVM_HOST}"
                       cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "8001"
-              - job_name: inference-proxy-vllm-proxy-qwen3-6-35b
-                scrape_interval: 15s
-                metrics_path: /metrics
-                static_configs:
-                  - targets: ['vllm-proxy-qwen3-6-35b:8000']
-                    labels:
-                      service: "vllm-proxy"
-                      source: "vllm-proxy"
-                      container_name: "vllm-proxy-qwen3-6-35b"
-                      model: "Qwen/Qwen3.6-35B-A3B-FP8"
-                      deployment: "gemma4x2-qwen36x2"
-                      env: "${ENV}"
-                      host: "${CVM_HOST}"
-                      host_machine: "${CVM_HOST}"
-                      cvm_name: "${CVM_NAME}"
-                      ip: "${HOST_IP}"
-                      port: "8002"
-              - job_name: inference-proxy-vllm-proxy-qwen3-6-27b
-                scrape_interval: 15s
-                metrics_path: /metrics
-                static_configs:
-                  - targets: ['vllm-proxy-qwen3-6-27b:8000']
-                    labels:
-                      service: "vllm-proxy"
-                      source: "vllm-proxy"
-                      container_name: "vllm-proxy-qwen3-6-27b"
-                      model: "Qwen/Qwen3.6-27B-FP8"
-                      deployment: "gemma4x2-qwen36x2"
-                      env: "${ENV}"
-                      host: "${CVM_HOST}"
-                      host_machine: "${CVM_HOST}"
-                      cvm_name: "${CVM_NAME}"
-                      ip: "${HOST_IP}"
-                      port: "8003"
+                      precision: "nvfp4"
 
         prometheus/self:
           config:
@@ -1059,7 +906,7 @@ configs:
       TOKEN="$${MODEL_PROXY_TOKEN}"
       TLS_PORT=8444
 
-      for port in 8001 8002 8003; do
+      for port in 8000 8001; do
         eval "REG_$$port=false"
         eval "FAIL_COUNT_$$port=0"
       done
@@ -1087,7 +934,7 @@ configs:
 
       cleanup() {
         echo "SIGTERM received, unregistering all endpoints"
-        for port in 8001 8002 8003; do
+        for port in 8000 8001; do
           unregister_endpoint "$${HOST_IP}:$$port"
         done
         exit 0
@@ -1103,26 +950,26 @@ configs:
 
       check_port() {
         case $$1 in
-          8001) check_chat vllm-gemma-4-31b-1 "google/gemma-4-31B-it" ;;
-          8002) check_chat vllm-qwen3-6-35b-1 "Qwen/Qwen3.6-35B-A3B-FP8" ;;
-          8003) check_chat vllm-qwen3-6-27b-1 "Qwen/Qwen3.6-27B-FP8" ;;
+          8000)
+            check_chat model-vllm-qwen36-nvfp4-1 "Qwen/Qwen3.6-35B-A3B-NVFP4-X4" &&
+            check_chat model-vllm-qwen36-nvfp4-2 "Qwen/Qwen3.6-35B-A3B-NVFP4-X4" &&
+            check_chat model-vllm-qwen36-nvfp4-3 "Qwen/Qwen3.6-35B-A3B-NVFP4-X4" &&
+            check_chat model-vllm-qwen36-nvfp4-4 "Qwen/Qwen3.6-35B-A3B-NVFP4-X4"
+            ;;
+          8001)
+            check_chat model-vllm-gemma4-nvfp4-1 "nvidia/Gemma-4-31B-IT-NVFP4-X2" &&
+            check_chat model-vllm-gemma4-nvfp4-2 "nvidia/Gemma-4-31B-IT-NVFP4-X2"
+            ;;
         esac
       }
 
-      # Probe the host-published nginx port via HOST_IP instead of the
-      # "nginx" compose DNS name. A stale/abandoned docker service-name
-      # resolution (e.g. after nginx is recreated) otherwise wedges this
-      # readiness gate forever and silently drops every model to 0 backends.
-      # Bounded + loud so a persistent probe failure falls through to the
-      # registration loop (which health-checks each backend directly) instead
-      # of hanging here forever. See cvm-compose-files#57.
-      READY_URL="http://$${HOST_IP}:8001/v1/models"
+      READY_URL="http://$${HOST_IP}:8000/v1/models"
       echo "Waiting for first model to be ready (probing $$READY_URL)..."
       ready_attempts=0
       until curl --connect-timeout 5 --max-time 10 -sf "$$READY_URL" > /dev/null 2>&1; do
         ready_attempts=$$((ready_attempts + 1))
         if [ "$$ready_attempts" -ge 30 ]; then
-          echo "WARN: first model not reachable at $$READY_URL after $$ready_attempts attempts (~20m); entering registration loop anyway (each backend is health-checked directly before registering)"
+          echo "WARN: first model not reachable at $$READY_URL after $$ready_attempts attempts (~20m); entering registration loop anyway"
           break
         fi
         echo "First model not ready yet (attempt $$ready_attempts/30), retrying in 30s..."
@@ -1131,10 +978,7 @@ configs:
       echo "First model ready, starting registration loop"
 
       while true; do
-        for port in 8001 8002 8003; do
-          # Liveness marker for the container healthcheck (see service def);
-          # refreshed each port so a slow-but-progressing serial loop is not
-          # falsely marked unhealthy. See cvm-compose-files#57.
+        for port in 8000 8001; do
           date +%s > /tmp/registrar_alive
           eval "was_reg=\$$REG_$$port"
           eval "fails=\$$FAIL_COUNT_$$port"
@@ -1153,13 +997,16 @@ configs:
           fi
         done
 
-        register_model "google/gemma-4-31B-it" "gemma-4-31b.completions.near.ai"
-        register_model "Qwen/Qwen3.6-35B-A3B-FP8" "qwen3-6-35b.completions.near.ai"
-        register_model "Qwen/Qwen3.6-27B-FP8" "qwen3-6-27b.completions.near.ai"
-        # Refresh liveness after the register_model calls, before the long sleep.
+        if [ "$$REG_8000" = true ]; then
+          register_model "Qwen/Qwen3.6-35B-A3B-NVFP4-X4" "qwen3-6-35b-nvfp4-x4.completions.near.ai"
+        fi
+        if [ "$$REG_8001" = true ]; then
+          register_model "nvidia/Gemma-4-31B-IT-NVFP4-X2" "gemma-4-31b-nvfp4-x2.completions.near.ai"
+        fi
         date +%s > /tmp/registrar_alive
         sleep 60
       done
+
   nginx_conf:
     content: |
       log_format json_combined escape=json
@@ -1191,57 +1038,34 @@ configs:
       client_max_body_size 100m;
       client_body_buffer_size 1m;
 
-      # :8001 - Gemma-4-31B-it
+      server {
+          listen 8000;
+          location / { proxy_pass http://vllm-proxy-qwen36-nvfp4-x4:8000; }
+      }
+
       server {
           listen 8001;
-          location / { proxy_pass http://vllm-proxy-gemma-4-31b:8000; }
+          location / { proxy_pass http://vllm-proxy-gemma4-nvfp4-x2:8000; }
       }
-
-      # :8002 - Qwen3.6-35B-A3B-FP8
-      server {
-          listen 8002;
-          location / { proxy_pass http://vllm-proxy-qwen3-6-35b:8000; }
-      }
-
-      # :8003 - Qwen3.6-27B-FP8
-      server {
-          listen 8003;
-          location / { proxy_pass http://vllm-proxy-qwen3-6-27b:8000; }
-      }
-
-      # ── TLS server blocks (port 443 = host 8444) ──
 
       ssl_certificate /etc/letsencrypt/live/completions.near.ai/fullchain.pem;
       ssl_certificate_key /etc/letsencrypt/live/completions.near.ai/privkey.pem;
       ssl_protocols TLSv1.2 TLSv1.3;
 
-      # Each model accepts both its canonical SNI and the rotation-SNI form
-      # `<canonical>-i<N>.completions.near.ai` used by cloud-api's discovery.
-      # See nearai/infra#143 / nearai/model-proxy#30.
-
       server {
           listen 443 ssl http2;
-          server_name gemma-4-31b.completions.near.ai
-                      ~^gemma-4-31b-i\d+\.completions\.near\.ai$$;
+          server_name qwen3-6-35b-nvfp4-x4.completions.near.ai
+                      ~^qwen3-6-35b-nvfp4-x4-i\d+\.completions\.near\.ai$$;
           keepalive_timeout 1h;
           keepalive_requests 1000000;
-          location / { proxy_pass http://vllm-proxy-gemma-4-31b:8000; }
+          location / { proxy_pass http://vllm-proxy-qwen36-nvfp4-x4:8000; }
       }
 
       server {
           listen 443 ssl http2;
-          server_name qwen3-6-35b.completions.near.ai
-                      ~^qwen3-6-35b-i\d+\.completions\.near\.ai$$;
+          server_name gemma-4-31b-nvfp4-x2.completions.near.ai
+                      ~^gemma-4-31b-nvfp4-x2-i\d+\.completions\.near\.ai$$;
           keepalive_timeout 1h;
           keepalive_requests 1000000;
-          location / { proxy_pass http://vllm-proxy-qwen3-6-35b:8000; }
-      }
-
-      server {
-          listen 443 ssl http2;
-          server_name qwen3-6-27b.completions.near.ai
-                      ~^qwen3-6-27b-i\d+\.completions\.near\.ai$$;
-          keepalive_timeout 1h;
-          keepalive_requests 1000000;
-          location / { proxy_pass http://vllm-proxy-qwen3-6-27b:8000; }
+          location / { proxy_pass http://vllm-proxy-gemma4-nvfp4-x2:8000; }
       }

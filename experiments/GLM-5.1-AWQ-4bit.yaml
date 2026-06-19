@@ -15,7 +15,7 @@ x-nvidia: &nvidia
       hard: 65535
 
 x-vllm-proxy-common: &vllm-proxy-common
-  image: nearaidev/vllm-proxy-rs@sha256:daaf83d5a87cdbec2399940b92cbf8d59d0a2e40e0c5f40cf0a89da1010a584f
+  image: nearaidev/vllm-proxy-rs@sha256:24536a0cee15835621fa3edea499b0cb148f6ee4f815e6296470984372cc3b64
   user: root
   privileged: true
   <<: *nvidia
@@ -40,15 +40,15 @@ services:
     command:
       - |
         set -e
-        echo "Downloading zai-org/GLM-5.1-FP8..."
-        uvx --from 'huggingface_hub[hf_xet]' hf download zai-org/GLM-5.1-FP8 --revision f396cf805182f4ca10fa675e1a99815b3ca384db
+        echo "Downloading QuantTrio/GLM-5.1-AWQ..."
+        uvx --from 'huggingface_hub[hf_xet]' hf download QuantTrio/GLM-5.1-AWQ --revision 8f60817aa28023f2607850d1a1e51d21aa34817a
         echo "Download complete."
     volumes:
       - huggingface_cache:/root/.cache/huggingface
     environment:
       - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
     labels:
-      com.datadoghq.ad.logs: '[{"source":"model-downloader","service":"model-downloader","tags":["model:zai-org/GLM-5.1-FP8","deployment:GLM-5.1","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.logs: '[{"source":"model-downloader","service":"model-downloader","tags":["model:QuantTrio/GLM-5.1-AWQ","deployment:GLM-5.1-AWQ-4bit","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
 
   proxy-nginx:
     image: nginx@sha256:1d13701a5f9f3fb01aaa88cef2344d65b6b5bf6b7d9fa4cf0dca557a8d7702ba
@@ -66,7 +66,7 @@ services:
     restart: unless-stopped
     logging: *logging-conf
     labels:
-      com.datadoghq.ad.logs: '[{"source":"nginx","service":"proxy-nginx","tags":["model:zai-org/GLM-5.1-FP8","deployment:GLM-5.1","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000"]}]'
+      com.datadoghq.ad.logs: '[{"source":"nginx","service":"proxy-nginx","tags":["model:QuantTrio/GLM-5.1-AWQ","deployment:GLM-5.1-AWQ-4bit","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000"]}]'
 
   model-proxy-registrar:
     image: curlimages/curl@sha256:d94d07ba9e7d6de898b6d96c1a072f6f8266c687af78a74f380087a0addf5d17
@@ -93,11 +93,11 @@ services:
         mode: 0755
     logging: *logging-conf
     labels:
-      com.datadoghq.ad.logs: '[{"source":"model-proxy-registrar","service":"model-proxy-registrar","tags":["model:zai-org/GLM-5.1-FP8","deployment:GLM-5.1","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.logs: '[{"source":"model-proxy-registrar","service":"model-proxy-registrar","tags":["model:QuantTrio/GLM-5.1-AWQ","deployment:GLM-5.1-AWQ-4bit","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
 
-  proxy-glm51:
+  proxy-glm51-awq:
     <<: *vllm-proxy-common
-    container_name: proxy-glm51
+    container_name: proxy-glm51-awq
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - CLOUD_API_URL=https://cloud-api.near.ai
@@ -109,46 +109,62 @@ services:
       - TOKEN=${PROXY_TOKEN}
       - FUSION_ENABLED=${FUSION_ENABLED}
       - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
-      - VLLM_BASE_URL=http://model-sg-glm51:8000
+      # One proxy load-balances both TP4 replicas (repo's multi-replica pattern).
+      - VLLM_BACKEND_URLS=http://model-sg-glm51-awq-1:8000,http://model-sg-glm51-awq-2:8000
+      - VLLM_PROXY_MAX_REQUEST_SIZE=104857600
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
       - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
       - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:zai-org/GLM-5.1-FP8","deployment:GLM-5.1","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:zai-org/GLM-5.1-FP8","deployment:GLM-5.1-AWQ-4bit","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "inference-proxy"
       nearai.otel.service: "vllm-proxy"
       nearai.otel.source: "vllm-proxy"
-      nearai.otel.container_name: "proxy-glm51"
+      nearai.otel.container_name: "proxy-glm51-awq"
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "zai-org/GLM-5.1-FP8"
-      nearai.otel.deployment: "GLM-5.1"
+      nearai.otel.deployment: "GLM-5.1-AWQ-4bit"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
       nearai.otel.host_machine: "${CVM_HOST}"
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
-  model-sg-glm51:
+  # Two TP4 replicas on one node (GPUs 0-3 and 4-7), each a full GLM-5.1-AWQ on 4
+  # GPUs. The single proxy-glm51-awq load-balances both via VLLM_BACKEND_URLS, and
+  # the registrar health-checks both before registering this node's one endpoint.
+  #
+  # QuantTrio/GLM-5.1-AWQ is INT4 AWQ (W4A16) — only the routed MoE experts are
+  # quantized; attention, shared experts, dense MLP and lm_head stay BF16. Runs on
+  # Hopper via Marlin (dequant INT4 -> BF16). sglang needs --disable-shared-experts-fusion
+  # for this checkpoint's weight layout (no --quantization flag). fp8 KV cache halves
+  # KV bytes/token to fit context at TP4. No EAGLE: the AWQ repo ships no draft weights.
+  #
+  # --served-model-name is zai-org/GLM-5.1-FP8 (NOT the AWQ repo id): drop-in for the
+  # FP8 model so the API name is identical and nothing downstream changes. Registered
+  # to the ISOLATED glm-5-1-awq domain (does not join the prod glm-5-1 rotation).
+  model-sg-glm51-awq-1: &model-sg-awq
     <<: *nvidia
     init: true
     depends_on:
       model-downloader:
         condition: service_completed_successfully
     image: lmsysorg/sglang:dev-cu12@sha256:aac6b242680daeb74d2ab1d85f70575357552d7d165d2e5d30eb362797db54a1
-    container_name: model-sg-glm51
     command: >
       sglang serve
-      --model-path zai-org/GLM-5.1-FP8
-      --revision f396cf805182f4ca10fa675e1a99815b3ca384db
-      --tp 8
+      --model-path QuantTrio/GLM-5.1-AWQ
+      --revision 8f60817aa28023f2607850d1a1e51d21aa34817a
+      --served-model-name zai-org/GLM-5.1-FP8
+      --disable-shared-experts-fusion
+      --kv-cache-dtype fp8_e4m3
+      --tp 4
       --reasoning-parser glm45
       --log-requests-level 0
       --tool-call-parser glm47
-      --kv-cache-dtype fp8_e4m3
-      --mem-fraction-static 0.83
+      --mem-fraction-static 0.85
       --max-queued-requests 8
       --num-continuous-decode-steps 5
       --model-loader-extra-config '{"enable_multithread_load": "true", "num_threads": 64}'
@@ -159,7 +175,6 @@ services:
       --host 0.0.0.0
       --enable-cache-report
       --enable-metrics
-      --enable-mfu-metrics
       --trust-remote-code
       --disable-custom-all-reduce
     volumes:
@@ -171,30 +186,61 @@ services:
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
       - OPENBLAS_L2_SIZE=2097152
       - NCCL_DEBUG=WARN
+    restart: unless-stopped
+    stop_grace_period: 5m
+    logging: *logging-conf
+    container_name: model-sg-glm51-awq-1
     deploy:
       resources:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["0","1","2","3","4","5","6","7"]
+              device_ids: ["0","1","2","3"]
               capabilities: [gpu]
-    restart: unless-stopped
-    stop_grace_period: 5m
-    logging: *logging-conf
     labels:
       com.datadoghq.ad.check_names: '["openmetrics"]'
       com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:zai-org/GLM-5.1-FP8","deployment:GLM-5.1","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-sg-glm51:8000/metrics", "histogram_buckets_as_distributions": true, "metrics":["sglang:*"], "service": "glm-5.1", "tags":["model:zai-org/GLM-5.1-FP8","ip:${HOST_IP}","port:8000"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:QuantTrio/GLM-5.1-AWQ","deployment:GLM-5.1-AWQ-4bit","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:1"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-sg-glm51-awq-1:8000/metrics", "histogram_buckets_as_distributions": true, "metrics":["sglang:*"], "service": "glm-5.1-awq", "tags":["model:QuantTrio/GLM-5.1-AWQ","ip:${HOST_IP}","port:8000","instance:1"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
       nearai.otel.source: "sglang"
-      nearai.otel.container_name: "model-sg-glm51"
+      nearai.otel.container_name: "model-sg-glm51-awq-1"
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
-      nearai.otel.model: "zai-org/GLM-5.1-FP8"
-      nearai.otel.deployment: "GLM-5.1"
+      nearai.otel.model: "QuantTrio/GLM-5.1-AWQ"
+      nearai.otel.deployment: "GLM-5.1-AWQ-4bit"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
+
+  model-sg-glm51-awq-2:
+    <<: *model-sg-awq
+    container_name: model-sg-glm51-awq-2
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["4","5","6","7"]
+              capabilities: [gpu]
+    labels:
+      com.datadoghq.ad.check_names: '["openmetrics"]'
+      com.datadoghq.ad.init_configs: "[{}]"
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:QuantTrio/GLM-5.1-AWQ","deployment:GLM-5.1-AWQ-4bit","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:2"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-sg-glm51-awq-2:8000/metrics", "histogram_buckets_as_distributions": true, "metrics":["sglang:*"], "service": "glm-5.1-awq", "tags":["model:QuantTrio/GLM-5.1-AWQ","ip:${HOST_IP}","port:8000","instance:2"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "sglang"
+      nearai.otel.service: "sglang"
+      nearai.otel.source: "sglang"
+      nearai.otel.container_name: "model-sg-glm51-awq-2"
+      nearai.otel.port: "8000"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "QuantTrio/GLM-5.1-AWQ"
+      nearai.otel.deployment: "GLM-5.1-AWQ-4bit"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
       nearai.otel.host_machine: "${CVM_HOST}"
@@ -223,8 +269,8 @@ services:
     labels:
       com.datadoghq.ad.check_names: '["dcgm"]'
       com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint": "http://%%host%%:9400/metrics", "tags":["model:zai-org/GLM-5.1-FP8","deployment:GLM-5.1","ip:${HOST_IP}"]}]'
-      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:zai-org/GLM-5.1-FP8","deployment:GLM-5.1","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint": "http://%%host%%:9400/metrics", "tags":["model:QuantTrio/GLM-5.1-AWQ","deployment:GLM-5.1-AWQ-4bit","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:QuantTrio/GLM-5.1-AWQ","deployment:GLM-5.1-AWQ-4bit","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "dcgm"
       nearai.otel.service: "dcgm-exporter"
@@ -232,8 +278,8 @@ services:
       nearai.otel.container_name: "dcgm-exporter"
       nearai.otel.port: "9400"
       nearai.otel.path: "/metrics"
-      nearai.otel.model: "zai-org/GLM-5.1-FP8"
-      nearai.otel.deployment: "GLM-5.1"
+      nearai.otel.model: "QuantTrio/GLM-5.1-AWQ"
+      nearai.otel.deployment: "GLM-5.1-AWQ-4bit"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
       nearai.otel.host_machine: "${CVM_HOST}"
@@ -270,7 +316,7 @@ services:
         max-size: "20m"
         max-file: "3"
     labels:
-      com.datadoghq.ad.logs: '[{"source":"otelcol-contrib","service":"otelcol-contrib","tags":["deployment:GLM-5.1","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.logs: '[{"source":"otelcol-contrib","service":"otelcol-contrib","tags":["deployment:GLM-5.1-AWQ-4bit","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
 
 networks:
   default:
@@ -373,23 +419,42 @@ configs:
         prometheus/apps:
           config:
             scrape_configs:
-              - job_name: sglang-model-sg-glm51
+              - job_name: sglang-model-sg-glm51-awq-1
                 scrape_interval: 15s
                 metrics_path: /metrics
                 static_configs:
-                  - targets: ['model-sg-glm51:8000']
+                  - targets: ['model-sg-glm51-awq-1:8000']
                     labels:
                       service: "sglang"
                       source: "sglang"
-                      container_name: "model-sg-glm51"
-                      model: "zai-org/GLM-5.1-FP8"
-                      deployment: "GLM-5.1"
+                      container_name: "model-sg-glm51-awq-1"
+                      model: "QuantTrio/GLM-5.1-AWQ"
+                      deployment: "GLM-5.1-AWQ-4bit"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
                       host_machine: "${CVM_HOST}"
                       cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "8000"
+                      instance: "1"
+              - job_name: sglang-model-sg-glm51-awq-2
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['model-sg-glm51-awq-2:8000']
+                    labels:
+                      service: "sglang"
+                      source: "sglang"
+                      container_name: "model-sg-glm51-awq-2"
+                      model: "QuantTrio/GLM-5.1-AWQ"
+                      deployment: "GLM-5.1-AWQ-4bit"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      port: "8000"
+                      instance: "2"
               - job_name: dcgm-dcgm-exporter
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -399,25 +464,25 @@ configs:
                       service: "dcgm-exporter"
                       source: "dcgm-exporter"
                       container_name: "dcgm-exporter"
-                      model: "zai-org/GLM-5.1-FP8"
-                      deployment: "GLM-5.1"
+                      model: "QuantTrio/GLM-5.1-AWQ"
+                      deployment: "GLM-5.1-AWQ-4bit"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
                       host_machine: "${CVM_HOST}"
                       cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "9400"
-              - job_name: inference-proxy-proxy-glm51
+              - job_name: inference-proxy-proxy-glm51-awq
                 scrape_interval: 15s
                 metrics_path: /metrics
                 static_configs:
-                  - targets: ['proxy-glm51:8000']
+                  - targets: ['proxy-glm51-awq:8000']
                     labels:
                       service: "vllm-proxy"
                       source: "vllm-proxy"
-                      container_name: "proxy-glm51"
+                      container_name: "proxy-glm51-awq"
                       model: "zai-org/GLM-5.1-FP8"
-                      deployment: "GLM-5.1"
+                      deployment: "GLM-5.1-AWQ-4bit"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
                       host_machine: "${CVM_HOST}"
@@ -592,48 +657,51 @@ configs:
         register_endpoint "$$ENDPOINT" "$${TLS_PORT}"
         register_model "zai-org/GLM-5.1-FP8" "glm-5-1.completions.near.ai"
         if [ "$$REGISTERED" = false ]; then
-          echo "[GLM-5.1] Registered zai-org/GLM-5.1-FP8 at $$ENDPOINT"
+          echo "[GLM-5.1-AWQ] Registered zai-org/GLM-5.1-FP8 (AWQ weights, 2x TP4) at $$ENDPOINT"
         fi
         REGISTERED=true
       }
 
-      # 1-token completion health check directly to model container (no auth needed).
-      # Return codes:
-      #   0: backend accepted the probe
-      #   2: backend is alive but saturated/backpressuring new requests
-      #   1: backend appears unhealthy/unreachable
-      check_inference() {
-        echo "Performing health check on model endpoint..."
+      # Per-replica 1-token probe (no auth needed). Return codes:
+      #   0: replica accepted the probe
+      #   2: replica alive but saturated/backpressuring (HTTP 503 or curl 52/56)
+      #   1: replica unhealthy/unreachable
+      check_chat() {
         status=$$(curl -sS --connect-timeout 10 --max-time 45 -o /dev/null -w "%{http_code}" \
-          -X POST "http://model-sg-glm51:8000/v1/chat/completions" \
+          -X POST "http://$$1:8000/v1/chat/completions" \
           -H "Content-Type: application/json" \
           -d '{"model":"zai-org/GLM-5.1-FP8","messages":[{"role":"user","content":"hi"}],"max_tokens":1}')
         curl_status=$$?
-
         if [ "$$curl_status" -ne 0 ]; then
           case "$$curl_status" in
             52|56)
-              echo "[GLM-5.1] Health probe hit connection-level backpressure (curl $$curl_status); treating as alive but saturated"
-              return 2
-              ;;
+              echo "[GLM-5.1-AWQ] $$1: connection backpressure (curl $$curl_status); alive but saturated"
+              return 2 ;;
           esac
-          echo "[GLM-5.1] Health probe curl failed with status $$curl_status"
+          echo "[GLM-5.1-AWQ] $$1: probe curl failed (status $$curl_status)"
           return 1
         fi
-
         case "$$status" in
-          2*)
-            return 0
-            ;;
+          2*) return 0 ;;
           503)
-            echo "[GLM-5.1] Backend returned 503; treating as alive but saturated"
-            return 2
-            ;;
+            echo "[GLM-5.1-AWQ] $$1: HTTP 503; alive but saturated"
+            return 2 ;;
           *)
-            echo "[GLM-5.1] Backend returned HTTP $$status"
-            return 1
-            ;;
+            echo "[GLM-5.1-AWQ] $$1: HTTP $$status"
+            return 1 ;;
         esac
+      }
+
+      # Aggregate both TP4 replicas: unhealthy if either is down; saturated if either
+      # is saturated (none down); otherwise ok. Saturated keeps the endpoint
+      # registered (don't drop a busy-but-healthy node).
+      check_inference() {
+        echo "Performing health check on both replicas..."
+        check_chat model-sg-glm51-awq-1; s1=$$?
+        check_chat model-sg-glm51-awq-2; s2=$$?
+        if [ "$$s1" -eq 1 ] || [ "$$s2" -eq 1 ]; then return 1; fi
+        if [ "$$s1" -eq 2 ] || [ "$$s2" -eq 2 ]; then return 2; fi
+        return 0
       }
 
       # Probe the host-published nginx port via HOST_IP instead of the
@@ -669,17 +737,17 @@ configs:
             ;;
           2)
             FAILURE_COUNT=0
-            echo "[GLM-5.1] Keeping $$ENDPOINT registered while backend is saturated"
+            echo "[GLM-5.1-AWQ] Keeping $$ENDPOINT registered while backend is saturated"
             mark_registered
             ;;
           *)
             FAILURE_COUNT=$$((FAILURE_COUNT + 1))
-            echo "[GLM-5.1] Health check failed ($$FAILURE_COUNT/$$MAX_RETRIES)"
+            echo "[GLM-5.1-AWQ] Health check failed ($$FAILURE_COUNT/$$MAX_RETRIES)"
             if [ "$$REGISTERED" = true ] && [ "$$FAILURE_COUNT" -ge "$$MAX_RETRIES" ]; then
-              echo "[GLM-5.1] Health check failed and Retry limit reached, unregistering $$ENDPOINT"
+              echo "[GLM-5.1-AWQ] Health check failed and Retry limit reached, unregistering $$ENDPOINT"
               unregister_endpoint "$$ENDPOINT"
               REGISTERED=false
-              echo "[GLM-5.1] Exiting to refresh DNS (container will auto-restart)"
+              echo "[GLM-5.1-AWQ] Exiting to refresh DNS (container will auto-restart)"
               exit 1
             fi
             ;;
@@ -711,7 +779,7 @@ configs:
           client_body_buffer_size 1m;
 
           location / {
-              proxy_pass http://proxy-glm51:8000;
+              proxy_pass http://proxy-glm51-awq:8000;
               proxy_http_version 1.1;
               proxy_set_header Host $$host;
               proxy_set_header X-Real-IP $$remote_addr;
@@ -746,7 +814,7 @@ configs:
           client_body_buffer_size 1m;
 
           location / {
-              proxy_pass http://proxy-glm51:8000;
+              proxy_pass http://proxy-glm51-awq:8000;
               proxy_http_version 1.1;
               proxy_set_header Host $$host;
               proxy_set_header X-Real-IP $$remote_addr;
