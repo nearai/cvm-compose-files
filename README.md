@@ -10,6 +10,7 @@ Deployed by `compose-manager` (running inside each inference CVM) which checks o
 .
 ├── prod/                  # Production-ready configs. Only these are deployable to prod.
 │   ├── GLM-5.2-SGL-FP8-TP8.yaml
+│   ├── GLM-5.2-W4AFP8-SGL-TP8.yaml
 │   ├── small-models.yaml
 │   └── dsv4-qwen36-gemma4.yaml
 ├── experiments/           # Work-in-progress: AWQ/int4/nvfp4 quantization sweeps,
@@ -73,6 +74,7 @@ Full deploy recipes (graceful drain for slow-shutdown models, env-var fetch, for
 | Config | Models served | Notes |
 |--------|---------------|-------|
 | `prod/GLM-5.2-SGL-FP8-TP8.yaml` | `z-ai/glm-5.2` | SGLang TP8, 1M context, official FP8. gpu23 + gpu04. |
+| `prod/GLM-5.2-W4AFP8-SGL-TP8.yaml` | `z-ai/glm-5.2` | SGLang TP8, 4-bit (PhalaCloud W4AFP8, 368GB vs 755GB FP8) — same model, serves the full 1M context FP8 can't fit, MTP on. **Alternative** to the FP8 config; deploy one or the other. Startup-hang under CC noted in header (under investigation). |
 | `prod/GLM-5.1-SGL-AWQ-TP4.yaml` | `zai-org/GLM-5.1-FP8` | SGLang 2× TP4 (AWQ W4A16). gpu03 + gpu13 + gpu26. Uses `build:` (inline SGLang patch) — see header. Replaced the archived FP8 TP8 config. |
 | `prod/Qwen3.5-122B.yaml` | `Qwen/Qwen3.5-122B-A10B` | vLLM TP4. gpu30. |
 | `prod/small-models.yaml` | gpt-oss-120b, FLUX.2-klein, Qwen3-VL-30B, Qwen3-Embedding, Qwen3-Reranker, whisper-large-v3, privacy-filter, Qwen3.6-35B-A3B-FP8, gemma-4-31B-it | Multi-model pack, gpu07 + gpu11. 10 services across 8 GPUs. |
