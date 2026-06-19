@@ -235,9 +235,6 @@ services:
   proxy-glm51-awq-tp4:
     <<: *vllm-proxy-common
     container_name: proxy-glm51-awq-tp4
-    depends_on:
-      - model-sg-glm51-awq-tp4-a
-      - model-sg-glm51-awq-tp4-b
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - CLOUD_API_URL=https://cloud-api.near.ai
