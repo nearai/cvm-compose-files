@@ -29,7 +29,7 @@ end
 def load_compose(path, errors)
   yaml_load(File.read(path))
 rescue StandardError => e
-  add_error(errors, File.basename(path), "$", "invalid YAML: #{e.message}")
+  add_error(errors, path.sub("#{ROOT}/", ""), "$", "invalid YAML: #{e.message}")
   nil
 end
 
@@ -239,11 +239,18 @@ end
 
 errors = []
 
-Dir.glob(File.join(ROOT, "*.yaml")).sort.each do |path|
-  file = File.basename(path)
+# Recursively find all compose files under prod/ and experiments/, plus any
+# root-level utilities (cleanup-hf-model.yaml). Sort for deterministic error
+# output. Relative paths from the repo root are used in error messages so
+# same-named files in different dirs are distinguishable.
+compose_files = Dir.glob(File.join(ROOT, "prod", "*.yaml")) +
+                Dir.glob(File.join(ROOT, "experiments", "*.yaml")) +
+                Dir.glob(File.join(ROOT, "*.yaml"))
+compose_files.sort.each do |path|
+  file = path.sub("#{ROOT}/", "")
   compose = load_compose(path, errors)
   next unless compose
-  next if EXCLUDED_FILES.include?(file)
+  next if EXCLUDED_FILES.include?(File.basename(path))
 
   validate_collector_service(file, compose, errors)
 
