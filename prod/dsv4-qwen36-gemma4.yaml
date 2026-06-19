@@ -65,7 +65,7 @@ x-dsv4-flash-common: &dsv4-flash-common
   #      page_first_direct: uses GPUDirect/unified-memory paths that hit
   #      'cudaErrorNotSupported' on the first warmup tensor.to(non_blocking)
   #      under TDX-confidential GPU memory — dropped.
-  image: lmsysorg/sglang:v0.5.12-cu129@sha256:9e02c8e1fe2790a1c445bd5f6814305fe43639a4adb01c8ad1e8e21e750bf581
+  image: lmsysorg/sglang@sha256:1c64fde976bdf0d56474a30bccbcfc19667e5b3ab34c826a534c9d6aaca41212  # 0.5.13.post1 — required for the FP4 --moe-runner-backend marlin path; was v0.5.12-cu129
   # Hidden-state passthrough (cloud-api#739 / inference-proxy#163) — OFF by default.
   # The gpu-manager toggles it at start via the DSV4_RETURN_HIDDEN_STATES env var,
   # spliced into /compose/up like GPT_OSS_CACHE_SUBPATH (see infra-docs compose-manager.md).
@@ -78,13 +78,10 @@ x-dsv4-flash-common: &dsv4-flash-common
   command: >
       sglang serve
       --trust-remote-code
-      --model-path sgl-project/DeepSeek-V4-Flash-FP8
-      --revision ae01d80c06cdfe30581edfd0e1c5449dc7ed7f17
-      --tp 4
-      --speculative-algo EAGLE
-      --speculative-num-steps 1
-      --speculative-eagle-topk 1
-      --speculative-num-draft-tokens 2
+      --model-path deepseek-ai/DeepSeek-V4-Flash
+      --revision 553034d7dd9e06c2eeaee68cf85a17d6d4754cf0
+      --tp 2
+      --moe-runner-backend marlin
       --cuda-graph-max-bs 64
       --mem-fraction-static 0.83
       --max-running-requests 64
@@ -110,7 +107,7 @@ x-dsv4-flash-common: &dsv4-flash-common
     - OPENBLAS_L2_SIZE=2097152
     - NCCL_DEBUG=WARN
     - SGLANG_ENABLE_SPEC_V2=1
-    - SGLANG_DSV4_FP4_EXPERTS=0
+    - SGLANG_DSV4_FP4_EXPERTS=1   # FP4 ckpt: experts ARE FP4 (marlin dequantizes). =0 forced the non-FP4 layout → load failure / invalid weights (PR #98 review)
     - SGLANG_ENABLE_UNIFIED_RADIX_TREE=1
     - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
   restart: unless-stopped
@@ -256,7 +253,10 @@ services:
     labels:
       com.datadoghq.ad.logs: '[{"source":"model-proxy-registrar","service":"model-proxy-registrar","tags":["model:deepseek-ai/DeepSeek-V4-Flash","deployment:dsv4-qwen36-gemma4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
 
-  # --- DeepSeek-V4-Flash-FP8 (GPUs 0-3) — SGLang TP=4 DP=4 dp-attention + DeepEP ---
+  # --- DeepSeek-V4-Flash (FP4) (GPUs 0-1) — SGLang TP=2 + --moe-runner-backend marlin, no spec-decode ---
+  # Was 4-GPU FP8 + EAGLE. FP4 ckpt on 2 GPUs (marlin dequant→INT4) halves the footprint at ~equal
+  # throughput → break-even/profitable vs the prior 4-GPU loss. Frees GPUs 2,3. See Benchmarks Notion
+  # "DeepSeek-V4-Flash — 2× H200 Serving & Profitability". VALIDATE IN STAGING before prod rollout.
 
   vllm-proxy-dsv4-flash:
     <<: *vllm-proxy-common
@@ -299,7 +299,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["0","1","2","3"]
+              device_ids: ["0","1"]   # TP=2 (FP4 marlin); was 0-3 under TP=4 FP8 — frees GPUs 2,3
               capabilities: [gpu]
     labels:
       com.datadoghq.ad.check_names: '["openmetrics"]'
@@ -533,7 +533,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["0","1","2","3"]
+              device_ids: ["0","1"]   # match dsv4 TP=2 serving set (was 0-3); GPUs 2,3 freed
               capabilities: [gpu]
     labels:
       com.datadoghq.ad.check_names: '["dcgm"]'
