@@ -179,12 +179,16 @@ services:
       nearai.otel.scrape: "true"
       nearai.otel.job: "inference-proxy"
       nearai.otel.service: "vllm-proxy"
+      nearai.otel.source: "vllm-proxy"
+      nearai.otel.container_name: "proxy-glm52-w4afp8"
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "z-ai/glm-5.2"
       nearai.otel.deployment: "GLM-5.2-W4AFP8-SGL-TP8"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
   model-sg-glm52-w4afp8:
@@ -215,12 +219,16 @@ services:
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
+      nearai.otel.source: "sglang"
+      nearai.otel.container_name: "model-sg-glm52-w4afp8"
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "z-ai/glm-5.2"
       nearai.otel.deployment: "GLM-5.2-W4AFP8-SGL-TP8"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
   dcgm-exporter:
@@ -250,12 +258,16 @@ services:
       nearai.otel.scrape: "true"
       nearai.otel.job: "dcgm"
       nearai.otel.service: "dcgm-exporter"
+      nearai.otel.source: "dcgm-exporter"
+      nearai.otel.container_name: "dcgm-exporter"
       nearai.otel.port: "9400"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "z-ai/glm-5.2"
       nearai.otel.deployment: "GLM-5.2-W4AFP8-SGL-TP8"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
   otelcol-contrib:
@@ -323,11 +335,14 @@ configs:
                   - targets: ['proxy-glm52-w4afp8:8000']
                     labels:
                       service: "vllm-proxy"
+                      source: "vllm-proxy"
                       container_name: "proxy-glm52-w4afp8"
                       model: "z-ai/glm-5.2"
                       deployment: "GLM-5.2-W4AFP8-SGL-TP8"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "8000"
               - job_name: sglang-model-sg-glm52-w4afp8
@@ -337,11 +352,14 @@ configs:
                   - targets: ['model-sg-glm52-w4afp8:8000']
                     labels:
                       service: "sglang"
+                      source: "sglang"
                       container_name: "model-sg-glm52-w4afp8"
                       model: "z-ai/glm-5.2"
                       deployment: "GLM-5.2-W4AFP8-SGL-TP8"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "8000"
               - job_name: dcgm-dcgm-exporter
@@ -351,11 +369,14 @@ configs:
                   - targets: ['dcgm-exporter:9400']
                     labels:
                       service: "dcgm-exporter"
+                      source: "dcgm-exporter"
                       container_name: "dcgm-exporter"
                       model: "z-ai/glm-5.2"
                       deployment: "GLM-5.2-W4AFP8-SGL-TP8"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "9400"
 
