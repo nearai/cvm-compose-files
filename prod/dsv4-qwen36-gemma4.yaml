@@ -107,7 +107,7 @@ x-dsv4-flash-common: &dsv4-flash-common
     - OPENBLAS_L2_SIZE=2097152
     - NCCL_DEBUG=WARN
     - SGLANG_ENABLE_SPEC_V2=1
-    - SGLANG_DSV4_FP4_EXPERTS=0
+    - SGLANG_DSV4_FP4_EXPERTS=1   # FP4 ckpt: experts ARE FP4 (marlin dequantizes). =0 forced the non-FP4 layout → load failure / invalid weights (PR #98 review)
     - SGLANG_ENABLE_UNIFIED_RADIX_TREE=1
     - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
   restart: unless-stopped
@@ -533,7 +533,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["0","1","2","3"]
+              device_ids: ["0","1"]   # match dsv4 TP=2 serving set (was 0-3); GPUs 2,3 freed
               capabilities: [gpu]
     labels:
       com.datadoghq.ad.check_names: '["dcgm"]'
