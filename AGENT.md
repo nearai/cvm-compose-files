@@ -143,6 +143,9 @@ ruby scripts/validate_otel_labels.rb
 # Proxy dependency contract — proxy services must not depends_on model services (requires ruby)
 ruby scripts/validate_proxy_dependencies.rb
 
+# Proxy environment contract — inference-proxy services must explicitly pass required env vars
+ruby scripts/validate_proxy_environment.rb
+
 # Embedded OTel collector config validation (per file, slow)
 for f in prod/*.yaml; do
   config="$(docker compose -f "$f" config --format=json | jq -r '.configs.otelcol_app_config.content // empty')"

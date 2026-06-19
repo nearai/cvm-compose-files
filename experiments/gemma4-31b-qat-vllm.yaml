@@ -160,6 +160,8 @@ services:
       - VLLM_PROXY_MAX_REQUEST_SIZE=104857600
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
+      - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
+      - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
     labels:
       com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:google/gemma-4-31B-it","model_path:google/gemma-4-31B-it-qat-w4a16-ct","precision:w4a16","deployment:gemma4-31b-qat-vllm","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:${HTTP_PORT:-8000}"]}]'
       nearai.otel.scrape: "true"

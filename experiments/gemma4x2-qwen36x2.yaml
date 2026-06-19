@@ -223,6 +223,8 @@ services:
       - VLLM_BACKEND_URLS=http://vllm-gemma-4-31b-1:8000,http://vllm-gemma-4-31b-2:8000
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
+      - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
+      - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
     labels:
       com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:google/gemma-4-31B-it","deployment:gemma4x2-qwen36x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8001"]}]'
       nearai.otel.scrape: "true"
@@ -307,6 +309,8 @@ services:
       - VLLM_BACKEND_URLS=http://vllm-qwen3-6-35b-1:8000,http://vllm-qwen3-6-35b-2:8000
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
+      - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
+      - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
     labels:
       com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:Qwen/Qwen3.6-35B-A3B-FP8","deployment:gemma4x2-qwen36x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8002"]}]'
       nearai.otel.scrape: "true"
@@ -391,6 +395,8 @@ services:
       - VLLM_BACKEND_URLS=http://vllm-qwen3-6-27b-1:8000,http://vllm-qwen3-6-27b-2:8000
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
+      - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
+      - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
     labels:
       com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:Qwen/Qwen3.6-27B-FP8","deployment:gemma4x2-qwen36x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8003"]}]'
       nearai.otel.scrape: "true"
