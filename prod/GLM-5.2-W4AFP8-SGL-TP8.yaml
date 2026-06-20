@@ -4,8 +4,7 @@
 # glm-5-2.completions.near.ai). Deploy ONE or the other, not both, in a given fleet rotation.
 # At ~HALF the weight memory (368GB W4AFP8 vs 755GB FP8 — routed experts INT4-g128 + FP8 act,
 # AWQ-calibrated; dense/attn/shared-experts/MTP stay FP8/BF16) the freed VRAM lets this config
-# serve the FULL 1M context at TP8 (KV pool leaves ~8GB/GPU spare at --context-length 1048576),
-# which the FP8 build (capped at 500K) cannot.
+# serve the FULL 1M context at TP8, which the FP8 build (capped at 500K) cannot.
 #
 # VALIDATED on the dev VM (8xH200, CC on; sglang 0.5.13.post1 — the staging soak target):
 #   - QUALITY: 10/10 on a temp=0 suite (math/reasoning/code/instruction/JSON/multilingual),
@@ -39,6 +38,26 @@
 #
 # DeepEP + DP-attention high-throughput (sglang cookbook) is CC-INCOMPATIBLE: DeepEP's
 # GPU-initiated all-to-all crashes under PPCIE ("deep_ep.cpp:230 invalid argument"). Do not use.
+#
+# *** VRAM-STABILITY FIX: --mem-fraction-static 0.72 + --cuda-graph-max-bs 128 (REQUIRED) ***
+#   The original 0.85 / no-cuda-graph-max-bs config is VRAM-STARVED at full 1M ctx + EAGLE +
+#   TP8 and crashes. There are TWO cudagraph-capture phases that OOM:
+#     (1) MAIN model capture (bs 1..256) — at mem-frac 0.85 only ~12GB/GPU free, capture needs
+#         ~6GB and races DeepGEMM warmup -> "Capture cuda graph failed: CUDA out of memory".
+#     (2) EAGLE *draft* capture (runs LAST, least free mem) — OOMs even at mem-frac 0.80
+#         (begins with only ~5.8GB free) -> sigquit.
+#   The same razor-thin headroom also caused a RUNTIME GPU Xid 31 MMU fault (illegal memory
+#   access) under the first real ~15k-token prefill load, taking down the whole TP8 group via
+#   the NCCL HeartbeatMonitor. The short (256-token) validation that gated this file never
+#   exercised production-shape prefill, so it was missed.
+#   FIX (validated on 8xH200 CC): --mem-fraction-static 0.72 + --cuda-graph-max-bs 128 ->
+#   main capture begins ~31.8GB free, draft capture ~18GB free; both succeed, the server boots,
+#   and survives a full 1->256 concurrency sweep at ~15k input with 0 errors / no Xid. KV pool
+#   at 0.72 still holds 1M ctx for the long-context use case. cuda-graph-max-bs 128 = the sglang
+#   GLM-5.2 cookbook value (batches >128 run eager — fine, they are compute-bound). Full EAGLE
+#   5/1/6 CC cold start is ~45min (weight load + DeepGEMM warmup + main capture ~827s + draft
+#   dynamic-shape compiles + piecewise prefill compile + draft capture) — size readiness probes
+#   accordingly; persist the compile_cache volume to speed restarts.
 
 x-logging-conf: &logging-conf
   driver: "json-file"
@@ -90,8 +109,9 @@ x-glm52-cmd: &glm52-cmd >
   --speculative-eagle-topk 1
   --speculative-num-draft-tokens 6
   --log-requests-level 0
-  --mem-fraction-static 0.85
+  --mem-fraction-static 0.72
   --max-running-requests 256
+  --cuda-graph-max-bs 128
   --context-length 1048576
   --dist-init-addr 127.0.0.1:29500
   --watchdog-timeout 1800
