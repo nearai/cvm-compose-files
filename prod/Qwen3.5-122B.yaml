@@ -33,11 +33,26 @@ x-sg-qwen35-122b-common: &sg-qwen35-122b-common
   # SGLang v0.5.12 (cu129) — migrated off vLLM 2026-05-22.
   # Context dropped from 1.01M (yarn rope override) to native 262144.
   # EAGLE spec decoding enabled (Spec V2 default since 0.5.11).
+  #
+  # WEIGHTS: official block-wise FP8 (Qwen/Qwen3.5-122B-A10B-FP8) — switched from BF16 (2026-06-20).
+  #   Near-lossless (Qwen: "nearly identical to original"; verified 5/5 on a temp=0 quality+needle probe),
+  #   native H200 FP8 tensor-core compute, ~half the weight VRAM (~114GB vs ~232GB → ~28.5GB/GPU at TP4).
+  #   Benchmarked at ~15k input (8xH200 CC, no-EAGLE arm — see note): FP8 vs BF16 at the SAME TP4 gave
+  #   +20-22% system throughput (c64 18.3k vs 15.0k, c128 21.4k vs 17.5k tok/s) + ~15-20% lower TPOT.
+  #   The freed VRAM also unlocks TP2 (FP8 fits 2xH200): a single TP2 replica holds ~90% of a TP4
+  #   replica's c64 throughput within the P99 TTFT<15s SLO, so 4xTP2 replicas/node ~= 2x the aggregate
+  #   node throughput of 2xTP4 (~66k vs ~30k tok/s). Consider migrating the deployment to TP2 x4 for
+  #   max throughput (balance each replica to ~c64; per-replica P99 TTFT collapses by c128 on 2 GPUs).
+  #   fp8 KV cache (line below) verified NON-corrupting on H200 — sglang #19603 is Blackwell-specific.
+  #   NOTE: dev-box benchmarks ran on sglang :latest with EAGLE disabled, because the pinned v0.5.12-cu129
+  #   image SIGILLs at init on the dev CVM's CPU and :latest has an EAGLE draft-path bug for Qwen3.5
+  #   (eagle_worker_v2 cuda_graph_buffer shape mismatch). Validate the FP8 checkpoint on this exact
+  #   v0.5.12-cu129 image (which prod runs fine) in staging before promoting.
   image: lmsysorg/sglang:v0.5.12-cu129@sha256:9e02c8e1fe2790a1c445bd5f6814305fe43639a4adb01c8ad1e8e21e750bf581
   command: >
       sglang serve
-      --model-path Qwen/Qwen3.5-122B-A10B
-      --revision dc4d348443bc740c68e2d77492492c11606384d5
+      --model-path Qwen/Qwen3.5-122B-A10B-FP8
+      --revision a099dee70ccfcd8d5dda56aaa0b60cb8ecadabc9
       --tp 4
       --reasoning-parser qwen3
       --tool-call-parser qwen3_coder
@@ -83,8 +98,8 @@ services:
     command:
       - |
         set -e
-        echo "Downloading Qwen/Qwen3.5-122B-A10B..."
-        uvx --from 'huggingface_hub[hf_xet]' hf download Qwen/Qwen3.5-122B-A10B --revision dc4d348443bc740c68e2d77492492c11606384d5
+        echo "Downloading Qwen/Qwen3.5-122B-A10B-FP8..."
+        uvx --from 'huggingface_hub[hf_xet]' hf download Qwen/Qwen3.5-122B-A10B-FP8 --revision a099dee70ccfcd8d5dda56aaa0b60cb8ecadabc9
         echo "Download complete."
     volumes:
       - huggingface_cache:/root/.cache/huggingface
