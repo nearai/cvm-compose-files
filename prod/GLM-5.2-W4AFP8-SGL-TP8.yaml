@@ -39,25 +39,31 @@
 # DeepEP + DP-attention high-throughput (sglang cookbook) is CC-INCOMPATIBLE: DeepEP's
 # GPU-initiated all-to-all crashes under PPCIE ("deep_ep.cpp:230 invalid argument"). Do not use.
 #
-# *** VRAM-STABILITY FIX: --mem-fraction-static 0.72 + --cuda-graph-max-bs 128 (REQUIRED) ***
-#   The original 0.85 / no-cuda-graph-max-bs config is VRAM-STARVED at full 1M ctx + EAGLE +
-#   TP8 and crashes. There are TWO cudagraph-capture phases that OOM:
-#     (1) MAIN model capture (bs 1..256) — at mem-frac 0.85 only ~12GB/GPU free, capture needs
-#         ~6GB and races DeepGEMM warmup -> "Capture cuda graph failed: CUDA out of memory".
-#     (2) EAGLE *draft* capture (runs LAST, least free mem) — OOMs even at mem-frac 0.80
-#         (begins with only ~5.8GB free) -> sigquit.
-#   The same razor-thin headroom also caused a RUNTIME GPU Xid 31 MMU fault (illegal memory
-#   access) under the first real ~15k-token prefill load, taking down the whole TP8 group via
-#   the NCCL HeartbeatMonitor. The short (256-token) validation that gated this file never
-#   exercised production-shape prefill, so it was missed.
-#   FIX (validated on 8xH200 CC): --mem-fraction-static 0.72 + --cuda-graph-max-bs 128 ->
-#   main capture begins ~31.8GB free, draft capture ~18GB free; both succeed, the server boots,
-#   and survives a full 1->256 concurrency sweep at ~15k input with 0 errors / no Xid. KV pool
-#   at 0.72 still holds 1M ctx for the long-context use case. cuda-graph-max-bs 128 = the sglang
-#   GLM-5.2 cookbook value (batches >128 run eager — fine, they are compute-bound). Full EAGLE
-#   5/1/6 CC cold start is ~45min (weight load + DeepGEMM warmup + main capture ~827s + draft
-#   dynamic-shape compiles + piecewise prefill compile + draft capture) — size readiness probes
-#   accordingly; persist the compile_cache volume to speed restarts.
+# *** CONFIG: EAGLE 3/1/4 + --mem-fraction-static 0.80 + --cuda-graph-max-bs 128 ***
+#   This is the optimum from a full one-factor-at-a-time sweep (8xH200 CC, ~11.5k-in/1154-out
+#   production shape, 1->256 concurrency). It Pareto-dominates the prior 5/1/6 + mf0.72:
+#   throughput >= at every concurrency (c64/128/256 strictly higher; c256 +54%), TPOT lower
+#   everywhere (122/138/200ms vs 138/161/306 at c32/c64/c256), +22% KV pool (965k->1.18M tokens,
+#   still full 1M ctx), same SLO knee (~c32 at P99 TTFT 15s), quality unchanged (needle-PASS).
+#   The EAGLE draft accepts ~3.1 tokens/step (vs ~1.9 at 1/1/2) — recovering deep-spec
+#   throughput while the shallower 3-step draft keeps TPOT and capture cost down.
+#
+#   VRAM stability (the reason this file exists): the original #97 config (mem-frac 0.85,
+#   no cuda-graph-max-bs) is VRAM-STARVED at 1M ctx + EAGLE + TP8 and crashes — main capture OOM,
+#   EAGLE *draft* capture OOM (runs last, least free mem), and a runtime Xid 31 MMU fault under
+#   the first ~15k-token prefill that takes down the whole TP8 group via NCCL HeartbeatMonitor.
+#   (The 256-token validation that gated #97 never exercised production-shape prefill.) The fix
+#   is headroom. mem-frac 0.80 is SAFE here because 3/1/4's draft capture is light (~6.6GB ->
+#   ~13GB free after capture); the crash needed 0.85 + 5/1/6's heavy ~9GB capture. Validated:
+#   boots clean + full 1->256 sweep at ~15k with 0 errors / no Xid. cuda-graph-max-bs 128 = the
+#   sglang GLM-5.2 cookbook value (batches >128 run eager — compute-bound anyway).
+#
+#   ALTERNATIVES (benchmarked, not chosen): 1/1/2 + mf0.80 = lowest TPOT (90ms@c32) but ~18%
+#   less throughput — pick only if absolute inter-token latency dominates. --speculative-adaptive
+#   CRASHES on this checkpoint (DSA-draft indexer fault when it switches to 7 steps). dp-attention
+#   gives unreliable/high-variance tail latency under PPCIE — not recommended. chunked-prefill
+#   size is neutral at 15k. Cold start ~35-45min (weight load + DeepGEMM warmup + capture);
+#   persist the compile_cache volume to speed restarts.
 
 x-logging-conf: &logging-conf
   driver: "json-file"
@@ -105,11 +111,11 @@ x-glm52-cmd: &glm52-cmd >
   --reasoning-parser glm45
   --tool-call-parser glm47
   --speculative-algorithm EAGLE
-  --speculative-num-steps 5
+  --speculative-num-steps 3
   --speculative-eagle-topk 1
-  --speculative-num-draft-tokens 6
+  --speculative-num-draft-tokens 4
   --log-requests-level 0
-  --mem-fraction-static 0.72
+  --mem-fraction-static 0.80
   --max-running-requests 256
   --cuda-graph-max-bs 128
   --context-length 1048576
