@@ -107,8 +107,9 @@ ruby scripts/validate_otel_labels.rb
 
 The end-to-end onboarding flow (staging `PATCH /v1/admin/models` → auto-generated tests → 30-min soak → auto-promote to prod) is documented in `ansible-playbooks/docs/model-onboarding-workflow.md`. The compose-config side of that flow:
 
-1. Start the config in `experiments/<Model>-<variant>.yaml`. Copy from the closest existing prod config as a template.
-2. Pin the image digests and HF `--revision`.
-3. Add the Datadog + OTel labels (copy from `prod/GLM-5.2-SGL-FP8-TP8.yaml` — the label set is exact).
-4. Soak in staging. Iterate.
-5. When the checklist passes, move to `prod/` and open a PR. CI validates; the merge auto-tags.
+1. **Choose the served model name and SNI domain first** — see [`AGENT.md` → Model naming and SNI domains](AGENT.md#model-naming-and-sni-domains). These are external identifiers: prefer the OpenRouter slug, no quantization suffix, no variant info. Pick them before writing the config so they don't need changing later.
+2. Start the config in `experiments/<Model>-<variant>.yaml`. Copy from the closest existing prod config as a template.
+3. Pin the image digests and HF `--revision`.
+4. Add the Datadog + OTel labels (copy from `prod/GLM-5.2-SGL-FP8-TP8.yaml` — the label set is exact).
+5. Soak in staging. Iterate.
+6. When the checklist passes, move to `prod/` and open a PR. CI validates; the merge auto-tags.

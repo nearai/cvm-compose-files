@@ -25,6 +25,48 @@ Files were moved from the repo root into `prod/` and `experiments/` in this PR. 
 - **Experiment**: `experiments/<Model>-<variant>-test.yaml` — e.g. `experiments/GLM-5.1-AWQ-4bit-test.yaml`. The `-test` suffix is mandatory for anything not meeting the prod-ready checklist.
 - **Operational utility**: root-level, descriptive — `cleanup-hf-model.yaml`. These are added to `EXCLUDED_FILES` in the validator.
 
+## Model naming and SNI domains
+
+### The served name is the API contract — the checkpoint is an implementation detail
+
+`MODEL_NAME` (inference-proxy env var) and `--served-model-name` (engine flag) are what API consumers see in requests and responses. They must be set to the **stable model identifier**, not the HuggingFace checkpoint path. The checkpoint (`--model-path`, `--revision`) is an internal detail: you can swap it for a different quantization without changing anything visible to callers.
+
+GLM-5.2 is the canonical example: both `prod/GLM-5.2-SGL-FP8-TP8.yaml` (checkpoint `zai-org/GLM-5.2-FP8`) and `prod/GLM-5.2-W4AFP8-SGL-TP8.yaml` (checkpoint `PhalaCloud/GLM-5.2-W4AFP8`) set `MODEL_NAME=z-ai/glm-5.2` and `--served-model-name z-ai/glm-5.2`. A caller switching from one to the other sees no difference.
+
+### Choosing a served model name
+
+1. **Prefer the OpenRouter slug** — `z-ai/glm-5.2`, `openai/gpt-oss-120b`, `deepseek-ai/DeepSeek-V4-Flash`. Check `openrouter.ai/models` for the canonical slug before inventing one.
+2. **Fall back to the HuggingFace org/model-name** when there is no OpenRouter listing — strip any quantization suffix from the model name (no `-FP8`, `-AWQ`, `-W4AFP8`, `-NVFP4`, etc.).
+3. **No quantization in the served name, ever.** The served name describes the model; the checkpoint describes how it's stored. Callers must not need to know or care which quantization is running.
+
+### Never change the served name of a prod model
+
+`MODEL_NAME` is a breaking change. API clients — including cloud-api's usage reporter, external callers, and infra-tests — hardcode it. Changing it silently breaks:
+- Usage reporting (`MODEL_NAME` must exactly match cloud-api's `model_name` column — mismatch → silent 404s).
+- Client requests that pin a model ID.
+- infra-tests assertions.
+
+If you need a name correction, open an issue, coordinate the cloud-api model table update, and flip both atomically — never just one side. For a checkpoint swap (e.g., switching from FP8 to W4AFP8), keep `MODEL_NAME` and `--served-model-name` identical to what is already in prod.
+
+### SNI domain naming
+
+The SNI domain (`server_name` in nginx, first arg to `register_model`) is also a stable external identifier. Rules:
+
+1. **No quantization, no variant suffix.** Both GLM-5.2 configs use `glm-5-2.completions.near.ai`. If a model has multiple alternative configs, they share one domain — only one is deployed at a time.
+2. **Format**: lowercase, digits, hyphens — `<model-shortname>.completions.near.ai`. Use dots in version numbers as hyphens (e.g., `glm-5-2`, `qwen3-6-27b`).
+3. **Derive from the model name, not the checkpoint.** `gpt-oss-120b.completions.near.ai` not `gpt-oss-120b-fp8.completions.near.ai`.
+4. **Never reuse a domain for a different model.** Once a domain is live, callers cache it. Retiring a model means removing its domain registration; do not reassign it.
+5. **Changing a domain is a breaking change** — it must be coordinated with model-proxy DNS, cloud-api's inference URL table, and any pinned clients. Treat it like renaming a model.
+
+### Summary table
+
+| Field | Owner | Changes allowed? | Rule |
+|-------|-------|-----------------|------|
+| `MODEL_NAME` / `--served-model-name` | API contract | Never for prod | Prefer OpenRouter slug; no quant suffix |
+| `--model-path` / `--revision` | Checkpoint | Free to swap | Points to actual HF checkpoint |
+| `server_name` / `register_model` domain | SNI routing | Never without coordination | `<model-shortname>.completions.near.ai`, no quant |
+| `nearai.otel.model` DD label | Observability | Free to update | Use checkpoint path so DD shows what's actually running |
+
 ## Prod-ready checklist
 
 A config graduates from `experiments/` to `prod/` only when **all** pass:
@@ -165,6 +207,8 @@ CI runs all four on every push/PR. A failing check blocks merge.
 - **`--max-queued-requests` too high on SGLang.** The queue is a brief overflow buffer, not a backlog. If it's large enough to hold requests for seconds, TTFB explodes and cloud-api times out. Pick a value ≈ "how many requests can complete in the fail-over window." GLM-5.1 uses 8.
 - **Forgetting `--enable-cache-report` (SGLang) / `--enable-prompt-tokens-details` (vLLM).** Without these, `cached_tokens` is silently null/absent and cache-hit billing is wrong. See `infra-docs/docs/inference.md` → Cached Token Reporting.
 - **Changing `MODEL_NAME` without updating cloud-api's model table.** inference-proxy's usage reporter requires `MODEL_NAME` to exactly match cloud-api's `model_name`. cloud-api does NOT check aliases — a mismatch causes silent 404s on usage reporting.
+- **Putting a quantization suffix in `MODEL_NAME`, `--served-model-name`, or the SNI domain.** These are external identifiers — callers must not need to know which checkpoint is running. Swap the checkpoint (`--model-path`/`--revision`) freely; keep the name and domain unchanged. See [Model naming and SNI domains](#model-naming-and-sni-domains).
+- **Assigning a new SNI domain when swapping checkpoints.** All configs for the same model share one domain. Introducing a second domain for the same model splits traffic and breaks callers that pinned the original.
 - **Using `:dev` or `:latest` image tags.** KMS attestation registers the compose hash; a mutable tag means the running image can drift from the registered hash. Always pin `@sha256:…`.
 - **`force_recreate: true` on heavy model containers.** Can wedge the docker daemon's stop path (GPU memory pressure during teardown). Use the down-then-up graceful drain pattern for GLM/DeepSeek — see `infra-docs/docs/deployment.md` → "Graceful drain for GLM".
 - **Adding a scrape target without `nearai.otel.scrape: "true"`.** The validator rejects extra targets. Every target in `otelcol_app_config` must have a matching scraped service.
