@@ -68,6 +68,11 @@ x-gpt-oss-common: &gpt-oss-common
   # env={"GPT_OSS_CACHE_SUBPATH":"v3"} to /compose/up to force a fresh cache.
   # Default is "v2" because v1 (the original /root/.cache/vllm root) holds the
   # corrupted 1603e894a6/... artifact from a prior interrupted compile.
+  # --max-num-batched-tokens 16384 (was 8192): a ~13.8k-token prompt prefills in one chunk
+  # instead of two, packing more tokens/step into the MXFP4 MoE GEMM -> +2-4% throughput
+  # across the concurrency range on H200 (internal 12:1 serving sweep), no quality/stability
+  # change. MXFP4-via-Marlin (VLLM_MXFP4_USE_MARLIN=1) stays — benched fastest on this engine
+  # for the practical range; the Triton matmul_ogs default was slower and unstable at c>=16.
   command: >
       openai/gpt-oss-120b
       --revision b5c939de8f754692c1647ca79fbf85e8c1e70f8a
@@ -79,7 +84,7 @@ x-gpt-oss-common: &gpt-oss-common
       --tool-call-parser openai
       --enable-auto-tool-choice
       --max-model-len 128K
-      --max-num-batched-tokens 8192
+      --max-num-batched-tokens 16384
       --load-format runai_streamer
       --model-loader-extra-config '{"distributed":true, "concurrency":48}'
       --enable-prompt-tokens-details
