@@ -1,3 +1,8 @@
+# Two-model AutoRound INT4 bring-up:
+# - DeepSeek-V4-Flash INT4 on GPUs 0-3, TP=4. The standalone INT4 file uses TP=8;
+#   this split is intentionally for side-by-side testing with Gemma 4.
+# - Gemma-4-31B-it INT4 x4, TP=1 per replica on GPUs 4-7.
+
 x-logging-conf: &logging-conf
   driver: "json-file"
   options:
@@ -17,15 +22,24 @@ x-nvidia: &nvidia
 x-vllm-common: &vllm-common
   <<: *nvidia
   init: true
+  image: vllm/vllm-openai@sha256:03768d9400bf490934e5dce2e9d8ddd9e004a5054939e14641188d8a9b69db8e
   volumes:
     - hugginface_cache:/root/.cache/huggingface
     - vllm_cache:/root/.cache/vllm
+  environment: &vllm-env
+    - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+    - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0}
+    - VLLM_LOGGING_LEVEL=INFO
+    - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    - OPENBLAS_L2_SIZE=2097152
+    - NCCL_DEBUG=WARN
+    - VLLM_CACHE_ROOT=/root/.cache/vllm/deepseek-v4-gemma4-int4-autoround-test
   restart: unless-stopped
   stop_grace_period: 5m
   logging: *logging-conf
 
 x-vllm-proxy-common: &vllm-proxy-common
-  image: nearaidev/vllm-proxy-rs@sha256:fe037f0061fc61fbdcf80efde534b8700f9f54f18b8a39e290263b3e1b0c00e1
+  image: nearaidev/vllm-proxy-rs@sha256:24536a0cee15835621fa3edea499b0cb148f6ee4f815e6296470984372cc3b64
   user: root
   privileged: true
   <<: *nvidia
@@ -37,16 +51,6 @@ x-vllm-proxy-common: &vllm-proxy-common
   restart: unless-stopped
   logging: *logging-conf
 
-x-sglang-env:
-  environment: &sglang-env
-    - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
-    - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0}
-    - VLLM_LOGGING_LEVEL=INFO
-    - NVIDIA_DRIVER_CAPABILITIES=compute,utility
-    - OPENBLAS_L2_SIZE=2097152
-    - NCCL_DEBUG=WARN
-    - SGLANG_ENABLE_SPEC_V2=1
-
 x-dcgm-common: &dcgm-common
   image: nvcr.io/nvidia/k8s/dcgm-exporter:4.5.2-4.8.1-distroless
   runtime: nvidia
@@ -55,138 +59,55 @@ x-dcgm-common: &dcgm-common
   restart: unless-stopped
   logging: *logging-conf
 
-x-dsv4-flash-common: &dsv4-flash-common
-  <<: *nvidia
-  init: true
-  # TDX-CC incompatibilities trimmed:
-  #   1. DeepEP+DP-attention: needs CUDA IPC across ranks (deep_ep.cpp:230
-  #      'invalid argument') — dropped.
-  #   2. Hierarchical cache w/ hicache_io_backend=direct + mem_layout=
-  #      page_first_direct: uses GPUDirect/unified-memory paths that hit
-  #      'cudaErrorNotSupported' on the first warmup tensor.to(non_blocking)
-  #      under TDX-confidential GPU memory — dropped.
-  image: lmsysorg/sglang:v0.5.12-cu129@sha256:9e02c8e1fe2790a1c445bd5f6814305fe43639a4adb01c8ad1e8e21e750bf581
+x-deepseek-v4-int4-common: &deepseek-v4-int4-common
+  <<: *vllm-common
+  # AutoRound INT4 is auto-detected from quantization_config.
   command: >
-      sglang serve
-      --trust-remote-code
-      --model-path sgl-project/DeepSeek-V4-Flash-FP8
-      --revision ae01d80c06cdfe30581edfd0e1c5449dc7ed7f17
-      --tp 4
-      --speculative-algo EAGLE
-      --speculative-num-steps 1
-      --speculative-eagle-topk 1
-      --speculative-num-draft-tokens 2
-      --cuda-graph-max-bs 128
-      --max-running-requests 128
-      --tool-call-parser deepseekv4
-      --reasoning-parser deepseek-v4
-      --port 8000
-      --host 0.0.0.0
-      --enable-cache-report
-      --enable-metrics
-      --log-requests-level 0
-      --served-model-name deepseek-ai/DeepSeek-V4-Flash
-      --enable-trace
-      --otlp-traces-endpoint otelcol-contrib:4317
-  volumes:
-    - hugginface_cache:/root/.cache/huggingface
-    - kernel_cache:/root/.cache/deep_gemm
-  environment:
-    - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
-    - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0}
-    - VLLM_LOGGING_LEVEL=INFO
-    - NVIDIA_DRIVER_CAPABILITIES=compute,utility
-    - OPENBLAS_L2_SIZE=2097152
-    - NCCL_DEBUG=WARN
-    - SGLANG_ENABLE_SPEC_V2=1
-    - SGLANG_DSV4_FP4_EXPERTS=0
-    - SGLANG_ENABLE_UNIFIED_RADIX_TREE=1
-  restart: unless-stopped
-  stop_grace_period: 5m
-  logging: *logging-conf
+    Intel/DeepSeek-V4-Flash-W4A16-AutoRound
+    --revision d8ac6c04e22da23f68f797884471dae5cb129ee0
+    --served-model-name deepseek-ai/DeepSeek-V4-Flash-INT4-AutoRound
+    --tensor-parallel-size 4
+    --trust-remote-code
+    --dtype auto
+    --kv-cache-dtype fp8
+    --gpu-memory-utilization 0.88
+    --max-model-len 65536
+    --max-num-seqs 8
+    --max-num-batched-tokens 8192
+    --enable-prefix-caching
+    --async-scheduling
+    --enable-prompt-tokens-details
 
-x-qwen3-6-27b-common: &qwen3-6-27b-common
-  <<: *nvidia
-  init: true
-  image: lmsysorg/sglang:v0.5.12-cu129@sha256:9e02c8e1fe2790a1c445bd5f6814305fe43639a4adb01c8ad1e8e21e750bf581
+x-gemma4-int4-common: &gemma4-int4-common
+  <<: *vllm-common
+  # AutoRound INT4 is auto-detected from quantization_config.
   command: >
-      sglang serve
-      --model-path Qwen/Qwen3.6-27B-FP8
-      --tp 2
-      --reasoning-parser qwen3
-      --tool-call-parser qwen3_coder
-      --mem-fraction-static 0.85
-      --max-running-requests 128
-      --context-length 262144
-      --num-continuous-decode-steps 5
-      --model-loader-extra-config '{"enable_multithread_load": "true", "num_threads": 64}'
-      --enable-mixed-chunk
-      --chunked-prefill-size 16384
-      --port 8000
-      --host 0.0.0.0
-      --enable-cache-report
-      --enable-metrics
-      --trust-remote-code
-      --log-requests-level 0
-      --served-model-name Qwen/Qwen3.6-27B-FP8
-      --enable-trace
-      --otlp-traces-endpoint otelcol-contrib:4317
-  volumes:
-    - hugginface_cache:/root/.cache/huggingface
-    - kernel_cache:/root/.cache/deep_gemm
-  environment: *sglang-env
-  restart: unless-stopped
-  stop_grace_period: 5m
-  logging: *logging-conf
-
-x-gemma-4-31b-common: &gemma-4-31b-common
-  <<: *nvidia
-  init: true
-  # https://lmsysorg.mintlify.app/cookbook/autoregressive/Google/Gemma4
-  image: lmsysorg/sglang:gemma4@sha256:87cecd3c9f4d17632c44b2d7cd1a20c50377c42b461d9ca39b153b4bb2b6e6ae
-  command: >
-      sglang serve
-      --model-path google/gemma-4-31B-it
-      --revision ba74f5b6c647c0911554e50278d6f6f4477f9010
-      --tp 2
-      --tool-call-parser gemma4
-      --mem-fraction-static 0.85
-      --max-running-requests 64
-      --chunked-prefill-size 8192
-      --num-continuous-decode-steps 5
-      --enable-mixed-chunk
-      --disable-fast-image-processor
-      --model-loader-extra-config '{"enable_multithread_load": "true", "num_threads": 64}'
-      --port 8000
-      --host 0.0.0.0
-      --enable-cache-report
-      --enable-metrics
-      --trust-remote-code
-      --log-requests-level 0
-      --served-model-name google/gemma-4-31B-it
-      --enable-trace
-      --otlp-traces-endpoint otelcol-contrib:4317
-  volumes:
-    - hugginface_cache:/root/.cache/huggingface
-    - kernel_cache:/root/.cache/deep_gemm
-  environment: *sglang-env
-  restart: unless-stopped
-  stop_grace_period: 5m
-  logging: *logging-conf
+    Intel/gemma-4-31B-it-int4-AutoRound
+    --revision a428c96a57976947b0f12735f0cf5fcae69019ad
+    --served-model-name google/gemma-4-31B-it-INT4-AutoRound
+    --tensor-parallel-size 1
+    --trust-remote-code
+    --dtype auto
+    --gpu-memory-utilization 0.90
+    --max-model-len 32768
+    --max-num-seqs 64
+    --max-num-batched-tokens 32768
+    --enable-chunked-prefill
+    --enable-prefix-caching
+    --async-scheduling
+    --enable-prompt-tokens-details
 
 services:
   nginx:
     image: nginx@sha256:1d13701a5f9f3fb01aaa88cef2344d65b6b5bf6b7d9fa4cf0dca557a8d7702ba
     container_name: nginx
     depends_on:
-      - vllm-proxy-dsv4-flash
-      - vllm-proxy-qwen3-6-27b
-      - vllm-proxy-gemma-4-31b
+      - vllm-proxy-dsv4-flash-int4
+      - vllm-proxy-gemma4-int4
     command: /bin/sh -c 'while :; do sleep 6h; nginx -s reload; done & nginx -g "daemon off;"'
     ports:
+      - "8000:8000"
       - "8001:8001"
-      - "8002:8002"
-      - "8003:8003"
       - "8444:443"
     volumes:
       - certs:/etc/letsencrypt:ro
@@ -197,7 +118,7 @@ services:
     restart: unless-stopped
     logging: *logging-conf
     labels:
-      com.datadoghq.ad.logs: '[{"source":"nginx","service":"nginx","tags":["model:deepseek-ai/DeepSeek-V4-Flash","deployment:dsv4-qwen36-gemma4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000"]}]'
+      com.datadoghq.ad.logs: '[{"source":"nginx","service":"nginx","tags":["model:deepseek-ai/DeepSeek-V4-Flash-INT4-AutoRound","deployment:deepseek-v4-gemma4-int4-autoround-test","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000"]}]'
 
   model-proxy-registrar:
     image: curlimages/curl@sha256:d94d07ba9e7d6de898b6d96c1a072f6f8266c687af78a74f380087a0addf5d17
@@ -205,9 +126,6 @@ services:
     entrypoint: ["sh", "/register.sh"]
     restart: unless-stopped
     healthcheck:
-      # Unhealthy if the registration loop hasn't ticked in 3m (e.g. wedged
-      # before the loop, or the loop died). Surfaces silent registrar failures
-      # in `docker ps` / Datadog. See cvm-compose-files#57.
       test: ["CMD-SHELL", "[ $$(( $$(date +%s) - $$(cat /tmp/registrar_alive 2>/dev/null || echo 0) )) -lt 180 ]"]
       interval: 30s
       timeout: 10s
@@ -222,42 +140,48 @@ services:
         mode: 0755
     logging: *logging-conf
     labels:
-      com.datadoghq.ad.logs: '[{"source":"model-proxy-registrar","service":"model-proxy-registrar","tags":["model:deepseek-ai/DeepSeek-V4-Flash","deployment:dsv4-qwen36-gemma4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.logs: '[{"source":"model-proxy-registrar","service":"model-proxy-registrar","tags":["model:deepseek-ai/DeepSeek-V4-Flash-INT4-AutoRound","deployment:deepseek-v4-gemma4-int4-autoround-test","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
 
-  # --- DeepSeek-V4-Flash-FP8 (GPUs 0-3) — SGLang TP=4 DP=4 dp-attention + DeepEP ---
-
-  vllm-proxy-dsv4-flash:
+  vllm-proxy-dsv4-flash-int4:
     <<: *vllm-proxy-common
-    container_name: vllm-proxy-dsv4-flash
+    container_name: vllm-proxy-dsv4-flash-int4
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - CLOUD_API_URL=https://cloud-api.near.ai
       - CLOUD_API_USAGE_TOKEN=${CLOUD_API_USAGE_TOKEN}
       - COMPOSE_MANAGER_URL=http://compose-manager:8080
       - LOG_FORMAT=json
-      - MODEL_NAME=deepseek-ai/DeepSeek-V4-Flash
+      - MODEL_NAME=deepseek-ai/DeepSeek-V4-Flash-INT4-AutoRound
       - OHTTP_ENABLED=true
       - TOKEN=${PROXY_TOKEN}
-      - VLLM_BASE_URL=http://vllm-dsv4-flash:8000
+      - FUSION_ENABLED=${FUSION_ENABLED}
+      - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
+      - VLLM_BASE_URL=http://model-vllm-dsv4-flash-int4:8000
       - VLLM_PROXY_MAX_REQUEST_SIZE=104857600
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
+      - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
+      - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:deepseek-ai/DeepSeek-V4-Flash","deployment:dsv4-qwen36-gemma4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8001"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:deepseek-ai/DeepSeek-V4-Flash-INT4-AutoRound","precision:int4","deployment:deepseek-v4-gemma4-int4-autoround-test","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "inference-proxy"
       nearai.otel.service: "vllm-proxy"
+      nearai.otel.source: "vllm-proxy"
+      nearai.otel.container_name: "vllm-proxy-dsv4-flash-int4"
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
-      nearai.otel.model: "deepseek-ai/DeepSeek-V4-Flash"
-      nearai.otel.deployment: "dsv4-qwen36-gemma4"
+      nearai.otel.model: "deepseek-ai/DeepSeek-V4-Flash-INT4-AutoRound"
+      nearai.otel.deployment: "deepseek-v4-gemma4-int4-autoround-test"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
-  vllm-dsv4-flash:
-    <<: *dsv4-flash-common
-    container_name: vllm-dsv4-flash
+  model-vllm-dsv4-flash-int4:
+    <<: *deepseek-v4-int4-common
+    container_name: model-vllm-dsv4-flash-int4
     deploy:
       resources:
         reservations:
@@ -266,138 +190,185 @@ services:
               device_ids: ["0","1","2","3"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.check_names: '["openmetrics"]'
+      com.datadoghq.ad.check_names: '["vllm"]'
       com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:deepseek-ai/DeepSeek-V4-Flash","deployment:dsv4-qwen36-gemma4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8001"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-dsv4-flash:8000/metrics", "metrics":["sglang:*"], "histogram_buckets_as_distributions": true, "service": "vllm-dsv4-flash", "tags":["model:deepseek-ai/DeepSeek-V4-Flash","ip:${HOST_IP}","port:8001"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:deepseek-ai/DeepSeek-V4-Flash-INT4-AutoRound","model_path:Intel/DeepSeek-V4-Flash-W4A16-AutoRound","precision:int4","deployment:deepseek-v4-gemma4-int4-autoround-test","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-dsv4-flash-int4:8000/metrics","histogram_buckets_as_distributions":true,"service":"model-vllm-dsv4-flash-int4","tags":["model:deepseek-ai/DeepSeek-V4-Flash-INT4-AutoRound","model_path:Intel/DeepSeek-V4-Flash-W4A16-AutoRound","precision:int4","deployment:deepseek-v4-gemma4-int4-autoround-test","ip:${HOST_IP}","port:8000"]}]'
       nearai.otel.scrape: "true"
-      nearai.otel.job: "sglang"
-      nearai.otel.service: "sglang"
+      nearai.otel.job: "vllm"
+      nearai.otel.service: "vllm"
+      nearai.otel.source: "vllm"
+      nearai.otel.container_name: "model-vllm-dsv4-flash-int4"
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
-      nearai.otel.model: "deepseek-ai/DeepSeek-V4-Flash"
-      nearai.otel.deployment: "dsv4-qwen36-gemma4"
+      nearai.otel.model: "deepseek-ai/DeepSeek-V4-Flash-INT4-AutoRound"
+      nearai.otel.deployment: "deepseek-v4-gemma4-int4-autoround-test"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
-  # --- Qwen3.6-27B-FP8 (GPUs 4-5) — SGLang TP=2 ---
-
-  vllm-proxy-qwen3-6-27b:
+  vllm-proxy-gemma4-int4:
     <<: *vllm-proxy-common
-    container_name: vllm-proxy-qwen3-6-27b
+    container_name: vllm-proxy-gemma4-int4
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - CLOUD_API_URL=https://cloud-api.near.ai
       - CLOUD_API_USAGE_TOKEN=${CLOUD_API_USAGE_TOKEN}
       - COMPOSE_MANAGER_URL=http://compose-manager:8080
       - LOG_FORMAT=json
-      - MODEL_NAME=Qwen/Qwen3.6-27B-FP8
+      - MODEL_NAME=google/gemma-4-31B-it-INT4-AutoRound
       - OHTTP_ENABLED=true
       - TOKEN=${PROXY_TOKEN}
-      - VLLM_BASE_URL=http://vllm-qwen3-6-27b:8000
+      - FUSION_ENABLED=${FUSION_ENABLED}
+      - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
+      - VLLM_BACKEND_URLS=http://model-vllm-gemma4-int4-1:8000,http://model-vllm-gemma4-int4-2:8000,http://model-vllm-gemma4-int4-3:8000,http://model-vllm-gemma4-int4-4:8000
+      - VLLM_PROXY_MAX_REQUEST_SIZE=104857600
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
+      - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
+      - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:Qwen/Qwen3.6-27B-FP8","deployment:dsv4-qwen36-gemma4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8002"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:google/gemma-4-31B-it-INT4-AutoRound","precision:int4","deployment:deepseek-v4-gemma4-int4-autoround-test","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8001"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "inference-proxy"
       nearai.otel.service: "vllm-proxy"
+      nearai.otel.source: "vllm-proxy"
+      nearai.otel.container_name: "vllm-proxy-gemma4-int4"
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
-      nearai.otel.model: "Qwen/Qwen3.6-27B-FP8"
-      nearai.otel.deployment: "dsv4-qwen36-gemma4"
+      nearai.otel.model: "google/gemma-4-31B-it-INT4-AutoRound"
+      nearai.otel.deployment: "deepseek-v4-gemma4-int4-autoround-test"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
-  vllm-qwen3-6-27b:
-    <<: *qwen3-6-27b-common
-    container_name: vllm-qwen3-6-27b
+  model-vllm-gemma4-int4-1:
+    <<: *gemma4-int4-common
+    container_name: model-vllm-gemma4-int4-1
     deploy:
       resources:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["4","5"]
+              device_ids: ["4"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.check_names: '["openmetrics"]'
+      com.datadoghq.ad.check_names: '["vllm"]'
       com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:Qwen/Qwen3.6-27B-FP8","deployment:dsv4-qwen36-gemma4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8002"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-qwen3-6-27b:8000/metrics", "metrics":["sglang:*"], "histogram_buckets_as_distributions": true, "service": "vllm-qwen3-6-27b", "tags":["model:Qwen/Qwen3.6-27B-FP8","ip:${HOST_IP}","port:8002"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:google/gemma-4-31B-it-INT4-AutoRound","model_path:Intel/gemma-4-31B-it-int4-AutoRound","precision:int4","deployment:deepseek-v4-gemma4-int4-autoround-test","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8001","instance:1"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-gemma4-int4-1:8000/metrics","histogram_buckets_as_distributions":true,"service":"model-vllm-gemma4-int4-1","tags":["model:google/gemma-4-31B-it-INT4-AutoRound","model_path:Intel/gemma-4-31B-it-int4-AutoRound","precision:int4","deployment:deepseek-v4-gemma4-int4-autoround-test","ip:${HOST_IP}","port:8001","instance:1"]}]'
       nearai.otel.scrape: "true"
-      nearai.otel.job: "sglang"
-      nearai.otel.service: "sglang"
+      nearai.otel.job: "vllm"
+      nearai.otel.service: "vllm"
+      nearai.otel.source: "vllm"
+      nearai.otel.container_name: "model-vllm-gemma4-int4-1"
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
-      nearai.otel.model: "Qwen/Qwen3.6-27B-FP8"
-      nearai.otel.deployment: "dsv4-qwen36-gemma4"
+      nearai.otel.model: "google/gemma-4-31B-it-INT4-AutoRound"
+      nearai.otel.deployment: "deepseek-v4-gemma4-int4-autoround-test"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
-  # --- Gemma-4-31B-it (GPUs 6-7) — SGLang TP=2 ---
-
-  vllm-proxy-gemma-4-31b:
-    <<: *vllm-proxy-common
-    container_name: vllm-proxy-gemma-4-31b
-    environment:
-      - NVIDIA_VISIBLE_DEVICES=all
-      - CLOUD_API_URL=https://cloud-api.near.ai
-      - CLOUD_API_USAGE_TOKEN=${CLOUD_API_USAGE_TOKEN}
-      - COMPOSE_MANAGER_URL=http://compose-manager:8080
-      - LOG_FORMAT=json
-      - MODEL_NAME=google/gemma-4-31B-it
-      - OHTTP_ENABLED=true
-      - TOKEN=${PROXY_TOKEN}
-      - VLLM_BASE_URL=http://vllm-gemma-4-31b:8000
-      - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
-      - USE_NV_ATTESTATION_SDK=true
-    labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:google/gemma-4-31B-it","deployment:dsv4-qwen36-gemma4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8003"]}]'
-      nearai.otel.scrape: "true"
-      nearai.otel.job: "inference-proxy"
-      nearai.otel.service: "vllm-proxy"
-      nearai.otel.port: "8000"
-      nearai.otel.path: "/metrics"
-      nearai.otel.model: "google/gemma-4-31B-it"
-      nearai.otel.deployment: "dsv4-qwen36-gemma4"
-      nearai.otel.env: "${ENV}"
-      nearai.otel.host: "${CVM_HOST}"
-      nearai.otel.ip: "${HOST_IP}"
-
-  vllm-gemma-4-31b:
-    <<: *gemma-4-31b-common
-    container_name: vllm-gemma-4-31b
+  model-vllm-gemma4-int4-2:
+    <<: *gemma4-int4-common
+    container_name: model-vllm-gemma4-int4-2
     deploy:
       resources:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["6","7"]
+              device_ids: ["5"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.check_names: '["openmetrics"]'
+      com.datadoghq.ad.check_names: '["vllm"]'
       com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:google/gemma-4-31B-it","deployment:dsv4-qwen36-gemma4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8003"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-gemma-4-31b:8000/metrics", "metrics":["sglang:*"], "histogram_buckets_as_distributions": true, "service": "vllm-gemma-4-31b", "tags":["model:google/gemma-4-31B-it","ip:${HOST_IP}","port:8003"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:google/gemma-4-31B-it-INT4-AutoRound","model_path:Intel/gemma-4-31B-it-int4-AutoRound","precision:int4","deployment:deepseek-v4-gemma4-int4-autoround-test","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8001","instance:2"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-gemma4-int4-2:8000/metrics","histogram_buckets_as_distributions":true,"service":"model-vllm-gemma4-int4-2","tags":["model:google/gemma-4-31B-it-INT4-AutoRound","model_path:Intel/gemma-4-31B-it-int4-AutoRound","precision:int4","deployment:deepseek-v4-gemma4-int4-autoround-test","ip:${HOST_IP}","port:8001","instance:2"]}]'
       nearai.otel.scrape: "true"
-      nearai.otel.job: "sglang"
-      nearai.otel.service: "sglang"
+      nearai.otel.job: "vllm"
+      nearai.otel.service: "vllm"
+      nearai.otel.source: "vllm"
+      nearai.otel.container_name: "model-vllm-gemma4-int4-2"
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
-      nearai.otel.model: "google/gemma-4-31B-it"
-      nearai.otel.deployment: "dsv4-qwen36-gemma4"
+      nearai.otel.model: "google/gemma-4-31B-it-INT4-AutoRound"
+      nearai.otel.deployment: "deepseek-v4-gemma4-int4-autoround-test"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
-  # --- Per-model dcgm-exporters: device_ids scopes NVML to that model's GPUs ---
+  model-vllm-gemma4-int4-3:
+    <<: *gemma4-int4-common
+    container_name: model-vllm-gemma4-int4-3
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["6"]
+              capabilities: [gpu]
+    labels:
+      com.datadoghq.ad.check_names: '["vllm"]'
+      com.datadoghq.ad.init_configs: "[{}]"
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:google/gemma-4-31B-it-INT4-AutoRound","model_path:Intel/gemma-4-31B-it-int4-AutoRound","precision:int4","deployment:deepseek-v4-gemma4-int4-autoround-test","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8001","instance:3"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-gemma4-int4-3:8000/metrics","histogram_buckets_as_distributions":true,"service":"model-vllm-gemma4-int4-3","tags":["model:google/gemma-4-31B-it-INT4-AutoRound","model_path:Intel/gemma-4-31B-it-int4-AutoRound","precision:int4","deployment:deepseek-v4-gemma4-int4-autoround-test","ip:${HOST_IP}","port:8001","instance:3"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "vllm"
+      nearai.otel.service: "vllm"
+      nearai.otel.source: "vllm"
+      nearai.otel.container_name: "model-vllm-gemma4-int4-3"
+      nearai.otel.port: "8000"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "google/gemma-4-31B-it-INT4-AutoRound"
+      nearai.otel.deployment: "deepseek-v4-gemma4-int4-autoround-test"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
 
-  dcgm-dsv4-flash:
+  model-vllm-gemma4-int4-4:
+    <<: *gemma4-int4-common
+    container_name: model-vllm-gemma4-int4-4
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["7"]
+              capabilities: [gpu]
+    labels:
+      com.datadoghq.ad.check_names: '["vllm"]'
+      com.datadoghq.ad.init_configs: "[{}]"
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:google/gemma-4-31B-it-INT4-AutoRound","model_path:Intel/gemma-4-31B-it-int4-AutoRound","precision:int4","deployment:deepseek-v4-gemma4-int4-autoround-test","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8001","instance:4"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-gemma4-int4-4:8000/metrics","histogram_buckets_as_distributions":true,"service":"model-vllm-gemma4-int4-4","tags":["model:google/gemma-4-31B-it-INT4-AutoRound","model_path:Intel/gemma-4-31B-it-int4-AutoRound","precision:int4","deployment:deepseek-v4-gemma4-int4-autoround-test","ip:${HOST_IP}","port:8001","instance:4"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "vllm"
+      nearai.otel.service: "vllm"
+      nearai.otel.source: "vllm"
+      nearai.otel.container_name: "model-vllm-gemma4-int4-4"
+      nearai.otel.port: "8000"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "google/gemma-4-31B-it-INT4-AutoRound"
+      nearai.otel.deployment: "deepseek-v4-gemma4-int4-autoround-test"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
+
+  dcgm-dsv4-flash-int4:
     <<: *dcgm-common
-    container_name: dcgm-dsv4-flash
+    container_name: dcgm-dsv4-flash-int4
     deploy:
       resources:
         reservations:
@@ -408,76 +379,53 @@ services:
     labels:
       com.datadoghq.ad.check_names: '["dcgm"]'
       com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint": "http://%%host%%:9400/metrics", "tags":["model:deepseek-ai/DeepSeek-V4-Flash","deployment:dsv4-qwen36-gemma4","ip:${HOST_IP}"]}]'
-      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:deepseek-ai/DeepSeek-V4-Flash","deployment:dsv4-qwen36-gemma4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://%%host%%:9400/metrics","tags":["model:deepseek-ai/DeepSeek-V4-Flash-INT4-AutoRound","precision:int4","deployment:deepseek-v4-gemma4-int4-autoround-test","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:deepseek-ai/DeepSeek-V4-Flash-INT4-AutoRound","precision:int4","deployment:deepseek-v4-gemma4-int4-autoround-test","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "dcgm"
       nearai.otel.service: "dcgm-exporter"
+      nearai.otel.source: "dcgm-exporter"
+      nearai.otel.container_name: "dcgm-dsv4-flash-int4"
       nearai.otel.port: "9400"
       nearai.otel.path: "/metrics"
-      nearai.otel.model: "deepseek-ai/DeepSeek-V4-Flash"
-      nearai.otel.deployment: "dsv4-qwen36-gemma4"
+      nearai.otel.model: "deepseek-ai/DeepSeek-V4-Flash-INT4-AutoRound"
+      nearai.otel.deployment: "deepseek-v4-gemma4-int4-autoround-test"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
-  dcgm-qwen3-6-27b:
+  dcgm-gemma4-int4:
     <<: *dcgm-common
-    container_name: dcgm-qwen3-6-27b
+    container_name: dcgm-gemma4-int4
     deploy:
       resources:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["4","5"]
+              device_ids: ["4","5","6","7"]
               capabilities: [gpu]
     labels:
       com.datadoghq.ad.check_names: '["dcgm"]'
       com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint": "http://%%host%%:9400/metrics", "tags":["model:Qwen/Qwen3.6-27B-FP8","deployment:dsv4-qwen36-gemma4","ip:${HOST_IP}"]}]'
-      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:Qwen/Qwen3.6-27B-FP8","deployment:dsv4-qwen36-gemma4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://%%host%%:9400/metrics","tags":["model:google/gemma-4-31B-it-INT4-AutoRound","precision:int4","deployment:deepseek-v4-gemma4-int4-autoround-test","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:google/gemma-4-31B-it-INT4-AutoRound","precision:int4","deployment:deepseek-v4-gemma4-int4-autoround-test","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "dcgm"
       nearai.otel.service: "dcgm-exporter"
+      nearai.otel.source: "dcgm-exporter"
+      nearai.otel.container_name: "dcgm-gemma4-int4"
       nearai.otel.port: "9400"
       nearai.otel.path: "/metrics"
-      nearai.otel.model: "Qwen/Qwen3.6-27B-FP8"
-      nearai.otel.deployment: "dsv4-qwen36-gemma4"
+      nearai.otel.model: "google/gemma-4-31B-it-INT4-AutoRound"
+      nearai.otel.deployment: "deepseek-v4-gemma4-int4-autoround-test"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
-  dcgm-gemma-4-31b:
-    <<: *dcgm-common
-    container_name: dcgm-gemma-4-31b
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              device_ids: ["6","7"]
-              capabilities: [gpu]
-    labels:
-      com.datadoghq.ad.check_names: '["dcgm"]'
-      com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint": "http://%%host%%:9400/metrics", "tags":["model:google/gemma-4-31B-it","deployment:dsv4-qwen36-gemma4","ip:${HOST_IP}"]}]'
-      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:google/gemma-4-31B-it","deployment:dsv4-qwen36-gemma4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
-      nearai.otel.scrape: "true"
-      nearai.otel.job: "dcgm"
-      nearai.otel.service: "dcgm-exporter"
-      nearai.otel.port: "9400"
-      nearai.otel.path: "/metrics"
-      nearai.otel.model: "google/gemma-4-31B-it"
-      nearai.otel.deployment: "dsv4-qwen36-gemma4"
-      nearai.otel.env: "${ENV}"
-      nearai.otel.host: "${CVM_HOST}"
-      nearai.otel.ip: "${HOST_IP}"
-
-  # --- App telemetry sidecar (self-hosted gateway) ---
-  # Receives request traces via OTLP/gRPC :4317, scrapes app/DCGM metrics, tails
-  # labeled Docker logs, and exports through telemetry.infra.near.ai using the
-  # compose-manager-provided MONITORING_INGEST_TOKEN. Datadog continues to use
-  # the existing Docker labels/autodiscovery path for inference logs and metrics.
   otelcol-contrib:
     image: otel/opentelemetry-collector-contrib@sha256:85ac41c2db88d0df9bd6145e608a3cb023f5d8443868adbfbbf66efb51087917
     container_name: otelcol-contrib
@@ -508,7 +456,7 @@ services:
         max-size: "20m"
         max-file: "3"
     labels:
-      com.datadoghq.ad.logs: '[{"source":"otelcol-contrib","service":"otelcol-contrib","tags":["deployment:dsv4-qwen36-gemma4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.logs: '[{"source":"otelcol-contrib","service":"otelcol-contrib","tags":["deployment:deepseek-v4-gemma4-int4-autoround-test","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
 
 networks:
   default:
@@ -519,7 +467,6 @@ volumes:
   otelcol_app_storage:
   hugginface_cache:
   vllm_cache:
-  kernel_cache:
   certs:
     external: true
     name: certs
@@ -611,132 +558,177 @@ configs:
         prometheus/apps:
           config:
             scrape_configs:
-              - job_name: sglang-vllm-dsv4-flash
+              - job_name: vllm-model-vllm-dsv4-flash-int4
                 scrape_interval: 15s
                 metrics_path: /metrics
                 static_configs:
-                  - targets: ['vllm-dsv4-flash:8000']
+                  - targets: ['model-vllm-dsv4-flash-int4:8000']
                     labels:
-                      service: "sglang"
-                      container_name: "vllm-dsv4-flash"
-                      model: "deepseek-ai/DeepSeek-V4-Flash"
-                      deployment: "dsv4-qwen36-gemma4"
+                      service: "vllm"
+                      source: "vllm"
+                      container_name: "model-vllm-dsv4-flash-int4"
+                      model: "deepseek-ai/DeepSeek-V4-Flash-INT4-AutoRound"
+                      deployment: "deepseek-v4-gemma4-int4-autoround-test"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      port: "8000"
+                      model_path: "Intel/DeepSeek-V4-Flash-W4A16-AutoRound"
+                      precision: "int4"
+              - job_name: vllm-model-vllm-gemma4-int4-1
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['model-vllm-gemma4-int4-1:8000']
+                    labels:
+                      service: "vllm"
+                      source: "vllm"
+                      container_name: "model-vllm-gemma4-int4-1"
+                      model: "google/gemma-4-31B-it-INT4-AutoRound"
+                      deployment: "deepseek-v4-gemma4-int4-autoround-test"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "8001"
-              - job_name: sglang-vllm-qwen3-6-27b
+                      model_path: "Intel/gemma-4-31B-it-int4-AutoRound"
+                      precision: "int4"
+                      instance: "1"
+              - job_name: vllm-model-vllm-gemma4-int4-2
                 scrape_interval: 15s
                 metrics_path: /metrics
                 static_configs:
-                  - targets: ['vllm-qwen3-6-27b:8000']
+                  - targets: ['model-vllm-gemma4-int4-2:8000']
                     labels:
-                      service: "sglang"
-                      container_name: "vllm-qwen3-6-27b"
-                      model: "Qwen/Qwen3.6-27B-FP8"
-                      deployment: "dsv4-qwen36-gemma4"
+                      service: "vllm"
+                      source: "vllm"
+                      container_name: "model-vllm-gemma4-int4-2"
+                      model: "google/gemma-4-31B-it-INT4-AutoRound"
+                      deployment: "deepseek-v4-gemma4-int4-autoround-test"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
-                      ip: "${HOST_IP}"
-                      port: "8002"
-              - job_name: sglang-vllm-gemma-4-31b
-                scrape_interval: 15s
-                metrics_path: /metrics
-                static_configs:
-                  - targets: ['vllm-gemma-4-31b:8000']
-                    labels:
-                      service: "sglang"
-                      container_name: "vllm-gemma-4-31b"
-                      model: "google/gemma-4-31B-it"
-                      deployment: "dsv4-qwen36-gemma4"
-                      env: "${ENV}"
-                      host: "${CVM_HOST}"
-                      ip: "${HOST_IP}"
-                      port: "8003"
-              - job_name: dcgm-dcgm-dsv4-flash
-                scrape_interval: 15s
-                metrics_path: /metrics
-                static_configs:
-                  - targets: ['dcgm-dsv4-flash:9400']
-                    labels:
-                      service: "dcgm-exporter"
-                      container_name: "dcgm-dsv4-flash"
-                      model: "deepseek-ai/DeepSeek-V4-Flash"
-                      deployment: "dsv4-qwen36-gemma4"
-                      env: "${ENV}"
-                      host: "${CVM_HOST}"
-                      ip: "${HOST_IP}"
-                      port: "9400"
-              - job_name: dcgm-dcgm-qwen3-6-27b
-                scrape_interval: 15s
-                metrics_path: /metrics
-                static_configs:
-                  - targets: ['dcgm-qwen3-6-27b:9400']
-                    labels:
-                      service: "dcgm-exporter"
-                      container_name: "dcgm-qwen3-6-27b"
-                      model: "Qwen/Qwen3.6-27B-FP8"
-                      deployment: "dsv4-qwen36-gemma4"
-                      env: "${ENV}"
-                      host: "${CVM_HOST}"
-                      ip: "${HOST_IP}"
-                      port: "9400"
-              - job_name: dcgm-dcgm-gemma-4-31b
-                scrape_interval: 15s
-                metrics_path: /metrics
-                static_configs:
-                  - targets: ['dcgm-gemma-4-31b:9400']
-                    labels:
-                      service: "dcgm-exporter"
-                      container_name: "dcgm-gemma-4-31b"
-                      model: "google/gemma-4-31B-it"
-                      deployment: "dsv4-qwen36-gemma4"
-                      env: "${ENV}"
-                      host: "${CVM_HOST}"
-                      ip: "${HOST_IP}"
-                      port: "9400"
-              - job_name: inference-proxy-vllm-proxy-dsv4-flash
-                scrape_interval: 15s
-                metrics_path: /metrics
-                static_configs:
-                  - targets: ['vllm-proxy-dsv4-flash:8000']
-                    labels:
-                      service: "vllm-proxy"
-                      container_name: "vllm-proxy-dsv4-flash"
-                      model: "deepseek-ai/DeepSeek-V4-Flash"
-                      deployment: "dsv4-qwen36-gemma4"
-                      env: "${ENV}"
-                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "8001"
-              - job_name: inference-proxy-vllm-proxy-qwen3-6-27b
+                      model_path: "Intel/gemma-4-31B-it-int4-AutoRound"
+                      precision: "int4"
+                      instance: "2"
+              - job_name: vllm-model-vllm-gemma4-int4-3
                 scrape_interval: 15s
                 metrics_path: /metrics
                 static_configs:
-                  - targets: ['vllm-proxy-qwen3-6-27b:8000']
+                  - targets: ['model-vllm-gemma4-int4-3:8000']
                     labels:
-                      service: "vllm-proxy"
-                      container_name: "vllm-proxy-qwen3-6-27b"
-                      model: "Qwen/Qwen3.6-27B-FP8"
-                      deployment: "dsv4-qwen36-gemma4"
+                      service: "vllm"
+                      source: "vllm"
+                      container_name: "model-vllm-gemma4-int4-3"
+                      model: "google/gemma-4-31B-it-INT4-AutoRound"
+                      deployment: "deepseek-v4-gemma4-int4-autoround-test"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
-                      port: "8002"
-              - job_name: inference-proxy-vllm-proxy-gemma-4-31b
+                      port: "8001"
+                      model_path: "Intel/gemma-4-31B-it-int4-AutoRound"
+                      precision: "int4"
+                      instance: "3"
+              - job_name: vllm-model-vllm-gemma4-int4-4
                 scrape_interval: 15s
                 metrics_path: /metrics
                 static_configs:
-                  - targets: ['vllm-proxy-gemma-4-31b:8000']
+                  - targets: ['model-vllm-gemma4-int4-4:8000']
                     labels:
-                      service: "vllm-proxy"
-                      container_name: "vllm-proxy-gemma-4-31b"
-                      model: "google/gemma-4-31B-it"
-                      deployment: "dsv4-qwen36-gemma4"
+                      service: "vllm"
+                      source: "vllm"
+                      container_name: "model-vllm-gemma4-int4-4"
+                      model: "google/gemma-4-31B-it-INT4-AutoRound"
+                      deployment: "deepseek-v4-gemma4-int4-autoround-test"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
-                      port: "8003"
+                      port: "8001"
+                      model_path: "Intel/gemma-4-31B-it-int4-AutoRound"
+                      precision: "int4"
+                      instance: "4"
+              - job_name: dcgm-dcgm-dsv4-flash-int4
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['dcgm-dsv4-flash-int4:9400']
+                    labels:
+                      service: "dcgm-exporter"
+                      source: "dcgm-exporter"
+                      container_name: "dcgm-dsv4-flash-int4"
+                      model: "deepseek-ai/DeepSeek-V4-Flash-INT4-AutoRound"
+                      deployment: "deepseek-v4-gemma4-int4-autoround-test"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      port: "9400"
+                      precision: "int4"
+              - job_name: dcgm-dcgm-gemma4-int4
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['dcgm-gemma4-int4:9400']
+                    labels:
+                      service: "dcgm-exporter"
+                      source: "dcgm-exporter"
+                      container_name: "dcgm-gemma4-int4"
+                      model: "google/gemma-4-31B-it-INT4-AutoRound"
+                      deployment: "deepseek-v4-gemma4-int4-autoround-test"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      port: "9400"
+                      precision: "int4"
+              - job_name: inference-proxy-vllm-proxy-dsv4-flash-int4
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['vllm-proxy-dsv4-flash-int4:8000']
+                    labels:
+                      service: "vllm-proxy"
+                      source: "vllm-proxy"
+                      container_name: "vllm-proxy-dsv4-flash-int4"
+                      model: "deepseek-ai/DeepSeek-V4-Flash-INT4-AutoRound"
+                      deployment: "deepseek-v4-gemma4-int4-autoround-test"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      port: "8000"
+                      precision: "int4"
+              - job_name: inference-proxy-vllm-proxy-gemma4-int4
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['vllm-proxy-gemma4-int4:8000']
+                    labels:
+                      service: "vllm-proxy"
+                      source: "vllm-proxy"
+                      container_name: "vllm-proxy-gemma4-int4"
+                      model: "google/gemma-4-31B-it-INT4-AutoRound"
+                      deployment: "deepseek-v4-gemma4-int4-autoround-test"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      port: "8001"
+                      precision: "int4"
 
         prometheus/self:
           config:
@@ -778,6 +770,8 @@ configs:
                 - set(attributes["service.name"], attributes["attrs"]["com.docker.compose.service"]) where attributes["attrs"] != nil and attributes["attrs"]["com.docker.compose.service"] != nil
                 - set(attributes["service.name"], ParseJSON(attributes["attrs"]["com.datadoghq.ad.logs"])[0]["service"]) where attributes["attrs"] != nil and attributes["attrs"]["com.datadoghq.ad.logs"] != nil
                 - set(attributes["log.source"], ParseJSON(attributes["attrs"]["com.datadoghq.ad.logs"])[0]["source"]) where attributes["attrs"] != nil and attributes["attrs"]["com.datadoghq.ad.logs"] != nil
+                - set(attributes["service"], attributes["service.name"]) where attributes["attrs"] != nil and attributes["attrs"]["com.datadoghq.ad.logs"] != nil and attributes["service.name"] != nil
+                - set(attributes["source"], attributes["log.source"]) where attributes["attrs"] != nil and attributes["attrs"]["com.datadoghq.ad.logs"] != nil and attributes["log.source"] != nil
                 - set(attributes["container.name"], attributes["attrs"]["com.docker.compose.service"]) where attributes["attrs"] != nil and attributes["attrs"]["com.docker.compose.service"] != nil
 
         filter/app_logs:
@@ -794,8 +788,10 @@ configs:
         groupbyattrs/docker_service:
           keys:
             - service.name
+            - service
             - container.name
             - log.source
+            - source
             - log.iostream
             - model
             - model_path
@@ -863,7 +859,7 @@ configs:
       TOKEN="$${MODEL_PROXY_TOKEN}"
       TLS_PORT=8444
 
-      for port in 8001 8002 8003; do
+      for port in 8000 8001; do
         eval "REG_$$port=false"
         eval "FAIL_COUNT_$$port=0"
       done
@@ -891,7 +887,7 @@ configs:
 
       cleanup() {
         echo "SIGTERM received, unregistering all endpoints"
-        for port in 8001 8002 8003; do
+        for port in 8000 8001; do
           unregister_endpoint "$${HOST_IP}:$$port"
         done
         exit 0
@@ -907,44 +903,40 @@ configs:
 
       check_port() {
         case $$1 in
-          8001) check_chat vllm-dsv4-flash "deepseek-ai/DeepSeek-V4-Flash" ;;
-          8002) check_chat vllm-qwen3-6-27b "Qwen/Qwen3.6-27B-FP8" ;;
-          8003) check_chat vllm-gemma-4-31b "google/gemma-4-31B-it" ;;
+          8000)
+            check_chat model-vllm-dsv4-flash-int4 "deepseek-ai/DeepSeek-V4-Flash-INT4-AutoRound"
+            ;;
+          8001)
+            check_chat model-vllm-gemma4-int4-1 "google/gemma-4-31B-it-INT4-AutoRound" &&
+            check_chat model-vllm-gemma4-int4-2 "google/gemma-4-31B-it-INT4-AutoRound" &&
+            check_chat model-vllm-gemma4-int4-3 "google/gemma-4-31B-it-INT4-AutoRound" &&
+            check_chat model-vllm-gemma4-int4-4 "google/gemma-4-31B-it-INT4-AutoRound"
+            ;;
         esac
       }
 
-      # Probe the host-published nginx port via HOST_IP instead of the
-      # "nginx" compose DNS name. A stale/abandoned docker service-name
-      # resolution (e.g. after nginx is recreated) otherwise wedges this
-      # readiness gate forever and silently drops every model to 0 backends.
-      # Bounded + loud so a persistent probe failure falls through to the
-      # registration loop (which health-checks each backend directly) instead
-      # of hanging here forever. See cvm-compose-files#57.
-      READY_URL="http://$${HOST_IP}:8001/v1/models"
+      READY_URL="http://$${HOST_IP}:8000/v1/models"
       echo "Waiting for first model to be ready (probing $$READY_URL)..."
       ready_attempts=0
       until curl --connect-timeout 5 --max-time 10 -sf "$$READY_URL" > /dev/null 2>&1; do
         ready_attempts=$$((ready_attempts + 1))
         if [ "$$ready_attempts" -ge 30 ]; then
-          echo "WARN: first model not reachable at $$READY_URL after $$ready_attempts attempts (~20m); entering registration loop anyway (each backend is health-checked directly before registering)"
+          echo "WARN: first model not reachable at $$READY_URL after $$ready_attempts attempts (~15m); entering registration loop anyway"
           break
         fi
         echo "First model not ready yet (attempt $$ready_attempts/30), retrying in 30s..."
         sleep 30
       done
-      echo "First model ready, starting registration loop"
+      echo "Starting registration loop"
 
       while true; do
-        for port in 8001 8002 8003; do
-          # Liveness marker for the container healthcheck (see service def);
-          # refreshed each port so a slow-but-progressing serial loop is not
-          # falsely marked unhealthy. See cvm-compose-files#57.
+        for port in 8000 8001; do
           date +%s > /tmp/registrar_alive
           eval "was_reg=\$$REG_$$port"
           eval "fails=\$$FAIL_COUNT_$$port"
           if check_port $$port; then
             eval "FAIL_COUNT_$$port=0"
-            register_endpoint "$${HOST_IP}:$$port" "$$TLS_PORT"
+            register_endpoint "$${HOST_IP}:$$port"
             if [ "$$was_reg" = false ]; then
               echo "Registered $${HOST_IP}:$$port"
             fi
@@ -957,13 +949,16 @@ configs:
           fi
         done
 
-        register_model "deepseek-ai/DeepSeek-V4-Flash" "dsv4-flash.completions.near.ai"
-        register_model "Qwen/Qwen3.6-27B-FP8" "qwen3-6-27b.completions.near.ai"
-        register_model "google/gemma-4-31B-it" "gemma-4-31b.completions.near.ai"
-        # Refresh liveness after the register_model calls, before the long sleep.
+        if [ "$$REG_8000" = true ]; then
+          register_model "deepseek-ai/DeepSeek-V4-Flash-INT4-AutoRound" "dsv4-flash-int4-gemma-test.completions.near.ai"
+        fi
+        if [ "$$REG_8001" = true ]; then
+          register_model "google/gemma-4-31B-it-INT4-AutoRound" "gemma-4-31b-int4-dsv4-test.completions.near.ai"
+        fi
         date +%s > /tmp/registrar_alive
         sleep 60
       done
+
   nginx_conf:
     content: |
       log_format json_combined escape=json
@@ -995,57 +990,34 @@ configs:
       client_max_body_size 100m;
       client_body_buffer_size 1m;
 
-      # :8001 - DeepSeek-V4-Flash
+      server {
+          listen 8000;
+          location / { proxy_pass http://vllm-proxy-dsv4-flash-int4:8000; }
+      }
+
       server {
           listen 8001;
-          location / { proxy_pass http://vllm-proxy-dsv4-flash:8000; }
+          location / { proxy_pass http://vllm-proxy-gemma4-int4:8000; }
       }
-
-      # :8002 - Qwen3.6-27B-FP8
-      server {
-          listen 8002;
-          location / { proxy_pass http://vllm-proxy-qwen3-6-27b:8000; }
-      }
-
-      # :8003 - Gemma-4-31B-it
-      server {
-          listen 8003;
-          location / { proxy_pass http://vllm-proxy-gemma-4-31b:8000; }
-      }
-
-      # ── TLS server blocks (port 443 = host 8444) ──
 
       ssl_certificate /etc/letsencrypt/live/completions.near.ai/fullchain.pem;
       ssl_certificate_key /etc/letsencrypt/live/completions.near.ai/privkey.pem;
       ssl_protocols TLSv1.2 TLSv1.3;
 
-      # Each model accepts both its canonical SNI and the rotation-SNI form
-      # `<canonical>-i<N>.completions.near.ai` used by cloud-api's discovery.
-      # See nearai/infra#143 / nearai/model-proxy#30.
-
       server {
           listen 443 ssl http2;
-          server_name dsv4-flash.completions.near.ai
-                      ~^dsv4-flash-i\d+\.completions\.near\.ai$$;
+          server_name dsv4-flash-int4-gemma-test.completions.near.ai
+                      ~^dsv4-flash-int4-gemma-test-i\d+\.completions\.near\.ai$$;
           keepalive_timeout 1h;
           keepalive_requests 1000000;
-          location / { proxy_pass http://vllm-proxy-dsv4-flash:8000; }
+          location / { proxy_pass http://vllm-proxy-dsv4-flash-int4:8000; }
       }
 
       server {
           listen 443 ssl http2;
-          server_name qwen3-6-27b.completions.near.ai
-                      ~^qwen3-6-27b-i\d+\.completions\.near\.ai$$;
+          server_name gemma-4-31b-int4-dsv4-test.completions.near.ai
+                      ~^gemma-4-31b-int4-dsv4-test-i\d+\.completions\.near\.ai$$;
           keepalive_timeout 1h;
           keepalive_requests 1000000;
-          location / { proxy_pass http://vllm-proxy-qwen3-6-27b:8000; }
-      }
-
-      server {
-          listen 443 ssl http2;
-          server_name gemma-4-31b.completions.near.ai
-                      ~^gemma-4-31b-i\d+\.completions\.near\.ai$$;
-          keepalive_timeout 1h;
-          keepalive_requests 1000000;
-          location / { proxy_pass http://vllm-proxy-gemma-4-31b:8000; }
+          location / { proxy_pass http://vllm-proxy-gemma4-int4:8000; }
       }

@@ -6,12 +6,33 @@ on:
 
 jobs:
   validate:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, infra]
     steps:
       - uses: actions/checkout@v4
 
       - name: Validate OTel label contracts
-        run: ruby scripts/validate_otel_labels.rb
+        run: |
+          docker run --rm \
+            -v "$PWD:/repo" \
+            -w /repo \
+            ruby:3.3-alpine \
+            ruby scripts/validate_otel_labels.rb
+
+      - name: Validate proxy dependency contracts
+        run: |
+          docker run --rm \
+            -v "$PWD:/repo" \
+            -w /repo \
+            ruby:3.3-alpine \
+            ruby scripts/validate_proxy_dependencies.rb
+
+      - name: Validate proxy environment contracts
+        run: |
+          docker run --rm \
+            -v "$PWD:/repo" \
+            -w /repo \
+            ruby:3.3-alpine \
+            ruby scripts/validate_proxy_environment.rb
 
       - name: Validate docker compose files
         # Compose files reference env vars that are populated at deploy time
@@ -33,9 +54,14 @@ jobs:
           PROXY_TOKEN: ci-dummy
           WEB_CONTEXT_SEARCH_URL: http://ci-dummy
           WEB_CONTEXT_SEARCH_API_KEY: ci-dummy
+          # Fusion (server-side multi-model deliberation); at deploy time
+          # FUSION_INTERNAL_BEARER_TOKEN mirrors PROXY_TOKEN, both from compose-manager.
+          FUSION_ENABLED: "true"
+          FUSION_INTERNAL_BEARER_TOKEN: ci-dummy
         run: |
           exit_code=0
-          for file in *.yaml; do
+          for file in prod/*.yaml experiments/*.yaml *.yaml; do
+            [ -f "$file" ] || continue
             echo "Validating $file..."
             if ! docker compose -f "$file" config --format=yaml > /dev/null 2>&1; then
               echo "::error file=$file::Invalid compose file"
@@ -61,9 +87,14 @@ jobs:
           PROXY_TOKEN: ci-dummy
           WEB_CONTEXT_SEARCH_URL: http://ci-dummy
           WEB_CONTEXT_SEARCH_API_KEY: ci-dummy
+          # Fusion (server-side multi-model deliberation); at deploy time
+          # FUSION_INTERNAL_BEARER_TOKEN mirrors PROXY_TOKEN, both from compose-manager.
+          FUSION_ENABLED: "true"
+          FUSION_INTERNAL_BEARER_TOKEN: ci-dummy
         run: |
           set -euo pipefail
-          for file in *.yaml; do
+          for file in prod/*.yaml experiments/*.yaml *.yaml; do
+            [ -f "$file" ] || continue
             config="$(docker compose -f "$file" config --format=json | jq -r '.configs.otelcol_app_config.content // empty')"
             if [ -z "$config" ]; then
               continue

@@ -28,13 +28,13 @@ x-vllm-common: &vllm-common
     - NVIDIA_DRIVER_CAPABILITIES=compute,utility
     - OPENBLAS_L2_SIZE=2097152
     - NCCL_DEBUG=WARN
-    - VLLM_CACHE_ROOT=/root/.cache/vllm/int4-compressed-tensors-test
+    - VLLM_CACHE_ROOT=/root/.cache/vllm/int4-autoround-test
   restart: unless-stopped
   stop_grace_period: 5m
   logging: *logging-conf
 
 x-vllm-proxy-common: &vllm-proxy-common
-  image: nearaidev/vllm-proxy-rs@sha256:fe037f0061fc61fbdcf80efde534b8700f9f54f18b8a39e290263b3e1b0c00e1
+  image: nearaidev/vllm-proxy-rs@sha256:24536a0cee15835621fa3edea499b0cb148f6ee4f815e6296470984372cc3b64
   user: root
   privileged: true
   <<: *nvidia
@@ -56,11 +56,11 @@ x-dcgm-common: &dcgm-common
 
 x-qwen36-int4-common: &qwen36-int4-common
   <<: *vllm-common
-  # compressed-tensors INT4 is auto-detected from quantization_config.
+  # AutoRound INT4 is auto-detected from quantization_config.
   command: >
-    caiovicentino1/Qwen3.6-35B-A3B-HLWQ-CT-INT4
-    --revision 0da5307c9baa4de44f95f226e7ec410893db80a6
-    --served-model-name Qwen/Qwen3.6-35B-A3B-INT4-CT
+    Intel/Qwen3.6-35B-A3B-int4-mixed-AutoRound
+    --revision 65f69c73f17488236c85c85211f6ba28d7106157
+    --served-model-name Qwen/Qwen3.6-35B-A3B-INT4-AutoRound
     --tensor-parallel-size 1
     --trust-remote-code
     --dtype auto
@@ -77,18 +77,18 @@ x-qwen36-int4-common: &qwen36-int4-common
 
 x-gemma4-int4-common: &gemma4-int4-common
   <<: *vllm-common
-  # compressed-tensors INT4 is auto-detected from quantization_config.
+  # AutoRound INT4 is auto-detected from quantization_config.
   command: >
-    ebircak/gemma-4-31B-it-4bit-W4A16-AWQ
-    --revision a3b96c7a8d07cc84cae0f0261ac2574310b12d37
-    --served-model-name google/gemma-4-31B-it-INT4-CT
-    --tensor-parallel-size 2
+    Intel/gemma-4-31B-it-int4-AutoRound
+    --revision a428c96a57976947b0f12735f0cf5fcae69019ad
+    --served-model-name google/gemma-4-31B-it-INT4-AutoRound
+    --tensor-parallel-size 1
     --trust-remote-code
     --dtype auto
     --gpu-memory-utilization 0.90
-    --max-model-len 65536
-    --max-num-seqs 16
-    --max-num-batched-tokens 16384
+    --max-model-len 32768
+    --max-num-seqs 64
+    --max-num-batched-tokens 32768
     --enable-chunked-prefill
     --enable-prefix-caching
     --async-scheduling
@@ -99,8 +99,8 @@ services:
     image: nginx@sha256:1d13701a5f9f3fb01aaa88cef2344d65b6b5bf6b7d9fa4cf0dca557a8d7702ba
     container_name: nginx
     depends_on:
-      - vllm-proxy-qwen36-int4-ct
-      - vllm-proxy-gemma4-int4-ct
+      - vllm-proxy-qwen36-int4
+      - vllm-proxy-gemma4-int4
     command: /bin/sh -c 'while :; do sleep 6h; nginx -s reload; done & nginx -g "daemon off;"'
     ports:
       - "8000:8000"
@@ -115,7 +115,7 @@ services:
     restart: unless-stopped
     logging: *logging-conf
     labels:
-      com.datadoghq.ad.logs: '[{"source":"nginx","service":"nginx","tags":["model:Qwen/Qwen3.6-35B-A3B-INT4-CT","deployment:qwen36-gemma4-int4-compressed-tensors-test","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000"]}]'
+      com.datadoghq.ad.logs: '[{"source":"nginx","service":"nginx","tags":["model:Qwen/Qwen3.6-35B-A3B-INT4-AutoRound","deployment:qwen36-gemma4-int4-autoround-test","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000"]}]'
 
   model-proxy-registrar:
     image: curlimages/curl@sha256:d94d07ba9e7d6de898b6d96c1a072f6f8266c687af78a74f380087a0addf5d17
@@ -137,41 +137,49 @@ services:
         mode: 0755
     logging: *logging-conf
     labels:
-      com.datadoghq.ad.logs: '[{"source":"model-proxy-registrar","service":"model-proxy-registrar","tags":["model:Qwen/Qwen3.6-35B-A3B-INT4-CT","deployment:qwen36-gemma4-int4-compressed-tensors-test","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.logs: '[{"source":"model-proxy-registrar","service":"model-proxy-registrar","tags":["model:Qwen/Qwen3.6-35B-A3B-INT4-AutoRound","deployment:qwen36-gemma4-int4-autoround-test","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
 
-  # Qwen3.6-35B-A3B compressed-tensors INT4 x4 (GPUs 0-3).
-  vllm-proxy-qwen36-int4-ct:
+  # Qwen3.6-35B-A3B Intel AutoRound INT4 x4 (GPUs 0-3).
+  vllm-proxy-qwen36-int4:
     <<: *vllm-proxy-common
-    container_name: vllm-proxy-qwen36-int4-ct
+    container_name: vllm-proxy-qwen36-int4
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - CLOUD_API_URL=https://cloud-api.near.ai
       - CLOUD_API_USAGE_TOKEN=${CLOUD_API_USAGE_TOKEN}
       - COMPOSE_MANAGER_URL=http://compose-manager:8080
       - LOG_FORMAT=json
-      - MODEL_NAME=Qwen/Qwen3.6-35B-A3B-INT4-CT
+      - MODEL_NAME=Qwen/Qwen3.6-35B-A3B-INT4-AutoRound
       - OHTTP_ENABLED=true
       - TOKEN=${PROXY_TOKEN}
-      - VLLM_BACKEND_URLS=http://model-vllm-qwen36-int4-ct-1:8000,http://model-vllm-qwen36-int4-ct-2:8000,http://model-vllm-qwen36-int4-ct-3:8000,http://model-vllm-qwen36-int4-ct-4:8000
+      - FUSION_ENABLED=${FUSION_ENABLED}
+      - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
+      - VLLM_BACKEND_URLS=http://model-vllm-qwen36-int4-1:8000,http://model-vllm-qwen36-int4-2:8000,http://model-vllm-qwen36-int4-3:8000,http://model-vllm-qwen36-int4-4:8000
       - VLLM_PROXY_MAX_REQUEST_SIZE=104857600
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
+      - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
+      - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:Qwen/Qwen3.6-35B-A3B-INT4-CT","precision:int4","deployment:qwen36-gemma4-int4-compressed-tensors-test","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:Qwen/Qwen3.6-35B-A3B-INT4-AutoRound","precision:int4","deployment:qwen36-gemma4-int4-autoround-test","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "inference-proxy"
       nearai.otel.service: "vllm-proxy"
+      nearai.otel.source: "vllm-proxy"
+      nearai.otel.container_name: "vllm-proxy-qwen36-int4"
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
-      nearai.otel.model: "Qwen/Qwen3.6-35B-A3B-INT4-CT"
-      nearai.otel.deployment: "qwen36-gemma4-int4-compressed-tensors-test"
+      nearai.otel.model: "Qwen/Qwen3.6-35B-A3B-INT4-AutoRound"
+      nearai.otel.deployment: "qwen36-gemma4-int4-autoround-test"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
-  model-vllm-qwen36-int4-ct-1:
+  model-vllm-qwen36-int4-1:
     <<: *qwen36-int4-common
-    container_name: model-vllm-qwen36-int4-ct-1
+    container_name: model-vllm-qwen36-int4-1
     deploy:
       resources:
         reservations:
@@ -182,22 +190,26 @@ services:
     labels:
       com.datadoghq.ad.check_names: '["vllm"]'
       com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:Qwen/Qwen3.6-35B-A3B-INT4-CT","model_path:caiovicentino1/Qwen3.6-35B-A3B-HLWQ-CT-INT4","precision:int4","deployment:qwen36-gemma4-int4-compressed-tensors-test","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:1"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-qwen36-int4-ct-1:8000/metrics","histogram_buckets_as_distributions":true,"service":"model-vllm-qwen36-int4-ct-1","tags":["model:Qwen/Qwen3.6-35B-A3B-INT4-CT","model_path:caiovicentino1/Qwen3.6-35B-A3B-HLWQ-CT-INT4","precision:int4","deployment:qwen36-gemma4-int4-compressed-tensors-test","ip:${HOST_IP}","port:8000","instance:1"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:Qwen/Qwen3.6-35B-A3B-INT4-AutoRound","model_path:Intel/Qwen3.6-35B-A3B-int4-mixed-AutoRound","precision:int4","deployment:qwen36-gemma4-int4-autoround-test","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:1"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-qwen36-int4-1:8000/metrics","histogram_buckets_as_distributions":true,"service":"model-vllm-qwen36-int4-1","tags":["model:Qwen/Qwen3.6-35B-A3B-INT4-AutoRound","model_path:Intel/Qwen3.6-35B-A3B-int4-mixed-AutoRound","precision:int4","deployment:qwen36-gemma4-int4-autoround-test","ip:${HOST_IP}","port:8000","instance:1"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
+      nearai.otel.source: "vllm"
+      nearai.otel.container_name: "model-vllm-qwen36-int4-1"
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
-      nearai.otel.model: "Qwen/Qwen3.6-35B-A3B-INT4-CT"
-      nearai.otel.deployment: "qwen36-gemma4-int4-compressed-tensors-test"
+      nearai.otel.model: "Qwen/Qwen3.6-35B-A3B-INT4-AutoRound"
+      nearai.otel.deployment: "qwen36-gemma4-int4-autoround-test"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
-  model-vllm-qwen36-int4-ct-2:
+  model-vllm-qwen36-int4-2:
     <<: *qwen36-int4-common
-    container_name: model-vllm-qwen36-int4-ct-2
+    container_name: model-vllm-qwen36-int4-2
     deploy:
       resources:
         reservations:
@@ -208,22 +220,26 @@ services:
     labels:
       com.datadoghq.ad.check_names: '["vllm"]'
       com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:Qwen/Qwen3.6-35B-A3B-INT4-CT","model_path:caiovicentino1/Qwen3.6-35B-A3B-HLWQ-CT-INT4","precision:int4","deployment:qwen36-gemma4-int4-compressed-tensors-test","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:2"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-qwen36-int4-ct-2:8000/metrics","histogram_buckets_as_distributions":true,"service":"model-vllm-qwen36-int4-ct-2","tags":["model:Qwen/Qwen3.6-35B-A3B-INT4-CT","model_path:caiovicentino1/Qwen3.6-35B-A3B-HLWQ-CT-INT4","precision:int4","deployment:qwen36-gemma4-int4-compressed-tensors-test","ip:${HOST_IP}","port:8000","instance:2"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:Qwen/Qwen3.6-35B-A3B-INT4-AutoRound","model_path:Intel/Qwen3.6-35B-A3B-int4-mixed-AutoRound","precision:int4","deployment:qwen36-gemma4-int4-autoround-test","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:2"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-qwen36-int4-2:8000/metrics","histogram_buckets_as_distributions":true,"service":"model-vllm-qwen36-int4-2","tags":["model:Qwen/Qwen3.6-35B-A3B-INT4-AutoRound","model_path:Intel/Qwen3.6-35B-A3B-int4-mixed-AutoRound","precision:int4","deployment:qwen36-gemma4-int4-autoround-test","ip:${HOST_IP}","port:8000","instance:2"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
+      nearai.otel.source: "vllm"
+      nearai.otel.container_name: "model-vllm-qwen36-int4-2"
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
-      nearai.otel.model: "Qwen/Qwen3.6-35B-A3B-INT4-CT"
-      nearai.otel.deployment: "qwen36-gemma4-int4-compressed-tensors-test"
+      nearai.otel.model: "Qwen/Qwen3.6-35B-A3B-INT4-AutoRound"
+      nearai.otel.deployment: "qwen36-gemma4-int4-autoround-test"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
-  model-vllm-qwen36-int4-ct-3:
+  model-vllm-qwen36-int4-3:
     <<: *qwen36-int4-common
-    container_name: model-vllm-qwen36-int4-ct-3
+    container_name: model-vllm-qwen36-int4-3
     deploy:
       resources:
         reservations:
@@ -234,22 +250,26 @@ services:
     labels:
       com.datadoghq.ad.check_names: '["vllm"]'
       com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:Qwen/Qwen3.6-35B-A3B-INT4-CT","model_path:caiovicentino1/Qwen3.6-35B-A3B-HLWQ-CT-INT4","precision:int4","deployment:qwen36-gemma4-int4-compressed-tensors-test","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:3"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-qwen36-int4-ct-3:8000/metrics","histogram_buckets_as_distributions":true,"service":"model-vllm-qwen36-int4-ct-3","tags":["model:Qwen/Qwen3.6-35B-A3B-INT4-CT","model_path:caiovicentino1/Qwen3.6-35B-A3B-HLWQ-CT-INT4","precision:int4","deployment:qwen36-gemma4-int4-compressed-tensors-test","ip:${HOST_IP}","port:8000","instance:3"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:Qwen/Qwen3.6-35B-A3B-INT4-AutoRound","model_path:Intel/Qwen3.6-35B-A3B-int4-mixed-AutoRound","precision:int4","deployment:qwen36-gemma4-int4-autoround-test","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:3"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-qwen36-int4-3:8000/metrics","histogram_buckets_as_distributions":true,"service":"model-vllm-qwen36-int4-3","tags":["model:Qwen/Qwen3.6-35B-A3B-INT4-AutoRound","model_path:Intel/Qwen3.6-35B-A3B-int4-mixed-AutoRound","precision:int4","deployment:qwen36-gemma4-int4-autoround-test","ip:${HOST_IP}","port:8000","instance:3"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
+      nearai.otel.source: "vllm"
+      nearai.otel.container_name: "model-vllm-qwen36-int4-3"
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
-      nearai.otel.model: "Qwen/Qwen3.6-35B-A3B-INT4-CT"
-      nearai.otel.deployment: "qwen36-gemma4-int4-compressed-tensors-test"
+      nearai.otel.model: "Qwen/Qwen3.6-35B-A3B-INT4-AutoRound"
+      nearai.otel.deployment: "qwen36-gemma4-int4-autoround-test"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
-  model-vllm-qwen36-int4-ct-4:
+  model-vllm-qwen36-int4-4:
     <<: *qwen36-int4-common
-    container_name: model-vllm-qwen36-int4-ct-4
+    container_name: model-vllm-qwen36-int4-4
     deploy:
       resources:
         reservations:
@@ -260,104 +280,184 @@ services:
     labels:
       com.datadoghq.ad.check_names: '["vllm"]'
       com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:Qwen/Qwen3.6-35B-A3B-INT4-CT","model_path:caiovicentino1/Qwen3.6-35B-A3B-HLWQ-CT-INT4","precision:int4","deployment:qwen36-gemma4-int4-compressed-tensors-test","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:4"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-qwen36-int4-ct-4:8000/metrics","histogram_buckets_as_distributions":true,"service":"model-vllm-qwen36-int4-ct-4","tags":["model:Qwen/Qwen3.6-35B-A3B-INT4-CT","model_path:caiovicentino1/Qwen3.6-35B-A3B-HLWQ-CT-INT4","precision:int4","deployment:qwen36-gemma4-int4-compressed-tensors-test","ip:${HOST_IP}","port:8000","instance:4"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:Qwen/Qwen3.6-35B-A3B-INT4-AutoRound","model_path:Intel/Qwen3.6-35B-A3B-int4-mixed-AutoRound","precision:int4","deployment:qwen36-gemma4-int4-autoround-test","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:4"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-qwen36-int4-4:8000/metrics","histogram_buckets_as_distributions":true,"service":"model-vllm-qwen36-int4-4","tags":["model:Qwen/Qwen3.6-35B-A3B-INT4-AutoRound","model_path:Intel/Qwen3.6-35B-A3B-int4-mixed-AutoRound","precision:int4","deployment:qwen36-gemma4-int4-autoround-test","ip:${HOST_IP}","port:8000","instance:4"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
+      nearai.otel.source: "vllm"
+      nearai.otel.container_name: "model-vllm-qwen36-int4-4"
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
-      nearai.otel.model: "Qwen/Qwen3.6-35B-A3B-INT4-CT"
-      nearai.otel.deployment: "qwen36-gemma4-int4-compressed-tensors-test"
+      nearai.otel.model: "Qwen/Qwen3.6-35B-A3B-INT4-AutoRound"
+      nearai.otel.deployment: "qwen36-gemma4-int4-autoround-test"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
-  # Gemma-4-31B-it compressed-tensors INT4 x2, TP=2 per replica (GPUs 4-5, 6-7).
-  vllm-proxy-gemma4-int4-ct:
+  # Gemma-4-31B-it Intel AutoRound INT4 x4, TP=1 per replica (GPUs 4-7).
+  vllm-proxy-gemma4-int4:
     <<: *vllm-proxy-common
-    container_name: vllm-proxy-gemma4-int4-ct
+    container_name: vllm-proxy-gemma4-int4
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - CLOUD_API_URL=https://cloud-api.near.ai
       - CLOUD_API_USAGE_TOKEN=${CLOUD_API_USAGE_TOKEN}
       - COMPOSE_MANAGER_URL=http://compose-manager:8080
       - LOG_FORMAT=json
-      - MODEL_NAME=google/gemma-4-31B-it-INT4-CT
+      - MODEL_NAME=google/gemma-4-31B-it-INT4-AutoRound
       - OHTTP_ENABLED=true
       - TOKEN=${PROXY_TOKEN}
-      - VLLM_BACKEND_URLS=http://model-vllm-gemma4-int4-ct-1:8000,http://model-vllm-gemma4-int4-ct-2:8000
+      - FUSION_ENABLED=${FUSION_ENABLED}
+      - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
+      - VLLM_BACKEND_URLS=http://model-vllm-gemma4-int4-1:8000,http://model-vllm-gemma4-int4-2:8000,http://model-vllm-gemma4-int4-3:8000,http://model-vllm-gemma4-int4-4:8000
       - VLLM_PROXY_MAX_REQUEST_SIZE=104857600
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
+      - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
+      - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:google/gemma-4-31B-it-INT4-CT","precision:int4","deployment:qwen36-gemma4-int4-compressed-tensors-test","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8001"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:google/gemma-4-31B-it-INT4-AutoRound","precision:int4","deployment:qwen36-gemma4-int4-autoround-test","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8001"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "inference-proxy"
       nearai.otel.service: "vllm-proxy"
+      nearai.otel.source: "vllm-proxy"
+      nearai.otel.container_name: "vllm-proxy-gemma4-int4"
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
-      nearai.otel.model: "google/gemma-4-31B-it-INT4-CT"
-      nearai.otel.deployment: "qwen36-gemma4-int4-compressed-tensors-test"
+      nearai.otel.model: "google/gemma-4-31B-it-INT4-AutoRound"
+      nearai.otel.deployment: "qwen36-gemma4-int4-autoround-test"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
-  model-vllm-gemma4-int4-ct-1:
+  model-vllm-gemma4-int4-1:
     <<: *gemma4-int4-common
-    container_name: model-vllm-gemma4-int4-ct-1
+    container_name: model-vllm-gemma4-int4-1
     deploy:
       resources:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["4","5"]
+              device_ids: ["4"]
               capabilities: [gpu]
     labels:
       com.datadoghq.ad.check_names: '["vllm"]'
       com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:google/gemma-4-31B-it-INT4-CT","model_path:ebircak/gemma-4-31B-it-4bit-W4A16-AWQ","precision:int4","deployment:qwen36-gemma4-int4-compressed-tensors-test","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8001","instance:1"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-gemma4-int4-ct-1:8000/metrics","histogram_buckets_as_distributions":true,"service":"model-vllm-gemma4-int4-ct-1","tags":["model:google/gemma-4-31B-it-INT4-CT","model_path:ebircak/gemma-4-31B-it-4bit-W4A16-AWQ","precision:int4","deployment:qwen36-gemma4-int4-compressed-tensors-test","ip:${HOST_IP}","port:8001","instance:1"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:google/gemma-4-31B-it-INT4-AutoRound","model_path:Intel/gemma-4-31B-it-int4-AutoRound","precision:int4","deployment:qwen36-gemma4-int4-autoround-test","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8001","instance:1"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-gemma4-int4-1:8000/metrics","histogram_buckets_as_distributions":true,"service":"model-vllm-gemma4-int4-1","tags":["model:google/gemma-4-31B-it-INT4-AutoRound","model_path:Intel/gemma-4-31B-it-int4-AutoRound","precision:int4","deployment:qwen36-gemma4-int4-autoround-test","ip:${HOST_IP}","port:8001","instance:1"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
+      nearai.otel.source: "vllm"
+      nearai.otel.container_name: "model-vllm-gemma4-int4-1"
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
-      nearai.otel.model: "google/gemma-4-31B-it-INT4-CT"
-      nearai.otel.deployment: "qwen36-gemma4-int4-compressed-tensors-test"
+      nearai.otel.model: "google/gemma-4-31B-it-INT4-AutoRound"
+      nearai.otel.deployment: "qwen36-gemma4-int4-autoround-test"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
-  model-vllm-gemma4-int4-ct-2:
+  model-vllm-gemma4-int4-2:
     <<: *gemma4-int4-common
-    container_name: model-vllm-gemma4-int4-ct-2
+    container_name: model-vllm-gemma4-int4-2
     deploy:
       resources:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["6","7"]
+              device_ids: ["5"]
               capabilities: [gpu]
     labels:
       com.datadoghq.ad.check_names: '["vllm"]'
       com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:google/gemma-4-31B-it-INT4-CT","model_path:ebircak/gemma-4-31B-it-4bit-W4A16-AWQ","precision:int4","deployment:qwen36-gemma4-int4-compressed-tensors-test","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8001","instance:2"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-gemma4-int4-ct-2:8000/metrics","histogram_buckets_as_distributions":true,"service":"model-vllm-gemma4-int4-ct-2","tags":["model:google/gemma-4-31B-it-INT4-CT","model_path:ebircak/gemma-4-31B-it-4bit-W4A16-AWQ","precision:int4","deployment:qwen36-gemma4-int4-compressed-tensors-test","ip:${HOST_IP}","port:8001","instance:2"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:google/gemma-4-31B-it-INT4-AutoRound","model_path:Intel/gemma-4-31B-it-int4-AutoRound","precision:int4","deployment:qwen36-gemma4-int4-autoround-test","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8001","instance:2"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-gemma4-int4-2:8000/metrics","histogram_buckets_as_distributions":true,"service":"model-vllm-gemma4-int4-2","tags":["model:google/gemma-4-31B-it-INT4-AutoRound","model_path:Intel/gemma-4-31B-it-int4-AutoRound","precision:int4","deployment:qwen36-gemma4-int4-autoround-test","ip:${HOST_IP}","port:8001","instance:2"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
+      nearai.otel.source: "vllm"
+      nearai.otel.container_name: "model-vllm-gemma4-int4-2"
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
-      nearai.otel.model: "google/gemma-4-31B-it-INT4-CT"
-      nearai.otel.deployment: "qwen36-gemma4-int4-compressed-tensors-test"
+      nearai.otel.model: "google/gemma-4-31B-it-INT4-AutoRound"
+      nearai.otel.deployment: "qwen36-gemma4-int4-autoround-test"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
-  dcgm-qwen36-int4-ct:
+  model-vllm-gemma4-int4-3:
+    <<: *gemma4-int4-common
+    container_name: model-vllm-gemma4-int4-3
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["6"]
+              capabilities: [gpu]
+    labels:
+      com.datadoghq.ad.check_names: '["vllm"]'
+      com.datadoghq.ad.init_configs: "[{}]"
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:google/gemma-4-31B-it-INT4-AutoRound","model_path:Intel/gemma-4-31B-it-int4-AutoRound","precision:int4","deployment:qwen36-gemma4-int4-autoround-test","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8001","instance:3"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-gemma4-int4-3:8000/metrics","histogram_buckets_as_distributions":true,"service":"model-vllm-gemma4-int4-3","tags":["model:google/gemma-4-31B-it-INT4-AutoRound","model_path:Intel/gemma-4-31B-it-int4-AutoRound","precision:int4","deployment:qwen36-gemma4-int4-autoround-test","ip:${HOST_IP}","port:8001","instance:3"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "vllm"
+      nearai.otel.service: "vllm"
+      nearai.otel.source: "vllm"
+      nearai.otel.container_name: "model-vllm-gemma4-int4-3"
+      nearai.otel.port: "8000"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "google/gemma-4-31B-it-INT4-AutoRound"
+      nearai.otel.deployment: "qwen36-gemma4-int4-autoround-test"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
+
+  model-vllm-gemma4-int4-4:
+    <<: *gemma4-int4-common
+    container_name: model-vllm-gemma4-int4-4
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["7"]
+              capabilities: [gpu]
+    labels:
+      com.datadoghq.ad.check_names: '["vllm"]'
+      com.datadoghq.ad.init_configs: "[{}]"
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:google/gemma-4-31B-it-INT4-AutoRound","model_path:Intel/gemma-4-31B-it-int4-AutoRound","precision:int4","deployment:qwen36-gemma4-int4-autoround-test","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8001","instance:4"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-gemma4-int4-4:8000/metrics","histogram_buckets_as_distributions":true,"service":"model-vllm-gemma4-int4-4","tags":["model:google/gemma-4-31B-it-INT4-AutoRound","model_path:Intel/gemma-4-31B-it-int4-AutoRound","precision:int4","deployment:qwen36-gemma4-int4-autoround-test","ip:${HOST_IP}","port:8001","instance:4"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "vllm"
+      nearai.otel.service: "vllm"
+      nearai.otel.source: "vllm"
+      nearai.otel.container_name: "model-vllm-gemma4-int4-4"
+      nearai.otel.port: "8000"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "google/gemma-4-31B-it-INT4-AutoRound"
+      nearai.otel.deployment: "qwen36-gemma4-int4-autoround-test"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
+
+  dcgm-qwen36-int4:
     <<: *dcgm-common
-    container_name: dcgm-qwen36-int4-ct
+    container_name: dcgm-qwen36-int4
     deploy:
       resources:
         reservations:
@@ -368,22 +468,26 @@ services:
     labels:
       com.datadoghq.ad.check_names: '["dcgm"]'
       com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://%%host%%:9400/metrics","tags":["model:Qwen/Qwen3.6-35B-A3B-INT4-CT","precision:int4","deployment:qwen36-gemma4-int4-compressed-tensors-test","ip:${HOST_IP}"]}]'
-      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:Qwen/Qwen3.6-35B-A3B-INT4-CT","precision:int4","deployment:qwen36-gemma4-int4-compressed-tensors-test","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://%%host%%:9400/metrics","tags":["model:Qwen/Qwen3.6-35B-A3B-INT4-AutoRound","precision:int4","deployment:qwen36-gemma4-int4-autoround-test","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:Qwen/Qwen3.6-35B-A3B-INT4-AutoRound","precision:int4","deployment:qwen36-gemma4-int4-autoround-test","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "dcgm"
       nearai.otel.service: "dcgm-exporter"
+      nearai.otel.source: "dcgm-exporter"
+      nearai.otel.container_name: "dcgm-qwen36-int4"
       nearai.otel.port: "9400"
       nearai.otel.path: "/metrics"
-      nearai.otel.model: "Qwen/Qwen3.6-35B-A3B-INT4-CT"
-      nearai.otel.deployment: "qwen36-gemma4-int4-compressed-tensors-test"
+      nearai.otel.model: "Qwen/Qwen3.6-35B-A3B-INT4-AutoRound"
+      nearai.otel.deployment: "qwen36-gemma4-int4-autoround-test"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
-  dcgm-gemma4-int4-ct:
+  dcgm-gemma4-int4:
     <<: *dcgm-common
-    container_name: dcgm-gemma4-int4-ct
+    container_name: dcgm-gemma4-int4
     deploy:
       resources:
         reservations:
@@ -394,17 +498,21 @@ services:
     labels:
       com.datadoghq.ad.check_names: '["dcgm"]'
       com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://%%host%%:9400/metrics","tags":["model:google/gemma-4-31B-it-INT4-CT","precision:int4","deployment:qwen36-gemma4-int4-compressed-tensors-test","ip:${HOST_IP}"]}]'
-      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:google/gemma-4-31B-it-INT4-CT","precision:int4","deployment:qwen36-gemma4-int4-compressed-tensors-test","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://%%host%%:9400/metrics","tags":["model:google/gemma-4-31B-it-INT4-AutoRound","precision:int4","deployment:qwen36-gemma4-int4-autoround-test","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:google/gemma-4-31B-it-INT4-AutoRound","precision:int4","deployment:qwen36-gemma4-int4-autoround-test","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "dcgm"
       nearai.otel.service: "dcgm-exporter"
+      nearai.otel.source: "dcgm-exporter"
+      nearai.otel.container_name: "dcgm-gemma4-int4"
       nearai.otel.port: "9400"
       nearai.otel.path: "/metrics"
-      nearai.otel.model: "google/gemma-4-31B-it-INT4-CT"
-      nearai.otel.deployment: "qwen36-gemma4-int4-compressed-tensors-test"
+      nearai.otel.model: "google/gemma-4-31B-it-INT4-AutoRound"
+      nearai.otel.deployment: "qwen36-gemma4-int4-autoround-test"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
   otelcol-contrib:
@@ -437,7 +545,7 @@ services:
         max-size: "20m"
         max-file: "3"
     labels:
-      com.datadoghq.ad.logs: '[{"source":"otelcol-contrib","service":"otelcol-contrib","tags":["deployment:qwen36-gemma4-int4-compressed-tensors-test","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.logs: '[{"source":"otelcol-contrib","service":"otelcol-contrib","tags":["deployment:qwen36-gemma4-int4-autoround-test","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
 
 networks:
   default:
@@ -539,165 +647,235 @@ configs:
         prometheus/apps:
           config:
             scrape_configs:
-              - job_name: vllm-model-vllm-qwen36-int4-ct-1
+              - job_name: vllm-model-vllm-qwen36-int4-1
                 scrape_interval: 15s
                 metrics_path: /metrics
                 static_configs:
-                  - targets: ['model-vllm-qwen36-int4-ct-1:8000']
+                  - targets: ['model-vllm-qwen36-int4-1:8000']
                     labels:
                       service: "vllm"
-                      container_name: "model-vllm-qwen36-int4-ct-1"
-                      model: "Qwen/Qwen3.6-35B-A3B-INT4-CT"
-                      deployment: "qwen36-gemma4-int4-compressed-tensors-test"
+                      source: "vllm"
+                      container_name: "model-vllm-qwen36-int4-1"
+                      model: "Qwen/Qwen3.6-35B-A3B-INT4-AutoRound"
+                      deployment: "qwen36-gemma4-int4-autoround-test"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "8000"
-                      model_path: "caiovicentino1/Qwen3.6-35B-A3B-HLWQ-CT-INT4"
+                      model_path: "Intel/Qwen3.6-35B-A3B-int4-mixed-AutoRound"
                       precision: "int4"
                       instance: "1"
-              - job_name: vllm-model-vllm-qwen36-int4-ct-2
+              - job_name: vllm-model-vllm-qwen36-int4-2
                 scrape_interval: 15s
                 metrics_path: /metrics
                 static_configs:
-                  - targets: ['model-vllm-qwen36-int4-ct-2:8000']
+                  - targets: ['model-vllm-qwen36-int4-2:8000']
                     labels:
                       service: "vllm"
-                      container_name: "model-vllm-qwen36-int4-ct-2"
-                      model: "Qwen/Qwen3.6-35B-A3B-INT4-CT"
-                      deployment: "qwen36-gemma4-int4-compressed-tensors-test"
+                      source: "vllm"
+                      container_name: "model-vllm-qwen36-int4-2"
+                      model: "Qwen/Qwen3.6-35B-A3B-INT4-AutoRound"
+                      deployment: "qwen36-gemma4-int4-autoround-test"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "8000"
-                      model_path: "caiovicentino1/Qwen3.6-35B-A3B-HLWQ-CT-INT4"
+                      model_path: "Intel/Qwen3.6-35B-A3B-int4-mixed-AutoRound"
                       precision: "int4"
                       instance: "2"
-              - job_name: vllm-model-vllm-qwen36-int4-ct-3
+              - job_name: vllm-model-vllm-qwen36-int4-3
                 scrape_interval: 15s
                 metrics_path: /metrics
                 static_configs:
-                  - targets: ['model-vllm-qwen36-int4-ct-3:8000']
+                  - targets: ['model-vllm-qwen36-int4-3:8000']
                     labels:
                       service: "vllm"
-                      container_name: "model-vllm-qwen36-int4-ct-3"
-                      model: "Qwen/Qwen3.6-35B-A3B-INT4-CT"
-                      deployment: "qwen36-gemma4-int4-compressed-tensors-test"
+                      source: "vllm"
+                      container_name: "model-vllm-qwen36-int4-3"
+                      model: "Qwen/Qwen3.6-35B-A3B-INT4-AutoRound"
+                      deployment: "qwen36-gemma4-int4-autoround-test"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "8000"
-                      model_path: "caiovicentino1/Qwen3.6-35B-A3B-HLWQ-CT-INT4"
+                      model_path: "Intel/Qwen3.6-35B-A3B-int4-mixed-AutoRound"
                       precision: "int4"
                       instance: "3"
-              - job_name: vllm-model-vllm-qwen36-int4-ct-4
+              - job_name: vllm-model-vllm-qwen36-int4-4
                 scrape_interval: 15s
                 metrics_path: /metrics
                 static_configs:
-                  - targets: ['model-vllm-qwen36-int4-ct-4:8000']
+                  - targets: ['model-vllm-qwen36-int4-4:8000']
                     labels:
                       service: "vllm"
-                      container_name: "model-vllm-qwen36-int4-ct-4"
-                      model: "Qwen/Qwen3.6-35B-A3B-INT4-CT"
-                      deployment: "qwen36-gemma4-int4-compressed-tensors-test"
+                      source: "vllm"
+                      container_name: "model-vllm-qwen36-int4-4"
+                      model: "Qwen/Qwen3.6-35B-A3B-INT4-AutoRound"
+                      deployment: "qwen36-gemma4-int4-autoround-test"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "8000"
-                      model_path: "caiovicentino1/Qwen3.6-35B-A3B-HLWQ-CT-INT4"
+                      model_path: "Intel/Qwen3.6-35B-A3B-int4-mixed-AutoRound"
                       precision: "int4"
                       instance: "4"
-              - job_name: vllm-model-vllm-gemma4-int4-ct-1
+              - job_name: vllm-model-vllm-gemma4-int4-1
                 scrape_interval: 15s
                 metrics_path: /metrics
                 static_configs:
-                  - targets: ['model-vllm-gemma4-int4-ct-1:8000']
+                  - targets: ['model-vllm-gemma4-int4-1:8000']
                     labels:
                       service: "vllm"
-                      container_name: "model-vllm-gemma4-int4-ct-1"
-                      model: "google/gemma-4-31B-it-INT4-CT"
-                      deployment: "qwen36-gemma4-int4-compressed-tensors-test"
+                      source: "vllm"
+                      container_name: "model-vllm-gemma4-int4-1"
+                      model: "google/gemma-4-31B-it-INT4-AutoRound"
+                      deployment: "qwen36-gemma4-int4-autoround-test"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "8001"
-                      model_path: "ebircak/gemma-4-31B-it-4bit-W4A16-AWQ"
+                      model_path: "Intel/gemma-4-31B-it-int4-AutoRound"
                       precision: "int4"
                       instance: "1"
-              - job_name: vllm-model-vllm-gemma4-int4-ct-2
+              - job_name: vllm-model-vllm-gemma4-int4-2
                 scrape_interval: 15s
                 metrics_path: /metrics
                 static_configs:
-                  - targets: ['model-vllm-gemma4-int4-ct-2:8000']
+                  - targets: ['model-vllm-gemma4-int4-2:8000']
                     labels:
                       service: "vllm"
-                      container_name: "model-vllm-gemma4-int4-ct-2"
-                      model: "google/gemma-4-31B-it-INT4-CT"
-                      deployment: "qwen36-gemma4-int4-compressed-tensors-test"
+                      source: "vllm"
+                      container_name: "model-vllm-gemma4-int4-2"
+                      model: "google/gemma-4-31B-it-INT4-AutoRound"
+                      deployment: "qwen36-gemma4-int4-autoround-test"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "8001"
-                      model_path: "ebircak/gemma-4-31B-it-4bit-W4A16-AWQ"
+                      model_path: "Intel/gemma-4-31B-it-int4-AutoRound"
                       precision: "int4"
                       instance: "2"
-              - job_name: dcgm-dcgm-qwen36-int4-ct
+              - job_name: vllm-model-vllm-gemma4-int4-3
                 scrape_interval: 15s
                 metrics_path: /metrics
                 static_configs:
-                  - targets: ['dcgm-qwen36-int4-ct:9400']
+                  - targets: ['model-vllm-gemma4-int4-3:8000']
                     labels:
-                      service: "dcgm-exporter"
-                      container_name: "dcgm-qwen36-int4-ct"
-                      model: "Qwen/Qwen3.6-35B-A3B-INT4-CT"
-                      deployment: "qwen36-gemma4-int4-compressed-tensors-test"
+                      service: "vllm"
+                      source: "vllm"
+                      container_name: "model-vllm-gemma4-int4-3"
+                      model: "google/gemma-4-31B-it-INT4-AutoRound"
+                      deployment: "qwen36-gemma4-int4-autoround-test"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      port: "8001"
+                      model_path: "Intel/gemma-4-31B-it-int4-AutoRound"
+                      precision: "int4"
+                      instance: "3"
+              - job_name: vllm-model-vllm-gemma4-int4-4
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['model-vllm-gemma4-int4-4:8000']
+                    labels:
+                      service: "vllm"
+                      source: "vllm"
+                      container_name: "model-vllm-gemma4-int4-4"
+                      model: "google/gemma-4-31B-it-INT4-AutoRound"
+                      deployment: "qwen36-gemma4-int4-autoround-test"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      port: "8001"
+                      model_path: "Intel/gemma-4-31B-it-int4-AutoRound"
+                      precision: "int4"
+                      instance: "4"
+              - job_name: dcgm-dcgm-qwen36-int4
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['dcgm-qwen36-int4:9400']
+                    labels:
+                      service: "dcgm-exporter"
+                      source: "dcgm-exporter"
+                      container_name: "dcgm-qwen36-int4"
+                      model: "Qwen/Qwen3.6-35B-A3B-INT4-AutoRound"
+                      deployment: "qwen36-gemma4-int4-autoround-test"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "9400"
                       precision: "int4"
-              - job_name: dcgm-dcgm-gemma4-int4-ct
+              - job_name: dcgm-dcgm-gemma4-int4
                 scrape_interval: 15s
                 metrics_path: /metrics
                 static_configs:
-                  - targets: ['dcgm-gemma4-int4-ct:9400']
+                  - targets: ['dcgm-gemma4-int4:9400']
                     labels:
                       service: "dcgm-exporter"
-                      container_name: "dcgm-gemma4-int4-ct"
-                      model: "google/gemma-4-31B-it-INT4-CT"
-                      deployment: "qwen36-gemma4-int4-compressed-tensors-test"
+                      source: "dcgm-exporter"
+                      container_name: "dcgm-gemma4-int4"
+                      model: "google/gemma-4-31B-it-INT4-AutoRound"
+                      deployment: "qwen36-gemma4-int4-autoround-test"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "9400"
                       precision: "int4"
-              - job_name: inference-proxy-vllm-proxy-qwen36-int4-ct
+              - job_name: inference-proxy-vllm-proxy-qwen36-int4
                 scrape_interval: 15s
                 metrics_path: /metrics
                 static_configs:
-                  - targets: ['vllm-proxy-qwen36-int4-ct:8000']
+                  - targets: ['vllm-proxy-qwen36-int4:8000']
                     labels:
                       service: "vllm-proxy"
-                      container_name: "vllm-proxy-qwen36-int4-ct"
-                      model: "Qwen/Qwen3.6-35B-A3B-INT4-CT"
-                      deployment: "qwen36-gemma4-int4-compressed-tensors-test"
+                      source: "vllm-proxy"
+                      container_name: "vllm-proxy-qwen36-int4"
+                      model: "Qwen/Qwen3.6-35B-A3B-INT4-AutoRound"
+                      deployment: "qwen36-gemma4-int4-autoround-test"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "8000"
                       precision: "int4"
-              - job_name: inference-proxy-vllm-proxy-gemma4-int4-ct
+              - job_name: inference-proxy-vllm-proxy-gemma4-int4
                 scrape_interval: 15s
                 metrics_path: /metrics
                 static_configs:
-                  - targets: ['vllm-proxy-gemma4-int4-ct:8000']
+                  - targets: ['vllm-proxy-gemma4-int4:8000']
                     labels:
                       service: "vllm-proxy"
-                      container_name: "vllm-proxy-gemma4-int4-ct"
-                      model: "google/gemma-4-31B-it-INT4-CT"
-                      deployment: "qwen36-gemma4-int4-compressed-tensors-test"
+                      source: "vllm-proxy"
+                      container_name: "vllm-proxy-gemma4-int4"
+                      model: "google/gemma-4-31B-it-INT4-AutoRound"
+                      deployment: "qwen36-gemma4-int4-autoround-test"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "8001"
                       precision: "int4"
@@ -742,6 +920,8 @@ configs:
                 - set(attributes["service.name"], attributes["attrs"]["com.docker.compose.service"]) where attributes["attrs"] != nil and attributes["attrs"]["com.docker.compose.service"] != nil
                 - set(attributes["service.name"], ParseJSON(attributes["attrs"]["com.datadoghq.ad.logs"])[0]["service"]) where attributes["attrs"] != nil and attributes["attrs"]["com.datadoghq.ad.logs"] != nil
                 - set(attributes["log.source"], ParseJSON(attributes["attrs"]["com.datadoghq.ad.logs"])[0]["source"]) where attributes["attrs"] != nil and attributes["attrs"]["com.datadoghq.ad.logs"] != nil
+                - set(attributes["service"], attributes["service.name"]) where attributes["attrs"] != nil and attributes["attrs"]["com.datadoghq.ad.logs"] != nil and attributes["service.name"] != nil
+                - set(attributes["source"], attributes["log.source"]) where attributes["attrs"] != nil and attributes["attrs"]["com.datadoghq.ad.logs"] != nil and attributes["log.source"] != nil
                 - set(attributes["container.name"], attributes["attrs"]["com.docker.compose.service"]) where attributes["attrs"] != nil and attributes["attrs"]["com.docker.compose.service"] != nil
 
         filter/app_logs:
@@ -758,8 +938,10 @@ configs:
         groupbyattrs/docker_service:
           keys:
             - service.name
+            - service
             - container.name
             - log.source
+            - source
             - log.iostream
             - model
             - model_path
@@ -872,14 +1054,16 @@ configs:
       check_port() {
         case $$1 in
           8000)
-            check_chat model-vllm-qwen36-int4-ct-1 "Qwen/Qwen3.6-35B-A3B-INT4-CT" &&
-            check_chat model-vllm-qwen36-int4-ct-2 "Qwen/Qwen3.6-35B-A3B-INT4-CT" &&
-            check_chat model-vllm-qwen36-int4-ct-3 "Qwen/Qwen3.6-35B-A3B-INT4-CT" &&
-            check_chat model-vllm-qwen36-int4-ct-4 "Qwen/Qwen3.6-35B-A3B-INT4-CT"
+            check_chat model-vllm-qwen36-int4-1 "Qwen/Qwen3.6-35B-A3B-INT4-AutoRound" &&
+            check_chat model-vllm-qwen36-int4-2 "Qwen/Qwen3.6-35B-A3B-INT4-AutoRound" &&
+            check_chat model-vllm-qwen36-int4-3 "Qwen/Qwen3.6-35B-A3B-INT4-AutoRound" &&
+            check_chat model-vllm-qwen36-int4-4 "Qwen/Qwen3.6-35B-A3B-INT4-AutoRound"
             ;;
           8001)
-            check_chat model-vllm-gemma4-int4-ct-1 "google/gemma-4-31B-it-INT4-CT" &&
-            check_chat model-vllm-gemma4-int4-ct-2 "google/gemma-4-31B-it-INT4-CT"
+            check_chat model-vllm-gemma4-int4-1 "google/gemma-4-31B-it-INT4-AutoRound" &&
+            check_chat model-vllm-gemma4-int4-2 "google/gemma-4-31B-it-INT4-AutoRound" &&
+            check_chat model-vllm-gemma4-int4-3 "google/gemma-4-31B-it-INT4-AutoRound" &&
+            check_chat model-vllm-gemma4-int4-4 "google/gemma-4-31B-it-INT4-AutoRound"
             ;;
         esac
       }
@@ -919,10 +1103,10 @@ configs:
         done
 
         if [ "$$REG_8000" = true ]; then
-          register_model "Qwen/Qwen3.6-35B-A3B-INT4-CT" "qwen3-6-35b-int4-ct.completions.near.ai"
+          register_model "Qwen/Qwen3.6-35B-A3B-INT4-AutoRound" "qwen3-6-35b-int4-autoround.completions.near.ai"
         fi
         if [ "$$REG_8001" = true ]; then
-          register_model "google/gemma-4-31B-it-INT4-CT" "gemma-4-31b-int4-ct.completions.near.ai"
+          register_model "google/gemma-4-31B-it-INT4-AutoRound" "gemma-4-31b-int4-autoround.completions.near.ai"
         fi
         date +%s > /tmp/registrar_alive
         sleep 60
@@ -961,12 +1145,12 @@ configs:
 
       server {
           listen 8000;
-          location / { proxy_pass http://vllm-proxy-qwen36-int4-ct:8000; }
+          location / { proxy_pass http://vllm-proxy-qwen36-int4:8000; }
       }
 
       server {
           listen 8001;
-          location / { proxy_pass http://vllm-proxy-gemma4-int4-ct:8000; }
+          location / { proxy_pass http://vllm-proxy-gemma4-int4:8000; }
       }
 
       ssl_certificate /etc/letsencrypt/live/completions.near.ai/fullchain.pem;
@@ -975,18 +1159,18 @@ configs:
 
       server {
           listen 443 ssl http2;
-          server_name qwen3-6-35b-int4-ct.completions.near.ai
-                      ~^qwen3-6-35b-int4-ct-i\d+\.completions\.near\.ai$$;
+          server_name qwen3-6-35b-int4-autoround.completions.near.ai
+                      ~^qwen3-6-35b-int4-autoround-i\d+\.completions\.near\.ai$$;
           keepalive_timeout 1h;
           keepalive_requests 1000000;
-          location / { proxy_pass http://vllm-proxy-qwen36-int4-ct:8000; }
+          location / { proxy_pass http://vllm-proxy-qwen36-int4:8000; }
       }
 
       server {
           listen 443 ssl http2;
-          server_name gemma-4-31b-int4-ct.completions.near.ai
-                      ~^gemma-4-31b-int4-ct-i\d+\.completions\.near\.ai$$;
+          server_name gemma-4-31b-int4-autoround.completions.near.ai
+                      ~^gemma-4-31b-int4-autoround-i\d+\.completions\.near\.ai$$;
           keepalive_timeout 1h;
           keepalive_requests 1000000;
-          location / { proxy_pass http://vllm-proxy-gemma4-int4-ct:8000; }
+          location / { proxy_pass http://vllm-proxy-gemma4-int4:8000; }
       }

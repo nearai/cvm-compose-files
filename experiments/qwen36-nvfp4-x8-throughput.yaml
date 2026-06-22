@@ -52,7 +52,7 @@ x-vllm-common: &vllm-common
   logging: *logging-conf
 
 x-vllm-proxy-common: &vllm-proxy-common
-  image: nearaidev/vllm-proxy-rs@sha256:fe037f0061fc61fbdcf80efde534b8700f9f54f18b8a39e290263b3e1b0c00e1
+  image: nearaidev/vllm-proxy-rs@sha256:24536a0cee15835621fa3edea499b0cb148f6ee4f815e6296470984372cc3b64
   user: root
   privileged: true
   <<: *nvidia
@@ -119,21 +119,29 @@ services:
       - MODEL_NAME=Qwen/Qwen3.6-35B-A3B-NVFP4-X8
       - OHTTP_ENABLED=true
       - TOKEN=${PROXY_TOKEN}
+      - FUSION_ENABLED=${FUSION_ENABLED}
+      - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
       - VLLM_BACKEND_URLS=http://model-vllm-qwen36-nvfp4-1:8000,http://model-vllm-qwen36-nvfp4-2:8000,http://model-vllm-qwen36-nvfp4-3:8000,http://model-vllm-qwen36-nvfp4-4:8000,http://model-vllm-qwen36-nvfp4-5:8000,http://model-vllm-qwen36-nvfp4-6:8000,http://model-vllm-qwen36-nvfp4-7:8000,http://model-vllm-qwen36-nvfp4-8:8000
       - VLLM_PROXY_MAX_REQUEST_SIZE=104857600
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
+      - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
+      - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
     labels:
       com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:Qwen/Qwen3.6-35B-A3B-NVFP4-X8","precision:nvfp4","deployment:qwen36-nvfp4-x8-throughput","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "inference-proxy"
       nearai.otel.service: "vllm-proxy"
+      nearai.otel.source: "vllm-proxy"
+      nearai.otel.container_name: "vllm-proxy-qwen36-nvfp4-x8"
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "Qwen/Qwen3.6-35B-A3B-NVFP4-X8"
       nearai.otel.deployment: "qwen36-nvfp4-x8-throughput"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
   model-vllm-qwen36-nvfp4-1:
@@ -154,12 +162,16 @@ services:
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
+      nearai.otel.source: "vllm"
+      nearai.otel.container_name: "model-vllm-qwen36-nvfp4-1"
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "Qwen/Qwen3.6-35B-A3B-NVFP4-X8"
       nearai.otel.deployment: "qwen36-nvfp4-x8-throughput"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
   model-vllm-qwen36-nvfp4-2:
@@ -179,12 +191,16 @@ services:
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
+      nearai.otel.source: "vllm"
+      nearai.otel.container_name: "model-vllm-qwen36-nvfp4-2"
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "Qwen/Qwen3.6-35B-A3B-NVFP4-X8"
       nearai.otel.deployment: "qwen36-nvfp4-x8-throughput"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
   model-vllm-qwen36-nvfp4-3:
@@ -204,12 +220,16 @@ services:
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
+      nearai.otel.source: "vllm"
+      nearai.otel.container_name: "model-vllm-qwen36-nvfp4-3"
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "Qwen/Qwen3.6-35B-A3B-NVFP4-X8"
       nearai.otel.deployment: "qwen36-nvfp4-x8-throughput"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
   model-vllm-qwen36-nvfp4-4:
@@ -229,12 +249,16 @@ services:
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
+      nearai.otel.source: "vllm"
+      nearai.otel.container_name: "model-vllm-qwen36-nvfp4-4"
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "Qwen/Qwen3.6-35B-A3B-NVFP4-X8"
       nearai.otel.deployment: "qwen36-nvfp4-x8-throughput"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
   model-vllm-qwen36-nvfp4-5:
@@ -254,12 +278,16 @@ services:
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
+      nearai.otel.source: "vllm"
+      nearai.otel.container_name: "model-vllm-qwen36-nvfp4-5"
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "Qwen/Qwen3.6-35B-A3B-NVFP4-X8"
       nearai.otel.deployment: "qwen36-nvfp4-x8-throughput"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
   model-vllm-qwen36-nvfp4-6:
@@ -279,12 +307,16 @@ services:
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
+      nearai.otel.source: "vllm"
+      nearai.otel.container_name: "model-vllm-qwen36-nvfp4-6"
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "Qwen/Qwen3.6-35B-A3B-NVFP4-X8"
       nearai.otel.deployment: "qwen36-nvfp4-x8-throughput"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
   model-vllm-qwen36-nvfp4-7:
@@ -304,12 +336,16 @@ services:
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
+      nearai.otel.source: "vllm"
+      nearai.otel.container_name: "model-vllm-qwen36-nvfp4-7"
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "Qwen/Qwen3.6-35B-A3B-NVFP4-X8"
       nearai.otel.deployment: "qwen36-nvfp4-x8-throughput"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
   model-vllm-qwen36-nvfp4-8:
@@ -329,12 +365,16 @@ services:
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
+      nearai.otel.source: "vllm"
+      nearai.otel.container_name: "model-vllm-qwen36-nvfp4-8"
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "Qwen/Qwen3.6-35B-A3B-NVFP4-X8"
       nearai.otel.deployment: "qwen36-nvfp4-x8-throughput"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
   dcgm-qwen36-nvfp4-x8:
@@ -360,12 +400,16 @@ services:
       nearai.otel.scrape: "true"
       nearai.otel.job: "dcgm"
       nearai.otel.service: "dcgm-exporter"
+      nearai.otel.source: "dcgm-exporter"
+      nearai.otel.container_name: "dcgm-qwen36-nvfp4-x8"
       nearai.otel.port: "9400"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "Qwen/Qwen3.6-35B-A3B-NVFP4-X8"
       nearai.otel.deployment: "qwen36-nvfp4-x8-throughput"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
   otelcol-contrib:
@@ -507,11 +551,14 @@ configs:
                   - targets: ['model-vllm-qwen36-nvfp4-1:8000']
                     labels:
                       service: "vllm"
+                      source: "vllm"
                       container_name: "model-vllm-qwen36-nvfp4-1"
                       model: "Qwen/Qwen3.6-35B-A3B-NVFP4-X8"
                       deployment: "qwen36-nvfp4-x8-throughput"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "8000"
                       model_path: "nvidia/Qwen3.6-35B-A3B-NVFP4"
@@ -524,11 +571,14 @@ configs:
                   - targets: ['model-vllm-qwen36-nvfp4-2:8000']
                     labels:
                       service: "vllm"
+                      source: "vllm"
                       container_name: "model-vllm-qwen36-nvfp4-2"
                       model: "Qwen/Qwen3.6-35B-A3B-NVFP4-X8"
                       deployment: "qwen36-nvfp4-x8-throughput"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "8000"
                       model_path: "nvidia/Qwen3.6-35B-A3B-NVFP4"
@@ -541,11 +591,14 @@ configs:
                   - targets: ['model-vllm-qwen36-nvfp4-3:8000']
                     labels:
                       service: "vllm"
+                      source: "vllm"
                       container_name: "model-vllm-qwen36-nvfp4-3"
                       model: "Qwen/Qwen3.6-35B-A3B-NVFP4-X8"
                       deployment: "qwen36-nvfp4-x8-throughput"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "8000"
                       model_path: "nvidia/Qwen3.6-35B-A3B-NVFP4"
@@ -558,11 +611,14 @@ configs:
                   - targets: ['model-vllm-qwen36-nvfp4-4:8000']
                     labels:
                       service: "vllm"
+                      source: "vllm"
                       container_name: "model-vllm-qwen36-nvfp4-4"
                       model: "Qwen/Qwen3.6-35B-A3B-NVFP4-X8"
                       deployment: "qwen36-nvfp4-x8-throughput"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "8000"
                       model_path: "nvidia/Qwen3.6-35B-A3B-NVFP4"
@@ -575,11 +631,14 @@ configs:
                   - targets: ['model-vllm-qwen36-nvfp4-5:8000']
                     labels:
                       service: "vllm"
+                      source: "vllm"
                       container_name: "model-vllm-qwen36-nvfp4-5"
                       model: "Qwen/Qwen3.6-35B-A3B-NVFP4-X8"
                       deployment: "qwen36-nvfp4-x8-throughput"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "8000"
                       model_path: "nvidia/Qwen3.6-35B-A3B-NVFP4"
@@ -592,11 +651,14 @@ configs:
                   - targets: ['model-vllm-qwen36-nvfp4-6:8000']
                     labels:
                       service: "vllm"
+                      source: "vllm"
                       container_name: "model-vllm-qwen36-nvfp4-6"
                       model: "Qwen/Qwen3.6-35B-A3B-NVFP4-X8"
                       deployment: "qwen36-nvfp4-x8-throughput"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "8000"
                       model_path: "nvidia/Qwen3.6-35B-A3B-NVFP4"
@@ -609,11 +671,14 @@ configs:
                   - targets: ['model-vllm-qwen36-nvfp4-7:8000']
                     labels:
                       service: "vllm"
+                      source: "vllm"
                       container_name: "model-vllm-qwen36-nvfp4-7"
                       model: "Qwen/Qwen3.6-35B-A3B-NVFP4-X8"
                       deployment: "qwen36-nvfp4-x8-throughput"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "8000"
                       model_path: "nvidia/Qwen3.6-35B-A3B-NVFP4"
@@ -626,11 +691,14 @@ configs:
                   - targets: ['model-vllm-qwen36-nvfp4-8:8000']
                     labels:
                       service: "vllm"
+                      source: "vllm"
                       container_name: "model-vllm-qwen36-nvfp4-8"
                       model: "Qwen/Qwen3.6-35B-A3B-NVFP4-X8"
                       deployment: "qwen36-nvfp4-x8-throughput"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "8000"
                       model_path: "nvidia/Qwen3.6-35B-A3B-NVFP4"
@@ -643,11 +711,14 @@ configs:
                   - targets: ['dcgm-qwen36-nvfp4-x8:9400']
                     labels:
                       service: "dcgm-exporter"
+                      source: "dcgm-exporter"
                       container_name: "dcgm-qwen36-nvfp4-x8"
                       model: "Qwen/Qwen3.6-35B-A3B-NVFP4-X8"
                       deployment: "qwen36-nvfp4-x8-throughput"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "9400"
                       precision: "nvfp4"
@@ -658,11 +729,14 @@ configs:
                   - targets: ['vllm-proxy-qwen36-nvfp4-x8:8000']
                     labels:
                       service: "vllm-proxy"
+                      source: "vllm-proxy"
                       container_name: "vllm-proxy-qwen36-nvfp4-x8"
                       model: "Qwen/Qwen3.6-35B-A3B-NVFP4-X8"
                       deployment: "qwen36-nvfp4-x8-throughput"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "8000"
                       precision: "nvfp4"
@@ -707,6 +781,8 @@ configs:
                 - set(attributes["service.name"], attributes["attrs"]["com.docker.compose.service"]) where attributes["attrs"] != nil and attributes["attrs"]["com.docker.compose.service"] != nil
                 - set(attributes["service.name"], ParseJSON(attributes["attrs"]["com.datadoghq.ad.logs"])[0]["service"]) where attributes["attrs"] != nil and attributes["attrs"]["com.datadoghq.ad.logs"] != nil
                 - set(attributes["log.source"], ParseJSON(attributes["attrs"]["com.datadoghq.ad.logs"])[0]["source"]) where attributes["attrs"] != nil and attributes["attrs"]["com.datadoghq.ad.logs"] != nil
+                - set(attributes["service"], attributes["service.name"]) where attributes["attrs"] != nil and attributes["attrs"]["com.datadoghq.ad.logs"] != nil and attributes["service.name"] != nil
+                - set(attributes["source"], attributes["log.source"]) where attributes["attrs"] != nil and attributes["attrs"]["com.datadoghq.ad.logs"] != nil and attributes["log.source"] != nil
                 - set(attributes["container.name"], attributes["attrs"]["com.docker.compose.service"]) where attributes["attrs"] != nil and attributes["attrs"]["com.docker.compose.service"] != nil
 
         filter/app_logs:
@@ -723,8 +799,10 @@ configs:
         groupbyattrs/docker_service:
           keys:
             - service.name
+            - service
             - container.name
             - log.source
+            - source
             - log.iostream
             - model
             - model_path

@@ -27,7 +27,7 @@ x-vllm-common: &vllm-common
   logging: *logging-conf
 
 x-vllm-proxy-common: &vllm-proxy-common
-  image: nearaidev/vllm-proxy-rs@sha256:fe037f0061fc61fbdcf80efde534b8700f9f54f18b8a39e290263b3e1b0c00e1
+  image: nearaidev/vllm-proxy-rs@sha256:24536a0cee15835621fa3edea499b0cb148f6ee4f815e6296470984372cc3b64
   user: root
   privileged: true
   <<: *nvidia
@@ -68,6 +68,11 @@ x-gpt-oss-common: &gpt-oss-common
   # env={"GPT_OSS_CACHE_SUBPATH":"v3"} to /compose/up to force a fresh cache.
   # Default is "v2" because v1 (the original /root/.cache/vllm root) holds the
   # corrupted 1603e894a6/... artifact from a prior interrupted compile.
+  # --max-num-batched-tokens 16384 (was 8192): a ~13.8k-token prompt prefills in one chunk
+  # instead of two, packing more tokens/step into the MXFP4 MoE GEMM -> +2-4% throughput
+  # across the concurrency range on H200 (internal 12:1 serving sweep), no quality/stability
+  # change. MXFP4-via-Marlin (VLLM_MXFP4_USE_MARLIN=1) stays — benched fastest on this engine
+  # for the practical range; the Triton matmul_ogs default was slower and unstable at c>=16.
   command: >
       openai/gpt-oss-120b
       --revision b5c939de8f754692c1647ca79fbf85e8c1e70f8a
@@ -79,7 +84,7 @@ x-gpt-oss-common: &gpt-oss-common
       --tool-call-parser openai
       --enable-auto-tool-choice
       --max-model-len 128K
-      --max-num-batched-tokens 8192
+      --max-num-batched-tokens 16384
       --load-format runai_streamer
       --model-loader-extra-config '{"distributed":true, "concurrency":48}'
       --enable-prompt-tokens-details
@@ -176,6 +181,37 @@ x-flux-common: &flux-common
           - driver: nvidia
             device_ids: ["7"]
             capabilities: [gpu]
+
+x-gemma-4-31b-common: &gemma-4-31b-common
+  <<: *vllm-common
+  image: vllm/vllm-openai@sha256:953d3a06d5e64ab582985cd7401289d3abf2a2c14ef2158e9a84313daeec77d7
+  # Official Gemma 4 QAT compressed-tensors checkpoint. Each prod Gemma
+  # GPU now runs an independent TP1 replica and serves the existing model name.
+  command: >
+      google/gemma-4-31B-it-qat-w4a16-ct
+      --revision ca9d5250d08695be35f2d632b434938b6d4aecfe
+      --served-model-name google/gemma-4-31B-it
+      --tensor-parallel-size 1
+      --gpu-memory-utilization 0.80
+      --trust-remote-code
+      --tool-call-parser gemma4
+      --enable-auto-tool-choice
+      --allowed-media-domains ${VLLM_ALLOWED_MEDIA_DOMAINS:-prod-files-secure.s3.us-west-2.amazonaws.com}
+      --host 0.0.0.0
+      --port 8000
+  volumes:
+    - hugginface_cache:/root/.cache/huggingface
+    - vllm_cache:/root/.cache/vllm
+  environment:
+    - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+    - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0}
+    - VLLM_LOGGING_LEVEL=INFO
+    - VLLM_CACHE_ROOT=/root/.cache/vllm/gemma4-31b-qat-vllm
+    - VLLM_WORKER_MULTIPROC_METHOD=spawn
+    - VLLM_MEDIA_URL_ALLOW_REDIRECTS=0
+    - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    - OPENBLAS_L2_SIZE=2097152
+    - NCCL_DEBUG=WARN
 
 x-dcgm-common: &dcgm-common
   image: nvcr.io/nvidia/k8s/dcgm-exporter:4.5.2-4.8.1-distroless
@@ -470,20 +506,28 @@ services:
       - MODEL_NAME=openai/gpt-oss-120b
       - OHTTP_ENABLED=true
       - TOKEN=${PROXY_TOKEN}
+      - FUSION_ENABLED=${FUSION_ENABLED}
+      - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
       - VLLM_BACKEND_URLS=http://model-vllm-gpt-oss-1:8000,http://model-vllm-gpt-oss-2:8000,http://model-vllm-gpt-oss-3:8000
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
+      - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
+      - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
     labels:
       com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:openai/gpt-oss-120b","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8001"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "inference-proxy"
       nearai.otel.service: "vllm-proxy"
+      nearai.otel.source: "vllm-proxy"
+      nearai.otel.container_name: "proxy-gpt-oss"
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "openai/gpt-oss-120b"
       nearai.otel.deployment: "small-models"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
   model-vllm-gpt-oss-1:
@@ -504,12 +548,16 @@ services:
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
+      nearai.otel.source: "vllm"
+      nearai.otel.container_name: "model-vllm-gpt-oss-1"
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "openai/gpt-oss-120b"
       nearai.otel.deployment: "small-models"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
   model-vllm-gpt-oss-2:
@@ -530,12 +578,16 @@ services:
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
+      nearai.otel.source: "vllm"
+      nearai.otel.container_name: "model-vllm-gpt-oss-2"
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "openai/gpt-oss-120b"
       nearai.otel.deployment: "small-models"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
   # instance:3 — runs on GPU 0, freed by retiring Qwen/Qwen3-30B-A3B-Instruct-2507.
@@ -557,12 +609,16 @@ services:
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
+      nearai.otel.source: "vllm"
+      nearai.otel.container_name: "model-vllm-gpt-oss-3"
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "openai/gpt-oss-120b"
       nearai.otel.deployment: "small-models"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
   # --- Qwen3.6-35B-A3B-FP8 x2 (GPUs 1, 4) — SGLang, TP=1, EAGLE-v2 spec, single proxy multi-backend ---
@@ -579,20 +635,28 @@ services:
       - MODEL_NAME=Qwen/Qwen3.6-35B-A3B-FP8
       - OHTTP_ENABLED=true
       - TOKEN=${PROXY_TOKEN}
+      - FUSION_ENABLED=${FUSION_ENABLED}
+      - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
       - VLLM_BACKEND_URLS=http://model-sg-qwen3-6-35b-1:8000,http://model-sg-qwen3-6-35b-2:8000
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
+      - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
+      - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
     labels:
       com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:Qwen/Qwen3.6-35B-A3B-FP8","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8008"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "inference-proxy"
       nearai.otel.service: "vllm-proxy"
+      nearai.otel.source: "vllm-proxy"
+      nearai.otel.container_name: "proxy-qwen3-6-35b"
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "Qwen/Qwen3.6-35B-A3B-FP8"
       nearai.otel.deployment: "small-models"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
   model-sg-qwen3-6-35b-1:
@@ -613,12 +677,16 @@ services:
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
+      nearai.otel.source: "sglang"
+      nearai.otel.container_name: "model-sg-qwen3-6-35b-1"
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "Qwen/Qwen3.6-35B-A3B-FP8"
       nearai.otel.deployment: "small-models"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
   model-sg-qwen3-6-35b-2:
@@ -639,15 +707,19 @@ services:
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
+      nearai.otel.source: "sglang"
+      nearai.otel.container_name: "model-sg-qwen3-6-35b-2"
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "Qwen/Qwen3.6-35B-A3B-FP8"
       nearai.otel.deployment: "small-models"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
-  # --- Gemma-4-31B-it (GPUs 5-6 TP=2, BF16) — single instance, single proxy ---
+  # --- Gemma-4-31B-it QAT (GPUs 5-6) — vLLM 2xTP1 ---
 
   proxy-gemma-4-31b:
     <<: *vllm-proxy-common
@@ -661,101 +733,88 @@ services:
       - MODEL_NAME=google/gemma-4-31B-it
       - OHTTP_ENABLED=true
       - TOKEN=${PROXY_TOKEN}
-      - VLLM_BASE_URL=http://model-sg-gemma-4-31b:8000
+      - FUSION_ENABLED=${FUSION_ENABLED}
+      - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
+      - VLLM_BACKEND_URLS=http://model-vllm-gemma-4-31b-1:8000,http://model-vllm-gemma-4-31b-2:8000
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
+      - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
+      - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
     labels:
       com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:google/gemma-4-31B-it","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8009"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "inference-proxy"
       nearai.otel.service: "vllm-proxy"
+      nearai.otel.source: "vllm-proxy"
+      nearai.otel.container_name: "proxy-gemma-4-31b"
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "google/gemma-4-31B-it"
       nearai.otel.deployment: "small-models"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
-  model-sg-gemma-4-31b:
-    <<: *nvidia
-    init: true
-    # SGLang gemma4 build (CUDA 12.9). Switched off vLLM because vLLM was
-    # returning 500 for media-fetch failures (broken FB/YouTube URLs) and
-    # cloud-api was retrying them as transient errors. SGLang's gemma4 tag also
-    # auto-selects the Triton attention backend required for bidirectional
-    # image-token attention during prefill.
-    # https://lmsysorg.mintlify.app/cookbook/autoregressive/Google/Gemma4
-    image: lmsysorg/sglang:gemma4@sha256:87cecd3c9f4d17632c44b2d7cd1a20c50377c42b461d9ca39b153b4bb2b6e6ae
-    container_name: model-sg-gemma-4-31b
-    # The command wraps `sglang serve` in a shell that first hot-patches the
-    # transformers gemma4 image processor baked into the image. A bare
-    # `image.numpy()` on a CUDA tensor crashes multimodal (image) requests with
-    #   TypeError: can't convert cuda:0 device type tensor to numpy
-    # for inputs SGLang decodes to a GPU tensor (video data-URLs, broken image
-    # URLs, etc). `--disable-fast-image-processor` does NOT cover this path — the
-    # tensor is already on GPU upstream of that flag. `.cpu()` is a no-op on CPU
-    # tensors, so the patch is safe and idempotent. See nearai/infra#156.
-    command:
-      - /bin/sh
-      - -c
-      - |
-        BACKENDS=/usr/local/lib/python3.12/dist-packages/transformers/image_processing_backends.py
-        sed -i 's/image = image\.numpy()/image = image.cpu().numpy()/' "$$BACKENDS"
-        # Fail loud if the CUDA->numpy hotfix did not land (path moved, transformers
-        # bumped, or pattern changed) instead of silently serving the crashing build.
-        # Tolerates a future image that already ships the fixed form. See nearai/infra#156.
-        if ! grep -q 'image = image\.cpu()\.numpy()' "$$BACKENDS"; then
-          echo "FATAL: gemma4 CUDA->numpy patch not present in $$BACKENDS; refusing to start" >&2
-          exit 1
-        fi
-        exec sglang serve \
-          --model-path google/gemma-4-31B-it \
-          --revision ba74f5b6c647c0911554e50278d6f6f4477f9010 \
-          --tp 2 \
-          --tool-call-parser gemma4 \
-          --mem-fraction-static 0.85 \
-          --max-running-requests 64 \
-          --chunked-prefill-size 8192 \
-          --num-continuous-decode-steps 5 \
-          --enable-mixed-chunk \
-          --disable-fast-image-processor \
-          --model-loader-extra-config '{"enable_multithread_load": "true", "num_threads": 64}' \
-          --port 8000 \
-          --host 0.0.0.0 \
-          --enable-cache-report \
-          --enable-metrics \
-          --trust-remote-code \
-          --log-requests-level 0 \
-          --served-model-name google/gemma-4-31B-it
-    volumes:
-      - hugginface_cache:/root/.cache/huggingface
-      - kernel_cache:/root/.cache/deep_gemm
-    environment: *sglang-env
+  model-vllm-gemma-4-31b-1:
+    <<: *gemma-4-31b-common
+    container_name: model-vllm-gemma-4-31b-1
     deploy:
       resources:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["5","6"]
+              device_ids: ["5"]
               capabilities: [gpu]
-    restart: unless-stopped
-    stop_grace_period: 5m
-    logging: *logging-conf
     labels:
-      com.datadoghq.ad.check_names: '["openmetrics"]'
+      com.datadoghq.ad.check_names: '["vllm"]'
       com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:google/gemma-4-31B-it","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8009"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-sg-gemma-4-31b:8000/metrics", "histogram_buckets_as_distributions": true, "metrics":["sglang:*"], "service": "model-sg-gemma-4-31b", "tags":["model:google/gemma-4-31B-it","ip:${HOST_IP}", "port:8009"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:google/gemma-4-31B-it","model_path:google/gemma-4-31B-it-qat-w4a16-ct","precision:w4a16","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8009","instance:1"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-gemma-4-31b-1:8000/metrics", "histogram_buckets_as_distributions": true, "service": "model-vllm-gemma-4-31b-1", "tags":["model:google/gemma-4-31B-it","model_path:google/gemma-4-31B-it-qat-w4a16-ct","precision:w4a16","deployment:small-models","ip:${HOST_IP}","port:8009","instance:1"]}]'
       nearai.otel.scrape: "true"
-      nearai.otel.job: "sglang"
-      nearai.otel.service: "sglang"
+      nearai.otel.job: "vllm"
+      nearai.otel.service: "vllm"
+      nearai.otel.source: "vllm"
+      nearai.otel.container_name: "model-vllm-gemma-4-31b-1"
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "google/gemma-4-31B-it"
       nearai.otel.deployment: "small-models"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
+
+  model-vllm-gemma-4-31b-2:
+    <<: *gemma-4-31b-common
+    container_name: model-vllm-gemma-4-31b-2
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["6"]
+              capabilities: [gpu]
+    labels:
+      com.datadoghq.ad.check_names: '["vllm"]'
+      com.datadoghq.ad.init_configs: "[{}]"
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:google/gemma-4-31B-it","model_path:google/gemma-4-31B-it-qat-w4a16-ct","precision:w4a16","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8009","instance:2"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-gemma-4-31b-2:8000/metrics", "histogram_buckets_as_distributions": true, "service": "model-vllm-gemma-4-31b-2", "tags":["model:google/gemma-4-31B-it","model_path:google/gemma-4-31B-it-qat-w4a16-ct","precision:w4a16","deployment:small-models","ip:${HOST_IP}","port:8009","instance:2"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "vllm"
+      nearai.otel.service: "vllm"
+      nearai.otel.source: "vllm"
+      nearai.otel.container_name: "model-vllm-gemma-4-31b-2"
+      nearai.otel.port: "8000"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "google/gemma-4-31B-it"
+      nearai.otel.deployment: "small-models"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
   # --- FLUX x1 (GPU 7, shared with small models) ---
@@ -772,20 +831,28 @@ services:
       - MODEL_NAME=black-forest-labs/FLUX.2-klein-4B
       - OHTTP_ENABLED=true
       - TOKEN=${PROXY_TOKEN}
+      - FUSION_ENABLED=${FUSION_ENABLED}
+      - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
       - VLLM_BASE_URL=http://model-sg-flux-2-klein-4b-1:8000
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
+      - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
+      - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
     labels:
       com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:black-forest-labs/FLUX.2-klein-4B","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8002"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "inference-proxy"
       nearai.otel.service: "vllm-proxy"
+      nearai.otel.source: "vllm-proxy"
+      nearai.otel.container_name: "proxy-flux"
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "black-forest-labs/FLUX.2-klein-4B"
       nearai.otel.deployment: "small-models"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
   model-sg-flux-2-klein-4b-1:
@@ -799,12 +866,16 @@ services:
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
+      nearai.otel.source: "sglang"
+      nearai.otel.container_name: "model-sg-flux-2-klein-4b-1"
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "black-forest-labs/FLUX.2-klein-4B"
       nearai.otel.deployment: "small-models"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
   # --- Qwen3-VL FP8 (GPU 7, shared with small models) ---
@@ -821,20 +892,28 @@ services:
       - MODEL_NAME=Qwen/Qwen3-VL-30B-A3B-Instruct
       - OHTTP_ENABLED=true
       - TOKEN=${PROXY_TOKEN}
+      - FUSION_ENABLED=${FUSION_ENABLED}
+      - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
       - VLLM_BASE_URL=http://model-vllm-qwen3-vl:8000
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
+      - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
+      - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
     labels:
       com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:Qwen/Qwen3-VL-30B-A3B-Instruct","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8003"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "inference-proxy"
       nearai.otel.service: "vllm-proxy"
+      nearai.otel.source: "vllm-proxy"
+      nearai.otel.container_name: "proxy-qwen3-vl"
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "Qwen/Qwen3-VL-30B-A3B-Instruct"
       nearai.otel.deployment: "small-models"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
   model-vllm-qwen3-vl:
@@ -872,12 +951,16 @@ services:
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
+      nearai.otel.source: "vllm"
+      nearai.otel.container_name: "model-vllm-qwen3-vl"
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "Qwen/Qwen3-VL-30B-A3B-Instruct"
       nearai.otel.deployment: "small-models"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
   # --- Embeddings, Reranker, Whisper (GPU 7) — single instance each ---
@@ -894,20 +977,28 @@ services:
       - MODEL_NAME=Qwen/Qwen3-Embedding-0.6B
       - OHTTP_ENABLED=true
       - TOKEN=${PROXY_TOKEN}
+      - FUSION_ENABLED=${FUSION_ENABLED}
+      - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
       - VLLM_BASE_URL=http://model-vllm-qwen3-embeddings:8000
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
+      - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
+      - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
     labels:
       com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:Qwen/Qwen3-Embedding-0.6B","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8004"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "inference-proxy"
       nearai.otel.service: "vllm-proxy"
+      nearai.otel.source: "vllm-proxy"
+      nearai.otel.container_name: "proxy-qwen3-embeddings"
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "Qwen/Qwen3-Embedding-0.6B"
       nearai.otel.deployment: "small-models"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
   model-vllm-qwen3-embeddings:
@@ -938,12 +1029,16 @@ services:
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
+      nearai.otel.source: "vllm"
+      nearai.otel.container_name: "model-vllm-qwen3-embeddings"
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "Qwen/Qwen3-Embedding-0.6B"
       nearai.otel.deployment: "small-models"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
   proxy-qwen3-reranker:
@@ -958,20 +1053,28 @@ services:
       - MODEL_NAME=Qwen/Qwen3-Reranker-0.6B
       - OHTTP_ENABLED=true
       - TOKEN=${PROXY_TOKEN}
+      - FUSION_ENABLED=${FUSION_ENABLED}
+      - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
       - VLLM_BASE_URL=http://model-vllm-qwen3-reranker:8000
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
+      - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
+      - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
     labels:
       com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:Qwen/Qwen3-Reranker-0.6B","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8005"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "inference-proxy"
       nearai.otel.service: "vllm-proxy"
+      nearai.otel.source: "vllm-proxy"
+      nearai.otel.container_name: "proxy-qwen3-reranker"
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "Qwen/Qwen3-Reranker-0.6B"
       nearai.otel.deployment: "small-models"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
   model-vllm-qwen3-reranker:
@@ -1002,12 +1105,16 @@ services:
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
+      nearai.otel.source: "vllm"
+      nearai.otel.container_name: "model-vllm-qwen3-reranker"
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "Qwen/Qwen3-Reranker-0.6B"
       nearai.otel.deployment: "small-models"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
   proxy-whisper3-large:
@@ -1022,20 +1129,28 @@ services:
       - MODEL_NAME=openai/whisper-large-v3
       - OHTTP_ENABLED=true
       - TOKEN=${PROXY_TOKEN}
+      - FUSION_ENABLED=${FUSION_ENABLED}
+      - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
       - VLLM_BASE_URL=http://model-vllm-whisper3-large:8000
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
+      - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
+      - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
     labels:
       com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:openai/whisper-large-v3","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8006"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "inference-proxy"
       nearai.otel.service: "vllm-proxy"
+      nearai.otel.source: "vllm-proxy"
+      nearai.otel.container_name: "proxy-whisper3-large"
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "openai/whisper-large-v3"
       nearai.otel.deployment: "small-models"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
   model-vllm-whisper3-large:
@@ -1070,12 +1185,16 @@ services:
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
+      nearai.otel.source: "vllm"
+      nearai.otel.container_name: "model-vllm-whisper3-large"
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "openai/whisper-large-v3"
       nearai.otel.deployment: "small-models"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
   # --- Privacy filter (GPU 7) — HF transformers token-classification ---
@@ -1092,20 +1211,28 @@ services:
       - MODEL_NAME=openai/privacy-filter
       - OHTTP_ENABLED=true
       - TOKEN=${PROXY_TOKEN}
+      - FUSION_ENABLED=${FUSION_ENABLED}
+      - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
       - VLLM_BASE_URL=http://model-privacy-filter:8000
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
+      - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
+      - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
     labels:
       com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:openai/privacy-filter","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8007"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "inference-proxy"
       nearai.otel.service: "vllm-proxy"
+      nearai.otel.source: "vllm-proxy"
+      nearai.otel.container_name: "proxy-privacy-filter"
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "openai/privacy-filter"
       nearai.otel.deployment: "small-models"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
   model-privacy-filter:
@@ -1136,12 +1263,16 @@ services:
       nearai.otel.scrape: "true"
       nearai.otel.job: "dcgm"
       nearai.otel.service: "dcgm-exporter"
+      nearai.otel.source: "dcgm-exporter"
+      nearai.otel.container_name: "dcgm-gpt-oss"
       nearai.otel.port: "9400"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "openai/gpt-oss-120b"
       nearai.otel.deployment: "small-models"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
   dcgm-qwen3-6-35b:
@@ -1162,12 +1293,16 @@ services:
       nearai.otel.scrape: "true"
       nearai.otel.job: "dcgm"
       nearai.otel.service: "dcgm-exporter"
+      nearai.otel.source: "dcgm-exporter"
+      nearai.otel.container_name: "dcgm-qwen3-6-35b"
       nearai.otel.port: "9400"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "Qwen/Qwen3.6-35B-A3B-FP8"
       nearai.otel.deployment: "small-models"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
   dcgm-gemma-4-31b:
@@ -1188,12 +1323,16 @@ services:
       nearai.otel.scrape: "true"
       nearai.otel.job: "dcgm"
       nearai.otel.service: "dcgm-exporter"
+      nearai.otel.source: "dcgm-exporter"
+      nearai.otel.container_name: "dcgm-gemma-4-31b"
       nearai.otel.port: "9400"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "google/gemma-4-31B-it"
       nearai.otel.deployment: "small-models"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
   # GPU 7 is shared across FLUX, Qwen3-VL, embedding, reranker, whisper,
@@ -1218,12 +1357,16 @@ services:
       nearai.otel.scrape: "true"
       nearai.otel.job: "dcgm"
       nearai.otel.service: "dcgm-exporter"
+      nearai.otel.source: "dcgm-exporter"
+      nearai.otel.container_name: "dcgm-shared-gpu7"
       nearai.otel.port: "9400"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "shared"
       nearai.otel.deployment: "small-models"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
   otelcol-contrib:
@@ -1366,13 +1509,17 @@ configs:
                   - targets: ['model-vllm-gpt-oss-1:8000']
                     labels:
                       service: "vllm"
+                      source: "vllm"
                       container_name: "model-vllm-gpt-oss-1"
                       model: "openai/gpt-oss-120b"
                       deployment: "small-models"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "8001"
+                      instance: "1"
               - job_name: vllm-model-vllm-gpt-oss-2
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -1380,13 +1527,17 @@ configs:
                   - targets: ['model-vllm-gpt-oss-2:8000']
                     labels:
                       service: "vllm"
+                      source: "vllm"
                       container_name: "model-vllm-gpt-oss-2"
                       model: "openai/gpt-oss-120b"
                       deployment: "small-models"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "8001"
+                      instance: "2"
               - job_name: vllm-model-vllm-gpt-oss-3
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -1394,13 +1545,17 @@ configs:
                   - targets: ['model-vllm-gpt-oss-3:8000']
                     labels:
                       service: "vllm"
+                      source: "vllm"
                       container_name: "model-vllm-gpt-oss-3"
                       model: "openai/gpt-oss-120b"
                       deployment: "small-models"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "8001"
+                      instance: "3"
               - job_name: sglang-model-sg-qwen3-6-35b-1
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -1408,13 +1563,17 @@ configs:
                   - targets: ['model-sg-qwen3-6-35b-1:8000']
                     labels:
                       service: "sglang"
+                      source: "sglang"
                       container_name: "model-sg-qwen3-6-35b-1"
                       model: "Qwen/Qwen3.6-35B-A3B-FP8"
                       deployment: "small-models"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "8008"
+                      instance: "1"
               - job_name: sglang-model-sg-qwen3-6-35b-2
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -1422,27 +1581,57 @@ configs:
                   - targets: ['model-sg-qwen3-6-35b-2:8000']
                     labels:
                       service: "sglang"
+                      source: "sglang"
                       container_name: "model-sg-qwen3-6-35b-2"
                       model: "Qwen/Qwen3.6-35B-A3B-FP8"
                       deployment: "small-models"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "8008"
-              - job_name: sglang-model-sg-gemma-4-31b
+                      instance: "2"
+              - job_name: vllm-model-vllm-gemma-4-31b-1
                 scrape_interval: 15s
                 metrics_path: /metrics
                 static_configs:
-                  - targets: ['model-sg-gemma-4-31b:8000']
+                  - targets: ['model-vllm-gemma-4-31b-1:8000']
                     labels:
-                      service: "sglang"
-                      container_name: "model-sg-gemma-4-31b"
+                      service: "vllm"
+                      source: "vllm"
+                      container_name: "model-vllm-gemma-4-31b-1"
                       model: "google/gemma-4-31B-it"
                       deployment: "small-models"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "8009"
+                      model_path: "google/gemma-4-31B-it-qat-w4a16-ct"
+                      precision: "w4a16"
+                      instance: "1"
+              - job_name: vllm-model-vllm-gemma-4-31b-2
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['model-vllm-gemma-4-31b-2:8000']
+                    labels:
+                      service: "vllm"
+                      source: "vllm"
+                      container_name: "model-vllm-gemma-4-31b-2"
+                      model: "google/gemma-4-31B-it"
+                      deployment: "small-models"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      port: "8009"
+                      model_path: "google/gemma-4-31B-it-qat-w4a16-ct"
+                      precision: "w4a16"
+                      instance: "2"
               - job_name: sglang-model-sg-flux-2-klein-4b-1
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -1450,13 +1639,17 @@ configs:
                   - targets: ['model-sg-flux-2-klein-4b-1:8000']
                     labels:
                       service: "sglang"
+                      source: "sglang"
                       container_name: "model-sg-flux-2-klein-4b-1"
                       model: "black-forest-labs/FLUX.2-klein-4B"
                       deployment: "small-models"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "8002"
+                      instance: "1"
               - job_name: vllm-model-vllm-qwen3-vl
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -1464,11 +1657,14 @@ configs:
                   - targets: ['model-vllm-qwen3-vl:8000']
                     labels:
                       service: "vllm"
+                      source: "vllm"
                       container_name: "model-vllm-qwen3-vl"
                       model: "Qwen/Qwen3-VL-30B-A3B-Instruct"
                       deployment: "small-models"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "8003"
               - job_name: vllm-model-vllm-qwen3-embeddings
@@ -1478,11 +1674,14 @@ configs:
                   - targets: ['model-vllm-qwen3-embeddings:8000']
                     labels:
                       service: "vllm"
+                      source: "vllm"
                       container_name: "model-vllm-qwen3-embeddings"
                       model: "Qwen/Qwen3-Embedding-0.6B"
                       deployment: "small-models"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "8004"
               - job_name: vllm-model-vllm-qwen3-reranker
@@ -1492,11 +1691,14 @@ configs:
                   - targets: ['model-vllm-qwen3-reranker:8000']
                     labels:
                       service: "vllm"
+                      source: "vllm"
                       container_name: "model-vllm-qwen3-reranker"
                       model: "Qwen/Qwen3-Reranker-0.6B"
                       deployment: "small-models"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "8005"
               - job_name: vllm-model-vllm-whisper3-large
@@ -1506,11 +1708,14 @@ configs:
                   - targets: ['model-vllm-whisper3-large:8000']
                     labels:
                       service: "vllm"
+                      source: "vllm"
                       container_name: "model-vllm-whisper3-large"
                       model: "openai/whisper-large-v3"
                       deployment: "small-models"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "8006"
               - job_name: dcgm-dcgm-gpt-oss
@@ -1520,11 +1725,14 @@ configs:
                   - targets: ['dcgm-gpt-oss:9400']
                     labels:
                       service: "dcgm-exporter"
+                      source: "dcgm-exporter"
                       container_name: "dcgm-gpt-oss"
                       model: "openai/gpt-oss-120b"
                       deployment: "small-models"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "9400"
               - job_name: dcgm-dcgm-qwen3-6-35b
@@ -1534,11 +1742,14 @@ configs:
                   - targets: ['dcgm-qwen3-6-35b:9400']
                     labels:
                       service: "dcgm-exporter"
+                      source: "dcgm-exporter"
                       container_name: "dcgm-qwen3-6-35b"
                       model: "Qwen/Qwen3.6-35B-A3B-FP8"
                       deployment: "small-models"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "9400"
               - job_name: dcgm-dcgm-gemma-4-31b
@@ -1548,11 +1759,14 @@ configs:
                   - targets: ['dcgm-gemma-4-31b:9400']
                     labels:
                       service: "dcgm-exporter"
+                      source: "dcgm-exporter"
                       container_name: "dcgm-gemma-4-31b"
                       model: "google/gemma-4-31B-it"
                       deployment: "small-models"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "9400"
               - job_name: dcgm-dcgm-shared-gpu7
@@ -1562,11 +1776,14 @@ configs:
                   - targets: ['dcgm-shared-gpu7:9400']
                     labels:
                       service: "dcgm-exporter"
+                      source: "dcgm-exporter"
                       container_name: "dcgm-shared-gpu7"
                       model: "shared"
                       deployment: "small-models"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "9400"
               - job_name: inference-proxy-proxy-gpt-oss
@@ -1576,11 +1793,14 @@ configs:
                   - targets: ['proxy-gpt-oss:8000']
                     labels:
                       service: "vllm-proxy"
+                      source: "vllm-proxy"
                       container_name: "proxy-gpt-oss"
                       model: "openai/gpt-oss-120b"
                       deployment: "small-models"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "8001"
               - job_name: inference-proxy-proxy-qwen3-6-35b
@@ -1590,11 +1810,14 @@ configs:
                   - targets: ['proxy-qwen3-6-35b:8000']
                     labels:
                       service: "vllm-proxy"
+                      source: "vllm-proxy"
                       container_name: "proxy-qwen3-6-35b"
                       model: "Qwen/Qwen3.6-35B-A3B-FP8"
                       deployment: "small-models"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "8008"
               - job_name: inference-proxy-proxy-gemma-4-31b
@@ -1604,11 +1827,14 @@ configs:
                   - targets: ['proxy-gemma-4-31b:8000']
                     labels:
                       service: "vllm-proxy"
+                      source: "vllm-proxy"
                       container_name: "proxy-gemma-4-31b"
                       model: "google/gemma-4-31B-it"
                       deployment: "small-models"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "8009"
               - job_name: inference-proxy-proxy-flux
@@ -1618,11 +1844,14 @@ configs:
                   - targets: ['proxy-flux:8000']
                     labels:
                       service: "vllm-proxy"
+                      source: "vllm-proxy"
                       container_name: "proxy-flux"
                       model: "black-forest-labs/FLUX.2-klein-4B"
                       deployment: "small-models"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "8002"
               - job_name: inference-proxy-proxy-qwen3-vl
@@ -1632,11 +1861,14 @@ configs:
                   - targets: ['proxy-qwen3-vl:8000']
                     labels:
                       service: "vllm-proxy"
+                      source: "vllm-proxy"
                       container_name: "proxy-qwen3-vl"
                       model: "Qwen/Qwen3-VL-30B-A3B-Instruct"
                       deployment: "small-models"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "8003"
               - job_name: inference-proxy-proxy-qwen3-embeddings
@@ -1646,11 +1878,14 @@ configs:
                   - targets: ['proxy-qwen3-embeddings:8000']
                     labels:
                       service: "vllm-proxy"
+                      source: "vllm-proxy"
                       container_name: "proxy-qwen3-embeddings"
                       model: "Qwen/Qwen3-Embedding-0.6B"
                       deployment: "small-models"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "8004"
               - job_name: inference-proxy-proxy-qwen3-reranker
@@ -1660,11 +1895,14 @@ configs:
                   - targets: ['proxy-qwen3-reranker:8000']
                     labels:
                       service: "vllm-proxy"
+                      source: "vllm-proxy"
                       container_name: "proxy-qwen3-reranker"
                       model: "Qwen/Qwen3-Reranker-0.6B"
                       deployment: "small-models"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "8005"
               - job_name: inference-proxy-proxy-whisper3-large
@@ -1674,11 +1912,14 @@ configs:
                   - targets: ['proxy-whisper3-large:8000']
                     labels:
                       service: "vllm-proxy"
+                      source: "vllm-proxy"
                       container_name: "proxy-whisper3-large"
                       model: "openai/whisper-large-v3"
                       deployment: "small-models"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "8006"
               - job_name: inference-proxy-proxy-privacy-filter
@@ -1688,11 +1929,14 @@ configs:
                   - targets: ['proxy-privacy-filter:8000']
                     labels:
                       service: "vllm-proxy"
+                      source: "vllm-proxy"
                       container_name: "proxy-privacy-filter"
                       model: "openai/privacy-filter"
                       deployment: "small-models"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "8007"
 
@@ -1736,6 +1980,8 @@ configs:
                 - set(attributes["service.name"], attributes["attrs"]["com.docker.compose.service"]) where attributes["attrs"] != nil and attributes["attrs"]["com.docker.compose.service"] != nil
                 - set(attributes["service.name"], ParseJSON(attributes["attrs"]["com.datadoghq.ad.logs"])[0]["service"]) where attributes["attrs"] != nil and attributes["attrs"]["com.datadoghq.ad.logs"] != nil
                 - set(attributes["log.source"], ParseJSON(attributes["attrs"]["com.datadoghq.ad.logs"])[0]["source"]) where attributes["attrs"] != nil and attributes["attrs"]["com.datadoghq.ad.logs"] != nil
+                - set(attributes["service"], attributes["service.name"]) where attributes["attrs"] != nil and attributes["attrs"]["com.datadoghq.ad.logs"] != nil and attributes["service.name"] != nil
+                - set(attributes["source"], attributes["log.source"]) where attributes["attrs"] != nil and attributes["attrs"]["com.datadoghq.ad.logs"] != nil and attributes["log.source"] != nil
                 - set(attributes["container.name"], attributes["attrs"]["com.docker.compose.service"]) where attributes["attrs"] != nil and attributes["attrs"]["com.docker.compose.service"] != nil
 
         filter/app_logs:
@@ -1752,8 +1998,10 @@ configs:
         groupbyattrs/docker_service:
           keys:
             - service.name
+            - service
             - container.name
             - log.source
+            - source
             - log.iostream
             - model
             - model_path
@@ -1875,7 +2123,10 @@ configs:
           8006) curl -sf --max-time 10 "http://model-vllm-whisper3-large:8000/v1/models" > /dev/null 2>&1 ;;
           8007) curl -sf --max-time 10 "http://model-privacy-filter:8000/v1/models" > /dev/null 2>&1 ;;
           8008) check_chat model-sg-qwen3-6-35b-1 "Qwen/Qwen3.6-35B-A3B-FP8" ;;
-          8009) check_chat model-sg-gemma-4-31b "google/gemma-4-31B-it" ;;
+          8009)
+            check_chat model-vllm-gemma-4-31b-1 "google/gemma-4-31B-it" &&
+            check_chat model-vllm-gemma-4-31b-2 "google/gemma-4-31B-it"
+            ;;
         esac
       }
 
