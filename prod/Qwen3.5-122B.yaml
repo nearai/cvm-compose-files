@@ -89,6 +89,60 @@ x-sg-qwen35-122b-common: &sg-qwen35-122b-common
   stop_grace_period: 5m
   logging: *logging-conf
 
+x-dcgm-common: &dcgm-common
+  image: nvcr.io/nvidia/k8s/dcgm-exporter:4.5.2-4.8.1-distroless
+  runtime: nvidia
+  cap_add:
+    - SYS_ADMIN
+  restart: unless-stopped
+  logging: *logging-conf
+
+x-dsv4-flash-common: &dsv4-flash-common
+  <<: *nvidia
+  init: true
+  # DeepSeek-V4-Flash uses the current production FP4/SGLang TP=2 path from
+  # prod/dsv4-qwen36-gemma4.yaml. Replaces the second Qwen3.5 TP4 replica on
+  # GPUs 4-7 with two DeepSeek replicas, each consuming two H200 GPUs.
+  image: lmsysorg/sglang@sha256:1c64fde976bdf0d56474a30bccbcfc19667e5b3ab34c826a534c9d6aaca41212  # 0.5.13.post1
+  command: >
+      sglang serve
+      --trust-remote-code
+      --model-path deepseek-ai/DeepSeek-V4-Flash
+      --revision 553034d7dd9e06c2eeaee68cf85a17d6d4754cf0
+      --tp 2
+      --moe-runner-backend marlin
+      --cuda-graph-max-bs 64
+      --mem-fraction-static 0.83
+      --max-running-requests 64
+      --schedule-conservativeness 1.3
+      --disable-custom-all-reduce
+      --tool-call-parser deepseekv4
+      --reasoning-parser deepseek-v4
+      --port 8000
+      --host 0.0.0.0
+      --enable-cache-report
+      --enable-metrics
+      --log-requests-level 0
+      --served-model-name deepseek-ai/DeepSeek-V4-Flash
+      ${DSV4_RETURN_HIDDEN_STATES:+--enable-return-hidden-states}
+  volumes:
+    - huggingface_cache:/root/.cache/huggingface
+    - kernel_cache:/root/.cache/deep_gemm
+  environment:
+    - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+    - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0}
+    - VLLM_LOGGING_LEVEL=INFO
+    - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    - OPENBLAS_L2_SIZE=2097152
+    - NCCL_DEBUG=WARN
+    - SGLANG_ENABLE_SPEC_V2=1
+    - SGLANG_DSV4_FP4_EXPERTS=1
+    - SGLANG_ENABLE_UNIFIED_RADIX_TREE=1
+    - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+  restart: unless-stopped
+  stop_grace_period: 5m
+  logging: *logging-conf
+
 services:
   model-downloader:
     image: ghcr.io/astral-sh/uv:python3.11-bookworm-slim@sha256:4f5d923c9dcea037f57bda425dd209f3ec643da2f0b74227f68d09dab0b3bb36
@@ -100,6 +154,8 @@ services:
         set -e
         echo "Downloading Qwen/Qwen3.5-122B-A10B-FP8..."
         uvx --from 'huggingface_hub[hf_xet]' hf download Qwen/Qwen3.5-122B-A10B-FP8 --revision a099dee70ccfcd8d5dda56aaa0b60cb8ecadabc9
+        echo "Downloading deepseek-ai/DeepSeek-V4-Flash..."
+        uvx --from 'huggingface_hub[hf_xet]' hf download deepseek-ai/DeepSeek-V4-Flash --revision 553034d7dd9e06c2eeaee68cf85a17d6d4754cf0
         echo "Download complete."
     volumes:
       - huggingface_cache:/root/.cache/huggingface
@@ -112,9 +168,13 @@ services:
   proxy-nginx:
     image: nginx@sha256:1d13701a5f9f3fb01aaa88cef2344d65b6b5bf6b7d9fa4cf0dca557a8d7702ba
     container_name: proxy-nginx
+    depends_on:
+      - proxy-qwen35
+      - vllm-proxy-dsv4-flash
     command: /bin/sh -c 'while :; do sleep 6h; nginx -s reload; done & nginx -g "daemon off;"'
     ports:
       - "8000:80"
+      - "8001:8001"
       - "8444:443"
     volumes:
       - certs:/etc/letsencrypt:ro
@@ -154,7 +214,7 @@ services:
     labels:
       com.datadoghq.ad.logs: '[{"source":"model-proxy-registrar","service":"model-proxy-registrar","tags":["model:Qwen/Qwen3.5-122B-A10B","deployment:Qwen3.5-122B","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
 
-  # --- Single proxy for both backends ---
+  # --- Qwen3.5-122B-A10B proxy (remaining backend on GPUs 0-3) ---
 
   proxy-qwen35:
     <<: *vllm-proxy-common
@@ -170,7 +230,7 @@ services:
       - TOKEN=${PROXY_TOKEN}
       - FUSION_ENABLED=${FUSION_ENABLED}
       - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
-      - VLLM_BACKEND_URLS=http://model-sg-qwen35-122b-1:8000,http://model-sg-qwen35-122b-2:8000
+      - VLLM_BASE_URL=http://model-sg-qwen35-122b-1:8000
       - VLLM_PROXY_MAX_REQUEST_SIZE=104857600
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
@@ -228,11 +288,48 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
-  # --- Qwen3.5-122B-A10B instance 2 (GPUs 4-7) ---
+  # --- DeepSeek-V4-Flash proxy (2 replicas on GPUs 4-7) ---
 
-  model-sg-qwen35-122b-2:
-    <<: *sg-qwen35-122b-common
-    container_name: model-sg-qwen35-122b-2
+  vllm-proxy-dsv4-flash:
+    <<: *vllm-proxy-common
+    container_name: vllm-proxy-dsv4-flash
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - CLOUD_API_URL=https://cloud-api.near.ai
+      - CLOUD_API_USAGE_TOKEN=${CLOUD_API_USAGE_TOKEN}
+      - COMPOSE_MANAGER_URL=http://compose-manager:8080
+      - LOG_FORMAT=json
+      - MODEL_NAME=deepseek-ai/DeepSeek-V4-Flash
+      - OHTTP_ENABLED=true
+      - TOKEN=${PROXY_TOKEN}
+      - FUSION_ENABLED=${FUSION_ENABLED}
+      - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
+      - VLLM_BACKEND_URLS=http://vllm-dsv4-flash-1:8000,http://vllm-dsv4-flash-2:8000
+      - VLLM_PROXY_MAX_REQUEST_SIZE=104857600
+      - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
+      - USE_NV_ATTESTATION_SDK=true
+      - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
+      - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:deepseek-ai/DeepSeek-V4-Flash","deployment:Qwen3.5-122B","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8001"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "inference-proxy"
+      nearai.otel.service: "vllm-proxy"
+      nearai.otel.source: "vllm-proxy"
+      nearai.otel.container_name: "vllm-proxy-dsv4-flash"
+      nearai.otel.port: "8000"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "deepseek-ai/DeepSeek-V4-Flash"
+      nearai.otel.deployment: "Qwen3.5-122B"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
+
+  vllm-dsv4-flash-1:
+    <<: *dsv4-flash-common
+    container_name: vllm-dsv4-flash-1
     depends_on:
       model-downloader:
         condition: service_completed_successfully
@@ -241,21 +338,21 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["4","5","6","7"]
+              device_ids: ["4","5"]
               capabilities: [gpu]
     labels:
       com.datadoghq.ad.check_names: '["openmetrics"]'
       com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:Qwen/Qwen3.5-122B-A10B","deployment:Qwen3.5-122B","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8001","instance:2"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-sg-qwen35-122b-2:8000/metrics", "metrics":["sglang:*"], "histogram_buckets_as_distributions": true, "service": "qwen35-2", "tags":["model:Qwen/Qwen3.5-122B-A10B","ip:${HOST_IP}","port:8001"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:deepseek-ai/DeepSeek-V4-Flash","deployment:Qwen3.5-122B","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8001","instance:1"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-dsv4-flash-1:8000/metrics", "metrics":["sglang:*"], "histogram_buckets_as_distributions": true, "service": "vllm-dsv4-flash-1", "tags":["model:deepseek-ai/DeepSeek-V4-Flash","ip:${HOST_IP}","port:8001"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
       nearai.otel.source: "sglang"
-      nearai.otel.container_name: "model-sg-qwen35-122b-2"
+      nearai.otel.container_name: "vllm-dsv4-flash-1"
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
-      nearai.otel.model: "Qwen/Qwen3.5-122B-A10B"
+      nearai.otel.model: "deepseek-ai/DeepSeek-V4-Flash"
       nearai.otel.deployment: "Qwen3.5-122B"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
@@ -263,25 +360,49 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
-  dcgm-exporter:
-    image: nvcr.io/nvidia/k8s/dcgm-exporter:4.5.2-4.8.1-distroless
-    container_name: dcgm-exporter
-    runtime: nvidia
-    cap_add:
-      - SYS_ADMIN
-    environment:
-      - NVIDIA_VISIBLE_DEVICES=all
-    ports:
-      - "9400:9400"
+  vllm-dsv4-flash-2:
+    <<: *dsv4-flash-common
+    container_name: vllm-dsv4-flash-2
+    depends_on:
+      model-downloader:
+        condition: service_completed_successfully
     deploy:
       resources:
         reservations:
           devices:
             - driver: nvidia
-              count: all
+              device_ids: ["6","7"]
               capabilities: [gpu]
-    restart: unless-stopped
-    logging: *logging-conf
+    labels:
+      com.datadoghq.ad.check_names: '["openmetrics"]'
+      com.datadoghq.ad.init_configs: "[{}]"
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:deepseek-ai/DeepSeek-V4-Flash","deployment:Qwen3.5-122B","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8001","instance:2"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-dsv4-flash-2:8000/metrics", "metrics":["sglang:*"], "histogram_buckets_as_distributions": true, "service": "vllm-dsv4-flash-2", "tags":["model:deepseek-ai/DeepSeek-V4-Flash","ip:${HOST_IP}","port:8001"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "sglang"
+      nearai.otel.service: "sglang"
+      nearai.otel.source: "sglang"
+      nearai.otel.container_name: "vllm-dsv4-flash-2"
+      nearai.otel.port: "8000"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "deepseek-ai/DeepSeek-V4-Flash"
+      nearai.otel.deployment: "Qwen3.5-122B"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
+
+  dcgm-qwen35-122b:
+    <<: *dcgm-common
+    container_name: dcgm-qwen35-122b
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["0","1","2","3"]
+              capabilities: [gpu]
     labels:
       com.datadoghq.ad.check_names: '["dcgm"]'
       com.datadoghq.ad.init_configs: "[{}]"
@@ -291,10 +412,40 @@ services:
       nearai.otel.job: "dcgm"
       nearai.otel.service: "dcgm-exporter"
       nearai.otel.source: "dcgm-exporter"
-      nearai.otel.container_name: "dcgm-exporter"
+      nearai.otel.container_name: "dcgm-qwen35-122b"
       nearai.otel.port: "9400"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "Qwen/Qwen3.5-122B-A10B"
+      nearai.otel.deployment: "Qwen3.5-122B"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
+
+  dcgm-dsv4-flash:
+    <<: *dcgm-common
+    container_name: dcgm-dsv4-flash
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["4","5","6","7"]
+              capabilities: [gpu]
+    labels:
+      com.datadoghq.ad.check_names: '["dcgm"]'
+      com.datadoghq.ad.init_configs: "[{}]"
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint": "http://%%host%%:9400/metrics", "tags":["model:deepseek-ai/DeepSeek-V4-Flash","deployment:Qwen3.5-122B","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:deepseek-ai/DeepSeek-V4-Flash","deployment:Qwen3.5-122B","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "dcgm"
+      nearai.otel.service: "dcgm-exporter"
+      nearai.otel.source: "dcgm-exporter"
+      nearai.otel.container_name: "dcgm-dsv4-flash"
+      nearai.otel.port: "9400"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "deepseek-ai/DeepSeek-V4-Flash"
       nearai.otel.deployment: "Qwen3.5-122B"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
@@ -452,16 +603,34 @@ configs:
                       ip: "${HOST_IP}"
                       port: "8000"
                       instance: "1"
-              - job_name: sglang-model-sg-qwen35-122b-2
+              - job_name: sglang-vllm-dsv4-flash-1
                 scrape_interval: 15s
                 metrics_path: /metrics
                 static_configs:
-                  - targets: ['model-sg-qwen35-122b-2:8000']
+                  - targets: ['vllm-dsv4-flash-1:8000']
                     labels:
                       service: "sglang"
                       source: "sglang"
-                      container_name: "model-sg-qwen35-122b-2"
-                      model: "Qwen/Qwen3.5-122B-A10B"
+                      container_name: "vllm-dsv4-flash-1"
+                      model: "deepseek-ai/DeepSeek-V4-Flash"
+                      deployment: "Qwen3.5-122B"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      port: "8001"
+                      instance: "1"
+              - job_name: sglang-vllm-dsv4-flash-2
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['vllm-dsv4-flash-2:8000']
+                    labels:
+                      service: "sglang"
+                      source: "sglang"
+                      container_name: "vllm-dsv4-flash-2"
+                      model: "deepseek-ai/DeepSeek-V4-Flash"
                       deployment: "Qwen3.5-122B"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
@@ -470,16 +639,33 @@ configs:
                       ip: "${HOST_IP}"
                       port: "8001"
                       instance: "2"
-              - job_name: dcgm-dcgm-exporter
+              - job_name: dcgm-dcgm-qwen35-122b
                 scrape_interval: 15s
                 metrics_path: /metrics
                 static_configs:
-                  - targets: ['dcgm-exporter:9400']
+                  - targets: ['dcgm-qwen35-122b:9400']
                     labels:
                       service: "dcgm-exporter"
                       source: "dcgm-exporter"
-                      container_name: "dcgm-exporter"
+                      container_name: "dcgm-qwen35-122b"
                       model: "Qwen/Qwen3.5-122B-A10B"
+                      deployment: "Qwen3.5-122B"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      port: "9400"
+              - job_name: dcgm-dcgm-dsv4-flash
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['dcgm-dsv4-flash:9400']
+                    labels:
+                      service: "dcgm-exporter"
+                      source: "dcgm-exporter"
+                      container_name: "dcgm-dsv4-flash"
+                      model: "deepseek-ai/DeepSeek-V4-Flash"
                       deployment: "Qwen3.5-122B"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
@@ -504,6 +690,23 @@ configs:
                       cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "8000"
+              - job_name: inference-proxy-vllm-proxy-dsv4-flash
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['vllm-proxy-dsv4-flash:8000']
+                    labels:
+                      service: "vllm-proxy"
+                      source: "vllm-proxy"
+                      container_name: "vllm-proxy-dsv4-flash"
+                      model: "deepseek-ai/DeepSeek-V4-Flash"
+                      deployment: "Qwen3.5-122B"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      port: "8001"
 
         prometheus/self:
           config:
@@ -632,72 +835,58 @@ configs:
       #!/bin/sh
       PROXY_URL="https://completions.near.ai"
       TOKEN="$${MODEL_PROXY_TOKEN}"
-      ENDPOINT="$${HOST_IP}:$${HTTP_PORT}"
-      REGISTERED=false
-      FAILURE_COUNT=0
       MAX_RETRIES=3
 
+      for port in 8000 8001; do
+        eval "REG_$$port=false"
+        eval "FAIL_COUNT_$$port=0"
+      done
+
       register_endpoint() {
-        echo "Registering endpoint $$1 with routing port $$2"
         curl -sS --max-time 10 -X POST "$$PROXY_URL/register/endpoint" \
           -H "Authorization: Bearer $$TOKEN" \
           -H "Content-Type: application/json" \
-          -d "{\"endpoint\":\"$$1\",\"routing_port\":$$2}"
+          -d "{\"endpoint\":\"$$1\",\"routing_port\":$${TLS_PORT}}" || true
       }
 
       unregister_endpoint() {
-        echo "Unregistering endpoint $$1"
         curl -sS --max-time 10 -X POST "$$PROXY_URL/unregister/endpoint" \
           -H "Authorization: Bearer $$TOKEN" \
           -H "Content-Type: application/json" \
-          -d "{\"endpoint\":\"$$1\"}"
+          -d "{\"endpoint\":\"$$1\"}" || true
       }
 
       register_model() {
         curl -sS --max-time 10 -X POST "$$PROXY_URL/register/model" \
           -H "Authorization: Bearer $$TOKEN" \
           -H "Content-Type: application/json" \
-          -d "{\"model\":\"$$1\",\"domain\":\"$$2\"}"
+          -d "{\"model\":\"$$1\",\"domain\":\"$$2\"}" || true
       }
 
       cleanup() {
-        echo "SIGTERM received, unregistering $$ENDPOINT"
-        unregister_endpoint "$$ENDPOINT"
-        REGISTERED=false
+        echo "SIGTERM received, unregistering all endpoints"
+        for port in 8000 8001; do
+          unregister_endpoint "$${HOST_IP}:$$port"
+        done
         exit 0
       }
       trap cleanup TERM INT
 
-      mark_registered() {
-        register_endpoint "$$ENDPOINT" "$${TLS_PORT}"
-        register_model "Qwen/Qwen3.5-122B-A10B" "qwen35-122b.completions.near.ai"
-        if [ "$$REGISTERED" = false ]; then
-          echo "[Qwen3.5-122B] Registered Qwen/Qwen3.5-122B-A10B at $$ENDPOINT"
-        fi
-        REGISTERED=true
-      }
-
-      # Health check directly on backend (no auth needed on raw sglang container).
-      # Return codes:
-      #   0: backend accepted the probe
-      #   2: backend is alive but saturated/backpressuring new requests
-      #   1: backend appears unhealthy/unreachable
-      check_inference() {
-        echo "Performing health check on backend..."
+      check_chat() {
         status=$$(curl -sS --connect-timeout 10 --max-time 45 -o /dev/null -w "%{http_code}" \
-          -X POST "http://model-sg-qwen35-122b-1:8000/v1/chat/completions" \
+          -X POST "http://$$1:8000/v1/chat/completions" \
           -H "Content-Type: application/json" \
-          -d '{"model":"Qwen/Qwen3.5-122B-A10B","messages":[{"role":"user","content":"hi"}],"max_tokens":1}')
+          -d "{\"model\":\"$$2\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":1}")
         curl_status=$$?
 
         if [ "$$curl_status" -ne 0 ]; then
           case "$$curl_status" in
             52|56)
-              echo "[Qwen3.5-122B] Health probe hit connection-level backpressure (curl $$curl_status); treating as alive but saturated"
-              return 2
+              echo "[$$2] Health probe hit connection-level backpressure (curl $$curl_status); treating as alive but saturated"
+              return 0
               ;;
           esac
-          echo "[Qwen3.5-122B] Health probe curl failed with status $$curl_status"
+          echo "[$$2] Health probe curl failed with status $$curl_status"
           return 1
         fi
 
@@ -706,12 +895,22 @@ configs:
             return 0
             ;;
           503)
-            echo "[Qwen3.5-122B] Backend returned 503; treating as alive but saturated"
-            return 2
+            echo "[$$2] Backend returned 503; treating as alive but saturated"
+            return 0
             ;;
           *)
-            echo "[Qwen3.5-122B] Backend returned HTTP $$status"
+            echo "[$$2] Backend returned HTTP $$status"
             return 1
+            ;;
+        esac
+      }
+
+      check_port() {
+        case $$1 in
+          8000) check_chat model-sg-qwen35-122b-1 "Qwen/Qwen3.5-122B-A10B" ;;
+          8001)
+            check_chat vllm-dsv4-flash-1 "deepseek-ai/DeepSeek-V4-Flash" &&
+            check_chat vllm-dsv4-flash-2 "deepseek-ai/DeepSeek-V4-Flash"
             ;;
         esac
       }
@@ -719,51 +918,53 @@ configs:
       # Probe the host-published nginx port via HOST_IP instead of the
       # "proxy-nginx" compose DNS name. A stale/abandoned docker service-name
       # resolution (e.g. after proxy-nginx is recreated) otherwise wedges this
-      # readiness gate forever and silently drops the model to 0 backends.
+      # readiness gate forever and silently drops every model to 0 backends.
       # Bounded + loud so a persistent probe failure falls through to the
       # registration loop (which health-checks each backend directly) instead
       # of hanging here forever. See cvm-compose-files#57.
       READY_URL="http://$${HOST_IP}:8000/v1/models"
-      echo "Waiting for model to be ready (probing $$READY_URL)..."
+      echo "Waiting for first model to be ready (probing $$READY_URL)..."
       ready_attempts=0
       until curl --connect-timeout 5 --max-time 10 -sf "$$READY_URL" > /dev/null 2>&1; do
         ready_attempts=$$((ready_attempts + 1))
         if [ "$$ready_attempts" -ge 30 ]; then
-          echo "WARN: model not reachable at $$READY_URL after $$ready_attempts attempts (~20m); entering registration loop anyway (each backend is health-checked directly before registering)"
+          echo "WARN: first model not reachable at $$READY_URL after $$ready_attempts attempts (~20m); entering registration loop anyway (each backend is health-checked directly before registering)"
           break
         fi
-        echo "Model not ready yet (attempt $$ready_attempts/30), retrying in 30s..."
+        echo "First model not ready yet (attempt $$ready_attempts/30), retrying in 30s..."
         sleep 30
       done
-      echo "Model ready, starting registration loop"
+      echo "First model ready, starting registration loop"
 
       while true; do
-        # Liveness marker for the container healthcheck (see service def).
-        date +%s > /tmp/registrar_alive
-        check_inference
-        health_status=$$?
-        case "$$health_status" in
-          0)
-            FAILURE_COUNT=0
-            mark_registered
-            ;;
-          2)
-            FAILURE_COUNT=0
-            echo "[Qwen3.5-122B] Keeping $$ENDPOINT registered while backend is saturated"
-            mark_registered
-            ;;
-          *)
-            FAILURE_COUNT=$$((FAILURE_COUNT + 1))
-            echo "[Qwen3.5-122B] Health check failed ($$FAILURE_COUNT/$$MAX_RETRIES)"
-            if [ "$$REGISTERED" = true ] && [ "$$FAILURE_COUNT" -ge "$$MAX_RETRIES" ]; then
-              echo "[Qwen3.5-122B] Health check failed and Retry limit reached, unregistering $$ENDPOINT"
-              unregister_endpoint "$$ENDPOINT"
-              REGISTERED=false
-              echo "[Qwen3.5-122B] Exiting to refresh DNS (container will auto-restart)"
-              exit 1
+        for port in 8000 8001; do
+          # Refreshed per port so a slow-but-progressing serial loop is not
+          # falsely marked unhealthy by the registrar container healthcheck.
+          date +%s > /tmp/registrar_alive
+          endpoint="$${HOST_IP}:$$port"
+          eval "was_reg=\$$REG_$$port"
+          eval "fails=\$$FAIL_COUNT_$$port"
+          if check_port $$port; then
+            eval "FAIL_COUNT_$$port=0"
+            register_endpoint "$$endpoint"
+            if [ "$$was_reg" = false ]; then
+              echo "Registered $$endpoint"
             fi
-            ;;
-        esac
+            eval "REG_$$port=true"
+          else
+            fails=$$((fails + 1))
+            eval "FAIL_COUNT_$$port=$$fails"
+            echo "Health check failed for $$endpoint (fail count: $$fails)"
+            if [ "$$was_reg" = true ] && [ "$$fails" -ge "$$MAX_RETRIES" ]; then
+              unregister_endpoint "$$endpoint"
+              eval "REG_$$port=false"
+            fi
+          fi
+        done
+
+        register_model "Qwen/Qwen3.5-122B-A10B" "qwen35-122b.completions.near.ai"
+        register_model "deepseek-ai/DeepSeek-V4-Flash" "dsv4-flash.completions.near.ai"
+        date +%s > /tmp/registrar_alive
         sleep 60
       done
   nginx_conf:
@@ -797,10 +998,16 @@ configs:
       client_max_body_size 100m;
       client_body_buffer_size 1m;
 
-      # :80 — single proxy handles both backends
+      # :80 / host :8000 - Qwen3.5-122B-A10B
       server {
         listen 80 default_server;
         location / { proxy_pass http://proxy-qwen35:8000; }
+      }
+
+      # :8001 - DeepSeek-V4-Flash
+      server {
+        listen 8001;
+        location / { proxy_pass http://vllm-proxy-dsv4-flash:8000; }
       }
 
       ssl_certificate /etc/letsencrypt/live/completions.near.ai/fullchain.pem;
@@ -809,7 +1016,8 @@ configs:
 
       server {
         listen 443 ssl http2;
-        server_name qwen35-122b.completions.near.ai;
+        server_name qwen35-122b.completions.near.ai
+                    ~^qwen35-122b-i\d+\.completions\.near\.ai$$;
         # Keep H2 connections from cloud-api alive across long idle gaps so the
         # bucket-pinned TCP connection survives between chats. Without this,
         # nginx defaults (75s idle, 1000 req/conn) close the connection and the
@@ -819,4 +1027,13 @@ configs:
         keepalive_timeout 1h;
         keepalive_requests 1000000;
         location / { proxy_pass http://proxy-qwen35:8000; }
+      }
+
+      server {
+        listen 443 ssl http2;
+        server_name dsv4-flash.completions.near.ai
+                    ~^dsv4-flash-i\d+\.completions\.near\.ai$$;
+        keepalive_timeout 1h;
+        keepalive_requests 1000000;
+        location / { proxy_pass http://vllm-proxy-dsv4-flash:8000; }
       }
