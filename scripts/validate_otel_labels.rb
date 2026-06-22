@@ -15,6 +15,21 @@ REQUIRED_COLLECTOR_ENV = %w[
   HOST_IP
 ].freeze
 REQUIRED_LOG_TAGS = %w[deployment env host ip].freeze
+REQUIRED_OTEL_SCRAPE_LABELS = %w[
+  nearai.otel.service
+  nearai.otel.source
+  nearai.otel.container_name
+  nearai.otel.model
+  nearai.otel.deployment
+  nearai.otel.env
+  nearai.otel.host
+  nearai.otel.host_machine
+  nearai.otel.cvm_name
+  nearai.otel.ip
+  nearai.otel.port
+  nearai.otel.path
+].freeze
+OPTIONAL_SCRAPE_TAGS = %w[model_path precision instance replica].freeze
 
 def add_error(errors, file, path, message)
   errors << [file, path, message]
@@ -126,8 +141,9 @@ def validate_log_label(file, service_name, service, errors)
   end
 
   otel_service = service.dig("labels", "nearai.otel.service")
-  if otel_service && source != otel_service
-    add_error(errors, file, "services.#{service_name}.labels.com.datadoghq.ad.logs", "source #{source.inspect} does not match nearai.otel.service #{otel_service.inspect}")
+  otel_source = service.dig("labels", "nearai.otel.source")
+  if otel_source && source != otel_source
+    add_error(errors, file, "services.#{service_name}.labels.com.datadoghq.ad.logs", "source #{source.inspect} does not match nearai.otel.source #{otel_source.inspect}")
   end
   if otel_service && service_label != otel_service
     add_error(errors, file, "services.#{service_name}.labels.com.datadoghq.ad.logs", "service #{service_label.inspect} does not match nearai.otel.service #{otel_service.inspect}")
@@ -193,6 +209,10 @@ def validate_scrape_contract(file, compose, log_tags_by_service, errors)
     next unless labels["nearai.otel.scrape"].to_s == "true"
 
     scrape_services[service_name] = true
+    REQUIRED_OTEL_SCRAPE_LABELS.each do |key|
+      add_error(errors, file, "services.#{service_name}.labels", "missing #{key}") if labels[key].to_s.empty?
+    end
+
     target = targets[service_name]
     unless target
       add_error(errors, file, "configs.otelcol_app_config", "missing scrape target for #{service_name}")
@@ -210,17 +230,28 @@ def validate_scrape_contract(file, compose, log_tags_by_service, errors)
     target_labels = target["labels"]
     {
       "service" => labels["nearai.otel.service"],
-      "container_name" => service_name,
+      "source" => labels["nearai.otel.source"],
+      "container_name" => labels["nearai.otel.container_name"] || service_name,
       "model" => labels["nearai.otel.model"],
       "deployment" => labels["nearai.otel.deployment"],
       "env" => labels["nearai.otel.env"],
       "host" => labels["nearai.otel.host"],
+      "host_machine" => labels["nearai.otel.host_machine"],
+      "cvm_name" => labels["nearai.otel.cvm_name"],
       "ip" => labels["nearai.otel.ip"],
     }.each do |key, expected|
       next if expected.to_s.empty?
       next if target_labels[key] == expected
 
       add_error(errors, file, "configs.otelcol_app_config", "#{service_name} #{key} label #{target_labels[key].inspect} should be #{expected.inspect}")
+    end
+
+    OPTIONAL_SCRAPE_TAGS.each do |key|
+      expected = log_tags_by_service.dig(service_name, key)
+      next if expected.to_s.empty?
+      next if target_labels[key] == expected
+
+      add_error(errors, file, "configs.otelcol_app_config", "#{service_name} optional #{key} label #{target_labels[key].inspect} should be #{expected.inspect}")
     end
 
     expected_public_port = expected_ports[service_name] || log_tags_by_service.dig(service_name, "port") || labels["nearai.otel.port"]

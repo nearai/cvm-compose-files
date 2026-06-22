@@ -177,12 +177,16 @@ services:
       nearai.otel.scrape: "true"
       nearai.otel.job: "inference-proxy"
       nearai.otel.service: "vllm-proxy"
+      nearai.otel.source: "vllm-proxy"
+      nearai.otel.container_name: "proxy-glm51-awq-vllm"
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "zai-org/GLM-5.1-FP8"
       nearai.otel.deployment: "GLM-5.1-AWQ-vllm"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
   model-vllm-glm51-awq-1:
@@ -203,12 +207,16 @@ services:
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
+      nearai.otel.source: "vllm"
+      nearai.otel.container_name: "model-vllm-glm51-awq-1"
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "zai-org/GLM-5.1-FP8"
       nearai.otel.deployment: "GLM-5.1-AWQ-vllm"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
   model-vllm-glm51-awq-2:
@@ -229,12 +237,16 @@ services:
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
+      nearai.otel.source: "vllm"
+      nearai.otel.container_name: "model-vllm-glm51-awq-2"
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "zai-org/GLM-5.1-FP8"
       nearai.otel.deployment: "GLM-5.1-AWQ-vllm"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
   dcgm-exporter:
@@ -264,12 +276,16 @@ services:
       nearai.otel.scrape: "true"
       nearai.otel.job: "dcgm"
       nearai.otel.service: "dcgm-exporter"
+      nearai.otel.source: "dcgm-exporter"
+      nearai.otel.container_name: "dcgm-exporter"
       nearai.otel.port: "9400"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "zai-org/GLM-5.1-FP8"
       nearai.otel.deployment: "GLM-5.1-AWQ-vllm"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
   otelcol-contrib:
@@ -412,11 +428,14 @@ configs:
                   - targets: ['model-vllm-glm51-awq-1:8000']
                     labels:
                       service: "vllm"
+                      source: "vllm"
                       container_name: "model-vllm-glm51-awq-1"
                       model: "zai-org/GLM-5.1-FP8"
                       deployment: "GLM-5.1-AWQ-vllm"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "8000"
                       model_path: "QuantTrio/GLM-5.1-AWQ"
@@ -429,11 +448,14 @@ configs:
                   - targets: ['model-vllm-glm51-awq-2:8000']
                     labels:
                       service: "vllm"
+                      source: "vllm"
                       container_name: "model-vllm-glm51-awq-2"
                       model: "zai-org/GLM-5.1-FP8"
                       deployment: "GLM-5.1-AWQ-vllm"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "8000"
                       model_path: "QuantTrio/GLM-5.1-AWQ"
@@ -446,11 +468,14 @@ configs:
                   - targets: ['dcgm-exporter:9400']
                     labels:
                       service: "dcgm-exporter"
+                      source: "dcgm-exporter"
                       container_name: "dcgm-exporter"
                       model: "zai-org/GLM-5.1-FP8"
                       deployment: "GLM-5.1-AWQ-vllm"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "9400"
               - job_name: inference-proxy-proxy-glm51-awq-vllm
@@ -460,11 +485,14 @@ configs:
                   - targets: ['proxy-glm51-awq-vllm:8000']
                     labels:
                       service: "vllm-proxy"
+                      source: "vllm-proxy"
                       container_name: "proxy-glm51-awq-vllm"
                       model: "zai-org/GLM-5.1-FP8"
                       deployment: "GLM-5.1-AWQ-vllm"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "8000"
                       precision: "int4"
@@ -509,6 +537,8 @@ configs:
                 - set(attributes["service.name"], attributes["attrs"]["com.docker.compose.service"]) where attributes["attrs"] != nil and attributes["attrs"]["com.docker.compose.service"] != nil
                 - set(attributes["service.name"], ParseJSON(attributes["attrs"]["com.datadoghq.ad.logs"])[0]["service"]) where attributes["attrs"] != nil and attributes["attrs"]["com.datadoghq.ad.logs"] != nil
                 - set(attributes["log.source"], ParseJSON(attributes["attrs"]["com.datadoghq.ad.logs"])[0]["source"]) where attributes["attrs"] != nil and attributes["attrs"]["com.datadoghq.ad.logs"] != nil
+                - set(attributes["service"], attributes["service.name"]) where attributes["attrs"] != nil and attributes["attrs"]["com.datadoghq.ad.logs"] != nil and attributes["service.name"] != nil
+                - set(attributes["source"], attributes["log.source"]) where attributes["attrs"] != nil and attributes["attrs"]["com.datadoghq.ad.logs"] != nil and attributes["log.source"] != nil
                 - set(attributes["container.name"], attributes["attrs"]["com.docker.compose.service"]) where attributes["attrs"] != nil and attributes["attrs"]["com.docker.compose.service"] != nil
 
         filter/app_logs:
@@ -525,8 +555,10 @@ configs:
         groupbyattrs/docker_service:
           keys:
             - service.name
+            - service
             - container.name
             - log.source
+            - source
             - log.iostream
             - model
             - model_path
