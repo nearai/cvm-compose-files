@@ -76,7 +76,8 @@ Full deploy recipes (graceful drain for slow-shutdown models, env-var fetch, for
 | `prod/GLM-5.2-SGL-FP8-TP8.yaml` | `z-ai/glm-5.2` | SGLang TP8, 1M context, official FP8. gpu23 + gpu04. |
 | `prod/GLM-5.2-W4AFP8-SGL-TP8.yaml` | `z-ai/glm-5.2` | SGLang TP8, 4-bit (PhalaCloud W4AFP8, 368GB vs 755GB FP8) — same model, serves the full 1M context FP8 can't fit, MTP on. **Alternative** to the FP8 config; deploy one or the other. Startup-hang under CC noted in header (under investigation). |
 | `prod/GLM-5.1-SGL-AWQ-TP4.yaml` | `zai-org/GLM-5.1-FP8` | SGLang 2× TP4 (AWQ W4A16). gpu03 + gpu13 + gpu26. Uses `build:` (inline SGLang patch) — see header. Replaced the archived FP8 TP8 config. |
-| `prod/Qwen3.5-122B.yaml` | `Qwen/Qwen3.5-122B-A10B` | vLLM TP4. gpu30. |
+| `prod/Qwen3.5-122B.yaml` | `Qwen/Qwen3.5-122B-A10B` | SGLang 2× TP4 on the official FP8 checkpoint. gpu30. |
+| `prod/qwen35-dsv4-flash.yaml` | `Qwen/Qwen3.5-122B-A10B`, `deepseek-ai/DeepSeek-V4-Flash` | Customer-requested 8-GPU mixed pack: 1× Qwen3.5 TP4 replica plus 2× DeepSeek-V4-Flash FP4 TP2 replicas. |
 | `prod/small-models.yaml` | gpt-oss-120b, FLUX.2-klein, Qwen3-VL-30B, Qwen3-Embedding, Qwen3-Reranker, whisper-large-v3, privacy-filter, Qwen3.6-35B-A3B-FP8, gemma-4-31B-it | Multi-model pack, gpu07 + gpu11. 10 services across 8 GPUs. |
 | `prod/dsv4-qwen36-gemma4.yaml` | DeepSeek-V4-Flash, Qwen3.6-27B-FP8, google/gemma-4-31B-it, Qwen3.6-35B-A3B-FP8 | Multi-model pack, gpu07 |
 
