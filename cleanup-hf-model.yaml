@@ -33,21 +33,35 @@ services:
       - |
         set -eu
         : "$${MODEL_NAME:?MODEL_NAME env var is required (e.g. zai-org/GLM-5-FP8)}"
+
+        echo "=== Disk usage ==="
+        df -h /root/.cache 2>/dev/null || df -h /
+
+        echo ""
+        echo "=== Cached model weights ==="
+        HUB=/root/.cache/huggingface/hub
+        if ls "$$HUB"/models--* >/dev/null 2>&1; then
+          du -sh "$$HUB"/models--* | sort -rh
+        else
+          echo "(none)"
+        fi
+        echo ""
+        echo "Total HF cache: $$(du -sh $$HUB 2>/dev/null | cut -f1)"
+
+        echo ""
+        echo "=== Cleanup ==="
         SAFE=$$(printf '%s' "$$MODEL_NAME" | sed 's|/|--|g')
-        TARGET="/root/.cache/huggingface/hub/models--$$SAFE"
+        TARGET="$$HUB/models--$$SAFE"
         echo "MODEL_NAME=$$MODEL_NAME"
         echo "TARGET=$$TARGET"
         if [ ! -d "$$TARGET" ]; then
-          echo "Not found. Existing model dirs:"
-          ls /root/.cache/huggingface/hub/ 2>/dev/null | grep '^models--' || echo "(none)"
-          exit 1
+          echo "Not found — nothing to remove."
+          exit 0
         fi
-        echo "Size before:"
-        du -sh "$$TARGET"
+        echo "Removing $$(du -sh "$$TARGET" | cut -f1) ..."
         rm -rf "$$TARGET"
         echo "Removed $$TARGET"
-        echo "Volume size after:"
-        du -sh /root/.cache/huggingface/hub 2>/dev/null || true
+        echo "Disk after: $$(df -h /root/.cache 2>/dev/null | tail -1 || df -h / | tail -1)"
     volumes:
       - huggingface_cache:/root/.cache/huggingface
     environment:
