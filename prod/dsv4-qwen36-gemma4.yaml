@@ -297,7 +297,7 @@ services:
 
   vllm-dsv4-flash:
     <<: *dsv4-flash-common
-    container_name: vllm-dsv4-flash
+    container_name: vllm-dsv4-flash-fp4
     deploy:
       resources:
         reservations:
@@ -309,7 +309,7 @@ services:
       com.datadoghq.ad.check_names: '["openmetrics"]'
       com.datadoghq.ad.init_configs: "[{}]"
       com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:deepseek-ai/DeepSeek-V4-Flash","deployment:dsv4-qwen36-gemma4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-dsv4-flash:8000/metrics", "metrics":["sglang:*"], "histogram_buckets_as_distributions": true, "service": "vllm-dsv4-flash", "tags":["model:deepseek-ai/DeepSeek-V4-Flash","ip:${HOST_IP}","port:8000"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://vllm-dsv4-flash:8000/metrics", "metrics":["sglang:*"], "histogram_buckets_as_distributions": true, "service": "vllm-dsv4-flash-fp4", "tags":["model:deepseek-ai/DeepSeek-V4-Flash","ip:${HOST_IP}","port:8000"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -766,7 +766,7 @@ configs:
         prometheus/apps:
           config:
             scrape_configs:
-              - job_name: sglang-vllm-dsv4-flash
+              - job_name: sglang-vllm-dsv4-flash-fp4
                 scrape_interval: 15s
                 metrics_path: /metrics
                 static_configs:
