@@ -98,6 +98,9 @@ services:
   nginx:
     image: nginx@sha256:1d13701a5f9f3fb01aaa88cef2344d65b6b5bf6b7d9fa4cf0dca557a8d7702ba
     container_name: nginx
+    depends_on:
+      - vllm-proxy-qwen36-int4
+      - vllm-proxy-gemma4-int4
     command: /bin/sh -c 'while :; do sleep 6h; nginx -s reload; done & nginx -g "daemon off;"'
     ports:
       - "8000:8000"

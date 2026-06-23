@@ -433,6 +433,16 @@ services:
   proxy-nginx:
     image: nginx@sha256:1d13701a5f9f3fb01aaa88cef2344d65b6b5bf6b7d9fa4cf0dca557a8d7702ba
     container_name: proxy-nginx
+    depends_on:
+      - proxy-gpt-oss
+      - proxy-qwen3-6-35b
+      - proxy-gemma-4-31b
+      - proxy-flux
+      - proxy-qwen3-vl
+      - proxy-qwen3-embeddings
+      - proxy-qwen3-reranker
+      - proxy-whisper3-large
+      - proxy-privacy-filter
     command: /bin/sh -c 'while :; do sleep 6h; nginx -s reload; done & nginx -g "daemon off;"'
     ports:
       - "80:80"
