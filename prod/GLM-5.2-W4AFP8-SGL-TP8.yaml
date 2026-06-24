@@ -139,12 +139,12 @@ x-glm52-model-env: &glm52-model-env
   TRITON_CACHE_DIR: /root/.cache/triton
 
 services:
-  proxy-nginx:
+  nginx:
     image: nginx@sha256:1d13701a5f9f3fb01aaa88cef2344d65b6b5bf6b7d9fa4cf0dca557a8d7702ba
-    container_name: proxy-nginx
+    container_name: nginx
     command: /bin/sh -c 'while :; do sleep 6h; nginx -s reload; done & nginx -g "daemon off;"'
     depends_on:
-      proxy-glm52-w4afp8:
+      proxy-glm52:
         condition: service_started
     ports:
       - "8000:80"
@@ -181,9 +181,9 @@ services:
     logging: *logging-conf
 
   # Single proxy fronting the one TP8 backend (attestation/signing/E2EE/auth + health/failover).
-  proxy-glm52-w4afp8:
+  proxy-glm52:
     <<: *vllm-proxy-common
-    container_name: proxy-glm52-w4afp8
+    container_name: proxy-glm52
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - CLOUD_API_URL=https://cloud-api.near.ai
@@ -195,7 +195,7 @@ services:
       - TOKEN=${PROXY_TOKEN}
       - FUSION_ENABLED=${FUSION_ENABLED}
       - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
-      - VLLM_BACKEND_URLS=http://model-sg-glm52-w4afp8:8000
+      - VLLM_BACKEND_URLS=http://model-sg-glm52-w4afp8-tp8:8000
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
       - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
@@ -206,7 +206,7 @@ services:
       nearai.otel.job: "inference-proxy"
       nearai.otel.service: "vllm-proxy"
       nearai.otel.source: "vllm-proxy"
-      nearai.otel.container_name: "proxy-glm52-w4afp8"
+      nearai.otel.container_name: "proxy-glm52"
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "z-ai/glm-5.2"
@@ -217,11 +217,11 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
-  model-sg-glm52-w4afp8:
+  model-sg-glm52-w4afp8-tp8:
     <<: *nvidia
     init: true
     image: lmsysorg/sglang@sha256:1c64fde976bdf0d56474a30bccbcfc19667e5b3ab34c826a534c9d6aaca41212
-    container_name: model-sg-glm52-w4afp8
+    container_name: model-sg-glm52-w4afp8-tp8
     command: *glm52-cmd
     volumes:
       - compile_cache:/root/.cache
@@ -241,12 +241,12 @@ services:
       com.datadoghq.ad.check_names: '["openmetrics"]'
       com.datadoghq.ad.init_configs: "[{}]"
       com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.2","deployment:GLM-5.2-W4AFP8-SGL-TP8","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-sg-glm52-w4afp8:8000/metrics", "histogram_buckets_as_distributions": true, "metrics":["sglang:*"], "service": "glm-5.2-w4afp8-sgl-tp8", "tags":["model:z-ai/glm-5.2","deployment:GLM-5.2-W4AFP8-SGL-TP8","ip:${HOST_IP}","port:8000"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-sg-glm52-w4afp8-tp8:8000/metrics", "histogram_buckets_as_distributions": true, "metrics":["sglang:*"], "service": "glm-5.2-w4afp8-sgl-tp8", "tags":["model:z-ai/glm-5.2","deployment:GLM-5.2-W4AFP8-SGL-TP8","ip:${HOST_IP}","port:8000"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
       nearai.otel.source: "sglang"
-      nearai.otel.container_name: "model-sg-glm52-w4afp8"
+      nearai.otel.container_name: "model-sg-glm52-w4afp8-tp8"
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "z-ai/glm-5.2"
@@ -257,9 +257,9 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
-  dcgm-exporter:
+  dcgm-glm52:
     image: nvcr.io/nvidia/k8s/dcgm-exporter:4.5.2-4.8.1-distroless
-    container_name: dcgm-exporter
+    container_name: dcgm-glm52
     runtime: nvidia
     cap_add:
       - SYS_ADMIN
@@ -285,7 +285,7 @@ services:
       nearai.otel.job: "dcgm"
       nearai.otel.service: "dcgm-exporter"
       nearai.otel.source: "dcgm-exporter"
-      nearai.otel.container_name: "dcgm-exporter"
+      nearai.otel.container_name: "dcgm-glm52"
       nearai.otel.port: "9400"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "z-ai/glm-5.2"
@@ -354,15 +354,15 @@ configs:
         prometheus/apps:
           config:
             scrape_configs:
-              - job_name: inference-proxy-proxy-glm52-w4afp8
+              - job_name: inference-proxy-proxy-glm52
                 scrape_interval: 15s
                 metrics_path: /metrics
                 static_configs:
-                  - targets: ['proxy-glm52-w4afp8:8000']
+                  - targets: ['proxy-glm52:8000']
                     labels:
                       service: "vllm-proxy"
                       source: "vllm-proxy"
-                      container_name: "proxy-glm52-w4afp8"
+                      container_name: "proxy-glm52"
                       model: "z-ai/glm-5.2"
                       deployment: "GLM-5.2-W4AFP8-SGL-TP8"
                       env: "${ENV}"
@@ -371,15 +371,15 @@ configs:
                       cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "8000"
-              - job_name: sglang-model-sg-glm52-w4afp8
+              - job_name: sglang-model-sg-glm52-w4afp8-tp8
                 scrape_interval: 15s
                 metrics_path: /metrics
                 static_configs:
-                  - targets: ['model-sg-glm52-w4afp8:8000']
+                  - targets: ['model-sg-glm52-w4afp8-tp8:8000']
                     labels:
                       service: "sglang"
                       source: "sglang"
-                      container_name: "model-sg-glm52-w4afp8"
+                      container_name: "model-sg-glm52-w4afp8-tp8"
                       model: "z-ai/glm-5.2"
                       deployment: "GLM-5.2-W4AFP8-SGL-TP8"
                       env: "${ENV}"
@@ -388,15 +388,15 @@ configs:
                       cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "8000"
-              - job_name: dcgm-dcgm-exporter
+              - job_name: dcgm-dcgm-glm52
                 scrape_interval: 15s
                 metrics_path: /metrics
                 static_configs:
-                  - targets: ['dcgm-exporter:9400']
+                  - targets: ['dcgm-glm52:9400']
                     labels:
                       service: "dcgm-exporter"
                       source: "dcgm-exporter"
-                      container_name: "dcgm-exporter"
+                      container_name: "dcgm-glm52"
                       model: "z-ai/glm-5.2"
                       deployment: "GLM-5.2-W4AFP8-SGL-TP8"
                       env: "${ENV}"
@@ -535,7 +535,7 @@ configs:
       check_inference() {
         echo "Performing health check on model endpoint..."
         status=$$(curl -sS --connect-timeout 10 --max-time 45 -o /dev/null -w "%{http_code}" \
-          -X POST "http://model-sg-glm52-w4afp8:8000/v1/chat/completions" \
+          -X POST "http://model-sg-glm52-w4afp8-tp8:8000/v1/chat/completions" \
           -H "Content-Type: application/json" \
           -d '{"model":"z-ai/glm-5.2","messages":[{"role":"user","content":"hi"}],"max_tokens":1}')
         curl_status=$$?
@@ -631,7 +631,7 @@ configs:
           client_max_body_size 100m;
           client_body_buffer_size 1m;
           location / {
-              proxy_pass http://proxy-glm52-w4afp8:8000;
+              proxy_pass http://proxy-glm52:8000;
               proxy_http_version 1.1;
               proxy_set_header Host $$host;
               proxy_set_header X-Real-IP $$remote_addr;
@@ -657,7 +657,7 @@ configs:
           client_max_body_size 100m;
           client_body_buffer_size 1m;
           location / {
-              proxy_pass http://proxy-glm52-w4afp8:8000;
+              proxy_pass http://proxy-glm52:8000;
               proxy_http_version 1.1;
               proxy_set_header Host $$host;
               proxy_set_header X-Real-IP $$remote_addr;
