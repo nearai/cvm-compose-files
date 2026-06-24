@@ -220,7 +220,7 @@ services:
       nearai.otel.ip: "${HOST_IP}"
 
   dcgm-glm52:
-    image: nvcr.io/nvidia/k8s/dcgm-glm52:4.5.2-4.8.1-distroless
+    image: nvcr.io/nvidia/k8s/dcgm-exporter:4.5.2-4.8.1-distroless
     container_name: dcgm-glm52
     runtime: nvidia
     cap_add:
@@ -242,11 +242,11 @@ services:
       com.datadoghq.ad.check_names: '["dcgm"]'
       com.datadoghq.ad.init_configs: "[{}]"
       com.datadoghq.ad.instances: '[{"openmetrics_endpoint": "http://%%host%%:9400/metrics", "tags":["model:z-ai/glm-5.2","deployment:GLM-5.2-SGL-FP8-TP8","ip:${HOST_IP}"]}]'
-      com.datadoghq.ad.logs: '[{"source":"dcgm-glm52","service":"dcgm-glm52","tags":["model:z-ai/glm-5.2","deployment:GLM-5.2-SGL-FP8-TP8","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:z-ai/glm-5.2","deployment:GLM-5.2-SGL-FP8-TP8","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "dcgm"
-      nearai.otel.service: "dcgm-glm52"
-      nearai.otel.source: "dcgm-glm52"
+      nearai.otel.service: "dcgm-exporter"
+      nearai.otel.source: "dcgm-exporter"
       nearai.otel.container_name: "dcgm-glm52"
       nearai.otel.port: "9400"
       nearai.otel.path: "/metrics"
@@ -356,8 +356,8 @@ configs:
                 static_configs:
                   - targets: ['dcgm-glm52:9400']
                     labels:
-                      service: "dcgm-glm52"
-                      source: "dcgm-glm52"
+                      service: "dcgm-exporter"
+                      source: "dcgm-exporter"
                       container_name: "dcgm-glm52"
                       model: "z-ai/glm-5.2"
                       deployment: "GLM-5.2-SGL-FP8-TP8"

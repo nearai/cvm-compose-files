@@ -266,7 +266,7 @@ services:
       nearai.otel.ip: "${HOST_IP}"
 
   dcgm-qwen35-122b:
-    image: nvcr.io/nvidia/k8s/dcgm-qwen35-122b:4.5.2-4.8.1-distroless
+    image: nvcr.io/nvidia/k8s/dcgm-exporter:4.5.2-4.8.1-distroless
     container_name: dcgm-qwen35-122b
     runtime: nvidia
     cap_add:
@@ -288,11 +288,11 @@ services:
       com.datadoghq.ad.check_names: '["dcgm"]'
       com.datadoghq.ad.init_configs: "[{}]"
       com.datadoghq.ad.instances: '[{"openmetrics_endpoint": "http://%%host%%:9400/metrics", "tags":["model:Qwen/Qwen3.5-122B-A10B","deployment:Qwen3.5-122B","ip:${HOST_IP}"]}]'
-      com.datadoghq.ad.logs: '[{"source":"dcgm-qwen35-122b","service":"dcgm-qwen35-122b","tags":["model:Qwen/Qwen3.5-122B-A10B","deployment:Qwen3.5-122B","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:Qwen/Qwen3.5-122B-A10B","deployment:Qwen3.5-122B","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "dcgm"
-      nearai.otel.service: "dcgm-qwen35-122b"
-      nearai.otel.source: "dcgm-qwen35-122b"
+      nearai.otel.service: "dcgm-exporter"
+      nearai.otel.source: "dcgm-exporter"
       nearai.otel.container_name: "dcgm-qwen35-122b"
       nearai.otel.port: "9400"
       nearai.otel.path: "/metrics"
@@ -478,8 +478,8 @@ configs:
                 static_configs:
                   - targets: ['dcgm-qwen35-122b:9400']
                     labels:
-                      service: "dcgm-qwen35-122b"
-                      source: "dcgm-qwen35-122b"
+                      service: "dcgm-exporter"
+                      source: "dcgm-exporter"
                       container_name: "dcgm-qwen35-122b"
                       model: "Qwen/Qwen3.5-122B-A10B"
                       deployment: "Qwen3.5-122B"
