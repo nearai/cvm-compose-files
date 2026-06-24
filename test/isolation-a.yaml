@@ -1,0 +1,8 @@
+# Test fixture for compose-manager project-isolation (--remove-orphans scoping, see compose-manager PR #46).
+# Deployed under a dedicated compose project; recreating a DIFFERENT project must NOT orphan this container.
+services:
+  isolation-svc-a:
+    image: busybox:1.36
+    container_name: isolation-svc-a
+    command: ["sleep", "infinity"]
+    restart: unless-stopped
