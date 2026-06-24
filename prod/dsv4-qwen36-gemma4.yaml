@@ -186,7 +186,24 @@ x-gemma-4-31b-common: &gemma-4-31b-common
   # Multimodal (image) enabled and verified under FA4 at no measurable throughput cost; native
   # 262144 context inferred from config.json (no --max-model-len). Each prod Gemma GPU runs an
   # independent TP1 replica and serves the existing model name.
-  command: >
+  #
+  # tile_n=80 FA4 CuteDSL kernel patch (nearai serving benchmark, 2026-06-23): gemma-4's 10
+  # full-attention (head_dim=512) layers run the FA4 CuteDSL kernel, whose default tile is
+  # tile_n=64. Bumping it to tile_n=80 + pv_is_rs=True (P kept in registers, 224KB SMEM — fits the
+  # H200 budget; 96 overflows) gives +1-4% throughput at high concurrency, neutral below, with no
+  # extra GPUs and identical quality. Applied at container start via the gemma4_tile80_patch config.
+  # The patch is NON-FATAL: if a future image changes the kernel layout it logs a warning and serves
+  # UNPATCHED, so a stale anchor can never cause a startup outage. The 50 sliding-window
+  # (head_dim=256) layers are intentionally left at tile_n=64 — tile_n=80 there REGRESSED -4-5%.
+  entrypoint: ["/bin/bash", "-c"]
+  configs:
+    - source: gemma4_tile80_patch
+      target: /etc/vllm/patch_tile80.py
+      mode: 0644
+  command:
+    - >
+      python3 /etc/vllm/patch_tile80.py &&
+      exec vllm serve
       RedHatAI/gemma-4-31B-it-FP8-block
       --revision 9a9994e657e035c1b79886566dd8dd2f6ba96d29
       --served-model-name google/gemma-4-31B-it
@@ -737,6 +754,25 @@ volumes:
     name: certs
 
 configs:
+  # FA4 CuteDSL tile_n=80 patch for gemma-4's head_dim=512 full-attention layers.
+  # Run once at container start (see x-gemma-4-31b-common). NON-FATAL by design: a missing anchor
+  # logs a warning and serves UNPATCHED rather than failing startup. Validated on H200:
+  # +1-4% throughput at high concurrency, neutral below, quality unchanged.
+  gemma4_tile80_patch:
+    content: |
+      import pathlib
+      F = pathlib.Path("/usr/local/lib/python3.12/dist-packages/vllm/vllm_flash_attn/cute/interface.py")
+      OLD = "    else: # 512\n        tile_n = 64\n        return FwdConfig(64, tile_n, False, True)"
+      NEW = "    else: # 512 -- nearai tile_n=80 pv_rs (FA4 hd=512, +1-4% tput hi-conc, 224KB SMEM)\n        tile_n = 80\n        return FwdConfig(64, tile_n, True, True)"
+      try:
+          s = F.read_text()
+          if OLD in s:
+              F.write_text(s.replace(OLD, NEW, 1))
+              print("[tile80] FA4 head_dim=512 tile_n 64->80 pv_rs applied", flush=True)
+          else:
+              print("[tile80] WARN: anchor not found; serving UNPATCHED (kernel layout changed?)", flush=True)
+      except Exception as e:
+          print(f"[tile80] WARN: patch failed ({e}); serving UNPATCHED", flush=True)
   otelcol_app_config:
     content: |
       receivers:
