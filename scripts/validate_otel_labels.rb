@@ -177,6 +177,10 @@ def validate_datadog_instances(file, service_name, service, log_tags, errors)
   if file.start_with?("prod/")
     otel_service = service.dig("labels", "nearai.otel.service")
     instance_service = first["service"]
+    # Only validate when both values are present. The DCGM exporter's ad.instances
+    # omits the "service" key by design (tags-only), so instance_service is nil and
+    # this check intentionally skips it — dcgm identity is asserted via container_name
+    # + scrape target, not a service label.
     if otel_service && instance_service && instance_service != otel_service
       add_error(errors, file, "services.#{service_name}.labels.com.datadoghq.ad.instances", "service #{instance_service.inspect} does not match nearai.otel.service #{otel_service.inspect}")
     end
