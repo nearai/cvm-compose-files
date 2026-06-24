@@ -884,6 +884,10 @@ configs:
       # "Could not resolve host" if the registrar loses compose-network DNS
       # (e.g. after a backend is recreated independently), wedging the health
       # check so every model drops to 0 backends. See cvm-compose-files#57.
+      # Return codes:
+      #   0: backend accepted a 1-token inference probe
+      #   2: backend is alive but saturated/backpressuring new requests
+      #   1: backend appears unhealthy/unreachable
       check_chat() {
         status=$$(curl -sS --connect-timeout 10 --max-time 45 -o /dev/null -w "%{http_code}" \
           -X POST "http://$$1/v1/chat/completions" \
@@ -895,7 +899,7 @@ configs:
           case "$$curl_status" in
             52|56)
               echo "[$$2] Health probe hit connection-level backpressure (curl $$curl_status); treating as alive but saturated"
-              return 0
+              return 2
               ;;
           esac
           echo "[$$2] Health probe curl failed with status $$curl_status"
@@ -908,7 +912,7 @@ configs:
             ;;
           503)
             echo "[$$2] Backend returned 503; treating as alive but saturated"
-            return 0
+            return 2
             ;;
           *)
             echo "[$$2] Backend returned HTTP $$status"
@@ -926,26 +930,23 @@ configs:
         esac
       }
 
-      # Probe the host-published nginx port via HOST_IP instead of the
-      # "nginx" compose DNS name. A stale/abandoned docker service-name
-      # resolution (e.g. after nginx is recreated) otherwise wedges this
-      # readiness gate forever and silently drops every model to 0 backends.
+      # Wait on an actual 1-token inference probe, not /v1/models. SGLang can
+      # expose model metadata before the request path is ready for completions.
       # Bounded + loud so a persistent probe failure falls through to the
-      # registration loop (which health-checks each backend directly) instead
-      # of hanging here forever. See cvm-compose-files#57.
-      READY_URL="http://$${HOST_IP}:8000/v1/models"
-      echo "Waiting for first model to be ready (probing $$READY_URL)..."
+      # registration loop, where each backend remains health-checked directly.
+      READY_PORT=8000
+      echo "Waiting for first model to be inference-ready (probing $${HOST_IP}:$$READY_PORT with a 1-token chat completion)..."
       ready_attempts=0
-      until curl --connect-timeout 5 --max-time 10 -sf "$$READY_URL" > /dev/null 2>&1; do
+      until check_port "$$READY_PORT"; do
         ready_attempts=$$((ready_attempts + 1))
         if [ "$$ready_attempts" -ge 30 ]; then
-          echo "WARN: first model not reachable at $$READY_URL after $$ready_attempts attempts (~20m); entering registration loop anyway (each backend is health-checked directly before registering)"
+          echo "WARN: first model did not pass inference readiness after $$ready_attempts attempts (~20m); entering registration loop anyway (each backend is health-checked directly before registering)"
           break
         fi
-        echo "First model not ready yet (attempt $$ready_attempts/30), retrying in 30s..."
+        echo "First model not inference-ready yet (attempt $$ready_attempts/30), retrying in 30s..."
         sleep 30
       done
-      echo "First model ready, starting registration loop"
+      echo "First model inference-ready, starting registration loop"
 
       while true; do
         for port in 8000 8001; do
@@ -955,22 +956,37 @@ configs:
           endpoint="$${HOST_IP}:$$port"
           eval "was_reg=\$$REG_$$port"
           eval "fails=\$$FAIL_COUNT_$$port"
-          if check_port $$port; then
-            eval "FAIL_COUNT_$$port=0"
-            register_endpoint "$$endpoint"
-            if [ "$$was_reg" = false ]; then
-              echo "Registered $$endpoint"
-            fi
-            eval "REG_$$port=true"
-          else
-            fails=$$((fails + 1))
-            eval "FAIL_COUNT_$$port=$$fails"
-            echo "Health check failed for $$endpoint (fail count: $$fails)"
-            if [ "$$was_reg" = true ] && [ "$$fails" -ge "$$MAX_RETRIES" ]; then
-              unregister_endpoint "$$endpoint"
-              eval "REG_$$port=false"
-            fi
-          fi
+          check_port $$port
+          health_status=$$?
+          case "$$health_status" in
+            0)
+              eval "FAIL_COUNT_$$port=0"
+              register_endpoint "$$endpoint"
+              if [ "$$was_reg" = false ]; then
+                echo "Registered $$endpoint"
+              fi
+              eval "REG_$$port=true"
+              ;;
+            2)
+              eval "FAIL_COUNT_$$port=0"
+              if [ "$$was_reg" = true ]; then
+                echo "Keeping $$endpoint registered while backend is saturated"
+                eval "REG_$$port=true"
+              else
+                echo "Not registering $$endpoint yet; backend is saturated before first successful inference probe"
+                eval "REG_$$port=false"
+              fi
+              ;;
+            *)
+              fails=$$((fails + 1))
+              eval "FAIL_COUNT_$$port=$$fails"
+              echo "Health check failed for $$endpoint (fail count: $$fails)"
+              if [ "$$was_reg" = true ] && [ "$$fails" -ge "$$MAX_RETRIES" ]; then
+                unregister_endpoint "$$endpoint"
+                eval "REG_$$port=false"
+              fi
+              ;;
+          esac
         done
 
         register_model "Qwen/Qwen3.5-122B-A10B" "qwen35-122b.completions.near.ai"
