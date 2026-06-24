@@ -535,7 +535,7 @@ configs:
       check_inference() {
         echo "Performing health check on model endpoint..."
         status=$$(curl -sS --connect-timeout 10 --max-time 45 -o /dev/null -w "%{http_code}" \
-          -X POST "http://model-sg-glm52-w4afp8-tp8:8000/v1/chat/completions" \
+          -X POST "http://$${HOST_IP}:8000/v1/chat/completions" \
           -H "Content-Type: application/json" \
           -d '{"model":"z-ai/glm-5.2","messages":[{"role":"user","content":"hi"}],"max_tokens":1}')
         curl_status=$$?
