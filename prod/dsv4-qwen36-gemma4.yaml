@@ -1251,8 +1251,15 @@ configs:
       }
       trap cleanup TERM INT
 
+      # Probe the host-published port via HOST_IP, not the compose service DNS
+      # name. If the registrar loses compose-network DNS (e.g. after a backend
+      # container is recreated independently), a service-name probe fails with
+      # curl (6) "Could not resolve host" every loop, the health check never
+      # passes, and every model silently drops to 0 backends. HOST_IP:<port> is
+      # the same endpoint model-proxy routes to and never depends on inter-
+      # container DNS. See cvm-compose-files#57. ($1 = host:port)
       check_chat() {
-        curl -sf --max-time 45 -X POST "http://$$1:8000/v1/chat/completions" \
+        curl -sf --max-time 45 -X POST "http://$$1/v1/chat/completions" \
           -H "Content-Type: application/json" \
           -d "{\"model\":\"$$2\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":1}" \
           > /dev/null 2>&1
@@ -1260,13 +1267,13 @@ configs:
 
       check_port() {
         case $$1 in
-          8000) check_chat model-sg-dsv4-flash-fp4-tp2 "deepseek-ai/DeepSeek-V4-Flash" ;;
-          8001) check_chat model-sg-qwen36-27b-fp8-tp1 "Qwen/Qwen3.6-27B-FP8" ;;
-          8002)
-            check_chat model-vllm-gemma4-31b-fp8-tp1-r1 "google/gemma-4-31B-it" &&
-            check_chat model-vllm-gemma4-31b-fp8-tp1-r2 "google/gemma-4-31B-it"
-            ;;
-          8003) check_chat model-sg-qwen36-35b-a3b-fp8-tp1 "Qwen/Qwen3.6-35B-A3B-FP8" ;;
+          8000) check_chat "$${HOST_IP}:8000" "deepseek-ai/DeepSeek-V4-Flash" ;;
+          8001) check_chat "$${HOST_IP}:8001" "Qwen/Qwen3.6-27B-FP8" ;;
+          # gemma has two replicas behind this host port (nginx LB); a single
+          # host-port probe verifies the endpoint serves, which is what
+          # model-proxy routes to.
+          8002) check_chat "$${HOST_IP}:8002" "google/gemma-4-31B-it" ;;
+          8003) check_chat "$${HOST_IP}:8003" "Qwen/Qwen3.6-35B-A3B-FP8" ;;
         esac
       }
 
