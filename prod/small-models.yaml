@@ -184,15 +184,30 @@ x-flux-common: &flux-common
 
 x-gemma-4-31b-common: &gemma-4-31b-common
   <<: *vllm-common
-  image: vllm/vllm-openai@sha256:953d3a06d5e64ab582985cd7401289d3abf2a2c14ef2158e9a84313daeec77d7
-  # Official Gemma 4 QAT compressed-tensors checkpoint. Each prod Gemma
-  # GPU now runs an independent TP1 replica and serves the existing model name.
-  command: >
-      google/gemma-4-31B-it-qat-w4a16-ct
-      --revision ca9d5250d08695be35f2d632b434938b6d4aecfe
+  image: vllm/vllm-openai@sha256:960ac5b3fda0547c3ce64d8f69bae9fa242d5ae5382fc74a98cd8ef13950e403  # vLLM v0.23.1rc1 — FA4 gemma-4 attention (PR #42175). DO NOT upgrade past RC1: nightly has a 1.9x gemma-4 attention regression. Matches dsv4-qwen36-gemma4.yaml.
+  # RedHatAI FP8-block (W8A8) on vLLM FA4 — ~1.9x faster prefill than the forced-Triton W4A16/QAT
+  # path it replaces, with identical quality. Brought to parity
+  # with the optimized dsv4-qwen36-gemma4.yaml deployment (same image/checkpoint/flags) so all
+  # gemma-4-31b.completions.near.ai backends serve the same fast FP8 path. Each prod Gemma GPU runs
+  # an independent TP1 replica (GPUs 5,6 here, dedicated — FP8-block ~31GB fits gmu 0.80) and serves
+  # the existing model name. tile_n=80 FA4 kernel patch (PR #111) applied at start via the
+  # gemma4_tile80_patch config (+1-4% tput at high concurrency; NON-FATAL — warns & serves unpatched
+  # if a future image changes the kernel layout, never a startup outage).
+  entrypoint: ["/bin/bash", "-c"]
+  configs:
+    - source: gemma4_tile80_patch
+      target: /etc/vllm/patch_tile80.py
+      mode: 0644
+  command:
+    - >
+      python3 /etc/vllm/patch_tile80.py &&
+      exec vllm serve
+      RedHatAI/gemma-4-31B-it-FP8-block
+      --revision 9a9994e657e035c1b79886566dd8dd2f6ba96d29
       --served-model-name google/gemma-4-31B-it
       --tensor-parallel-size 1
       --gpu-memory-utilization 0.80
+      --max-num-batched-tokens 16384
       --trust-remote-code
       --tool-call-parser gemma4
       --enable-auto-tool-choice
@@ -770,8 +785,8 @@ services:
     labels:
       com.datadoghq.ad.check_names: '["vllm"]'
       com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:google/gemma-4-31B-it","model_path:google/gemma-4-31B-it-qat-w4a16-ct","precision:w4a16","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8009","instance:1"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-gemma-4-31b-1:8000/metrics", "histogram_buckets_as_distributions": true, "service": "model-vllm-gemma-4-31b-1", "tags":["model:google/gemma-4-31B-it","model_path:google/gemma-4-31B-it-qat-w4a16-ct","precision:w4a16","deployment:small-models","ip:${HOST_IP}","port:8009","instance:1"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:google/gemma-4-31B-it","model_path:RedHatAI/gemma-4-31B-it-FP8-block","precision:fp8","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8009","instance:1"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-gemma-4-31b-1:8000/metrics", "histogram_buckets_as_distributions": true, "service": "model-vllm-gemma-4-31b-1", "tags":["model:google/gemma-4-31B-it","model_path:RedHatAI/gemma-4-31B-it-FP8-block","precision:fp8","deployment:small-models","ip:${HOST_IP}","port:8009","instance:1"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
@@ -800,8 +815,8 @@ services:
     labels:
       com.datadoghq.ad.check_names: '["vllm"]'
       com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:google/gemma-4-31B-it","model_path:google/gemma-4-31B-it-qat-w4a16-ct","precision:w4a16","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8009","instance:2"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-gemma-4-31b-2:8000/metrics", "histogram_buckets_as_distributions": true, "service": "model-vllm-gemma-4-31b-2", "tags":["model:google/gemma-4-31B-it","model_path:google/gemma-4-31B-it-qat-w4a16-ct","precision:w4a16","deployment:small-models","ip:${HOST_IP}","port:8009","instance:2"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:google/gemma-4-31B-it","model_path:RedHatAI/gemma-4-31B-it-FP8-block","precision:fp8","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8009","instance:2"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-gemma-4-31b-2:8000/metrics", "histogram_buckets_as_distributions": true, "service": "model-vllm-gemma-4-31b-2", "tags":["model:google/gemma-4-31B-it","model_path:RedHatAI/gemma-4-31B-it-FP8-block","precision:fp8","deployment:small-models","ip:${HOST_IP}","port:8009","instance:2"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
@@ -1416,6 +1431,25 @@ volumes:
     name: certs
 
 configs:
+  # FA4 CuteDSL tile_n=80 patch for gemma-4's head_dim=512 full-attention layers (PR #111 parity
+  # with dsv4-qwen36-gemma4.yaml). Run once at container start (see x-gemma-4-31b-common). NON-FATAL:
+  # a missing anchor logs a warning and serves UNPATCHED rather than failing startup. Validated on
+  # H200: +1-4% throughput at high concurrency, neutral below, quality unchanged.
+  gemma4_tile80_patch:
+    content: |
+      import pathlib
+      F = pathlib.Path("/usr/local/lib/python3.12/dist-packages/vllm/vllm_flash_attn/cute/interface.py")
+      OLD = "    else: # 512\n        tile_n = 64\n        return FwdConfig(64, tile_n, False, True)"
+      NEW = "    else: # 512 -- nearai tile_n=80 pv_rs (FA4 hd=512, +1-4% tput hi-conc, 224KB SMEM)\n        tile_n = 80\n        return FwdConfig(64, tile_n, True, True)"
+      try:
+          s = F.read_text()
+          if OLD in s:
+              F.write_text(s.replace(OLD, NEW, 1))
+              print("[tile80] FA4 head_dim=512 tile_n 64->80 pv_rs applied", flush=True)
+          else:
+              print("[tile80] WARN: anchor not found; serving UNPATCHED (kernel layout changed?)", flush=True)
+      except Exception as e:
+          print(f"[tile80] WARN: patch failed ({e}); serving UNPATCHED", flush=True)
   otelcol_app_config:
     content: |
       receivers:
@@ -1609,8 +1643,8 @@ configs:
                       cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "8009"
-                      model_path: "google/gemma-4-31B-it-qat-w4a16-ct"
-                      precision: "w4a16"
+                      model_path: "RedHatAI/gemma-4-31B-it-FP8-block"
+                      precision: "fp8"
                       instance: "1"
               - job_name: vllm-model-vllm-gemma-4-31b-2
                 scrape_interval: 15s
@@ -1629,8 +1663,8 @@ configs:
                       cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "8009"
-                      model_path: "google/gemma-4-31B-it-qat-w4a16-ct"
-                      precision: "w4a16"
+                      model_path: "RedHatAI/gemma-4-31B-it-FP8-block"
+                      precision: "fp8"
                       instance: "2"
               - job_name: sglang-model-sg-flux-2-klein-4b-1
                 scrape_interval: 15s
