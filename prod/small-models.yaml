@@ -2139,28 +2139,38 @@ configs:
       }
       trap cleanup TERM INT
 
-      # Health check directly on backends (no auth needed on raw vLLM/SGLang containers)
+      # Health check via the host-published port (HOST_IP:<port>), NOT the
+      # compose service DNS name. A service-name probe fails with curl (6)
+      # "Could not resolve host" if the registrar loses compose-network DNS
+      # (e.g. after a backend container is recreated independently), wedging
+      # every port's health check so all 9 models silently drop to 0 backends.
+      # HOST_IP:<port> is the endpoint model-proxy actually routes to and never
+      # depends on inter-container DNS. See cvm-compose-files#57. ($1 = host:port)
       check_chat() {
-        curl -sf --max-time 45 -X POST "http://$$1:8000/v1/chat/completions" \
+        curl -sf --max-time 45 -X POST "http://$$1/v1/chat/completions" \
           -H "Content-Type: application/json" \
           -d "{\"model\":\"$$2\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":1}" \
           > /dev/null 2>&1
       }
 
+      # For non-chat backends (embeddings, reranker, flux, whisper, privacy-filter)
+      check_models() {
+        curl -sf --max-time 10 "http://$$1/v1/models" > /dev/null 2>&1
+      }
+
       check_port() {
         case $$1 in
-          8001) check_chat model-vllm-gptoss-120b-mxfp4-tp1-r1 "openai/gpt-oss-120b" ;;
-          8002) curl -sf --max-time 10 "http://model-sg-flux2-klein-4b-tp1:8000/v1/models" > /dev/null 2>&1 ;;
-          8003) check_chat model-vllm-qwen3vl-30b-a3b-fp8-tp1 "Qwen/Qwen3-VL-30B-A3B-Instruct" ;;
-          8004) curl -sf --max-time 10 "http://model-vllm-qwen3-embedding-0.6b-tp1:8000/v1/models" > /dev/null 2>&1 ;;
-          8005) curl -sf --max-time 10 "http://model-vllm-qwen3-reranker-0.6b-tp1:8000/v1/models" > /dev/null 2>&1 ;;
-          8006) curl -sf --max-time 10 "http://model-vllm-whisper-large-v3-tp1:8000/v1/models" > /dev/null 2>&1 ;;
-          8007) curl -sf --max-time 10 "http://model-privacy-filter:8000/v1/models" > /dev/null 2>&1 ;;
-          8008) check_chat model-sg-qwen36-35b-a3b-fp8-tp1-r1 "Qwen/Qwen3.6-35B-A3B-FP8" ;;
-          8009)
-            check_chat model-vllm-gemma4-31b-fp8-tp1-r1 "google/gemma-4-31B-it" &&
-            check_chat model-vllm-gemma4-31b-fp8-tp1-r2 "google/gemma-4-31B-it"
-            ;;
+          8001) check_chat "$${HOST_IP}:8001" "openai/gpt-oss-120b" ;;
+          8002) check_models "$${HOST_IP}:8002" ;;
+          8003) check_chat "$${HOST_IP}:8003" "Qwen/Qwen3-VL-30B-A3B-Instruct" ;;
+          8004) check_models "$${HOST_IP}:8004" ;;
+          8005) check_models "$${HOST_IP}:8005" ;;
+          8006) check_models "$${HOST_IP}:8006" ;;
+          8007) check_models "$${HOST_IP}:8007" ;;
+          8008) check_chat "$${HOST_IP}:8008" "Qwen/Qwen3.6-35B-A3B-FP8" ;;
+          # gemma has two replicas behind this host port (nginx LB); a single
+          # host-port probe verifies the endpoint model-proxy routes to.
+          8009) check_chat "$${HOST_IP}:8009" "google/gemma-4-31B-it" ;;
         esac
       }
 

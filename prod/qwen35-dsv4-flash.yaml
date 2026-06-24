@@ -879,9 +879,14 @@ configs:
       }
       trap cleanup TERM INT
 
+      # $1 = host:port. Probe the host-published port via HOST_IP, not the
+      # compose service DNS name: a service-name probe fails with curl (6)
+      # "Could not resolve host" if the registrar loses compose-network DNS
+      # (e.g. after a backend is recreated independently), wedging the health
+      # check so every model drops to 0 backends. See cvm-compose-files#57.
       check_chat() {
         status=$$(curl -sS --connect-timeout 10 --max-time 45 -o /dev/null -w "%{http_code}" \
-          -X POST "http://$$1:8000/v1/chat/completions" \
+          -X POST "http://$$1/v1/chat/completions" \
           -H "Content-Type: application/json" \
           -d "{\"model\":\"$$2\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":1}")
         curl_status=$$?
@@ -914,11 +919,10 @@ configs:
 
       check_port() {
         case $$1 in
-          8000) check_chat model-sg-qwen35-122b-fp8-tp4 "Qwen/Qwen3.5-122B-A10B" ;;
-          8001)
-            check_chat model-sg-dsv4-flash-fp4-tp2-r1 "deepseek-ai/DeepSeek-V4-Flash" &&
-            check_chat model-sg-dsv4-flash-fp4-tp2-r2 "deepseek-ai/DeepSeek-V4-Flash"
-            ;;
+          8000) check_chat "$${HOST_IP}:8000" "Qwen/Qwen3.5-122B-A10B" ;;
+          # dsv4-flash has two replicas behind this host port (nginx LB); a
+          # single host-port probe verifies the endpoint model-proxy routes to.
+          8001) check_chat "$${HOST_IP}:8001" "deepseek-ai/DeepSeek-V4-Flash" ;;
         esac
       }
 
