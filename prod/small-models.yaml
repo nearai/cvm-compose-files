@@ -186,7 +186,7 @@ x-gemma-4-31b-common: &gemma-4-31b-common
   <<: *vllm-common
   image: vllm/vllm-openai@sha256:960ac5b3fda0547c3ce64d8f69bae9fa242d5ae5382fc74a98cd8ef13950e403  # vLLM v0.23.1rc1 — FA4 gemma-4 attention (PR #42175). DO NOT upgrade past RC1: nightly has a 1.9x gemma-4 attention regression. Matches dsv4-qwen36-gemma4.yaml.
   # RedHatAI FP8-block (W8A8) on vLLM FA4 — ~1.9x faster prefill than the forced-Triton W4A16/QAT
-  # path it replaces, quality identical, and PROFITABLE where W4A16 lost money. Brought to parity
+  # path it replaces, with identical quality. Brought to parity
   # with the optimized dsv4-qwen36-gemma4.yaml deployment (same image/checkpoint/flags) so all
   # gemma-4-31b.completions.near.ai backends serve the same fast FP8 path. Each prod Gemma GPU runs
   # an independent TP1 replica (GPUs 5,6 here, dedicated — FP8-block ~31GB fits gmu 0.80) and serves
