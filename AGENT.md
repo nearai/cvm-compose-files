@@ -25,6 +25,31 @@ Files were moved from the repo root into `prod/` and `experiments/` in this PR. 
 - **Experiment**: `experiments/<Model>-<variant>-test.yaml` — e.g. `experiments/GLM-5.1-AWQ-4bit-test.yaml`. The `-test` suffix is mandatory for anything not meeting the prod-ready checklist.
 - **Operational utility**: root-level, descriptive — `cleanup-hf-model.yaml`. These are added to `EXCLUDED_FILES` in the validator.
 
+## Container and service naming
+
+Every service's `container_name` **must equal its service key**. The name is the container's internal DNS name, so it is the literal string used in every cross-reference (`VLLM_BACKEND_URLS`, `VLLM_BASE_URL`, nginx `proxy_pass`, prometheus scrape `targets`, datadog `openmetrics_endpoint`, `depends_on`, registrar `check_chat`). Renaming a service means updating all of those in the same change.
+
+This is an **internal** naming layer — distinct from the external API/SNI identifiers in [Model naming and SNI domains](#model-naming-and-sni-domains). The container token is compact (`glm52`, `qwen36-27b`); the SNI is hyphen-versioned (`glm-5-2`, `qwen3-6-27b`). They are not interchangeable; do not derive one from the other.
+
+| Service type | Pattern | Example |
+|--------------|---------|---------|
+| Engine (vLLM/SGLang) | `model-<engine>-<short>-<quant>-tp<N>[-r<i>]` | `model-sg-glm52-w4afp8-tp8`, `model-vllm-gemma4-31b-fp8-tp1-r1` |
+| Inference proxy | `proxy-<short>` | `proxy-glm52`, `proxy-gemma4-31b` |
+| DCGM exporter | `dcgm-<short>` | `dcgm-glm52` |
+| Front nginx | `nginx` | `nginx` |
+| Registrar | `model-proxy-registrar` | (fixed) |
+| Model downloader | `model-downloader` | (fixed) |
+| OTel collector | `otelcol-contrib` | (fixed) |
+
+Rules:
+
+1. **`<engine>` is `sg` (SGLang) or `vllm` — and must match the actual engine.** The engine is determined by the `image:` (`lmsysorg/sglang*` → `sg`, `vllm/vllm-openai*` → `vllm`), not by historical naming. Do not label an SGLang container `vllm-*`.
+2. **`<short>`** is the compact model token: drop dots, include size/variant — `glm52`, `gemma4-31b`, `qwen35-122b`, `qwen36-35b-a3b`, `dsv4-flash`, `gptoss-120b`.
+3. **`<quant>`** (`fp8`, `w4afp8`, `mxfp4`, `awq`, …) is included for quantized engine containers; omit it for native-precision models (`model-vllm-whisper-large-v3-tp1`, `model-sg-flux2-klein-4b-tp1`).
+4. **`tp<N>`** is the engine's tensor-parallel size. The proxy and dcgm are not tensor-parallel, so their names are **model-only** (`proxy-<short>`, `dcgm-<short>`) — no `-tp`, no quant.
+5. **Replicas** use `-r1/-r2/-r3` (never `-1/-2` or `-a/-b`), and **only when there is more than one replica** — a single replica gets no suffix.
+6. **Custom/shared services keep descriptive names** when they don't fit the engine grammar: `model-privacy-filter` (custom non-vLLM/SGLang image), `dcgm-shared-gpu7` (shared GPU exporter).
+
 ## Model naming and SNI domains
 
 ### The served name is the API contract — the checkpoint is an implementation detail
@@ -129,6 +154,8 @@ labels:
 ```
 
 `source` must equal `nearai.otel.service` when both are set. `service` must equal `nearai.otel.service`.
+
+**`service`/`source` are the product/role, not the container name.** Use the engine or component identity — `sglang`, `vllm`, `vllm-proxy`, `dcgm-exporter`, `nginx`, `model-proxy-registrar`, `model-downloader` — the **same value across all of**: `ad.logs` `source`+`service`, `ad.instances` `service`, `nearai.otel.service`/`nearai.otel.source`, and the collector's prometheus relabel `service`/`source`. This is deliberately decoupled from the container name: e.g. the DCGM exporter container is `dcgm-<short>` (per-model, for `container_name`/scrape target) but its `service`/`source` stays `dcgm-exporter` (the product). Per-model and per-replica dimensions live in the **tags**, not in `service` — use the `model:` tag for the model and `instance:1/2/3` for replicas (never `replica:a/b`; the replica index mirrors the engine container's `-r<i>` suffix).
 
 ### Required OTel scrape labels (`nearai.otel.*`)
 

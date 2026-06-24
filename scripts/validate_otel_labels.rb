@@ -168,6 +168,23 @@ def validate_datadog_instances(file, service_name, service, log_tags, errors)
 
     add_error(errors, file, "services.#{service_name}.labels.com.datadoghq.ad.instances", "#{key} tag #{instance_tags[key].inspect} does not match log tag #{log_tags[key].inspect}")
   end
+
+  # The instances "service" is the product/role (sglang, vllm, vllm-proxy, dcgm-exporter, ...),
+  # not the container name. It must match nearai.otel.service — the same rule already enforced
+  # for the ad.logs "service". Keeps all service-identity labels aligned across a container.
+  # Prod-only: experiments/ is a relaxed zone (not held to the full prod label contract), and
+  # carries pre-existing service-label drift we don't want to block iteration on.
+  if file.start_with?("prod/")
+    otel_service = service.dig("labels", "nearai.otel.service")
+    instance_service = first["service"]
+    # Only validate when both values are present. The DCGM exporter's ad.instances
+    # omits the "service" key by design (tags-only), so instance_service is nil and
+    # this check intentionally skips it — dcgm identity is asserted via container_name
+    # + scrape target, not a service label.
+    if otel_service && instance_service && instance_service != otel_service
+      add_error(errors, file, "services.#{service_name}.labels.com.datadoghq.ad.instances", "service #{instance_service.inspect} does not match nearai.otel.service #{otel_service.inspect}")
+    end
+  end
 rescue StandardError => e
   add_error(errors, file, "services.#{service_name}.labels.com.datadoghq.ad.instances", "invalid JSON: #{e.message}")
 end
