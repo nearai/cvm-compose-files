@@ -39,9 +39,9 @@
 # DeepEP + DP-attention high-throughput (sglang cookbook) is CC-INCOMPATIBLE: DeepEP's
 # GPU-initiated all-to-all crashes under PPCIE ("deep_ep.cpp:230 invalid argument"). Do not use.
 #
-# *** CONFIG: EAGLE 3/1/4 + --mem-fraction-static 0.80 + --cuda-graph-max-bs 128 ***
-#   This is the optimum from a full one-factor-at-a-time sweep (8xH200 CC, ~11.5k-in/1154-out
-#   production shape, 1->256 concurrency). It Pareto-dominates the prior 5/1/6 + mf0.72:
+# *** CONFIG: EAGLE 3/1/4 + --mem-fraction-static 0.78 + --cuda-graph-max-bs 128 ***
+#   The 0.80 baseline came from a full one-factor-at-a-time sweep (8xH200 CC, ~11.5k-in/1154-out
+#   production shape, 1->256 concurrency). It Pareto-dominated the prior 5/1/6 + mf0.72:
 #   throughput >= at every concurrency (c64/128/256 strictly higher; c256 +54%), TPOT lower
 #   everywhere (122/138/200ms vs 138/161/306 at c32/c64/c256), +22% KV pool (965k->1.18M tokens,
 #   still full 1M ctx), same SLO knee (~c32 at P99 TTFT 15s), quality unchanged (needle-PASS).
@@ -53,10 +53,13 @@
 #   EAGLE *draft* capture OOM (runs last, least free mem), and a runtime Xid 31 MMU fault under
 #   the first ~15k-token prefill that takes down the whole TP8 group via NCCL HeartbeatMonitor.
 #   (The 256-token validation that gated #97 never exercised production-shape prefill.) The fix
-#   is headroom. mem-frac 0.80 is SAFE here because 3/1/4's draft capture is light (~6.6GB ->
-#   ~13GB free after capture); the crash needed 0.85 + 5/1/6's heavy ~9GB capture. Validated:
-#   boots clean + full 1->256 sweep at ~15k with 0 errors / no Xid. cuda-graph-max-bs 128 = the
-#   sglang GLM-5.2 cookbook value (batches >128 run eager — compute-bound anyway).
+#   is headroom. mem-frac 0.80 was the validated baseline because 3/1/4's draft capture is light
+#   (~6.6GB -> ~13GB free after capture); the crash needed 0.85 + 5/1/6's heavy ~9GB capture.
+#   2026-07-02 canary: lower to 0.78 after live GLM-5.2 hit ~99% token usage and crashed, to give
+#   runtime kernels/graph replay more workspace while preserving every other serving knob. Validated:
+#   the prior 0.80 baseline boots clean + full 1->256 sweep at ~15k with 0 errors / no Xid.
+#   cuda-graph-max-bs 128 = the sglang GLM-5.2 cookbook value (batches >128 run eager —
+#   compute-bound anyway).
 #
 #   ALTERNATIVES (benchmarked, not chosen): 1/1/2 + mf0.80 = lowest TPOT (90ms@c32) but ~18%
 #   less throughput — pick only if absolute inter-token latency dominates. --speculative-adaptive
@@ -115,7 +118,7 @@ x-glm52-cmd: &glm52-cmd >
   --speculative-eagle-topk 1
   --speculative-num-draft-tokens 4
   --log-requests-level 0
-  --mem-fraction-static 0.80
+  --mem-fraction-static 0.78
   --max-running-requests 256
   --max-queued-requests 16
   --cuda-graph-max-bs 128
