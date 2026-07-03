@@ -25,7 +25,7 @@
 #   re-validation (#29837 / #29954 load regressions were live as of 07-02).
 #
 # FLAGS (each measured, see REPORT.md):
-#   --chunked-prefill-size 32768 AND --max-prefill-tokens 32768 — BOTH required, effective
+#   --chunked-prefill-size 8192 AND --max-prefill-tokens 16384 — BOTH required, effective
 #     budget is min() (sglang #29358); tuned prefill = +15-17% throughput at prod shape.
 #   --max-running-requests 96 — explicit: spec decode silently resets it to 48 otherwise.
 #   --max-queued-requests 16 — bounded queue -> 503 -> cloud-api retry_with_fallback to the
@@ -97,15 +97,12 @@ x-downloader-common: &downloader-common
 
 # Shared sglang args (identical across both backends - keep tuning here so the
 # two replicas never drift). Flags rationale in the header; measurements in REPORT.md.
-# ===== PRODUCTION A/B: the two replicas run IDENTICAL configs except the prefill budget =====
-# r1 (cmd-a): chunked-prefill 32768 / max-prefill-tokens 32768 — candidate (sglang cookbook
-#   +34-78% tuned-prefill claim; issue #29358 +10% at 64k prompts; our combined-stack bench win).
-# r2 (cmd-b): chunked-prefill 8192 / max-prefill-tokens 16384 — Phala's shipped default
-#   (checkpoint authors), the conservative well-tested budget.
-# Both sit behind the SAME least-conn proxy -> near-identical live traffic; Datadog separates
-# them via instance:1 / instance:2 tags (sglang TTFT/queue/throughput per replica).
-# PROMOTION: after ~1 week of prod data, converge BOTH replicas on the winner (TTFT p95 at
-# equal admitted load; tie -> keep 8192). Everything else below is the measured campaign winner.
+# PREFILL BUDGET: 8192/16384 (Phala default) on BOTH replicas. Resolved by offline isolation
+# A/B (2026-07-03, solo-vs-solo, same GPUs, single variable): 32768/32768 was a TIE at the
+# operating range (+/-2%), +5-8% throughput past the knee but WORSE TTFT p95 (HOL blocking).
+# Tie -> conservative default per the agreed promotion rule. The two-anchor structure below is
+# kept so future contested flags can be A/B'd per replica (Grafana: glm52-prefill-ab dashboard,
+# per-container_name series).
 x-glm52-cmd-a: &glm52-cmd-a >
   sglang serve
   --model-path PhalaCloud/GLM-5.2-W4AFP8
@@ -122,8 +119,8 @@ x-glm52-cmd-a: &glm52-cmd-a >
   --log-requests-level 0
   --mem-fraction-static 0.85
   --context-length 262144
-  --chunked-prefill-size 32768
-  --max-prefill-tokens 32768
+  --chunked-prefill-size 8192
+  --max-prefill-tokens 16384
   --max-running-requests 96
   --max-queued-requests 16
   --cuda-graph-max-bs 64
