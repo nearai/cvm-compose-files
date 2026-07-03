@@ -6,6 +6,21 @@
 # AWQ-calibrated; dense/attn/shared-experts/MTP stay FP8/BF16) the freed VRAM lets this config
 # serve the FULL 1M context at TP8, which the FP8 build (capped at 500K) cannot.
 #
+# *** LONG-CONTEXT TIER (dual-domain registration) ***
+#   Alongside the 2xTP4 fleet (GLM-5.2-W4AFP8-SGL-2xTP4.yaml, ctx 262144), this TP8 host is
+#   the 1M-context tier. It registers under TWO domains:
+#     - glm-5-2.completions.near.ai       (standard pool member, via :8000 as before)
+#     - glm-5-2-long.completions.near.ai  (long-context tier; cloud-api routes requests whose
+#       estimated input exceeds the TP4 fleet's 262k window here, with Chutes as overflow)
+#   The long domain is advertised through a discovery-only nginx stub on :8001 that reports the
+#   SYNTHETIC model id "z-ai/glm-5.2-long". NEVER register the canonical id under the long
+#   domain: model-proxy's model->domain map is one-domain-per-model-id, LAST-WRITER-WINS
+#   (model-proxy src/registry.rs register_model_domain), so re-mapping z-ai/glm-5.2 would fight
+#   the 2xTP4 registrars every cycle and flap routing for the whole fleet. The synthetic id
+#   exists ONLY inside model-proxy discovery — SGLang, signing (KMS key path is keyed on
+#   MODEL_NAME=z-ai/glm-5.2), attestation, billing, and the customer catalog all keep the
+#   canonical id; traffic on both domains lands on the same nginx:8444 -> proxy-glm52 path.
+#
 # VALIDATED on the dev VM (8xH200, CC on; sglang 0.5.13.post1 — the staging soak target):
 #   - QUALITY: 10/10 on a temp=0 suite (math/reasoning/code/instruction/JSON/multilingual),
 #     output indistinguishable from the FP8 baseline. AWQ calibration holds (no degeneration).
@@ -152,6 +167,7 @@ services:
         condition: service_started
     ports:
       - "8000:80"
+      - "8001:8001"
       - "8444:443"
     volumes:
       - certs:/etc/letsencrypt:ro
@@ -176,6 +192,7 @@ services:
     environment:
       - HOST_IP=${HOST_IP}
       - HTTP_PORT=${HTTP_PORT:-8000}
+      - LONG_HTTP_PORT=${LONG_HTTP_PORT:-8001}
       - TLS_PORT=${TLS_PORT:-8444}
       - MODEL_PROXY_TOKEN=${MODEL_PROXY_TOKEN}
       - PROXY_TOKEN=${PROXY_TOKEN}
@@ -594,6 +611,12 @@ configs:
       TOKEN="$${MODEL_PROXY_TOKEN}"
       INFERENCE_TOKEN="$${PROXY_TOKEN}"
       ENDPOINT="$${HOST_IP}:$${HTTP_PORT}"
+      # Long-context tier: a second, discovery-only endpoint (nginx stub on :8001) advertises
+      # the synthetic id z-ai/glm-5.2-long so model-proxy attaches this host to the long domain.
+      # DO NOT register the canonical z-ai/glm-5.2 under the long domain — model-proxy's
+      # model->domain map is last-writer-wins and the 2xTP4 registrars would fight it (see the
+      # LONG-CONTEXT TIER note in the file header).
+      LONG_ENDPOINT="$${HOST_IP}:$${LONG_HTTP_PORT}"
       REGISTERED=false
       FAILURE_COUNT=0
       MAX_RETRIES=3
@@ -627,8 +650,9 @@ configs:
       }
 
       cleanup() {
-        echo "SIGTERM received, unregistering $$ENDPOINT"
+        echo "SIGTERM received, unregistering $$ENDPOINT and $$LONG_ENDPOINT"
         unregister_endpoint "$$ENDPOINT"
+        unregister_endpoint "$$LONG_ENDPOINT"
         REGISTERED=false
         exit 0
       }
@@ -637,8 +661,10 @@ configs:
       mark_registered() {
         register_endpoint "$$ENDPOINT" "$${TLS_PORT}"
         register_model "z-ai/glm-5.2" "glm-5-2.completions.near.ai"
+        register_endpoint "$$LONG_ENDPOINT" "$${TLS_PORT}"
+        register_model "z-ai/glm-5.2-long" "glm-5-2-long.completions.near.ai"
         if [ "$$REGISTERED" = false ]; then
-          echo "[GLM-5.2-W4AFP8-SGL-TP8] Registered z-ai/glm-5.2 (TP8 FP8) at $$ENDPOINT"
+          echo "[GLM-5.2-W4AFP8-SGL-TP8] Registered z-ai/glm-5.2 (TP8 1M) at $$ENDPOINT + long tier at $$LONG_ENDPOINT"
         fi
         REGISTERED=true
       }
@@ -712,8 +738,9 @@ configs:
             FAILURE_COUNT=$$((FAILURE_COUNT + 1))
             echo "[GLM-5.2-W4AFP8-SGL-TP8] Health check failed ($$FAILURE_COUNT/$$MAX_RETRIES)"
             if [ "$$REGISTERED" = true ] && [ "$$FAILURE_COUNT" -ge "$$MAX_RETRIES" ]; then
-              echo "[GLM-5.2-W4AFP8-SGL-TP8] Retry limit reached, unregistering $$ENDPOINT"
+              echo "[GLM-5.2-W4AFP8-SGL-TP8] Retry limit reached, unregistering $$ENDPOINT and $$LONG_ENDPOINT"
               unregister_endpoint "$$ENDPOINT"
+              unregister_endpoint "$$LONG_ENDPOINT"
               REGISTERED=false
               echo "[GLM-5.2-W4AFP8-SGL-TP8] Exiting to refresh DNS (container will auto-restart)"
               exit 1
@@ -758,10 +785,31 @@ configs:
           }
       }
 
+      # Discovery-only stub for the long-context tier: model-proxy probes this endpoint's
+      # /v1/models and maps the synthetic id to glm-5-2-long.completions.near.ai (routing
+      # still targets :8444 -> proxy-glm52; see the LONG-CONTEXT TIER note in the header).
+      # The synthetic id must never appear in SGLang, the catalog, or any serving-path config.
+      server {
+          listen 8001;
+          access_log /var/log/nginx/access.log json_combined;
+          location = /v1/models {
+              default_type application/json;
+              return 200 '{"object":"list","data":[{"id":"z-ai/glm-5.2-long","object":"model","owned_by":"nearai"}]}';
+          }
+          location / {
+              return 404;
+          }
+      }
+
       server {
           listen 443 ssl;
           http2 on;
-          server_name glm-5-2.completions.near.ai;
+          # Single (default) server block on :443, so ALL SNIs arriving on 8444 are served
+          # here regardless of server_name — including rotation SNIs (glm-5-2-i0, ...) and the
+          # long-context domain. The names below are documentation of the domains model-proxy
+          # routes to this host; do not split into separate blocks or the default-server
+          # property that makes rotation SNIs work would need explicit regex coverage.
+          server_name glm-5-2.completions.near.ai glm-5-2-long.completions.near.ai;
           ssl_certificate /etc/letsencrypt/live/completions.near.ai/fullchain.pem;
           ssl_certificate_key /etc/letsencrypt/live/completions.near.ai/privkey.pem;
           ssl_protocols TLSv1.2 TLSv1.3;
