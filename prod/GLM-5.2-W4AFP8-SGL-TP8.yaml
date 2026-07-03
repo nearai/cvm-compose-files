@@ -797,8 +797,10 @@ configs:
       # shared backend's probe_address (probe_address is first-registered-wins), and
       # stale-endpoint eviction keeps working. An unconditional 200 here would keep the
       # long domain routing to a dead engine and mask wedged-backend detection.
+      # (default_server keeps scripts/validate_otel_labels.rb's public-port scan anchored
+      # on the serving blocks — this port is discovery-only, not the app's public port.)
       server {
-          listen 8001;
+          listen 8001 default_server;
           access_log /var/log/nginx/access.log json_combined;
           location = /v1/models {
               auth_request /_engine_health;
