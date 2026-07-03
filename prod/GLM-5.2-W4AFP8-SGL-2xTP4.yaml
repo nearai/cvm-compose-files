@@ -1,0 +1,933 @@
+# GLM-5.2-W4AFP8-SGL-2xTP4 — PhalaCloud/GLM-5.2-W4AFP8 (INT4 experts + FP8 activations) on SGLang, 2x TP4.
+#
+# TOPOLOGY: two co-resident TP4 sglang backends (GPUs 0-3 and 4-7) behind a SINGLE
+# nearaidev/vllm-proxy-rs that load-balances across both via VLLM_BACKEND_URLS
+# (least-connections, per-backend health/failover). nginx -> proxy -> {r1, r2}.
+# Same topology as GLM-5.1-SGL-AWQ-TP4.yaml, which this file is cloned from.
+#
+# WHY (glm52x campaign, gpu02-vm 2026-07-02/03, /dstack/persistent/bench/glm52x/REPORT.md):
+#   - Prod GLM-5.2 TP8 pain was 3 things: unbounded queue (92% of the 28.3s weighted TTFT),
+#     TP8 topology waste (comm-bound; 2xTP4 wins, as on 5.1), and — bench-side — all prior
+#     TP4 evaluations ran a pre-IndexShare-fix image that generated garbage past ~2k tokens.
+#   - W4AFP8 (~100 GB/GPU at TP4) fits 4xH200 with a 419k-token fp8 KV pool per replica
+#     at ctx 262144 / mem-fraction 0.85.
+#   - Measured (symmetric 2-replica load, quality-gated incl. 193k-token needle):
+#     prod shape 44.9k in / 770 out @ 0.14 rps/replica: ~5.8k in tok/s per replica,
+#     TTFT p95 <= 12s, TPOT p50 14-35 ms; box total ~11.5k in tok/s = > entire 07-02
+#     GLM-5.2 fleet offered load on ONE box. ~$7.6/GPU-h revenue at $1.40/$4.40 pricing.
+#     Co-residency retention 97.0% mean (no cross-replica all-reduce).
+#     6h soak (131 rounds, continuous 94k-token probes): quality 6/6 every round.
+#
+# IMAGE: lmsysorg/sglang v0.5.14 (2026-06-26), pinned by digest. REQUIRED >= v0.5.13:
+#   pre-IndexShare images serve GLM-5.2 long-context BROKEN (silent garbage past ~2k tok).
+#   v0.5.14 additionally fixes the low-concurrency decode regression (#28363) that
+#   v0.5.13.post1-era images carry, and PCG+DSA (#28644). Do NOT bump to ToT main without
+#   re-validation (#29837 / #29954 load regressions were live as of 07-02).
+#
+# FLAGS (each measured, see REPORT.md):
+#   --chunked-prefill-size 32768 AND --max-prefill-tokens 32768 — BOTH required, effective
+#     budget is min() (sglang #29358); tuned prefill = +15-17% throughput at prod shape.
+#   --max-running-requests 96 — explicit: spec decode silently resets it to 48 otherwise.
+#   --max-queued-requests 16 — bounded queue -> 503 -> cloud-api retry_with_fallback to the
+#     peer replica/host (the fix for the prod queueing pathology; same as GLM-5.1).
+#   --enforce-disable-flashinfer-allreduce-fusion — auto-enabled fusion has a prefill
+#     regression (sglang #28912); Phala ships this flag too.
+#   --cuda-graph-max-bs 64 — decode is KV-bound far below 64 at prod shapes; faster capture.
+#   EAGLE 5/1/6 + SGLANG_ENABLE_SPEC_V2=1 — beats 3/1/4 and no-spec at EVERY load level at
+#     TP4 (accept length ~3.1-4.6). Do NOT add mixed-chunk/num-continuous-decode-steps (5.1
+#     IMA crash combo), --enable-two-batch-overlap (hard-rejected on DSA), or
+#     --enable-dp-attention (EAGLE deadlock, sglang #29144).
+#
+# CONTEXT: 262144 (down from the TP8 file's 1M). Covers ~p97 of observed input sizes
+#   (07-02 distribution: p95 197k, p99 318k, max 950k). The >262k tail CANNOT be served at
+#   TP4 (419k-token KV pool); keep one TP8 host as the long-context tier during/after
+#   rollout, or accept 400s on >262k until a routing tier exists. CATALOG contextLength
+#   must be updated (customer-facing) before rollout.
+#
+# REVISION: pinned to 8dc3a42a (current HF default branch; the revision this campaign
+#   quality-gated). The TP8 file pins the older d975c19a — do not mix.
+#
+# OPS (CC/TEE cold-start runbook, learned the hard way — see REPORT.md):
+#   - Replica cold start is ~50 min (weight load + JIT + capture). compose-manager deploys:
+#     down-then-up per host, ONE host at a time; the two replicas within a host stagger
+#     their rendezvous via distinct --dist-init-addr ports (same 29500, isolated per-container namespace).
+#   - Never kill -9 sglang ranks (D-state driver cleanup wedges the GPU ~15 min).
+#   - Compile caches are per-replica volumes (compile_cache_a/b) — never share a live
+#     cache between two cold-starting replicas (JIT write races corrupt kernels -> SIGILL).
+#
+# *** DIST-INIT (--dist-init-addr 127.0.0.1:295NN): ***
+#   On the dstack bridge network, sglang's default distributed-init address resolves to
+#   0.0.0.0 and TP rank rendezvous times out after 600s. Forcing loopback fixes it. The two
+#   backends are in separate net namespaces, but distinct ports are used anyway for clarity.
+
+x-logging-conf: &logging-conf
+  driver: "json-file"
+  options:
+    max-size: "100m"
+    max-file: "10"
+    labels: "com.datadoghq.ad.logs,com.docker.compose.service"
+
+x-nvidia: &nvidia
+  runtime: nvidia
+  ipc: host
+  ulimits:
+    memlock: -1
+    nofile:
+      soft: 65535
+      hard: 65535
+
+x-vllm-proxy-common: &vllm-proxy-common
+  image: nearaidev/vllm-proxy-rs@sha256:b183677a5d32267539b9b21ec45327a4f3be0a013afeb608c68c4d76e9472e36
+  user: root
+  privileged: true
+  <<: *nvidia
+  extra_hosts:
+    - "compose-manager:host-gateway"
+  volumes:
+    - /var/run/dstack.sock:/var/run/dstack.sock
+    - certs:/etc/letsencrypt:ro
+  restart: unless-stopped
+  logging: *logging-conf
+
+x-downloader-common: &downloader-common
+  image: ghcr.io/astral-sh/uv:python3.11-bookworm-slim@sha256:4f5d923c9dcea037f57bda425dd209f3ec643da2f0b74227f68d09dab0b3bb36
+  entrypoint: ["sh", "-c"]
+  restart: "no"
+  logging: *logging-conf
+
+# Shared sglang args (identical across both backends - keep tuning here so the
+# two replicas never drift). Flags rationale in the header; measurements in REPORT.md.
+# ===== PRODUCTION A/B: the two replicas run IDENTICAL configs except the prefill budget =====
+# r1 (cmd-a): chunked-prefill 32768 / max-prefill-tokens 32768 — candidate (sglang cookbook
+#   +34-78% tuned-prefill claim; issue #29358 +10% at 64k prompts; our combined-stack bench win).
+# r2 (cmd-b): chunked-prefill 8192 / max-prefill-tokens 16384 — Phala's shipped default
+#   (checkpoint authors), the conservative well-tested budget.
+# Both sit behind the SAME least-conn proxy -> near-identical live traffic; Datadog separates
+# them via instance:1 / instance:2 tags (sglang TTFT/queue/throughput per replica).
+# PROMOTION: after ~1 week of prod data, converge BOTH replicas on the winner (TTFT p95 at
+# equal admitted load; tie -> keep 8192). Everything else below is the measured campaign winner.
+x-glm52-cmd-a: &glm52-cmd-a >
+  sglang serve
+  --model-path PhalaCloud/GLM-5.2-W4AFP8
+  --revision 8dc3a42a45cf2a6c47d241fd2c226afde73f1316
+  --served-model-name z-ai/glm-5.2
+  --quantization w4afp8
+  --tp 4
+  --dist-init-addr 127.0.0.1:29500
+  --disable-shared-experts-fusion
+  --disable-custom-all-reduce
+  --kv-cache-dtype fp8_e4m3
+  --reasoning-parser glm45
+  --tool-call-parser glm47
+  --log-requests-level 0
+  --mem-fraction-static 0.85
+  --context-length 262144
+  --chunked-prefill-size 32768
+  --max-prefill-tokens 32768
+  --max-running-requests 96
+  --max-queued-requests 16
+  --cuda-graph-max-bs 64
+  --enforce-disable-flashinfer-allreduce-fusion
+  --speculative-algorithm EAGLE
+  --speculative-num-steps 5
+  --speculative-eagle-topk 1
+  --speculative-num-draft-tokens 6
+  --watchdog-timeout 1800
+  --port 8000
+  --host 0.0.0.0
+  --enable-cache-report
+  --enable-metrics
+  --trust-remote-code
+
+x-glm52-cmd-b: &glm52-cmd-b >
+  sglang serve
+  --model-path PhalaCloud/GLM-5.2-W4AFP8
+  --revision 8dc3a42a45cf2a6c47d241fd2c226afde73f1316
+  --served-model-name z-ai/glm-5.2
+  --quantization w4afp8
+  --tp 4
+  --dist-init-addr 127.0.0.1:29500
+  --disable-shared-experts-fusion
+  --disable-custom-all-reduce
+  --kv-cache-dtype fp8_e4m3
+  --reasoning-parser glm45
+  --tool-call-parser glm47
+  --log-requests-level 0
+  --mem-fraction-static 0.85
+  --context-length 262144
+  --chunked-prefill-size 8192
+  --max-prefill-tokens 16384
+  --max-running-requests 96
+  --max-queued-requests 16
+  --cuda-graph-max-bs 64
+  --enforce-disable-flashinfer-allreduce-fusion
+  --speculative-algorithm EAGLE
+  --speculative-num-steps 5
+  --speculative-eagle-topk 1
+  --speculative-num-draft-tokens 6
+  --watchdog-timeout 1800
+  --port 8000
+  --host 0.0.0.0
+  --enable-cache-report
+  --enable-metrics
+  --trust-remote-code
+
+x-glm52-model-env: &glm52-model-env
+  HF_TOKEN: ${HUGGING_FACE_HUB_TOKEN}
+  HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-0}
+  NVIDIA_DRIVER_CAPABILITIES: compute,utility
+  OPENBLAS_L2_SIZE: "2097152"
+  NCCL_DEBUG: WARN
+  # EAGLE spec-decode uses the V2 worker path (topk=1 chain). Validated config.
+  SGLANG_ENABLE_SPEC_V2: "1"
+  # Persist the inductor/triton compile caches so an UNCHANGED config skips
+  # RECOMPILE on restart (default: ephemeral /tmp/torchinductor_root + /root/.triton,
+  # wiped on container recreate). Content-addressed, so a changed config only
+  # misses the kernels that actually changed.
+  # MEASURED CAVEAT (campaign iter 7-8): this saves only the compile slice
+  # (~10-15min). The DOMINANT startup cost is weight-load (~11min) + cuda-graph
+  # capture-RECORD (~12min), both per-process and NOT file-cacheable — so restart
+  # is somewhat faster, NOT an instant warm replay (~40min cold stays ~25-30min).
+  TORCHINDUCTOR_CACHE_DIR: /root/.cache/torchinductor
+  TRITON_CACHE_DIR: /root/.cache/triton
+
+services:
+  model-downloader:
+    <<: *downloader-common
+    container_name: model-downloader
+    command:
+      - |
+        set -e
+        echo "Downloading PhalaCloud/GLM-5.2-W4AFP8..."
+        uvx --from 'huggingface_hub[hf_xet]' hf download PhalaCloud/GLM-5.2-W4AFP8 --revision 8dc3a42a45cf2a6c47d241fd2c226afde73f1316
+        echo "Download complete."
+    volumes:
+      - huggingface_cache:/root/.cache/huggingface
+    environment:
+      - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"model-downloader","service":"model-downloader","tags":["model:PhalaCloud/GLM-5.2-W4AFP8","deployment:GLM-5.2-W4AFP8-SGL-2xTP4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+
+  nginx:
+    image: nginx@sha256:1d13701a5f9f3fb01aaa88cef2344d65b6b5bf6b7d9fa4cf0dca557a8d7702ba
+    container_name: nginx
+    depends_on:
+      - proxy-glm52
+    command: /bin/sh -c 'while :; do sleep 6h; nginx -s reload; done & nginx -g "daemon off;"'
+    ports:
+      - "8000:80"
+      - "8444:443"
+    volumes:
+      - certs:/etc/letsencrypt:ro
+    configs:
+      - source: nginx_conf
+        target: /etc/nginx/conf.d/default.conf
+        mode: 0644
+    restart: unless-stopped
+    logging: *logging-conf
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"nginx","service":"nginx","tags":["model:PhalaCloud/GLM-5.2-W4AFP8","deployment:GLM-5.2-W4AFP8-SGL-2xTP4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000"]}]'
+
+  model-proxy-registrar:
+    image: curlimages/curl@sha256:d94d07ba9e7d6de898b6d96c1a072f6f8266c687af78a74f380087a0addf5d17
+    container_name: model-proxy-registrar
+    entrypoint: ["sh", "/register.sh"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "[ $$(( $$(date +%s) - $$(cat /tmp/registrar_alive 2>/dev/null || echo 0) )) -lt 180 ]"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 1200s
+    environment:
+      - HOST_IP=${HOST_IP}
+      - HTTP_PORT=${HTTP_PORT:-8000}
+      - TLS_PORT=${TLS_PORT:-8444}
+      - MODEL_PROXY_TOKEN=${MODEL_PROXY_TOKEN}
+    configs:
+      - source: registrar_script
+        target: /register.sh
+        mode: 0755
+    logging: *logging-conf
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"model-proxy-registrar","service":"model-proxy-registrar","tags":["model:PhalaCloud/GLM-5.2-W4AFP8","deployment:GLM-5.2-W4AFP8-SGL-2xTP4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+
+  # Single proxy fronting BOTH TP4 backends (VLLM_BACKEND_URLS = least-conn pool).
+  proxy-glm52:
+    <<: *vllm-proxy-common
+    container_name: proxy-glm52
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - CLOUD_API_URL=https://cloud-api.near.ai
+      - CLOUD_API_USAGE_TOKEN=${CLOUD_API_USAGE_TOKEN}
+      - COMPOSE_MANAGER_URL=http://compose-manager:8080
+      - LOG_FORMAT=json
+      - MODEL_NAME=z-ai/glm-5.2
+      - OHTTP_ENABLED=true
+      - TOKEN=${PROXY_TOKEN}
+      - FUSION_ENABLED=${FUSION_ENABLED}
+      - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
+      - VLLM_BACKEND_URLS=http://model-sg-glm52-w4a-tp4-r1:8000,http://model-sg-glm52-w4a-tp4-r2:8000
+      - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
+      - USE_NV_ATTESTATION_SDK=true
+      - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
+      - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:z-ai/glm-5.2","deployment:GLM-5.2-W4AFP8-SGL-2xTP4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "inference-proxy"
+      nearai.otel.service: "vllm-proxy"
+      nearai.otel.source: "vllm-proxy"
+      nearai.otel.container_name: "proxy-glm52"
+      nearai.otel.port: "8000"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "z-ai/glm-5.2"
+      nearai.otel.deployment: "GLM-5.2-W4AFP8-SGL-2xTP4"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
+
+  model-sg-glm52-w4a-tp4-r1:
+    <<: *nvidia
+    init: true
+    depends_on:
+      model-downloader:
+        condition: service_completed_successfully
+    image: lmsysorg/sglang@sha256:5027e95bf6ec536856b1b52a91d1f35ff5c564ab83e8a94758a169ff09bb8df3  # v0.5.14 (2026-06-26)
+    container_name: model-sg-glm52-w4a-tp4-r1
+    command: *glm52-cmd-a
+    volumes:
+      # compile_cache_a at /root/.cache persists inductor + triton + deep_gemm +
+      # flashinfer for replica a; huggingface_cache nests under it (shared weights).
+      - compile_cache_a:/root/.cache
+      - huggingface_cache:/root/.cache/huggingface
+    environment: *glm52-model-env
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["0","1","2","3"]
+              capabilities: [gpu]
+    restart: unless-stopped
+    stop_grace_period: 5m
+    logging: *logging-conf
+    labels:
+      com.datadoghq.ad.check_names: '["openmetrics"]'
+      com.datadoghq.ad.init_configs: "[{}]"
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:PhalaCloud/GLM-5.2-W4AFP8","deployment:GLM-5.2-W4AFP8-SGL-2xTP4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:1"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-sg-glm52-w4a-tp4-r1:8000/metrics", "histogram_buckets_as_distributions": true, "metrics":["sglang:*"], "service": "sglang", "tags":["model:PhalaCloud/GLM-5.2-W4AFP8","instance:1","ip:${HOST_IP}","port:8000"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "sglang"
+      nearai.otel.service: "sglang"
+      nearai.otel.source: "sglang"
+      nearai.otel.container_name: "model-sg-glm52-w4a-tp4-r1"
+      nearai.otel.port: "8000"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "PhalaCloud/GLM-5.2-W4AFP8"
+      nearai.otel.deployment: "GLM-5.2-W4AFP8-SGL-2xTP4"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
+
+  model-sg-glm52-w4a-tp4-r2:
+    <<: *nvidia
+    init: true
+    depends_on:
+      model-downloader:
+        condition: service_completed_successfully
+    image: lmsysorg/sglang@sha256:5027e95bf6ec536856b1b52a91d1f35ff5c564ab83e8a94758a169ff09bb8df3  # v0.5.14 (2026-06-26)
+    container_name: model-sg-glm52-w4a-tp4-r2
+    command: *glm52-cmd-b
+    volumes:
+      - compile_cache_b:/root/.cache
+      - huggingface_cache:/root/.cache/huggingface
+    environment: *glm52-model-env
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["4","5","6","7"]
+              capabilities: [gpu]
+    restart: unless-stopped
+    stop_grace_period: 5m
+    logging: *logging-conf
+    labels:
+      com.datadoghq.ad.check_names: '["openmetrics"]'
+      com.datadoghq.ad.init_configs: "[{}]"
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:PhalaCloud/GLM-5.2-W4AFP8","deployment:GLM-5.2-W4AFP8-SGL-2xTP4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:2"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-sg-glm52-w4a-tp4-r2:8000/metrics", "histogram_buckets_as_distributions": true, "metrics":["sglang:*"], "service": "sglang", "tags":["model:PhalaCloud/GLM-5.2-W4AFP8","instance:2","ip:${HOST_IP}","port:8000"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "sglang"
+      nearai.otel.service: "sglang"
+      nearai.otel.source: "sglang"
+      nearai.otel.container_name: "model-sg-glm52-w4a-tp4-r2"
+      nearai.otel.port: "8000"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "PhalaCloud/GLM-5.2-W4AFP8"
+      nearai.otel.deployment: "GLM-5.2-W4AFP8-SGL-2xTP4"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
+
+  dcgm-glm52:
+    image: nvcr.io/nvidia/k8s/dcgm-exporter:4.5.2-4.8.1-distroless
+    container_name: dcgm-glm52
+    runtime: nvidia
+    cap_add:
+      - SYS_ADMIN
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+    ports:
+      - "9400:9400"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+    logging: *logging-conf
+    labels:
+      com.datadoghq.ad.check_names: '["dcgm"]'
+      com.datadoghq.ad.init_configs: "[{}]"
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint": "http://%%host%%:9400/metrics", "tags":["model:PhalaCloud/GLM-5.2-W4AFP8","deployment:GLM-5.2-W4AFP8-SGL-2xTP4","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:PhalaCloud/GLM-5.2-W4AFP8","deployment:GLM-5.2-W4AFP8-SGL-2xTP4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "dcgm"
+      nearai.otel.service: "dcgm-exporter"
+      nearai.otel.source: "dcgm-exporter"
+      nearai.otel.container_name: "dcgm-glm52"
+      nearai.otel.port: "9400"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "PhalaCloud/GLM-5.2-W4AFP8"
+      nearai.otel.deployment: "GLM-5.2-W4AFP8-SGL-2xTP4"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
+
+  otelcol-contrib:
+    image: otel/opentelemetry-collector-contrib@sha256:85ac41c2db88d0df9bd6145e608a3cb023f5d8443868adbfbbf66efb51087917
+    container_name: otelcol-contrib
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    user: "0:0"
+    mem_limit: "768m"
+    environment:
+      - MONITORING_INGEST_TOKEN=${MONITORING_INGEST_TOKEN:-}
+      - CVM_NAME=${CVM_NAME:-unknown}
+      - CVM_HOST=${CVM_HOST:-unknown}
+      - DD_HOSTNAME=${DD_HOSTNAME:-unknown}
+      - ENV=${ENV:-unknown}
+      - HOST_IP=${HOST_IP:-unknown}
+    expose:
+      - "4317"
+      - "4318"
+    volumes:
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - otelcol_app_storage:/var/lib/otelcol-contrib
+    configs:
+      - source: otelcol_app_config
+        target: /etc/otelcol-contrib/config.yaml
+        mode: 0444
+    restart: unless-stopped
+    logging:
+      driver: "local"
+      options:
+        max-size: "20m"
+        max-file: "3"
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"otelcol-contrib","service":"otelcol-contrib","tags":["deployment:GLM-5.2-W4AFP8-SGL-2xTP4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+
+networks:
+  default:
+    external: true
+    name: dstack_default
+
+volumes:
+  otelcol_app_storage:
+  huggingface_cache:
+  compile_cache_a:   # persisted inductor/triton/deep_gemm for replica a (warm restarts)
+  compile_cache_b:
+  certs:
+    external: true
+    name: certs
+
+configs:
+  otelcol_app_config:
+    content: |
+      receivers:
+        otlp:
+          protocols:
+            grpc:
+              endpoint: 0.0.0.0:4317
+            http:
+              endpoint: 0.0.0.0:4318
+
+        filelog/docker_containers:
+          include: [/var/lib/docker/containers/*/*-json.log]
+          start_at: end
+          storage: file_storage
+          include_file_path: true
+          operators:
+            - type: json_parser
+              parse_from: body
+              parse_to: attributes
+              timestamp:
+                parse_from: attributes.time
+                layout_type: gotime
+                layout: '2006-01-02T15:04:05.999999999Z07:00'
+              on_error: send_quiet
+            - type: move
+              from: attributes.log
+              to: body
+              if: 'attributes.log != nil'
+            - type: move
+              from: attributes.stream
+              to: attributes["log.iostream"]
+              if: 'attributes.stream != nil'
+            - type: remove
+              field: attributes.time
+              if: 'attributes.time != nil'
+            - type: regex_parser
+              parse_from: attributes["log.file.path"]
+              regex: '/var/lib/docker/containers/(?P<container_id>[a-f0-9]{12})[a-f0-9]*/'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'model:(?P<model>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'model_path:(?P<model_path>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'precision:(?P<precision>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'deployment:(?P<deployment>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'ip:(?P<ip>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'port:(?P<port>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'env:(?P<env>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'host:(?P<host>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'instance:(?P<instance>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'replica:(?P<replica>[^",\]]+)'
+              on_error: send_quiet
+            - type: add
+              field: attributes["service.name"]
+              value: cvm-docker
+
+        prometheus/apps:
+          config:
+            scrape_configs:
+              - job_name: sglang-model-sg-glm52-w4a-tp4-r1
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['model-sg-glm52-w4a-tp4-r1:8000']
+                    labels:
+                      service: "sglang"
+                      source: "sglang"
+                      container_name: "model-sg-glm52-w4a-tp4-r1"
+                      model: "PhalaCloud/GLM-5.2-W4AFP8"
+                      deployment: "GLM-5.2-W4AFP8-SGL-2xTP4"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      port: "8000"
+                      instance: "1"
+              - job_name: sglang-model-sg-glm52-w4a-tp4-r2
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['model-sg-glm52-w4a-tp4-r2:8000']
+                    labels:
+                      service: "sglang"
+                      source: "sglang"
+                      container_name: "model-sg-glm52-w4a-tp4-r2"
+                      model: "PhalaCloud/GLM-5.2-W4AFP8"
+                      deployment: "GLM-5.2-W4AFP8-SGL-2xTP4"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      port: "8000"
+                      instance: "2"
+              - job_name: dcgm-dcgm-glm52
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['dcgm-glm52:9400']
+                    labels:
+                      service: "dcgm-exporter"
+                      source: "dcgm-exporter"
+                      container_name: "dcgm-glm52"
+                      model: "PhalaCloud/GLM-5.2-W4AFP8"
+                      deployment: "GLM-5.2-W4AFP8-SGL-2xTP4"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      port: "9400"
+              - job_name: inference-proxy-proxy-glm52
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['proxy-glm52:8000']
+                    labels:
+                      service: "vllm-proxy"
+                      source: "vllm-proxy"
+                      container_name: "proxy-glm52"
+                      model: "z-ai/glm-5.2"
+                      deployment: "GLM-5.2-W4AFP8-SGL-2xTP4"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      port: "8000"
+
+        prometheus/self:
+          config:
+            scrape_configs:
+              - job_name: otelcol-app
+                scrape_interval: 30s
+                static_configs:
+                  - targets: ['localhost:8888']
+
+      processors:
+        memory_limiter:
+          check_interval: 1s
+          limit_mib: 512
+          spike_limit_mib: 128
+
+        resource:
+          attributes:
+            - key: host.name
+              value: $${env:DD_HOSTNAME}
+              action: upsert
+            - key: cvm.name
+              value: $${env:CVM_NAME}
+              action: upsert
+            - key: host.machine
+              value: $${env:CVM_HOST}
+              action: insert
+            - key: deployment.environment
+              value: $${env:ENV}
+              action: upsert
+            - key: service.namespace
+              value: near-ai
+              action: insert
+
+        transform/docker_metadata:
+          error_mode: ignore
+          log_statements:
+            - context: log
+              statements:
+                - set(attributes["service.name"], attributes["attrs"]["com.docker.compose.service"]) where attributes["attrs"] != nil and attributes["attrs"]["com.docker.compose.service"] != nil
+                - set(attributes["service.name"], ParseJSON(attributes["attrs"]["com.datadoghq.ad.logs"])[0]["service"]) where attributes["attrs"] != nil and attributes["attrs"]["com.datadoghq.ad.logs"] != nil
+                - set(attributes["log.source"], ParseJSON(attributes["attrs"]["com.datadoghq.ad.logs"])[0]["source"]) where attributes["attrs"] != nil and attributes["attrs"]["com.datadoghq.ad.logs"] != nil
+                - set(attributes["service"], attributes["service.name"]) where attributes["attrs"] != nil and attributes["attrs"]["com.datadoghq.ad.logs"] != nil and attributes["service.name"] != nil
+                - set(attributes["source"], attributes["log.source"]) where attributes["attrs"] != nil and attributes["attrs"]["com.datadoghq.ad.logs"] != nil and attributes["log.source"] != nil
+                - set(attributes["container.name"], attributes["attrs"]["com.docker.compose.service"]) where attributes["attrs"] != nil and attributes["attrs"]["com.docker.compose.service"] != nil
+
+        filter/app_logs:
+          error_mode: ignore
+          logs:
+            log_record:
+              - 'attributes["model"] == nil and attributes["deployment"] == nil'
+              - 'attributes["service.name"] == "compose-manager"'
+              - 'attributes["service.name"] == "compose-manager-launcher"'
+              - 'attributes["service.name"] == "otelcol-management"'
+              - 'attributes["service.name"] == "otelcol-contrib"'
+              - 'attributes["service.name"] == "datadog-agent"'
+
+        groupbyattrs/docker_service:
+          keys:
+            - service.name
+            - service
+            - container.name
+            - log.source
+            - source
+            - log.iostream
+            - model
+            - model_path
+            - precision
+            - deployment
+            - env
+            - host
+            - ip
+            - port
+            - instance
+            - replica
+
+        batch:
+          send_batch_size: 1024
+          send_batch_max_size: 2048
+          timeout: 5s
+
+      exporters:
+        otlphttp/gateway:
+          endpoint: https://telemetry.infra.near.ai
+          headers:
+            Authorization: "Bearer $${env:MONITORING_INGEST_TOKEN}"
+          sending_queue:
+            queue_size: 128
+            storage: file_storage
+
+      extensions:
+        file_storage:
+          directory: /var/lib/otelcol-contrib/storage
+          create_directory: true
+
+      service:
+        extensions: [file_storage]
+        pipelines:
+          logs/app:
+            receivers: [filelog/docker_containers]
+            processors: [memory_limiter, resource, transform/docker_metadata, filter/app_logs, groupbyattrs/docker_service, batch]
+            exporters: [otlphttp/gateway]
+          metrics/app:
+            receivers: [prometheus/apps]
+            processors: [memory_limiter, resource, batch]
+            exporters: [otlphttp/gateway]
+          metrics/otlp:
+            receivers: [otlp]
+            processors: [memory_limiter, resource, batch]
+            exporters: [otlphttp/gateway]
+          metrics/self:
+            receivers: [prometheus/self]
+            processors: [memory_limiter, resource, batch]
+            exporters: [otlphttp/gateway]
+          traces:
+            receivers: [otlp]
+            processors: [memory_limiter, resource, batch]
+            exporters: [otlphttp/gateway]
+        telemetry:
+          metrics:
+            address: localhost:8888
+          logs:
+            level: info
+
+  registrar_script:
+    content: |
+      #!/bin/sh
+      PROXY_URL="https://completions.near.ai"
+      TOKEN="$${MODEL_PROXY_TOKEN}"
+      ENDPOINT="$${HOST_IP}:$${HTTP_PORT}"
+      REGISTERED=false
+      FAILURE_COUNT=0
+      MAX_RETRIES=3
+
+      register_endpoint() {
+        echo "Registering endpoint $$1 with routing port $$2"
+        curl -sS --max-time 10 -X POST "$$PROXY_URL/register/endpoint" \
+          -H "Authorization: Bearer $$TOKEN" \
+          -H "Content-Type: application/json" \
+          -d "{\"endpoint\":\"$$1\",\"routing_port\":$$2}"
+      }
+
+      unregister_endpoint() {
+        echo "Unregistering endpoint $$1"
+        curl -sS --max-time 10 -X POST "$$PROXY_URL/unregister/endpoint" \
+          -H "Authorization: Bearer $$TOKEN" \
+          -H "Content-Type: application/json" \
+          -d "{\"endpoint\":\"$$1\"}"
+      }
+
+      register_model() {
+        curl -sS --max-time 10 -X POST "$$PROXY_URL/register/model" \
+          -H "Authorization: Bearer $$TOKEN" \
+          -H "Content-Type: application/json" \
+          -d "{\"model\":\"$$1\",\"domain\":\"$$2\"}"
+      }
+
+      cleanup() {
+        echo "SIGTERM received, unregistering $$ENDPOINT"
+        unregister_endpoint "$$ENDPOINT"
+        REGISTERED=false
+        exit 0
+      }
+      trap cleanup TERM INT
+
+      mark_registered() {
+        register_endpoint "$$ENDPOINT" "$${TLS_PORT}"
+        register_model "z-ai/glm-5.2" "glm-5-2.completions.near.ai"
+        if [ "$$REGISTERED" = false ]; then
+          echo "[GLM-5.2-W4AFP8-SGL-2xTP4] Registered z-ai/glm-5.2 (2x AWQ TP4) at $$ENDPOINT"
+        fi
+        REGISTERED=true
+      }
+
+      # Readiness gate: probe the proxy pool via the host nginx port. The proxy's
+      # backend_pool health-manages a/b at runtime, so the box is "ready" once the
+      # path resolves; per-backend failover is handled downstream.
+      check_inference() {
+        echo "Performing health check on model endpoint..."
+        status=$$(curl -sS --connect-timeout 10 --max-time 45 -o /dev/null -w "%{http_code}" \
+          -X POST "http://$${HOST_IP}:8000/v1/chat/completions" \
+          -H "Content-Type: application/json" \
+          -d '{"model":"z-ai/glm-5.2","messages":[{"role":"user","content":"hi"}],"max_tokens":1}')
+        curl_status=$$?
+
+        if [ "$$curl_status" -ne 0 ]; then
+          case "$$curl_status" in
+            52|56)
+              echo "[GLM-5.2-W4AFP8-SGL-2xTP4] Health probe hit connection-level backpressure (curl $$curl_status); treating as alive but saturated"
+              return 2
+              ;;
+          esac
+          echo "[GLM-5.2-W4AFP8-SGL-2xTP4] Health probe curl failed with status $$curl_status"
+          return 1
+        fi
+
+        case "$$status" in
+          2*)
+            return 0
+            ;;
+          503)
+            echo "[GLM-5.2-W4AFP8-SGL-2xTP4] Backend returned 503; treating as alive but saturated"
+            return 2
+            ;;
+          *)
+            echo "[GLM-5.2-W4AFP8-SGL-2xTP4] Backend returned HTTP $$status"
+            return 1
+            ;;
+        esac
+      }
+
+      READY_URL="http://$${HOST_IP}:8000/v1/models"
+      echo "Waiting for model to be ready (probing $$READY_URL)..."
+      ready_attempts=0
+      until curl --connect-timeout 5 --max-time 10 -sf "$$READY_URL" > /dev/null 2>&1; do
+        ready_attempts=$$((ready_attempts + 1))
+        if [ "$$ready_attempts" -ge 30 ]; then
+          echo "WARN: model not reachable at $$READY_URL after $$ready_attempts attempts (~20m); entering registration loop anyway"
+          break
+        fi
+        echo "Model not ready yet (attempt $$ready_attempts/30), retrying in 30s..."
+        sleep 30
+      done
+      echo "Model ready, starting registration loop"
+
+      while true; do
+        date +%s > /tmp/registrar_alive
+        check_inference
+        health_status=$$?
+        case "$$health_status" in
+          0)
+            FAILURE_COUNT=0
+            mark_registered
+            ;;
+          2)
+            FAILURE_COUNT=0
+            echo "[GLM-5.2-W4AFP8-SGL-2xTP4] Keeping $$ENDPOINT registered while backend is saturated"
+            mark_registered
+            ;;
+          *)
+            FAILURE_COUNT=$$((FAILURE_COUNT + 1))
+            echo "[GLM-5.2-W4AFP8-SGL-2xTP4] Health check failed ($$FAILURE_COUNT/$$MAX_RETRIES)"
+            if [ "$$REGISTERED" = true ] && [ "$$FAILURE_COUNT" -ge "$$MAX_RETRIES" ]; then
+              echo "[GLM-5.2-W4AFP8-SGL-2xTP4] Retry limit reached, unregistering $$ENDPOINT"
+              unregister_endpoint "$$ENDPOINT"
+              REGISTERED=false
+              echo "[GLM-5.2-W4AFP8-SGL-2xTP4] Exiting to refresh DNS (container will auto-restart)"
+              exit 1
+            fi
+            ;;
+        esac
+        sleep 60
+      done
+  nginx_conf:
+    content: |
+      log_format json_combined escape=json
+        '{'  '"time":"$$time_iso8601"'
+        ',"request_id":"$$http_x_request_id"'
+        ',"org_id":"$$http_x_org_id"'
+        ',"workspace_id":"$$http_x_workspace_id"'
+        ',"http_host":"$$host"'
+        ',"method":"$$request_method"'
+        ',"uri":"$$uri"'
+        ',"status":$$status'
+        ',"request_length":$$request_length'
+        ',"bytes_sent":$$bytes_sent'
+        ',"request_time":$$request_time'
+        ',"upstream_addr":"$$upstream_addr"'
+        '}';
+
+      server {
+          listen 80 default_server;
+          access_log /var/log/nginx/access.log json_combined;
+          client_max_body_size 100m;
+          client_body_buffer_size 1m;
+          location / {
+              proxy_pass http://proxy-glm52:8000;
+              proxy_http_version 1.1;
+              proxy_set_header Host $$host;
+              proxy_set_header X-Real-IP $$remote_addr;
+              proxy_set_header X-Forwarded-For $$proxy_add_x_forwarded_for;
+              proxy_set_header X-Forwarded-Proto $$scheme;
+              proxy_set_header Connection '';
+              proxy_buffering off;
+              proxy_cache off;
+              proxy_read_timeout 3600s;
+          }
+      }
+
+      server {
+          listen 443 ssl http2;
+          server_name glm-5-2.completions.near.ai;
+          ssl_certificate /etc/letsencrypt/live/completions.near.ai/fullchain.pem;
+          ssl_certificate_key /etc/letsencrypt/live/completions.near.ai/privkey.pem;
+          ssl_protocols TLSv1.2 TLSv1.3;
+          keepalive_timeout 1h;
+          keepalive_requests 1000000;
+          access_log /var/log/nginx/access.log json_combined;
+          client_max_body_size 100m;
+          client_body_buffer_size 1m;
+          location / {
+              proxy_pass http://proxy-glm52:8000;
+              proxy_http_version 1.1;
+              proxy_set_header Host $$host;
+              proxy_set_header X-Real-IP $$remote_addr;
+              proxy_set_header X-Forwarded-For $$proxy_add_x_forwarded_for;
+              proxy_set_header X-Forwarded-Proto $$scheme;
+              proxy_set_header Connection '';
+              proxy_buffering off;
+              proxy_cache off;
+              proxy_read_timeout 3600s;
+          }
+      }
