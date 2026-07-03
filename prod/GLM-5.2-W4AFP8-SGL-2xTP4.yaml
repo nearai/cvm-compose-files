@@ -97,7 +97,16 @@ x-downloader-common: &downloader-common
 
 # Shared sglang args (identical across both backends - keep tuning here so the
 # two replicas never drift). Flags rationale in the header; measurements in REPORT.md.
-x-glm52-cmd: &glm52-cmd >
+# ===== PRODUCTION A/B: the two replicas run IDENTICAL configs except the prefill budget =====
+# r1 (cmd-a): chunked-prefill 32768 / max-prefill-tokens 32768 — candidate (sglang cookbook
+#   +34-78% tuned-prefill claim; issue #29358 +10% at 64k prompts; our combined-stack bench win).
+# r2 (cmd-b): chunked-prefill 8192 / max-prefill-tokens 16384 — Phala's shipped default
+#   (checkpoint authors), the conservative well-tested budget.
+# Both sit behind the SAME least-conn proxy -> near-identical live traffic; Datadog separates
+# them via instance:1 / instance:2 tags (sglang TTFT/queue/throughput per replica).
+# PROMOTION: after ~1 week of prod data, converge BOTH replicas on the winner (TTFT p95 at
+# equal admitted load; tie -> keep 8192). Everything else below is the measured campaign winner.
+x-glm52-cmd-a: &glm52-cmd-a >
   sglang serve
   --model-path PhalaCloud/GLM-5.2-W4AFP8
   --revision 8dc3a42a45cf2a6c47d241fd2c226afde73f1316
@@ -115,6 +124,39 @@ x-glm52-cmd: &glm52-cmd >
   --context-length 262144
   --chunked-prefill-size 32768
   --max-prefill-tokens 32768
+  --max-running-requests 96
+  --max-queued-requests 16
+  --cuda-graph-max-bs 64
+  --enforce-disable-flashinfer-allreduce-fusion
+  --speculative-algorithm EAGLE
+  --speculative-num-steps 5
+  --speculative-eagle-topk 1
+  --speculative-num-draft-tokens 6
+  --watchdog-timeout 1800
+  --port 8000
+  --host 0.0.0.0
+  --enable-cache-report
+  --enable-metrics
+  --trust-remote-code
+
+x-glm52-cmd-b: &glm52-cmd-b >
+  sglang serve
+  --model-path PhalaCloud/GLM-5.2-W4AFP8
+  --revision 8dc3a42a45cf2a6c47d241fd2c226afde73f1316
+  --served-model-name z-ai/glm-5.2
+  --quantization w4afp8
+  --tp 4
+  --dist-init-addr 127.0.0.1:29500
+  --disable-shared-experts-fusion
+  --disable-custom-all-reduce
+  --kv-cache-dtype fp8_e4m3
+  --reasoning-parser glm45
+  --tool-call-parser glm47
+  --log-requests-level 0
+  --mem-fraction-static 0.85
+  --context-length 262144
+  --chunked-prefill-size 8192
+  --max-prefill-tokens 16384
   --max-running-requests 96
   --max-queued-requests 16
   --cuda-graph-max-bs 64
@@ -255,7 +297,7 @@ services:
         condition: service_completed_successfully
     image: lmsysorg/sglang@sha256:5027e95bf6ec536856b1b52a91d1f35ff5c564ab83e8a94758a169ff09bb8df3  # v0.5.14 (2026-06-26)
     container_name: model-sg-glm52-w4a-tp4-r1
-    command: *glm52-cmd
+    command: *glm52-cmd-a
     volumes:
       # compile_cache_a at /root/.cache persists inductor + triton + deep_gemm +
       # flashinfer for replica a; huggingface_cache nests under it (shared weights).
@@ -300,7 +342,7 @@ services:
         condition: service_completed_successfully
     image: lmsysorg/sglang@sha256:5027e95bf6ec536856b1b52a91d1f35ff5c564ab83e8a94758a169ff09bb8df3  # v0.5.14 (2026-06-26)
     container_name: model-sg-glm52-w4a-tp4-r2
-    command: *glm52-cmd
+    command: *glm52-cmd-b
     volumes:
       - compile_cache_b:/root/.cache
       - huggingface_cache:/root/.cache/huggingface
