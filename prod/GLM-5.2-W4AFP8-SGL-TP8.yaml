@@ -789,12 +789,29 @@ configs:
       # /v1/models and maps the synthetic id to glm-5-2-long.completions.near.ai (routing
       # still targets :8444 -> proxy-glm52; see the LONG-CONTEXT TIER note in the header).
       # The synthetic id must never appear in SGLang, the catalog, or any serving-path config.
+      #
+      # The static JSON is gated on the REAL serving path via auth_request (a zero-body
+      # subrequest to proxy-glm52's /v1/models): if the engine/proxy is down the stub
+      # returns 5xx, so model-proxy's discovery drops the long domain's backend within a
+      # cycle, its health checker sees genuine failures even if this port ends up as the
+      # shared backend's probe_address (probe_address is first-registered-wins), and
+      # stale-endpoint eviction keeps working. An unconditional 200 here would keep the
+      # long domain routing to a dead engine and mask wedged-backend detection.
       server {
           listen 8001;
           access_log /var/log/nginx/access.log json_combined;
           location = /v1/models {
+              auth_request /_engine_health;
               default_type application/json;
               return 200 '{"object":"list","data":[{"id":"z-ai/glm-5.2-long","object":"model","owned_by":"nearai"}]}';
+          }
+          location = /_engine_health {
+              internal;
+              proxy_pass http://proxy-glm52:8000/v1/models;
+              proxy_pass_request_body off;
+              proxy_set_header Content-Length "";
+              proxy_connect_timeout 2s;
+              proxy_read_timeout 4s;
           }
           location / {
               return 404;
