@@ -6,6 +6,30 @@
 # AWQ-calibrated; dense/attn/shared-experts/MTP stay FP8/BF16) the freed VRAM lets this config
 # serve the FULL 1M context at TP8, which the FP8 build (capped at 500K) cannot.
 #
+# *** LONG-CONTEXT TIER (dual-domain registration) ***
+#   Alongside the 2xTP4 fleet (GLM-5.2-W4AFP8-SGL-2xTP4.yaml, ctx 262144), this TP8 host is
+#   the 1M-context tier. It registers under TWO domains:
+#     - glm-5-2.completions.near.ai       (standard pool member, via :8000 as before)
+#     - glm-5-2-long.completions.near.ai  (long-context tier; cloud-api routes requests whose
+#       estimated input exceeds the TP4 fleet's 262k window here, with Chutes as overflow)
+#   DUAL-ROLE IS DELIBERATE (bake phase): while registered on the base domain, model-proxy's
+#   least-connections balancing sends a share of SHORT traffic to this host too — extra
+#   standard capacity plus failover during the 2xTP4 rollout, at the cost of some 1M-tier
+#   headroom. Long requests are unaffected (the long domain only has this backend). To
+#   dedicate the host to long-context traffic post-bake, set LONG_TIER_ONLY=true on the
+#   registrar (env flip + registrar restart — no compose tag change): it stops registering
+#   the base :8000 endpoint and unregisters it. NOTE: until model-proxy's cleanup-ownership
+#   fix lands, unregistering the base probe transiently (~1 discovery cycle, ~10s) drops the
+#   shared :8444 backend from BOTH domains — flip during a quiet window.
+#   The long domain is advertised through a discovery-only nginx stub on :8001 that reports the
+#   SYNTHETIC model id "z-ai/glm-5.2-long". NEVER register the canonical id under the long
+#   domain: model-proxy's model->domain map is one-domain-per-model-id, LAST-WRITER-WINS
+#   (model-proxy src/registry.rs register_model_domain), so re-mapping z-ai/glm-5.2 would fight
+#   the 2xTP4 registrars every cycle and flap routing for the whole fleet. The synthetic id
+#   exists ONLY inside model-proxy discovery — SGLang, signing (KMS key path is keyed on
+#   MODEL_NAME=z-ai/glm-5.2), attestation, billing, and the customer catalog all keep the
+#   canonical id; traffic on both domains lands on the same nginx:8444 -> proxy-glm52 path.
+#
 # VALIDATED on the dev VM (8xH200, CC on; sglang 0.5.13.post1 — the staging soak target):
 #   - QUALITY: 10/10 on a temp=0 suite (math/reasoning/code/instruction/JSON/multilingual),
 #     output indistinguishable from the FP8 baseline. AWQ calibration holds (no degeneration).
@@ -152,6 +176,7 @@ services:
         condition: service_started
     ports:
       - "8000:80"
+      - "8001:8001"
       - "8444:443"
     volumes:
       - certs:/etc/letsencrypt:ro
@@ -176,6 +201,11 @@ services:
     environment:
       - HOST_IP=${HOST_IP}
       - HTTP_PORT=${HTTP_PORT:-8000}
+      - LONG_HTTP_PORT=${LONG_HTTP_PORT:-8001}
+      # "true" dedicates this host to the long-context domain: the base :8000
+      # endpoint is unregistered instead of registered (see the LONG-CONTEXT
+      # TIER note in the header for the flip caveat).
+      - LONG_TIER_ONLY=${LONG_TIER_ONLY:-false}
       - TLS_PORT=${TLS_PORT:-8444}
       - MODEL_PROXY_TOKEN=${MODEL_PROXY_TOKEN}
       - PROXY_TOKEN=${PROXY_TOKEN}
@@ -594,7 +624,14 @@ configs:
       TOKEN="$${MODEL_PROXY_TOKEN}"
       INFERENCE_TOKEN="$${PROXY_TOKEN}"
       ENDPOINT="$${HOST_IP}:$${HTTP_PORT}"
+      # Long-context tier: a second, discovery-only endpoint (nginx stub on :8001) advertises
+      # the synthetic id z-ai/glm-5.2-long so model-proxy attaches this host to the long domain.
+      # DO NOT register the canonical z-ai/glm-5.2 under the long domain — model-proxy's
+      # model->domain map is last-writer-wins and the 2xTP4 registrars would fight it (see the
+      # LONG-CONTEXT TIER note in the file header).
+      LONG_ENDPOINT="$${HOST_IP}:$${LONG_HTTP_PORT}"
       REGISTERED=false
+      BASE_UNREGISTERED=false
       FAILURE_COUNT=0
       MAX_RETRIES=3
 
@@ -627,18 +664,34 @@ configs:
       }
 
       cleanup() {
-        echo "SIGTERM received, unregistering $$ENDPOINT"
+        echo "SIGTERM received, unregistering $$ENDPOINT and $$LONG_ENDPOINT"
         unregister_endpoint "$$ENDPOINT"
+        unregister_endpoint "$$LONG_ENDPOINT"
         REGISTERED=false
         exit 0
       }
       trap cleanup TERM INT
 
       mark_registered() {
-        register_endpoint "$$ENDPOINT" "$${TLS_PORT}"
-        register_model "z-ai/glm-5.2" "glm-5-2.completions.near.ai"
+        if [ "$$LONG_TIER_ONLY" = "true" ]; then
+          # Dedicated long-context host: keep the base endpoint out of the
+          # standard pool. Unregister ONCE per registrar process — model-proxy's
+          # endpoint cleanup currently matches backends by IP, so each
+          # unregister transiently (~1 discovery cycle) drops the shared :8444
+          # backend from BOTH domains; doing it every cycle would flap the
+          # long domain continuously.
+          if [ "$$BASE_UNREGISTERED" = false ]; then
+            unregister_endpoint "$$ENDPOINT"
+            BASE_UNREGISTERED=true
+          fi
+        else
+          register_endpoint "$$ENDPOINT" "$${TLS_PORT}"
+          register_model "z-ai/glm-5.2" "glm-5-2.completions.near.ai"
+        fi
+        register_endpoint "$$LONG_ENDPOINT" "$${TLS_PORT}"
+        register_model "z-ai/glm-5.2-long" "glm-5-2-long.completions.near.ai"
         if [ "$$REGISTERED" = false ]; then
-          echo "[GLM-5.2-W4AFP8-SGL-TP8] Registered z-ai/glm-5.2 (TP8 FP8) at $$ENDPOINT"
+          echo "[GLM-5.2-W4AFP8-SGL-TP8] Registered z-ai/glm-5.2 (TP8 1M, long_tier_only=$$LONG_TIER_ONLY) at $$ENDPOINT + long tier at $$LONG_ENDPOINT"
         fi
         REGISTERED=true
       }
@@ -712,8 +765,9 @@ configs:
             FAILURE_COUNT=$$((FAILURE_COUNT + 1))
             echo "[GLM-5.2-W4AFP8-SGL-TP8] Health check failed ($$FAILURE_COUNT/$$MAX_RETRIES)"
             if [ "$$REGISTERED" = true ] && [ "$$FAILURE_COUNT" -ge "$$MAX_RETRIES" ]; then
-              echo "[GLM-5.2-W4AFP8-SGL-TP8] Retry limit reached, unregistering $$ENDPOINT"
+              echo "[GLM-5.2-W4AFP8-SGL-TP8] Retry limit reached, unregistering $$ENDPOINT and $$LONG_ENDPOINT"
               unregister_endpoint "$$ENDPOINT"
+              unregister_endpoint "$$LONG_ENDPOINT"
               REGISTERED=false
               echo "[GLM-5.2-W4AFP8-SGL-TP8] Exiting to refresh DNS (container will auto-restart)"
               exit 1
@@ -758,10 +812,61 @@ configs:
           }
       }
 
+      # Discovery-only stub for the long-context tier: model-proxy probes this endpoint's
+      # /v1/models and maps the synthetic id to glm-5-2-long.completions.near.ai (routing
+      # still targets :8444 -> proxy-glm52; see the LONG-CONTEXT TIER note in the header).
+      # The synthetic id must never appear in SGLang, the catalog, or any serving-path config.
+      #
+      # The static JSON is gated on the REAL serving path via auth_request (a zero-body
+      # subrequest to proxy-glm52's /v1/models): if the engine/proxy is down the stub
+      # returns 5xx, so model-proxy's discovery drops the long domain's backend within a
+      # cycle, its health checker sees genuine failures even if this port ends up as the
+      # shared backend's probe_address (probe_address is first-registered-wins), and
+      # stale-endpoint eviction keeps working. An unconditional 200 here would keep the
+      # long domain routing to a dead engine and mask wedged-backend detection.
+      # (default_server keeps scripts/validate_otel_labels.rb's public-port scan anchored
+      # on the serving blocks — this port is discovery-only, not the app's public port.)
+      #
+      # PHASE-ORDER TRAP: the synthetic JSON must NOT be served with `return` — `return`
+      # runs in the rewrite phase, BEFORE auth_request's access phase, so the gate would
+      # be a no-op (verified on this pinned image: dead upstream still answered 200).
+      # try_files runs in the precontent phase, AFTER access, so the auth_request gate
+      # genuinely fires first; the always-missing file falls through to the named
+      # location, whose `return` executes in the redirected location's own cycle.
+      # Verified on this image: upstream dead -> 500, upstream alive -> 200 + synthetic id.
+      server {
+          listen 8001 default_server;
+          access_log /var/log/nginx/access.log json_combined;
+          location = /v1/models {
+              auth_request /_engine_health;
+              try_files /__synthetic_models__ @synthetic_models;
+          }
+          location @synthetic_models {
+              default_type application/json;
+              return 200 '{"object":"list","data":[{"id":"z-ai/glm-5.2-long","object":"model","owned_by":"nearai"}]}';
+          }
+          location = /_engine_health {
+              internal;
+              proxy_pass http://proxy-glm52:8000/v1/models;
+              proxy_pass_request_body off;
+              proxy_set_header Content-Length "";
+              proxy_connect_timeout 2s;
+              proxy_read_timeout 4s;
+          }
+          location / {
+              return 404;
+          }
+      }
+
       server {
           listen 443 ssl;
           http2 on;
-          server_name glm-5-2.completions.near.ai;
+          # Single (default) server block on :443, so ALL SNIs arriving on 8444 are served
+          # here regardless of server_name — including rotation SNIs (glm-5-2-i0, ...) and the
+          # long-context domain. The names below are documentation of the domains model-proxy
+          # routes to this host; do not split into separate blocks or the default-server
+          # property that makes rotation SNIs work would need explicit regex coverage.
+          server_name glm-5-2.completions.near.ai glm-5-2-long.completions.near.ai;
           ssl_certificate /etc/letsencrypt/live/completions.near.ai/fullchain.pem;
           ssl_certificate_key /etc/letsencrypt/live/completions.near.ai/privkey.pem;
           ssl_protocols TLSv1.2 TLSv1.3;
