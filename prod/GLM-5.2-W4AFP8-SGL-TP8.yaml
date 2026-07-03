@@ -12,6 +12,15 @@
 #     - glm-5-2.completions.near.ai       (standard pool member, via :8000 as before)
 #     - glm-5-2-long.completions.near.ai  (long-context tier; cloud-api routes requests whose
 #       estimated input exceeds the TP4 fleet's 262k window here, with Chutes as overflow)
+#   DUAL-ROLE IS DELIBERATE (bake phase): while registered on the base domain, model-proxy's
+#   least-connections balancing sends a share of SHORT traffic to this host too — extra
+#   standard capacity plus failover during the 2xTP4 rollout, at the cost of some 1M-tier
+#   headroom. Long requests are unaffected (the long domain only has this backend). To
+#   dedicate the host to long-context traffic post-bake, set LONG_TIER_ONLY=true on the
+#   registrar (env flip + registrar restart — no compose tag change): it stops registering
+#   the base :8000 endpoint and unregisters it. NOTE: until model-proxy's cleanup-ownership
+#   fix lands, unregistering the base probe transiently (~1 discovery cycle, ~10s) drops the
+#   shared :8444 backend from BOTH domains — flip during a quiet window.
 #   The long domain is advertised through a discovery-only nginx stub on :8001 that reports the
 #   SYNTHETIC model id "z-ai/glm-5.2-long". NEVER register the canonical id under the long
 #   domain: model-proxy's model->domain map is one-domain-per-model-id, LAST-WRITER-WINS
@@ -193,6 +202,10 @@ services:
       - HOST_IP=${HOST_IP}
       - HTTP_PORT=${HTTP_PORT:-8000}
       - LONG_HTTP_PORT=${LONG_HTTP_PORT:-8001}
+      # "true" dedicates this host to the long-context domain: the base :8000
+      # endpoint is unregistered instead of registered (see the LONG-CONTEXT
+      # TIER note in the header for the flip caveat).
+      - LONG_TIER_ONLY=${LONG_TIER_ONLY:-false}
       - TLS_PORT=${TLS_PORT:-8444}
       - MODEL_PROXY_TOKEN=${MODEL_PROXY_TOKEN}
       - PROXY_TOKEN=${PROXY_TOKEN}
@@ -618,6 +631,7 @@ configs:
       # LONG-CONTEXT TIER note in the file header).
       LONG_ENDPOINT="$${HOST_IP}:$${LONG_HTTP_PORT}"
       REGISTERED=false
+      BASE_UNREGISTERED=false
       FAILURE_COUNT=0
       MAX_RETRIES=3
 
@@ -659,12 +673,25 @@ configs:
       trap cleanup TERM INT
 
       mark_registered() {
-        register_endpoint "$$ENDPOINT" "$${TLS_PORT}"
-        register_model "z-ai/glm-5.2" "glm-5-2.completions.near.ai"
+        if [ "$$LONG_TIER_ONLY" = "true" ]; then
+          # Dedicated long-context host: keep the base endpoint out of the
+          # standard pool. Unregister ONCE per registrar process — model-proxy's
+          # endpoint cleanup currently matches backends by IP, so each
+          # unregister transiently (~1 discovery cycle) drops the shared :8444
+          # backend from BOTH domains; doing it every cycle would flap the
+          # long domain continuously.
+          if [ "$$BASE_UNREGISTERED" = false ]; then
+            unregister_endpoint "$$ENDPOINT"
+            BASE_UNREGISTERED=true
+          fi
+        else
+          register_endpoint "$$ENDPOINT" "$${TLS_PORT}"
+          register_model "z-ai/glm-5.2" "glm-5-2.completions.near.ai"
+        fi
         register_endpoint "$$LONG_ENDPOINT" "$${TLS_PORT}"
         register_model "z-ai/glm-5.2-long" "glm-5-2-long.completions.near.ai"
         if [ "$$REGISTERED" = false ]; then
-          echo "[GLM-5.2-W4AFP8-SGL-TP8] Registered z-ai/glm-5.2 (TP8 1M) at $$ENDPOINT + long tier at $$LONG_ENDPOINT"
+          echo "[GLM-5.2-W4AFP8-SGL-TP8] Registered z-ai/glm-5.2 (TP8 1M, long_tier_only=$$LONG_TIER_ONLY) at $$ENDPOINT + long tier at $$LONG_ENDPOINT"
         fi
         REGISTERED=true
       }
@@ -799,11 +826,22 @@ configs:
       # long domain routing to a dead engine and mask wedged-backend detection.
       # (default_server keeps scripts/validate_otel_labels.rb's public-port scan anchored
       # on the serving blocks — this port is discovery-only, not the app's public port.)
+      #
+      # PHASE-ORDER TRAP: the synthetic JSON must NOT be served with `return` — `return`
+      # runs in the rewrite phase, BEFORE auth_request's access phase, so the gate would
+      # be a no-op (verified on this pinned image: dead upstream still answered 200).
+      # try_files runs in the precontent phase, AFTER access, so the auth_request gate
+      # genuinely fires first; the always-missing file falls through to the named
+      # location, whose `return` executes in the redirected location's own cycle.
+      # Verified on this image: upstream dead -> 500, upstream alive -> 200 + synthetic id.
       server {
           listen 8001 default_server;
           access_log /var/log/nginx/access.log json_combined;
           location = /v1/models {
               auth_request /_engine_health;
+              try_files /__synthetic_models__ @synthetic_models;
+          }
+          location @synthetic_models {
               default_type application/json;
               return 200 '{"object":"list","data":[{"id":"z-ai/glm-5.2-long","object":"model","owned_by":"nearai"}]}';
           }
