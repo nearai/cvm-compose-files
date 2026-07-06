@@ -34,6 +34,14 @@ jobs:
             ruby:3.3-alpine \
             ruby scripts/validate_proxy_environment.rb
 
+      - name: Validate registrar auth contracts
+        run: |
+          docker run --rm \
+            -v "$PWD:/repo" \
+            -w /repo \
+            ruby:3.3-alpine \
+            ruby scripts/validate_registrar_auth.rb
+
       - name: Validate docker compose files
         # Compose files reference env vars that are populated at deploy time
         # by compose-manager (or the operator). CI doesn't have the real

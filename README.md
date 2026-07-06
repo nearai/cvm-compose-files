@@ -88,8 +88,10 @@ Configs in `experiments/` are WIP (AWQ/int4/nvfp4 quantization sweeps, otel test
 `.github/workflows/validate-compose.yaml` runs on every push/PR:
 
 1. **OTel label contract** (`scripts/validate_otel_labels.rb`) — enforces that Datadog `ad.logs` tags and OTel scrape labels match across every service, and that the OTel collector env vars are present. `cleanup-hf-model.yaml` is excluded.
-2. **Compose syntax** — `docker compose -f <file> config` against every `*.yaml`, with dummy env vars for the `${VAR:?required}` fail-fast markers.
-3. **Embedded OTel collector config** — validates the `otelcol_app_config` content with the actual collector image.
+2. **Proxy dependency/env contracts** (`scripts/validate_proxy_dependencies.rb`, `scripts/validate_proxy_environment.rb`) — enforces the proxy dependency and required env var wiring.
+3. **Prod registrar auth contract** (`scripts/validate_registrar_auth.rb`) — enforces that prod registrar health probes authenticate when probing inference-proxy endpoints.
+4. **Compose syntax** — `docker compose -f <file> config` against every `*.yaml`, with dummy env vars for the `${VAR:?required}` fail-fast markers.
+5. **Embedded OTel collector config** — validates the `otelcol_app_config` content with the actual collector image.
 
 A PR that fails any of these cannot merge. Run locally before pushing:
 
@@ -102,6 +104,9 @@ done
 
 # OTel label contract (requires ruby)
 ruby scripts/validate_otel_labels.rb
+
+# Registrar auth contract (requires ruby)
+ruby scripts/validate_registrar_auth.rb
 ```
 
 ## Adding a new model
