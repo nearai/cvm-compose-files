@@ -108,7 +108,7 @@ x-dsv4-flash-common: &dsv4-flash-common
   # DeepSeek-V4-Flash uses the current production FP4/SGLang TP=2 path from
   # prod/dsv4-qwen36-gemma4.yaml. Each replica consumes two H200 GPUs, so the
   # four GPUs left after one Qwen3.5 TP=4 replica fit two DeepSeek replicas.
-  image: lmsysorg/sglang@sha256:1c64fde976bdf0d56474a30bccbcfc19667e5b3ab34c826a534c9d6aaca41212  # 0.5.13.post1
+  image: lmsysorg/sglang@sha256:5027e95bf6ec536856b1b52a91d1f35ff5c564ab83e8a94758a169ff09bb8df3  # v0.5.14
   command: >
       sglang serve
       --trust-remote-code
@@ -119,6 +119,7 @@ x-dsv4-flash-common: &dsv4-flash-common
       --cuda-graph-max-bs 64
       --mem-fraction-static 0.83
       --max-running-requests 64
+      --max-queued-requests 16
       --schedule-conservativeness 1.3
       --enable-mixed-chunk
       --chunked-prefill-size 16384
