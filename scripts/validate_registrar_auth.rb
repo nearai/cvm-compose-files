@@ -53,7 +53,7 @@ def curl_blocks(script)
 end
 
 def registrar_probe_blocks(script)
-  ready_url_requires_auth = script.match?(/READY_URL="http:\/\/\$\$\{HOST_IP\}:[^"]+\/v1\/models"/)
+  ready_url_requires_auth = script.include?('READY_URL="http://')
 
   curl_blocks(script).select do |block|
     block.include?("/v1/chat/completions") ||
