@@ -274,6 +274,7 @@ services:
     environment:
       - HOST_IP=${HOST_IP}
       - MODEL_PROXY_TOKEN=${MODEL_PROXY_TOKEN}
+      - PROXY_TOKEN=${PROXY_TOKEN}
     configs:
       - source: registrar_script
         target: /register.sh
@@ -1217,6 +1218,13 @@ configs:
       #!/bin/sh
       PROXY_URL="https://completions.near.ai"
       TOKEN="$${MODEL_PROXY_TOKEN}"
+      INFERENCE_TOKEN="$${PROXY_TOKEN}"
+
+      if [ -z "$$TOKEN" ] || [ -z "$$INFERENCE_TOKEN" ]; then
+        echo "ERROR: MODEL_PROXY_TOKEN and PROXY_TOKEN are required for model-proxy registration"
+        exit 1
+      fi
+
       TLS_PORT=8444
 
       for port in 8000 8001 8002 8003; do
@@ -1263,6 +1271,7 @@ configs:
       # container DNS. See cvm-compose-files#57. ($1 = host:port)
       check_chat() {
         curl -sf --max-time 45 -X POST "http://$$1/v1/chat/completions" \
+          -H "Authorization: Bearer $$INFERENCE_TOKEN" \
           -H "Content-Type: application/json" \
           -d "{\"model\":\"$$2\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":1}" \
           > /dev/null 2>&1
@@ -1290,7 +1299,9 @@ configs:
       READY_URL="http://$${HOST_IP}:8000/v1/models"
       echo "Waiting for first model to be ready (probing $$READY_URL)..."
       ready_attempts=0
-      until curl --connect-timeout 5 --max-time 10 -sf "$$READY_URL" > /dev/null 2>&1; do
+      until curl --connect-timeout 5 --max-time 10 -sf \
+        -H "Authorization: Bearer $$INFERENCE_TOKEN" \
+        "$$READY_URL" > /dev/null 2>&1; do
         ready_attempts=$$((ready_attempts + 1))
         if [ "$$ready_attempts" -ge 30 ]; then
           echo "WARN: first model not reachable at $$READY_URL after $$ready_attempts attempts (~20m); entering registration loop anyway (each backend is health-checked directly before registering)"

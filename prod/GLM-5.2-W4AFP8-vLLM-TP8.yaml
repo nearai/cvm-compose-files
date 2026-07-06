@@ -110,6 +110,7 @@ services:
       - HTTP_PORT=${HTTP_PORT:-8000}
       - TLS_PORT=${TLS_PORT:-8444}
       - MODEL_PROXY_TOKEN=${MODEL_PROXY_TOKEN}
+      - PROXY_TOKEN=${PROXY_TOKEN}
     configs:
       - source: registrar_script
         target: /register.sh
@@ -425,6 +426,13 @@ configs:
       #!/bin/sh
       PROXY_URL="https://completions.near.ai"
       TOKEN="$${MODEL_PROXY_TOKEN}"
+      INFERENCE_TOKEN="$${PROXY_TOKEN}"
+
+      if [ -z "$$TOKEN" ] || [ -z "$$INFERENCE_TOKEN" ]; then
+        echo "ERROR: MODEL_PROXY_TOKEN and PROXY_TOKEN are required for model-proxy registration"
+        exit 1
+      fi
+
       ENDPOINT="$${HOST_IP}:$${HTTP_PORT}"
       REGISTERED=false
       FAILURE_COUNT=0
@@ -473,7 +481,8 @@ configs:
       check_inference() {
         echo "Performing health check on model endpoint..."
         status=$$(curl -sS --connect-timeout 10 --max-time 45 -o /dev/null -w "%{http_code}" \
-          -X POST "http://$${HOST_IP}:8000/v1/chat/completions" \
+          -X POST "http://$${HOST_IP}:$${HTTP_PORT}/v1/chat/completions" \
+          -H "Authorization: Bearer $$INFERENCE_TOKEN" \
           -H "Content-Type: application/json" \
           -d '{"model":"z-ai/glm-5.2","messages":[{"role":"user","content":"hi"}],"max_tokens":1}')
         curl_status=$$?
@@ -504,10 +513,12 @@ configs:
         esac
       }
 
-      READY_URL="http://$${HOST_IP}:8000/v1/models"
+      READY_URL="http://$${HOST_IP}:$${HTTP_PORT}/v1/models"
       echo "Waiting for model to be ready (probing $$READY_URL)..."
       ready_attempts=0
-      until curl --connect-timeout 5 --max-time 10 -sf "$$READY_URL" > /dev/null 2>&1; do
+      until curl --connect-timeout 5 --max-time 10 -sf \
+        -H "Authorization: Bearer $$INFERENCE_TOKEN" \
+        "$$READY_URL" > /dev/null 2>&1; do
         ready_attempts=$$((ready_attempts + 1))
         if [ "$$ready_attempts" -ge 40 ]; then
           echo "WARN: model not reachable at $$READY_URL after $$ready_attempts attempts (~20m); entering registration loop anyway"
