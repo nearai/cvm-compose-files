@@ -109,6 +109,15 @@ x-dsv4-flash-common: &dsv4-flash-common
   # prod/dsv4-qwen36-gemma4.yaml. Each replica consumes two H200 GPUs, so the
   # four GPUs left after one Qwen3.5 TP=4 replica fit two DeepSeek replicas.
   image: lmsysorg/sglang@sha256:5027e95bf6ec536856b1b52a91d1f35ff5c564ab83e8a94758a169ff09bb8df3  # v0.5.14
+  # EAGLE 3/1/4 MTP spec-decode (added 2026-07-07; gpu02 dev-CVM validation, Notion
+  # "dsv4 work doc"): +11-22% decode tok/s at prod 30k-context shape (accept-len
+  # 2.27 code / 2.42 rag, same-wave two-port A/B; alpha identical at these exact
+  # 0.83/64 settings, no OOM, ~24GB headroom). Draft = the checkpoint's own MTP
+  # layer (auto-derived; needs SGLANG_ENABLE_SPEC_V2=1, already set below).
+  # DELIBERATELY NO --speculative-adaptive: 2/2 CUDA illegal-memory-access crashes
+  # under c1<->c8 burst soaks on 0.5.14 (upstream #25715 does not backport).
+  # Trade-off: c4 ~-26%/req during rare bursts (prod avg ~1.08 running reqs);
+  # TTFT +~5% (draft-extend after prefill). Rollback = remove the 4 spec flags.
   command: >
       sglang serve
       --trust-remote-code
@@ -124,6 +133,10 @@ x-dsv4-flash-common: &dsv4-flash-common
       --enable-mixed-chunk
       --chunked-prefill-size 16384
       --disable-custom-all-reduce
+      --speculative-algorithm EAGLE
+      --speculative-num-steps 3
+      --speculative-eagle-topk 1
+      --speculative-num-draft-tokens 4
       --tool-call-parser deepseekv4
       --reasoning-parser deepseek-v4
       --port 8000
