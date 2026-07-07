@@ -845,6 +845,25 @@ configs:
               default_type application/json;
               return 200 '{"object":"list","data":[{"id":"z-ai/glm-5.2-long","object":"model","owned_by":"nearai"}]}';
           }
+          # model-proxy's health checker probes the CONFIGURED health path
+          # (prod: MODELPROXY__HEALTH_CHECK__HEALTH_CHECK_PATH=/healthz), not
+          # /v1/models — and probe_address is latched first-registered-wins
+          # across this host's sibling ports (:8000/:8001). Since model-proxy
+          # PR#42 a non-2xx probe counts as FAILURE, so a proxy instance that
+          # latches :8001 and gets the fallthrough 404 opens the circuit
+          # breaker for this host's whole :8444 backend (observed 2026-07-07:
+          # one prod proxy instance black-holed the sibling host this way).
+          # Serve /healthz here, gated on the same engine-health subrequest as
+          # /v1/models (same phase-order trap: no bare `return`), so a :8001
+          # latch reports genuine engine health instead of a constant 404.
+          location = /healthz {
+              auth_request /_engine_health;
+              try_files /__healthz__ @healthz_ok;
+          }
+          location @healthz_ok {
+              default_type text/plain;
+              return 200 'ok';
+          }
           location = /_engine_health {
               internal;
               proxy_pass http://proxy-glm52:8000/v1/models;
