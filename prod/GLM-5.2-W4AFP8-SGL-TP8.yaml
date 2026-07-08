@@ -711,6 +711,27 @@ configs:
               echo "[GLM-5.2-W4AFP8-SGL-TP8] Health probe hit connection-level backpressure (curl $$curl_status); treating as alive but saturated"
               return 2
               ;;
+            28)
+              # Probe timeout is NOT proof of death: a 1-token completion queues
+              # behind long-context prefills and legitimately exceeds 45s under
+              # prod load, with no 503/backpressure signal. Observed 2026-07-08:
+              # both TP8 hosts flap-cycled (3 timeouts -> unregister both
+              # endpoints -> exit) all night while serving traffic fine, halving
+              # glm-5.2 capacity for minutes at a time. Disambiguate with a fast
+              # /v1/models probe - it answers from the HTTP layer even at full
+              # queue depth, so 2xx here means alive-but-saturated. Genuinely
+              # dead backends still fail this and unregister; model-proxy's own
+              # /healthz checker + breaker (PR#42) covers them within seconds
+              # regardless.
+              if curl -sf --connect-timeout 5 --max-time 10 \
+                -H "Authorization: Bearer $$INFERENCE_TOKEN" \
+                "http://$${HOST_IP}:$${HTTP_PORT}/v1/models" > /dev/null 2>&1; then
+                echo "[GLM-5.2-W4AFP8-SGL-TP8] Health probe timed out but /v1/models is live; treating as alive but saturated"
+                return 2
+              fi
+              echo "[GLM-5.2-W4AFP8-SGL-TP8] Health probe timed out and /v1/models is unreachable"
+              return 1
+              ;;
           esac
           echo "[GLM-5.2-W4AFP8-SGL-TP8] Health probe curl failed with status $$curl_status"
           return 1
