@@ -98,6 +98,12 @@ x-downloader-common: &downloader-common
 # Shared sglang args (identical across both backends - keep tuning here so the
 # two replicas never drift). Flags rationale in the header; measurements in REPORT.md.
 # ===== PRODUCTION A/B: the two replicas run IDENTICAL configs except the prefill budget =====
+# r1 (cmd-a): mem-fraction-static 0.82 (r2 keeps 0.85): at 0.85 r1 OOM-boot-loops —
+#   deterministically, seconds after "server fired up": the first inference allocates a
+#   fresh 4.02 GiB workspace with only ~3.4 GiB free after captures (measured 2026-07-09/10,
+#   ~30 crash cycles overnight). 0.82 = ~7.6 GiB free at ready (~1.9x the observed alloc),
+#   KV pool 381k -> ~308k tokens (still 1.17x the 262144 context). r2 survives at 0.85 only
+#   because its workspace allocated early and stays cached — do not copy 0.85 to new replicas.
 # r1 (cmd-a): chunked-prefill 32768 / max-prefill-tokens 32768 — candidate (sglang cookbook
 #   +34-78% tuned-prefill claim; issue #29358 +10% at 64k prompts; our combined-stack bench win).
 # r2 (cmd-b): chunked-prefill 8192 / max-prefill-tokens 16384 — Phala's shipped default
@@ -120,7 +126,7 @@ x-glm52-cmd-a: &glm52-cmd-a >
   --reasoning-parser glm45
   --tool-call-parser glm47
   --log-requests-level 0
-  --mem-fraction-static 0.85
+  --mem-fraction-static 0.82
   --context-length 262144
   --chunked-prefill-size 32768
   --max-prefill-tokens 32768
