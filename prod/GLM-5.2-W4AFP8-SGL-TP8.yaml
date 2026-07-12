@@ -88,9 +88,18 @@
 #   ALTERNATIVES (benchmarked, not chosen): 1/1/2 + mf0.80 = lowest TPOT (90ms@c32) but ~18%
 #   less throughput — pick only if absolute inter-token latency dominates. --speculative-adaptive
 #   CRASHES on this checkpoint (DSA-draft indexer fault when it switches to 7 steps). dp-attention
-#   gives unreliable/high-variance tail latency under PPCIE — not recommended. chunked-prefill
-#   size is neutral at 15k. Cold start ~35-45min (weight load + DeepGEMM warmup + capture);
-#   persist the compile_cache volume to speed restarts.
+#   gives unreliable/high-variance tail latency under PPCIE — not recommended. Cold start ~35-45min
+#   (weight load + DeepGEMM warmup + capture); persist the compile_cache volume to speed restarts.
+#
+# *** CHUNKED-PREFILL 16384 (raised from the 8192 default) ***
+#   Production traffic on this model is heavily long-context: prod prefill logs show single
+#   prompts queueing >1M pending tokens with the engine grinding through 8192-token chunks at
+#   ~5000 tok/s while the KV pool sits at 0.95+ — i.e. the bottleneck is prefill throughput, not
+#   the ~15k-shape sweep where chunk size was neutral (OFAT run E6 tested 16384 at mf0.80 here:
+#   booted clean, full 1->256 sweep, neutral at 15k). A larger chunk halves the scheduler
+#   iterations and improves per-step GPU utilization on these long prompts. mem-frac 0.80 still
+#   has headroom (3/1/4 draft capture leaves ~13GB free), and 16384 was already verified to boot
+#   on this exact config. Revert to the default if peak prefill memory ever crowds the KV pool.
 
 x-logging-conf: &logging-conf
   driver: "json-file"
@@ -147,6 +156,7 @@ x-glm52-cmd: &glm52-cmd >
   --max-queued-requests 16
   --cuda-graph-max-bs 128
   --context-length 1048576
+  --chunked-prefill-size 16384
   --dist-init-addr 127.0.0.1:29500
   --watchdog-timeout 1800
   --port 8000
