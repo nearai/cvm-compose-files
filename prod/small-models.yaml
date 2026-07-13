@@ -936,6 +936,13 @@ services:
     <<: *vllm-common
     image: vllm/vllm-openai@sha256:ccd6a6dbf4aba4e94c6f7052d1835d6e742082b6a5095276552e9b7a5a47c2e5
     container_name: model-vllm-qwen3vl-30b-a3b-fp8-tp1
+    # --async-scheduling REMOVED: same-mechanism follow-on to the gpt-oss-120b measurement
+    # (single H200 CC-on, MoE decode: OFF beat ON by ~5%, arXiv:2606.23969 — async's
+    # output-drain/next-step overlap is void under GPU-CC). NOT directly benchmarked for this
+    # model, and this service runs at max-num-seqs 16 (co-located, mem-frac 0.35) where the
+    # effect is weaker than the conc-64 gpt-oss test — so the expectation here is neutral-to-
+    # small-positive rather than a firm +5%. Safe (flag removal only, same image/attestation);
+    # re-add only if a CC benchmark shows async helps at this operating point.
     command: >
         Qwen/Qwen3-VL-30B-A3B-Instruct-FP8
         --revision d9748a51ae66354c4dad665aab2c71f26cf2c8cd
@@ -946,7 +953,6 @@ services:
         --max-model-len 16384
         --max-num-seqs 16
         --max-num-batched-tokens 8K
-        --async-scheduling
         --enable-prompt-tokens-details
     volumes:
       - hugginface_cache:/root/.cache/huggingface
