@@ -73,13 +73,19 @@ x-gpt-oss-common: &gpt-oss-common
   # across the concurrency range on H200 (internal 12:1 serving sweep), no quality/stability
   # change. MXFP4-via-Marlin (VLLM_MXFP4_USE_MARLIN=1) stays — benched fastest on this engine
   # for the practical range; the Triton matmul_ogs default was slower and unstable at c>=16.
+  # --async-scheduling REMOVED (benchmarked 2026-07-10, gpu02 dev CVM, single H200 CC-on, TP1,
+  # in1024/out1024 @ conc64, MXFP4 Marlin, prod image). Under GPU-CC the async output-drain /
+  # next-step-prep overlap is void — the secure-copy bridge serializes the small D2H drains — so
+  # the flag is a net loss here: OFF beat ON by +5.2% output tok/s and -5.1% TPOT, reproduced
+  # across two ON deploys with clean arm separation. Matches arXiv:2606.23969 (Phala): async's
+  # benefit "stops at parity" on Hopper under CC and turns slightly negative for MoE decode
+  # (irreducible per-step expert-routing crossings). Do NOT re-add without re-benchmarking on CC.
   command: >
       openai/gpt-oss-120b
       --revision b5c939de8f754692c1647ca79fbf85e8c1e70f8a
       --tensor-parallel-size 1
       --gpu-memory-utilization 0.90
       --enable-prefix-caching
-      --async-scheduling
       --max-num-seqs 64
       --tool-call-parser openai
       --enable-auto-tool-choice
