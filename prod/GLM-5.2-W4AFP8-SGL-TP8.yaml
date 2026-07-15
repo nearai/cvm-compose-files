@@ -63,7 +63,7 @@
 # DeepEP + DP-attention high-throughput (sglang cookbook) is CC-INCOMPATIBLE: DeepEP's
 # GPU-initiated all-to-all crashes under PPCIE ("deep_ep.cpp:230 invalid argument"). Do not use.
 #
-# *** CONFIG: EAGLE 3/1/4 + --mem-fraction-static 0.78 + --cuda-graph-max-bs 128 ***
+# *** CONFIG: EAGLE 3/1/4 + --mem-fraction-static 0.75 + --cuda-graph-max-bs 128 ***
 #   The 0.80 baseline came from a full one-factor-at-a-time sweep (8xH200 CC, ~11.5k-in/1154-out
 #   production shape, 1->256 concurrency). It Pareto-dominated the prior 5/1/6 + mf0.72:
 #   throughput >= at every concurrency (c64/128/256 strictly higher; c256 +54%), TPOT lower
@@ -142,7 +142,7 @@ x-glm52-cmd: &glm52-cmd >
   --speculative-eagle-topk 1
   --speculative-num-draft-tokens 4
   --log-requests-level 0
-  --mem-fraction-static 0.78
+  --mem-fraction-static 0.75
   --max-running-requests 256
   --max-queued-requests 16
   --cuda-graph-max-bs 128
