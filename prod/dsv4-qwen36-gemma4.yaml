@@ -65,7 +65,9 @@ x-dsv4-flash-common: &dsv4-flash-common
   #      page_first_direct: uses GPUDirect/unified-memory paths that hit
   #      'cudaErrorNotSupported' on the first warmup tensor.to(non_blocking)
   #      under TDX-confidential GPU memory — dropped.
-  image: lmsysorg/sglang@sha256:5027e95bf6ec536856b1b52a91d1f35ff5c564ab83e8a94758a169ff09bb8df3  # v0.5.14 — required for the FP4 --moe-runner-backend marlin path; was v0.5.12-cu129
+  # Temporary official CUDA 13 nightly containing sglang#29883; retains the FP4 Marlin path.
+  # Workflow head/tag: 7de33ce8 / nightly-dev-cu13-20260711-7de33ce8. Replace with the next fixed stable.
+  image: lmsysorg/sglang@sha256:6bb5fee34b6c4537c09a4775e2292ac40350d5ad1218fcc835b2692142f443b1
   # Hidden-state passthrough (cloud-api#739 / inference-proxy#163) — OFF by default.
   # The gpu-manager toggles it at start via the DSV4_RETURN_HIDDEN_STATES env var,
   # spliced into /compose/up like GPT_OSS_CACHE_SUBPATH (see infra-docs compose-manager.md).
