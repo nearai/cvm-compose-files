@@ -108,7 +108,9 @@ x-dsv4-flash-common: &dsv4-flash-common
   # DeepSeek-V4-Flash uses the current production FP4/SGLang TP=2 path from
   # prod/dsv4-qwen36-gemma4.yaml. Each replica consumes two H200 GPUs, so the
   # four GPUs left after one Qwen3.5 TP=4 replica fit two DeepSeek replicas.
-  image: lmsysorg/sglang@sha256:5027e95bf6ec536856b1b52a91d1f35ff5c564ab83e8a94758a169ff09bb8df3  # v0.5.14
+  # Temporary official CUDA 13 nightly containing sglang#29883; retains the FP4 Marlin path.
+  # Workflow head/tag: 7de33ce8 / nightly-dev-cu13-20260711-7de33ce8. Replace with the next fixed stable.
+  image: lmsysorg/sglang@sha256:6bb5fee34b6c4537c09a4775e2292ac40350d5ad1218fcc835b2692142f443b1
   # EAGLE 3/1/4 MTP spec-decode (added 2026-07-07; gpu02 dev-CVM validation, Notion
   # "dsv4 work doc"): +11-22% decode tok/s at prod 30k-context shape (accept-len
   # 2.27 code / 2.42 rag, same-wave two-port A/B; alpha identical at these exact
