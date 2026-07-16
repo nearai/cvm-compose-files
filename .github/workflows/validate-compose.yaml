@@ -4,42 +4,103 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   validate:
-    runs-on: [self-hosted, infra]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      RUBY_VALIDATION_IMAGE: ruby:3.3-alpine@sha256:940f1f8ba78c93b303eb2a632b249792cf60435517da260f3a1b9c8b8f1e7dfe
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
 
       - name: Validate OTel label contracts
         run: |
           docker run --rm \
-            -v "$PWD:/repo" \
+            --network none \
+            --read-only \
+            --cap-drop ALL \
+            --security-opt no-new-privileges \
+            --pids-limit 128 \
+            --memory 512m \
+            --cpus 2 \
+            --tmpfs /tmp:rw,nosuid,nodev,noexec,size=64m \
+            --user 65534:65534 \
+            -v "$PWD:/repo:ro" \
             -w /repo \
-            ruby:3.3-alpine \
+            "$RUBY_VALIDATION_IMAGE" \
             ruby scripts/validate_otel_labels.rb
+
+      - name: Test OTel label contract failures
+        run: |
+          docker run --rm \
+            --network none \
+            --read-only \
+            --cap-drop ALL \
+            --security-opt no-new-privileges \
+            --pids-limit 128 \
+            --memory 512m \
+            --cpus 2 \
+            --tmpfs /tmp:rw,nosuid,nodev,noexec,size=64m \
+            --user 65534:65534 \
+            -v "$PWD:/repo:ro" \
+            -w /repo \
+            "$RUBY_VALIDATION_IMAGE" \
+            ruby scripts/test_validate_otel_labels.rb
 
       - name: Validate proxy dependency contracts
         run: |
           docker run --rm \
-            -v "$PWD:/repo" \
+            --network none \
+            --read-only \
+            --cap-drop ALL \
+            --security-opt no-new-privileges \
+            --pids-limit 128 \
+            --memory 512m \
+            --cpus 2 \
+            --tmpfs /tmp:rw,nosuid,nodev,noexec,size=64m \
+            --user 65534:65534 \
+            -v "$PWD:/repo:ro" \
             -w /repo \
-            ruby:3.3-alpine \
+            "$RUBY_VALIDATION_IMAGE" \
             ruby scripts/validate_proxy_dependencies.rb
 
       - name: Validate proxy environment contracts
         run: |
           docker run --rm \
-            -v "$PWD:/repo" \
+            --network none \
+            --read-only \
+            --cap-drop ALL \
+            --security-opt no-new-privileges \
+            --pids-limit 128 \
+            --memory 512m \
+            --cpus 2 \
+            --tmpfs /tmp:rw,nosuid,nodev,noexec,size=64m \
+            --user 65534:65534 \
+            -v "$PWD:/repo:ro" \
             -w /repo \
-            ruby:3.3-alpine \
+            "$RUBY_VALIDATION_IMAGE" \
             ruby scripts/validate_proxy_environment.rb
 
       - name: Validate registrar auth contracts
         run: |
           docker run --rm \
-            -v "$PWD:/repo" \
+            --network none \
+            --read-only \
+            --cap-drop ALL \
+            --security-opt no-new-privileges \
+            --pids-limit 128 \
+            --memory 512m \
+            --cpus 2 \
+            --tmpfs /tmp:rw,nosuid,nodev,noexec,size=64m \
+            --user 65534:65534 \
+            -v "$PWD:/repo:ro" \
             -w /repo \
-            ruby:3.3-alpine \
+            "$RUBY_VALIDATION_IMAGE" \
             ruby scripts/validate_registrar_auth.rb
 
       - name: Validate docker compose files
@@ -109,5 +170,13 @@ jobs:
             fi
             image="$(docker compose -f "$file" config --format=json | jq -r '.services["otelcol-contrib"].image')"
             echo "Validating embedded OTel config in $file with $image..."
-            printf '%s' "$config" | docker run --rm -i "$image" validate --config=/dev/stdin
+            printf '%s' "$config" | docker run --rm -i \
+              --network none \
+              --read-only \
+              --cap-drop ALL \
+              --security-opt no-new-privileges \
+              --pids-limit 128 \
+              --memory 512m \
+              --cpus 2 \
+              "$image" validate --config=/dev/stdin
           done

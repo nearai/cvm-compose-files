@@ -83,11 +83,27 @@ Full deploy recipes (graceful drain for slow-shutdown models, env-var fetch, for
 
 Configs in `experiments/` are WIP (AWQ/int4/nvfp4 quantization sweeps, otel test harnesses, alternative engine configs) and are not deployed to prod. See their header comments for status. `experiments/GLM-5.1-FP8-TP8-archived.yaml` is the previous GLM-5.1 prod config (SGLang TP8, official FP8) — superseded by `prod/GLM-5.1-SGL-AWQ-TP4.yaml`, kept for reference.
 
+## Datadog decommission
+
+`nearai.otel.logs` is the canonical Docker log metadata label. App collectors
+with a `filelog/docker_containers` pipeline consume it; configs without that
+pipeline carry the label in preparation for enabling OTel log collection.
+During the migration, every log-collected service also carries an exact
+`com.datadoghq.ad.logs` copy so Datadog and OTel can run in parallel while Loki
+parity is verified. Pre-existing services excluded from both log backends use
+`nearai.otel.logs.disabled: "true"`; CI allowlists those exact file/service
+pairs, so changing that opt-out requires a separate collection-scope and
+privacy review plus an allowlist change. Remove the `com.datadoghq.ad.logs` copy
+only after the compose slice has completed its soak, every affected prod config
+has an active OTel log pipeline, and Loki parity is verified. Remove Datadog
+autodiscovery metric labels only after the corresponding OTel/Prometheus scrape
+path is active and metric parity is verified separately.
+
 ## CI
 
 `.github/workflows/validate-compose.yaml` runs on every push/PR:
 
-1. **OTel label contract** (`scripts/validate_otel_labels.rb`) — enforces that Datadog `ad.logs` tags and OTel scrape labels match across every service, and that the OTel collector env vars are present. `cleanup-hf-model.yaml` is excluded.
+1. **OTel label contract** (`scripts/validate_otel_labels.rb`) — enforces neutral `nearai.otel.logs` metadata or an explicit collection opt-out, temporary Datadog parity, OTel scrape labels, and collector env vars across every service. It also rejects collectors that still consume Datadog labels. `scripts/test_validate_otel_labels.rb` locks the decommission failure cases. `cleanup-hf-model.yaml` is excluded.
 2. **Proxy dependency/env contracts** (`scripts/validate_proxy_dependencies.rb`, `scripts/validate_proxy_environment.rb`) — enforces the proxy dependency and required env var wiring.
 3. **Prod registrar auth contract** (`scripts/validate_registrar_auth.rb`) — enforces that prod registrar health probes authenticate when probing inference-proxy endpoints.
 4. **Compose syntax** — `docker compose -f <file> config` against every `*.yaml`, with dummy env vars for the `${VAR:?required}` fail-fast markers.
@@ -116,6 +132,6 @@ The end-to-end onboarding flow (staging `PATCH /v1/admin/models` → auto-genera
 1. **Choose the served model name and SNI domain first** — see [`AGENT.md` → Model naming and SNI domains](AGENT.md#model-naming-and-sni-domains). These are external identifiers: prefer the OpenRouter slug, no quantization suffix, no variant info. Pick them before writing the config so they don't need changing later.
 2. Start the config in `experiments/<Model>-<variant>.yaml`. Copy from the closest existing prod config as a template.
 3. Pin the image digests and HF `--revision`.
-4. Add the Datadog + OTel labels (copy from `prod/GLM-5.2-SGL-FP8-TP8.yaml` — the label set is exact).
+4. Add the neutral OTel log/scrape labels and temporary Datadog parity labels (copy from `prod/GLM-5.2-SGL-FP8-TP8.yaml` — the label set is exact).
 5. Soak in staging. Iterate.
 6. When the checklist passes, move to `prod/` and open a PR. CI validates; the merge auto-tags.

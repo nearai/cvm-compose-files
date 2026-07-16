@@ -1,6 +1,4 @@
 #!/usr/bin/env ruby
-# Validates the label contract shared by Datadog logs and the app OTel collector.
-
 require "json"
 require "yaml"
 
@@ -30,6 +28,12 @@ REQUIRED_OTEL_SCRAPE_LABELS = %w[
   nearai.otel.path
 ].freeze
 OPTIONAL_SCRAPE_TAGS = %w[model_path precision instance replica].freeze
+LOG_COLLECTION_OPT_OUTS = {
+  "experiments/gemma4-31b-qat-vllm.yaml" => %w[model-downloader proxy-nginx model-proxy-registrar],
+  "prod/GLM-5.2-SGL-FP8-TP8.yaml" => %w[nginx model-proxy-registrar],
+  "prod/GLM-5.2-W4AFP8-SGL-TP8.yaml" => %w[nginx model-proxy-registrar],
+  "prod/GLM-5.2-W4AFP8-vLLM-TP8.yaml" => %w[nginx model-proxy-registrar],
+}.freeze
 
 def add_error(errors, file, path, message)
   errors << [file, path, message]
@@ -48,17 +52,32 @@ rescue StandardError => e
   nil
 end
 
-def docker_log_config(raw)
+def docker_log_configs(raw)
   parsed = JSON.parse(raw)
-  raise "expected non-empty JSON array" unless parsed.is_a?(Array) && parsed.first.is_a?(Hash)
+  unless parsed.is_a?(Array) && parsed.length == 1 && parsed.first.is_a?(Hash)
+    raise "expected a single-entry JSON array"
+  end
 
-  parsed.first
+  parsed
 end
 
 def tag_map(tags)
   Array(tags).each_with_object({}) do |tag, memo|
     key, value = tag.to_s.split(":", 2)
     memo[key] = value if key && value
+  end
+end
+
+def contains_string?(value, needle)
+  case value
+  when Hash
+    value.any? { |key, nested| contains_string?(key, needle) || contains_string?(nested, needle) }
+  when Array
+    value.any? { |nested| contains_string?(nested, needle) }
+  when String
+    value.include?(needle)
+  else
+    false
   end
 end
 
@@ -78,8 +97,7 @@ def service_environment(service)
 end
 
 def scrape_targets(collector_config)
-  parsed = yaml_load(collector_config)
-  scrape_configs = parsed.dig("receivers", "prometheus/apps", "config", "scrape_configs") || []
+  scrape_configs = collector_config.dig("receivers", "prometheus/apps", "config", "scrape_configs") || []
   scrape_configs.each_with_object({}) do |scrape, memo|
     Array(scrape["static_configs"]).each do |static_config|
       Array(static_config["targets"]).each do |target|
@@ -121,37 +139,74 @@ def expected_public_ports(compose)
 end
 
 def validate_log_label(file, service_name, service, errors)
-  raw = service.dig("labels", "com.datadoghq.ad.logs")
-  return nil unless raw
+  neutral_raw = service.dig("labels", "nearai.otel.logs")
+  datadog_raw = service.dig("labels", "com.datadoghq.ad.logs")
+  disabled_raw = service.dig("labels", "nearai.otel.logs.disabled")
 
-  config = docker_log_config(raw)
+  path = "services.#{service_name}.labels.nearai.otel.logs"
+  approved_opt_out = LOG_COLLECTION_OPT_OUTS.fetch(file, []).include?(service_name)
+  if approved_opt_out
+    unless disabled_raw == "true"
+      add_error(errors, file, "services.#{service_name}.labels.nearai.otel.logs.disabled", "approved log collection opt-out must remain true")
+    end
+    if neutral_raw || datadog_raw
+      add_error(errors, file, "services.#{service_name}.labels", "log collection opt-out cannot be combined with log metadata labels")
+    end
+    return nil
+  end
+  unless disabled_raw.nil?
+    add_error(errors, file, "services.#{service_name}.labels.nearai.otel.logs.disabled", "log collection opt-out is not approved for this service")
+  end
+  unless datadog_raw
+    add_error(errors, file, "services.#{service_name}.labels.com.datadoghq.ad.logs", "missing temporary Datadog parity label")
+  end
+  unless neutral_raw
+    add_error(errors, file, path, "missing neutral log metadata label")
+    return nil
+  end
+
+  configs = docker_log_configs(neutral_raw)
+  datadog_configs = begin
+    docker_log_configs(datadog_raw) if datadog_raw
+  rescue StandardError => e
+    add_error(errors, file, "services.#{service_name}.labels.com.datadoghq.ad.logs", "invalid JSON: #{e.message}")
+    nil
+  end
+  if datadog_configs && datadog_configs != configs
+    add_error(errors, file, path, "does not match temporary Datadog parity label")
+  end
+  config = configs.first
   source = config["source"]
   service_label = config["service"]
   tags = tag_map(config["tags"])
 
-  add_error(errors, file, "services.#{service_name}.labels.com.datadoghq.ad.logs", "missing source") if source.to_s.empty?
-  add_error(errors, file, "services.#{service_name}.labels.com.datadoghq.ad.logs", "missing service") if service_label.to_s.empty?
+  add_error(errors, file, path, "missing source") if source.to_s.empty?
+  add_error(errors, file, path, "missing service") if service_label.to_s.empty?
 
   REQUIRED_LOG_TAGS.each do |key|
-    add_error(errors, file, "services.#{service_name}.labels.com.datadoghq.ad.logs", "missing #{key}: tag") unless tags.key?(key)
+    add_error(errors, file, path, "missing #{key}: tag") unless tags.key?(key)
   end
 
   unless service_name == "otelcol-contrib"
-    add_error(errors, file, "services.#{service_name}.labels.com.datadoghq.ad.logs", "missing model: tag") unless tags.key?("model")
+    add_error(errors, file, path, "missing model: tag") unless tags.key?("model")
+    log_driver_labels = service.dig("logging", "options", "labels").to_s.split(",")
+    %w[nearai.otel.logs com.docker.compose.service].each do |label|
+      add_error(errors, file, "services.#{service_name}.logging.options.labels", "missing #{label}") unless log_driver_labels.include?(label)
+    end
   end
 
   otel_service = service.dig("labels", "nearai.otel.service")
   otel_source = service.dig("labels", "nearai.otel.source")
   if otel_source && source != otel_source
-    add_error(errors, file, "services.#{service_name}.labels.com.datadoghq.ad.logs", "source #{source.inspect} does not match nearai.otel.source #{otel_source.inspect}")
+    add_error(errors, file, path, "source #{source.inspect} does not match nearai.otel.source #{otel_source.inspect}")
   end
   if otel_service && service_label != otel_service
-    add_error(errors, file, "services.#{service_name}.labels.com.datadoghq.ad.logs", "service #{service_label.inspect} does not match nearai.otel.service #{otel_service.inspect}")
+    add_error(errors, file, path, "service #{service_label.inspect} does not match nearai.otel.service #{otel_service.inspect}")
   end
 
   tags
 rescue StandardError => e
-  add_error(errors, file, "services.#{service_name}.labels.com.datadoghq.ad.logs", "invalid JSON: #{e.message}")
+  add_error(errors, file, "services.#{service_name}.labels.nearai.otel.logs", "invalid JSON: #{e.message}")
   nil
 end
 
@@ -213,11 +268,21 @@ def validate_scrape_contract(file, compose, log_tags_by_service, errors)
   config = compose.dig("configs", "otelcol_app_config", "content")
   return unless config
 
+  parsed_config = yaml_load(config)
   if config.include?("datadog-agent:4317") || config.include?("otlp/datadog_agent")
     add_error(errors, file, "configs.otelcol_app_config", "standalone inference compose files must not export OTLP to datadog-agent:4317")
   end
+  if contains_string?(parsed_config, "com.datadoghq.")
+    add_error(errors, file, "configs.otelcol_app_config", "app collector must not depend on Datadog-specific metadata")
+  end
+  filelog_receivers = parsed_config.fetch("receivers", {}).select { |name, _receiver| name.match?(/\Afilelog(?:\/|\z)/) }
+  filelog_receivers.each do |name, receiver|
+    unless contains_string?(receiver, "nearai.otel.logs")
+      add_error(errors, file, "configs.otelcol_app_config.receivers.#{name}", "Docker log pipeline does not consume nearai.otel.logs")
+    end
+  end
 
-  targets = scrape_targets(config)
+  targets = scrape_targets(parsed_config)
   expected_ports = expected_public_ports(compose)
   scrape_services = {}
 
@@ -291,8 +356,8 @@ errors = []
 # root-level utilities (cleanup-hf-model.yaml). Sort for deterministic error
 # output. Relative paths from the repo root are used in error messages so
 # same-named files in different dirs are distinguishable.
-compose_files = Dir.glob(File.join(ROOT, "prod", "*.yaml")) +
-                Dir.glob(File.join(ROOT, "experiments", "*.yaml")) +
+compose_files = Dir.glob(File.join(ROOT, "prod", "**", "*.yaml")) +
+                Dir.glob(File.join(ROOT, "experiments", "**", "*.yaml")) +
                 Dir.glob(File.join(ROOT, "*.yaml"))
 compose_files.sort.each do |path|
   file = path.sub("#{ROOT}/", "")
@@ -313,7 +378,7 @@ compose_files.sort.each do |path|
     log_port = log_tags_by_service.dig(service_name, "port")
     next unless log_port && log_port != port
 
-    add_error(errors, file, "services.#{service_name}.labels.com.datadoghq.ad.logs", "port tag #{log_port.inspect} should match nginx public port #{port.inspect}")
+    add_error(errors, file, "services.#{service_name}.labels.nearai.otel.logs", "port tag #{log_port.inspect} should match nginx public port #{port.inspect}")
   end
 
   validate_scrape_contract(file, compose, log_tags_by_service, errors)
