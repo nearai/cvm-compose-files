@@ -5,10 +5,10 @@ name: Auto Tag on Merge
 # history: the newest commit always gets the highest number, so a deployer that
 # treats the highest v0.0.N tag as "latest" never selects an older commit.
 #
-# Note on deployment: compose-manager enforces MIN_TAG_AGE_HOURS (>2h, gated on
-# the *commit* date — see docs/deployment.md). A tag created here points at the
-# fresh merge commit, so it only becomes deployable ~2h after merge. For an
-# immediate deploy, use the backdate-tag flow instead of this auto-tag.
+# Note on deployment: compose-manager enforces MIN_TAG_AGE_HOURS (default 48h,
+# gated on the *commit* date — see docs/deployment.md). A tag created here points
+# at the fresh merge commit, so it only becomes deployable ~48h after merge. For
+# an immediate deploy, use the backdate-tag flow instead of this auto-tag.
 
 on:
   push:

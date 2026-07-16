@@ -3,7 +3,7 @@ x-logging-conf: &logging-conf
   options:
     max-size: "100m"
     max-file: "10"
-    labels: "com.datadoghq.ad.logs,com.docker.compose.service"
+    labels: "nearai.otel.logs,com.datadoghq.ad.logs,com.docker.compose.service"
 
 # Non-chat models (FLUX, embedding, reranker, whisper) use /v1/models
 
@@ -486,6 +486,7 @@ services:
     restart: unless-stopped
     logging: *logging-conf
     labels:
+      nearai.otel.logs: '[{"source":"nginx","service":"nginx","tags":["model:openai/gpt-oss-120b","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000"]}]'
       com.datadoghq.ad.logs: '[{"source":"nginx","service":"nginx","tags":["model:openai/gpt-oss-120b","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000"]}]'
 
   model-proxy-registrar:
@@ -512,6 +513,7 @@ services:
         mode: 0755
     logging: *logging-conf
     labels:
+      nearai.otel.logs: '[{"source":"model-proxy-registrar","service":"model-proxy-registrar","tags":["model:openai/gpt-oss-120b","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
       com.datadoghq.ad.logs: '[{"source":"model-proxy-registrar","service":"model-proxy-registrar","tags":["model:openai/gpt-oss-120b","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
 
   # --- GPT-OSS x3 (GPUs 0, 2, 3) — single proxy, multi-backend ---
@@ -536,6 +538,7 @@ services:
       - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
       - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
     labels:
+      nearai.otel.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:openai/gpt-oss-120b","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8001"]}]'
       com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:openai/gpt-oss-120b","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8001"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "inference-proxy"
@@ -565,6 +568,7 @@ services:
     labels:
       com.datadoghq.ad.check_names: '["vllm"]'
       com.datadoghq.ad.init_configs: "[{}]"
+      nearai.otel.logs: '[{"source":"vllm","service":"vllm","tags":["model:openai/gpt-oss-120b","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8001","instance:1"]}]'
       com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:openai/gpt-oss-120b","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8001","instance:1"]}]'
       com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-gptoss-120b-mxfp4-tp1-r1:8000/metrics", "histogram_buckets_as_distributions": true, "service": "vllm", "tags":["model:openai/gpt-oss-120b","ip:${HOST_IP}", "port:8001"]}]'
       nearai.otel.scrape: "true"
@@ -595,6 +599,7 @@ services:
     labels:
       com.datadoghq.ad.check_names: '["vllm"]'
       com.datadoghq.ad.init_configs: "[{}]"
+      nearai.otel.logs: '[{"source":"vllm","service":"vllm","tags":["model:openai/gpt-oss-120b","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8001","instance:2"]}]'
       com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:openai/gpt-oss-120b","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8001","instance:2"]}]'
       com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-gptoss-120b-mxfp4-tp1-r2:8000/metrics", "histogram_buckets_as_distributions": true, "service": "vllm", "tags":["model:openai/gpt-oss-120b","ip:${HOST_IP}", "port:8001"]}]'
       nearai.otel.scrape: "true"
@@ -626,6 +631,7 @@ services:
     labels:
       com.datadoghq.ad.check_names: '["vllm"]'
       com.datadoghq.ad.init_configs: "[{}]"
+      nearai.otel.logs: '[{"source":"vllm","service":"vllm","tags":["model:openai/gpt-oss-120b","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8001","instance:3"]}]'
       com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:openai/gpt-oss-120b","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8001","instance:3"]}]'
       com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-gptoss-120b-mxfp4-tp1-r3:8000/metrics", "histogram_buckets_as_distributions": true, "service": "vllm", "tags":["model:openai/gpt-oss-120b","ip:${HOST_IP}", "port:8001"]}]'
       nearai.otel.scrape: "true"
@@ -665,6 +671,7 @@ services:
       - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
       - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
     labels:
+      nearai.otel.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:Qwen/Qwen3.6-35B-A3B-FP8","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8008"]}]'
       com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:Qwen/Qwen3.6-35B-A3B-FP8","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8008"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "inference-proxy"
@@ -694,6 +701,7 @@ services:
     labels:
       com.datadoghq.ad.check_names: '["openmetrics"]'
       com.datadoghq.ad.init_configs: "[{}]"
+      nearai.otel.logs: '[{"source":"sglang","service":"sglang","tags":["model:Qwen/Qwen3.6-35B-A3B-FP8","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8008","instance:1"]}]'
       com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:Qwen/Qwen3.6-35B-A3B-FP8","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8008","instance:1"]}]'
       com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-sg-qwen36-35b-a3b-fp8-tp1-r1:8000/metrics", "histogram_buckets_as_distributions": true, "metrics":["sglang:*"], "service": "sglang", "tags":["model:Qwen/Qwen3.6-35B-A3B-FP8","ip:${HOST_IP}", "port:8008"]}]'
       nearai.otel.scrape: "true"
@@ -724,6 +732,7 @@ services:
     labels:
       com.datadoghq.ad.check_names: '["openmetrics"]'
       com.datadoghq.ad.init_configs: "[{}]"
+      nearai.otel.logs: '[{"source":"sglang","service":"sglang","tags":["model:Qwen/Qwen3.6-35B-A3B-FP8","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8008","instance:2"]}]'
       com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:Qwen/Qwen3.6-35B-A3B-FP8","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8008","instance:2"]}]'
       com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-sg-qwen36-35b-a3b-fp8-tp1-r2:8000/metrics", "histogram_buckets_as_distributions": true, "metrics":["sglang:*"], "service": "sglang", "tags":["model:Qwen/Qwen3.6-35B-A3B-FP8","ip:${HOST_IP}", "port:8008"]}]'
       nearai.otel.scrape: "true"
@@ -763,6 +772,7 @@ services:
       - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
       - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
     labels:
+      nearai.otel.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:google/gemma-4-31B-it","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8009"]}]'
       com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:google/gemma-4-31B-it","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8009"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "inference-proxy"
@@ -792,6 +802,7 @@ services:
     labels:
       com.datadoghq.ad.check_names: '["vllm"]'
       com.datadoghq.ad.init_configs: "[{}]"
+      nearai.otel.logs: '[{"source":"vllm","service":"vllm","tags":["model:google/gemma-4-31B-it","model_path:RedHatAI/gemma-4-31B-it-FP8-block","precision:fp8","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8009","instance:1"]}]'
       com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:google/gemma-4-31B-it","model_path:RedHatAI/gemma-4-31B-it-FP8-block","precision:fp8","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8009","instance:1"]}]'
       com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-gemma4-31b-fp8-tp1-r1:8000/metrics", "histogram_buckets_as_distributions": true, "service": "vllm", "tags":["model:google/gemma-4-31B-it","model_path:RedHatAI/gemma-4-31B-it-FP8-block","precision:fp8","deployment:small-models","ip:${HOST_IP}","port:8009","instance:1"]}]'
       nearai.otel.scrape: "true"
@@ -822,6 +833,7 @@ services:
     labels:
       com.datadoghq.ad.check_names: '["vllm"]'
       com.datadoghq.ad.init_configs: "[{}]"
+      nearai.otel.logs: '[{"source":"vllm","service":"vllm","tags":["model:google/gemma-4-31B-it","model_path:RedHatAI/gemma-4-31B-it-FP8-block","precision:fp8","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8009","instance:2"]}]'
       com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:google/gemma-4-31B-it","model_path:RedHatAI/gemma-4-31B-it-FP8-block","precision:fp8","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8009","instance:2"]}]'
       com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-gemma4-31b-fp8-tp1-r2:8000/metrics", "histogram_buckets_as_distributions": true, "service": "vllm", "tags":["model:google/gemma-4-31B-it","model_path:RedHatAI/gemma-4-31B-it-FP8-block","precision:fp8","deployment:small-models","ip:${HOST_IP}","port:8009","instance:2"]}]'
       nearai.otel.scrape: "true"
@@ -861,6 +873,7 @@ services:
       - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
       - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
     labels:
+      nearai.otel.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:black-forest-labs/FLUX.2-klein-4B","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8002"]}]'
       com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:black-forest-labs/FLUX.2-klein-4B","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8002"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "inference-proxy"
@@ -883,6 +896,7 @@ services:
     labels:
       com.datadoghq.ad.check_names: '["openmetrics"]'
       com.datadoghq.ad.init_configs: "[{}]"
+      nearai.otel.logs: '[{"source":"sglang","service":"sglang","tags":["model:black-forest-labs/FLUX.2-klein-4B","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8002","instance:1"]}]'
       com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:black-forest-labs/FLUX.2-klein-4B","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8002","instance:1"]}]'
       com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-sg-flux2-klein-4b-tp1:8000/metrics", "histogram_buckets_as_distributions": true, "metrics":["sglang:*"], "service": "sglang", "tags":["model:black-forest-labs/FLUX.2-klein-4B","ip:${HOST_IP}", "port:8002"]}]'
       nearai.otel.scrape: "true"
@@ -922,6 +936,7 @@ services:
       - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
       - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
     labels:
+      nearai.otel.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:Qwen/Qwen3-VL-30B-A3B-Instruct","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8003"]}]'
       com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:Qwen/Qwen3-VL-30B-A3B-Instruct","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8003"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "inference-proxy"
@@ -974,6 +989,7 @@ services:
     labels:
       com.datadoghq.ad.check_names: '["vllm"]'
       com.datadoghq.ad.init_configs: "[{}]"
+      nearai.otel.logs: '[{"source":"vllm","service":"vllm","tags":["model:Qwen/Qwen3-VL-30B-A3B-Instruct","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8003"]}]'
       com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:Qwen/Qwen3-VL-30B-A3B-Instruct","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8003"]}]'
       com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-qwen3vl-30b-a3b-fp8-tp1:8000/metrics", "histogram_buckets_as_distributions": true, "service": "vllm", "tags":["model:Qwen/Qwen3-VL-30B-A3B-Instruct","ip:${HOST_IP}", "port:8003"]}]'
       nearai.otel.scrape: "true"
@@ -1013,6 +1029,7 @@ services:
       - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
       - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
     labels:
+      nearai.otel.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:Qwen/Qwen3-Embedding-0.6B","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8004"]}]'
       com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:Qwen/Qwen3-Embedding-0.6B","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8004"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "inference-proxy"
@@ -1052,6 +1069,7 @@ services:
     labels:
       com.datadoghq.ad.check_names: '["vllm"]'
       com.datadoghq.ad.init_configs: "[{}]"
+      nearai.otel.logs: '[{"source":"vllm","service":"vllm","tags":["model:Qwen/Qwen3-Embedding-0.6B","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8004"]}]'
       com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:Qwen/Qwen3-Embedding-0.6B","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8004"]}]'
       com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-qwen3-embedding-0.6b-tp1:8000/metrics", "histogram_buckets_as_distributions": true, "service": "vllm", "tags":["model:Qwen/Qwen3-Embedding-0.6B","ip:${HOST_IP}", "port:8004"]}]'
       nearai.otel.scrape: "true"
@@ -1089,6 +1107,7 @@ services:
       - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
       - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
     labels:
+      nearai.otel.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:Qwen/Qwen3-Reranker-0.6B","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8005"]}]'
       com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:Qwen/Qwen3-Reranker-0.6B","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8005"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "inference-proxy"
@@ -1128,6 +1147,7 @@ services:
     labels:
       com.datadoghq.ad.check_names: '["vllm"]'
       com.datadoghq.ad.init_configs: "[{}]"
+      nearai.otel.logs: '[{"source":"vllm","service":"vllm","tags":["model:Qwen/Qwen3-Reranker-0.6B","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8005"]}]'
       com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:Qwen/Qwen3-Reranker-0.6B","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8005"]}]'
       com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-qwen3-reranker-0.6b-tp1:8000/metrics", "histogram_buckets_as_distributions": true, "service": "vllm", "tags":["model:Qwen/Qwen3-Reranker-0.6B","ip:${HOST_IP}", "port:8005"]}]'
       nearai.otel.scrape: "true"
@@ -1165,6 +1185,7 @@ services:
       - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
       - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
     labels:
+      nearai.otel.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:openai/whisper-large-v3","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8006"]}]'
       com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:openai/whisper-large-v3","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8006"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "inference-proxy"
@@ -1208,6 +1229,7 @@ services:
     labels:
       com.datadoghq.ad.check_names: '["vllm"]'
       com.datadoghq.ad.init_configs: "[{}]"
+      nearai.otel.logs: '[{"source":"vllm","service":"vllm","tags":["model:openai/whisper-large-v3","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8006"]}]'
       com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:openai/whisper-large-v3","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8006"]}]'
       com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-whisper-large-v3-tp1:8000/metrics", "histogram_buckets_as_distributions": true, "service": "vllm", "tags":["model:openai/whisper-large-v3","ip:${HOST_IP}", "port:8006"]}]'
       nearai.otel.scrape: "true"
@@ -1247,6 +1269,7 @@ services:
       - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
       - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
     labels:
+      nearai.otel.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:openai/privacy-filter","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8007"]}]'
       com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:openai/privacy-filter","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8007"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "inference-proxy"
@@ -1267,6 +1290,7 @@ services:
     <<: *privacy-filter-common
     container_name: model-privacy-filter
     labels:
+      nearai.otel.logs: '[{"source":"privacy-filter","service":"privacy-filter","tags":["model:openai/privacy-filter","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8007"]}]'
       com.datadoghq.ad.logs: '[{"source":"privacy-filter","service":"privacy-filter","tags":["model:openai/privacy-filter","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8007"]}]'
 
   # Per-model dcgm-exporters: each container only sees its assigned GPUs via
@@ -1287,6 +1311,7 @@ services:
       com.datadoghq.ad.check_names: '["dcgm"]'
       com.datadoghq.ad.init_configs: "[{}]"
       com.datadoghq.ad.instances: '[{"openmetrics_endpoint": "http://%%host%%:9400/metrics", "tags":["model:openai/gpt-oss-120b","deployment:small-models","ip:${HOST_IP}"]}]'
+      nearai.otel.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:openai/gpt-oss-120b","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
       com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:openai/gpt-oss-120b","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "dcgm"
@@ -1317,6 +1342,7 @@ services:
       com.datadoghq.ad.check_names: '["dcgm"]'
       com.datadoghq.ad.init_configs: "[{}]"
       com.datadoghq.ad.instances: '[{"openmetrics_endpoint": "http://%%host%%:9400/metrics", "tags":["model:Qwen/Qwen3.6-35B-A3B-FP8","deployment:small-models","ip:${HOST_IP}"]}]'
+      nearai.otel.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:Qwen/Qwen3.6-35B-A3B-FP8","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
       com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:Qwen/Qwen3.6-35B-A3B-FP8","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "dcgm"
@@ -1347,6 +1373,7 @@ services:
       com.datadoghq.ad.check_names: '["dcgm"]'
       com.datadoghq.ad.init_configs: "[{}]"
       com.datadoghq.ad.instances: '[{"openmetrics_endpoint": "http://%%host%%:9400/metrics", "tags":["model:google/gemma-4-31B-it","deployment:small-models","ip:${HOST_IP}"]}]'
+      nearai.otel.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:google/gemma-4-31B-it","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
       com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:google/gemma-4-31B-it","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "dcgm"
@@ -1381,6 +1408,7 @@ services:
       com.datadoghq.ad.check_names: '["dcgm"]'
       com.datadoghq.ad.init_configs: "[{}]"
       com.datadoghq.ad.instances: '[{"openmetrics_endpoint": "http://%%host%%:9400/metrics", "tags":["model:shared","deployment:small-models","ip:${HOST_IP}"]}]'
+      nearai.otel.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:shared","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
       com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:shared","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "dcgm"
@@ -1427,6 +1455,7 @@ services:
         max-size: "20m"
         max-file: "3"
     labels:
+      nearai.otel.logs: '[{"source":"otelcol-contrib","service":"otelcol-contrib","tags":["deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
       com.datadoghq.ad.logs: '[{"source":"otelcol-contrib","service":"otelcol-contrib","tags":["deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
 
 networks:
@@ -1503,43 +1532,43 @@ configs:
               regex: '/var/lib/docker/containers/(?P<container_id>[a-f0-9]{12})[a-f0-9]*/'
               on_error: send_quiet
             - type: regex_parser
-              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              parse_from: attributes["attrs"]["nearai.otel.logs"]
               regex: 'model:(?P<model>[^",\]]+)'
               on_error: send_quiet
             - type: regex_parser
-              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              parse_from: attributes["attrs"]["nearai.otel.logs"]
               regex: 'model_path:(?P<model_path>[^",\]]+)'
               on_error: send_quiet
             - type: regex_parser
-              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              parse_from: attributes["attrs"]["nearai.otel.logs"]
               regex: 'precision:(?P<precision>[^",\]]+)'
               on_error: send_quiet
             - type: regex_parser
-              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              parse_from: attributes["attrs"]["nearai.otel.logs"]
               regex: 'deployment:(?P<deployment>[^",\]]+)'
               on_error: send_quiet
             - type: regex_parser
-              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              parse_from: attributes["attrs"]["nearai.otel.logs"]
               regex: 'ip:(?P<ip>[^",\]]+)'
               on_error: send_quiet
             - type: regex_parser
-              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              parse_from: attributes["attrs"]["nearai.otel.logs"]
               regex: 'port:(?P<port>[^",\]]+)'
               on_error: send_quiet
             - type: regex_parser
-              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              parse_from: attributes["attrs"]["nearai.otel.logs"]
               regex: 'env:(?P<env>[^",\]]+)'
               on_error: send_quiet
             - type: regex_parser
-              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              parse_from: attributes["attrs"]["nearai.otel.logs"]
               regex: 'host:(?P<host>[^",\]]+)'
               on_error: send_quiet
             - type: regex_parser
-              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              parse_from: attributes["attrs"]["nearai.otel.logs"]
               regex: 'instance:(?P<instance>[^",\]]+)'
               on_error: send_quiet
             - type: regex_parser
-              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              parse_from: attributes["attrs"]["nearai.otel.logs"]
               regex: 'replica:(?P<replica>[^",\]]+)'
               on_error: send_quiet
             - type: add
@@ -2025,10 +2054,10 @@ configs:
             - context: log
               statements:
                 - set(attributes["service.name"], attributes["attrs"]["com.docker.compose.service"]) where attributes["attrs"] != nil and attributes["attrs"]["com.docker.compose.service"] != nil
-                - set(attributes["service.name"], ParseJSON(attributes["attrs"]["com.datadoghq.ad.logs"])[0]["service"]) where attributes["attrs"] != nil and attributes["attrs"]["com.datadoghq.ad.logs"] != nil
-                - set(attributes["log.source"], ParseJSON(attributes["attrs"]["com.datadoghq.ad.logs"])[0]["source"]) where attributes["attrs"] != nil and attributes["attrs"]["com.datadoghq.ad.logs"] != nil
-                - set(attributes["service"], attributes["service.name"]) where attributes["attrs"] != nil and attributes["attrs"]["com.datadoghq.ad.logs"] != nil and attributes["service.name"] != nil
-                - set(attributes["source"], attributes["log.source"]) where attributes["attrs"] != nil and attributes["attrs"]["com.datadoghq.ad.logs"] != nil and attributes["log.source"] != nil
+                - set(attributes["service.name"], ParseJSON(attributes["attrs"]["nearai.otel.logs"])[0]["service"]) where attributes["attrs"] != nil and attributes["attrs"]["nearai.otel.logs"] != nil
+                - set(attributes["log.source"], ParseJSON(attributes["attrs"]["nearai.otel.logs"])[0]["source"]) where attributes["attrs"] != nil and attributes["attrs"]["nearai.otel.logs"] != nil
+                - set(attributes["service"], attributes["service.name"]) where attributes["attrs"] != nil and attributes["attrs"]["nearai.otel.logs"] != nil and attributes["service.name"] != nil
+                - set(attributes["source"], attributes["log.source"]) where attributes["attrs"] != nil and attributes["attrs"]["nearai.otel.logs"] != nil and attributes["log.source"] != nil
                 - set(attributes["container.name"], attributes["attrs"]["com.docker.compose.service"]) where attributes["attrs"] != nil and attributes["attrs"]["com.docker.compose.service"] != nil
 
         filter/app_logs:

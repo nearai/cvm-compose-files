@@ -97,7 +97,7 @@ The SNI domain (`server_name` in nginx, first arg to `register_model`) is also a
 A config graduates from `experiments/` to `prod/` only when **all** pass:
 
 1. **Soaked ≥30 min in staging, 0 failures.** Against the model-onboarding soak harness. Non-negotiable — catches detokenizer-wedge and queue-saturation bugs that smoke tests miss.
-2. **Full monitoring stack.** Every model config includes: `inference-proxy`, `proxy-nginx`, `model-proxy-registrar`, `model-downloader`, `dcgm-exporter`, `otelcol-contrib`, and the model engine. All carry Datadog `com.datadoghq.ad.*` labels **and** `nearai.otel.*` scrape labels. CI enforces the contract (see [Monitoring label contract](#monitoring-label-contract)).
+2. **Full monitoring stack.** Every model config includes: `inference-proxy`, `proxy-nginx`, `model-proxy-registrar`, `model-downloader`, `dcgm-exporter`, `otelcol-contrib`, and the model engine. Log-collected services carry canonical `nearai.otel.logs` metadata and temporary Datadog parity labels during the decommission soak; pre-existing uncollected services must use an explicit opt-out. Scraped services carry `nearai.otel.*` metric labels. CI enforces the contract (see [Monitoring label contract](#monitoring-label-contract)).
 3. **Digest-pinned images.** Every `image:` is `name@sha256:…`. No `:latest`, `:dev`, or bare tags. HuggingFace model pinned via `--revision <sha>`. Required for KMS attestation reproducibility.
 4. **Registrar healthcheck + readiness probe.** `model-proxy-registrar` has the `/tmp/registrar_alive` liveness healthcheck (180s threshold, `start_period: 1200s`) and the 30-attempt readiness probe before entering the registration loop. Canonical pattern in `prod/GLM-5.2-SGL-FP8-TP8.yaml` (cvm-compose-files#57).
 5. **Graceful drain in nginx.** TLS `server` block: `keepalive_timeout 1h; keepalive_requests 1000000;`. Prevents H2 connection churn that causes signature 404s when cloud-api's bucket-pinned connection lands on a different backend after a model-proxy L4 rebalance.
@@ -122,7 +122,7 @@ Every prod config follows this service set (copy from `prod/GLM-5.2-SGL-FP8-TP8.
 
 Every file defines these anchors and reuses them via `<<: *anchor`:
 
-- `x-logging-conf` — json-file driver, 100m×10 files, Datadog log labels enabled.
+- `x-logging-conf` — json-file driver, 100m×10 files, with neutral OTel and temporary Datadog log metadata exposed to the collector.
 - `x-nvidia` — `runtime: nvidia`, `ipc: host`, memlock/nofile ulimits.
 - `x-vllm-proxy-common` — the inference-proxy base: image digest, `user: root`, `privileged: true`, `extra_hosts: ["compose-manager:host-gateway"]`, mounts `dstack.sock` + `certs:ro`, `restart: unless-stopped`.
 - `x-downloader-common` — the `uv:python3.11-bookworm-slim` image, `sh -c` entrypoint, `restart: "no"`.
@@ -142,20 +142,21 @@ Every file defines these anchors and reuses them via `<<: *anchor`:
 
 ## Monitoring label contract
 
-CI (`scripts/validate_otel_labels.rb`) enforces a strict label contract. Every service with logs or metrics must carry matching Datadog + OTel labels.
+CI (`scripts/validate_otel_labels.rb`) enforces a strict label contract. Every log-collected service uses `nearai.otel.logs` as its canonical metadata source. Any app collector with a Docker `filelog` pipeline must consume that neutral label and must not read `com.datadoghq.*`. During the decommission soak, an exact Datadog copy remains so both backends receive equivalent metadata. Services that were already excluded from both log backends use `nearai.otel.logs.disabled: "true"`; the validator allowlists those exact file/service pairs, so adding or removing an opt-out requires an explicit collection-scope and privacy review plus an allowlist change. Do not remove the Datadog copy from a prod config until its OTel log pipeline is active and has passed Loki parity checks.
 
-### Required Datadog log tags (`com.datadoghq.ad.logs`)
+### Required neutral log metadata (`nearai.otel.logs`)
 
 Every service except `otelcol-contrib` must have `model`, `deployment`, `env`, `host`, `ip` tags. `port` tag must match the nginx public port for proxy/engine services. The JSON shape:
 
 ```yaml
 labels:
+  nearai.otel.logs: '[{"source":"sglang","service":"sglang","tags":["model:zai-org/GLM-5.2-FP8","deployment:GLM-5.2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000"]}]'
   com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:zai-org/GLM-5.2-FP8","deployment:GLM-5.2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000"]}]'
 ```
 
-`source` must equal `nearai.otel.service` when both are set. `service` must equal `nearai.otel.service`.
+The two JSON values must remain identical during the soak. `source` must equal `nearai.otel.source` when set, and `service` must equal `nearai.otel.service`.
 
-**`service`/`source` are the product/role, not the container name.** Use the engine or component identity — `sglang`, `vllm`, `vllm-proxy`, `dcgm-exporter`, `nginx`, `model-proxy-registrar`, `model-downloader` — the **same value across all of**: `ad.logs` `source`+`service`, `ad.instances` `service`, `nearai.otel.service`/`nearai.otel.source`, and the collector's prometheus relabel `service`/`source`. This is deliberately decoupled from the container name: e.g. the DCGM exporter container is `dcgm-<short>` (per-model, for `container_name`/scrape target) but its `service`/`source` stays `dcgm-exporter` (the product). Per-model and per-replica dimensions live in the **tags**, not in `service` — use the `model:` tag for the model and `instance:1/2/3` for replicas (never `replica:a/b`; the replica index mirrors the engine container's `-r<i>` suffix).
+**`service`/`source` are the product/role, not the container name.** Use the engine or component identity — `sglang`, `vllm`, `vllm-proxy`, `dcgm-exporter`, `nginx`, `model-proxy-registrar`, `model-downloader` — the **same value across all of**: `nearai.otel.logs` `source`+`service`, the temporary Datadog copy, `ad.instances` `service`, `nearai.otel.service`/`nearai.otel.source`, and the collector's prometheus relabel `service`/`source`. This is deliberately decoupled from the container name: e.g. the DCGM exporter container is `dcgm-<short>` (per-model, for `container_name`/scrape target) but its `service`/`source` stays `dcgm-exporter` (the product). Per-model and per-replica dimensions live in the **tags**, not in `service` — use the `model:` tag for the model and `instance:1/2/3` for replicas (never `replica:a/b`; the replica index mirrors the engine container's `-r<i>` suffix).
 
 ### Required OTel scrape labels (`nearai.otel.*`)
 
@@ -164,7 +165,7 @@ For any service with `nearai.otel.scrape: "true"`:
 | Label | Value |
 |-------|-------|
 | `nearai.otel.job` | scraper job name (e.g. `sglang`, `vllm-proxy`, `dcgm`) |
-| `nearai.otel.service` | service name (must match Datadog `source`/`service`) |
+| `nearai.otel.service` | service name (must match neutral log `source`/`service`) |
 | `nearai.otel.port` | scrape port (e.g. `8000`, `9400`) |
 | `nearai.otel.path` | metrics path (usually `/metrics`) |
 | `nearai.otel.model` | full model id (e.g. `zai-org/GLM-5.2-FP8`) |
