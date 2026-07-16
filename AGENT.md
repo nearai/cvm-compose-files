@@ -6,7 +6,7 @@ Operating rules for agents editing inference compose configs in this repo. Read 
 
 ```
 prod/           # Production-ready configs. Only these are deployable to prod.
-experiments/    # WIP: quantization sweeps, alt engine configs, otel test harnesses.
+experiments/    # WIP and archived-for-reference configs.
                 # NOT deployable to prod. Soak in staging only.
 scripts/        # CI validators.
 *.yaml @ root   # Only `cleanup-hf-model.yaml` (operational utility, validator-excluded).
@@ -202,6 +202,7 @@ Run before pushing:
 ```bash
 # Compose syntax (fast, ~5s per file)
 for f in prod/*.yaml experiments/*.yaml; do
+  [ -f "$f" ] || continue
   docker compose -f "$f" config --format=yaml >/dev/null 2>&1 \
     && echo "OK: $f" || echo "INVALID: $f"
 done
