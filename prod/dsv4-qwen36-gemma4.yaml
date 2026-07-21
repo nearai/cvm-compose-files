@@ -77,13 +77,17 @@ x-dsv4-flash-common: &dsv4-flash-common
   # To turn OFF, UNSET the var and redeploy — setting it to "0" still counts as ON.
   # Only this DeepSeek service opts in; Qwen/Gemma on this host are unaffected.
   # Carries a measured throughput cost, so keep unset outside interp-research windows.
-  # EAGLE 3/1/4 MTP spec-decode is disabled on this host as an incident canary.
-  # This build disables mixed chunked prefill whenever EAGLE is enabled; under
-  # long-prompt load that produced a measured 56s prefill-only decode drought.
-  # Upstream sglang#25512 also reproduces an illegal memory access in the EAGLE
-  # CUDA-graph replay path with this DeepSeek-V4 shape. Keep the July 11 engine,
-  # target-model CUDA graphs, and all capacity settings unchanged to isolate
-  # speculative decode. Restore only after a c1<->c16 streaming soak passes.
+  # EAGLE 3/1/4 MTP spec-decode (added 2026-07-07; gpu02 dev-CVM validation, Notion
+  # "dsv4 work doc"): +11-22% decode tok/s at prod 30k-context shape (accept-len
+  # 2.27 code / 2.42 rag, same-wave two-port A/B; alpha identical at these exact
+  # 0.83/64 settings, no OOM, ~24GB headroom). Draft = the checkpoint's own MTP
+  # layer (auto-derived; needs SGLANG_ENABLE_SPEC_V2=1, already set below).
+  # DELIBERATELY NO --speculative-adaptive: 2/2 CUDA illegal-memory-access crashes
+  # under c1<->c8 burst soaks on 0.5.14 (upstream #25715 does not backport).
+  # Trade-off: c4 ~-26%/req during rare bursts (prod avg ~1.08 running reqs);
+  # TTFT +~5% (draft-extend after prefill). Rollback = remove the 4 spec flags.
+  # The 2026-07-21 EAGLE-off production canary restored mixed prefill/decode
+  # interleaving, but failed organic tail-latency/abort guardrails; no wider rollout.
   command: >
       sglang serve
       --trust-remote-code
@@ -99,6 +103,10 @@ x-dsv4-flash-common: &dsv4-flash-common
       --enable-mixed-chunk
       --chunked-prefill-size 16384
       --disable-custom-all-reduce
+      --speculative-algorithm EAGLE
+      --speculative-num-steps 3
+      --speculative-eagle-topk 1
+      --speculative-num-draft-tokens 4
       --tool-call-parser deepseekv4
       --reasoning-parser deepseek-v4
       --port 8000
@@ -118,6 +126,7 @@ x-dsv4-flash-common: &dsv4-flash-common
     - NVIDIA_DRIVER_CAPABILITIES=compute,utility
     - OPENBLAS_L2_SIZE=2097152
     - NCCL_DEBUG=WARN
+    - SGLANG_ENABLE_SPEC_V2=1
     - SGLANG_DSV4_FP4_EXPERTS=1   # FP4 ckpt: experts ARE FP4 (marlin dequantizes). =0 forced the non-FP4 layout → load failure / invalid weights (PR #98 review)
     - SGLANG_ENABLE_UNIFIED_RADIX_TREE=1
     - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
