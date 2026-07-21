@@ -77,13 +77,13 @@ x-dsv4-flash-common: &dsv4-flash-common
   # To turn OFF, UNSET the var and redeploy — setting it to "0" still counts as ON.
   # Only this DeepSeek service opts in; Qwen/Gemma on this host are unaffected.
   # Carries a measured throughput cost, so keep unset outside interp-research windows.
-  # EAGLE 3/1/4 MTP spec-decode was disabled on this host as an incident canary.
-  # Under current production concurrency it correlates with synchronous stream
-  # stalls/aborts, and upstream sglang#25512 reproduces an illegal memory access
-  # in the EAGLE CUDA-graph replay path with this DeepSeek-V4 shape. Keep the
-  # July 11 engine, target-model CUDA graphs, and all capacity settings unchanged
-  # so this isolates speculative decode. Restore only after the upstream fix is
-  # merged and a c1<->c16 streaming soak completes without incomplete streams.
+  # EAGLE 3/1/4 MTP spec-decode is disabled on this host as an incident canary.
+  # This build disables mixed chunked prefill whenever EAGLE is enabled; under
+  # long-prompt load that produced a measured 56s prefill-only decode drought.
+  # Upstream sglang#25512 also reproduces an illegal memory access in the EAGLE
+  # CUDA-graph replay path with this DeepSeek-V4 shape. Keep the July 11 engine,
+  # target-model CUDA graphs, and all capacity settings unchanged to isolate
+  # speculative decode. Restore only after a c1<->c16 streaming soak passes.
   command: >
       sglang serve
       --trust-remote-code
