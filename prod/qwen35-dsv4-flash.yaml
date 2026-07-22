@@ -316,8 +316,16 @@ services:
 
   proxy-dsv4-flash:
     <<: *vllm-proxy-common
+    # WATCHDOG CANARY (2026-07-22, dsv4 streaming-stall incident): pin the post-#213
+    # inference-proxy build and enable its SSE idle watchdog on THIS endpoint only.
+    # Idle >20s between upstream chunks => stream terminates with an explicit error
+    # (reassembled JSON: 504) instead of hanging silently; emits
+    # upstream_stream_incomplete_total{reason=...}. Other proxies keep the fleet pin.
+    # Rollback = drop the image override + env var (anchor pin applies).
+    image: nearaidev/vllm-proxy-rs@sha256:b0c5cd0786b19dfa46144107be15e340b7a338b1c341d02ffa994c9f1ea77dfd
     container_name: proxy-dsv4-flash
     environment:
+      - VLLM_PROXY_STREAM_IDLE_TIMEOUT_SECS=20
       - NVIDIA_VISIBLE_DEVICES=all
       - CLOUD_API_URL=https://cloud-api.near.ai
       - CLOUD_API_USAGE_TOKEN=${CLOUD_API_USAGE_TOKEN}
