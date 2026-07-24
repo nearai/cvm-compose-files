@@ -126,6 +126,12 @@ x-dsv4-flash-common: &dsv4-flash-common
   # 20-30s+, #p-quality-assurance Jul 21 + Notion "deepseek-v4-streaming-incident").
   # 8192 halves the worst-case drought; r1-vs-r2 A/B showed no steady-state cost
   # (ITL/e2e equal at matched load). EAGLE-off alternative failed guardrails (#146/#147).
+  # PREFILL-FAIRNESS A/B: r1 remains the exact unpatched control. r2 overrides
+  # only the engine image and enables SGLANG_EAGLE_PREFILL_FAIRNESS=1. The guarded
+  # scheduler gives active decode work one turn between consecutive EAGLE prefill
+  # chunks. gpu02 validation: 3x 10/10 matched runs + 150/150 strict-stream soak;
+  # unpatched controls failed 9/10 twice on different GPU pairs. Source and
+  # immutable image provenance live under docker/sglang-dsv4-eagle-prefill-fairness/.
   command: >
       sglang serve
       --trust-remote-code
@@ -449,7 +455,21 @@ services:
 
   model-sg-dsv4-flash-fp4-tp2-r2:
     <<: *dsv4-flash-common
+    # Candidate arm only. Rollback is this image override + environment block.
+    image: nearaidev/sglang@sha256:1e335c485bfe064e1b9cdfdcb2765e327235a59fbb65df91be9b429d23e1db08
     container_name: model-sg-dsv4-flash-fp4-tp2-r2
+    environment:
+      - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+      - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0}
+      - VLLM_LOGGING_LEVEL=INFO
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - OPENBLAS_L2_SIZE=2097152
+      - NCCL_DEBUG=WARN
+      - SGLANG_ENABLE_SPEC_V2=1
+      - SGLANG_DSV4_FP4_EXPERTS=1
+      - SGLANG_ENABLE_UNIFIED_RADIX_TREE=1
+      - SGLANG_EAGLE_PREFILL_FAIRNESS=1
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
     depends_on:
       model-downloader:
         condition: service_completed_successfully
@@ -463,8 +483,8 @@ services:
     labels:
       com.datadoghq.ad.check_names: '["openmetrics"]'
       com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:deepseek-ai/DeepSeek-V4-Flash","deployment:qwen35-dsv4-flash","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8002","instance:2"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-sg-dsv4-flash-fp4-tp2-r2:8000/metrics", "metrics":["sglang:*"], "histogram_buckets_as_distributions": true, "service": "sglang", "tags":["model:deepseek-ai/DeepSeek-V4-Flash","ip:${HOST_IP}","port:8002"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:deepseek-ai/DeepSeek-V4-Flash","deployment:qwen35-dsv4-flash","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8002","instance:2","experiment_id:dsv4-prefill-fairness-v1","experiment_arm:candidate","eagle:1","eagle_prefill_fairness:1","chunk_size:8192","cuda_graph:1","continuous_decode_steps:1","max_prefill_tokens:16384","max_running_requests:64","max_queued_requests:16","schedule_conservativeness:1.3","sglang_revision:7de33ce8"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-sg-dsv4-flash-fp4-tp2-r2:8000/metrics", "metrics":["sglang:*"], "histogram_buckets_as_distributions": true, "service": "sglang", "tags":["model:deepseek-ai/DeepSeek-V4-Flash","deployment:qwen35-dsv4-flash","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8002","instance:2","experiment_id:dsv4-prefill-fairness-v1","experiment_arm:candidate","eagle:1","eagle_prefill_fairness:1","chunk_size:8192","cuda_graph:1","continuous_decode_steps:1","max_prefill_tokens:16384","max_running_requests:64","max_queued_requests:16","schedule_conservativeness:1.3","sglang_revision:7de33ce8"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -479,6 +499,18 @@ services:
       nearai.otel.host_machine: "${CVM_HOST}"
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
+      nearai.otel.experiment_id: "dsv4-prefill-fairness-v1"
+      nearai.otel.experiment_arm: "candidate"
+      nearai.otel.eagle: "1"
+      nearai.otel.eagle_prefill_fairness: "1"
+      nearai.otel.chunk_size: "8192"
+      nearai.otel.cuda_graph: "1"
+      nearai.otel.continuous_decode_steps: "1"
+      nearai.otel.max_prefill_tokens: "16384"
+      nearai.otel.max_running_requests: "64"
+      nearai.otel.max_queued_requests: "16"
+      nearai.otel.schedule_conservativeness: "1.3"
+      nearai.otel.sglang_revision: "7de33ce8"
 
   # --- Per-model dcgm-exporters: device_ids scopes NVML to each model's GPUs ---
 
@@ -667,6 +699,30 @@ configs:
               parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
               regex: 'replica:(?P<replica>[^",\]]+)'
               on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'experiment_id:(?P<experiment_id>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'experiment_arm:(?P<experiment_arm>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'eagle:(?P<eagle>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'eagle_prefill_fairness:(?P<eagle_prefill_fairness>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'chunk_size:(?P<chunk_size>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'cuda_graph:(?P<cuda_graph>[^",\]]+)'
+              on_error: send_quiet
             - type: add
               field: attributes["service.name"]
               value: cvm-docker
@@ -710,6 +766,19 @@ configs:
                       ip: "${HOST_IP}"
                       port: "8001"
                       instance: "1"
+                      experiment_id: "dsv4-prefill-fairness-v1"
+                      experiment_arm: "control"
+                      eagle: "1"
+                      eagle_prefill_fairness: "0"
+                      chunk_size: "8192"
+                      cuda_graph: "1"
+                      continuous_decode_steps: "1"
+                      max_prefill_tokens: "16384"
+                      max_running_requests: "64"
+                      max_queued_requests: "16"
+                      schedule_conservativeness: "1.3"
+                      sglang_revision: "7de33ce8"
+                      engine_image: "production-base"
               - job_name: sglang-model-sg-dsv4-flash-fp4-tp2-r2
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -728,6 +797,19 @@ configs:
                       ip: "${HOST_IP}"
                       port: "8002"
                       instance: "2"
+                      experiment_id: "dsv4-prefill-fairness-v1"
+                      experiment_arm: "candidate"
+                      eagle: "1"
+                      eagle_prefill_fairness: "1"
+                      chunk_size: "8192"
+                      cuda_graph: "1"
+                      continuous_decode_steps: "1"
+                      max_prefill_tokens: "16384"
+                      max_running_requests: "64"
+                      max_queued_requests: "16"
+                      schedule_conservativeness: "1.3"
+                      sglang_revision: "7de33ce8"
+                      engine_image: "eagle-prefill-fairness-v1"
               - job_name: dcgm-dcgm-qwen35-122b
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -797,6 +879,14 @@ configs:
                       ip: "${HOST_IP}"
                       port: "8001"
                       instance: "1"
+                      experiment_id: "dsv4-prefill-fairness-v1"
+                      experiment_arm: "control"
+                      eagle: "1"
+                      eagle_prefill_fairness: "0"
+                      chunk_size: "8192"
+                      cuda_graph: "1"
+                      sglang_revision: "7de33ce8"
+                      engine_image: "production-base"
               - job_name: inference-proxy-proxy-dsv4-flash-2
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -815,6 +905,14 @@ configs:
                       ip: "${HOST_IP}"
                       port: "8002"
                       instance: "2"
+                      experiment_id: "dsv4-prefill-fairness-v1"
+                      experiment_arm: "candidate"
+                      eagle: "1"
+                      eagle_prefill_fairness: "1"
+                      chunk_size: "8192"
+                      cuda_graph: "1"
+                      sglang_revision: "7de33ce8"
+                      engine_image: "eagle-prefill-fairness-v1"
 
         prometheus/self:
           config:
