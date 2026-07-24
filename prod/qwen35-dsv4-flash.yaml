@@ -201,11 +201,14 @@ services:
     depends_on:
       - proxy-qwen35-122b
       - proxy-dsv4-flash
+      - proxy-dsv4-flash-2
     command: /bin/sh -c 'while :; do sleep 6h; nginx -s reload; done & nginx -g "daemon off;"'
     ports:
       - "8000:8000"
       - "8001:8001"
+      - "8002:8002"
       - "8444:443"
+      - "8003:8003"
     volumes:
       - certs:/etc/letsencrypt:ro
     configs:
@@ -235,6 +238,7 @@ services:
       - HOST_IP=${HOST_IP}
       - HTTP_PORT=${HTTP_PORT:-8000}
       - TLS_PORT=${TLS_PORT:-8444}
+      - TLS_PORT_2=${TLS_PORT_2:-8003}
       - MODEL_PROXY_TOKEN=${MODEL_PROXY_TOKEN}
       - PROXY_TOKEN=${PROXY_TOKEN}
     configs:
@@ -321,11 +325,24 @@ services:
 
   # --- DeepSeek-V4-Flash proxy (2 replicas on GPUs 4-7) ---
 
+  # Per-replica endpoints (2026-07-22, cloud-api#894): each dsv4 engine gets its own
+  # proxy + TLS routing port (r1 via 8444, r2 via 8003) and registers as a distinct
+  # model-proxy backend. With gpu26 that makes 3 equal backends, so cloud-api's
+  # prefix-hash % count gives each ENGINE ~1/3 of traffic (previously this host's
+  # two engines shared one backend slot and gpu26's single engine took ~half), and
+  # each prefix bucket pins to one radix cache (the old shared proxy least-conn'd
+  # across r1/r2, splitting prefix buckets across caches). Both proxies also run
+  # the SSE idle watchdog (supersedes PR #149): idle >20s between upstream chunks
+  # fails the stream explicitly instead of hanging the client, and emits
+  # upstream_stream_incomplete_total{reason}. Image = post-inference-proxy#213
+  # build (main 48d7e34). Rollback = revert this commit (engines unaffected).
   proxy-dsv4-flash:
     <<: *vllm-proxy-common
+    image: nearaidev/vllm-proxy-rs@sha256:b0c5cd0786b19dfa46144107be15e340b7a338b1c341d02ffa994c9f1ea77dfd
     container_name: proxy-dsv4-flash
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
+      - VLLM_PROXY_STREAM_IDLE_TIMEOUT_SECS=20
       - CLOUD_API_URL=https://cloud-api.near.ai
       - CLOUD_API_USAGE_TOKEN=${CLOUD_API_USAGE_TOKEN}
       - COMPOSE_MANAGER_URL=http://compose-manager:8080
@@ -335,19 +352,58 @@ services:
       - TOKEN=${PROXY_TOKEN}
       - FUSION_ENABLED=${FUSION_ENABLED}
       - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
-      - VLLM_BACKEND_URLS=http://model-sg-dsv4-flash-fp4-tp2-r1:8000,http://model-sg-dsv4-flash-fp4-tp2-r2:8000
+      - VLLM_BASE_URL=http://model-sg-dsv4-flash-fp4-tp2-r1:8000
       - VLLM_PROXY_MAX_REQUEST_SIZE=104857600
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
       - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
       - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:deepseek-ai/DeepSeek-V4-Flash","deployment:qwen35-dsv4-flash","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8001"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:deepseek-ai/DeepSeek-V4-Flash","deployment:qwen35-dsv4-flash","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8001","instance:1"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "inference-proxy"
       nearai.otel.service: "vllm-proxy"
       nearai.otel.source: "vllm-proxy"
       nearai.otel.container_name: "proxy-dsv4-flash"
+      nearai.otel.port: "8000"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "deepseek-ai/DeepSeek-V4-Flash"
+      nearai.otel.deployment: "qwen35-dsv4-flash"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
+
+  proxy-dsv4-flash-2:
+    <<: *vllm-proxy-common
+    image: nearaidev/vllm-proxy-rs@sha256:b0c5cd0786b19dfa46144107be15e340b7a338b1c341d02ffa994c9f1ea77dfd
+    container_name: proxy-dsv4-flash-2
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - VLLM_PROXY_STREAM_IDLE_TIMEOUT_SECS=20
+      - CLOUD_API_URL=https://cloud-api.near.ai
+      - CLOUD_API_USAGE_TOKEN=${CLOUD_API_USAGE_TOKEN}
+      - COMPOSE_MANAGER_URL=http://compose-manager:8080
+      - LOG_FORMAT=json
+      - MODEL_NAME=deepseek-ai/DeepSeek-V4-Flash
+      - OHTTP_ENABLED=true
+      - TOKEN=${PROXY_TOKEN}
+      - FUSION_ENABLED=${FUSION_ENABLED}
+      - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
+      - VLLM_BASE_URL=http://model-sg-dsv4-flash-fp4-tp2-r2:8000
+      - VLLM_PROXY_MAX_REQUEST_SIZE=104857600
+      - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
+      - USE_NV_ATTESTATION_SDK=true
+      - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
+      - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:deepseek-ai/DeepSeek-V4-Flash","deployment:qwen35-dsv4-flash","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8002","instance:2"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "inference-proxy"
+      nearai.otel.service: "vllm-proxy"
+      nearai.otel.source: "vllm-proxy"
+      nearai.otel.container_name: "proxy-dsv4-flash-2"
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "deepseek-ai/DeepSeek-V4-Flash"
@@ -407,8 +463,8 @@ services:
     labels:
       com.datadoghq.ad.check_names: '["openmetrics"]'
       com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:deepseek-ai/DeepSeek-V4-Flash","deployment:qwen35-dsv4-flash","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8001","instance:2"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-sg-dsv4-flash-fp4-tp2-r2:8000/metrics", "metrics":["sglang:*"], "histogram_buckets_as_distributions": true, "service": "sglang", "tags":["model:deepseek-ai/DeepSeek-V4-Flash","ip:${HOST_IP}","port:8001"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:deepseek-ai/DeepSeek-V4-Flash","deployment:qwen35-dsv4-flash","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8002","instance:2"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-sg-dsv4-flash-fp4-tp2-r2:8000/metrics", "metrics":["sglang:*"], "histogram_buckets_as_distributions": true, "service": "sglang", "tags":["model:deepseek-ai/DeepSeek-V4-Flash","ip:${HOST_IP}","port:8002"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -670,7 +726,7 @@ configs:
                       host_machine: "${CVM_HOST}"
                       cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
-                      port: "8001"
+                      port: "8002"
                       instance: "2"
               - job_name: dcgm-dcgm-qwen35-122b
                 scrape_interval: 15s
@@ -740,6 +796,25 @@ configs:
                       cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "8001"
+                      instance: "1"
+              - job_name: inference-proxy-proxy-dsv4-flash-2
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['proxy-dsv4-flash-2:8000']
+                    labels:
+                      service: "vllm-proxy"
+                      source: "vllm-proxy"
+                      container_name: "proxy-dsv4-flash-2"
+                      model: "deepseek-ai/DeepSeek-V4-Flash"
+                      deployment: "qwen35-dsv4-flash"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      port: "8002"
+                      instance: "2"
 
         prometheus/self:
           config:
@@ -877,16 +952,28 @@ configs:
 
       MAX_RETRIES=3
 
-      for port in 8000 8001; do
+      for port in 8000 8001 8002; do
         eval "REG_$$port=false"
         eval "FAIL_COUNT_$$port=0"
       done
 
+      # Host port -> TLS routing port model-proxy should dial for that backend.
+      # 8002 (dsv4 r2) rides the second TLS listener on 8003 (inside the
+      # QEMU-forwarded + backend-ACL'd port set); everything else uses the
+      # default 8444.
+      routing_port_for() {
+        case $$1 in
+          8002) echo "$${TLS_PORT_2}" ;;
+          *) echo "$${TLS_PORT}" ;;
+        esac
+      }
+
+      # $1 = endpoint (host:port), $2 = routing port for that backend.
       register_endpoint() {
         curl -sS --max-time 10 -X POST "$$PROXY_URL/register/endpoint" \
           -H "Authorization: Bearer $$TOKEN" \
           -H "Content-Type: application/json" \
-          -d "{\"endpoint\":\"$$1\",\"routing_port\":$${TLS_PORT}}" || true
+          -d "{\"endpoint\":\"$$1\",\"routing_port\":$$2}" || true
       }
 
       unregister_endpoint() {
@@ -905,7 +992,7 @@ configs:
 
       cleanup() {
         echo "SIGTERM received, unregistering all endpoints"
-        for port in 8000 8001; do
+        for port in 8000 8001 8002; do
           unregister_endpoint "$${HOST_IP}:$$port"
         done
         exit 0
@@ -951,12 +1038,35 @@ configs:
         esac
       }
 
+      # Verify the r2 TLS routing path end-to-end: resolve the dsv4 SNI to
+      # this host's forwarded routing port and require a 2xx from /v1/models.
+      # Proves QEMU-forward + nginx TLS listener + proxy chain, not just the
+      # plaintext probe port.
+      check_tls_route() {
+        tls_status=$$(curl -skS --connect-timeout 10 --max-time 20 -o /dev/null -w "%{http_code}" \
+          --resolve "dsv4-flash.completions.near.ai:$${TLS_PORT_2}:$${HOST_IP}" \
+          -H "Authorization: Bearer $$INFERENCE_TOKEN" \
+          "https://dsv4-flash.completions.near.ai:$${TLS_PORT_2}/v1/models")
+        case "$$tls_status" in
+          2*) return 0 ;;
+          *)
+            echo "[dsv4 r2] TLS routing-port check failed (https :$${TLS_PORT_2} -> HTTP $$tls_status)"
+            return 1
+            ;;
+        esac
+      }
+
       check_port() {
         case $$1 in
           8000) check_chat "$${HOST_IP}:8000" "Qwen/Qwen3.5-122B-A10B" ;;
-          # dsv4-flash has two replicas behind this host port (nginx LB); a
-          # single host-port probe verifies the endpoint model-proxy routes to.
+          # One probe per dsv4 replica: 8001 -> proxy-dsv4-flash -> r1,
+          # 8002 -> proxy-dsv4-flash-2 -> r2. A dead replica unregisters only
+          # its own backend instead of hiding behind a shared LB probe.
           8001) check_chat "$${HOST_IP}:8001" "deepseek-ai/DeepSeek-V4-Flash" ;;
+          # r2 gates on BOTH the plaintext probe AND its TLS routing socket
+          # (8003): a probe-up/routing-down split would otherwise advertise a
+          # backend model-proxy cannot actually dial (PR #150 review).
+          8002) check_chat "$${HOST_IP}:8002" "deepseek-ai/DeepSeek-V4-Flash" && check_tls_route ;;
         esac
       }
 
@@ -984,7 +1094,7 @@ configs:
       echo "First model ready, starting registration loop"
 
       while true; do
-        for port in 8000 8001; do
+        for port in 8000 8001 8002; do
           # Refreshed per port so a slow-but-progressing serial loop is not
           # falsely marked unhealthy by the registrar container healthcheck.
           date +%s > /tmp/registrar_alive
@@ -993,7 +1103,7 @@ configs:
           eval "fails=\$$FAIL_COUNT_$$port"
           if check_port $$port; then
             eval "FAIL_COUNT_$$port=0"
-            register_endpoint "$$endpoint"
+            register_endpoint "$$endpoint" "$$(routing_port_for $$port)"
             if [ "$$was_reg" = false ]; then
               echo "Registered $$endpoint"
             fi
@@ -1051,10 +1161,16 @@ configs:
         location / { proxy_pass http://proxy-qwen35-122b:8000; }
       }
 
-      # :8001 - DeepSeek-V4-Flash
+      # :8001 - DeepSeek-V4-Flash replica 1 (registrar probe path for the 8444 backend)
       server {
         listen 8001;
         location / { proxy_pass http://proxy-dsv4-flash:8000; }
+      }
+
+      # :8002 - DeepSeek-V4-Flash replica 2 (registrar probe path for the 8003 backend)
+      server {
+        listen 8002;
+        location / { proxy_pass http://proxy-dsv4-flash-2:8000; }
       }
 
       ssl_certificate /etc/letsencrypt/live/completions.near.ai/fullchain.pem;
@@ -1083,4 +1199,22 @@ configs:
         keepalive_timeout 1h;
         keepalive_requests 1000000;
         location / { proxy_pass http://proxy-dsv4-flash:8000; }
+      }
+
+      # Second dsv4 routing port: model-proxy dials (host, 8003) for the r2
+      # backend. 8003 is used (not 8445) because the host only QEMU-forwards
+      # service_ports 8000-8010/8080/8444 into the CVM and the backend ACL
+      # protects exactly 8000:8009,8444 (cvm-ansible-playbooks
+      # vars/gpu_cvm_conf.yaml + playbooks/install/backend_acl.yaml) — a new
+      # port would need a coordinated host-forward + ACL + CVM lifecycle
+      # change. Same wildcard cert (http-context ssl_certificate above); the
+      # H2 keepalive settings mirror :443 so cloud-api's bucket-pinned
+      # connections survive idle gaps on this backend too.
+      server {
+        listen 8003 ssl http2;
+        server_name dsv4-flash.completions.near.ai
+                    ~^dsv4-flash-i\d+\.completions\.near\.ai$$;
+        keepalive_timeout 1h;
+        keepalive_requests 1000000;
+        location / { proxy_pass http://proxy-dsv4-flash-2:8000; }
       }
