@@ -13,8 +13,7 @@ Deployed by `compose-manager` (running inside each inference CVM) which checks o
 │   ├── GLM-5.2-W4AFP8-SGL-TP8.yaml
 │   ├── small-models.yaml
 │   └── dsv4-qwen36-gemma4.yaml
-├── experiments/           # Work-in-progress: AWQ/int4/nvfp4 quantization sweeps,
-│                          # otel test harnesses, alternative engine configs.
+├── experiments/           # Work-in-progress and archived-for-reference configs.
 │                          # NOT deployable to prod. Soak in staging only.
 └── scripts/               # CI validators (OTel label contract, compose syntax).
 ```
@@ -81,7 +80,7 @@ Full deploy recipes (graceful drain for slow-shutdown models, env-var fetch, for
 | `prod/small-models.yaml` | gpt-oss-120b, FLUX.2-klein, Qwen3-VL-30B, Qwen3-Embedding, Qwen3-Reranker, whisper-large-v3, privacy-filter, Qwen3.6-35B-A3B-FP8, gemma-4-31B-it | Multi-model pack, gpu07 + gpu11. 10 services across 8 GPUs. |
 | `prod/dsv4-qwen36-gemma4.yaml` | DeepSeek-V4-Flash, Qwen3.6-27B-FP8, google/gemma-4-31B-it, Qwen3.6-35B-A3B-FP8 | Multi-model pack, gpu07 |
 
-Configs in `experiments/` are WIP (AWQ/int4/nvfp4 quantization sweeps, otel test harnesses, alternative engine configs) and are not deployed to prod. See their header comments for status. `experiments/GLM-5.1-FP8-TP8-archived.yaml` is the previous GLM-5.1 prod config (SGLang TP8, official FP8) — superseded by `prod/GLM-5.1-SGL-AWQ-TP4.yaml`, kept for reference.
+Configs in `experiments/` are WIP or archived-for-reference and are not deployed to prod. See their header comments for status; concluded experiments are deleted (git history keeps them). `experiments/GLM-5.1-FP8-TP8-archived.yaml` is the previous GLM-5.1 prod config (SGLang TP8, official FP8) — superseded by `prod/GLM-5.1-SGL-AWQ-TP4.yaml`, kept for reference as the switch-back config while the AWQ quality evaluation is open.
 
 ## CI
 
@@ -98,6 +97,7 @@ A PR that fails any of these cannot merge. Run locally before pushing:
 ```bash
 # Compose syntax (fast)
 for f in prod/*.yaml experiments/*.yaml; do
+  [ -f "$f" ] || continue
   docker compose -f "$f" config --format=yaml >/dev/null 2>&1 \
     || echo "INVALID: $f"
 done
