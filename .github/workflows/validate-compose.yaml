@@ -42,6 +42,14 @@ jobs:
             ruby:3.3-alpine \
             ruby scripts/validate_registrar_auth.rb
 
+      - name: Validate gpu31 bare-metal experiment contract
+        run: |
+          docker run --rm \
+            -v "$PWD:/repo" \
+            -w /repo \
+            ruby:3.3-alpine \
+            ruby scripts/validate_gpu31_bare_experiment.rb
+
       - name: Validate docker compose files
         # Compose files reference env vars that are populated at deploy time
         # by compose-manager (or the operator). CI doesn't have the real

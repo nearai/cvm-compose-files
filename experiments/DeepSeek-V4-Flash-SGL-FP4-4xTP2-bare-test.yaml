@@ -1,0 +1,424 @@
+# STATUS: EXPERIMENT — private gpu31 bare-metal validation only.
+# Four independent TP2 replicas, no EAGLE, no inference-proxy, no registrar,
+# no dstack socket, and no public listener. Promotion requires a separate
+# production design; this experiment requires a 60-minute validation soak.
+
+x-logging-conf: &logging-conf
+  driver: json-file
+  options:
+    max-size: 100m
+    max-file: "10"
+    labels: com.datadoghq.ad.logs,com.docker.compose.service
+
+x-dsv4-common: &dsv4-common
+  image: lmsysorg/sglang@sha256:6bb5fee34b6c4537c09a4775e2292ac40350d5ad1218fcc835b2692142f443b1
+  init: true
+  ipc: host
+  ulimits:
+    memlock: -1
+    nofile:
+      soft: 65535
+      hard: 65535
+  volumes:
+    - /data/models/huggingface:/root/.cache/huggingface
+    - /data/cache/sglang:/root/.cache/deep_gemm
+  environment:
+    - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN:-}
+    - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0}
+    - VLLM_LOGGING_LEVEL=INFO
+    - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    - OPENBLAS_L2_SIZE=2097152
+    - NCCL_DEBUG=WARN
+    - SGLANG_DSV4_FP4_EXPERTS=1
+    - SGLANG_ENABLE_UNIFIED_RADIX_TREE=1
+    - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+  restart: unless-stopped
+  stop_grace_period: 5m
+  logging: *logging-conf
+
+x-dsv4-command: &dsv4-command
+  - /bin/bash
+  - -lc
+  - |
+    set -euo pipefail
+    command -v numactl >/dev/null
+    exec numactl --membind="$${GPU_NUMA_NODE}" \
+      sglang serve \
+      --trust-remote-code \
+      --model-path deepseek-ai/DeepSeek-V4-Flash \
+      --revision 553034d7dd9e06c2eeaee68cf85a17d6d4754cf0 \
+      --tp 2 \
+      --moe-runner-backend marlin \
+      --cuda-graph-max-bs 64 \
+      --mem-fraction-static 0.83 \
+      --max-running-requests 64 \
+      --max-queued-requests 16 \
+      --schedule-conservativeness 1.3 \
+      --enable-mixed-chunk \
+      --chunked-prefill-size 8192 \
+      --watchdog-timeout 1800 \
+      --disable-custom-all-reduce \
+      --tool-call-parser deepseekv4 \
+      --reasoning-parser deepseek-v4 \
+      --port 8000 \
+      --host 0.0.0.0 \
+      --enable-cache-report \
+      --enable-metrics \
+      --log-requests-level 0 \
+      --served-model-name deepseek-ai/DeepSeek-V4-Flash
+
+services:
+  model-downloader:
+    image: ghcr.io/astral-sh/uv:python3.11-bookworm-slim@sha256:4f5d923c9dcea037f57bda425dd209f3ec643da2f0b74227f68d09dab0b3bb36
+    container_name: model-downloader
+    restart: "no"
+    entrypoint: [sh, -c]
+    command:
+      - |
+        set -eu
+        uvx --from 'huggingface_hub[hf_xet]' hf download \
+          deepseek-ai/DeepSeek-V4-Flash \
+          --revision 553034d7dd9e06c2eeaee68cf85a17d6d4754cf0
+    volumes:
+      - /data/models/huggingface:/root/.cache/huggingface
+    environment:
+      - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN:-}
+    logging: *logging-conf
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"model-downloader","service":"model-downloader","tags":["model:deepseek-ai/DeepSeek-V4-Flash","deployment:gpu31-dsv4-flash-bare","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+
+  model-sg-dsv4-flash-fp4-tp2-r1:
+    <<: *dsv4-common
+    container_name: model-sg-dsv4-flash-fp4-tp2-r1
+    command: *dsv4-command
+    cpuset: "${GPU_R1_CPUSET:?GPU_R1_CPUSET is required}"
+    environment:
+      - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN:-}
+      - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0}
+      - GPU_NUMA_NODE=${GPU_R1_MEMS:?GPU_R1_MEMS is required}
+      - VLLM_LOGGING_LEVEL=INFO
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - OPENBLAS_L2_SIZE=2097152
+      - NCCL_DEBUG=WARN
+      - SGLANG_DSV4_FP4_EXPERTS=1
+      - SGLANG_ENABLE_UNIFIED_RADIX_TREE=1
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+    depends_on:
+      model-downloader:
+        condition: service_completed_successfully
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids:
+                - "${GPU_R1_0:?GPU_R1_0 is required}"
+                - "${GPU_R1_1:?GPU_R1_1 is required}"
+              capabilities: [gpu]
+    ports:
+      - "127.0.0.1:30001:8000"
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:deepseek-ai/DeepSeek-V4-Flash","model_path:deepseek-ai/DeepSeek-V4-Flash","precision:fp4","deployment:gpu31-dsv4-flash-bare","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:30001","instance:1"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-sg-dsv4-flash-fp4-tp2-r1:8000/metrics","histogram_buckets_as_distributions":true,"service":"sglang","tags":["model:deepseek-ai/DeepSeek-V4-Flash","model_path:deepseek-ai/DeepSeek-V4-Flash","precision:fp4","deployment:gpu31-dsv4-flash-bare","ip:${HOST_IP}","port:30001","instance:1"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: sglang
+      nearai.otel.service: sglang
+      nearai.otel.source: sglang
+      nearai.otel.container_name: model-sg-dsv4-flash-fp4-tp2-r1
+      nearai.otel.port: "8000"
+      nearai.otel.path: /metrics
+      nearai.otel.model: deepseek-ai/DeepSeek-V4-Flash
+      nearai.otel.deployment: gpu31-dsv4-flash-bare
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
+
+  model-sg-dsv4-flash-fp4-tp2-r2:
+    <<: *dsv4-common
+    container_name: model-sg-dsv4-flash-fp4-tp2-r2
+    command: *dsv4-command
+    cpuset: "${GPU_R2_CPUSET:?GPU_R2_CPUSET is required}"
+    environment:
+      - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN:-}
+      - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0}
+      - GPU_NUMA_NODE=${GPU_R2_MEMS:?GPU_R2_MEMS is required}
+      - VLLM_LOGGING_LEVEL=INFO
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - OPENBLAS_L2_SIZE=2097152
+      - NCCL_DEBUG=WARN
+      - SGLANG_DSV4_FP4_EXPERTS=1
+      - SGLANG_ENABLE_UNIFIED_RADIX_TREE=1
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+    depends_on:
+      model-downloader:
+        condition: service_completed_successfully
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids:
+                - "${GPU_R2_0:?GPU_R2_0 is required}"
+                - "${GPU_R2_1:?GPU_R2_1 is required}"
+              capabilities: [gpu]
+    ports:
+      - "127.0.0.1:30002:8000"
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:deepseek-ai/DeepSeek-V4-Flash","model_path:deepseek-ai/DeepSeek-V4-Flash","precision:fp4","deployment:gpu31-dsv4-flash-bare","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:30002","instance:2"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-sg-dsv4-flash-fp4-tp2-r2:8000/metrics","histogram_buckets_as_distributions":true,"service":"sglang","tags":["model:deepseek-ai/DeepSeek-V4-Flash","model_path:deepseek-ai/DeepSeek-V4-Flash","precision:fp4","deployment:gpu31-dsv4-flash-bare","ip:${HOST_IP}","port:30002","instance:2"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: sglang
+      nearai.otel.service: sglang
+      nearai.otel.source: sglang
+      nearai.otel.container_name: model-sg-dsv4-flash-fp4-tp2-r2
+      nearai.otel.port: "8000"
+      nearai.otel.path: /metrics
+      nearai.otel.model: deepseek-ai/DeepSeek-V4-Flash
+      nearai.otel.deployment: gpu31-dsv4-flash-bare
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
+
+  model-sg-dsv4-flash-fp4-tp2-r3:
+    <<: *dsv4-common
+    container_name: model-sg-dsv4-flash-fp4-tp2-r3
+    command: *dsv4-command
+    cpuset: "${GPU_R3_CPUSET:?GPU_R3_CPUSET is required}"
+    environment:
+      - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN:-}
+      - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0}
+      - GPU_NUMA_NODE=${GPU_R3_MEMS:?GPU_R3_MEMS is required}
+      - VLLM_LOGGING_LEVEL=INFO
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - OPENBLAS_L2_SIZE=2097152
+      - NCCL_DEBUG=WARN
+      - SGLANG_DSV4_FP4_EXPERTS=1
+      - SGLANG_ENABLE_UNIFIED_RADIX_TREE=1
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+    depends_on:
+      model-downloader:
+        condition: service_completed_successfully
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids:
+                - "${GPU_R3_0:?GPU_R3_0 is required}"
+                - "${GPU_R3_1:?GPU_R3_1 is required}"
+              capabilities: [gpu]
+    ports:
+      - "127.0.0.1:30003:8000"
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:deepseek-ai/DeepSeek-V4-Flash","model_path:deepseek-ai/DeepSeek-V4-Flash","precision:fp4","deployment:gpu31-dsv4-flash-bare","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:30003","instance:3"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-sg-dsv4-flash-fp4-tp2-r3:8000/metrics","histogram_buckets_as_distributions":true,"service":"sglang","tags":["model:deepseek-ai/DeepSeek-V4-Flash","model_path:deepseek-ai/DeepSeek-V4-Flash","precision:fp4","deployment:gpu31-dsv4-flash-bare","ip:${HOST_IP}","port:30003","instance:3"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: sglang
+      nearai.otel.service: sglang
+      nearai.otel.source: sglang
+      nearai.otel.container_name: model-sg-dsv4-flash-fp4-tp2-r3
+      nearai.otel.port: "8000"
+      nearai.otel.path: /metrics
+      nearai.otel.model: deepseek-ai/DeepSeek-V4-Flash
+      nearai.otel.deployment: gpu31-dsv4-flash-bare
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
+
+  model-sg-dsv4-flash-fp4-tp2-r4:
+    <<: *dsv4-common
+    container_name: model-sg-dsv4-flash-fp4-tp2-r4
+    command: *dsv4-command
+    cpuset: "${GPU_R4_CPUSET:?GPU_R4_CPUSET is required}"
+    environment:
+      - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN:-}
+      - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0}
+      - GPU_NUMA_NODE=${GPU_R4_MEMS:?GPU_R4_MEMS is required}
+      - VLLM_LOGGING_LEVEL=INFO
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - OPENBLAS_L2_SIZE=2097152
+      - NCCL_DEBUG=WARN
+      - SGLANG_DSV4_FP4_EXPERTS=1
+      - SGLANG_ENABLE_UNIFIED_RADIX_TREE=1
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+    depends_on:
+      model-downloader:
+        condition: service_completed_successfully
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids:
+                - "${GPU_R4_0:?GPU_R4_0 is required}"
+                - "${GPU_R4_1:?GPU_R4_1 is required}"
+              capabilities: [gpu]
+    ports:
+      - "127.0.0.1:30004:8000"
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:deepseek-ai/DeepSeek-V4-Flash","model_path:deepseek-ai/DeepSeek-V4-Flash","precision:fp4","deployment:gpu31-dsv4-flash-bare","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:30004","instance:4"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-sg-dsv4-flash-fp4-tp2-r4:8000/metrics","histogram_buckets_as_distributions":true,"service":"sglang","tags":["model:deepseek-ai/DeepSeek-V4-Flash","model_path:deepseek-ai/DeepSeek-V4-Flash","precision:fp4","deployment:gpu31-dsv4-flash-bare","ip:${HOST_IP}","port:30004","instance:4"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: sglang
+      nearai.otel.service: sglang
+      nearai.otel.source: sglang
+      nearai.otel.container_name: model-sg-dsv4-flash-fp4-tp2-r4
+      nearai.otel.port: "8000"
+      nearai.otel.path: /metrics
+      nearai.otel.model: deepseek-ai/DeepSeek-V4-Flash
+      nearai.otel.deployment: gpu31-dsv4-flash-bare
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
+
+  dcgm-dsv4-flash:
+    image: nvcr.io/nvidia/k8s/dcgm-exporter:4.5.2-4.8.1-ubuntu22.04@sha256:a7ad6547d4546eaf4dd5d6b4c0b4db4101e63ef7dc3cdff7f42b767d2c60b706
+    container_name: dcgm-dsv4-flash
+    cap_add: [SYS_ADMIN]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+    logging: *logging-conf
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:deepseek-ai/DeepSeek-V4-Flash","deployment:gpu31-dsv4-flash-bare","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:9400"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://%%host%%:9400/metrics","tags":["model:deepseek-ai/DeepSeek-V4-Flash","deployment:gpu31-dsv4-flash-bare","ip:${HOST_IP}","port:9400"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: dcgm
+      nearai.otel.service: dcgm-exporter
+      nearai.otel.source: dcgm-exporter
+      nearai.otel.container_name: dcgm-dsv4-flash
+      nearai.otel.port: "9400"
+      nearai.otel.path: /metrics
+      nearai.otel.model: deepseek-ai/DeepSeek-V4-Flash
+      nearai.otel.deployment: gpu31-dsv4-flash-bare
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
+
+  otelcol-contrib:
+    image: otel/opentelemetry-collector-contrib@sha256:85ac41c2db88d0df9bd6145e608a3cb023f5d8443868adbfbbf66efb51087917
+    container_name: otelcol-contrib
+    command: [--config=/etc/otelcol-contrib/config.yaml]
+    user: "0:0"
+    mem_limit: 768m
+    environment:
+      - MONITORING_INGEST_TOKEN=${MONITORING_INGEST_TOKEN:-}
+      - CVM_NAME=${CVM_NAME:-gpu31-bare}
+      - CVM_HOST=${CVM_HOST:-gpu31}
+      - DD_HOSTNAME=${DD_HOSTNAME:-gpu31-bare}
+      - ENV=${ENV:-validation}
+      - HOST_IP=${HOST_IP:-127.0.0.1}
+    volumes:
+      - /data/otelcol:/var/lib/otelcol-contrib
+    configs:
+      - source: otelcol_app_config
+        target: /etc/otelcol-contrib/config.yaml
+        mode: 0444
+    restart: unless-stopped
+    logging:
+      driver: local
+      options:
+        max-size: 20m
+        max-file: "3"
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"otelcol-contrib","service":"otelcol-contrib","tags":["deployment:gpu31-dsv4-flash-bare","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+
+volumes:
+  otelcol_app_storage:
+
+configs:
+  otelcol_app_config:
+    content: |
+      receivers:
+        prometheus/apps:
+          config:
+            scrape_configs:
+              - job_name: sglang-r1
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: [model-sg-dsv4-flash-fp4-tp2-r1:8000]
+                    labels: {service: sglang, source: sglang, container_name: model-sg-dsv4-flash-fp4-tp2-r1, model: deepseek-ai/DeepSeek-V4-Flash, model_path: deepseek-ai/DeepSeek-V4-Flash, precision: fp4, deployment: gpu31-dsv4-flash-bare, env: "${ENV}", host: "${CVM_HOST}", host_machine: "${CVM_HOST}", cvm_name: "${CVM_NAME}", ip: "${HOST_IP}", port: "30001", instance: "1"}
+              - job_name: sglang-r2
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: [model-sg-dsv4-flash-fp4-tp2-r2:8000]
+                    labels: {service: sglang, source: sglang, container_name: model-sg-dsv4-flash-fp4-tp2-r2, model: deepseek-ai/DeepSeek-V4-Flash, model_path: deepseek-ai/DeepSeek-V4-Flash, precision: fp4, deployment: gpu31-dsv4-flash-bare, env: "${ENV}", host: "${CVM_HOST}", host_machine: "${CVM_HOST}", cvm_name: "${CVM_NAME}", ip: "${HOST_IP}", port: "30002", instance: "2"}
+              - job_name: sglang-r3
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: [model-sg-dsv4-flash-fp4-tp2-r3:8000]
+                    labels: {service: sglang, source: sglang, container_name: model-sg-dsv4-flash-fp4-tp2-r3, model: deepseek-ai/DeepSeek-V4-Flash, model_path: deepseek-ai/DeepSeek-V4-Flash, precision: fp4, deployment: gpu31-dsv4-flash-bare, env: "${ENV}", host: "${CVM_HOST}", host_machine: "${CVM_HOST}", cvm_name: "${CVM_NAME}", ip: "${HOST_IP}", port: "30003", instance: "3"}
+              - job_name: sglang-r4
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: [model-sg-dsv4-flash-fp4-tp2-r4:8000]
+                    labels: {service: sglang, source: sglang, container_name: model-sg-dsv4-flash-fp4-tp2-r4, model: deepseek-ai/DeepSeek-V4-Flash, model_path: deepseek-ai/DeepSeek-V4-Flash, precision: fp4, deployment: gpu31-dsv4-flash-bare, env: "${ENV}", host: "${CVM_HOST}", host_machine: "${CVM_HOST}", cvm_name: "${CVM_NAME}", ip: "${HOST_IP}", port: "30004", instance: "4"}
+              - job_name: dcgm
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: [dcgm-dsv4-flash:9400]
+                    labels: {service: dcgm-exporter, source: dcgm-exporter, container_name: dcgm-dsv4-flash, model: deepseek-ai/DeepSeek-V4-Flash, deployment: gpu31-dsv4-flash-bare, env: "${ENV}", host: "${CVM_HOST}", host_machine: "${CVM_HOST}", cvm_name: "${CVM_NAME}", ip: "${HOST_IP}", port: "9400"}
+
+      processors:
+        memory_limiter:
+          check_interval: 1s
+          limit_mib: 512
+          spike_limit_mib: 128
+        resource:
+          attributes:
+            - {key: host.name, value: "$${env:DD_HOSTNAME}", action: upsert}
+            - {key: cvm.name, value: "$${env:CVM_NAME}", action: upsert}
+            - {key: host.machine, value: "$${env:CVM_HOST}", action: insert}
+            - {key: deployment.environment, value: "$${env:ENV}", action: upsert}
+            - {key: service.namespace, value: near-ai, action: insert}
+        batch:
+          send_batch_size: 1024
+          send_batch_max_size: 2048
+          timeout: 5s
+
+      exporters:
+        otlphttp/gateway:
+          endpoint: https://telemetry.infra.near.ai
+          headers:
+            Authorization: "Bearer $${env:MONITORING_INGEST_TOKEN}"
+          sending_queue:
+            queue_size: 128
+            storage: file_storage
+
+      extensions:
+        file_storage:
+          directory: /var/lib/otelcol-contrib/storage
+          create_directory: true
+
+      service:
+        extensions: [file_storage]
+        pipelines:
+          metrics/app:
+            receivers: [prometheus/apps]
+            processors: [memory_limiter, resource, batch]
+            exporters: [otlphttp/gateway]
+        telemetry:
+          metrics:
+            address: localhost:8888
+          logs:
+            level: info
