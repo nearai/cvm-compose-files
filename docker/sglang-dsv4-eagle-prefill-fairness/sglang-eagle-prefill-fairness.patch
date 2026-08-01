@@ -1,0 +1,36 @@
+diff --git a/python/sglang/srt/managers/scheduler.py b/python/sglang/srt/managers/scheduler.py
+--- a/python/sglang/srt/managers/scheduler.py
++++ b/python/sglang/srt/managers/scheduler.py
+@@ -325,6 +325,13 @@ class Scheduler(
+ 
+         # Parse args
+         self.server_args = server_args
++        self.enable_eagle_prefill_fairness = get_bool_env_var(
++            "SGLANG_EAGLE_PREFILL_FAIRNESS"
++        )
++        if self.enable_eagle_prefill_fairness:
++            logger.warning(
++                "Experimental EAGLE prefill fairness is enabled: force one decode turn between chunked prefill batches."
++            )
+         self.nccl_port = port_args.nccl_port
+         self.schedule_policy = server_args.schedule_policy
+         self.enable_priority_scheduling = server_args.enable_priority_scheduling
+@@ -2690,6 +2697,18 @@ class Scheduler(
+ 
+         if self.dllm_config is not None:
+             new_batch = self.get_new_batch_dllm(running_batch)
++        elif (
++            self.enable_eagle_prefill_fairness
++            and self.chunked_req is not None
++            and last_batch is not None
++            and last_batch.forward_mode.is_extend()
++            and not running_batch.is_empty()
++            and not running_batch.is_prefill_only
++        ):
++            # The default scheduler always prefers the next prefill chunk. With
++            # EAGLE disabling mixed chunk, that can starve every active decode
++            # stream for the whole long prompt. Give decodes one bounded turn.
++            new_batch = None
+         else:
+             prefill_plan = self.get_new_batch_prefill(running_batch)
+             new_batch = prefill_plan.batch_to_run
