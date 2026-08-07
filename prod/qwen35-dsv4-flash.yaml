@@ -186,6 +186,8 @@ services:
         uvx --from 'huggingface_hub[hf_xet]' hf download Qwen/Qwen3.5-122B-A10B-FP8 --revision a099dee70ccfcd8d5dda56aaa0b60cb8ecadabc9
         echo "Downloading deepseek-ai/DeepSeek-V4-Flash..."
         uvx --from 'huggingface_hub[hf_xet]' hf download deepseek-ai/DeepSeek-V4-Flash --revision 553034d7dd9e06c2eeaee68cf85a17d6d4754cf0
+        echo "Downloading deepseek-ai/DeepSeek-V4-Flash-0731..."
+        uvx --from 'huggingface_hub[hf_xet]' hf download deepseek-ai/DeepSeek-V4-Flash-0731 --revision 7872f01b1d1fe23eabc4c98b48bffcef5a386062
         echo "Download complete."
     volumes:
       - huggingface_cache:/root/.cache/huggingface
@@ -416,6 +418,39 @@ services:
 
   model-sg-dsv4-flash-fp4-tp2-r1:
     <<: *dsv4-flash-common
+    # Guarded 0731 canary. r2 intentionally keeps the inherited original
+    # checkpoint, image, EAGLE flags, and command as the rollback control.
+    image: docker.io/nearaidev/sglang@sha256:eac0a7c825c1c29588fef2f514b7328c1a41b7ac1ed222b3afecc52e32a18525
+    command: >
+      sglang serve
+      --trust-remote-code
+      --model-path deepseek-ai/DeepSeek-V4-Flash-0731
+      --revision 7872f01b1d1fe23eabc4c98b48bffcef5a386062
+      --tp-size 2
+      --kv-cache-dtype fp8_e4m3
+      --moe-runner-backend marlin
+      --cuda-graph-max-bs 64
+      --mem-fraction-static 0.83
+      --max-running-requests 64
+      --max-queued-requests 16
+      --schedule-conservativeness 1.3
+      --num-continuous-decode-steps 1
+      --enable-mixed-chunk
+      --chunked-prefill-size 8192
+      --max-prefill-tokens 16384
+      --swa-full-tokens-ratio 0.1
+      --watchdog-timeout 1800
+      --disable-custom-all-reduce
+      --tool-call-parser deepseekv4
+      --reasoning-parser deepseek-v4
+      --json-model-override-args '{"dsv4_reasoning_effort_profile":"official"}'
+      --port 8000
+      --host 0.0.0.0
+      --enable-cache-report
+      --enable-metrics
+      --log-requests-level 0
+      --served-model-name deepseek-ai/DeepSeek-V4-Flash
+      ${DSV4_RETURN_HIDDEN_STATES:+--enable-return-hidden-states}
     container_name: model-sg-dsv4-flash-fp4-tp2-r1
     depends_on:
       model-downloader:
@@ -430,8 +465,8 @@ services:
     labels:
       com.datadoghq.ad.check_names: '["openmetrics"]'
       com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:deepseek-ai/DeepSeek-V4-Flash","deployment:qwen35-dsv4-flash","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8001","instance:1"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-sg-dsv4-flash-fp4-tp2-r1:8000/metrics", "metrics":["sglang:*"], "histogram_buckets_as_distributions": true, "service": "sglang", "tags":["model:deepseek-ai/DeepSeek-V4-Flash","ip:${HOST_IP}","port:8001"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:deepseek-ai/DeepSeek-V4-Flash-0731","model_path:deepseek-ai/DeepSeek-V4-Flash-0731","model_revision:7872f01b1d1fe23eabc4c98b48bffcef5a386062","deployment:qwen35-dsv4-flash","config_variant:dsv4-0731-canary-target-only","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8001","instance:1"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-sg-dsv4-flash-fp4-tp2-r1:8000/metrics", "metrics":["sglang:*"], "histogram_buckets_as_distributions": true, "service": "sglang", "tags":["model:deepseek-ai/DeepSeek-V4-Flash-0731","model_path:deepseek-ai/DeepSeek-V4-Flash-0731","model_revision:7872f01b1d1fe23eabc4c98b48bffcef5a386062","config_variant:dsv4-0731-canary-target-only","ip:${HOST_IP}","port:8001","instance:1"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -439,7 +474,7 @@ services:
       nearai.otel.container_name: "model-sg-dsv4-flash-fp4-tp2-r1"
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
-      nearai.otel.model: "deepseek-ai/DeepSeek-V4-Flash"
+      nearai.otel.model: "deepseek-ai/DeepSeek-V4-Flash-0731"
       nearai.otel.deployment: "qwen35-dsv4-flash"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
@@ -701,7 +736,8 @@ configs:
                       service: "sglang"
                       source: "sglang"
                       container_name: "model-sg-dsv4-flash-fp4-tp2-r1"
-                      model: "deepseek-ai/DeepSeek-V4-Flash"
+                      model: "deepseek-ai/DeepSeek-V4-Flash-0731"
+                      model_path: "deepseek-ai/DeepSeek-V4-Flash-0731"
                       deployment: "qwen35-dsv4-flash"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
