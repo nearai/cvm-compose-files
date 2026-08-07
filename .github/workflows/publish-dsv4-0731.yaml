@@ -153,8 +153,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/dsv4-0731-trivy-cache"
           docker run --rm \
             --user "$(id -u):$(id -g)" \
-            --dns 1.1.1.1 \
-            --dns 8.8.8.8 \
+            --network host \
             --env TRIVY_USERNAME \
             --env TRIVY_PASSWORD \
             --env TRIVY_NO_PROGRESS=true \
