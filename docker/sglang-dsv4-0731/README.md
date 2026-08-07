@@ -34,6 +34,12 @@ make the one-replica compose delta described below.
 The local image ID is evidence only. It is not a registry digest and must
 never appear in `prod/*.yaml`.
 
+The published production image removes the unused Nsight Compute and Nsight
+Systems EFA `nic_sampler` profiler helpers inherited from the CUDA base. Trivy
+0.70.0 reported the Compute helper's Go standard library as affected by the
+fixable CRITICAL `CVE-2025-68121`. These profiler helpers are not referenced by
+the SGLang serving tree and are not required for inference.
+
 ## Build and promotion
 
 ```bash
