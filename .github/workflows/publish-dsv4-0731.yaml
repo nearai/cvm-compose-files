@@ -224,11 +224,30 @@ jobs:
       - name: Verify signature
         run: |
           set -euo pipefail
-          cosign verify \
-            --certificate-identity \
-            'https://github.com/nearai/cvm-compose-files/.github/workflows/publish-dsv4-0731.yaml@refs/heads/main' \
-            --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
-            "$IMAGE_IMMUTABLE_REF" > cosign-verification.json
+          verification_file="$(mktemp)"
+          trap 'rm -f "$verification_file"' EXIT
+
+          # Docker Hub can acknowledge the OCI 1.1 signature referrer before it
+          # becomes visible through the referrers API used by cosign verify.
+          for attempt in $(seq 1 30); do
+            if cosign verify \
+              --certificate-identity \
+              'https://github.com/nearai/cvm-compose-files/.github/workflows/publish-dsv4-0731.yaml@refs/heads/main' \
+              --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
+              "$IMAGE_IMMUTABLE_REF" > "$verification_file"; then
+              mv "$verification_file" cosign-verification.json
+              trap - EXIT
+              exit 0
+            fi
+
+            if [[ "$attempt" -eq 30 ]]; then
+              echo "Signature was not visible after 30 verification attempts" >&2
+              exit 1
+            fi
+
+            echo "Signature not visible yet; retrying in 10 seconds ($attempt/30)" >&2
+            sleep 10
+          done
 
       - name: Retain signature verification
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
