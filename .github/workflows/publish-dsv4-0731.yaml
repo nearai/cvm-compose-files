@@ -9,6 +9,10 @@ on:
         type: string
         default: dsv4-0731-v0.5.16-0666a644
 
+concurrency:
+  group: publish-dsv4-0731-${{ inputs.tag }}
+  cancel-in-progress: false
+
 env:
   REGISTRY: docker.io
   IMAGE_REPOSITORY: ${{ vars.DOCKER_REGISTRY_USER }}/sglang
@@ -22,9 +26,15 @@ jobs:
       attestations: write
       id-token: write
     runs-on: [self-hosted, infra]
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: bash
     steps:
       - name: Check out the merged source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
 
       - name: Validate tag and source provenance
         env:
@@ -99,6 +109,25 @@ jobs:
           echo "TRIVY_CRITICAL=$CRITICAL" >> "$GITHUB_ENV"
           printf 'Trivy fixed-vulnerability findings: high=%s critical=%s\n' "$HIGH" "$CRITICAL"
 
+      - name: Retain pre-promotion scan evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: dsv4-0731-image-evidence
+          path: |
+            build-metadata.json
+            image-config.json
+            trivy-results.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Reject fixable critical vulnerabilities
+        run: |
+          set -euo pipefail
+          if (( TRIVY_CRITICAL > 0 )); then
+            echo "Refusing to attest or sign an image with $TRIVY_CRITICAL fixable critical vulnerabilities" >&2
+            exit 1
+          fi
+
       - name: Attest build provenance
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4
         with:
@@ -112,14 +141,20 @@ jobs:
       - name: Sign the immutable digest
         run: cosign sign --yes "$IMAGE_IMMUTABLE_REF"
 
-      - name: Retain build and scan evidence
+      - name: Verify signature
+        run: |
+          set -euo pipefail
+          cosign verify \
+            --certificate-identity \
+            'https://github.com/nearai/cvm-compose-files/.github/workflows/publish-dsv4-0731.yaml@refs/heads/main' \
+            --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
+            "$IMAGE_IMMUTABLE_REF" > cosign-verification.json
+
+      - name: Retain signature verification
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: dsv4-0731-image-evidence
-          path: |
-            build-metadata.json
-            image-config.json
-            trivy-results.json
+          name: dsv4-0731-signature-verification
+          path: cosign-verification.json
           if-no-files-found: error
           retention-days: 30
 
