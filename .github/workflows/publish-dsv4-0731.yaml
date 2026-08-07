@@ -151,10 +151,16 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/dsv4-0731-trivy-cache"
+          # The runner DNS listener is loopback-only; bridge containers cannot reach it.
+          # Constrain the pinned host-network scanner to a read-only, capability-free sandbox.
           docker run --rm \
             --user "$(id -u):$(id -g)" \
-            --dns 1.1.1.1 \
-            --dns 8.8.8.8 \
+            --network host \
+            --read-only \
+            --cap-drop ALL \
+            --security-opt no-new-privileges:true \
+            --pids-limit 256 \
+            --tmpfs /tmp:rw,noexec,nosuid,size=512m \
             --env TRIVY_USERNAME \
             --env TRIVY_PASSWORD \
             --env TRIVY_NO_PROGRESS=true \
