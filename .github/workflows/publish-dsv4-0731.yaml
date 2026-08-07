@@ -151,29 +151,28 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/dsv4-0731-trivy-cache"
-          # The runner DNS listener is loopback-only; bridge containers cannot reach it.
-          # Constrain the pinned host-network scanner to a read-only, capability-free sandbox.
-          docker run --rm \
-            --user "$(id -u):$(id -g)" \
-            --network host \
-            --read-only \
-            --cap-drop ALL \
-            --security-opt no-new-privileges:true \
-            --pids-limit 256 \
-            --tmpfs /tmp:rw,noexec,nosuid,size=512m \
-            --env TRIVY_USERNAME \
-            --env TRIVY_PASSWORD \
-            --env TRIVY_NO_PROGRESS=true \
-            --volume "$RUNNER_TEMP/dsv4-0731-trivy-cache:/trivy-cache" \
-            --volume "$GITHUB_WORKSPACE:/workspace" \
+          # The runner DNS listener is in the job namespace, so bridge and Docker-host
+          # network modes cannot reach it. Extract the scanner from the pinned image and
+          # run it as the unprivileged Actions user with the runner's working resolver.
+          TRIVY_CONTAINER="dsv4-0731-trivy-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          TRIVY_BINARY="$RUNNER_TEMP/dsv4-0731-trivy-cache/trivy"
+          trap 'docker rm -f "$TRIVY_CONTAINER" >/dev/null 2>&1 || true' EXIT
+          docker create \
+            --name "$TRIVY_CONTAINER" \
             docker.io/aquasec/trivy@sha256:be1190afcb28352bfddc4ddeb71470835d16462af68d310f9f4bca710961a41e \
-            image \
-            --cache-dir /trivy-cache \
+            >/dev/null
+          docker cp "$TRIVY_CONTAINER:/usr/local/bin/trivy" "$TRIVY_BINARY"
+          docker rm "$TRIVY_CONTAINER" >/dev/null
+          trap - EXIT
+          test "$(sha256sum "$TRIVY_BINARY" | awk '{print $1}')" = \
+            379d59f24a4a828c55de5f0b91b6805cc35d13580180b658820e648611256166
+          TRIVY_NO_PROGRESS=true "$TRIVY_BINARY" image \
+            --cache-dir "$RUNNER_TEMP/dsv4-0731-trivy-cache" \
             --scanners vuln \
             --timeout 20m \
             --skip-version-check \
             --format json \
-            --output /workspace/trivy-results.json \
+            --output "$GITHUB_WORKSPACE/trivy-results.json" \
             --severity HIGH,CRITICAL \
             --ignore-unfixed \
             --exit-code 0 \
