@@ -7,7 +7,7 @@ on:
         description: Docker Hub tag; production must use the resulting digest
         required: true
         type: string
-        default: dsv4-0731-v0.5.16-0666a644
+        default: dsv4-0731-v0.5.16-0666a644-cvefix1
 
 concurrency:
   group: publish-dsv4-0731-${{ inputs.tag }}
@@ -34,7 +34,7 @@ jobs:
       - name: Check out the merged source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: f9a21ff960a2fc4aa169fa9b3bc4a4462cd98eaf
+          ref: 0901061d1f01579a23679356bbea2f616ef2157b
           fetch-depth: 0
 
       - name: Validate tag and source provenance
@@ -50,6 +50,9 @@ jobs:
             0666a644e0791a92606c73d91725b0b52908aa347880973ffa1d3e9dc47282f4
           grep -Fxq \
             'model_revision=7872f01b1d1fe23eabc4c98b48bffcef5a386062' \
+            "$BUILD_CONTEXT/PROVENANCE"
+          grep -Fxq \
+            'security_remediation=CVE-2025-68121:removed-unused-nsight-efa-samplers' \
             "$BUILD_CONTEXT/PROVENANCE"
           echo "IMAGE_REF=${REGISTRY}/${IMAGE_REPOSITORY}:${IMAGE_TAG}" >> "$GITHUB_ENV"
 
@@ -88,18 +91,36 @@ jobs:
             '.config.Labels["org.opencontainers.image.revision"] == "fdebc938f7f4d16fe6b9f55dcd9a767cf0899ea1" and
              .config.Labels["nearai.sglang.admission_patch"] == "pr28175" and
              .config.Labels["nearai.sglang.reasoning_backport"] == "059269594c5f245f77dad711631843c299d7713f" and
-             .config.Labels["nearai.sglang.patch.sha256"] == "0666a644e0791a92606c73d91725b0b52908aa347880973ffa1d3e9dc47282f4"' \
+             .config.Labels["nearai.sglang.patch.sha256"] == "0666a644e0791a92606c73d91725b0b52908aa347880973ffa1d3e9dc47282f4" and
+             .config.Labels["nearai.security.cve_2025_68121"] == "removed-unused-nsight-efa-samplers"' \
             image-config.json
 
       - name: Scan the published digest
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          image-ref: ${{ env.IMAGE_IMMUTABLE_REF }}
-          format: json
-          output: trivy-results.json
-          severity: HIGH,CRITICAL
-          ignore-unfixed: true
-          exit-code: 0
+        env:
+          TRIVY_USERNAME: ${{ vars.DOCKER_REGISTRY_USER }}
+          TRIVY_PASSWORD: ${{ secrets.DOCKER_REGISTRY_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/dsv4-0731-trivy-cache"
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            --env TRIVY_USERNAME \
+            --env TRIVY_PASSWORD \
+            --env TRIVY_NO_PROGRESS=true \
+            --volume "$RUNNER_TEMP/dsv4-0731-trivy-cache:/trivy-cache" \
+            --volume "$GITHUB_WORKSPACE:/workspace" \
+            docker.io/aquasec/trivy@sha256:be1190afcb28352bfddc4ddeb71470835d16462af68d310f9f4bca710961a41e \
+            image \
+            --cache-dir /trivy-cache \
+            --scanners vuln \
+            --timeout 20m \
+            --skip-version-check \
+            --format json \
+            --output /workspace/trivy-results.json \
+            --severity HIGH,CRITICAL \
+            --ignore-unfixed \
+            --exit-code 0 \
+            "$IMAGE_IMMUTABLE_REF"
 
       - name: Summarize vulnerability scan
         run: |
