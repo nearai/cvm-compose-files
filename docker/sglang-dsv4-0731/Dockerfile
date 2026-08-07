@@ -21,6 +21,8 @@ RUN echo "0666a644e0791a92606c73d91725b0b52908aa347880973ffa1d3e9dc47282f4  /tmp
         python/sglang/srt/entrypoints/openai/serving_base.py \
         python/sglang/srt/entrypoints/openai/serving_chat.py \
         python/sglang/srt/entrypoints/openai/serving_completions.py \
+    && test -f /opt/nvidia/nsight-compute/2025.3.1/host/target-linux-x64/plugins/efa_metrics/nic_sampler \
+    && test -f /opt/nvidia/nsight-systems-cli/2026.4.1/target-linux-x64/plugins/efa_metrics/nic_sampler \
     && rm \
         /opt/nvidia/nsight-compute/2025.3.1/host/target-linux-x64/plugins/efa_metrics/nic_sampler \
         /opt/nvidia/nsight-systems-cli/2026.4.1/target-linux-x64/plugins/efa_metrics/nic_sampler \
