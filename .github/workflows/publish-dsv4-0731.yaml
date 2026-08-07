@@ -1,0 +1,137 @@
+name: Publish DS4F-0731 SGLang image
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Docker Hub tag; production must use the resulting digest
+        required: true
+        type: string
+        default: dsv4-0731-v0.5.16-0666a644
+
+env:
+  REGISTRY: docker.io
+  IMAGE_REPOSITORY: ${{ vars.DOCKER_REGISTRY_USER }}/sglang
+  BUILD_CONTEXT: docker/sglang-dsv4-0731
+
+jobs:
+  publish:
+    name: Build, scan, attest, and publish
+    permissions:
+      contents: read
+      attestations: write
+      id-token: write
+    runs-on: [self-hosted, infra]
+    steps:
+      - name: Check out the merged source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Validate tag and source provenance
+        env:
+          IMAGE_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$IMAGE_TAG" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$ ]]; then
+            echo "Invalid Docker tag: $IMAGE_TAG" >&2
+            exit 1
+          fi
+          test "$(sha256sum "$BUILD_CONTEXT/sglang-v0.5.16-dsv4-0731-runtime.patch" | awk '{print $1}')" = \
+            0666a644e0791a92606c73d91725b0b52908aa347880973ffa1d3e9dc47282f4
+          grep -Fxq \
+            'model_revision=7872f01b1d1fe23eabc4c98b48bffcef5a386062' \
+            "$BUILD_CONTEXT/PROVENANCE"
+          echo "IMAGE_REF=${REGISTRY}/${IMAGE_REPOSITORY}:${IMAGE_TAG}" >> "$GITHUB_ENV"
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v3.7.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ vars.DOCKER_REGISTRY_USER }}
+          password: ${{ secrets.DOCKER_REGISTRY_TOKEN }}
+
+      - name: Build and push with SBOM
+        run: |
+          set -euo pipefail
+          docker buildx build \
+            --pull \
+            --platform linux/amd64 \
+            --provenance=mode=max \
+            --sbom=true \
+            --metadata-file build-metadata.json \
+            --tag "$IMAGE_REF" \
+            --push \
+            "$BUILD_CONTEXT"
+          DIGEST=$(jq -r '."containerimage.digest" // empty' build-metadata.json)
+          test -n "$DIGEST"
+          echo "IMAGE_DIGEST=$DIGEST" >> "$GITHUB_ENV"
+          echo "IMAGE_IMMUTABLE_REF=${REGISTRY}/${IMAGE_REPOSITORY}@${DIGEST}" >> "$GITHUB_ENV"
+
+      - name: Verify published manifest and labels
+        run: |
+          set -euo pipefail
+          docker buildx imagetools inspect "$IMAGE_IMMUTABLE_REF"
+          docker buildx imagetools inspect \
+            --format '{{json .Image}}' \
+            "$IMAGE_IMMUTABLE_REF" > image-config.json
+          jq -e \
+            '.config.Labels["org.opencontainers.image.revision"] == "fdebc938f7f4d16fe6b9f55dcd9a767cf0899ea1" and
+             .config.Labels["nearai.sglang.admission_patch"] == "pr28175" and
+             .config.Labels["nearai.sglang.reasoning_backport"] == "059269594c5f245f77dad711631843c299d7713f" and
+             .config.Labels["nearai.sglang.patch.sha256"] == "0666a644e0791a92606c73d91725b0b52908aa347880973ffa1d3e9dc47282f4"' \
+            image-config.json
+
+      - name: Scan the published digest
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ env.IMAGE_IMMUTABLE_REF }}
+          format: json
+          output: trivy-results.json
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: 0
+
+      - name: Summarize vulnerability scan
+        run: |
+          set -euo pipefail
+          HIGH=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "HIGH")] | length' trivy-results.json)
+          CRITICAL=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "CRITICAL")] | length' trivy-results.json)
+          echo "TRIVY_HIGH=$HIGH" >> "$GITHUB_ENV"
+          echo "TRIVY_CRITICAL=$CRITICAL" >> "$GITHUB_ENV"
+          printf 'Trivy fixed-vulnerability findings: high=%s critical=%s\n' "$HIGH" "$CRITICAL"
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_REPOSITORY }}
+          subject-digest: ${{ env.IMAGE_DIGEST }}
+          push-to-registry: true
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      - name: Sign the immutable digest
+        run: cosign sign --yes "$IMAGE_IMMUTABLE_REF"
+
+      - name: Retain build and scan evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: dsv4-0731-image-evidence
+          path: |
+            build-metadata.json
+            image-config.json
+            trivy-results.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish summary
+        run: |
+          {
+            echo '## DS4F-0731 SGLang image'
+            echo
+            echo "- tag: \`$IMAGE_REF\`"
+            echo "- immutable: \`$IMAGE_IMMUTABLE_REF\`"
+            echo "- patch: \`0666a644e0791a92606c73d91725b0b52908aa347880973ffa1d3e9dc47282f4\`"
+            echo "- Trivy fixed HIGH findings: $TRIVY_HIGH"
+            echo "- Trivy fixed CRITICAL findings: $TRIVY_CRITICAL"
+            echo "- Sigstore: https://search.sigstore.dev/?hash=$IMAGE_DIGEST"
+          } >> "$GITHUB_STEP_SUMMARY"
