@@ -8,6 +8,11 @@ on:
         required: true
         type: string
         default: dsv4-0731-v0.5.16-0666a644-cvefix1
+      resume_digest:
+        description: Existing digest for a failed post-build run; must match the tag
+        required: false
+        type: string
+        default: ''
 
 concurrency:
   group: publish-dsv4-0731-${{ inputs.tag }}
@@ -40,10 +45,15 @@ jobs:
       - name: Validate tag and source provenance
         env:
           IMAGE_TAG: ${{ inputs.tag }}
+          RESUME_DIGEST: ${{ inputs.resume_digest }}
         run: |
           set -euo pipefail
           if [[ ! "$IMAGE_TAG" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$ ]]; then
             echo "Invalid Docker tag: $IMAGE_TAG" >&2
+            exit 1
+          fi
+          if [[ -n "$RESUME_DIGEST" && ! "$RESUME_DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+            echo "Invalid resume digest: $RESUME_DIGEST" >&2
             exit 1
           fi
           test "$(sha256sum "$BUILD_CONTEXT/sglang-v0.5.16-dsv4-0731-runtime.patch" | awk '{print $1}')" = \
@@ -64,6 +74,7 @@ jobs:
           password: ${{ secrets.DOCKER_REGISTRY_TOKEN }}
 
       - name: Build and push with SBOM
+        if: inputs.resume_digest == ''
         run: |
           set -euo pipefail
           docker buildx build \
@@ -80,6 +91,26 @@ jobs:
           echo "IMAGE_DIGEST=$DIGEST" >> "$GITHUB_ENV"
           echo "IMAGE_IMMUTABLE_REF=${REGISTRY}/${IMAGE_REPOSITORY}@${DIGEST}" >> "$GITHUB_ENV"
 
+      - name: Resume exact published digest
+        if: inputs.resume_digest != ''
+        env:
+          RESUME_DIGEST: ${{ inputs.resume_digest }}
+        run: |
+          set -euo pipefail
+          TAG_DIGEST="sha256:$(docker buildx imagetools inspect \
+            --raw \
+            "$IMAGE_REF" | sha256sum | awk '{print $1}')"
+          if [[ "$TAG_DIGEST" != "$RESUME_DIGEST" ]]; then
+            echo "Tag digest $TAG_DIGEST does not match requested resume digest $RESUME_DIGEST" >&2
+            exit 1
+          fi
+          jq -n \
+            --arg digest "$RESUME_DIGEST" \
+            '{"containerimage.digest": $digest, "nearai.resume": true}' \
+            > build-metadata.json
+          echo "IMAGE_DIGEST=$RESUME_DIGEST" >> "$GITHUB_ENV"
+          echo "IMAGE_IMMUTABLE_REF=${REGISTRY}/${IMAGE_REPOSITORY}@${RESUME_DIGEST}" >> "$GITHUB_ENV"
+
       - name: Verify published manifest and labels
         run: |
           set -euo pipefail
@@ -95,6 +126,24 @@ jobs:
              .config.Labels["nearai.security.cve_2025_68121"] == "removed-unused-nsight-efa-samplers"' \
             image-config.json
 
+      - name: Verify embedded BuildKit provenance
+        run: |
+          set -euo pipefail
+          docker buildx imagetools inspect \
+            --format '{{json .Provenance.SLSA}}' \
+            "$IMAGE_IMMUTABLE_REF" > buildkit-provenance.json
+          jq -e \
+            '.buildType == "https://mobyproject.org/buildkit@v1" and
+             .metadata.buildStartedOn != null and
+             .metadata.buildFinishedOn != null and
+             .metadata["https://mobyproject.org/buildkit@v1#metadata"].vcs.source == "https://github.com/nearai/cvm-compose-files" and
+             .metadata["https://mobyproject.org/buildkit@v1#metadata"].vcs.revision == "0901061d1f01579a23679356bbea2f616ef2157b" and
+             .metadata["https://mobyproject.org/buildkit@v1#metadata"].vcs["localdir:context"] == "docker/sglang-dsv4-0731" and
+             .metadata["https://mobyproject.org/buildkit@v1#metadata"].vcs["localdir:dockerfile"] == "docker/sglang-dsv4-0731" and
+             any(.materials[];
+               .digest.sha256 == "984699c298a95b73c469b2191403ddc85fd780506e13c39c4afff3845e27bc6c")' \
+            buildkit-provenance.json
+
       - name: Scan the published digest
         env:
           TRIVY_USERNAME: ${{ vars.DOCKER_REGISTRY_USER }}
@@ -104,6 +153,8 @@ jobs:
           mkdir -p "$RUNNER_TEMP/dsv4-0731-trivy-cache"
           docker run --rm \
             --user "$(id -u):$(id -g)" \
+            --dns 1.1.1.1 \
+            --dns 8.8.8.8 \
             --env TRIVY_USERNAME \
             --env TRIVY_PASSWORD \
             --env TRIVY_NO_PROGRESS=true \
@@ -137,6 +188,7 @@ jobs:
           name: dsv4-0731-image-evidence
           path: |
             build-metadata.json
+            buildkit-provenance.json
             image-config.json
             trivy-results.json
           if-no-files-found: error
@@ -151,6 +203,7 @@ jobs:
           fi
 
       - name: Attest build provenance
+        if: inputs.resume_digest == ''
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4
         with:
           subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_REPOSITORY }}
@@ -188,6 +241,7 @@ jobs:
             echo "- tag: \`$IMAGE_REF\`"
             echo "- immutable: \`$IMAGE_IMMUTABLE_REF\`"
             echo "- patch: \`0666a644e0791a92606c73d91725b0b52908aa347880973ffa1d3e9dc47282f4\`"
+            echo "- embedded BuildKit provenance: verified"
             echo "- Trivy fixed HIGH findings: $TRIVY_HIGH"
             echo "- Trivy fixed CRITICAL findings: $TRIVY_CRITICAL"
             echo "- Sigstore: https://search.sigstore.dev/?hash=$IMAGE_DIGEST"
