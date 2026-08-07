@@ -450,6 +450,7 @@ services:
       --enable-metrics
       --log-requests-level 0
       --served-model-name deepseek-ai/DeepSeek-V4-Flash
+      ${DSV4_RETURN_HIDDEN_STATES:+--enable-return-hidden-states}
     container_name: model-sg-dsv4-flash-fp4-tp2-r1
     depends_on:
       model-downloader:
@@ -464,8 +465,8 @@ services:
     labels:
       com.datadoghq.ad.check_names: '["openmetrics"]'
       com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:deepseek-ai/DeepSeek-V4-Flash","model_path:deepseek-ai/DeepSeek-V4-Flash-0731","model_revision:7872f01b1d1fe23eabc4c98b48bffcef5a386062","deployment:qwen35-dsv4-flash","config_variant:dsv4-0731-canary-target-only","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8001","instance:1"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-sg-dsv4-flash-fp4-tp2-r1:8000/metrics", "metrics":["sglang:*"], "histogram_buckets_as_distributions": true, "service": "sglang", "tags":["model:deepseek-ai/DeepSeek-V4-Flash","model_path:deepseek-ai/DeepSeek-V4-Flash-0731","model_revision:7872f01b1d1fe23eabc4c98b48bffcef5a386062","config_variant:dsv4-0731-canary-target-only","ip:${HOST_IP}","port:8001","instance:1"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:deepseek-ai/DeepSeek-V4-Flash-0731","model_path:deepseek-ai/DeepSeek-V4-Flash-0731","model_revision:7872f01b1d1fe23eabc4c98b48bffcef5a386062","deployment:qwen35-dsv4-flash","config_variant:dsv4-0731-canary-target-only","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8001","instance:1"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-sg-dsv4-flash-fp4-tp2-r1:8000/metrics", "metrics":["sglang:*"], "histogram_buckets_as_distributions": true, "service": "sglang", "tags":["model:deepseek-ai/DeepSeek-V4-Flash-0731","model_path:deepseek-ai/DeepSeek-V4-Flash-0731","model_revision:7872f01b1d1fe23eabc4c98b48bffcef5a386062","config_variant:dsv4-0731-canary-target-only","ip:${HOST_IP}","port:8001","instance:1"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -473,7 +474,7 @@ services:
       nearai.otel.container_name: "model-sg-dsv4-flash-fp4-tp2-r1"
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
-      nearai.otel.model: "deepseek-ai/DeepSeek-V4-Flash"
+      nearai.otel.model: "deepseek-ai/DeepSeek-V4-Flash-0731"
       nearai.otel.deployment: "qwen35-dsv4-flash"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
@@ -735,7 +736,7 @@ configs:
                       service: "sglang"
                       source: "sglang"
                       container_name: "model-sg-dsv4-flash-fp4-tp2-r1"
-                      model: "deepseek-ai/DeepSeek-V4-Flash"
+                      model: "deepseek-ai/DeepSeek-V4-Flash-0731"
                       model_path: "deepseek-ai/DeepSeek-V4-Flash-0731"
                       deployment: "qwen35-dsv4-flash"
                       env: "${ENV}"
