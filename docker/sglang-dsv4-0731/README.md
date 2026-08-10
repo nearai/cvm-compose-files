@@ -73,8 +73,9 @@ Before a config PR:
    failures before adding the image to `prod/*.yaml`.
 
 Normal merged tags are not deployable for 48 hours. A same-day rollout must
-use the repository's sanctioned `backdate-tag` workflow after merge. Do not
-manually tag the commit or lower compose-manager's `MIN_TAG_AGE_HOURS` gate.
+use the repository's sanctioned `backdate-tag` skill for the deployment
+commit. Do not manually tag the commit or lower compose-manager's
+`MIN_TAG_AGE_HOURS` gate.
 
 ## Qualified per-replica command delta
 
