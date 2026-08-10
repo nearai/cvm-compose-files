@@ -104,9 +104,10 @@ x-dsv4-flash-common: &dsv4-flash-common
   <<: *nvidia
   init: true
   # Qualified DeepSeek-V4-Flash-0731 target-only TP2 production configuration.
-  # Each replica consumes two H200 GPUs; mixed 8192-token prefill and one
-  # continuous decode step bound long-prefill interference without EAGLE.
-  image: docker.io/nearaidev/sglang@sha256:eac0a7c825c1c29588fef2f514b7328c1a41b7ac1ed222b3afecc52e32a18525
+  # Each replica consumes two H200 GPUs; mixed 8192-token prefill, one
+  # continuous decode step, and a 4096-token admission reserve bound
+  # long-prefill interference without EAGLE.
+  image: docker.io/nearaidev/sglang@sha256:ec518148762ea02c23aa8615f69ca79b0c18bcd59b3c21c10229db3df323c615
   command: >
       sglang serve
       --trust-remote-code
@@ -148,6 +149,7 @@ x-dsv4-flash-common: &dsv4-flash-common
     - OPENBLAS_L2_SIZE=2097152
     - NCCL_DEBUG=WARN
     - SGLANG_ENABLE_SPEC_V2=1
+    - SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE=4096
     - SGLANG_DSV4_FP4_EXPERTS=1
     - SGLANG_ENABLE_UNIFIED_RADIX_TREE=1
     - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
@@ -414,8 +416,8 @@ services:
     labels:
       com.datadoghq.ad.check_names: '["openmetrics"]'
       com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:deepseek-ai/DeepSeek-V4-Flash-0731","model_path:deepseek-ai/DeepSeek-V4-Flash-0731","model_revision:7872f01b1d1fe23eabc4c98b48bffcef5a386062","deployment:qwen35-dsv4-flash","config_variant:dsv4-0731-prod-target-only","decode_mode:target_only","chunk_size:8192","max_prefill_tokens:16384","continuous_decode_steps:1","watchdog_timeout:1800","cuda_graph:1","max_running_requests:64","max_queued_requests:16","schedule_conservativeness:1.3","sglang_revision:0.5.16-near-dsv4-0731","engine_image:eac0a7c825c1","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8001","instance:1"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-sg-dsv4-flash-fp4-tp2-r1:8000/metrics", "metrics":["sglang:*"], "histogram_buckets_as_distributions": true, "service": "sglang", "tags":["model:deepseek-ai/DeepSeek-V4-Flash-0731","model_path:deepseek-ai/DeepSeek-V4-Flash-0731","model_revision:7872f01b1d1fe23eabc4c98b48bffcef5a386062","deployment:qwen35-dsv4-flash","config_variant:dsv4-0731-prod-target-only","decode_mode:target_only","chunk_size:8192","max_prefill_tokens:16384","continuous_decode_steps:1","watchdog_timeout:1800","cuda_graph:1","max_running_requests:64","max_queued_requests:16","schedule_conservativeness:1.3","sglang_revision:0.5.16-near-dsv4-0731","engine_image:eac0a7c825c1","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8001","instance:1"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:deepseek-ai/DeepSeek-V4-Flash-0731","model_path:deepseek-ai/DeepSeek-V4-Flash-0731","model_revision:7872f01b1d1fe23eabc4c98b48bffcef5a386062","deployment:qwen35-dsv4-flash","config_variant:dsv4-0731-prod-target-only","decode_mode:target_only","chunk_size:8192","max_prefill_tokens:16384","continuous_decode_steps:1","chunked_prefill_admission_reserve:4096","watchdog_timeout:1800","cuda_graph:1","max_running_requests:64","max_queued_requests:16","schedule_conservativeness:1.3","sglang_revision:0.5.16-near-dsv4-0731","engine_image:ec518148762e","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8001","instance:1"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-sg-dsv4-flash-fp4-tp2-r1:8000/metrics", "metrics":["sglang:*"], "histogram_buckets_as_distributions": true, "service": "sglang", "tags":["model:deepseek-ai/DeepSeek-V4-Flash-0731","model_path:deepseek-ai/DeepSeek-V4-Flash-0731","model_revision:7872f01b1d1fe23eabc4c98b48bffcef5a386062","deployment:qwen35-dsv4-flash","config_variant:dsv4-0731-prod-target-only","decode_mode:target_only","chunk_size:8192","max_prefill_tokens:16384","continuous_decode_steps:1","chunked_prefill_admission_reserve:4096","watchdog_timeout:1800","cuda_graph:1","max_running_requests:64","max_queued_requests:16","schedule_conservativeness:1.3","sglang_revision:0.5.16-near-dsv4-0731","engine_image:ec518148762e","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8001","instance:1"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -437,13 +439,14 @@ services:
       nearai.otel.chunk_size: "8192"
       nearai.otel.max_prefill_tokens: "16384"
       nearai.otel.continuous_decode_steps: "1"
+      nearai.otel.chunked_prefill_admission_reserve: "4096"
       nearai.otel.watchdog_timeout: "1800"
       nearai.otel.cuda_graph: "1"
       nearai.otel.max_running_requests: "64"
       nearai.otel.max_queued_requests: "16"
       nearai.otel.schedule_conservativeness: "1.3"
       nearai.otel.sglang_revision: "0.5.16-near-dsv4-0731"
-      nearai.otel.engine_image: "eac0a7c825c1"
+      nearai.otel.engine_image: "ec518148762e"
 
   model-sg-dsv4-flash-fp4-tp2-r2:
     <<: *dsv4-flash-common
@@ -461,8 +464,8 @@ services:
     labels:
       com.datadoghq.ad.check_names: '["openmetrics"]'
       com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:deepseek-ai/DeepSeek-V4-Flash-0731","model_path:deepseek-ai/DeepSeek-V4-Flash-0731","model_revision:7872f01b1d1fe23eabc4c98b48bffcef5a386062","deployment:qwen35-dsv4-flash","config_variant:dsv4-0731-prod-target-only","decode_mode:target_only","chunk_size:8192","max_prefill_tokens:16384","continuous_decode_steps:1","watchdog_timeout:1800","cuda_graph:1","max_running_requests:64","max_queued_requests:16","schedule_conservativeness:1.3","sglang_revision:0.5.16-near-dsv4-0731","engine_image:eac0a7c825c1","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8002","instance:2"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-sg-dsv4-flash-fp4-tp2-r2:8000/metrics", "metrics":["sglang:*"], "histogram_buckets_as_distributions": true, "service": "sglang", "tags":["model:deepseek-ai/DeepSeek-V4-Flash-0731","model_path:deepseek-ai/DeepSeek-V4-Flash-0731","model_revision:7872f01b1d1fe23eabc4c98b48bffcef5a386062","deployment:qwen35-dsv4-flash","config_variant:dsv4-0731-prod-target-only","decode_mode:target_only","chunk_size:8192","max_prefill_tokens:16384","continuous_decode_steps:1","watchdog_timeout:1800","cuda_graph:1","max_running_requests:64","max_queued_requests:16","schedule_conservativeness:1.3","sglang_revision:0.5.16-near-dsv4-0731","engine_image:eac0a7c825c1","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8002","instance:2"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:deepseek-ai/DeepSeek-V4-Flash-0731","model_path:deepseek-ai/DeepSeek-V4-Flash-0731","model_revision:7872f01b1d1fe23eabc4c98b48bffcef5a386062","deployment:qwen35-dsv4-flash","config_variant:dsv4-0731-prod-target-only","decode_mode:target_only","chunk_size:8192","max_prefill_tokens:16384","continuous_decode_steps:1","chunked_prefill_admission_reserve:4096","watchdog_timeout:1800","cuda_graph:1","max_running_requests:64","max_queued_requests:16","schedule_conservativeness:1.3","sglang_revision:0.5.16-near-dsv4-0731","engine_image:ec518148762e","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8002","instance:2"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-sg-dsv4-flash-fp4-tp2-r2:8000/metrics", "metrics":["sglang:*"], "histogram_buckets_as_distributions": true, "service": "sglang", "tags":["model:deepseek-ai/DeepSeek-V4-Flash-0731","model_path:deepseek-ai/DeepSeek-V4-Flash-0731","model_revision:7872f01b1d1fe23eabc4c98b48bffcef5a386062","deployment:qwen35-dsv4-flash","config_variant:dsv4-0731-prod-target-only","decode_mode:target_only","chunk_size:8192","max_prefill_tokens:16384","continuous_decode_steps:1","chunked_prefill_admission_reserve:4096","watchdog_timeout:1800","cuda_graph:1","max_running_requests:64","max_queued_requests:16","schedule_conservativeness:1.3","sglang_revision:0.5.16-near-dsv4-0731","engine_image:ec518148762e","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8002","instance:2"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -484,13 +487,14 @@ services:
       nearai.otel.chunk_size: "8192"
       nearai.otel.max_prefill_tokens: "16384"
       nearai.otel.continuous_decode_steps: "1"
+      nearai.otel.chunked_prefill_admission_reserve: "4096"
       nearai.otel.watchdog_timeout: "1800"
       nearai.otel.cuda_graph: "1"
       nearai.otel.max_running_requests: "64"
       nearai.otel.max_queued_requests: "16"
       nearai.otel.schedule_conservativeness: "1.3"
       nearai.otel.sglang_revision: "0.5.16-near-dsv4-0731"
-      nearai.otel.engine_image: "eac0a7c825c1"
+      nearai.otel.engine_image: "ec518148762e"
 
   # --- Per-model dcgm-exporters: device_ids scopes NVML to each model's GPUs ---
 
