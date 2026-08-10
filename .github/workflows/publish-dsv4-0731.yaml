@@ -7,7 +7,11 @@ on:
         description: Docker Hub tag; production must use the resulting digest
         required: true
         type: string
-        default: dsv4-0731-v0.5.16-0666a644-cvefix1
+        default: dsv4-0731-v0.5.16-fairness-v1
+      source_revision:
+        description: Exact merged commit on main containing the build context
+        required: true
+        type: string
       resume_digest:
         description: Existing digest for a failed post-build run; must match the tag
         required: false
@@ -39,13 +43,14 @@ jobs:
       - name: Check out the merged source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: 0901061d1f01579a23679356bbea2f616ef2157b
+          ref: ${{ inputs.source_revision }}
           fetch-depth: 0
 
       - name: Validate tag and source provenance
         env:
           IMAGE_TAG: ${{ inputs.tag }}
           RESUME_DIGEST: ${{ inputs.resume_digest }}
+          SOURCE_REVISION: ${{ inputs.source_revision }}
         run: |
           set -euo pipefail
           if [[ ! "$IMAGE_TAG" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$ ]]; then
@@ -56,10 +61,22 @@ jobs:
             echo "Invalid resume digest: $RESUME_DIGEST" >&2
             exit 1
           fi
+          if [[ ! "$SOURCE_REVISION" =~ ^[a-f0-9]{40}$ ]]; then
+            echo "Source revision must be an exact 40-character commit: $SOURCE_REVISION" >&2
+            exit 1
+          fi
+          test "$(git rev-parse HEAD)" = "$SOURCE_REVISION"
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          git merge-base --is-ancestor "$SOURCE_REVISION" origin/main
           test "$(sha256sum "$BUILD_CONTEXT/sglang-v0.5.16-dsv4-0731-runtime.patch" | awk '{print $1}')" = \
             0666a644e0791a92606c73d91725b0b52908aa347880973ffa1d3e9dc47282f4
+          test "$(sha256sum "$BUILD_CONTEXT/sglang-v0.5.16-chunked-prefill-admission-reserve.patch" | awk '{print $1}')" = \
+            3f1c92b7a4655d4cd8d675a4a7cd33d78eb95156a962e53e4ac6da81273f4099
           grep -Fxq \
             'model_revision=7872f01b1d1fe23eabc4c98b48bffcef5a386062' \
+            "$BUILD_CONTEXT/PROVENANCE"
+          grep -Fxq \
+            'chunked_prefill_admission_patch_sha256=3f1c92b7a4655d4cd8d675a4a7cd33d78eb95156a962e53e4ac6da81273f4099' \
             "$BUILD_CONTEXT/PROVENANCE"
           grep -Fxq \
             'security_remediation=CVE-2025-68121:removed-unused-nsight-efa-samplers' \
@@ -123,21 +140,26 @@ jobs:
              .config.Labels["nearai.sglang.admission_patch"] == "pr28175" and
              .config.Labels["nearai.sglang.reasoning_backport"] == "059269594c5f245f77dad711631843c299d7713f" and
              .config.Labels["nearai.sglang.patch.sha256"] == "0666a644e0791a92606c73d91725b0b52908aa347880973ffa1d3e9dc47282f4" and
+             .config.Labels["nearai.sglang.chunked_prefill_admission_patch"] == "nearai-v1" and
+             .config.Labels["nearai.sglang.chunked_prefill_admission_patch_sha256"] == "3f1c92b7a4655d4cd8d675a4a7cd33d78eb95156a962e53e4ac6da81273f4099" and
+             .config.Labels["nearai.sglang.chunked_prefill_admission_reserve"] == "runtime-env" and
              .config.Labels["nearai.security.cve_2025_68121"] == "removed-unused-nsight-efa-samplers"' \
             image-config.json
 
       - name: Verify embedded BuildKit provenance
+        env:
+          SOURCE_REVISION: ${{ inputs.source_revision }}
         run: |
           set -euo pipefail
           docker buildx imagetools inspect \
             --format '{{json .Provenance.SLSA}}' \
             "$IMAGE_IMMUTABLE_REF" > buildkit-provenance.json
-          jq -e \
+          jq -e --arg source_revision "$SOURCE_REVISION" \
             '.buildType == "https://mobyproject.org/buildkit@v1" and
              .metadata.buildStartedOn != null and
              .metadata.buildFinishedOn != null and
              .metadata["https://mobyproject.org/buildkit@v1#metadata"].vcs.source == "https://github.com/nearai/cvm-compose-files" and
-             .metadata["https://mobyproject.org/buildkit@v1#metadata"].vcs.revision == "0901061d1f01579a23679356bbea2f616ef2157b" and
+             .metadata["https://mobyproject.org/buildkit@v1#metadata"].vcs.revision == $source_revision and
              .metadata["https://mobyproject.org/buildkit@v1#metadata"].vcs["localdir:context"] == "docker/sglang-dsv4-0731" and
              .metadata["https://mobyproject.org/buildkit@v1#metadata"].vcs["localdir:dockerfile"] == "docker/sglang-dsv4-0731" and
              any(.materials[];
@@ -264,7 +286,8 @@ jobs:
             echo
             echo "- tag: \`$IMAGE_REF\`"
             echo "- immutable: \`$IMAGE_IMMUTABLE_REF\`"
-            echo "- patch: \`0666a644e0791a92606c73d91725b0b52908aa347880973ffa1d3e9dc47282f4\`"
+            echo "- runtime patch: \`0666a644e0791a92606c73d91725b0b52908aa347880973ffa1d3e9dc47282f4\`"
+            echo "- fairness patch: \`3f1c92b7a4655d4cd8d675a4a7cd33d78eb95156a962e53e4ac6da81273f4099\`"
             echo "- embedded BuildKit provenance: verified"
             echo "- Trivy fixed HIGH findings: $TRIVY_HIGH"
             echo "- Trivy fixed CRITICAL findings: $TRIVY_CRITICAL"
