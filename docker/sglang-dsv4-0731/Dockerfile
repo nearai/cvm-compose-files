@@ -7,7 +7,7 @@ LABEL nearai.sglang.admission_patch="pr28175"
 LABEL nearai.sglang.reasoning_backport="059269594c5f245f77dad711631843c299d7713f"
 LABEL nearai.sglang.patch.sha256="0666a644e0791a92606c73d91725b0b52908aa347880973ffa1d3e9dc47282f4"
 LABEL nearai.sglang.chunked_prefill_admission_patch="nearai-v1"
-LABEL nearai.sglang.chunked_prefill_admission_patch_sha256="0eaa136bc44ff122bdd950285fc8e507a9be40f9293a5705f02a25a586e86d21"
+LABEL nearai.sglang.chunked_prefill_admission_patch_sha256="3f1c92b7a4655d4cd8d675a4a7cd33d78eb95156a962e53e4ac6da81273f4099"
 LABEL nearai.sglang.chunked_prefill_admission_reserve="runtime-env"
 LABEL nearai.security.cve_2025_68121="removed-unused-nsight-efa-samplers"
 
@@ -15,7 +15,7 @@ COPY sglang-v0.5.16-dsv4-0731-runtime.patch /tmp/sglang-v0.5.16-dsv4-0731-runtim
 COPY sglang-v0.5.16-chunked-prefill-admission-reserve.patch /tmp/sglang-v0.5.16-chunked-prefill-admission-reserve.patch
 
 RUN echo "0666a644e0791a92606c73d91725b0b52908aa347880973ffa1d3e9dc47282f4  /tmp/sglang-v0.5.16-dsv4-0731-runtime.patch" | sha256sum --check --strict \
-    && echo "0eaa136bc44ff122bdd950285fc8e507a9be40f9293a5705f02a25a586e86d21  /tmp/sglang-v0.5.16-chunked-prefill-admission-reserve.patch" | sha256sum --check --strict \
+    && echo "3f1c92b7a4655d4cd8d675a4a7cd33d78eb95156a962e53e4ac6da81273f4099  /tmp/sglang-v0.5.16-chunked-prefill-admission-reserve.patch" | sha256sum --check --strict \
     && cd /sgl-workspace/sglang \
     && git apply --check /tmp/sglang-v0.5.16-dsv4-0731-runtime.patch \
     && git apply /tmp/sglang-v0.5.16-dsv4-0731-runtime.patch \

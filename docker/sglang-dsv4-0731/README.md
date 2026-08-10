@@ -28,13 +28,13 @@ make the one-replica compose delta described below.
 - Combined patch SHA-256:
   `0666a644e0791a92606c73d91725b0b52908aa347880973ffa1d3e9dc47282f4`
 - Bounded chunked-prefill admission patch SHA-256:
-  `0eaa136bc44ff122bdd950285fc8e507a9be40f9293a5705f02a25a586e86d21`
+  `3f1c92b7a4655d4cd8d675a4a7cd33d78eb95156a962e53e4ac6da81273f4099`
 - Original qualified local image ID:
   `sha256:dac8a4f3f9906a3ef9ac3fdb4b9499492c85ed9d822e179728b0daa2ed1d8c54`
 - Fairness-qualified local image ID:
   `sha256:f418325ee720598664e54dd454fe1c815a320678297563c1e329114f47109f52`
 - Reproduced Dockerfile image ID:
-  `sha256:dcd4196d9791c8f28816b4db26b84a6ef10c02f998b5dd475cd8662c0e15fa4d`
+  `sha256:38727a8d787528b37e2a411ad1659efbf25d5811b544e07c0dd064d3a516fd6e`
 - Model revision:
   `7872f01b1d1fe23eabc4c98b48bffcef5a386062`
 
@@ -150,18 +150,18 @@ failure.
 The bounded-fairness validation then ran two reserve-0 controls and two
 reserve-4096 candidates simultaneously across both GPU31 NVLink islands:
 
-- both controls reproduced the failure at 113.345-114.173 seconds worst short
+- both controls reproduced the failure at 112.690-114.833 seconds worst short
   TTFT/event gap;
-- both candidates passed at 1.708-2.213 seconds;
-- 850k prefill elapsed time was 117.132-117.961 seconds for controls and
-  118.231-119.923 seconds for candidates;
+- both candidates passed at 2.086-2.118 seconds;
+- 850k prefill elapsed time was 116.472-118.388 seconds for controls and
+  119.332-119.633 seconds for candidates;
 - a 6,017-token queue head correctly bypassed the 4,096-token reserve, with
-  candidate/control long-prefill ratios of 0.992 and 1.028;
+  candidate/control long-prefill ratios of 1.010 and 1.019;
 - quality passed 14/14 with zero OOM, restart, malformed stream, engine error,
   XID, ECC growth or AER growth.
 
 Raw artifacts are on GPU31 under
-`/data/validation/ds4f-0731-admission-fairness-20260810/runs/v2-candidate-validation-v1`.
+`/data/validation/ds4f-0731-admission-fairness-20260810/runs/v2-candidate-validation-v2`.
 
 ## Staged rollout
 

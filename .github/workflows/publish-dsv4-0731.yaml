@@ -71,12 +71,12 @@ jobs:
           test "$(sha256sum "$BUILD_CONTEXT/sglang-v0.5.16-dsv4-0731-runtime.patch" | awk '{print $1}')" = \
             0666a644e0791a92606c73d91725b0b52908aa347880973ffa1d3e9dc47282f4
           test "$(sha256sum "$BUILD_CONTEXT/sglang-v0.5.16-chunked-prefill-admission-reserve.patch" | awk '{print $1}')" = \
-            0eaa136bc44ff122bdd950285fc8e507a9be40f9293a5705f02a25a586e86d21
+            3f1c92b7a4655d4cd8d675a4a7cd33d78eb95156a962e53e4ac6da81273f4099
           grep -Fxq \
             'model_revision=7872f01b1d1fe23eabc4c98b48bffcef5a386062' \
             "$BUILD_CONTEXT/PROVENANCE"
           grep -Fxq \
-            'chunked_prefill_admission_patch_sha256=0eaa136bc44ff122bdd950285fc8e507a9be40f9293a5705f02a25a586e86d21' \
+            'chunked_prefill_admission_patch_sha256=3f1c92b7a4655d4cd8d675a4a7cd33d78eb95156a962e53e4ac6da81273f4099' \
             "$BUILD_CONTEXT/PROVENANCE"
           grep -Fxq \
             'security_remediation=CVE-2025-68121:removed-unused-nsight-efa-samplers' \
@@ -141,7 +141,7 @@ jobs:
              .config.Labels["nearai.sglang.reasoning_backport"] == "059269594c5f245f77dad711631843c299d7713f" and
              .config.Labels["nearai.sglang.patch.sha256"] == "0666a644e0791a92606c73d91725b0b52908aa347880973ffa1d3e9dc47282f4" and
              .config.Labels["nearai.sglang.chunked_prefill_admission_patch"] == "nearai-v1" and
-             .config.Labels["nearai.sglang.chunked_prefill_admission_patch_sha256"] == "0eaa136bc44ff122bdd950285fc8e507a9be40f9293a5705f02a25a586e86d21" and
+             .config.Labels["nearai.sglang.chunked_prefill_admission_patch_sha256"] == "3f1c92b7a4655d4cd8d675a4a7cd33d78eb95156a962e53e4ac6da81273f4099" and
              .config.Labels["nearai.sglang.chunked_prefill_admission_reserve"] == "runtime-env" and
              .config.Labels["nearai.security.cve_2025_68121"] == "removed-unused-nsight-efa-samplers"' \
             image-config.json
@@ -287,7 +287,7 @@ jobs:
             echo "- tag: \`$IMAGE_REF\`"
             echo "- immutable: \`$IMAGE_IMMUTABLE_REF\`"
             echo "- runtime patch: \`0666a644e0791a92606c73d91725b0b52908aa347880973ffa1d3e9dc47282f4\`"
-            echo "- fairness patch: \`0eaa136bc44ff122bdd950285fc8e507a9be40f9293a5705f02a25a586e86d21\`"
+            echo "- fairness patch: \`3f1c92b7a4655d4cd8d675a4a7cd33d78eb95156a962e53e4ac6da81273f4099\`"
             echo "- embedded BuildKit provenance: verified"
             echo "- Trivy fixed HIGH findings: $TRIVY_HIGH"
             echo "- Trivy fixed CRITICAL findings: $TRIVY_CRITICAL"

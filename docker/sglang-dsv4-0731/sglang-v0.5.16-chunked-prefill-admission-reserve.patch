@@ -60,12 +60,13 @@ diff --git a/python/sglang/srt/managers/schedule_policy.py b/python/sglang/srt/m
              if self.is_hybrid_swa:
                  # alloc_extend needs extend_num_tokens + page_size per request,
                  # so reserve one page here to avoid OOM
-@@ -1122,6 +1153,15 @@ class PrefillAdder:
+@@ -1122,6 +1153,16 @@ class PrefillAdder:
  
                  self._add_dllm_req(req, prefix_len)
                  self._req_inc_lock_ref(req)
 +            elif (
-+                has_chunked_req
++                CHUNKED_PREFILL_ADMISSION_RESERVE > 0
++                and has_chunked_req
 +                and chunk_tokens_limit is not None
 +                and input_tokens > chunk_tokens_limit
 +            ):
