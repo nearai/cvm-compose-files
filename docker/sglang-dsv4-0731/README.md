@@ -1,7 +1,8 @@
 # DeepSeek-V4-Flash-0731 staged rollout image
 
 This directory reproduces the SGLang runtime qualified on GPU31 on
-2026-08-07 for a staged production rollout of
+2026-08-07 and its bounded admission-fairness update qualified on 2026-08-10
+for a staged production rollout of
 `deepseek-ai/DeepSeek-V4-Flash-0731`.
 
 It deliberately keeps the stable public model name
@@ -26,8 +27,14 @@ make the one-replica compose delta described below.
   `059269594c5f245f77dad711631843c299d7713f`
 - Combined patch SHA-256:
   `0666a644e0791a92606c73d91725b0b52908aa347880973ffa1d3e9dc47282f4`
-- Qualified local image ID:
+- Bounded chunked-prefill admission patch SHA-256:
+  `0eaa136bc44ff122bdd950285fc8e507a9be40f9293a5705f02a25a586e86d21`
+- Original qualified local image ID:
   `sha256:dac8a4f3f9906a3ef9ac3fdb4b9499492c85ed9d822e179728b0daa2ed1d8c54`
+- Fairness-qualified local image ID:
+  `sha256:f418325ee720598664e54dd454fe1c815a320678297563c1e329114f47109f52`
+- Reproduced Dockerfile image ID:
+  `sha256:dcd4196d9791c8f28816b4db26b84a6ef10c02f998b5dd475cd8662c0e15fa4d`
 - Model revision:
   `7872f01b1d1fe23eabc4c98b48bffcef5a386062`
 
@@ -60,7 +67,8 @@ Before a config PR:
 3. record the immutable `repository@sha256:...` reference;
 4. verify the published digest, patch label, and source labels;
 5. run semantic, tool-call, strict-SSE, official low/high/max, clean-overload,
-   and long-prefill gates against the published digest on one TP2 replica;
+   and long-prefill gates against the published digest on one TP2 replica,
+   including the 850k-prefill-plus-short-arrivals admission gate;
 6. complete the repository's required 30-minute staging soak with zero
    failures before adding the image to `prod/*.yaml`.
 
@@ -83,6 +91,17 @@ and add:
 --num-continuous-decode-steps 1
 --json-model-override-args '{"dsv4_reasoning_effort_profile":"official"}'
 ```
+
+Set the qualified bounded-fairness control in the engine environment:
+
+```text
+SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE=4096
+```
+
+The value is intentionally smaller than the 8192-token chunk. It leaves one
+aligned slice for complete queued requests only when the queue head fits; the
+active long prefill retains progress and immediately returns to full chunks
+after the short burst clears.
 
 Retain:
 
@@ -120,13 +139,36 @@ or allow a GPU co-tenant.
 The frozen 10-second c64 p99 gate missed by 0.765 seconds. This qualifies a
 guarded canary, not an immediate fleet cutover.
 
+The first production canary of the published but fairness-unpatched image
+(`docker.io/nearaidev/sglang@sha256:eac0a7c825c1c29588fef2f514b7328c1a41b7ac1ed222b3afecc52e32a18525`)
+was withdrawn on 2026-08-10. Five short streams admitted behind an already
+active 850k chunked prefill reached about 30 seconds TTFB. The backend was
+drained and restored to the original checkpoint with no OOM or hardware
+failure.
+
+The bounded-fairness validation then ran two reserve-0 controls and two
+reserve-4096 candidates simultaneously across both GPU31 NVLink islands:
+
+- both controls reproduced the failure at 113.345-114.173 seconds worst short
+  TTFT/event gap;
+- both candidates passed at 1.708-2.213 seconds;
+- 850k prefill elapsed time was 117.132-117.961 seconds for controls and
+  118.231-119.923 seconds for candidates;
+- a 6,017-token queue head correctly bypassed the 4,096-token reserve, with
+  candidate/control long-prefill ratios of 0.992 and 1.028;
+- quality passed 14/14 with zero OOM, restart, malformed stream, engine error,
+  XID, ECC growth or AER growth.
+
+Raw artifacts are on GPU31 under
+`/data/validation/ds4f-0731-admission-fairness-20260810/runs/v2-candidate-validation-v1`.
+
 ## Staged rollout
 
-The first config PR should override only
-`model-sg-dsv4-flash-fp4-tp2-r1` in
-`prod/qwen35-dsv4-flash.yaml`. Do not modify the shared DS4F anchor, replica 2,
-the proxies, the registrar, Qwen, or any other service. The colocated r2 stays
-on the original checkpoint and current image as the matched rollback control.
+The first deployment step must override only one DS4F replica with the newly
+published and requalified digest. The other four replicas stay on the original
+checkpoint and current image as rollback controls. Do not merge the fleet-wide
+compose expansion until that exact digest passes direct gates and a registered
+canary observation.
 
 One of five production replicas is nominally about 20% of backend capacity,
 not 10%. Prefix affinity and queue state can skew actual traffic, so validate
@@ -137,15 +179,17 @@ the measured per-backend request share rather than assuming equal routing.
    nine-decode-plus-850k-prefill cycle against the published digest.
 3. Register r1 and observe it for 30-60 minutes before changing another
    replica.
-4. Hold at one replica through a representative peak window. Require 24 clean
-   hours before the final replicas move.
+4. Hold at one replica through a representative window, then continue one
+   replica at a time. The complete guarded observation is capped at three
+   hours; there is no 24-hour soak requirement.
 5. Roll the remaining configs one replica at a time, always preserving an
    original-checkpoint control until the final step.
 
 Abort and drain the candidate on any OOM, worker restart, malformed or
-unterminated SSE, in-stream error, semantic/tool failure, active-stream gap
-above 10 seconds, XID, ECC or AER growth, or two consecutive five-minute
-windows above 12 seconds c64-like p99 TTFT or 15 seconds c128-like p99 TTFT.
+unterminated SSE, in-stream error, semantic/tool failure, active-stream or
+short-arrival admission gap above 10 seconds, XID, ECC or AER growth, or two
+consecutive five-minute windows above 12 seconds c64-like p99 TTFT or 15
+seconds c128-like p99 TTFT.
 
 ## Rollback
 

@@ -1,0 +1,91 @@
+diff --git a/python/sglang/srt/managers/schedule_policy.py b/python/sglang/srt/managers/schedule_policy.py
+--- a/python/sglang/srt/managers/schedule_policy.py
++++ b/python/sglang/srt/managers/schedule_policy.py
+@@ -88,6 +88,17 @@
+ 
+ IGNORE_EOS_RESERVE_TOKENS = 1
+ 
++# Downstream safety control for latency-sensitive mixed workloads.  The stock
++# scheduler always spends the entire chunk budget on an in-flight long prefill,
++# so requests that arrive after it cannot enter the same prefill batch.  Reserve
++# part of that budget for complete waiting requests.  Zero preserves upstream
++# behavior; production candidates must set and qualify an explicit value.
++CHUNKED_PREFILL_ADMISSION_RESERVE = int(
++    os.environ.get("SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE", "0")
++)
++if CHUNKED_PREFILL_ADMISSION_RESERVE < 0:
++    raise ValueError("SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE must be non-negative")
++
+ 
+ def match_prefix_for_req(
+     tree_cache: BasePrefixCache,
+@@ -456,6 +467,7 @@ class PrefillAdder:
+         prefill_delayer_single_pass: Optional[PrefillDelayerSinglePassExecutor] = None,
+         dllm_config: Optional[DllmConfig] = None,
+         waiting_queue_len: int = 0,
++        first_waiting_req_tokens: Optional[int] = None,
+     ):
+         self.page_size = page_size
+         self.tree_cache = tree_cache
+@@ -546,6 +558,11 @@ class PrefillAdder:
+         # Snapshot of scheduler waiting_queue length at the start of this
+         # prefill pass. Used by PrefillDelayer's queue-based trigger.
+         self.waiting_queue_len = waiting_queue_len
++        # Full prompt length of the first request after scheduling policy has
++        # ordered the queue.  It is a conservative pre-prefix-match estimate,
++        # used only to avoid reserving chunk capacity that no queued request can
++        # consume this pass.
++        self.first_waiting_req_tokens = first_waiting_req_tokens
+ 
+     def _init_dllm_meta(self, dllm_config: DllmConfig):
+         self.dllm_block_size = dllm_config.block_size
+@@ -832,6 +849,20 @@ class PrefillAdder:
+             _rem_tokens = self._get_dllm_remain_tokens()
+         else:
+             _rem_tokens = min(self.rem_chunk_tokens, int(self.rem_total_tokens))
++            if self.waiting_queue_len > 0 and CHUNKED_PREFILL_ADMISSION_RESERVE > 0:
++                # Leave an aligned slice of this iteration's chunk budget for
++                # waiting requests.  Keep at least one page for the in-flight
++                # request so it always makes progress under sustained arrivals.
++                reserve = min(
++                    CHUNKED_PREFILL_ADMISSION_RESERVE,
++                    max(self.rem_chunk_tokens - self.page_size, 0),
++                )
++                reserve = reserve // self.page_size * self.page_size
++                if (
++                    self.first_waiting_req_tokens is not None
++                    and self.first_waiting_req_tokens <= reserve
++                ):
++                    _rem_tokens = min(_rem_tokens, self.rem_chunk_tokens - reserve)
+             if self.is_hybrid_swa:
+                 # alloc_extend needs extend_num_tokens + page_size per request,
+                 # so reserve one page here to avoid OOM
+@@ -1122,6 +1153,15 @@ class PrefillAdder:
+ 
+                 self._add_dllm_req(req, prefix_len)
+                 self._req_inc_lock_ref(req)
++            elif (
++                has_chunked_req
++                and chunk_tokens_limit is not None
++                and input_tokens > chunk_tokens_limit
++            ):
++                # Only one chunked request may be in flight.  A waiting request
++                # may share the reserved budget only when its remaining prefill
++                # fits completely; otherwise leave it queued for a later pass.
++                return AddReqResult.OTHER
+             elif chunk_tokens_limit is None or input_tokens <= chunk_tokens_limit:
+                 # Non-chunked prefill — the whole sequence is committed this iter.
+                 req.set_extend_range(
+diff --git a/python/sglang/srt/managers/scheduler.py b/python/sglang/srt/managers/scheduler.py
+--- a/python/sglang/srt/managers/scheduler.py
++++ b/python/sglang/srt/managers/scheduler.py
+@@ -2929,6 +2929,9 @@ class Scheduler:
+             prefill_delayer_single_pass=prefill_delayer_single_pass,
+             dllm_config=self.dllm_config,
+             waiting_queue_len=len(self.waiting_queue),
++            first_waiting_req_tokens=(
++                self.waiting_queue[0].seqlen if self.waiting_queue else None
++            ),
+         )
+ 
+         if self.chunked_req is not None:
