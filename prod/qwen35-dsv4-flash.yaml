@@ -47,11 +47,14 @@ x-sg-qwen35-122b-common: &sg-qwen35-122b-common
   #   node throughput of 2xTP4 (~66k vs ~30k tok/s). Consider migrating the deployment to TP2 x4 for
   #   max throughput (balance each replica to ~c64; per-replica P99 TTFT collapses by c128 on 2 GPUs).
   #   fp8 KV cache (line below) verified NON-corrupting on H200 — sglang #19603 is Blackwell-specific.
-  #   NOTE: dev-box benchmarks ran on sglang :latest with EAGLE disabled, because the pinned v0.5.12-cu129
-  #   image SIGILLs at init on the dev CVM's CPU and :latest has an EAGLE draft-path bug for Qwen3.5
-  #   (eagle_worker_v2 cuda_graph_buffer shape mismatch). Validate the FP8 checkpoint on this exact
-  #   v0.5.12-cu129 image (which prod runs fine) in staging before promoting.
-  image: lmsysorg/sglang:v0.5.12-cu129@sha256:9e02c8e1fe2790a1c445bd5f6814305fe43639a4adb01c8ad1e8e21e750bf581
+  #   NOTE: the original dev-box benchmarks ran on sglang :latest with EAGLE disabled because
+  #   v0.5.12-cu129 SIGILLed on that CVM's CPU and :latest had an EAGLE draft-path bug for Qwen3.5
+  #   (eagle_worker_v2 cuda_graph_buffer shape mismatch). Keep the FP8/EAGLE image qualified on
+  #   H200 before promoting future runtime changes.
+  # v0.5.16 includes xgrammar 0.2.1, fixing the qwen3_coder forced-tool grammar
+  # regression reported in sgl-project/sglang#27336. Runtime defaults changed after v0.5.12,
+  # so the command below keeps the existing Mamba, prefill, and multimodal behavior explicit.
+  image: lmsysorg/sglang:v0.5.16-cu129@sha256:984699c298a95b73c469b2191403ddc85fd780506e13c39c4afff3845e27bc6c
   command: >
       sglang serve
       --model-path Qwen/Qwen3.5-122B-A10B-FP8
@@ -63,7 +66,9 @@ x-sg-qwen35-122b-common: &sg-qwen35-122b-common
       --speculative-num-steps 3
       --speculative-eagle-topk 1
       --speculative-num-draft-tokens 4
-      --mamba-scheduler-strategy extra_buffer
+      --mamba-radix-cache-strategy extra_buffer
+      --disable-prefill-cuda-graph
+      --mm-feature-transport cpu
       --kv-cache-dtype fp8_e4m3
       --mem-fraction-static 0.88
       --context-length 262144
@@ -87,7 +92,6 @@ x-sg-qwen35-122b-common: &sg-qwen35-122b-common
     - NVIDIA_DRIVER_CAPABILITIES=compute,utility
     - OPENBLAS_L2_SIZE=2097152
     - NCCL_DEBUG=WARN
-    - SGLANG_ENABLE_SPEC_V2=1
   restart: unless-stopped
   stop_grace_period: 5m
   logging: *logging-conf
