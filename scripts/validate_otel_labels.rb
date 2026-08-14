@@ -285,6 +285,29 @@ rescue StandardError => e
   add_error(errors, file, "configs.otelcol_app_config", "invalid collector config: #{e.message}")
 end
 
+def validate_gateway_queue_order(file, compose, errors)
+  config = compose.dig("configs", "otelcol_app_config", "content")
+  return unless config
+
+  collector_config = yaml_load(config)
+  consumers = collector_config.dig(
+    "exporters",
+    "otlphttp/gateway",
+    "sending_queue",
+    "num_consumers",
+  )
+  return if consumers == 1
+
+  add_error(
+    errors,
+    file,
+    "configs.otelcol_app_config.exporters.otlphttp/gateway.sending_queue.num_consumers",
+    "must be 1 to preserve cumulative metric request order",
+  )
+rescue StandardError => e
+  add_error(errors, file, "configs.otelcol_app_config", "invalid collector config: #{e.message}")
+end
+
 errors = []
 
 # Recursively find all compose files under prod/ and experiments/, plus any
@@ -317,6 +340,7 @@ compose_files.sort.each do |path|
   end
 
   validate_scrape_contract(file, compose, log_tags_by_service, errors)
+  validate_gateway_queue_order(file, compose, errors)
 end
 
 if errors.any?
