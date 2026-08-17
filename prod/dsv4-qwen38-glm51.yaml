@@ -1,15 +1,26 @@
-# GPU02 DeepSeek-V4-Flash + GLM-5.1 capacity pack.
+# GPU02 DeepSeek-V4-Flash + Qwen3.8-27B + GLM-5.1 capacity pack.
 #
 # Runtime topology:
 # - one TDX CVM launched with PPCIe and all eight H200 GPUs/NVSwitches attached;
-# - r1 uses guest GPUs 0-1 and r2 uses guest GPUs 2-3;
+# - the remaining DeepSeek-V4-Flash TP2 replica uses guest GPUs 0-1;
+# - two independent Qwen3.8-27B FP8 TP1 replicas use guest GPUs 2 and 3;
 # - one GLM-5.1 AWQ TP4 engine uses guest GPUs 4-7;
 # - all inference proxies collect NVIDIA attestation from the PPCIe-attached CVM.
 #
-# Both replicas use the qualified DeepSeek-V4-Flash-0731 target-only TP2
+# The DeepSeek replica uses the qualified DeepSeek-V4-Flash-0731 target-only TP2
 # configuration: SGLang 0.5.16, FP4 Marlin, FP8 KV, 8192-token mixed prefill,
 # 16384 max prefill tokens, one continuous decode step, graph max batch 64,
 # memory 0.83, running/queued 64/16, and scheduler conservativeness 1.3.
+# Its legacy -r1 service name is retained intentionally to avoid an unnecessary
+# engine recreation during rollout.
+#
+# The Qwen replicas use the gpu31-qualified H200 recipe: pinned FP8 checkpoint
+# and SGLang image, FlashInfer with FA3 multimodal attention, 8192-token mixed
+# prefill, Mamba cache 320, and running/queued limits of 64/128. Direct engine
+# qualification completed a 30-minute 9000/9000-request soak plus strict SSE,
+# tool-call, vision, and 250K-input checks. Full proxy/attestation canaries remain
+# a deployment-time gate. The Qwen proxy deliberately leaves stream-idle timeout
+# disabled so long-context prefills are not terminated before the first token.
 #
 # The GLM engine is the existing production QuantTrio/GLM-5.1-AWQ TP4 recipe
 # from prod/GLM-5.1-SGL-AWQ-TP4.yaml, including the pinned checkpoint, EAGLE
@@ -94,6 +105,49 @@ x-dsv4-flash-common: &dsv4-flash-common
     - SGLANG_DSV4_FP4_EXPERTS=1
     - SGLANG_ENABLE_UNIFIED_RADIX_TREE=1
     - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+  restart: unless-stopped
+  stop_grace_period: 5m
+  logging: *logging-conf
+
+x-qwen3-8-27b-common: &qwen3-8-27b-common
+  <<: *nvidia
+  init: true
+  cap_add:
+    - SYS_NICE
+  image: lmsysorg/sglang@sha256:febfb971c7352570fc445c466ebd6ffc9d896024958e544a60f2137fd85856b1
+  command: >
+      sglang serve
+      --trust-remote-code
+      --model-path Qwen/Qwen3.8-27B-FP8
+      --revision 017b9c7af6b5689d5dd426a76e0bc077eb5ca20a
+      --served-model-name Qwen/Qwen3.8-27B
+      --tp 1
+      --mem-fraction-static 0.85
+      --attention-backend flashinfer
+      --mm-attention-backend fa3
+      --chunked-prefill-size 8192
+      --max-prefill-tokens 8192
+      --enable-mixed-chunk
+      --max-mamba-cache-size 320
+      --max-running-requests 64
+      --max-queued-requests 128
+      --reasoning-parser qwen3
+      --tool-call-parser qwen3_coder
+      --port 8000
+      --host 0.0.0.0
+      --enable-cache-report
+      --enable-metrics
+      --log-requests-level 0
+  volumes:
+    - huggingface_cache:/root/.cache/huggingface
+    - qwen38_kernel_cache:/root/.cache/sglang
+  environment:
+    - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+    - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0}
+    - VLLM_LOGGING_LEVEL=INFO
+    - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    - OPENBLAS_L2_SIZE=2097152
+    - NCCL_DEBUG=WARN
   restart: unless-stopped
   stop_grace_period: 5m
   logging: *logging-conf
@@ -188,6 +242,8 @@ services:
         uvx --from 'huggingface_hub[hf_xet]' hf download deepseek-ai/DeepSeek-V4-Flash --revision 553034d7dd9e06c2eeaee68cf85a17d6d4754cf0
         echo "Downloading deepseek-ai/DeepSeek-V4-Flash-0731..."
         uvx --from 'huggingface_hub[hf_xet]' hf download deepseek-ai/DeepSeek-V4-Flash-0731 --revision 7872f01b1d1fe23eabc4c98b48bffcef5a386062
+        echo "Downloading Qwen/Qwen3.8-27B-FP8..."
+        uvx --from 'huggingface_hub[hf_xet]' hf download Qwen/Qwen3.8-27B-FP8 --revision 017b9c7af6b5689d5dd426a76e0bc077eb5ca20a
         echo "Downloading QuantTrio/GLM-5.1-AWQ..."
         uvx --from 'huggingface_hub[hf_xet]' hf download QuantTrio/GLM-5.1-AWQ --revision 8f60817aa28023f2607850d1a1e51d21aa34817a
         echo "Downloads complete."
@@ -196,14 +252,14 @@ services:
     environment:
       - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
     labels:
-      com.datadoghq.ad.logs: '[{"source":"model-downloader","service":"model-downloader","tags":["model:multi","deployment:dsv4-flash-glm51-gpu02","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:gpu02-capacity-v2"]}]'
+      com.datadoghq.ad.logs: '[{"source":"model-downloader","service":"model-downloader","tags":["model:multi","deployment:dsv4-qwen38-glm51-gpu02","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:gpu02-capacity-v3"]}]'
 
   nginx:
     image: nginx@sha256:1d13701a5f9f3fb01aaa88cef2344d65b6b5bf6b7d9fa4cf0dca557a8d7702ba
     container_name: nginx
     depends_on:
       - proxy-dsv4-flash
-      - proxy-dsv4-flash-2
+      - proxy-qwen38-27b
       - proxy-glm51
     command: /bin/sh -c 'while :; do sleep 6h; nginx -s reload; done & nginx -g "daemon off;"'
     ports:
@@ -222,7 +278,7 @@ services:
     restart: unless-stopped
     logging: *logging-conf
     labels:
-      com.datadoghq.ad.logs: '[{"source":"nginx","service":"nginx","tags":["model:deepseek-ai/DeepSeek-V4-Flash","deployment:dsv4-flash-gpu02","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8001","ppcie:true","config_variant:gpu02-capacity-v1"]}]'
+      com.datadoghq.ad.logs: '[{"source":"nginx","service":"nginx","tags":["model:multi","deployment:dsv4-qwen38-glm51-gpu02","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:gpu02-capacity-v3"]}]'
 
   model-proxy-registrar:
     image: curlimages/curl@sha256:d94d07ba9e7d6de898b6d96c1a072f6f8266c687af78a74f380087a0addf5d17
@@ -248,7 +304,7 @@ services:
         mode: 0755
     logging: *logging-conf
     labels:
-      com.datadoghq.ad.logs: '[{"source":"model-proxy-registrar","service":"model-proxy-registrar","tags":["model:deepseek-ai/DeepSeek-V4-Flash","deployment:dsv4-flash-gpu02","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:gpu02-capacity-v1"]}]'
+      com.datadoghq.ad.logs: '[{"source":"model-proxy-registrar","service":"model-proxy-registrar","tags":["model:multi","deployment:dsv4-qwen38-glm51-gpu02","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:gpu02-capacity-v3"]}]'
 
   proxy-dsv4-flash:
     <<: *vllm-proxy-common
@@ -293,54 +349,51 @@ services:
       nearai.otel.config_variant: "gpu02-capacity-v1"
       nearai.otel.stream_idle_timeout: "20"
 
-  proxy-dsv4-flash-2:
+  proxy-qwen38-27b:
     <<: *vllm-proxy-common
-    container_name: proxy-dsv4-flash-2
+    image: nearaidev/vllm-proxy-rs@sha256:b183677a5d32267539b9b21ec45327a4f3be0a013afeb608c68c4d76e9472e36
+    container_name: proxy-qwen38-27b
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
-      - VLLM_PROXY_STREAM_IDLE_TIMEOUT_SECS=20
       - CLOUD_API_URL=https://cloud-api.near.ai
       - CLOUD_API_USAGE_TOKEN=${CLOUD_API_USAGE_TOKEN}
       - COMPOSE_MANAGER_URL=http://compose-manager:8080
       - LOG_FORMAT=json
-      - MODEL_NAME=deepseek-ai/DeepSeek-V4-Flash
+      - MODEL_NAME=Qwen/Qwen3.8-27B
       - OHTTP_ENABLED=true
       - TOKEN=${PROXY_TOKEN}
       - FUSION_ENABLED=${FUSION_ENABLED}
       - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
-      - VLLM_BASE_URL=http://model-sg-dsv4-flash-fp4-tp2-r2:8000
+      - VLLM_BACKEND_URLS=http://model-sg-qwen38-27b-fp8-tp1-r1:8000,http://model-sg-qwen38-27b-fp8-tp1-r2:8000
       - VLLM_PROXY_MAX_REQUEST_SIZE=104857600
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
       - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
       - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:deepseek-ai/DeepSeek-V4-Flash","deployment:dsv4-flash-gpu02","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8002","instance:2","gpu_pair:2-3","ppcie:true","config_variant:gpu02-capacity-v1","stream_idle_timeout:20"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:Qwen/Qwen3.8-27B","deployment:qwen38-gpu02","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8002","gpu_pair:2-3","ppcie:true","config_variant:qwen38-h200-tp1-nonspec"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "inference-proxy"
       nearai.otel.service: "vllm-proxy"
       nearai.otel.source: "vllm-proxy"
-      nearai.otel.container_name: "proxy-dsv4-flash-2"
+      nearai.otel.container_name: "proxy-qwen38-27b"
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
-      nearai.otel.model: "deepseek-ai/DeepSeek-V4-Flash"
-      nearai.otel.deployment: "dsv4-flash-gpu02"
+      nearai.otel.model: "Qwen/Qwen3.8-27B"
+      nearai.otel.deployment: "qwen38-gpu02"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
       nearai.otel.host_machine: "${CVM_HOST}"
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
-      nearai.otel.instance: "2"
       nearai.otel.gpu_pair: "2-3"
       nearai.otel.ppcie: "true"
-      nearai.otel.config_variant: "gpu02-capacity-v1"
-      nearai.otel.stream_idle_timeout: "20"
+      nearai.otel.config_variant: "qwen38-h200-tp1-nonspec"
 
   proxy-glm51:
     <<: *vllm-proxy-common
     # Preserve the exact proxy digest used by the current GLM-5.1 production
-    # config; do not change the two DeepSeek proxy images during this add-only
-    # capacity rollout.
+    # config; keep the GLM proxy unchanged during this capacity swap.
     image: nearaidev/vllm-proxy-rs@sha256:b183677a5d32267539b9b21ec45327a4f3be0a013afeb608c68c4d76e9472e36
     container_name: proxy-glm51
     environment:
@@ -431,9 +484,9 @@ services:
       nearai.otel.sglang_revision: "0.5.16-near-dsv4-0731"
       nearai.otel.engine_image: "ec518148762e"
 
-  model-sg-dsv4-flash-fp4-tp2-r2:
-    <<: *dsv4-flash-common
-    container_name: model-sg-dsv4-flash-fp4-tp2-r2
+  model-sg-qwen38-27b-fp8-tp1-r1:
+    <<: *qwen3-8-27b-common
+    container_name: model-sg-qwen38-27b-fp8-tp1-r1
     depends_on:
       model-downloader:
         condition: service_completed_successfully
@@ -442,45 +495,90 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["2","3"]
+              device_ids: ["2"]
               capabilities: [gpu]
     labels:
       com.datadoghq.ad.check_names: '["openmetrics"]'
       com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:deepseek-ai/DeepSeek-V4-Flash-0731","model_path:deepseek-ai/DeepSeek-V4-Flash-0731","model_revision:7872f01b1d1fe23eabc4c98b48bffcef5a386062","deployment:dsv4-flash-gpu02","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8002","instance:2","gpu_pair:2-3","ppcie:true","config_variant:dsv4-0731-prod-target-only","decode_mode:target_only","chunk_size:8192","max_prefill_tokens:16384","continuous_decode_steps:1","chunked_prefill_admission_reserve:4096","watchdog_timeout:1800","cuda_graph:1","max_running_requests:64","max_queued_requests:16","schedule_conservativeness:1.3","sglang_revision:0.5.16-near-dsv4-0731","engine_image:ec518148762e"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-sg-dsv4-flash-fp4-tp2-r2:8000/metrics","metrics":["sglang:*"],"histogram_buckets_as_distributions":true,"service":"sglang","tags":["model:deepseek-ai/DeepSeek-V4-Flash-0731","model_path:deepseek-ai/DeepSeek-V4-Flash-0731","model_revision:7872f01b1d1fe23eabc4c98b48bffcef5a386062","deployment:dsv4-flash-gpu02","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8002","instance:2","gpu_pair:2-3","ppcie:true","config_variant:dsv4-0731-prod-target-only","decode_mode:target_only","chunk_size:8192","max_prefill_tokens:16384","continuous_decode_steps:1","chunked_prefill_admission_reserve:4096","watchdog_timeout:1800","cuda_graph:1","max_running_requests:64","max_queued_requests:16","schedule_conservativeness:1.3","sglang_revision:0.5.16-near-dsv4-0731","engine_image:ec518148762e"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:Qwen/Qwen3.8-27B-FP8","served_model:Qwen/Qwen3.8-27B","model_revision:017b9c7af6b5689d5dd426a76e0bc077eb5ca20a","deployment:qwen38-gpu02","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8002","instance:1","gpu_pair:2","ppcie:true","config_variant:qwen38-h200-tp1-nonspec","quantization:fp8","sglang_revision:qwen38.27b.g561c8f3","engine_image:febfb971c735"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-sg-qwen38-27b-fp8-tp1-r1:8000/metrics","metrics":["sglang:*"],"histogram_buckets_as_distributions":true,"service":"sglang","tags":["model:Qwen/Qwen3.8-27B-FP8","served_model:Qwen/Qwen3.8-27B","model_revision:017b9c7af6b5689d5dd426a76e0bc077eb5ca20a","deployment:qwen38-gpu02","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8002","instance:1","gpu_pair:2","ppcie:true","config_variant:qwen38-h200-tp1-nonspec","quantization:fp8","sglang_revision:qwen38.27b.g561c8f3","engine_image:febfb971c735"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
       nearai.otel.source: "sglang"
-      nearai.otel.container_name: "model-sg-dsv4-flash-fp4-tp2-r2"
+      nearai.otel.container_name: "model-sg-qwen38-27b-fp8-tp1-r1"
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
-      nearai.otel.model: "deepseek-ai/DeepSeek-V4-Flash-0731"
-      nearai.otel.model_path: "deepseek-ai/DeepSeek-V4-Flash-0731"
-      nearai.otel.model_revision: "7872f01b1d1fe23eabc4c98b48bffcef5a386062"
-      nearai.otel.deployment: "dsv4-flash-gpu02"
+      nearai.otel.model: "Qwen/Qwen3.8-27B-FP8"
+      nearai.otel.served_model: "Qwen/Qwen3.8-27B"
+      nearai.otel.model_revision: "017b9c7af6b5689d5dd426a76e0bc077eb5ca20a"
+      nearai.otel.deployment: "qwen38-gpu02"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
+      nearai.otel.instance: "1"
+      nearai.otel.gpu_pair: "2"
+      nearai.otel.ppcie: "true"
+      nearai.otel.config_variant: "qwen38-h200-tp1-nonspec"
+      nearai.otel.quantization: "fp8"
+      nearai.otel.chunk_size: "8192"
+      nearai.otel.max_prefill_tokens: "8192"
+      nearai.otel.mixed_chunk: "1"
+      nearai.otel.max_mamba_cache_size: "320"
+      nearai.otel.max_running_requests: "64"
+      nearai.otel.max_queued_requests: "128"
+      nearai.otel.sglang_revision: "qwen38.27b.g561c8f3"
+      nearai.otel.engine_image: "febfb971c735"
+
+  model-sg-qwen38-27b-fp8-tp1-r2:
+    <<: *qwen3-8-27b-common
+    container_name: model-sg-qwen38-27b-fp8-tp1-r2
+    depends_on:
+      model-downloader:
+        condition: service_completed_successfully
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["3"]
+              capabilities: [gpu]
+    labels:
+      com.datadoghq.ad.check_names: '["openmetrics"]'
+      com.datadoghq.ad.init_configs: "[{}]"
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:Qwen/Qwen3.8-27B-FP8","served_model:Qwen/Qwen3.8-27B","model_revision:017b9c7af6b5689d5dd426a76e0bc077eb5ca20a","deployment:qwen38-gpu02","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8002","instance:2","gpu_pair:3","ppcie:true","config_variant:qwen38-h200-tp1-nonspec","quantization:fp8","sglang_revision:qwen38.27b.g561c8f3","engine_image:febfb971c735"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-sg-qwen38-27b-fp8-tp1-r2:8000/metrics","metrics":["sglang:*"],"histogram_buckets_as_distributions":true,"service":"sglang","tags":["model:Qwen/Qwen3.8-27B-FP8","served_model:Qwen/Qwen3.8-27B","model_revision:017b9c7af6b5689d5dd426a76e0bc077eb5ca20a","deployment:qwen38-gpu02","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8002","instance:2","gpu_pair:3","ppcie:true","config_variant:qwen38-h200-tp1-nonspec","quantization:fp8","sglang_revision:qwen38.27b.g561c8f3","engine_image:febfb971c735"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "sglang"
+      nearai.otel.service: "sglang"
+      nearai.otel.source: "sglang"
+      nearai.otel.container_name: "model-sg-qwen38-27b-fp8-tp1-r2"
+      nearai.otel.port: "8000"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "Qwen/Qwen3.8-27B-FP8"
+      nearai.otel.served_model: "Qwen/Qwen3.8-27B"
+      nearai.otel.model_revision: "017b9c7af6b5689d5dd426a76e0bc077eb5ca20a"
+      nearai.otel.deployment: "qwen38-gpu02"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
       nearai.otel.host_machine: "${CVM_HOST}"
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.instance: "2"
-      nearai.otel.gpu_pair: "2-3"
+      nearai.otel.gpu_pair: "3"
       nearai.otel.ppcie: "true"
-      nearai.otel.config_variant: "dsv4-0731-prod-target-only"
-      nearai.otel.decode_mode: "target_only"
+      nearai.otel.config_variant: "qwen38-h200-tp1-nonspec"
+      nearai.otel.quantization: "fp8"
       nearai.otel.chunk_size: "8192"
-      nearai.otel.max_prefill_tokens: "16384"
-      nearai.otel.continuous_decode_steps: "1"
-      nearai.otel.chunked_prefill_admission_reserve: "4096"
-      nearai.otel.watchdog_timeout: "1800"
-      nearai.otel.cuda_graph: "1"
+      nearai.otel.max_prefill_tokens: "8192"
+      nearai.otel.mixed_chunk: "1"
+      nearai.otel.max_mamba_cache_size: "320"
       nearai.otel.max_running_requests: "64"
-      nearai.otel.max_queued_requests: "16"
-      nearai.otel.schedule_conservativeness: "1.3"
-      nearai.otel.sglang_revision: "0.5.16-near-dsv4-0731"
-      nearai.otel.engine_image: "ec518148762e"
+      nearai.otel.max_queued_requests: "128"
+      nearai.otel.sglang_revision: "qwen38.27b.g561c8f3"
+      nearai.otel.engine_image: "febfb971c735"
 
   model-sg-glm51-awq-tp4:
     <<: *nvidia
@@ -546,13 +644,13 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["0","1","2","3"]
+              device_ids: ["0","1"]
               capabilities: [gpu]
     labels:
       com.datadoghq.ad.check_names: '["dcgm"]'
       com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://%%host%%:9400/metrics","tags":["model:deepseek-ai/DeepSeek-V4-Flash","deployment:dsv4-flash-gpu02","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","gpu_pair:0-3","ppcie:true","config_variant:gpu02-capacity-v1"]}]'
-      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:deepseek-ai/DeepSeek-V4-Flash","deployment:dsv4-flash-gpu02","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","gpu_pair:0-3","ppcie:true","config_variant:gpu02-capacity-v1"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://%%host%%:9400/metrics","tags":["model:deepseek-ai/DeepSeek-V4-Flash","deployment:dsv4-flash-gpu02","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","gpu_pair:0-1","ppcie:true","config_variant:gpu02-capacity-v1"]}]'
+      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:deepseek-ai/DeepSeek-V4-Flash","deployment:dsv4-flash-gpu02","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","gpu_pair:0-1","ppcie:true","config_variant:gpu02-capacity-v1"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "dcgm"
       nearai.otel.service: "dcgm-exporter"
@@ -567,9 +665,43 @@ services:
       nearai.otel.host_machine: "${CVM_HOST}"
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
-      nearai.otel.gpu_pair: "0-3"
+      nearai.otel.gpu_pair: "0-1"
       nearai.otel.ppcie: "true"
       nearai.otel.config_variant: "gpu02-capacity-v1"
+
+  dcgm-qwen38-27b:
+    <<: *dcgm-common
+    container_name: dcgm-qwen38-27b
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["2","3"]
+              capabilities: [gpu]
+    labels:
+      com.datadoghq.ad.check_names: '["dcgm"]'
+      com.datadoghq.ad.init_configs: "[{}]"
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://%%host%%:9400/metrics","tags":["model:Qwen/Qwen3.8-27B-FP8","served_model:Qwen/Qwen3.8-27B","deployment:qwen38-gpu02","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","gpu_pair:2-3","ppcie:true","config_variant:qwen38-h200-tp1-nonspec"]}]'
+      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:Qwen/Qwen3.8-27B-FP8","served_model:Qwen/Qwen3.8-27B","deployment:qwen38-gpu02","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","gpu_pair:2-3","ppcie:true","config_variant:qwen38-h200-tp1-nonspec"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "dcgm"
+      nearai.otel.service: "dcgm-exporter"
+      nearai.otel.source: "dcgm-exporter"
+      nearai.otel.container_name: "dcgm-qwen38-27b"
+      nearai.otel.port: "9400"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "Qwen/Qwen3.8-27B-FP8"
+      nearai.otel.served_model: "Qwen/Qwen3.8-27B"
+      nearai.otel.deployment: "qwen38-gpu02"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
+      nearai.otel.gpu_pair: "2-3"
+      nearai.otel.ppcie: "true"
+      nearai.otel.config_variant: "qwen38-h200-tp1-nonspec"
 
   dcgm-glm51:
     <<: *dcgm-common
@@ -635,7 +767,7 @@ services:
         max-size: "20m"
         max-file: "3"
     labels:
-      com.datadoghq.ad.logs: '[{"source":"otelcol-contrib","service":"otelcol-contrib","tags":["deployment:dsv4-flash-gpu02","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:gpu02-capacity-v1"]}]'
+      com.datadoghq.ad.logs: '[{"source":"otelcol-contrib","service":"otelcol-contrib","tags":["model:multi","deployment:dsv4-qwen38-glm51-gpu02","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:gpu02-capacity-v3"]}]'
 
 networks:
   default:
@@ -646,6 +778,7 @@ volumes:
   otelcol_app_storage:
   huggingface_cache:
   kernel_cache:
+  qwen38_kernel_cache:
   compile_cache_glm51:
   certs:
     external: true
@@ -797,18 +930,50 @@ configs:
                       schedule_conservativeness: "1.3"
                       sglang_revision: "0.5.16-near-dsv4-0731"
                       engine_image: "ec518148762e"
-              - job_name: sglang-model-sg-dsv4-flash-fp4-tp2-r2
+              - job_name: sglang-model-sg-qwen38-27b-fp8-tp1-r1
                 scrape_interval: 15s
                 metrics_path: /metrics
                 static_configs:
-                  - targets: ['model-sg-dsv4-flash-fp4-tp2-r2:8000']
+                  - targets: ['model-sg-qwen38-27b-fp8-tp1-r1:8000']
                     labels:
                       service: "sglang"
                       source: "sglang"
-                      container_name: "model-sg-dsv4-flash-fp4-tp2-r2"
-                      model: "deepseek-ai/DeepSeek-V4-Flash-0731"
-                      model_path: "deepseek-ai/DeepSeek-V4-Flash-0731"
-                      deployment: "dsv4-flash-gpu02"
+                      container_name: "model-sg-qwen38-27b-fp8-tp1-r1"
+                      model: "Qwen/Qwen3.8-27B-FP8"
+                      served_model: "Qwen/Qwen3.8-27B"
+                      deployment: "qwen38-gpu02"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      port: "8002"
+                      instance: "1"
+                      gpu_pair: "2"
+                      ppcie: "true"
+                      model_revision: "017b9c7af6b5689d5dd426a76e0bc077eb5ca20a"
+                      config_variant: "qwen38-h200-tp1-nonspec"
+                      quantization: "fp8"
+                      chunk_size: "8192"
+                      max_prefill_tokens: "8192"
+                      mixed_chunk: "1"
+                      max_mamba_cache_size: "320"
+                      max_running_requests: "64"
+                      max_queued_requests: "128"
+                      sglang_revision: "qwen38.27b.g561c8f3"
+                      engine_image: "febfb971c735"
+              - job_name: sglang-model-sg-qwen38-27b-fp8-tp1-r2
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['model-sg-qwen38-27b-fp8-tp1-r2:8000']
+                    labels:
+                      service: "sglang"
+                      source: "sglang"
+                      container_name: "model-sg-qwen38-27b-fp8-tp1-r2"
+                      model: "Qwen/Qwen3.8-27B-FP8"
+                      served_model: "Qwen/Qwen3.8-27B"
+                      deployment: "qwen38-gpu02"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
                       host_machine: "${CVM_HOST}"
@@ -816,22 +981,19 @@ configs:
                       ip: "${HOST_IP}"
                       port: "8002"
                       instance: "2"
-                      gpu_pair: "2-3"
+                      gpu_pair: "3"
                       ppcie: "true"
-                      model_revision: "7872f01b1d1fe23eabc4c98b48bffcef5a386062"
-                      config_variant: "dsv4-0731-prod-target-only"
-                      decode_mode: "target_only"
+                      model_revision: "017b9c7af6b5689d5dd426a76e0bc077eb5ca20a"
+                      config_variant: "qwen38-h200-tp1-nonspec"
+                      quantization: "fp8"
                       chunk_size: "8192"
-                      max_prefill_tokens: "16384"
-                      continuous_decode_steps: "1"
-                      chunked_prefill_admission_reserve: "4096"
-                      watchdog_timeout: "1800"
-                      cuda_graph: "1"
+                      max_prefill_tokens: "8192"
+                      mixed_chunk: "1"
+                      max_mamba_cache_size: "320"
                       max_running_requests: "64"
-                      max_queued_requests: "16"
-                      schedule_conservativeness: "1.3"
-                      sglang_revision: "0.5.16-near-dsv4-0731"
-                      engine_image: "ec518148762e"
+                      max_queued_requests: "128"
+                      sglang_revision: "qwen38.27b.g561c8f3"
+                      engine_image: "febfb971c735"
               - job_name: sglang-model-sg-glm51-awq-tp4
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -878,9 +1040,30 @@ configs:
                       cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "9400"
-                      gpu_pair: "0-3"
+                      gpu_pair: "0-1"
                       ppcie: "true"
                       config_variant: "gpu02-capacity-v1"
+              - job_name: dcgm-dcgm-qwen38-27b
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['dcgm-qwen38-27b:9400']
+                    labels:
+                      service: "dcgm-exporter"
+                      source: "dcgm-exporter"
+                      container_name: "dcgm-qwen38-27b"
+                      model: "Qwen/Qwen3.8-27B-FP8"
+                      served_model: "Qwen/Qwen3.8-27B"
+                      deployment: "qwen38-gpu02"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      port: "9400"
+                      gpu_pair: "2-3"
+                      ppcie: "true"
+                      config_variant: "qwen38-h200-tp1-nonspec"
               - job_name: dcgm-dcgm-glm51
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -924,28 +1107,26 @@ configs:
                       ppcie: "true"
                       config_variant: "gpu02-capacity-v1"
                       stream_idle_timeout: "20"
-              - job_name: inference-proxy-proxy-dsv4-flash-2
+              - job_name: inference-proxy-proxy-qwen38-27b
                 scrape_interval: 15s
                 metrics_path: /metrics
                 static_configs:
-                  - targets: ['proxy-dsv4-flash-2:8000']
+                  - targets: ['proxy-qwen38-27b:8000']
                     labels:
                       service: "vllm-proxy"
                       source: "vllm-proxy"
-                      container_name: "proxy-dsv4-flash-2"
-                      model: "deepseek-ai/DeepSeek-V4-Flash"
-                      deployment: "dsv4-flash-gpu02"
+                      container_name: "proxy-qwen38-27b"
+                      model: "Qwen/Qwen3.8-27B"
+                      deployment: "qwen38-gpu02"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
                       host_machine: "${CVM_HOST}"
                       cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "8002"
-                      instance: "2"
                       gpu_pair: "2-3"
                       ppcie: "true"
-                      config_variant: "gpu02-capacity-v1"
-                      stream_idle_timeout: "20"
+                      config_variant: "qwen38-h200-tp1-nonspec"
               - job_name: inference-proxy-proxy-glm51
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -1125,6 +1306,7 @@ configs:
 
       model_for() {
         case $$1 in
+          8002) echo "Qwen/Qwen3.8-27B" ;;
           8004) echo "zai-org/GLM-5.1-FP8" ;;
           *) echo "deepseek-ai/DeepSeek-V4-Flash" ;;
         esac
@@ -1132,6 +1314,7 @@ configs:
 
       domain_for() {
         case $$1 in
+          8002) echo "qwen3-8-27b.completions.near.ai" ;;
           8004) echo "glm-5-1.completions.near.ai" ;;
           *) echo "dsv4-flash.completions.near.ai" ;;
         esac
@@ -1262,6 +1445,7 @@ configs:
         done
 
         register_model "deepseek-ai/DeepSeek-V4-Flash" "dsv4-flash.completions.near.ai"
+        register_model "Qwen/Qwen3.8-27B" "qwen3-8-27b.completions.near.ai"
         register_model "zai-org/GLM-5.1-FP8" "glm-5-1.completions.near.ai"
         date +%s > /tmp/registrar_alive
         sleep 60
@@ -1305,7 +1489,7 @@ configs:
 
       server {
         listen 8002;
-        location / { proxy_pass http://proxy-dsv4-flash-2:8000; }
+        location / { proxy_pass http://proxy-qwen38-27b:8000; }
       }
 
       server {
@@ -1328,11 +1512,11 @@ configs:
 
       server {
         listen 8003 ssl http2;
-        server_name dsv4-flash.completions.near.ai
-                    ~^dsv4-flash-i\d+\.completions\.near\.ai$$;
+        server_name qwen3-8-27b.completions.near.ai
+                    ~^qwen3-8-27b-i\d+\.completions\.near\.ai$$;
         keepalive_timeout 1h;
         keepalive_requests 1000000;
-        location / { proxy_pass http://proxy-dsv4-flash-2:8000; }
+        location / { proxy_pass http://proxy-qwen38-27b:8000; }
       }
 
       server {
