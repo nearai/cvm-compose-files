@@ -290,13 +290,31 @@ def validate_gateway_queue_order(file, compose, errors)
   return unless config
 
   collector_config = yaml_load(config)
-  consumers = collector_config.dig(
-    "exporters",
-    "otlphttp/gateway",
-    "sending_queue",
-    "num_consumers",
-  )
-  return if consumers == 1
+  gateway_exporter = collector_config.dig("exporters", "otlphttp/gateway")
+  unless gateway_exporter
+    add_error(
+      errors,
+      file,
+      "configs.otelcol_app_config.exporters.otlphttp/gateway",
+      "missing otlphttp/gateway exporter",
+    )
+    return
+  end
+
+  sending_queue = gateway_exporter["sending_queue"]
+  unless sending_queue
+    add_error(
+      errors,
+      file,
+      "configs.otelcol_app_config.exporters.otlphttp/gateway.sending_queue",
+      "missing sending_queue configuration",
+    )
+    return
+  end
+
+  consumers = sending_queue["num_consumers"]
+  return if consumers.is_a?(Integer) && consumers == 1
+  return if consumers.is_a?(String) && consumers.strip == "1"
 
   add_error(
     errors,
