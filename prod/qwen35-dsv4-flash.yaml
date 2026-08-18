@@ -107,10 +107,12 @@ x-dcgm-common: &dcgm-common
 x-dsv4-flash-common: &dsv4-flash-common
   <<: *nvidia
   init: true
-  # Qualified DeepSeek-V4-Flash-0731 target-only TP4 production configuration.
-  # The single replica consumes four H200 GPUs; mixed 4096-token prefill, one
-  # continuous decode step, and a 4096-token admission reserve bound
-  # long-prefill interference without EAGLE.
+  # DeepSeek-V4-Flash-0731 TP4 replica on four H200s, using the SGLang-verified
+  # H200 FP4 low-latency recipe with DSPARK speculative decoding.
+  # Mixed chunked prefill is necessarily disabled because SGLang forbids it
+  # alongside speculative decoding. This is the known trade-off documented by
+  # commit 8287cb8, which removed EAGLE to restore mixed chunked prefill after
+  # long prompt bursts starved decode.
   image: docker.io/nearaidev/sglang@sha256:ec518148762ea02c23aa8615f69ca79b0c18bcd59b3c21c10229db3df323c615
   command: >
       sglang serve
@@ -120,13 +122,13 @@ x-dsv4-flash-common: &dsv4-flash-common
       --tp-size 4
       --kv-cache-dtype fp8_e4m3
       --moe-runner-backend marlin
+      --speculative-algorithm DSPARK
       --cuda-graph-max-bs 64
       --mem-fraction-static 0.83
       --max-running-requests 64
       --max-queued-requests 16
       --schedule-conservativeness 1.3
       --num-continuous-decode-steps 1
-      --enable-mixed-chunk
       --chunked-prefill-size 4096
       --max-prefill-tokens 16384
       --swa-full-tokens-ratio 0.1
@@ -366,8 +368,8 @@ services:
     labels:
       com.datadoghq.ad.check_names: '["openmetrics"]'
       com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:deepseek-ai/DeepSeek-V4-Flash-0731","model_path:deepseek-ai/DeepSeek-V4-Flash-0731","model_revision:7872f01b1d1fe23eabc4c98b48bffcef5a386062","deployment:qwen35-dsv4-flash","config_variant:dsv4-0731-prod-target-only-tp4","decode_mode:target_only","chunk_size:4096","max_prefill_tokens:16384","continuous_decode_steps:1","chunked_prefill_admission_reserve:4096","watchdog_timeout:1800","cuda_graph:1","max_running_requests:64","max_queued_requests:16","schedule_conservativeness:1.3","sglang_revision:0.5.16-near-dsv4-0731","engine_image:ec518148762e","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8001","instance:1"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-sg-dsv4-flash-fp4-tp4:8000/metrics", "metrics":["sglang:*"], "histogram_buckets_as_distributions": true, "service": "sglang", "tags":["model:deepseek-ai/DeepSeek-V4-Flash-0731","model_path:deepseek-ai/DeepSeek-V4-Flash-0731","model_revision:7872f01b1d1fe23eabc4c98b48bffcef5a386062","deployment:qwen35-dsv4-flash","config_variant:dsv4-0731-prod-target-only-tp4","decode_mode:target_only","chunk_size:4096","max_prefill_tokens:16384","continuous_decode_steps:1","chunked_prefill_admission_reserve:4096","watchdog_timeout:1800","cuda_graph:1","max_running_requests:64","max_queued_requests:16","schedule_conservativeness:1.3","sglang_revision:0.5.16-near-dsv4-0731","engine_image:ec518148762e","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8001","instance:1"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:deepseek-ai/DeepSeek-V4-Flash-0731","model_path:deepseek-ai/DeepSeek-V4-Flash-0731","model_revision:7872f01b1d1fe23eabc4c98b48bffcef5a386062","deployment:qwen35-dsv4-flash","config_variant:dsv4-0731-tp4-dspark","decode_mode:dspark","chunk_size:4096","max_prefill_tokens:16384","continuous_decode_steps:1","chunked_prefill_admission_reserve:4096","watchdog_timeout:1800","cuda_graph:1","max_running_requests:64","max_queued_requests:16","schedule_conservativeness:1.3","sglang_revision:0.5.16-near-dsv4-0731","engine_image:ec518148762e","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8001","instance:1"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-sg-dsv4-flash-fp4-tp4:8000/metrics", "metrics":["sglang:*"], "histogram_buckets_as_distributions": true, "service": "sglang", "tags":["model:deepseek-ai/DeepSeek-V4-Flash-0731","model_path:deepseek-ai/DeepSeek-V4-Flash-0731","model_revision:7872f01b1d1fe23eabc4c98b48bffcef5a386062","deployment:qwen35-dsv4-flash","config_variant:dsv4-0731-tp4-dspark","decode_mode:dspark","chunk_size:4096","max_prefill_tokens:16384","continuous_decode_steps:1","chunked_prefill_admission_reserve:4096","watchdog_timeout:1800","cuda_graph:1","max_running_requests:64","max_queued_requests:16","schedule_conservativeness:1.3","sglang_revision:0.5.16-near-dsv4-0731","engine_image:ec518148762e","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8001","instance:1"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -384,8 +386,8 @@ services:
       nearai.otel.host_machine: "${CVM_HOST}"
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
-      nearai.otel.config_variant: "dsv4-0731-prod-target-only-tp4"
-      nearai.otel.decode_mode: "target_only"
+      nearai.otel.config_variant: "dsv4-0731-tp4-dspark"
+      nearai.otel.decode_mode: "dspark"
       nearai.otel.chunk_size: "4096"
       nearai.otel.max_prefill_tokens: "16384"
       nearai.otel.continuous_decode_steps: "1"
@@ -630,8 +632,8 @@ configs:
                       ip: "${HOST_IP}"
                       port: "8001"
                       instance: "1"
-                      config_variant: "dsv4-0731-prod-target-only-tp4"
-                      decode_mode: "target_only"
+                      config_variant: "dsv4-0731-tp4-dspark"
+                      decode_mode: "dspark"
                       chunk_size: "4096"
                       max_prefill_tokens: "16384"
                       continuous_decode_steps: "1"
