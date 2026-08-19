@@ -5,6 +5,11 @@ x-logging-conf: &logging-conf
     max-file: "10"
     labels: "com.datadoghq.ad.logs,com.docker.compose.service"
 
+# gpu04 production layout: one DeepSeek-V4-Flash-0731 TP4 target-only
+# sparse-prefill-off treatment on GPUs 0-3, Qwen3.6 TP1 services on GPUs 4-5,
+# and two Gemma 4 TP1 replicas on GPUs 6-7. The matched sparse-prefill-on TP4 control is
+# gpu30's DeepSeek service in qwen35-dsv4-flash.yaml.
+
 x-nvidia: &nvidia
   runtime: nvidia
   ipc: host
@@ -64,8 +69,10 @@ x-dsv4-flash-common: &dsv4-flash-common
   #      page_first_direct: uses GPUDirect/unified-memory paths that hit
   #      'cudaErrorNotSupported' on the first warmup tensor.to(non_blocking)
   #      under TDX-confidential GPU memory — dropped.
-  # Qualified DeepSeek-V4-Flash-0731 target-only TP2 configuration with the
-  # bounded 4096-token chunked-prefill admission reserve.
+  # DeepSeek-V4-Flash-0731 target-only TP4 sparse-prefill-off treatment.
+  # It matches gpu30's target-only TP4 control except for the sparse-prefill
+  # toggle and host/co-tenant placement. The 4096-token admission reserve
+  # remains enabled to bound long-prefill interference.
   image: docker.io/nearaidev/sglang@sha256:ec518148762ea02c23aa8615f69ca79b0c18bcd59b3c21c10229db3df323c615
   # Hidden-state passthrough (cloud-api#739 / inference-proxy#163) — OFF by default.
   # The gpu-manager toggles it at start via the DSV4_RETURN_HIDDEN_STATES env var,
@@ -81,7 +88,7 @@ x-dsv4-flash-common: &dsv4-flash-common
       --trust-remote-code
       --model-path deepseek-ai/DeepSeek-V4-Flash-0731
       --revision 7872f01b1d1fe23eabc4c98b48bffcef5a386062
-      --tp-size 2
+      --tp-size 4
       --kv-cache-dtype fp8_e4m3
       --moe-runner-backend marlin
       --cuda-graph-max-bs 64
@@ -91,7 +98,7 @@ x-dsv4-flash-common: &dsv4-flash-common
       --schedule-conservativeness 1.3
       --num-continuous-decode-steps 1
       --enable-mixed-chunk
-      --chunked-prefill-size 4096
+      --chunked-prefill-size 8192
       --max-prefill-tokens 16384
       --swa-full-tokens-ratio 0.1
       --watchdog-timeout 1800
@@ -121,6 +128,9 @@ x-dsv4-flash-common: &dsv4-flash-common
     - SGLANG_DSV4_FP4_EXPERTS=1   # FP4 ckpt: experts ARE FP4 (marlin dequantizes). =0 forced the non-FP4 layout → load failure / invalid weights (PR #98 review)
     - SGLANG_ENABLE_UNIFIED_RADIX_TREE=1
     - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+    # Partial bypass only: batches with q.shape[0] > 11673 still enter the
+    # FlashMLA sparse kernel regardless of this toggle.
+    - SGLANG_OPT_FLASHMLA_SPARSE_PREFILL=0
   restart: unless-stopped
   stop_grace_period: 5m
   logging: *logging-conf
@@ -277,7 +287,6 @@ services:
     container_name: nginx
     depends_on:
       - proxy-dsv4-flash
-      - proxy-dsv4-flash-arm3
       - proxy-qwen36-27b
       - proxy-gemma4-31b
       - proxy-qwen36-35b-a3b
@@ -287,8 +296,6 @@ services:
       - "8001:8001"
       - "8002:8002"
       - "8003:8003"
-      - "8004:8004"
-      - "8005:8005"
       - "8444:443"
     volumes:
       - certs:/etc/letsencrypt:ro
@@ -318,7 +325,6 @@ services:
     environment:
       - HOST_IP=${HOST_IP}
       - TLS_PORT=${TLS_PORT:-8444}
-      - TLS_PORT_2=${TLS_PORT_2:-8005}
       - MODEL_PROXY_TOKEN=${MODEL_PROXY_TOKEN}
       - PROXY_TOKEN=${PROXY_TOKEN}
     configs:
@@ -329,10 +335,10 @@ services:
     labels:
       com.datadoghq.ad.logs: '[{"source":"model-proxy-registrar","service":"model-proxy-registrar","tags":["model:deepseek-ai/DeepSeek-V4-Flash","deployment:dsv4-qwen36-gemma4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
 
-  # --- DeepSeek-V4-Flash (FP4) (GPUs 0-1) — SGLang TP=2 + --moe-runner-backend marlin, no spec-decode ---
-  # Was 4-GPU FP8 + EAGLE. FP4 ckpt on 2 GPUs (marlin dequant→INT4) halves the footprint at ~equal
-  # throughput → break-even/profitable vs the prior 4-GPU loss. Frees GPUs 2,3. See Benchmarks Notion
-  # "DeepSeek-V4-Flash — 2× H200 Serving & Profitability". VALIDATE IN STAGING before prod rollout.
+  # --- DeepSeek-V4-Flash (FP4) (GPUs 0-3) — target-only TP4 sparse-off treatment ---
+  # gpu30 is the sparse-on TP4 control. This consolidation removes gpu04's two
+  # TP2 arms and keeps one stable endpoint so the cross-host A/B differs at the
+  # engine level only by sparse-prefill mode (plus unavoidable host/co-tenancy).
 
   proxy-dsv4-flash:
     <<: *vllm-proxy-common
@@ -348,14 +354,15 @@ services:
       - TOKEN=${PROXY_TOKEN}
       - FUSION_ENABLED=${FUSION_ENABLED}
       - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
-      - VLLM_BASE_URL=http://model-sg-dsv4-flash-fp4-tp2:8000
+      - VLLM_BASE_URL=http://model-sg-dsv4-flash-fp4-tp4:8000
       - VLLM_PROXY_MAX_REQUEST_SIZE=104857600
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
       - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
       - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
+      - VLLM_PROXY_STREAM_IDLE_TIMEOUT_SECS=20
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:deepseek-ai/DeepSeek-V4-Flash","deployment:dsv4-qwen36-gemma4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:deepseek-ai/DeepSeek-V4-Flash","deployment:dsv4-qwen36-gemma4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","ab_arm:tp4-target-only-sparse-off-gpu04","sparse_prefill:off"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "inference-proxy"
       nearai.otel.service: "vllm-proxy"
@@ -370,49 +377,12 @@ services:
       nearai.otel.host_machine: "${CVM_HOST}"
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
+      nearai.otel.ab_arm: "tp4-target-only-sparse-off-gpu04"
+      nearai.otel.sparse_prefill: "off"
 
-  proxy-dsv4-flash-arm3:
-    <<: *vllm-proxy-common
-    container_name: proxy-dsv4-flash-arm3
-    environment:
-      - NVIDIA_VISIBLE_DEVICES=all
-      - CLOUD_API_URL=https://cloud-api.near.ai
-      - CLOUD_API_USAGE_TOKEN=${CLOUD_API_USAGE_TOKEN}
-      - COMPOSE_MANAGER_URL=http://compose-manager:8080
-      - LOG_FORMAT=json
-      - MODEL_NAME=deepseek-ai/DeepSeek-V4-Flash
-      - OHTTP_ENABLED=true
-      - TOKEN=${PROXY_TOKEN}
-      - FUSION_ENABLED=${FUSION_ENABLED}
-      - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
-      - VLLM_BASE_URL=http://model-sg-dsv4-flash-fp4-tp2-arm3:8000
-      - VLLM_PROXY_MAX_REQUEST_SIZE=104857600
-      - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
-      - USE_NV_ATTESTATION_SDK=true
-      - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
-      - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
-      - VLLM_PROXY_STREAM_IDLE_TIMEOUT_SECS=20
-    labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:deepseek-ai/DeepSeek-V4-Flash","deployment:dsv4-qwen36-gemma4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8004"]}]'
-      nearai.otel.scrape: "true"
-      nearai.otel.job: "inference-proxy"
-      nearai.otel.service: "vllm-proxy"
-      nearai.otel.source: "vllm-proxy"
-      nearai.otel.container_name: "proxy-dsv4-flash-arm3"
-      nearai.otel.port: "8000"
-      nearai.otel.path: "/metrics"
-      nearai.otel.model: "deepseek-ai/DeepSeek-V4-Flash"
-      nearai.otel.deployment: "dsv4-qwen36-gemma4"
-      nearai.otel.env: "${ENV}"
-      nearai.otel.host: "${CVM_HOST}"
-      nearai.otel.host_machine: "${CVM_HOST}"
-      nearai.otel.cvm_name: "${CVM_NAME}"
-      nearai.otel.ip: "${HOST_IP}"
-      nearai.otel.ab_arm: "arm3-chunk4096-sparse-off"
-
-  model-sg-dsv4-flash-fp4-tp2:
+  model-sg-dsv4-flash-fp4-tp4:
     <<: *dsv4-flash-common
-    container_name: model-sg-dsv4-flash-fp4-tp2
+    container_name: model-sg-dsv4-flash-fp4-tp4
     depends_on:
       model-downloader:
         condition: service_completed_successfully
@@ -421,18 +391,18 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["0","1"]   # TP=2 (FP4 marlin); was 0-3 under TP=4 FP8 — frees GPUs 2,3
+              device_ids: ["0","1","2","3"]
               capabilities: [gpu]
     labels:
       com.datadoghq.ad.check_names: '["openmetrics"]'
       com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:deepseek-ai/DeepSeek-V4-Flash-0731","model_path:deepseek-ai/DeepSeek-V4-Flash-0731","model_revision:7872f01b1d1fe23eabc4c98b48bffcef5a386062","deployment:dsv4-qwen36-gemma4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:1","config_variant:dsv4-0731-prod-target-only","decode_mode:target_only","chunk_size:4096","ab_arm:arm2-chunk4096-sparse-on","max_prefill_tokens:16384","continuous_decode_steps:1","chunked_prefill_admission_reserve:4096","watchdog_timeout:1800","cuda_graph:1","max_running_requests:64","max_queued_requests:16","schedule_conservativeness:1.3","sglang_revision:0.5.16-near-dsv4-0731","engine_image:ec518148762e"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-sg-dsv4-flash-fp4-tp2:8000/metrics", "metrics":["sglang:*"], "histogram_buckets_as_distributions": true, "service": "sglang", "tags":["model:deepseek-ai/DeepSeek-V4-Flash-0731","model_path:deepseek-ai/DeepSeek-V4-Flash-0731","model_revision:7872f01b1d1fe23eabc4c98b48bffcef5a386062","deployment:dsv4-qwen36-gemma4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:1","config_variant:dsv4-0731-prod-target-only","decode_mode:target_only","chunk_size:4096","ab_arm:arm2-chunk4096-sparse-on","max_prefill_tokens:16384","continuous_decode_steps:1","chunked_prefill_admission_reserve:4096","watchdog_timeout:1800","cuda_graph:1","max_running_requests:64","max_queued_requests:16","schedule_conservativeness:1.3","sglang_revision:0.5.16-near-dsv4-0731","engine_image:ec518148762e"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:deepseek-ai/DeepSeek-V4-Flash-0731","model_path:deepseek-ai/DeepSeek-V4-Flash-0731","model_revision:7872f01b1d1fe23eabc4c98b48bffcef5a386062","deployment:dsv4-qwen36-gemma4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:1","config_variant:dsv4-0731-tp4-target-only-sparse-off","decode_mode:target_only","sparse_prefill:off","chunk_size:8192","ab_arm:tp4-target-only-sparse-off-gpu04","max_prefill_tokens:16384","continuous_decode_steps:1","chunked_prefill_admission_reserve:4096","watchdog_timeout:1800","cuda_graph:1","max_running_requests:64","max_queued_requests:16","schedule_conservativeness:1.3","sglang_revision:0.5.16-near-dsv4-0731","engine_image:ec518148762e"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-sg-dsv4-flash-fp4-tp4:8000/metrics", "metrics":["sglang:*"], "histogram_buckets_as_distributions": true, "service": "sglang", "tags":["model:deepseek-ai/DeepSeek-V4-Flash-0731","model_path:deepseek-ai/DeepSeek-V4-Flash-0731","model_revision:7872f01b1d1fe23eabc4c98b48bffcef5a386062","deployment:dsv4-qwen36-gemma4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:1","config_variant:dsv4-0731-tp4-target-only-sparse-off","decode_mode:target_only","sparse_prefill:off","chunk_size:8192","ab_arm:tp4-target-only-sparse-off-gpu04","max_prefill_tokens:16384","continuous_decode_steps:1","chunked_prefill_admission_reserve:4096","watchdog_timeout:1800","cuda_graph:1","max_running_requests:64","max_queued_requests:16","schedule_conservativeness:1.3","sglang_revision:0.5.16-near-dsv4-0731","engine_image:ec518148762e"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
       nearai.otel.source: "sglang"
-      nearai.otel.container_name: "model-sg-dsv4-flash-fp4-tp2"
+      nearai.otel.container_name: "model-sg-dsv4-flash-fp4-tp4"
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "deepseek-ai/DeepSeek-V4-Flash-0731"
@@ -444,10 +414,11 @@ services:
       nearai.otel.host_machine: "${CVM_HOST}"
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
-      nearai.otel.config_variant: "dsv4-0731-prod-target-only"
+      nearai.otel.config_variant: "dsv4-0731-tp4-target-only-sparse-off"
       nearai.otel.decode_mode: "target_only"
-      nearai.otel.chunk_size: "4096"
-      nearai.otel.ab_arm: "arm2-chunk4096-sparse-on"
+      nearai.otel.sparse_prefill: "off"
+      nearai.otel.chunk_size: "8192"
+      nearai.otel.ab_arm: "tp4-target-only-sparse-off-gpu04"
       nearai.otel.max_prefill_tokens: "16384"
       nearai.otel.continuous_decode_steps: "1"
       nearai.otel.chunked_prefill_admission_reserve: "4096"
@@ -458,76 +429,6 @@ services:
       nearai.otel.schedule_conservativeness: "1.3"
       nearai.otel.sglang_revision: "0.5.16-near-dsv4-0731"
       nearai.otel.engine_image: "ec518148762e"
-
-  # A/B arm 3: three replicas crashed 2026-08-12 in the FlashMLA sparse-prefill kernel
-  # (phase1.cuh:614, XID 31 on both TP ranks). No upstream fix exists:
-  # vllm-project/vllm#50660 is open and #50668 is unmerged. Arms 2 and 3 test chunk-size
-  # and sparse-prefill-bypass respectively against the untouched gpu30/gpu02 control arm.
-  # Known limitation: deepseek_v4_backend.py dispatches to flash_mla_sparse_fwd when
-  # q.shape[0] > 11673 OR the env toggle is on, so SGLANG_OPT_FLASHMLA_SPARSE_PREFILL=0
-  # removes only the second condition. Arm 3 is a partial bypass; batches above that
-  # query threshold still enter the sparse kernel.
-  model-sg-dsv4-flash-fp4-tp2-arm3:
-    <<: *dsv4-flash-common
-    container_name: model-sg-dsv4-flash-fp4-tp2-arm3
-    depends_on:
-      model-downloader:
-        condition: service_completed_successfully
-    environment:
-      - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
-      - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0}
-      - VLLM_LOGGING_LEVEL=INFO
-      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
-      - OPENBLAS_L2_SIZE=2097152
-      - NCCL_DEBUG=WARN
-      - SGLANG_ENABLE_SPEC_V2=1
-      - SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE=4096
-      - SGLANG_DSV4_FP4_EXPERTS=1   # FP4 ckpt: experts ARE FP4 (marlin dequantizes). =0 forced the non-FP4 layout → load failure / invalid weights (PR #98 review)
-      - SGLANG_ENABLE_UNIFIED_RADIX_TREE=1
-      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-      - SGLANG_OPT_FLASHMLA_SPARSE_PREFILL=0
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              device_ids: ["2","3"]
-              capabilities: [gpu]
-    labels:
-      com.datadoghq.ad.check_names: '["openmetrics"]'
-      com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:deepseek-ai/DeepSeek-V4-Flash-0731","model_path:deepseek-ai/DeepSeek-V4-Flash-0731","model_revision:7872f01b1d1fe23eabc4c98b48bffcef5a386062","deployment:dsv4-qwen36-gemma4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8004","instance:2","config_variant:dsv4-0731-prod-target-only","decode_mode:target_only","chunk_size:4096","ab_arm:arm3-chunk4096-sparse-off","max_prefill_tokens:16384","continuous_decode_steps:1","chunked_prefill_admission_reserve:4096","watchdog_timeout:1800","cuda_graph:1","max_running_requests:64","max_queued_requests:16","schedule_conservativeness:1.3","sglang_revision:0.5.16-near-dsv4-0731","engine_image:ec518148762e"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-sg-dsv4-flash-fp4-tp2-arm3:8000/metrics", "metrics":["sglang:*"], "histogram_buckets_as_distributions": true, "service": "sglang", "tags":["model:deepseek-ai/DeepSeek-V4-Flash-0731","model_path:deepseek-ai/DeepSeek-V4-Flash-0731","model_revision:7872f01b1d1fe23eabc4c98b48bffcef5a386062","deployment:dsv4-qwen36-gemma4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8004","instance:2","config_variant:dsv4-0731-prod-target-only","decode_mode:target_only","chunk_size:4096","ab_arm:arm3-chunk4096-sparse-off","max_prefill_tokens:16384","continuous_decode_steps:1","chunked_prefill_admission_reserve:4096","watchdog_timeout:1800","cuda_graph:1","max_running_requests:64","max_queued_requests:16","schedule_conservativeness:1.3","sglang_revision:0.5.16-near-dsv4-0731","engine_image:ec518148762e"]}]'
-      nearai.otel.scrape: "true"
-      nearai.otel.job: "sglang"
-      nearai.otel.service: "sglang"
-      nearai.otel.source: "sglang"
-      nearai.otel.container_name: "model-sg-dsv4-flash-fp4-tp2-arm3"
-      nearai.otel.port: "8000"
-      nearai.otel.path: "/metrics"
-      nearai.otel.model: "deepseek-ai/DeepSeek-V4-Flash-0731"
-      nearai.otel.model_path: "deepseek-ai/DeepSeek-V4-Flash-0731"
-      nearai.otel.model_revision: "7872f01b1d1fe23eabc4c98b48bffcef5a386062"
-      nearai.otel.deployment: "dsv4-qwen36-gemma4"
-      nearai.otel.env: "${ENV}"
-      nearai.otel.host: "${CVM_HOST}"
-      nearai.otel.host_machine: "${CVM_HOST}"
-      nearai.otel.cvm_name: "${CVM_NAME}"
-      nearai.otel.ip: "${HOST_IP}"
-      nearai.otel.config_variant: "dsv4-0731-prod-target-only"
-      nearai.otel.decode_mode: "target_only"
-      nearai.otel.chunk_size: "4096"
-      nearai.otel.max_prefill_tokens: "16384"
-      nearai.otel.continuous_decode_steps: "1"
-      nearai.otel.chunked_prefill_admission_reserve: "4096"
-      nearai.otel.watchdog_timeout: "1800"
-      nearai.otel.cuda_graph: "1"
-      nearai.otel.max_running_requests: "64"
-      nearai.otel.max_queued_requests: "16"
-      nearai.otel.schedule_conservativeness: "1.3"
-      nearai.otel.sglang_revision: "0.5.16-near-dsv4-0731"
-      nearai.otel.engine_image: "ec518148762e"
-      nearai.otel.ab_arm: "arm3-chunk4096-sparse-off"
 
   # --- Qwen3.6-27B-FP8 (GPU 4) — SGLang TP=1 ---
 
@@ -773,13 +674,13 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["0","1"]   # match dsv4 TP=2 serving set (was 0-3); GPUs 2,3 freed
+              device_ids: ["0","1","2","3"]
               capabilities: [gpu]
     labels:
       com.datadoghq.ad.check_names: '["dcgm"]'
       com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint": "http://%%host%%:9400/metrics", "tags":["model:deepseek-ai/DeepSeek-V4-Flash","deployment:dsv4-qwen36-gemma4","ip:${HOST_IP}"]}]'
-      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:deepseek-ai/DeepSeek-V4-Flash","deployment:dsv4-qwen36-gemma4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint": "http://%%host%%:9400/metrics", "tags":["model:deepseek-ai/DeepSeek-V4-Flash","deployment:dsv4-qwen36-gemma4","ip:${HOST_IP}","ab_arm:tp4-target-only-sparse-off-gpu04","sparse_prefill:off"]}]'
+      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:deepseek-ai/DeepSeek-V4-Flash","deployment:dsv4-qwen36-gemma4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ab_arm:tp4-target-only-sparse-off-gpu04","sparse_prefill:off"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "dcgm"
       nearai.otel.service: "dcgm-exporter"
@@ -794,36 +695,8 @@ services:
       nearai.otel.host_machine: "${CVM_HOST}"
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
-
-  dcgm-dsv4-flash-arm3:
-    <<: *dcgm-common
-    container_name: dcgm-dsv4-flash-arm3
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              device_ids: ["2","3"]
-              capabilities: [gpu]
-    labels:
-      com.datadoghq.ad.check_names: '["dcgm"]'
-      com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint": "http://%%host%%:9400/metrics", "tags":["model:deepseek-ai/DeepSeek-V4-Flash","deployment:dsv4-qwen36-gemma4","ip:${HOST_IP}","ab_arm:arm3-chunk4096-sparse-off"]}]'
-      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:deepseek-ai/DeepSeek-V4-Flash","deployment:dsv4-qwen36-gemma4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ab_arm:arm3-chunk4096-sparse-off"]}]'
-      nearai.otel.scrape: "true"
-      nearai.otel.job: "dcgm"
-      nearai.otel.service: "dcgm-exporter"
-      nearai.otel.source: "dcgm-exporter"
-      nearai.otel.container_name: "dcgm-dsv4-flash-arm3"
-      nearai.otel.port: "9400"
-      nearai.otel.path: "/metrics"
-      nearai.otel.model: "deepseek-ai/DeepSeek-V4-Flash"
-      nearai.otel.deployment: "dsv4-qwen36-gemma4"
-      nearai.otel.env: "${ENV}"
-      nearai.otel.host: "${CVM_HOST}"
-      nearai.otel.host_machine: "${CVM_HOST}"
-      nearai.otel.cvm_name: "${CVM_NAME}"
-      nearai.otel.ip: "${HOST_IP}"
+      nearai.otel.ab_arm: "tp4-target-only-sparse-off-gpu04"
+      nearai.otel.sparse_prefill: "off"
 
   dcgm-qwen36-27b:
     <<: *dcgm-common
@@ -1067,15 +940,15 @@ configs:
         prometheus/apps:
           config:
             scrape_configs:
-              - job_name: sglang-model-sg-dsv4-flash-fp4-tp2
+              - job_name: sglang-model-sg-dsv4-flash-fp4-tp4
                 scrape_interval: 15s
                 metrics_path: /metrics
                 static_configs:
-                  - targets: ['model-sg-dsv4-flash-fp4-tp2:8000']
+                  - targets: ['model-sg-dsv4-flash-fp4-tp4:8000']
                     labels:
                       service: "sglang"
                       source: "sglang"
-                      container_name: "model-sg-dsv4-flash-fp4-tp2"
+                      container_name: "model-sg-dsv4-flash-fp4-tp4"
                       model: "deepseek-ai/DeepSeek-V4-Flash-0731"
                       model_path: "deepseek-ai/DeepSeek-V4-Flash-0731"
                       model_revision: "7872f01b1d1fe23eabc4c98b48bffcef5a386062"
@@ -1087,44 +960,11 @@ configs:
                       ip: "${HOST_IP}"
                       port: "8000"
                       instance: "1"
-                      config_variant: "dsv4-0731-prod-target-only"
+                      config_variant: "dsv4-0731-tp4-target-only-sparse-off"
                       decode_mode: "target_only"
-                      chunk_size: "4096"
-                      ab_arm: "arm2-chunk4096-sparse-on"
-                      max_prefill_tokens: "16384"
-                      continuous_decode_steps: "1"
-                      chunked_prefill_admission_reserve: "4096"
-                      watchdog_timeout: "1800"
-                      cuda_graph: "1"
-                      max_running_requests: "64"
-                      max_queued_requests: "16"
-                      schedule_conservativeness: "1.3"
-                      sglang_revision: "0.5.16-near-dsv4-0731"
-                      engine_image: "ec518148762e"
-              - job_name: sglang-model-sg-dsv4-flash-fp4-tp2-arm3
-                scrape_interval: 15s
-                metrics_path: /metrics
-                static_configs:
-                  - targets: ['model-sg-dsv4-flash-fp4-tp2-arm3:8000']
-                    labels:
-                      service: "sglang"
-                      source: "sglang"
-                      container_name: "model-sg-dsv4-flash-fp4-tp2-arm3"
-                      model: "deepseek-ai/DeepSeek-V4-Flash-0731"
-                      model_path: "deepseek-ai/DeepSeek-V4-Flash-0731"
-                      model_revision: "7872f01b1d1fe23eabc4c98b48bffcef5a386062"
-                      deployment: "dsv4-qwen36-gemma4"
-                      env: "${ENV}"
-                      host: "${CVM_HOST}"
-                      host_machine: "${CVM_HOST}"
-                      cvm_name: "${CVM_NAME}"
-                      ip: "${HOST_IP}"
-                      port: "8004"
-                      instance: "2"
-                      config_variant: "dsv4-0731-prod-target-only"
-                      decode_mode: "target_only"
-                      chunk_size: "4096"
-                      ab_arm: "arm3-chunk4096-sparse-off"
+                      sparse_prefill: "off"
+                      chunk_size: "8192"
+                      ab_arm: "tp4-target-only-sparse-off-gpu04"
                       max_prefill_tokens: "16384"
                       continuous_decode_steps: "1"
                       chunked_prefill_admission_reserve: "4096"
@@ -1226,23 +1066,8 @@ configs:
                       cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "9400"
-              - job_name: dcgm-dcgm-dsv4-flash-arm3
-                scrape_interval: 15s
-                metrics_path: /metrics
-                static_configs:
-                  - targets: ['dcgm-dsv4-flash-arm3:9400']
-                    labels:
-                      service: "dcgm-exporter"
-                      source: "dcgm-exporter"
-                      container_name: "dcgm-dsv4-flash-arm3"
-                      model: "deepseek-ai/DeepSeek-V4-Flash"
-                      deployment: "dsv4-qwen36-gemma4"
-                      env: "${ENV}"
-                      host: "${CVM_HOST}"
-                      host_machine: "${CVM_HOST}"
-                      cvm_name: "${CVM_NAME}"
-                      ip: "${HOST_IP}"
-                      port: "9400"
+                      ab_arm: "tp4-target-only-sparse-off-gpu04"
+                      sparse_prefill: "off"
               - job_name: dcgm-dcgm-qwen36-27b
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -1311,24 +1136,8 @@ configs:
                       cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "8000"
-              - job_name: inference-proxy-proxy-dsv4-flash-arm3
-                scrape_interval: 15s
-                metrics_path: /metrics
-                static_configs:
-                  - targets: ['proxy-dsv4-flash-arm3:8000']
-                    labels:
-                      service: "vllm-proxy"
-                      source: "vllm-proxy"
-                      container_name: "proxy-dsv4-flash-arm3"
-                      model: "deepseek-ai/DeepSeek-V4-Flash"
-                      deployment: "dsv4-qwen36-gemma4"
-                      env: "${ENV}"
-                      host: "${CVM_HOST}"
-                      host_machine: "${CVM_HOST}"
-                      cvm_name: "${CVM_NAME}"
-                      ip: "${HOST_IP}"
-                      port: "8004"
-                      ab_arm: "arm3-chunk4096-sparse-off"
+                      ab_arm: "tp4-target-only-sparse-off-gpu04"
+                      sparse_prefill: "off"
               - job_name: inference-proxy-proxy-qwen36-27b
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -1516,21 +1325,12 @@ configs:
         exit 1
       fi
 
-      for port in 8000 8001 8002 8003 8004; do
+      for port in 8000 8001 8002 8003; do
         eval "REG_$$port=false"
         eval "FAIL_COUNT_$$port=0"
       done
 
-      # Host port -> TLS routing port model-proxy should dial for that backend.
-      # Arm 3 on 8004 rides the second TLS listener; all other backends use 8444.
-      routing_port_for() {
-        case $$1 in
-          8004) echo "$${TLS_PORT_2}" ;;
-          *) echo "$${TLS_PORT}" ;;
-        esac
-      }
-
-      # $1 = endpoint (host:port), $2 = routing port for that backend.
+      # $1 = endpoint (host:port), $2 = TLS routing port model-proxy should dial.
       register_endpoint() {
         curl -sS --max-time 10 -X POST "$$PROXY_URL/register/endpoint" \
           -H "Authorization: Bearer $$TOKEN" \
@@ -1554,7 +1354,7 @@ configs:
 
       cleanup() {
         echo "SIGTERM received, unregistering all endpoints"
-        for port in 8000 8001 8002 8003 8004; do
+        for port in 8000 8001 8002 8003; do
           unregister_endpoint "$${HOST_IP}:$$port"
         done
         exit 0
@@ -1576,22 +1376,6 @@ configs:
           > /dev/null 2>&1
       }
 
-      # Require the arm-3 TLS path to answer HTTP 2xx before advertising it.
-      # This proves the forwarded port, nginx TLS listener, and proxy chain together.
-      check_tls_route() {
-        tls_status=$$(curl -skS --connect-timeout 10 --max-time 20 -o /dev/null -w "%{http_code}" \
-          --resolve "dsv4-flash.completions.near.ai:$${TLS_PORT_2}:$${HOST_IP}" \
-          -H "Authorization: Bearer $$INFERENCE_TOKEN" \
-          "https://dsv4-flash.completions.near.ai:$${TLS_PORT_2}/v1/models")
-        case "$$tls_status" in
-          2*) return 0 ;;
-          *)
-            echo "[dsv4 arm3] TLS routing-port check failed (https :$${TLS_PORT_2} -> HTTP $$tls_status)"
-            return 1
-            ;;
-        esac
-      }
-
       check_port() {
         case $$1 in
           8000) check_chat "$${HOST_IP}:8000" "deepseek-ai/DeepSeek-V4-Flash" ;;
@@ -1601,7 +1385,6 @@ configs:
           # model-proxy routes to.
           8002) check_chat "$${HOST_IP}:8002" "google/gemma-4-31B-it" ;;
           8003) check_chat "$${HOST_IP}:8003" "Qwen/Qwen3.6-35B-A3B-FP8" ;;
-          8004) check_chat "$${HOST_IP}:8004" "deepseek-ai/DeepSeek-V4-Flash" && check_tls_route ;;
         esac
       }
 
@@ -1629,7 +1412,7 @@ configs:
       echo "First model ready, starting registration loop"
 
       while true; do
-        for port in 8000 8001 8002 8003 8004; do
+        for port in 8000 8001 8002 8003; do
           # Liveness marker for the container healthcheck (see service def);
           # refreshed each port so a slow-but-progressing serial loop is not
           # falsely marked unhealthy. See cvm-compose-files#57.
@@ -1639,7 +1422,7 @@ configs:
           eval "fails=\$$FAIL_COUNT_$$port"
           if check_port $$port; then
             eval "FAIL_COUNT_$$port=0"
-            register_endpoint "$$endpoint" "$$(routing_port_for $$port)"
+            register_endpoint "$$endpoint" "$${TLS_PORT}"
             if [ "$$was_reg" = false ]; then
               echo "Registered $$endpoint"
             fi
@@ -1715,12 +1498,6 @@ configs:
           location / { proxy_pass http://proxy-qwen36-35b-a3b:8000; }
       }
 
-      # :8004 - DeepSeek-V4-Flash arm3 (A/B: chunk4096 + sparse-prefill off)
-      server {
-          listen 8004;
-          location / { proxy_pass http://proxy-dsv4-flash-arm3:8000; }
-      }
-
       # ── TLS server blocks (port 443 = host 8444) ──
 
       ssl_certificate /etc/letsencrypt/live/completions.near.ai/fullchain.pem;
@@ -1738,15 +1515,6 @@ configs:
           keepalive_timeout 1h;
           keepalive_requests 1000000;
           location / { proxy_pass http://proxy-dsv4-flash:8000; }
-      }
-
-      server {
-          listen 8005 ssl http2;
-          server_name dsv4-flash.completions.near.ai
-                      ~^dsv4-flash-i\d+\.completions\.near\.ai$$;
-          keepalive_timeout 1h;
-          keepalive_requests 1000000;
-          location / { proxy_pass http://proxy-dsv4-flash-arm3:8000; }
       }
 
       server {
