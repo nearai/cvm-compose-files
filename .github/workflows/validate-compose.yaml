@@ -34,6 +34,9 @@ jobs:
             ruby:3.3-alpine \
             ruby scripts/validate_proxy_environment.rb
 
+      - name: Validate streaming HTTP/2 keepalive contracts
+        run: python3 scripts/validate_streaming_keepalive.py
+
       - name: Validate registrar auth contracts
         run: |
           docker run --rm \
