@@ -1,0 +1,106 @@
+diff --git a/python/sglang/srt/entrypoints/openai/serving_base.py b/python/sglang/srt/entrypoints/openai/serving_base.py
+index aa50f8a..4e4dc4a 100644
+--- a/python/sglang/srt/entrypoints/openai/serving_base.py
++++ b/python/sglang/srt/entrypoints/openai/serving_base.py
+@@ -22,6 +22,21 @@ if TYPE_CHECKING:
+ logger = logging.getLogger(__name__)
+ 
+ 
++class StreamingAbortBeforeFirstChunk(Exception):
++    """Carry a scheduler abort to the HTTP layer before streaming starts.
++
++    Before the first SSE chunk, the HTTP status has not been committed and the
++    serving handler can return the scheduler's real status code. After a chunk
++    has been emitted, the existing in-band SSE error behavior remains required.
++    """
++
++    def __init__(self, message: str, err_type: str, status_code: int):
++        super().__init__(message)
++        self.message = message
++        self.err_type = err_type
++        self.status_code = status_code
++
++
+ # Base class for specific endpoint handlers
+ class OpenAIServingBase(ABC):
+     """Abstract base class for OpenAI endpoint handlers"""
+diff --git a/python/sglang/srt/entrypoints/openai/serving_chat.py b/python/sglang/srt/entrypoints/openai/serving_chat.py
+index 5599347..f4bcc2a 100644
+--- a/python/sglang/srt/entrypoints/openai/serving_chat.py
++++ b/python/sglang/srt/entrypoints/openai/serving_chat.py
+@@ -49,7 +49,10 @@ from sglang.srt.entrypoints.openai.protocol import (
+     ToolChoice,
+     TopLogprob,
+ )
+-from sglang.srt.entrypoints.openai.serving_base import OpenAIServingBase
++from sglang.srt.entrypoints.openai.serving_base import (
++    OpenAIServingBase,
++    StreamingAbortBeforeFirstChunk,
++)
+ from sglang.srt.entrypoints.openai.sse_utils import build_sse_content
+ from sglang.srt.entrypoints.openai.usage_processor import UsageProcessor
+ from sglang.srt.entrypoints.openai.utils import (
+@@ -1477,6 +1480,8 @@ class OpenAIServingChat(OpenAIServingBase):
+             first_chunk = await generator.__anext__()
+         except ValueError as e:
+             return self.create_error_response(str(e))
++        except StreamingAbortBeforeFirstChunk as e:
++            return self.create_error_response(e.message, e.err_type, e.status_code)
+ 
+         async def prepend_first_chunk():
+             yield first_chunk
+@@ -1578,8 +1583,13 @@ class OpenAIServingChat(OpenAIServingBase):
+                         finish_reason.get("status_code"), HTTPStatus
+                     ):
+                         code = finish_reason["status_code"]
++                        message = finish_reason.get("message", "Generation aborted.")
++                        if not stream_started:
++                            raise StreamingAbortBeforeFirstChunk(
++                                message, code.name, code.value
++                            )
+                         error = self.create_streaming_error_response(
+-                            finish_reason.get("message", "Generation aborted."),
++                            message,
+                             code.name,
+                             code.value,
+                         )
+diff --git a/python/sglang/srt/entrypoints/openai/serving_completions.py b/python/sglang/srt/entrypoints/openai/serving_completions.py
+index d558776..23215f8 100644
+--- a/python/sglang/srt/entrypoints/openai/serving_completions.py
++++ b/python/sglang/srt/entrypoints/openai/serving_completions.py
+@@ -17,7 +17,10 @@ from sglang.srt.entrypoints.openai.protocol import (
+     ErrorResponse,
+     SglExt,
+ )
+-from sglang.srt.entrypoints.openai.serving_base import OpenAIServingBase
++from sglang.srt.entrypoints.openai.serving_base import (
++    OpenAIServingBase,
++    StreamingAbortBeforeFirstChunk,
++)
+ from sglang.srt.entrypoints.openai.usage_processor import UsageProcessor
+ from sglang.srt.entrypoints.openai.utils import (
+     cached_tokens_details_from_dict,
+@@ -203,6 +206,8 @@ class OpenAIServingCompletion(OpenAIServingBase):
+             first_chunk = await generator.__anext__()
+         except ValueError as e:
+             return self.create_error_response(str(e))
++        except StreamingAbortBeforeFirstChunk as e:
++            return self.create_error_response(e.message, e.err_type, e.status_code)
+ 
+         async def prepend_first_chunk():
+             yield first_chunk
+@@ -351,8 +356,13 @@ class OpenAIServingCompletion(OpenAIServingBase):
+                     finish_reason.get("status_code"), HTTPStatus
+                 ):
+                     code = finish_reason["status_code"]
++                    message = finish_reason.get("message", "Generation aborted.")
++                    if not stream_started:
++                        raise StreamingAbortBeforeFirstChunk(
++                            message, code.name, code.value
++                        )
+                     error = self.create_streaming_error_response(
+-                        finish_reason.get("message", "Generation aborted."),
++                        message,
+                         code.name,
+                         code.value,
+                     )

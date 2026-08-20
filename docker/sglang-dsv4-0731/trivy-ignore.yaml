@@ -1,0 +1,17 @@
+vulnerabilities:
+  - id: CVE-2026-3059
+    purls:
+      - "pkg:pypi/sglang@0.0.0.dev1%2Bgc0b6474b4"
+    expired_at: "2026-09-30T00:00:00Z"
+    statement: >-
+      The nightly package version sorts below 0.5.10, but this pinned source
+      retains the 0.5.10 loopback-only ZMQ broker remediation. The Docker build
+      asserts that the wildcard bind is absent.
+  - id: CVE-2026-3060
+    purls:
+      - "pkg:pypi/sglang@0.0.0.dev1%2Bgc0b6474b4"
+    expired_at: "2026-09-30T00:00:00Z"
+    statement: >-
+      The nightly package version sorts below 0.5.10, but this pinned source
+      uses safe_pickle_loads at the encoder-disaggregation receive boundary.
+      The Docker build asserts that raw pickle.loads is absent there.
