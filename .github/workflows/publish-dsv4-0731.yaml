@@ -98,6 +98,13 @@ jobs:
           grep -Fxq \
             'trivy_ignore_sha256=76ca74c9b9b29ca7819c7af21eff16128d133698b98110252ce265d20fb1fdbb' \
             "$BUILD_CONTEXT/PROVENANCE"
+          TRIVY_IGNORE_EXPIRES_AT='2026-09-30T00:00:00Z'
+          CURRENT_UTC=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          if [[ "$CURRENT_UTC" > "$TRIVY_IGNORE_EXPIRES_AT" ]] || \
+             [[ "$CURRENT_UTC" == "$TRIVY_IGNORE_EXPIRES_AT" ]]; then
+            echo "trivy-ignore.yaml exceptions expired at $TRIVY_IGNORE_EXPIRES_AT; update the base or re-audit them" >&2
+            exit 1
+          fi
           echo "IMAGE_REF=${REGISTRY}/${IMAGE_REPOSITORY}:${IMAGE_TAG}" >> "$GITHUB_ENV"
 
       - name: Log in to Docker Hub
@@ -181,7 +188,8 @@ jobs:
              .metadata["https://mobyproject.org/buildkit@v1#metadata"].vcs["localdir:context"] == "docker/sglang-dsv4-0731" and
              .metadata["https://mobyproject.org/buildkit@v1#metadata"].vcs["localdir:dockerfile"] == "docker/sglang-dsv4-0731" and
              any(.materials[];
-               .digest.sha256 == "51e576f02368480c055c7aadb67590d82b172e2392123ce4cf4cc8251b2d8caf")' \
+               .digest.sha256 == "51e576f02368480c055c7aadb67590d82b172e2392123ce4cf4cc8251b2d8caf" and
+               (.uri | contains("lmsysorg/sglang")))' \
             buildkit-provenance.json
 
       - name: Scan the published digest
@@ -251,6 +259,10 @@ jobs:
             echo "Refusing to attest or sign an image with $TRIVY_CRITICAL fixable critical vulnerabilities" >&2
             exit 1
           fi
+          # The two exact-PURL advisories are each reported from the source
+          # egg-info and installed dist-info metadata. Keep the expected four
+          # fail-closed: scanner deduplication or database changes require a
+          # fresh audit instead of silently weakening this exception gate.
           if (( TRIVY_SUPPRESSED_CRITICAL != 4 )); then
             echo "Expected four duplicate source-proven SGLang nightly-version suppressions, got $TRIVY_SUPPRESSED_CRITICAL" >&2
             exit 1
