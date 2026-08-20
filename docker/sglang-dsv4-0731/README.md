@@ -1,207 +1,162 @@
-# DeepSeek-V4-Flash-0731 staged rollout image
+# DeepSeek-V4-Flash-0731 nightly derivative
 
-This directory reproduces the SGLang runtime qualified on GPU31 on
-2026-08-07 and its bounded admission-fairness update qualified on 2026-08-10
-for a staged production rollout of
-`deepseek-ai/DeepSeek-V4-Flash-0731`.
+This directory builds the SGLang runtime candidate for the recurring DS4F TP
+rank desynchronization. It moves the production derivative from SGLang v0.5.16
+to the exact post-#33587 nightly validated as one arm of the GPU31/GPU32 test
+matrix, while retaining the small downstream behaviors already required by the
+gpu30 workload.
 
 It deliberately keeps the stable public model name
 `deepseek-ai/DeepSeek-V4-Flash`. The 0731 checkpoint is an implementation
-change and must not change `MODEL_NAME`, `--served-model-name`, or the
+detail and must not change `MODEL_NAME`, `--served-model-name`, or the
 `dsv4-flash.completions.near.ai` SNI domain.
 
-This PR does not change a production compose file. The tested image currently
-exists only on GPU31, so a production config must not reference its local image
-ID. Build, scan, publish, and pin the resulting registry digest first; then
-make the one-replica compose delta described below.
+This build-context change is the first half of the release. The derivative must
+be merged, published, and qualified before a separate deployment PR can pin its
+registry digest in `prod/qwen35-dsv4-flash.yaml` for the gpu30 canary.
 
 ## Provenance
 
-- Base image:
-  `lmsysorg/sglang@sha256:984699c298a95b73c469b2191403ddc85fd780506e13c39c4afff3845e27bc6c`
-- SGLang source:
-  `fdebc938f7f4d16fe6b9f55dcd9a767cf0899ea1` (`v0.5.16`)
-- Pre-stream admission change: upstream PR #28175, change
-  `36613db9813b5c8213edf2c5d74796b811cec491`
-- Official DSV4 reasoning-effort support:
-  `059269594c5f245f77dad711631843c299d7713f`
-- Combined patch SHA-256:
-  `0666a644e0791a92606c73d91725b0b52908aa347880973ffa1d3e9dc47282f4`
+- Base image tag: `lmsysorg/sglang:nightly-dev-20260818-c0b6474b`
+- Base image digest:
+  `sha256:51e576f02368480c055c7aadb67590d82b172e2392123ce4cf4cc8251b2d8caf`
+- SGLang source: `c0b6474b43363c2f4bc60fe3d7817d393fb51d32`
+- WAR-fence fix: upstream PR
+  [#33587](https://github.com/sgl-project/sglang/pull/33587), merge commit
+  `717a559f02b3ad85ba4bb4623772a1672e9e3e9c`
 - Bounded chunked-prefill admission patch SHA-256:
-  `3f1c92b7a4655d4cd8d675a4a7cd33d78eb95156a962e53e4ac6da81273f4099`
-- Original qualified local image ID:
-  `sha256:dac8a4f3f9906a3ef9ac3fdb4b9499492c85ed9d822e179728b0daa2ed1d8c54`
-- Fairness-qualified local image ID:
-  `sha256:f418325ee720598664e54dd454fe1c815a320678297563c1e329114f47109f52`
-- Reproduced Dockerfile image ID:
-  `sha256:38727a8d787528b37e2a411ad1659efbf25d5811b544e07c0dd064d3a516fd6e`
-- Model revision:
-  `7872f01b1d1fe23eabc4c98b48bffcef5a386062`
+  `3f7111c472b583b0921246b38d54d09ab6bb41090efe8a6301b750612b98fc89`
+- Pre-first-chunk abort patch SHA-256:
+  `28bc45ba377e3616d7221a609e584272c765f4fc3e69e0620d1ed0003bd608e4`
+- Model revision: `7872f01b1d1fe23eabc4c98b48bffcef5a386062`
 
-The local image ID is evidence only. It is not a registry digest and must
-never appear in `prod/*.yaml`.
+The nightly already contains the official DSV4 reasoning-effort profile, the
+earlier pre-stream admission work, and PR #33587. Those changes are no longer
+carried as downstream backports.
 
-The published production image removes the unused Nsight Compute and Nsight
-Systems EFA `nic_sampler` profiler helpers inherited from the CUDA base. Trivy
-0.70.0 reported the Compute helper's Go standard library as affected by the
-fixable CRITICAL `CVE-2025-68121`. These profiler helpers are not referenced by
-the SGLang serving tree and are not required for inference.
+## Retained downstream behavior
+
+The official nightly is not a direct production replacement. This derivative
+retains:
+
+1. `SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE=4096`, which leaves an aligned
+   slice of an 8192-token long-prefill chunk for a complete queued request;
+2. pre-first-chunk scheduler abort propagation, so an overload or scheduler
+   rejection can return its HTTP status before committing an SSE 200 response;
+3. removal of the two unused Nsight EFA `nic_sampler` helpers covered by the
+   existing `CVE-2025-68121` image-hardening control.
+
+The gpu30 deployment candidate should also set:
+
+```text
+SGLANG_DSV4_COMPRESS_STATE_DTYPE=bf16
+```
+
+The matched H200 A/B increased the TP4 KV pool from 10.47M to 11.53M tokens
+(10%) without an observed latency, throughput, or synthetic-quality regression.
+BF16 compressed state is a capacity improvement, not the rank-desynchronization
+fix.
+
+Do not set `SGLANG_FORCE_COARSE_WAR_BARRIER=1` on this image. It was the
+same-build v0.5.16 containment; this base includes the upstream WAR-fence fix.
+`SGLANG_ENABLE_PREFILL_WAR_READ_DONE` remains at its upstream default until it
+is independently qualified.
 
 ## Build and promotion
 
 ```bash
 docker build \
   --pull \
-  --tag ds4f-0731-sglang:v0.5.16-fdebc938 \
+  --tag ds4f-0731-sglang:nightly-c0b6474-near-v1 \
   docker/sglang-dsv4-0731
 ```
 
-The build fails if the patch checksum differs, if it no longer applies to the
-pinned base, if the resulting diff has whitespace errors, or if the modified
-Python files do not compile.
+The build fails if the base source revision differs, either patch checksum
+changes, either patch stops applying, the resulting diff has whitespace
+errors, the modified Python files fail compilation, or either hardened helper
+is absent before removal.
 
-Before a config PR:
+Publish only through `.github/workflows/publish-dsv4-0731.yaml`. The workflow:
 
-1. scan the image and retain the SBOM;
-2. publish it through the approved registry workflow;
-3. record the immutable `repository@sha256:...` reference;
-4. verify the published digest, patch label, and source labels;
-5. run semantic, tool-call, strict-SSE, official low/high/max, clean-overload,
-   and long-prefill gates against the published digest on one TP2 replica,
-   including the 850k-prefill-plus-short-arrivals admission gate;
-6. complete the repository's required 30-minute staging soak with zero
-   failures before adding the image to `prod/*.yaml`.
+1. checks out an exact merged commit on `main`;
+2. validates base, patch, model, and hardening provenance;
+3. builds and pushes with BuildKit provenance and an SBOM;
+4. verifies the published labels and base-image material;
+5. runs Trivy and rejects fixable critical vulnerabilities;
+6. attests and signs the immutable digest.
 
-Normal merged tags are not deployable for 48 hours. A same-day rollout must
-use the repository's sanctioned `backdate-tag` skill for the deployment
-commit. Do not manually tag the commit or lower compose-manager's
-`MIN_TAG_AGE_HOURS` gate.
+The pinned nightly identifies itself to Python package scanners as
+`0.0.0.dev1+gc0b6474b4`, which sorts below the advisory's fixed `0.5.10`
+version. The narrowly scoped, expiring `trivy-ignore.yaml` entries cover only
+that exact PURL and CVE-2026-3059/CVE-2026-3060. The build independently fails
+unless the loopback-only multimodal broker and safe encoder-disaggregation
+deserializer remediations remain in the source. All other fixable critical
+findings still fail publication.
 
-## Qualified per-replica command delta
+Production compose must use the resulting
+`docker.io/nearaidev/sglang@sha256:...` reference, never the nightly tag or a
+mutable registry tag.
 
-Keep TP2, FP4 Marlin, FP8 KV, decode CUDA graphs through batch 64, memory
-fraction 0.83, 64 running, 16 queued, scheduler conservativeness 1.3, an
-8192-token chunk, and the 1800-second watchdog. Remove every EAGLE/DSPARK flag
-and add:
+## Evidence and remaining qualification
 
-```text
---model-path deepseek-ai/DeepSeek-V4-Flash-0731
---revision 7872f01b1d1fe23eabc4c98b48bffcef5a386062
---max-prefill-tokens 16384
---enable-mixed-chunk
---num-continuous-decode-steps 1
---json-model-override-args '{"dsv4_reasoning_effort_profile":"official"}'
-```
+The unmodified pinned nightly completed the August 20 GPU31/GPU32 matrix:
 
-Set the qualified bounded-fairness control in the engine environment:
+- 4,329 strict streaming rank-churn requests;
+- 56 semantic, reasoning, JSON, tool-call, and SSE cases;
+- zero request errors, malformed streams, restarts, OOMs, NCCL/desync failures,
+  XIDs, AER errors, or uncorrected ECC errors.
 
-```text
-SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE=4096
-```
+The intermittent production hang did not reproduce. This supports the image
+candidate but does not prove the race eliminated. The derivative itself is not
+qualified until the published digest passes. A local build of this derivative
+also completed two simultaneous BF16-compressed TP4 arms on GPU32, with sparse
+prefill on and off:
 
-The value is intentionally smaller than the 8192-token chunk. It leaves one
-aligned slice for complete queued requests only when the queue head fits; the
-active long prefill retains progress and immediately returns to full chunks
-after the short burst clears.
+- 14/14 semantic, reasoning, JSON, tool-call, and strict-SSE checks passed;
+- both 850k-token prefill/live-decode/new-short gates passed, with 1.2912s and
+  1.2333s worst new-short TTFT/event gaps;
+- each arm returned 17 complete strict streams and 79 clean pre-stream HTTP 503
+  rejections under a 96-request overload burst, with no malformed stream;
+- the 30-minute soak completed 1,117 strict streams with zero request or health
+  failures; worst TTFT was 7.6121s;
+- both replicas stayed at zero restarts/OOMs, and the exact window had no
+  NCCL/desync failure, XID, AER error, or corrected/uncorrected ECC growth;
+- each replica exposed 11.526M KV tokens with
+  `SGLANG_DSV4_COMPRESS_STATE_DTYPE=bf16`.
 
-Retain:
+The published immutable digest must repeat:
 
-```text
---served-model-name deepseek-ai/DeepSeek-V4-Flash
---tool-call-parser deepseekv4
---reasoning-parser deepseek-v4
---enable-cache-report
-```
+1. patch and source-label verification;
+2. semantic, tool-call, strict-SSE, and clean-overload/error-contract gates;
+3. low/high/max DSV4 reasoning-profile checks;
+4. an 850k-token prefill with live decodes and new short arrivals;
+5. sustained TP4 rank churn with NCCL desync diagnostics enabled;
+6. at least 30 minutes with zero restart, malformed stream, semantic failure,
+   starvation, XID, AER, or ECC growth.
 
-The downloader must fetch the 0731 checkpoint at the exact revision above.
-Update the DS4F engine's `nearai.otel.model` and Datadog `model:` tag to the
-checkpoint path, while keeping the served-model contract unchanged.
+The bounded-admission implementation was previously qualified on GPU31 with
+reserve-0 and reserve-4096 controls across both NVLink islands. Controls reached
+112.690-114.833 seconds worst short TTFT/event gap, while reserve-4096 candidates
+passed at 2.086-2.118 seconds. Rebase onto nightly requires repeating that gate.
 
-## Evidence
+## gpu30 canary and rollback
 
-The GPU31 release qualification used four TP2 replicas on all eight H200 GPUs
-with A/B/B/A followed by B/A/A/B physical-island placement:
+After publication and qualification, the deployment PR should change only the
+gpu30 DS4F service in `prod/qwen35-dsv4-flash.yaml`:
 
-- 80/80 strict long-prefill streams completed;
-- worst active-decode gap: 2.789 seconds while an 850k-token prefill ran
-  behind nine active decodes;
-- 56/56 production-shaped quality cases, 32/32 model-card cases, and 16/16
-  official-profile cases passed;
-- overload returned 936 valid pre-stream HTTP 503 responses with zero
-  protocol failures;
-- zero OOM, restart, malformed SSE, XID, ECC growth, or AER growth;
-- c64: 3,608 total tokens/s/GPU, 10.765-second p99 TTFT;
-- c128: 4,194 total tokens/s/GPU, 13.768-second p99 TTFT.
+- pin the new derivative digest;
+- retain TP4, target-only decode, the current sparse-prefill setting, 8192-token
+  chunks, the 4096-token admission reserve, and existing queue/watchdog limits;
+- add `SGLANG_DSV4_COMPRESS_STATE_DTYPE=bf16`;
+- update `sglang_revision` and `engine_image` telemetry labels;
+- do not carry `SGLANG_FORCE_COARSE_WAR_BARRIER=1`.
 
-Peak sampled HBM was 143,136 MiB/GPU, leaving only 635 MiB of physical
-headroom. Do not raise `--mem-fraction-static 0.83`, loosen admission limits,
-or allow a GPU co-tenant.
+Drain and start the gpu30 backend without registration, run the direct gates,
+then register it and observe for 30-60 minutes before considering another host.
+Abort and drain on any worker restart, malformed or unterminated SSE, in-stream
+error, semantic/tool failure, active-stream or short-arrival gap above 10
+seconds, NCCL/desync signal, XID, AER, or ECC growth.
 
-The frozen 10-second c64 p99 gate missed by 0.765 seconds. This qualifies a
-guarded canary, not an immediate fleet cutover.
-
-The first production canary of the published but fairness-unpatched image
-(`docker.io/nearaidev/sglang@sha256:eac0a7c825c1c29588fef2f514b7328c1a41b7ac1ed222b3afecc52e32a18525`)
-was withdrawn on 2026-08-10. Five short streams admitted behind an already
-active 850k chunked prefill reached about 30 seconds TTFB. The backend was
-drained and restored to the original checkpoint with no OOM or hardware
-failure.
-
-The bounded-fairness validation then ran two reserve-0 controls and two
-reserve-4096 candidates simultaneously across both GPU31 NVLink islands:
-
-- both controls reproduced the failure at 112.690-114.833 seconds worst short
-  TTFT/event gap;
-- both candidates passed at 2.086-2.118 seconds;
-- 850k prefill elapsed time was 116.472-118.388 seconds for controls and
-  119.332-119.633 seconds for candidates;
-- a 6,017-token queue head correctly bypassed the 4,096-token reserve, with
-  candidate/control long-prefill ratios of 1.010 and 1.019;
-- quality passed 14/14 with zero OOM, restart, malformed stream, engine error,
-  XID, ECC growth or AER growth.
-
-Raw artifacts are on GPU31 under
-`/data/validation/ds4f-0731-admission-fairness-20260810/runs/v2-candidate-validation-v2`.
-
-## Staged rollout
-
-The first deployment step must override only one DS4F replica with the newly
-published and requalified digest. The other four replicas stay on the original
-checkpoint and current image as rollback controls. Do not merge the fleet-wide
-compose expansion until that exact digest passes direct gates and a registered
-canary observation.
-
-One of five production replicas is nominally about 20% of backend capacity,
-not 10%. Prefix affinity and queue state can skew actual traffic, so validate
-the measured per-backend request share rather than assuming equal routing.
-
-1. Pre-download the checkpoint and start r1 without registration.
-2. Repeat the direct semantic/tool/SSE/profile/admission gates and one
-   nine-decode-plus-850k-prefill cycle against the published digest.
-3. Register r1 and observe it for 30-60 minutes before changing another
-   replica.
-4. Hold at one replica through a representative window, then continue one
-   replica at a time. The complete guarded observation is capped at three
-   hours; there is no 24-hour soak requirement.
-5. Roll the remaining configs one replica at a time, always preserving an
-   original-checkpoint control until the final step.
-
-Abort and drain the candidate on any OOM, worker restart, malformed or
-unterminated SSE, in-stream error, semantic/tool failure, active-stream or
-short-arrival admission gap above 10 seconds, XID, ECC or AER growth, or two
-consecutive five-minute windows above 12 seconds c64-like p99 TTFT or 15
-seconds c128-like p99 TTFT.
-
-## Rollback
-
-For the first canary, restore r1 to:
-
-```text
-lmsysorg/sglang@sha256:6bb5fee34b6c4537c09a4775e2292ac40350d5ad1218fcc835b2692142f443b1
-deepseek-ai/DeepSeek-V4-Flash@553034d7dd9e06c2eeaee68cf85a17d6d4754cf0
-EAGLE 3/1/4
-```
-
-Withdraw the 0731 backend before recreating it, then re-register only after
-the original checkpoint passes readiness. Do not rebuild or retag the rollback
-image during the rollout.
+Rollback is the currently pinned production image
+`docker.io/nearaidev/sglang@sha256:ec518148762ea02c23aa8615f69ca79b0c18bcd59b3c21c10229db3df323c615`
+with the existing gpu30 compose settings. Do not rebuild or retag rollback.

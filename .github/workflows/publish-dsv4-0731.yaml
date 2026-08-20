@@ -7,7 +7,7 @@ on:
         description: Docker Hub tag; production must use the resulting digest
         required: true
         type: string
-        default: dsv4-0731-v0.5.16-fairness-v1
+        default: dsv4-0731-nightly-c0b6474-near-v1
       source_revision:
         description: Exact merged commit on main containing the build context
         required: true
@@ -68,18 +68,35 @@ jobs:
           test "$(git rev-parse HEAD)" = "$SOURCE_REVISION"
           git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
           git merge-base --is-ancestor "$SOURCE_REVISION" origin/main
-          test "$(sha256sum "$BUILD_CONTEXT/sglang-v0.5.16-dsv4-0731-runtime.patch" | awk '{print $1}')" = \
-            0666a644e0791a92606c73d91725b0b52908aa347880973ffa1d3e9dc47282f4
-          test "$(sha256sum "$BUILD_CONTEXT/sglang-v0.5.16-chunked-prefill-admission-reserve.patch" | awk '{print $1}')" = \
-            3f1c92b7a4655d4cd8d675a4a7cd33d78eb95156a962e53e4ac6da81273f4099
+          test "$(sha256sum "$BUILD_CONTEXT/sglang-nightly-c0b6474-streaming-abort.patch" | awk '{print $1}')" = \
+            28bc45ba377e3616d7221a609e584272c765f4fc3e69e0620d1ed0003bd608e4
+          test "$(sha256sum "$BUILD_CONTEXT/sglang-nightly-c0b6474-chunked-prefill-admission-reserve.patch" | awk '{print $1}')" = \
+            3f7111c472b583b0921246b38d54d09ab6bb41090efe8a6301b750612b98fc89
+          grep -Fxq \
+            'base_image=lmsysorg/sglang@sha256:51e576f02368480c055c7aadb67590d82b172e2392123ce4cf4cc8251b2d8caf' \
+            "$BUILD_CONTEXT/PROVENANCE"
+          grep -Fxq \
+            'base_commit=c0b6474b43363c2f4bc60fe3d7817d393fb51d32' \
+            "$BUILD_CONTEXT/PROVENANCE"
+          grep -Fxq \
+            'war_fence_fix_commit=717a559f02b3ad85ba4bb4623772a1672e9e3e9c' \
+            "$BUILD_CONTEXT/PROVENANCE"
           grep -Fxq \
             'model_revision=7872f01b1d1fe23eabc4c98b48bffcef5a386062' \
             "$BUILD_CONTEXT/PROVENANCE"
           grep -Fxq \
-            'chunked_prefill_admission_patch_sha256=3f1c92b7a4655d4cd8d675a4a7cd33d78eb95156a962e53e4ac6da81273f4099' \
+            'streaming_abort_patch_sha256=28bc45ba377e3616d7221a609e584272c765f4fc3e69e0620d1ed0003bd608e4' \
+            "$BUILD_CONTEXT/PROVENANCE"
+          grep -Fxq \
+            'chunked_prefill_admission_patch_sha256=3f7111c472b583b0921246b38d54d09ab6bb41090efe8a6301b750612b98fc89' \
             "$BUILD_CONTEXT/PROVENANCE"
           grep -Fxq \
             'security_remediation=CVE-2025-68121:removed-unused-nsight-efa-samplers' \
+            "$BUILD_CONTEXT/PROVENANCE"
+          test "$(sha256sum "$BUILD_CONTEXT/trivy-ignore.yaml" | awk '{print $1}')" = \
+            76ca74c9b9b29ca7819c7af21eff16128d133698b98110252ce265d20fb1fdbb
+          grep -Fxq \
+            'trivy_ignore_sha256=76ca74c9b9b29ca7819c7af21eff16128d133698b98110252ce265d20fb1fdbb' \
             "$BUILD_CONTEXT/PROVENANCE"
           echo "IMAGE_REF=${REGISTRY}/${IMAGE_REPOSITORY}:${IMAGE_TAG}" >> "$GITHUB_ENV"
 
@@ -136,12 +153,13 @@ jobs:
             --format '{{json .Image}}' \
             "$IMAGE_IMMUTABLE_REF" > image-config.json
           jq -e \
-            '.config.Labels["org.opencontainers.image.revision"] == "fdebc938f7f4d16fe6b9f55dcd9a767cf0899ea1" and
-             .config.Labels["nearai.sglang.admission_patch"] == "pr28175" and
-             .config.Labels["nearai.sglang.reasoning_backport"] == "059269594c5f245f77dad711631843c299d7713f" and
-             .config.Labels["nearai.sglang.patch.sha256"] == "0666a644e0791a92606c73d91725b0b52908aa347880973ffa1d3e9dc47282f4" and
-             .config.Labels["nearai.sglang.chunked_prefill_admission_patch"] == "nearai-v1" and
-             .config.Labels["nearai.sglang.chunked_prefill_admission_patch_sha256"] == "3f1c92b7a4655d4cd8d675a4a7cd33d78eb95156a962e53e4ac6da81273f4099" and
+            '.config.Labels["org.opencontainers.image.revision"] == "c0b6474b43363c2f4bc60fe3d7817d393fb51d32" and
+             .config.Labels["nearai.sglang.war_fence_fix"] == "sgl-project/sglang#33587" and
+             .config.Labels["nearai.sglang.dsv4_reasoning_profile"] == "upstream" and
+             .config.Labels["nearai.sglang.streaming_abort_patch"] == "nearai-v2-nightly-c0b6474" and
+             .config.Labels["nearai.sglang.streaming_abort_patch_sha256"] == "28bc45ba377e3616d7221a609e584272c765f4fc3e69e0620d1ed0003bd608e4" and
+             .config.Labels["nearai.sglang.chunked_prefill_admission_patch"] == "nearai-v2-nightly-c0b6474" and
+             .config.Labels["nearai.sglang.chunked_prefill_admission_patch_sha256"] == "3f7111c472b583b0921246b38d54d09ab6bb41090efe8a6301b750612b98fc89" and
              .config.Labels["nearai.sglang.chunked_prefill_admission_reserve"] == "runtime-env" and
              .config.Labels["nearai.security.cve_2025_68121"] == "removed-unused-nsight-efa-samplers"' \
             image-config.json
@@ -163,7 +181,7 @@ jobs:
              .metadata["https://mobyproject.org/buildkit@v1#metadata"].vcs["localdir:context"] == "docker/sglang-dsv4-0731" and
              .metadata["https://mobyproject.org/buildkit@v1#metadata"].vcs["localdir:dockerfile"] == "docker/sglang-dsv4-0731" and
              any(.materials[];
-               .digest.sha256 == "984699c298a95b73c469b2191403ddc85fd780506e13c39c4afff3845e27bc6c")' \
+               .digest.sha256 == "51e576f02368480c055c7aadb67590d82b172e2392123ce4cf4cc8251b2d8caf")' \
             buildkit-provenance.json
 
       - name: Scan the published digest
@@ -197,6 +215,8 @@ jobs:
             --output "$GITHUB_WORKSPACE/trivy-results.json" \
             --severity HIGH,CRITICAL \
             --ignore-unfixed \
+            --ignorefile "$BUILD_CONTEXT/trivy-ignore.yaml" \
+            --show-suppressed \
             --exit-code 0 \
             "$IMAGE_IMMUTABLE_REF"
 
@@ -205,9 +225,12 @@ jobs:
           set -euo pipefail
           HIGH=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "HIGH")] | length' trivy-results.json)
           CRITICAL=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "CRITICAL")] | length' trivy-results.json)
+          SUPPRESSED_CRITICAL=$(jq '[.Results[]?.ExperimentalModifiedFindings[]? | select(.Status == "ignored" and .Finding.Severity == "CRITICAL")] | length' trivy-results.json)
           echo "TRIVY_HIGH=$HIGH" >> "$GITHUB_ENV"
           echo "TRIVY_CRITICAL=$CRITICAL" >> "$GITHUB_ENV"
-          printf 'Trivy fixed-vulnerability findings: high=%s critical=%s\n' "$HIGH" "$CRITICAL"
+          echo "TRIVY_SUPPRESSED_CRITICAL=$SUPPRESSED_CRITICAL" >> "$GITHUB_ENV"
+          printf 'Trivy fixed-vulnerability findings: high=%s critical=%s suppressed-critical=%s\n' \
+            "$HIGH" "$CRITICAL" "$SUPPRESSED_CRITICAL"
 
       - name: Retain pre-promotion scan evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -228,6 +251,18 @@ jobs:
             echo "Refusing to attest or sign an image with $TRIVY_CRITICAL fixable critical vulnerabilities" >&2
             exit 1
           fi
+          if (( TRIVY_SUPPRESSED_CRITICAL != 4 )); then
+            echo "Expected four duplicate source-proven SGLang nightly-version suppressions, got $TRIVY_SUPPRESSED_CRITICAL" >&2
+            exit 1
+          fi
+          SUPPRESSED_SIGNATURES=$(jq -r '
+            [.Results[]?.ExperimentalModifiedFindings[]?
+             | select(.Status == "ignored" and .Finding.Severity == "CRITICAL")
+             | [.Finding.VulnerabilityID, .Finding.PkgIdentifier.PURL]]
+            | sort | unique | map(join("|")) | join(",")
+          ' trivy-results.json)
+          test "$SUPPRESSED_SIGNATURES" = \
+            'CVE-2026-3059|pkg:pypi/sglang@0.0.0.dev1%2Bgc0b6474b4,CVE-2026-3060|pkg:pypi/sglang@0.0.0.dev1%2Bgc0b6474b4'
 
       - name: Attest build provenance
         if: inputs.resume_digest == ''
@@ -286,10 +321,12 @@ jobs:
             echo
             echo "- tag: \`$IMAGE_REF\`"
             echo "- immutable: \`$IMAGE_IMMUTABLE_REF\`"
-            echo "- runtime patch: \`0666a644e0791a92606c73d91725b0b52908aa347880973ffa1d3e9dc47282f4\`"
-            echo "- fairness patch: \`3f1c92b7a4655d4cd8d675a4a7cd33d78eb95156a962e53e4ac6da81273f4099\`"
+            echo "- upstream SGLang: \`c0b6474b43363c2f4bc60fe3d7817d393fb51d32\` (includes #33587)"
+            echo "- streaming-abort patch: \`28bc45ba377e3616d7221a609e584272c765f4fc3e69e0620d1ed0003bd608e4\`"
+            echo "- fairness patch: \`3f7111c472b583b0921246b38d54d09ab6bb41090efe8a6301b750612b98fc89\`"
             echo "- embedded BuildKit provenance: verified"
             echo "- Trivy fixed HIGH findings: $TRIVY_HIGH"
             echo "- Trivy fixed CRITICAL findings: $TRIVY_CRITICAL"
+            echo "- Trivy source-proven nightly-version suppressions: $TRIVY_SUPPRESSED_CRITICAL"
             echo "- Sigstore: https://search.sigstore.dev/?hash=$IMAGE_DIGEST"
           } >> "$GITHUB_STEP_SUMMARY"
