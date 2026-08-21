@@ -35,7 +35,14 @@ jobs:
             ruby scripts/validate_proxy_environment.rb
 
       - name: Validate streaming HTTP/2 keepalive contracts
-        run: python3 scripts/validate_streaming_keepalive.py
+        run: |
+          docker run --rm \
+            -v "$PWD:/repo" \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "$(command -v docker):/usr/local/bin/docker:ro" \
+            -w /repo \
+            python:3.12-slim \
+            python3 scripts/validate_streaming_keepalive.py
 
       - name: Validate registrar auth contracts
         run: |
