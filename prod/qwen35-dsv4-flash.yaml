@@ -107,13 +107,13 @@ x-dcgm-common: &dcgm-common
 x-dsv4-flash-common: &dsv4-flash-common
   <<: *nvidia
   init: true
-  # DeepSeek-V4-Flash-0731 target-only TP4 sparse-prefill-on control.
+  # DeepSeek-V4-Flash-0731 target-only TP4 sparse-prefill-on configuration.
   # The single replica consumes four H200 GPUs; mixed 8192-token prefill, one
   # continuous decode step, and a 4096-token admission reserve bound
   # long-prefill interference. This pinned nightly includes the upstream
   # overlap-scheduler WAR-fence alignment from sgl-project/sglang#33587.
   # DSPARK remains disabled because it is not qualified for this mixed workload.
-  # gpu04 provides the matched target-only TP4 sparse-prefill-off treatment.
+  # gpu04 uses the same DeepSeek serving settings, with different GPU placement.
   image: docker.io/nearaidev/sglang@sha256:5bc4bc0dfd3629af7e57168098b5e76b4206dcb02b8ed8a872aebfd153ff240b
   command: >
       sglang serve
