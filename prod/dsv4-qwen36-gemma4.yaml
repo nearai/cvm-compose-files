@@ -69,11 +69,12 @@ x-dsv4-flash-common: &dsv4-flash-common
   #      page_first_direct: uses GPUDirect/unified-memory paths that hit
   #      'cudaErrorNotSupported' on the first warmup tensor.to(non_blocking)
   #      under TDX-confidential GPU memory — dropped.
-  # DeepSeek-V4-Flash-0731 target-only TP4 sparse-prefill-off treatment.
-  # It matches gpu30's target-only TP4 control except for the sparse-prefill
-  # toggle and host/co-tenant placement. The 4096-token admission reserve
-  # remains enabled to bound long-prefill interference.
-  image: docker.io/nearaidev/sglang@sha256:ec518148762ea02c23aa8615f69ca79b0c18bcd59b3c21c10229db3df323c615
+  # DeepSeek-V4-Flash-0731 target-only TP4 sparse-prefill-off containment.
+  # The pinned nightly includes the upstream overlap-scheduler WAR-fence
+  # alignment from sgl-project/sglang#33587. The sparse-prefill-off arm also
+  # disables overlap scheduling as a conservative qualification treatment;
+  # keep it isolated from the overlap-on control until qualified.
+  image: docker.io/nearaidev/sglang@sha256:5bc4bc0dfd3629af7e57168098b5e76b4206dcb02b8ed8a872aebfd153ff240b
   # Hidden-state passthrough (cloud-api#739 / inference-proxy#163) — OFF by default.
   # The gpu-manager toggles it at start via the DSV4_RETURN_HIDDEN_STATES env var,
   # spliced into /compose/up like GPT_OSS_CACHE_SUBPATH (see infra-docs compose-manager.md).
@@ -92,6 +93,7 @@ x-dsv4-flash-common: &dsv4-flash-common
       --kv-cache-dtype fp8_e4m3
       --moe-runner-backend marlin
       --cuda-graph-max-bs 64
+      --disable-overlap-schedule
       --mem-fraction-static 0.83
       --max-running-requests 64
       --max-queued-requests 16
@@ -126,6 +128,11 @@ x-dsv4-flash-common: &dsv4-flash-common
     - SGLANG_ENABLE_SPEC_V2=1
     - SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE=4096
     - SGLANG_DSV4_FP4_EXPERTS=1   # FP4 ckpt: experts ARE FP4 (marlin dequantizes). =0 forced the non-FP4 layout → load failure / invalid weights (PR #98 review)
+    # Matched H200 A/B: 10.47M -> 11.53M KV tokens per TP4 replica (+10%).
+    - SGLANG_DSV4_COMPRESS_STATE_DTYPE=bf16
+    # Avoid TopK v2's long-context illegal-address failure band while the
+    # independent TP-rank divergence remains under investigation.
+    - SGLANG_OPT_USE_TOPK_V2=0
     - SGLANG_ENABLE_UNIFIED_RADIX_TREE=1
     - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
     # Partial bypass only: batches with q.shape[0] > 11673 still enter the
@@ -362,7 +369,7 @@ services:
       - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
       - VLLM_PROXY_STREAM_IDLE_TIMEOUT_SECS=20
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:deepseek-ai/DeepSeek-V4-Flash","deployment:dsv4-qwen36-gemma4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","ab_arm:tp4-target-only-sparse-off-gpu04","sparse_prefill:off"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:deepseek-ai/DeepSeek-V4-Flash","deployment:dsv4-qwen36-gemma4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","ab_arm:tp4-target-only-sparse-off-no-overlap-gpu04","sparse_prefill:off","overlap_schedule:off"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "inference-proxy"
       nearai.otel.service: "vllm-proxy"
@@ -377,8 +384,9 @@ services:
       nearai.otel.host_machine: "${CVM_HOST}"
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
-      nearai.otel.ab_arm: "tp4-target-only-sparse-off-gpu04"
+      nearai.otel.ab_arm: "tp4-target-only-sparse-off-no-overlap-gpu04"
       nearai.otel.sparse_prefill: "off"
+      nearai.otel.overlap_schedule: "off"
 
   model-sg-dsv4-flash-fp4-tp4:
     <<: *dsv4-flash-common
@@ -396,8 +404,8 @@ services:
     labels:
       com.datadoghq.ad.check_names: '["openmetrics"]'
       com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:deepseek-ai/DeepSeek-V4-Flash-0731","model_path:deepseek-ai/DeepSeek-V4-Flash-0731","model_revision:7872f01b1d1fe23eabc4c98b48bffcef5a386062","deployment:dsv4-qwen36-gemma4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:1","config_variant:dsv4-0731-tp4-target-only-sparse-off","decode_mode:target_only","sparse_prefill:off","chunk_size:8192","ab_arm:tp4-target-only-sparse-off-gpu04","max_prefill_tokens:16384","continuous_decode_steps:1","chunked_prefill_admission_reserve:4096","watchdog_timeout:1800","cuda_graph:1","max_running_requests:64","max_queued_requests:16","schedule_conservativeness:1.3","sglang_revision:0.5.16-near-dsv4-0731","engine_image:ec518148762e"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-sg-dsv4-flash-fp4-tp4:8000/metrics", "metrics":["sglang:*"], "histogram_buckets_as_distributions": true, "service": "sglang", "tags":["model:deepseek-ai/DeepSeek-V4-Flash-0731","model_path:deepseek-ai/DeepSeek-V4-Flash-0731","model_revision:7872f01b1d1fe23eabc4c98b48bffcef5a386062","deployment:dsv4-qwen36-gemma4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:1","config_variant:dsv4-0731-tp4-target-only-sparse-off","decode_mode:target_only","sparse_prefill:off","chunk_size:8192","ab_arm:tp4-target-only-sparse-off-gpu04","max_prefill_tokens:16384","continuous_decode_steps:1","chunked_prefill_admission_reserve:4096","watchdog_timeout:1800","cuda_graph:1","max_running_requests:64","max_queued_requests:16","schedule_conservativeness:1.3","sglang_revision:0.5.16-near-dsv4-0731","engine_image:ec518148762e"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:deepseek-ai/DeepSeek-V4-Flash-0731","model_path:deepseek-ai/DeepSeek-V4-Flash-0731","model_revision:7872f01b1d1fe23eabc4c98b48bffcef5a386062","deployment:dsv4-qwen36-gemma4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:1","config_variant:dsv4-0731-tp4-target-only-sparse-off-no-overlap","decode_mode:target_only","sparse_prefill:off","overlap_schedule:off","chunk_size:8192","ab_arm:tp4-target-only-sparse-off-no-overlap-gpu04","max_prefill_tokens:16384","continuous_decode_steps:1","chunked_prefill_admission_reserve:4096","compress_state_dtype:bf16","watchdog_timeout:1800","cuda_graph:1","max_running_requests:64","max_queued_requests:16","schedule_conservativeness:1.3","sglang_revision:nightly-c0b6474-near-v1","engine_image:5bc4bc0dfd36"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-sg-dsv4-flash-fp4-tp4:8000/metrics", "metrics":["sglang:*"], "histogram_buckets_as_distributions": true, "service": "sglang", "tags":["model:deepseek-ai/DeepSeek-V4-Flash-0731","model_path:deepseek-ai/DeepSeek-V4-Flash-0731","model_revision:7872f01b1d1fe23eabc4c98b48bffcef5a386062","deployment:dsv4-qwen36-gemma4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:1","config_variant:dsv4-0731-tp4-target-only-sparse-off-no-overlap","decode_mode:target_only","sparse_prefill:off","overlap_schedule:off","chunk_size:8192","ab_arm:tp4-target-only-sparse-off-no-overlap-gpu04","max_prefill_tokens:16384","continuous_decode_steps:1","chunked_prefill_admission_reserve:4096","compress_state_dtype:bf16","watchdog_timeout:1800","cuda_graph:1","max_running_requests:64","max_queued_requests:16","schedule_conservativeness:1.3","sglang_revision:nightly-c0b6474-near-v1","engine_image:5bc4bc0dfd36"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -414,21 +422,23 @@ services:
       nearai.otel.host_machine: "${CVM_HOST}"
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
-      nearai.otel.config_variant: "dsv4-0731-tp4-target-only-sparse-off"
+      nearai.otel.config_variant: "dsv4-0731-tp4-target-only-sparse-off-no-overlap"
       nearai.otel.decode_mode: "target_only"
       nearai.otel.sparse_prefill: "off"
+      nearai.otel.overlap_schedule: "off"
       nearai.otel.chunk_size: "8192"
-      nearai.otel.ab_arm: "tp4-target-only-sparse-off-gpu04"
+      nearai.otel.ab_arm: "tp4-target-only-sparse-off-no-overlap-gpu04"
       nearai.otel.max_prefill_tokens: "16384"
       nearai.otel.continuous_decode_steps: "1"
       nearai.otel.chunked_prefill_admission_reserve: "4096"
+      nearai.otel.compress_state_dtype: "bf16"
       nearai.otel.watchdog_timeout: "1800"
       nearai.otel.cuda_graph: "1"
       nearai.otel.max_running_requests: "64"
       nearai.otel.max_queued_requests: "16"
       nearai.otel.schedule_conservativeness: "1.3"
-      nearai.otel.sglang_revision: "0.5.16-near-dsv4-0731"
-      nearai.otel.engine_image: "ec518148762e"
+      nearai.otel.sglang_revision: "nightly-c0b6474-near-v1"
+      nearai.otel.engine_image: "5bc4bc0dfd36"
 
   # --- Qwen3.6-27B-FP8 (GPU 4) — SGLang TP=1 ---
 
