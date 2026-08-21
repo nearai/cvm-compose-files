@@ -160,6 +160,9 @@ x-dsv4-flash-common: &dsv4-flash-common
     - SGLANG_DSV4_FP4_EXPERTS=1
     # Matched H200 A/B: 10.47M -> 11.53M KV tokens per TP4 replica (+10%).
     - SGLANG_DSV4_COMPRESS_STATE_DTYPE=bf16
+    # Containment for sgl-project/sglang#34718: avoid TopK v2's 65K-131K
+    # streaming band until its long-context illegal-address failure is fixed.
+    - SGLANG_OPT_USE_TOPK_V2=0
     - SGLANG_ENABLE_UNIFIED_RADIX_TREE=1
     - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
     - SGLANG_OPT_FLASHMLA_SPARSE_PREFILL=1
