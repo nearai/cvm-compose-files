@@ -6,6 +6,9 @@ require "yaml"
 
 ROOT = File.expand_path("..", __dir__)
 EXCLUDED_FILES = ["cleanup-hf-model.yaml"].freeze
+QWEN36_DOMAIN = "qwen3-6-35b.completions.near.ai".freeze
+QWEN30_DOMAIN = "qwen3-30b.completions.near.ai".freeze
+QWEN30_STAGING_DOMAIN = "qwen3-30b.completions-stg.near.ai".freeze
 
 def yaml_load(content)
   YAML.load(content, aliases: true)
@@ -54,6 +57,43 @@ def proxy_pass_upstreams(compose, service)
   end.uniq
 end
 
+def validate_qwen30_compat(compose, file, errors)
+  return unless file.start_with?("prod/")
+
+  services = compose.fetch("services", {})
+  configs = compose.fetch("configs", {})
+  nginx = services.find { |name, _service| nginx_service?(name) }&.last
+  return if nginx.nil?
+
+  nginx_content = config_sources(nginx).map do |source|
+    configs.fetch(source, {}).fetch("content", "")
+  end.join("\n")
+  return unless nginx_content.include?(QWEN36_DOMAIN)
+
+  qwen_vhost = nginx_content.match(
+    %r{server_name\s+#{Regexp.escape(QWEN36_DOMAIN)}(?<names>.*?);\s+.*?proxy_pass\s+http://proxy-qwen36-35b-a3b:8000;}m,
+  )
+  if qwen_vhost.nil?
+    errors << "#{file}: Qwen3.6 nginx vhost is missing or does not target proxy-qwen36-35b-a3b:8000"
+  else
+    names = qwen_vhost[:names]
+    [QWEN30_DOMAIN, QWEN30_STAGING_DOMAIN, "qwen3-30b-i"].each do |required_name|
+      next if names.include?(required_name)
+
+      errors << "#{file}: Qwen3.6 nginx vhost missing compatibility SNI #{required_name}"
+    end
+  end
+
+  registrar = configs.dig("registrar_script", "content").to_s
+  unless registrar.include?('"https://completions-stg.near.ai"')
+    errors << "#{file}: registrar alias refresh must cover the staging model-proxy"
+  end
+  expected_alias = %(register_alias "#{QWEN30_DOMAIN}" "#{QWEN36_DOMAIN}")
+  unless registrar.include?(expected_alias)
+    errors << "#{file}: registrar missing #{expected_alias}"
+  end
+end
+
 errors = []
 
 # Find compose files in prod/, experiments/, and root (utilities). Relative
@@ -67,6 +107,7 @@ compose_files.sort.each do |path|
 
   compose = yaml_load(File.read(path))
   services = compose.fetch("services", {})
+  validate_qwen30_compat(compose, file, errors)
 
   services.each do |service_name, service|
     deps = dependency_names(service["depends_on"]).map(&:to_s)
