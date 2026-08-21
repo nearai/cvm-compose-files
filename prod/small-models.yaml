@@ -2368,6 +2368,13 @@ configs:
           server_name gpt-oss-120b.completions.near.ai
                       gpt-oss-120b.completions-stg.near.ai
                       ~^gpt-oss-120b-i\d+\.completions(-stg)?\.near\.ai$$;
+          # cloud-api multiplexes unrelated H2 requests over one bucket-pinned connection.
+          # Raise the request budget so nginx does not close it at 1000 requests and kill
+          # every in-flight SSE stream. Keep it alive across idle gaps so a reconnect does
+          # not open a new TCP through model-proxy's L4 LB, land on a different backend,
+          # and make the signature lookup return 404.
+          keepalive_timeout 1h;
+          keepalive_requests 1000000;
           location / { proxy_pass http://proxy-gptoss-120b:8000; }
       }
 
@@ -2384,6 +2391,13 @@ configs:
           server_name qwen3-vl-30b.completions.near.ai
                       qwen3-vl-30b.completions-stg.near.ai
                       ~^qwen3-vl-30b-i\d+\.completions(-stg)?\.near\.ai$$;
+          # cloud-api multiplexes unrelated H2 requests over one bucket-pinned connection.
+          # Raise the request budget so nginx does not close it at 1000 requests and kill
+          # every in-flight SSE stream. Keep it alive across idle gaps so a reconnect does
+          # not open a new TCP through model-proxy's L4 LB, land on a different backend,
+          # and make the signature lookup return 404.
+          keepalive_timeout 1h;
+          keepalive_requests 1000000;
           location / { proxy_pass http://proxy-qwen3vl-30b-a3b:8000; }
       }
 
@@ -2424,6 +2438,13 @@ configs:
           server_name qwen3-6-35b.completions.near.ai
                       qwen3-6-35b.completions-stg.near.ai
                       ~^qwen3-6-35b-i\d+\.completions(-stg)?\.near\.ai$$;
+          # cloud-api multiplexes unrelated H2 requests over one bucket-pinned connection.
+          # Raise the request budget so nginx does not close it at 1000 requests and kill
+          # every in-flight SSE stream. Keep it alive across idle gaps so a reconnect does
+          # not open a new TCP through model-proxy's L4 LB, land on a different backend,
+          # and make the signature lookup return 404.
+          keepalive_timeout 1h;
+          keepalive_requests 1000000;
           location / { proxy_pass http://proxy-qwen36-35b-a3b:8000; }
       }
 
@@ -2432,5 +2453,12 @@ configs:
           server_name gemma-4-31b.completions.near.ai
                       gemma-4-31b.completions-stg.near.ai
                       ~^gemma-4-31b-i\d+\.completions(-stg)?\.near\.ai$$;
+          # cloud-api multiplexes unrelated H2 requests over one bucket-pinned connection.
+          # Raise the request budget so nginx does not close it at 1000 requests and kill
+          # every in-flight SSE stream. Keep it alive across idle gaps so a reconnect does
+          # not open a new TCP through model-proxy's L4 LB, land on a different backend,
+          # and make the signature lookup return 404.
+          keepalive_timeout 1h;
+          keepalive_requests 1000000;
           location / { proxy_pass http://proxy-gemma4-31b:8000; }
       }
