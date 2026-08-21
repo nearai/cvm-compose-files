@@ -342,10 +342,9 @@ services:
     labels:
       com.datadoghq.ad.logs: '[{"source":"model-proxy-registrar","service":"model-proxy-registrar","tags":["model:deepseek-ai/DeepSeek-V4-Flash","deployment:dsv4-qwen36-gemma4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
 
-  # --- DeepSeek-V4-Flash (FP4) (GPUs 0-3) — target-only TP4 sparse-off treatment ---
-  # gpu30 is the sparse-on TP4 control. This consolidation removes gpu04's two
-  # TP2 arms and keeps one stable endpoint so the cross-host A/B differs at the
-  # engine level only by sparse-prefill mode (plus unavoidable host/co-tenancy).
+  # --- DeepSeek-V4-Flash (FP4) (GPUs 0-3) — target-only TP4 containment ---
+  # This combined sparse-prefill-off/no-overlap qualification arm is isolated
+  # from the sparse-on/overlap-on control (plus unavoidable host/co-tenancy).
 
   proxy-dsv4-flash:
     <<: *vllm-proxy-common
@@ -689,8 +688,8 @@ services:
     labels:
       com.datadoghq.ad.check_names: '["dcgm"]'
       com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint": "http://%%host%%:9400/metrics", "tags":["model:deepseek-ai/DeepSeek-V4-Flash","deployment:dsv4-qwen36-gemma4","ip:${HOST_IP}","ab_arm:tp4-target-only-sparse-off-gpu04","sparse_prefill:off"]}]'
-      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:deepseek-ai/DeepSeek-V4-Flash","deployment:dsv4-qwen36-gemma4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ab_arm:tp4-target-only-sparse-off-gpu04","sparse_prefill:off"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint": "http://%%host%%:9400/metrics", "tags":["model:deepseek-ai/DeepSeek-V4-Flash","deployment:dsv4-qwen36-gemma4","ip:${HOST_IP}","ab_arm:tp4-target-only-sparse-off-no-overlap-gpu04","sparse_prefill:off","overlap_schedule:off","compress_state_dtype:bf16"]}]'
+      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:deepseek-ai/DeepSeek-V4-Flash","deployment:dsv4-qwen36-gemma4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ab_arm:tp4-target-only-sparse-off-no-overlap-gpu04","sparse_prefill:off","overlap_schedule:off","compress_state_dtype:bf16"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "dcgm"
       nearai.otel.service: "dcgm-exporter"
@@ -705,8 +704,10 @@ services:
       nearai.otel.host_machine: "${CVM_HOST}"
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
-      nearai.otel.ab_arm: "tp4-target-only-sparse-off-gpu04"
+      nearai.otel.ab_arm: "tp4-target-only-sparse-off-no-overlap-gpu04"
       nearai.otel.sparse_prefill: "off"
+      nearai.otel.overlap_schedule: "off"
+      nearai.otel.compress_state_dtype: "bf16"
 
   dcgm-qwen36-27b:
     <<: *dcgm-common
@@ -970,21 +971,23 @@ configs:
                       ip: "${HOST_IP}"
                       port: "8000"
                       instance: "1"
-                      config_variant: "dsv4-0731-tp4-target-only-sparse-off"
+                      config_variant: "dsv4-0731-tp4-target-only-sparse-off-no-overlap"
                       decode_mode: "target_only"
                       sparse_prefill: "off"
+                      overlap_schedule: "off"
                       chunk_size: "8192"
-                      ab_arm: "tp4-target-only-sparse-off-gpu04"
+                      ab_arm: "tp4-target-only-sparse-off-no-overlap-gpu04"
                       max_prefill_tokens: "16384"
                       continuous_decode_steps: "1"
                       chunked_prefill_admission_reserve: "4096"
+                      compress_state_dtype: "bf16"
                       watchdog_timeout: "1800"
                       cuda_graph: "1"
                       max_running_requests: "64"
                       max_queued_requests: "16"
                       schedule_conservativeness: "1.3"
-                      sglang_revision: "0.5.16-near-dsv4-0731"
-                      engine_image: "ec518148762e"
+                      sglang_revision: "nightly-c0b6474-near-v1"
+                      engine_image: "5bc4bc0dfd36"
               - job_name: sglang-model-sg-qwen36-27b-fp8-tp1
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -1076,8 +1079,10 @@ configs:
                       cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "9400"
-                      ab_arm: "tp4-target-only-sparse-off-gpu04"
+                      ab_arm: "tp4-target-only-sparse-off-no-overlap-gpu04"
                       sparse_prefill: "off"
+                      overlap_schedule: "off"
+                      compress_state_dtype: "bf16"
               - job_name: dcgm-dcgm-qwen36-27b
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -1146,8 +1151,9 @@ configs:
                       cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "8000"
-                      ab_arm: "tp4-target-only-sparse-off-gpu04"
+                      ab_arm: "tp4-target-only-sparse-off-no-overlap-gpu04"
                       sparse_prefill: "off"
+                      overlap_schedule: "off"
               - job_name: inference-proxy-proxy-qwen36-27b
                 scrape_interval: 15s
                 metrics_path: /metrics
