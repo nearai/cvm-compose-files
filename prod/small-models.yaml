@@ -221,6 +221,20 @@ x-downloader-common: &downloader-common
 # mem-fraction 0.85 is safe WITH the 8192/16384 budget (workspace stays small); the KV pool
 # regained by 0.85 over the hotfix's 0.82 is ~73k tokens (~381k vs ~308k, ctx 262144).
 # Do NOT raise the prefill budget without re-running the full OOM math on 141 GB H200s.
+# GLM-5.2 CONTEXT TIERS: this engine is the deliberate 262k BASE tier;
+# --context-length 262144 and the base glm-5-2.completions.near.ai domain are
+# by design. See prod/GLM-5.2-W4AFP8-SGL-2xTP4.yaml (the 2xTP4 base fleet).
+# Requests larger than the base window are routed by cloud-api to the TP8 host
+# at glm-5-2-long.completions.near.ai through the model row's
+# provider_config.long_context block; routing lives in
+# crates/services/src/inference_provider_pool/context_routing.rs.
+# Do NOT register canonical z-ai/glm-5.2 under the long domain from this file:
+# model-proxy's model->domain map is one-domain-per-model-id, last-writer-wins,
+# so that would flap routing fleet-wide. The TP8 file below owns the long-tier
+# discovery stub: prod/GLM-5.2-W4AFP8-SGL-TP8.yaml.
+# DEPLOY GATE: this host must not take base-pool traffic until the long_context
+# block is confirmed on the z-ai/glm-5.2 catalog row; without it, oversized
+# requests round-robin into this 262k engine and fail.
 x-glm52-cmd: &glm52-cmd >
   sglang serve
   --model-path PhalaCloud/GLM-5.2-W4AFP8
