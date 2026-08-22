@@ -232,9 +232,12 @@ x-downloader-common: &downloader-common
 # model-proxy's model->domain map is one-domain-per-model-id, last-writer-wins,
 # so that would flap routing fleet-wide. The TP8 file below owns the long-tier
 # discovery stub: prod/GLM-5.2-W4AFP8-SGL-TP8.yaml.
-# DEPLOY GATE: this host must not take base-pool traffic until the long_context
-# block is confirmed on the z-ai/glm-5.2 catalog row; without it, oversized
-# requests round-robin into this 262k engine and fail.
+# LONG-CONTEXT GATE VERIFIED LIVE (2026-08-22): a 262k backend is safe in the
+# base pool. Re-check on a model-proxy host:
+# curl -H "Authorization: Bearer $MODEL_PROXY_TOKEN" http://127.0.0.1:34090/metrics | grep requests_by_domain.*glm-5-2
+# A nonzero glm-5-2-long counter means the tier is active. If it is ever zero
+# while this engine is in the base pool, oversized requests will land here
+# and fail.
 x-glm52-cmd: &glm52-cmd >
   sglang serve
   --model-path PhalaCloud/GLM-5.2-W4AFP8
