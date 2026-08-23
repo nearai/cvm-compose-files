@@ -91,6 +91,7 @@ x-dsv4-flash-common: &dsv4-flash-common
       --max-num-seqs 64
       --max-num-batched-tokens 16384
       --enable-prefix-caching
+      --enable-prompt-tokens-details
       --host 0.0.0.0
       --port 8000
   volumes:
@@ -334,6 +335,9 @@ services:
       - FUSION_ENABLED=${FUSION_ENABLED}
       - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
       - VLLM_BASE_URL=http://model-vllm-dsv4-flash-fp4-dp4:8000
+      # REVIEW BLOCKER: replace the proxy image digest above with a build that
+      # supports this variable before deployment; the current digest ignores it.
+      - VLLM_DATA_PARALLEL_SIZE=4
       - VLLM_PROXY_MAX_REQUEST_SIZE=104857600
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
