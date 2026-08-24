@@ -103,6 +103,9 @@ x-dsv4-flash-common: &dsv4-flash-common
     - NVIDIA_DRIVER_CAPABILITIES=compute,utility
     - OPENBLAS_L2_SIZE=2097152
     - NCCL_DEBUG=WARN
+    # First-start compile/profiling on the TDX H200 host exceeded vLLM's
+    # 600-second default even though all four engine ranks kept progressing.
+    - VLLM_ENGINE_READY_TIMEOUT_S=1800
     - VLLM_USE_BREAKABLE_CUDAGRAPH=0
     - VLLM_SKIP_P2P_CHECK=1
     - NCCL_CUMEM_ENABLE=1
@@ -321,6 +324,7 @@ services:
 
   proxy-dsv4-flash:
     <<: *vllm-proxy-common
+    image: nearaidev/vllm-proxy-rs@sha256:700e5a806433e6b820118043e592e2d8dd8cc1bb9bab2e10bab85d33afa7975e
     container_name: proxy-dsv4-flash
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
@@ -334,6 +338,7 @@ services:
       - FUSION_ENABLED=${FUSION_ENABLED}
       - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
       - VLLM_BASE_URL=http://model-vllm-dsv4-flash-fp4-dp4:8000
+      - VLLM_DATA_PARALLEL_SIZE=4
       - VLLM_PROXY_MAX_REQUEST_SIZE=104857600
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
