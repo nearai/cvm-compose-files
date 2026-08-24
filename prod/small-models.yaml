@@ -193,6 +193,8 @@ x-flux-common: &flux-common
 # This engine joins the existing uniform glm-5-1.completions.near.ai pool
 # (today: gpu03 and gpu02), all backends serving zai-org/GLM-5.1-FP8 on the
 # same recipe, so there is no context-tier hazard.
+# The TP4 engine sits on GPUs 3-6 so the single-copy gpt-oss and qwen3.6 r1
+# keep their existing GPUs and are never recreated during this rollout.
 # The recipe is copied from prod/dsv4-qwen38-glm51.yaml — keep the two in sync,
 # do not retune here.
 # This engine uses build: (the sglang#28305 patch), so a deploy must run
@@ -566,7 +568,7 @@ services:
     labels:
       com.datadoghq.ad.logs: '[{"source":"model-proxy-registrar","service":"model-proxy-registrar","tags":["model:openai/gpt-oss-120b","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
 
-  # --- GPT-OSS x1 (GPU 4) — single proxy, single backend ---
+  # --- GPT-OSS x1 (GPU 0) — single proxy, single backend ---
 
   proxy-gptoss-120b:
     <<: *vllm-proxy-common
@@ -582,7 +584,7 @@ services:
       - TOKEN=${PROXY_TOKEN}
       - FUSION_ENABLED=${FUSION_ENABLED}
       - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
-      - VLLM_BACKEND_URLS=http://model-vllm-gptoss-120b-mxfp4-tp1-r1:8000
+      - VLLM_BACKEND_URLS=http://model-vllm-gptoss-120b-mxfp4-tp1-r3:8000
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
       - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
@@ -604,26 +606,27 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
-  model-vllm-gptoss-120b-mxfp4-tp1-r1:
+  # Keep the legacy -r3 service name so the running GPU-0 container is never recreated.
+  model-vllm-gptoss-120b-mxfp4-tp1-r3:
     <<: *gpt-oss-common
-    container_name: model-vllm-gptoss-120b-mxfp4-tp1-r1
+    container_name: model-vllm-gptoss-120b-mxfp4-tp1-r3
     deploy:
       resources:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["4"]
+              device_ids: ["0"]
               capabilities: [gpu]
     labels:
       com.datadoghq.ad.check_names: '["vllm"]'
       com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:openai/gpt-oss-120b","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8001","instance:1"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-gptoss-120b-mxfp4-tp1-r1:8000/metrics", "histogram_buckets_as_distributions": true, "service": "vllm", "tags":["model:openai/gpt-oss-120b","ip:${HOST_IP}", "port:8001"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:openai/gpt-oss-120b","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8001","instance:3"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-gptoss-120b-mxfp4-tp1-r3:8000/metrics", "histogram_buckets_as_distributions": true, "service": "vllm", "tags":["model:openai/gpt-oss-120b","ip:${HOST_IP}", "port:8001"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
       nearai.otel.source: "vllm"
-      nearai.otel.container_name: "model-vllm-gptoss-120b-mxfp4-tp1-r1"
+      nearai.otel.container_name: "model-vllm-gptoss-120b-mxfp4-tp1-r3"
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "openai/gpt-oss-120b"
@@ -634,7 +637,7 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
-  # --- Qwen3.6-35B-A3B-FP8 x2 (GPUs 5, 6) — SGLang, TP=1, EAGLE-v2 spec, single proxy multi-backend ---
+  # --- Qwen3.6-35B-A3B-FP8 x2 (GPUs 1, 2) — SGLang, TP=1, EAGLE-v2 spec, single proxy multi-backend ---
 
   proxy-qwen36-35b-a3b:
     <<: *vllm-proxy-common
@@ -680,7 +683,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["5"]
+              device_ids: ["1"]
               capabilities: [gpu]
     labels:
       com.datadoghq.ad.check_names: '["openmetrics"]'
@@ -710,7 +713,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["6"]
+              device_ids: ["2"]
               capabilities: [gpu]
     labels:
       com.datadoghq.ad.check_names: '["openmetrics"]'
@@ -787,7 +790,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["0","1","2","3"]
+              device_ids: ["3","4","5","6"]
               capabilities: [gpu]
     restart: unless-stopped
     stop_grace_period: 5m
@@ -1255,7 +1258,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["4"]
+              device_ids: ["0"]
               capabilities: [gpu]
     labels:
       com.datadoghq.ad.check_names: '["dcgm"]'
@@ -1285,7 +1288,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["5","6"]
+              device_ids: ["1","2"]
               capabilities: [gpu]
     labels:
       com.datadoghq.ad.check_names: '["dcgm"]'
@@ -1315,7 +1318,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["0","1","2","3"]
+              device_ids: ["3","4","5","6"]
               capabilities: [gpu]
     labels:
       com.datadoghq.ad.check_names: '["dcgm"]'
@@ -1506,15 +1509,15 @@ configs:
         prometheus/apps:
           config:
             scrape_configs:
-              - job_name: vllm-model-vllm-gptoss-120b-mxfp4-tp1-r1
+              - job_name: vllm-model-vllm-gptoss-120b-mxfp4-tp1-r3
                 scrape_interval: 15s
                 metrics_path: /metrics
                 static_configs:
-                  - targets: ['model-vllm-gptoss-120b-mxfp4-tp1-r1:8000']
+                  - targets: ['model-vllm-gptoss-120b-mxfp4-tp1-r3:8000']
                     labels:
                       service: "vllm"
                       source: "vllm"
-                      container_name: "model-vllm-gptoss-120b-mxfp4-tp1-r1"
+                      container_name: "model-vllm-gptoss-120b-mxfp4-tp1-r3"
                       model: "openai/gpt-oss-120b"
                       deployment: "small-models"
                       env: "${ENV}"
@@ -1523,7 +1526,7 @@ configs:
                       cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "8001"
-                      instance: "1"
+                      instance: "3"
               - job_name: sglang-model-sg-qwen36-35b-a3b-fp8-tp1-r1
                 scrape_interval: 15s
                 metrics_path: /metrics
