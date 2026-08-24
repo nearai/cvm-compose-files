@@ -190,15 +190,14 @@ x-flux-common: &flux-common
             device_ids: ["7"]
             capabilities: [gpu]
 
-# GLM-5.2 W4AFP8 — SINGLE TP4 SGLang replica co-resident with the small-models
-# pack on GPUs 0-3. The W4AFP8 checkpoint fits the four-GPU H200 slice with a
-# large FP8 KV pool at context 262144; the v0.5.14 image is pinned because it
-# includes the long-context IndexShare and low-concurrency decode fixes.
-# Bounded prefill and request queues avoid the TP4 transient workspace OOM path;
-# EAGLE 5/1/6 with spec-v2 is the validated decode configuration. The 8dc3a42a
-# revision is the quality-gated HF revision, and the digest must not drift.
-# The single replica uses an isolated compile cache; the loopback rendezvous
-# address avoids the dstack bridge's distributed-init timeout.
+# This engine joins the existing uniform glm-5-1.completions.near.ai pool
+# (today: gpu03 and gpu02), all backends serving zai-org/GLM-5.1-FP8 on the
+# same recipe, so there is no context-tier hazard.
+# The recipe is copied from prod/dsv4-qwen38-glm51.yaml — keep the two in sync,
+# do not retune here.
+# This engine uses build: (the sglang#28305 patch), so a deploy must run
+# docker compose build before up — compose-manager's /compose/up already does
+# pull -> build -> up.
 
 x-downloader-common: &downloader-common
   image: ghcr.io/astral-sh/uv:python3.11-bookworm-slim@sha256:4f5d923c9dcea037f57bda425dd209f3ec643da2f0b74227f68d09dab0b3bb36
@@ -206,64 +205,54 @@ x-downloader-common: &downloader-common
   restart: "no"
   logging: *logging-conf
 
-# Shared sglang args for the replica command. Flags rationale is in the header;
-# measurements are in REPORT.md.
-# ===== PREFILL A/B VERDICT (2026-07-16): both replicas converged on the 8192/16384 budget =====
-# The A/B (r1: cookbook 32768/32768 candidate vs r2: Phala default 8192/16384) was decided
-# by STABILITY, not TTFT. r1's 32k budget needs a ~3.5-4 GiB transient workspace per rank on
-# its first heavy prefill, and OOM'd at BOTH mem-fractions tried:
-#   - 0.85: 4.02 GiB alloc vs ~3.4 GiB free -> deterministic boot-loop (2026-07-09/10,
-#     ~30 cycles; the repeated hard kills also wedged the CVM's NVML/NVSwitch state,
-#     requiring a host-side vmm-cli VM restart on 07-13).
-#   - 0.82 (#137 hotfix): survived 2 days of light traffic, then 3.47 GiB alloc vs
-#     2.73 GiB free -> crash-looped all of 07-15; r1 stopped via dashboard 20:46 CEST.
-# r2 (8192/16384 @0.85) served the same live traffic mix without a single OOM throughout.
-# mem-fraction 0.85 is safe WITH the 8192/16384 budget (workspace stays small); the KV pool
-# regained by 0.85 over the hotfix's 0.82 is ~73k tokens (~381k vs ~308k, ctx 262144).
-# Do NOT raise the prefill budget without re-running the full OOM math on 141 GB H200s.
-# GLM-5.2 CONTEXT TIERS: this engine is the deliberate 262k BASE tier;
-# --context-length 262144 and the base glm-5-2.completions.near.ai domain are
-# by design. See prod/GLM-5.2-W4AFP8-SGL-2xTP4.yaml (the 2xTP4 base fleet).
-# Requests larger than the base window are routed by cloud-api to the TP8 host
-# at glm-5-2-long.completions.near.ai through the model row's
-# provider_config.long_context block; routing lives in
-# crates/services/src/inference_provider_pool/context_routing.rs.
-# Do NOT register canonical z-ai/glm-5.2 under the long domain from this file:
-# model-proxy's model->domain map is one-domain-per-model-id, last-writer-wins,
-# so that would flap routing fleet-wide. The TP8 file below owns the long-tier
-# discovery stub: prod/GLM-5.2-W4AFP8-SGL-TP8.yaml.
-# LONG-CONTEXT GATE VERIFIED LIVE (2026-08-22): a 262k backend is safe in the
-# base pool. Re-check on a model-proxy host:
-# curl -H "Authorization: Bearer $MODEL_PROXY_TOKEN" http://127.0.0.1:34090/metrics | grep requests_by_domain.*glm-5-2
-# A nonzero glm-5-2-long counter means the tier is active. If it is ever zero
-# while this engine is in the base pool, oversized requests will land here
-# and fail.
-x-glm52-cmd: &glm52-cmd >
+# SGLang base + sglang#28305 fused-qkv cat_dim fix, copied byte-for-byte from
+# the deployed GLM-5.1 recipe. The build fails loudly if the upstream loader
+# changes and the patch anchor no longer matches.
+x-glm51-awq-build: &glm51-awq-build
+  dockerfile_inline: |
+    FROM lmsysorg/sglang:dev-cu12@sha256:aac6b242680daeb74d2ab1d85f70575357552d7d165d2e5d30eb362797db54a1
+    RUN python3 - <<'PYEOF'
+    import re
+    f = "/sgl-workspace/sglang/python/sglang/srt/models/deepseek_common/deepseek_weight_loader.py"
+    s = open(f).read()
+    pat = re.compile(r"(?P<i> +)cat_dim = 1\n\n(?P<j> +)fused_weight = torch\.cat\(")
+    def repl(m):
+        j = m.group("j")
+        return (
+            m.group("i") + "cat_dim = 1\n\n"
+            + j + "if (\n"
+            + j + "    q_a_proj_weight.dim() == 2\n"
+            + j + "    and q_a_proj_weight.shape[1 - cat_dim]\n"
+            + j + "    != kv_a_proj_weight.shape[1 - cat_dim]\n"
+            + j + "):\n"
+            + j + "    cat_dim = 1 - cat_dim\n\n"
+            + j + "fused_weight = torch.cat("
+        )
+    s2, n = pat.subn(repl, s, count=1)
+    assert n == 1, "sglang#28305 cat_dim patch anchor not found (loader changed)"
+    open(f, "w").write(s2)
+    print("[sglang#28305] fused qkv_a_proj cat_dim fix applied")
+    PYEOF
+
+x-glm51-awq-cmd: &glm51-awq-cmd >
   sglang serve
-  --model-path PhalaCloud/GLM-5.2-W4AFP8
-  --revision 8dc3a42a45cf2a6c47d241fd2c226afde73f1316
-  --served-model-name z-ai/glm-5.2
-  --quantization w4afp8
+  --model-path QuantTrio/GLM-5.1-AWQ
+  --revision 8f60817aa28023f2607850d1a1e51d21aa34817a
+  --served-model-name zai-org/GLM-5.1-FP8
   --tp 4
   --dist-init-addr 127.0.0.1:29500
   --disable-shared-experts-fusion
-  --disable-custom-all-reduce
   --kv-cache-dtype fp8_e4m3
   --reasoning-parser glm45
   --tool-call-parser glm47
   --log-requests-level 0
   --mem-fraction-static 0.85
-  --context-length 262144
-  --chunked-prefill-size 8192
-  --max-prefill-tokens 16384
-  --max-running-requests 96
+  --max-running-requests 128
   --max-queued-requests 16
-  --cuda-graph-max-bs 64
-  --enforce-disable-flashinfer-allreduce-fusion
   --speculative-algorithm EAGLE
-  --speculative-num-steps 5
+  --speculative-num-steps 3
   --speculative-eagle-topk 1
-  --speculative-num-draft-tokens 6
+  --speculative-num-draft-tokens 4
   --watchdog-timeout 1800
   --port 8000
   --host 0.0.0.0
@@ -271,22 +260,13 @@ x-glm52-cmd: &glm52-cmd >
   --enable-metrics
   --trust-remote-code
 
-x-glm52-model-env: &glm52-model-env
+x-glm51-awq-model-env: &glm51-awq-model-env
   HF_TOKEN: ${HUGGING_FACE_HUB_TOKEN}
   HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-0}
   NVIDIA_DRIVER_CAPABILITIES: compute,utility
   OPENBLAS_L2_SIZE: "2097152"
   NCCL_DEBUG: WARN
-  # EAGLE spec-decode uses the V2 worker path (topk=1 chain). Validated config.
   SGLANG_ENABLE_SPEC_V2: "1"
-  # Persist the inductor/triton compile caches so an UNCHANGED config skips
-  # RECOMPILE on restart (default: ephemeral /tmp/torchinductor_root + /root/.triton,
-  # wiped on container recreate). Content-addressed, so a changed config only
-  # misses the kernels that actually changed.
-  # MEASURED CAVEAT (campaign iter 7-8): this saves only the compile slice
-  # (~10-15min). The DOMINANT startup cost is weight-load (~11min) + cuda-graph
-  # capture-RECORD (~12min), both per-process and NOT file-cacheable — so restart
-  # is somewhat faster, NOT an instant warm replay (~40min cold stays ~25-30min).
   TORCHINDUCTOR_CACHE_DIR: /root/.cache/torchinductor
   TRITON_CACHE_DIR: /root/.cache/triton
 
@@ -513,15 +493,15 @@ services:
     command:
       - |
         set -e
-        echo "Downloading PhalaCloud/GLM-5.2-W4AFP8..."
-        uvx --from 'huggingface_hub[hf_xet]' hf download PhalaCloud/GLM-5.2-W4AFP8 --revision 8dc3a42a45cf2a6c47d241fd2c226afde73f1316
+        echo "Downloading QuantTrio/GLM-5.1-AWQ..."
+        uvx --from 'huggingface_hub[hf_xet]' hf download QuantTrio/GLM-5.1-AWQ --revision 8f60817aa28023f2607850d1a1e51d21aa34817a
         echo "Download complete."
     volumes:
       - hugginface_cache:/root/.cache/huggingface
     environment:
       - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
     labels:
-      com.datadoghq.ad.logs: '[{"source":"model-downloader","service":"model-downloader","tags":["model:PhalaCloud/GLM-5.2-W4AFP8","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.logs: '[{"source":"model-downloader","service":"model-downloader","tags":["model:QuantTrio/GLM-5.1-AWQ","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
 
   nginx:
     image: nginx@sha256:1d13701a5f9f3fb01aaa88cef2344d65b6b5bf6b7d9fa4cf0dca557a8d7702ba
@@ -529,7 +509,7 @@ services:
     depends_on:
       - proxy-gptoss-120b
       - proxy-qwen36-35b-a3b
-      - proxy-glm52
+      - proxy-glm51
       - proxy-flux2-klein-4b
       - proxy-qwen3vl-30b-a3b
       - proxy-qwen3-embedding-0.6b
@@ -752,35 +732,35 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
-  proxy-glm52:
+  proxy-glm51:
     <<: *vllm-proxy-common
-    container_name: proxy-glm52
+    container_name: proxy-glm51
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - CLOUD_API_URL=https://cloud-api.near.ai
       - CLOUD_API_USAGE_TOKEN=${CLOUD_API_USAGE_TOKEN}
       - COMPOSE_MANAGER_URL=http://compose-manager:8080
       - LOG_FORMAT=json
-      - MODEL_NAME=z-ai/glm-5.2
+      - MODEL_NAME=zai-org/GLM-5.1-FP8
       - OHTTP_ENABLED=true
       - TOKEN=${PROXY_TOKEN}
       - FUSION_ENABLED=${FUSION_ENABLED}
       - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
-      - VLLM_BASE_URL=http://model-sg-glm52-w4a-tp4:8000
+      - VLLM_BASE_URL=http://model-sg-glm51-awq-tp4:8000
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
       - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
       - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:z-ai/glm-5.2","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8009"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:zai-org/GLM-5.1-FP8","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8009"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "inference-proxy"
       nearai.otel.service: "vllm-proxy"
       nearai.otel.source: "vllm-proxy"
-      nearai.otel.container_name: "proxy-glm52"
+      nearai.otel.container_name: "proxy-glm51"
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
-      nearai.otel.model: "z-ai/glm-5.2"
+      nearai.otel.model: "zai-org/GLM-5.1-FP8"
       nearai.otel.deployment: "small-models"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
@@ -788,19 +768,20 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
-  model-sg-glm52-w4a-tp4:
+  model-sg-glm51-awq-tp4:
     <<: *nvidia
     init: true
     depends_on:
       model-downloader:
         condition: service_completed_successfully
-    image: lmsysorg/sglang@sha256:5027e95bf6ec536856b1b52a91d1f35ff5c564ab83e8a94758a169ff09bb8df3  # v0.5.14 (2026-06-26)
-    container_name: model-sg-glm52-w4a-tp4
-    command: *glm52-cmd
+    image: glm51-sgl-awq-tp4-patched:local
+    build: *glm51-awq-build
+    container_name: model-sg-glm51-awq-tp4
+    command: *glm51-awq-cmd
     volumes:
-      - compile_cache_glm52:/root/.cache
+      - compile_cache_glm51:/root/.cache
       - hugginface_cache:/root/.cache/huggingface
-    environment: *glm52-model-env
+    environment: *glm51-awq-model-env
     deploy:
       resources:
         reservations:
@@ -814,16 +795,17 @@ services:
     labels:
       com.datadoghq.ad.check_names: '["openmetrics"]'
       com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:PhalaCloud/GLM-5.2-W4AFP8","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8009","instance:1"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-sg-glm52-w4a-tp4:8000/metrics", "histogram_buckets_as_distributions": true, "metrics":["sglang:*"], "service": "sglang", "tags":["model:PhalaCloud/GLM-5.2-W4AFP8","instance:1","ip:${HOST_IP}","port:8009"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:QuantTrio/GLM-5.1-AWQ","served_model:zai-org/GLM-5.1-FP8","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8009","instance:1"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-sg-glm51-awq-tp4:8000/metrics", "histogram_buckets_as_distributions": true, "metrics":["sglang:*"], "service": "sglang", "tags":["model:QuantTrio/GLM-5.1-AWQ","served_model:zai-org/GLM-5.1-FP8","instance:1","ip:${HOST_IP}","port:8009"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
       nearai.otel.source: "sglang"
-      nearai.otel.container_name: "model-sg-glm52-w4a-tp4"
+      nearai.otel.container_name: "model-sg-glm51-awq-tp4"
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
-      nearai.otel.model: "PhalaCloud/GLM-5.2-W4AFP8"
+      nearai.otel.model: "QuantTrio/GLM-5.1-AWQ"
+      nearai.otel.served_model: "zai-org/GLM-5.1-FP8"
       nearai.otel.deployment: "small-models"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
@@ -1325,9 +1307,9 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
-  dcgm-glm52:
+  dcgm-glm51:
     <<: *dcgm-common
-    container_name: dcgm-glm52
+    container_name: dcgm-glm51
     deploy:
       resources:
         reservations:
@@ -1338,16 +1320,17 @@ services:
     labels:
       com.datadoghq.ad.check_names: '["dcgm"]'
       com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint": "http://%%host%%:9400/metrics", "tags":["model:PhalaCloud/GLM-5.2-W4AFP8","deployment:small-models","ip:${HOST_IP}"]}]'
-      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:PhalaCloud/GLM-5.2-W4AFP8","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint": "http://%%host%%:9400/metrics", "tags":["model:QuantTrio/GLM-5.1-AWQ","served_model:zai-org/GLM-5.1-FP8","deployment:small-models","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:QuantTrio/GLM-5.1-AWQ","served_model:zai-org/GLM-5.1-FP8","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "dcgm"
       nearai.otel.service: "dcgm-exporter"
       nearai.otel.source: "dcgm-exporter"
-      nearai.otel.container_name: "dcgm-glm52"
+      nearai.otel.container_name: "dcgm-glm51"
       nearai.otel.port: "9400"
       nearai.otel.path: "/metrics"
-      nearai.otel.model: "PhalaCloud/GLM-5.2-W4AFP8"
+      nearai.otel.model: "QuantTrio/GLM-5.1-AWQ"
+      nearai.otel.served_model: "zai-org/GLM-5.1-FP8"
       nearai.otel.deployment: "small-models"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
@@ -1431,7 +1414,7 @@ volumes:
   hugginface_cache:
   vllm_cache:
   kernel_cache:
-  compile_cache_glm52:
+  compile_cache_glm51:
   certs:
     external: true
     name: certs
@@ -1577,16 +1560,17 @@ configs:
                       ip: "${HOST_IP}"
                       port: "8008"
                       instance: "2"
-              - job_name: sglang-model-sg-glm52-w4a-tp4
+              - job_name: sglang-model-sg-glm51-awq-tp4
                 scrape_interval: 15s
                 metrics_path: /metrics
                 static_configs:
-                  - targets: ['model-sg-glm52-w4a-tp4:8000']
+                  - targets: ['model-sg-glm51-awq-tp4:8000']
                     labels:
                       service: "sglang"
                       source: "sglang"
-                      container_name: "model-sg-glm52-w4a-tp4"
-                      model: "PhalaCloud/GLM-5.2-W4AFP8"
+                      container_name: "model-sg-glm51-awq-tp4"
+                      model: "QuantTrio/GLM-5.1-AWQ"
+                      served_model: "zai-org/GLM-5.1-FP8"
                       deployment: "small-models"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
@@ -1715,16 +1699,17 @@ configs:
                       cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "9400"
-              - job_name: dcgm-dcgm-glm52
+              - job_name: dcgm-dcgm-glm51
                 scrape_interval: 15s
                 metrics_path: /metrics
                 static_configs:
-                  - targets: ['dcgm-glm52:9400']
+                  - targets: ['dcgm-glm51:9400']
                     labels:
                       service: "dcgm-exporter"
                       source: "dcgm-exporter"
-                      container_name: "dcgm-glm52"
-                      model: "PhalaCloud/GLM-5.2-W4AFP8"
+                      container_name: "dcgm-glm51"
+                      model: "QuantTrio/GLM-5.1-AWQ"
+                      served_model: "zai-org/GLM-5.1-FP8"
                       deployment: "small-models"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
@@ -1783,16 +1768,16 @@ configs:
                       cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "8008"
-              - job_name: inference-proxy-proxy-glm52
+              - job_name: inference-proxy-proxy-glm51
                 scrape_interval: 15s
                 metrics_path: /metrics
                 static_configs:
-                  - targets: ['proxy-glm52:8000']
+                  - targets: ['proxy-glm51:8000']
                     labels:
                       service: "vllm-proxy"
                       source: "vllm-proxy"
-                      container_name: "proxy-glm52"
-                      model: "z-ai/glm-5.2"
+                      container_name: "proxy-glm51"
+                      model: "zai-org/GLM-5.1-FP8"
                       deployment: "small-models"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
@@ -2108,8 +2093,8 @@ configs:
           8006) check_models "$${HOST_IP}:8006" ;;
           8007) check_models "$${HOST_IP}:8007" ;;
           8008) check_chat "$${HOST_IP}:8008" "Qwen/Qwen3.6-35B-A3B-FP8" ;;
-          # GLM-5.2 has a single TP4 backend behind this host port.
-          8009) check_chat "$${HOST_IP}:8009" "z-ai/glm-5.2" ;;
+          # GLM-5.1 has a single TP4 backend behind this host port.
+          8009) check_chat "$${HOST_IP}:8009" "zai-org/GLM-5.1-FP8" ;;
         esac
       }
 
@@ -2169,7 +2154,7 @@ configs:
         register_model "openai/whisper-large-v3" "whisper-large-v3.completions.near.ai"
         register_model "openai/privacy-filter" "privacy-filter.completions.near.ai"
         register_model "Qwen/Qwen3.6-35B-A3B-FP8" "qwen3-6-35b.completions.near.ai"
-        register_model "z-ai/glm-5.2" "glm-5-2.completions.near.ai"
+        register_model "zai-org/GLM-5.1-FP8" "glm-5-1.completions.near.ai"
         # Refresh liveness after the register_model calls, before the long sleep.
         date +%s > /tmp/registrar_alive
         sleep 60
@@ -2254,10 +2239,10 @@ configs:
           location / { proxy_pass http://proxy-qwen36-35b-a3b:8000; }
       }
 
-      # :8009 - GLM-5.2 W4AFP8 TP4
+      # :8009 - GLM-5.1 AWQ TP4
       server {
           listen 8009;
-          location / { proxy_pass http://proxy-glm52:8000; }
+          location / { proxy_pass http://proxy-glm51:8000; }
       }
 
       # ── TLS server blocks (port 443 = host 8444) ──
@@ -2342,10 +2327,10 @@ configs:
 
       server {
           listen 443 ssl http2;
-          server_name glm-5-2.completions.near.ai
-                      glm-5-2.completions-stg.near.ai
-                      ~^glm-5-2-i\d+\.completions(-stg)?\.near\.ai$$;
+          server_name glm-5-1.completions.near.ai
+                      glm-5-1.completions-stg.near.ai
+                      ~^glm-5-1-i\d+\.completions(-stg)?\.near\.ai$$;
           keepalive_timeout 1h;
           keepalive_requests 1000000;
-          location / { proxy_pass http://proxy-glm52:8000; }
+          location / { proxy_pass http://proxy-glm51:8000; }
       }
