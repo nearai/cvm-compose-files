@@ -190,51 +190,87 @@ x-flux-common: &flux-common
             device_ids: ["7"]
             capabilities: [gpu]
 
-x-gemma-4-31b-common: &gemma-4-31b-common
-  <<: *vllm-common
-  image: vllm/vllm-openai@sha256:960ac5b3fda0547c3ce64d8f69bae9fa242d5ae5382fc74a98cd8ef13950e403  # vLLM v0.23.1rc1 — FA4 gemma-4 attention (PR #42175). DO NOT upgrade past RC1: nightly has a 1.9x gemma-4 attention regression. Matches dsv4-qwen36-gemma4.yaml.
-  # RedHatAI FP8-block (W8A8) on vLLM FA4 — ~1.9x faster prefill than the forced-Triton W4A16/QAT
-  # path it replaces, with identical quality. Brought to parity
-  # with the optimized dsv4-qwen36-gemma4.yaml deployment (same image/checkpoint/flags) so all
-  # gemma-4-31b.completions.near.ai backends serve the same fast FP8 path. Each prod Gemma GPU runs
-  # an independent TP1 replica (GPUs 5,6 here, dedicated — FP8-block ~31GB fits gmu 0.80) and serves
-  # the existing model name. tile_n=80 FA4 kernel patch (PR #111) applied at start via the
-  # gemma4_tile80_patch config (+1-4% tput at high concurrency; NON-FATAL — warns & serves unpatched
-  # if a future image changes the kernel layout, never a startup outage).
-  entrypoint: ["/bin/bash", "-c"]
-  configs:
-    - source: gemma4_tile80_patch
-      target: /etc/vllm/patch_tile80.py
-      mode: 0644
-  command:
-    - >
-      python3 /etc/vllm/patch_tile80.py &&
-      exec vllm serve
-      RedHatAI/gemma-4-31B-it-FP8-block
-      --revision 9a9994e657e035c1b79886566dd8dd2f6ba96d29
-      --served-model-name google/gemma-4-31B-it
-      --tensor-parallel-size 1
-      --gpu-memory-utilization 0.80
-      --max-num-batched-tokens 16384
-      --trust-remote-code
-      --tool-call-parser gemma4
-      --enable-auto-tool-choice
-      --allowed-media-domains ${VLLM_ALLOWED_MEDIA_DOMAINS:-prod-files-secure.s3.us-west-2.amazonaws.com}
-      --host 0.0.0.0
-      --port 8000
-  volumes:
-    - hugginface_cache:/root/.cache/huggingface
-    - vllm_cache:/root/.cache/vllm
-  environment:
-    - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
-    - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0}
-    - VLLM_LOGGING_LEVEL=INFO
-    - VLLM_CACHE_ROOT=/root/.cache/vllm/gemma4-31b-qat-vllm
-    - VLLM_WORKER_MULTIPROC_METHOD=spawn
-    - VLLM_MEDIA_URL_ALLOW_REDIRECTS=0
-    - NVIDIA_DRIVER_CAPABILITIES=compute,utility
-    - OPENBLAS_L2_SIZE=2097152
-    - NCCL_DEBUG=WARN
+# This engine joins the existing uniform glm-5-1.completions.near.ai pool
+# (today: gpu03 and gpu02), all backends serving zai-org/GLM-5.1-FP8 on the
+# same recipe, so there is no context-tier hazard.
+# The TP4 engine sits on GPUs 3-6 so the single-copy gpt-oss and qwen3.6 r1
+# keep their existing GPUs and are never recreated during this rollout.
+# The recipe is copied from prod/dsv4-qwen38-glm51.yaml — keep the two in sync,
+# do not retune here.
+# This engine uses build: (the sglang#28305 patch), so a deploy must run
+# docker compose build before up — compose-manager's /compose/up already does
+# pull -> build -> up.
+
+x-downloader-common: &downloader-common
+  image: ghcr.io/astral-sh/uv:python3.11-bookworm-slim@sha256:4f5d923c9dcea037f57bda425dd209f3ec643da2f0b74227f68d09dab0b3bb36
+  entrypoint: ["sh", "-c"]
+  restart: "no"
+  logging: *logging-conf
+
+# SGLang base + sglang#28305 fused-qkv cat_dim fix, copied byte-for-byte from
+# the deployed GLM-5.1 recipe. The build fails loudly if the upstream loader
+# changes and the patch anchor no longer matches.
+x-glm51-awq-build: &glm51-awq-build
+  dockerfile_inline: |
+    FROM lmsysorg/sglang:dev-cu12@sha256:aac6b242680daeb74d2ab1d85f70575357552d7d165d2e5d30eb362797db54a1
+    RUN python3 - <<'PYEOF'
+    import re
+    f = "/sgl-workspace/sglang/python/sglang/srt/models/deepseek_common/deepseek_weight_loader.py"
+    s = open(f).read()
+    pat = re.compile(r"(?P<i> +)cat_dim = 1\n\n(?P<j> +)fused_weight = torch\.cat\(")
+    def repl(m):
+        j = m.group("j")
+        return (
+            m.group("i") + "cat_dim = 1\n\n"
+            + j + "if (\n"
+            + j + "    q_a_proj_weight.dim() == 2\n"
+            + j + "    and q_a_proj_weight.shape[1 - cat_dim]\n"
+            + j + "    != kv_a_proj_weight.shape[1 - cat_dim]\n"
+            + j + "):\n"
+            + j + "    cat_dim = 1 - cat_dim\n\n"
+            + j + "fused_weight = torch.cat("
+        )
+    s2, n = pat.subn(repl, s, count=1)
+    assert n == 1, "sglang#28305 cat_dim patch anchor not found (loader changed)"
+    open(f, "w").write(s2)
+    print("[sglang#28305] fused qkv_a_proj cat_dim fix applied")
+    PYEOF
+
+x-glm51-awq-cmd: &glm51-awq-cmd >
+  sglang serve
+  --model-path QuantTrio/GLM-5.1-AWQ
+  --revision 8f60817aa28023f2607850d1a1e51d21aa34817a
+  --served-model-name zai-org/GLM-5.1-FP8
+  --tp 4
+  --dist-init-addr 127.0.0.1:29500
+  --disable-shared-experts-fusion
+  --kv-cache-dtype fp8_e4m3
+  --reasoning-parser glm45
+  --tool-call-parser glm47
+  --log-requests-level 0
+  --mem-fraction-static 0.85
+  --max-running-requests 128
+  --max-queued-requests 16
+  --speculative-algorithm EAGLE
+  --speculative-num-steps 3
+  --speculative-eagle-topk 1
+  --speculative-num-draft-tokens 4
+  --watchdog-timeout 1800
+  --port 8000
+  --host 0.0.0.0
+  --enable-cache-report
+  --enable-metrics
+  --trust-remote-code
+
+x-glm51-awq-model-env: &glm51-awq-model-env
+  HF_TOKEN: ${HUGGING_FACE_HUB_TOKEN}
+  HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-0}
+  NVIDIA_DRIVER_CAPABILITIES: compute,utility
+  OPENBLAS_L2_SIZE: "2097152"
+  NCCL_DEBUG: WARN
+  SGLANG_ENABLE_SPEC_V2: "1"
+  TORCHINDUCTOR_CACHE_DIR: /root/.cache/torchinductor
+  TRITON_CACHE_DIR: /root/.cache/triton
 
 x-dcgm-common: &dcgm-common
   image: nvcr.io/nvidia/k8s/dcgm-exporter:4.5.2-4.8.1-distroless
@@ -453,13 +489,29 @@ x-privacy-filter-common: &privacy-filter-common
             capabilities: [gpu]
 
 services:
+  model-downloader:
+    <<: *downloader-common
+    container_name: model-downloader
+    command:
+      - |
+        set -e
+        echo "Downloading QuantTrio/GLM-5.1-AWQ..."
+        uvx --from 'huggingface_hub[hf_xet]' hf download QuantTrio/GLM-5.1-AWQ --revision 8f60817aa28023f2607850d1a1e51d21aa34817a
+        echo "Download complete."
+    volumes:
+      - hugginface_cache:/root/.cache/huggingface
+    environment:
+      - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"model-downloader","service":"model-downloader","tags":["model:QuantTrio/GLM-5.1-AWQ","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+
   nginx:
     image: nginx@sha256:1d13701a5f9f3fb01aaa88cef2344d65b6b5bf6b7d9fa4cf0dca557a8d7702ba
     container_name: nginx
     depends_on:
       - proxy-gptoss-120b
       - proxy-qwen36-35b-a3b
-      - proxy-gemma4-31b
+      - proxy-glm51
       - proxy-flux2-klein-4b
       - proxy-qwen3vl-30b-a3b
       - proxy-qwen3-embedding-0.6b
@@ -516,7 +568,7 @@ services:
     labels:
       com.datadoghq.ad.logs: '[{"source":"model-proxy-registrar","service":"model-proxy-registrar","tags":["model:openai/gpt-oss-120b","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
 
-  # --- GPT-OSS x3 (GPUs 0, 2, 3) — single proxy, multi-backend ---
+  # --- GPT-OSS x1 (GPU 0) — single proxy, single backend ---
 
   proxy-gptoss-120b:
     <<: *vllm-proxy-common
@@ -532,7 +584,7 @@ services:
       - TOKEN=${PROXY_TOKEN}
       - FUSION_ENABLED=${FUSION_ENABLED}
       - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
-      - VLLM_BACKEND_URLS=http://model-vllm-gptoss-120b-mxfp4-tp1-r1:8000,http://model-vllm-gptoss-120b-mxfp4-tp1-r2:8000,http://model-vllm-gptoss-120b-mxfp4-tp1-r3:8000
+      - VLLM_BACKEND_URLS=http://model-vllm-gptoss-120b-mxfp4-tp1-r3:8000
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
       - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
@@ -554,67 +606,7 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
-  model-vllm-gptoss-120b-mxfp4-tp1-r1:
-    <<: *gpt-oss-common
-    container_name: model-vllm-gptoss-120b-mxfp4-tp1-r1
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              device_ids: ["2"]
-              capabilities: [gpu]
-    labels:
-      com.datadoghq.ad.check_names: '["vllm"]'
-      com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:openai/gpt-oss-120b","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8001","instance:1"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-gptoss-120b-mxfp4-tp1-r1:8000/metrics", "histogram_buckets_as_distributions": true, "service": "vllm", "tags":["model:openai/gpt-oss-120b","ip:${HOST_IP}", "port:8001"]}]'
-      nearai.otel.scrape: "true"
-      nearai.otel.job: "vllm"
-      nearai.otel.service: "vllm"
-      nearai.otel.source: "vllm"
-      nearai.otel.container_name: "model-vllm-gptoss-120b-mxfp4-tp1-r1"
-      nearai.otel.port: "8000"
-      nearai.otel.path: "/metrics"
-      nearai.otel.model: "openai/gpt-oss-120b"
-      nearai.otel.deployment: "small-models"
-      nearai.otel.env: "${ENV}"
-      nearai.otel.host: "${CVM_HOST}"
-      nearai.otel.host_machine: "${CVM_HOST}"
-      nearai.otel.cvm_name: "${CVM_NAME}"
-      nearai.otel.ip: "${HOST_IP}"
-
-  model-vllm-gptoss-120b-mxfp4-tp1-r2:
-    <<: *gpt-oss-common
-    container_name: model-vllm-gptoss-120b-mxfp4-tp1-r2
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              device_ids: ["3"]
-              capabilities: [gpu]
-    labels:
-      com.datadoghq.ad.check_names: '["vllm"]'
-      com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:openai/gpt-oss-120b","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8001","instance:2"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-gptoss-120b-mxfp4-tp1-r2:8000/metrics", "histogram_buckets_as_distributions": true, "service": "vllm", "tags":["model:openai/gpt-oss-120b","ip:${HOST_IP}", "port:8001"]}]'
-      nearai.otel.scrape: "true"
-      nearai.otel.job: "vllm"
-      nearai.otel.service: "vllm"
-      nearai.otel.source: "vllm"
-      nearai.otel.container_name: "model-vllm-gptoss-120b-mxfp4-tp1-r2"
-      nearai.otel.port: "8000"
-      nearai.otel.path: "/metrics"
-      nearai.otel.model: "openai/gpt-oss-120b"
-      nearai.otel.deployment: "small-models"
-      nearai.otel.env: "${ENV}"
-      nearai.otel.host: "${CVM_HOST}"
-      nearai.otel.host_machine: "${CVM_HOST}"
-      nearai.otel.cvm_name: "${CVM_NAME}"
-      nearai.otel.ip: "${HOST_IP}"
-
-  # instance:3 — runs on GPU 0, freed by retiring Qwen/Qwen3-30B-A3B-Instruct-2507.
+  # Keep the legacy -r3 service name so the running GPU-0 container is never recreated.
   model-vllm-gptoss-120b-mxfp4-tp1-r3:
     <<: *gpt-oss-common
     container_name: model-vllm-gptoss-120b-mxfp4-tp1-r3
@@ -645,7 +637,7 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
-  # --- Qwen3.6-35B-A3B-FP8 x2 (GPUs 1, 4) — SGLang, TP=1, EAGLE-v2 spec, single proxy multi-backend ---
+  # --- Qwen3.6-35B-A3B-FP8 x2 (GPUs 1, 2) — SGLang, TP=1, EAGLE-v2 spec, single proxy multi-backend ---
 
   proxy-qwen36-35b-a3b:
     <<: *vllm-proxy-common
@@ -721,7 +713,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["4"]
+              device_ids: ["2"]
               capabilities: [gpu]
     labels:
       com.datadoghq.ad.check_names: '["openmetrics"]'
@@ -743,37 +735,35 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
-  # --- Gemma-4-31B-it QAT (GPUs 5-6) — vLLM 2xTP1 ---
-
-  proxy-gemma4-31b:
+  proxy-glm51:
     <<: *vllm-proxy-common
-    container_name: proxy-gemma4-31b
+    container_name: proxy-glm51
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - CLOUD_API_URL=https://cloud-api.near.ai
       - CLOUD_API_USAGE_TOKEN=${CLOUD_API_USAGE_TOKEN}
       - COMPOSE_MANAGER_URL=http://compose-manager:8080
       - LOG_FORMAT=json
-      - MODEL_NAME=google/gemma-4-31B-it
+      - MODEL_NAME=zai-org/GLM-5.1-FP8
       - OHTTP_ENABLED=true
       - TOKEN=${PROXY_TOKEN}
       - FUSION_ENABLED=${FUSION_ENABLED}
       - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
-      - VLLM_BACKEND_URLS=http://model-vllm-gemma4-31b-fp8-tp1-r1:8000,http://model-vllm-gemma4-31b-fp8-tp1-r2:8000
+      - VLLM_BASE_URL=http://model-sg-glm51-awq-tp4:8000
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
       - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
       - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:google/gemma-4-31B-it","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8009"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:zai-org/GLM-5.1-FP8","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8009"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "inference-proxy"
       nearai.otel.service: "vllm-proxy"
       nearai.otel.source: "vllm-proxy"
-      nearai.otel.container_name: "proxy-gemma4-31b"
+      nearai.otel.container_name: "proxy-glm51"
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
-      nearai.otel.model: "google/gemma-4-31B-it"
+      nearai.otel.model: "zai-org/GLM-5.1-FP8"
       nearai.otel.deployment: "small-models"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
@@ -781,59 +771,44 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
-  model-vllm-gemma4-31b-fp8-tp1-r1:
-    <<: *gemma-4-31b-common
-    container_name: model-vllm-gemma4-31b-fp8-tp1-r1
+  model-sg-glm51-awq-tp4:
+    <<: *nvidia
+    init: true
+    depends_on:
+      model-downloader:
+        condition: service_completed_successfully
+    image: glm51-sgl-awq-tp4-patched:local
+    build: *glm51-awq-build
+    container_name: model-sg-glm51-awq-tp4
+    command: *glm51-awq-cmd
+    volumes:
+      - compile_cache_glm51:/root/.cache
+      - hugginface_cache:/root/.cache/huggingface
+    environment: *glm51-awq-model-env
     deploy:
       resources:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["5"]
+              device_ids: ["3","4","5","6"]
               capabilities: [gpu]
+    restart: unless-stopped
+    stop_grace_period: 5m
+    logging: *logging-conf
     labels:
-      com.datadoghq.ad.check_names: '["vllm"]'
+      com.datadoghq.ad.check_names: '["openmetrics"]'
       com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:google/gemma-4-31B-it","model_path:RedHatAI/gemma-4-31B-it-FP8-block","precision:fp8","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8009","instance:1"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-gemma4-31b-fp8-tp1-r1:8000/metrics", "histogram_buckets_as_distributions": true, "service": "vllm", "tags":["model:google/gemma-4-31B-it","model_path:RedHatAI/gemma-4-31B-it-FP8-block","precision:fp8","deployment:small-models","ip:${HOST_IP}","port:8009","instance:1"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:QuantTrio/GLM-5.1-AWQ","served_model:zai-org/GLM-5.1-FP8","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8009","instance:1"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-sg-glm51-awq-tp4:8000/metrics", "histogram_buckets_as_distributions": true, "metrics":["sglang:*"], "service": "sglang", "tags":["model:QuantTrio/GLM-5.1-AWQ","served_model:zai-org/GLM-5.1-FP8","instance:1","ip:${HOST_IP}","port:8009"]}]'
       nearai.otel.scrape: "true"
-      nearai.otel.job: "vllm"
-      nearai.otel.service: "vllm"
-      nearai.otel.source: "vllm"
-      nearai.otel.container_name: "model-vllm-gemma4-31b-fp8-tp1-r1"
+      nearai.otel.job: "sglang"
+      nearai.otel.service: "sglang"
+      nearai.otel.source: "sglang"
+      nearai.otel.container_name: "model-sg-glm51-awq-tp4"
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
-      nearai.otel.model: "google/gemma-4-31B-it"
-      nearai.otel.deployment: "small-models"
-      nearai.otel.env: "${ENV}"
-      nearai.otel.host: "${CVM_HOST}"
-      nearai.otel.host_machine: "${CVM_HOST}"
-      nearai.otel.cvm_name: "${CVM_NAME}"
-      nearai.otel.ip: "${HOST_IP}"
-
-  model-vllm-gemma4-31b-fp8-tp1-r2:
-    <<: *gemma-4-31b-common
-    container_name: model-vllm-gemma4-31b-fp8-tp1-r2
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              device_ids: ["6"]
-              capabilities: [gpu]
-    labels:
-      com.datadoghq.ad.check_names: '["vllm"]'
-      com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:google/gemma-4-31B-it","model_path:RedHatAI/gemma-4-31B-it-FP8-block","precision:fp8","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8009","instance:2"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-gemma4-31b-fp8-tp1-r2:8000/metrics", "histogram_buckets_as_distributions": true, "service": "vllm", "tags":["model:google/gemma-4-31B-it","model_path:RedHatAI/gemma-4-31B-it-FP8-block","precision:fp8","deployment:small-models","ip:${HOST_IP}","port:8009","instance:2"]}]'
-      nearai.otel.scrape: "true"
-      nearai.otel.job: "vllm"
-      nearai.otel.service: "vllm"
-      nearai.otel.source: "vllm"
-      nearai.otel.container_name: "model-vllm-gemma4-31b-fp8-tp1-r2"
-      nearai.otel.port: "8000"
-      nearai.otel.path: "/metrics"
-      nearai.otel.model: "google/gemma-4-31B-it"
+      nearai.otel.model: "QuantTrio/GLM-5.1-AWQ"
+      nearai.otel.served_model: "zai-org/GLM-5.1-FP8"
       nearai.otel.deployment: "small-models"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
@@ -1283,7 +1258,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["0","2","3"]
+              device_ids: ["0"]
               capabilities: [gpu]
     labels:
       com.datadoghq.ad.check_names: '["dcgm"]'
@@ -1313,7 +1288,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["1","4"]
+              device_ids: ["1","2"]
               capabilities: [gpu]
     labels:
       com.datadoghq.ad.check_names: '["dcgm"]'
@@ -1335,29 +1310,30 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
-  dcgm-gemma4-31b:
+  dcgm-glm51:
     <<: *dcgm-common
-    container_name: dcgm-gemma4-31b
+    container_name: dcgm-glm51
     deploy:
       resources:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["5","6"]
+              device_ids: ["3","4","5","6"]
               capabilities: [gpu]
     labels:
       com.datadoghq.ad.check_names: '["dcgm"]'
       com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint": "http://%%host%%:9400/metrics", "tags":["model:google/gemma-4-31B-it","deployment:small-models","ip:${HOST_IP}"]}]'
-      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:google/gemma-4-31B-it","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint": "http://%%host%%:9400/metrics", "tags":["model:QuantTrio/GLM-5.1-AWQ","served_model:zai-org/GLM-5.1-FP8","deployment:small-models","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:QuantTrio/GLM-5.1-AWQ","served_model:zai-org/GLM-5.1-FP8","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "dcgm"
       nearai.otel.service: "dcgm-exporter"
       nearai.otel.source: "dcgm-exporter"
-      nearai.otel.container_name: "dcgm-gemma4-31b"
+      nearai.otel.container_name: "dcgm-glm51"
       nearai.otel.port: "9400"
       nearai.otel.path: "/metrics"
-      nearai.otel.model: "google/gemma-4-31B-it"
+      nearai.otel.model: "QuantTrio/GLM-5.1-AWQ"
+      nearai.otel.served_model: "zai-org/GLM-5.1-FP8"
       nearai.otel.deployment: "small-models"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
@@ -1441,30 +1417,12 @@ volumes:
   hugginface_cache:
   vllm_cache:
   kernel_cache:
+  compile_cache_glm51:
   certs:
     external: true
     name: certs
 
 configs:
-  # FA4 CuteDSL tile_n=80 patch for gemma-4's head_dim=512 full-attention layers (PR #111 parity
-  # with dsv4-qwen36-gemma4.yaml). Run once at container start (see x-gemma-4-31b-common). NON-FATAL:
-  # a missing anchor logs a warning and serves UNPATCHED rather than failing startup. Validated on
-  # H200: +1-4% throughput at high concurrency, neutral below, quality unchanged.
-  gemma4_tile80_patch:
-    content: |
-      import pathlib
-      F = pathlib.Path("/usr/local/lib/python3.12/dist-packages/vllm/vllm_flash_attn/cute/interface.py")
-      OLD = "    else: # 512\n        tile_n = 64\n        return FwdConfig(64, tile_n, False, True)"
-      NEW = "    else: # 512 -- nearai tile_n=80 pv_rs (FA4 hd=512, +1-4% tput hi-conc, 224KB SMEM)\n        tile_n = 80\n        return FwdConfig(64, tile_n, True, True)"
-      try:
-          s = F.read_text()
-          if OLD in s:
-              F.write_text(s.replace(OLD, NEW, 1))
-              print("[tile80] FA4 head_dim=512 tile_n 64->80 pv_rs applied", flush=True)
-          else:
-              print("[tile80] WARN: anchor not found; serving UNPATCHED (kernel layout changed?)", flush=True)
-      except Exception as e:
-          print(f"[tile80] WARN: patch failed ({e}); serving UNPATCHED", flush=True)
   otelcol_app_config:
     content: |
       receivers:
@@ -1551,42 +1509,6 @@ configs:
         prometheus/apps:
           config:
             scrape_configs:
-              - job_name: vllm-model-vllm-gptoss-120b-mxfp4-tp1-r1
-                scrape_interval: 15s
-                metrics_path: /metrics
-                static_configs:
-                  - targets: ['model-vllm-gptoss-120b-mxfp4-tp1-r1:8000']
-                    labels:
-                      service: "vllm"
-                      source: "vllm"
-                      container_name: "model-vllm-gptoss-120b-mxfp4-tp1-r1"
-                      model: "openai/gpt-oss-120b"
-                      deployment: "small-models"
-                      env: "${ENV}"
-                      host: "${CVM_HOST}"
-                      host_machine: "${CVM_HOST}"
-                      cvm_name: "${CVM_NAME}"
-                      ip: "${HOST_IP}"
-                      port: "8001"
-                      instance: "1"
-              - job_name: vllm-model-vllm-gptoss-120b-mxfp4-tp1-r2
-                scrape_interval: 15s
-                metrics_path: /metrics
-                static_configs:
-                  - targets: ['model-vllm-gptoss-120b-mxfp4-tp1-r2:8000']
-                    labels:
-                      service: "vllm"
-                      source: "vllm"
-                      container_name: "model-vllm-gptoss-120b-mxfp4-tp1-r2"
-                      model: "openai/gpt-oss-120b"
-                      deployment: "small-models"
-                      env: "${ENV}"
-                      host: "${CVM_HOST}"
-                      host_machine: "${CVM_HOST}"
-                      cvm_name: "${CVM_NAME}"
-                      ip: "${HOST_IP}"
-                      port: "8001"
-                      instance: "2"
               - job_name: vllm-model-vllm-gptoss-120b-mxfp4-tp1-r3
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -1641,16 +1563,17 @@ configs:
                       ip: "${HOST_IP}"
                       port: "8008"
                       instance: "2"
-              - job_name: vllm-model-vllm-gemma4-31b-fp8-tp1-r1
+              - job_name: sglang-model-sg-glm51-awq-tp4
                 scrape_interval: 15s
                 metrics_path: /metrics
                 static_configs:
-                  - targets: ['model-vllm-gemma4-31b-fp8-tp1-r1:8000']
+                  - targets: ['model-sg-glm51-awq-tp4:8000']
                     labels:
-                      service: "vllm"
-                      source: "vllm"
-                      container_name: "model-vllm-gemma4-31b-fp8-tp1-r1"
-                      model: "google/gemma-4-31B-it"
+                      service: "sglang"
+                      source: "sglang"
+                      container_name: "model-sg-glm51-awq-tp4"
+                      model: "QuantTrio/GLM-5.1-AWQ"
+                      served_model: "zai-org/GLM-5.1-FP8"
                       deployment: "small-models"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
@@ -1658,29 +1581,7 @@ configs:
                       cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "8009"
-                      model_path: "RedHatAI/gemma-4-31B-it-FP8-block"
-                      precision: "fp8"
                       instance: "1"
-              - job_name: vllm-model-vllm-gemma4-31b-fp8-tp1-r2
-                scrape_interval: 15s
-                metrics_path: /metrics
-                static_configs:
-                  - targets: ['model-vllm-gemma4-31b-fp8-tp1-r2:8000']
-                    labels:
-                      service: "vllm"
-                      source: "vllm"
-                      container_name: "model-vllm-gemma4-31b-fp8-tp1-r2"
-                      model: "google/gemma-4-31B-it"
-                      deployment: "small-models"
-                      env: "${ENV}"
-                      host: "${CVM_HOST}"
-                      host_machine: "${CVM_HOST}"
-                      cvm_name: "${CVM_NAME}"
-                      ip: "${HOST_IP}"
-                      port: "8009"
-                      model_path: "RedHatAI/gemma-4-31B-it-FP8-block"
-                      precision: "fp8"
-                      instance: "2"
               - job_name: sglang-model-sg-flux2-klein-4b-tp1
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -1801,16 +1702,17 @@ configs:
                       cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "9400"
-              - job_name: dcgm-dcgm-gemma4-31b
+              - job_name: dcgm-dcgm-glm51
                 scrape_interval: 15s
                 metrics_path: /metrics
                 static_configs:
-                  - targets: ['dcgm-gemma4-31b:9400']
+                  - targets: ['dcgm-glm51:9400']
                     labels:
                       service: "dcgm-exporter"
                       source: "dcgm-exporter"
-                      container_name: "dcgm-gemma4-31b"
-                      model: "google/gemma-4-31B-it"
+                      container_name: "dcgm-glm51"
+                      model: "QuantTrio/GLM-5.1-AWQ"
+                      served_model: "zai-org/GLM-5.1-FP8"
                       deployment: "small-models"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
@@ -1869,16 +1771,16 @@ configs:
                       cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "8008"
-              - job_name: inference-proxy-proxy-gemma4-31b
+              - job_name: inference-proxy-proxy-glm51
                 scrape_interval: 15s
                 metrics_path: /metrics
                 static_configs:
-                  - targets: ['proxy-gemma4-31b:8000']
+                  - targets: ['proxy-glm51:8000']
                     labels:
                       service: "vllm-proxy"
                       source: "vllm-proxy"
-                      container_name: "proxy-gemma4-31b"
-                      model: "google/gemma-4-31B-it"
+                      container_name: "proxy-glm51"
+                      model: "zai-org/GLM-5.1-FP8"
                       deployment: "small-models"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
@@ -2194,9 +2096,8 @@ configs:
           8006) check_models "$${HOST_IP}:8006" ;;
           8007) check_models "$${HOST_IP}:8007" ;;
           8008) check_chat "$${HOST_IP}:8008" "Qwen/Qwen3.6-35B-A3B-FP8" ;;
-          # gemma has two replicas behind this host port (nginx LB); a single
-          # host-port probe verifies the endpoint model-proxy routes to.
-          8009) check_chat "$${HOST_IP}:8009" "google/gemma-4-31B-it" ;;
+          # GLM-5.1 has a single TP4 backend behind this host port.
+          8009) check_chat "$${HOST_IP}:8009" "zai-org/GLM-5.1-FP8" ;;
         esac
       }
 
@@ -2256,7 +2157,7 @@ configs:
         register_model "openai/whisper-large-v3" "whisper-large-v3.completions.near.ai"
         register_model "openai/privacy-filter" "privacy-filter.completions.near.ai"
         register_model "Qwen/Qwen3.6-35B-A3B-FP8" "qwen3-6-35b.completions.near.ai"
-        register_model "google/gemma-4-31B-it" "gemma-4-31b.completions.near.ai"
+        register_model "zai-org/GLM-5.1-FP8" "glm-5-1.completions.near.ai"
         # Refresh liveness after the register_model calls, before the long sleep.
         date +%s > /tmp/registrar_alive
         sleep 60
@@ -2293,7 +2194,7 @@ configs:
       client_max_body_size 100m;
       client_body_buffer_size 1m;
 
-      # :8001 - GPT-OSS (single proxy, 3 backends)
+      # :8001 - GPT-OSS (single proxy, single backend)
       server {
           listen 8001;
           location / { proxy_pass http://proxy-gptoss-120b:8000; }
@@ -2341,10 +2242,10 @@ configs:
           location / { proxy_pass http://proxy-qwen36-35b-a3b:8000; }
       }
 
-      # :8009 - Gemma-4-31B-it
+      # :8009 - GLM-5.1 AWQ TP4
       server {
           listen 8009;
-          location / { proxy_pass http://proxy-gemma4-31b:8000; }
+          location / { proxy_pass http://proxy-glm51:8000; }
       }
 
       # ── TLS server blocks (port 443 = host 8444) ──
@@ -2429,8 +2330,10 @@ configs:
 
       server {
           listen 443 ssl http2;
-          server_name gemma-4-31b.completions.near.ai
-                      gemma-4-31b.completions-stg.near.ai
-                      ~^gemma-4-31b-i\d+\.completions(-stg)?\.near\.ai$$;
-          location / { proxy_pass http://proxy-gemma4-31b:8000; }
+          server_name glm-5-1.completions.near.ai
+                      glm-5-1.completions-stg.near.ai
+                      ~^glm-5-1-i\d+\.completions(-stg)?\.near\.ai$$;
+          keepalive_timeout 1h;
+          keepalive_requests 1000000;
+          location / { proxy_pass http://proxy-glm51:8000; }
       }
