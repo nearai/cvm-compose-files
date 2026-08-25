@@ -14,6 +14,11 @@ REQUIRED_COLLECTOR_ENV = %w[
   ENV
   HOST_IP
 ].freeze
+DATADOG_AGENT_CHECK_LABELS = %w[
+  com.datadoghq.ad.check_names
+  com.datadoghq.ad.init_configs
+  com.datadoghq.ad.instances
+].freeze
 REQUIRED_LOG_TAGS = %w[deployment env host ip].freeze
 REQUIRED_OTEL_SCRAPE_LABELS = %w[
   nearai.otel.service
@@ -155,38 +160,13 @@ rescue StandardError => e
   nil
 end
 
-def validate_datadog_instances(file, service_name, service, log_tags, errors)
-  raw = service.dig("labels", "com.datadoghq.ad.instances")
-  return unless raw && log_tags
+def validate_no_datadog_agent_checks(file, service_name, service, errors)
+  labels = service["labels"] || {}
+  DATADOG_AGENT_CHECK_LABELS.each do |key|
+    next unless labels.key?(key)
 
-  instances = JSON.parse(raw)
-  first = instances.first || {}
-  instance_tags = tag_map(first["tags"])
-  %w[model port].each do |key|
-    next unless log_tags[key] && instance_tags[key]
-    next if log_tags[key] == instance_tags[key]
-
-    add_error(errors, file, "services.#{service_name}.labels.com.datadoghq.ad.instances", "#{key} tag #{instance_tags[key].inspect} does not match log tag #{log_tags[key].inspect}")
+    add_error(errors, file, "services.#{service_name}.labels.#{key}", "Datadog Agent check labels are removed (decommission); use nearai.otel.scrape + an otelcol_app_config scrape target instead")
   end
-
-  # The instances "service" is the product/role (sglang, vllm, vllm-proxy, dcgm-exporter, ...),
-  # not the container name. It must match nearai.otel.service — the same rule already enforced
-  # for the ad.logs "service". Keeps all service-identity labels aligned across a container.
-  # Prod-only: experiments/ is a relaxed zone (not held to the full prod label contract), and
-  # carries pre-existing service-label drift we don't want to block iteration on.
-  if file.start_with?("prod/")
-    otel_service = service.dig("labels", "nearai.otel.service")
-    instance_service = first["service"]
-    # Only validate when both values are present. The DCGM exporter's ad.instances
-    # omits the "service" key by design (tags-only), so instance_service is nil and
-    # this check intentionally skips it — dcgm identity is asserted via container_name
-    # + scrape target, not a service label.
-    if otel_service && instance_service && instance_service != otel_service
-      add_error(errors, file, "services.#{service_name}.labels.com.datadoghq.ad.instances", "service #{instance_service.inspect} does not match nearai.otel.service #{otel_service.inspect}")
-    end
-  end
-rescue StandardError => e
-  add_error(errors, file, "services.#{service_name}.labels.com.datadoghq.ad.instances", "invalid JSON: #{e.message}")
 end
 
 def validate_collector_service(file, compose, errors)
@@ -347,7 +327,7 @@ compose_files.sort.each do |path|
   (compose["services"] || {}).each do |service_name, service|
     log_tags = validate_log_label(file, service_name, service, errors)
     log_tags_by_service[service_name] = log_tags if log_tags
-    validate_datadog_instances(file, service_name, service, log_tags, errors)
+    validate_no_datadog_agent_checks(file, service_name, service, errors)
   end
 
   expected_public_ports(compose).each do |service_name, port|

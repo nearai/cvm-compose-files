@@ -28,7 +28,7 @@ Deployed by `compose-manager` (running inside each inference CVM) which checks o
 A config in `experiments/` graduates to `prod/` only when **all** of the following are true:
 
 1. **Soaked in staging.** Ran on a real CVM under load for ≥30 min with 0 request failures, against the model-onboarding soak harness (see `ansible-playbooks/docs/model-onboarding-workflow.md`). The 30-min soak is the gate, not a suggestion — it catches the detokenizer-wedge / queue-saturation class of bugs that don't surface in a smoke test.
-2. **Full monitoring stack present.** Every model config must include: `inference-proxy`, `proxy-nginx`, `model-proxy-registrar`, `model-downloader`, `dcgm-exporter`, `otelcol-contrib`, and the model engine service — all carrying the correct Datadog `com.datadoghq.ad.*` labels **and** `nearai.otel.*` scrape labels. The CI validator (`scripts/validate_otel_labels.rb`) enforces the label contract.
+2. **Full monitoring stack present.** Every model config must include: `inference-proxy`, `proxy-nginx`, `model-proxy-registrar`, `model-downloader`, `dcgm-exporter`, `otelcol-contrib`, and the model engine service — with retained `com.datadoghq.ad.logs` metadata for the OTel log pipeline and the correct `nearai.otel.*` scrape labels. The CI validator (`scripts/validate_otel_labels.rb`) enforces the label contract.
 3. **Digest-pinned images.** Every `image:` field uses `@sha256:…`, never `:latest`, `:dev`, or a bare tag. The HuggingFace model is pinned to a specific `--revision` (commit SHA). This is required for attestation reproducibility — the compose hash is registered with the KMS contract.
 4. **Registrar healthcheck + readiness probe.** The `model-proxy-registrar` service has the liveness healthcheck (`/tmp/registrar_alive` marker, 180s threshold) and the 30-attempt readiness probe before registration. See `prod/GLM-5.2-SGL-FP8-TP8.yaml` for the canonical pattern (added in cvm-compose-files#57 to surface silent registrar failures).
 5. **Graceful drain in nginx.** The TLS `server` block sets `keepalive_timeout 1h` + `keepalive_requests 1000000` so H2 connections from cloud-api survive long idle gaps. Without this, the next request opens a new TCP via model-proxy's L4 LB, may land on a different backend, and the signature 404s.
@@ -88,7 +88,7 @@ Configs in `experiments/` are WIP (AWQ/int4/nvfp4 quantization sweeps, otel test
 
 `.github/workflows/validate-compose.yaml` runs on every push/PR:
 
-1. **OTel label contract** (`scripts/validate_otel_labels.rb`) — enforces that Datadog `ad.logs` tags and OTel scrape labels match across every service, and that the OTel collector env vars are present. `cleanup-hf-model.yaml` is excluded.
+1. **OTel label contract** (`scripts/validate_otel_labels.rb`) — enforces that the retained `com.datadoghq.ad.logs` tags and the `nearai.otel.*` scrape labels match across every service, that the OTel collector env vars are present, and that the removed Datadog Agent check labels (`com.datadoghq.ad.check_names`, `com.datadoghq.ad.init_configs`, and `com.datadoghq.ad.instances`) are rejected if reintroduced. `cleanup-hf-model.yaml` is excluded.
 2. **Proxy dependency/env contracts** (`scripts/validate_proxy_dependencies.rb`, `scripts/validate_proxy_environment.rb`) — enforces the proxy dependency and required env var wiring.
 3. **Prod registrar auth contract** (`scripts/validate_registrar_auth.rb`) — enforces that prod registrar health probes authenticate when probing inference-proxy endpoints.
 4. **Compose syntax** — `docker compose -f <file> config` against every `*.yaml`, with dummy env vars for the `${VAR:?required}` fail-fast markers.
@@ -117,6 +117,6 @@ The end-to-end onboarding flow (staging `PATCH /v1/admin/models` → auto-genera
 1. **Choose the served model name and SNI domain first** — see [`AGENT.md` → Model naming and SNI domains](AGENT.md#model-naming-and-sni-domains). These are external identifiers: prefer the OpenRouter slug, no quantization suffix, no variant info. Pick them before writing the config so they don't need changing later.
 2. Start the config in `experiments/<Model>-<variant>.yaml`. Copy from the closest existing prod config as a template.
 3. Pin the image digests and HF `--revision`.
-4. Add the Datadog + OTel labels (copy from `prod/GLM-5.2-SGL-FP8-TP8.yaml` — the label set is exact).
+4. Add the retained `com.datadoghq.ad.logs` metadata and OTel scrape labels (copy from `prod/GLM-5.2-SGL-FP8-TP8.yaml` — the label set is exact).
 5. Soak in staging. Iterate.
 6. When the checklist passes, move to `prod/` and open a PR. CI validates; the merge auto-tags.
