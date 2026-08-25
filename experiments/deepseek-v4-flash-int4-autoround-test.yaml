@@ -152,10 +152,7 @@ services:
               device_ids: ["0","1","2","3","4","5","6","7"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.check_names: '["vllm"]'
-      com.datadoghq.ad.init_configs: "[{}]"
       com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:deepseek-ai/DeepSeek-V4-Flash-INT4-AutoRound","model_path:Intel/DeepSeek-V4-Flash-W4A16-AutoRound","precision:int4","deployment:deepseek-v4-flash-int4-autoround-test","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-dsv4-flash-int4:8000/metrics","histogram_buckets_as_distributions":true,"service":"model-vllm-dsv4-flash-int4","tags":["model:deepseek-ai/DeepSeek-V4-Flash-INT4-AutoRound","model_path:Intel/DeepSeek-V4-Flash-W4A16-AutoRound","precision:int4","deployment:deepseek-v4-flash-int4-autoround-test","ip:${HOST_IP}","port:8000"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
@@ -187,9 +184,6 @@ services:
     restart: unless-stopped
     logging: *logging-conf
     labels:
-      com.datadoghq.ad.check_names: '["dcgm"]'
-      com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://%%host%%:9400/metrics","tags":["model:deepseek-ai/DeepSeek-V4-Flash-INT4-AutoRound","precision:int4","deployment:deepseek-v4-flash-int4-autoround-test","ip:${HOST_IP}"]}]'
       com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:deepseek-ai/DeepSeek-V4-Flash-INT4-AutoRound","precision:int4","deployment:deepseek-v4-flash-int4-autoround-test","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "dcgm"
