@@ -65,8 +65,11 @@ x-dsv4-flash-common: &dsv4-flash-common
   # GPU04 A/B CANARY ONLY: do not expand before the one-host 24-hour gate.
   # Pinned vLLM 0.26 DP4+TP1+EP, target-only, FP8 KV, prefix caching, and
   # non-breakable FULL_DECODE_ONLY graphs. The matched H200 development gate
-  # was clean at <=128K; the 1M production context cap below still requires an
-  # 850K/1M staging qualification. DSPARK remains disabled for mixed serving.
+  # was clean through synthetic 393K long-prefill stress; the 1M production
+  # context cap below still requires an 850K/1M staging qualification. DSPARK
+  # remains disabled for mixed serving.
+  # Keep prefill chunks at 2K so long-prefill work cannot starve active decode
+  # streams long enough to trip the proxy's post-progress idle watchdog.
   # This candidate does not expose SGLang's optional hidden-state passthrough;
   # keep gpu04 out of interpretation-research windows while it is evaluated.
   image: vllm/vllm-openai@sha256:770fe65b2c73ee74a5c42165cf3433de4048cc2cd9c57a937ca4e35aba5aa87b
@@ -89,7 +92,7 @@ x-dsv4-flash-common: &dsv4-flash-common
       --max-model-len 1048576
       --gpu-memory-utilization 0.83
       --max-num-seqs 64
-      --max-num-batched-tokens 16384
+      --max-num-batched-tokens 2048
       --enable-prefix-caching
       --enable-prompt-tokens-details
       --host 0.0.0.0
@@ -379,7 +382,7 @@ services:
               device_ids: ["0","1","2","3"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:deepseek-ai/DeepSeek-V4-Flash-0731","model_path:deepseek-ai/DeepSeek-V4-Flash-0731","model_revision:7872f01b1d1fe23eabc4c98b48bffcef5a386062","deployment:dsv4-qwen36-gemma4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:1","config_variant:dsv4-0731-vllm026-dp4-ep-fdo","decode_mode:target_only","parallelism:dp4-tp1-ep","cuda_graph_mode:full-decode-only","kv_cache_dtype:fp8","block_size:256","prefix_caching:on","max_model_len:1048576","max_num_seqs:64","max_num_batched_tokens:16384","vllm_revision:0.26.0","engine_image:770fe65b2c73"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:deepseek-ai/DeepSeek-V4-Flash-0731","model_path:deepseek-ai/DeepSeek-V4-Flash-0731","model_revision:7872f01b1d1fe23eabc4c98b48bffcef5a386062","deployment:dsv4-qwen36-gemma4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:1","config_variant:dsv4-0731-vllm026-dp4-ep-fdo-mbt2k","decode_mode:target_only","parallelism:dp4-tp1-ep","cuda_graph_mode:full-decode-only","kv_cache_dtype:fp8","block_size:256","prefix_caching:on","max_model_len:1048576","max_num_seqs:64","max_num_batched_tokens:2048","vllm_revision:0.26.0","engine_image:770fe65b2c73"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
@@ -396,7 +399,7 @@ services:
       nearai.otel.host_machine: "${CVM_HOST}"
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
-      nearai.otel.config_variant: "dsv4-0731-vllm026-dp4-ep-fdo"
+      nearai.otel.config_variant: "dsv4-0731-vllm026-dp4-ep-fdo-mbt2k"
       nearai.otel.decode_mode: "target_only"
       nearai.otel.parallelism: "dp4-tp1-ep"
       nearai.otel.cuda_graph_mode: "full-decode-only"
@@ -405,7 +408,7 @@ services:
       nearai.otel.prefix_caching: "on"
       nearai.otel.max_model_len: "1048576"
       nearai.otel.max_num_seqs: "64"
-      nearai.otel.max_num_batched_tokens: "16384"
+      nearai.otel.max_num_batched_tokens: "2048"
       nearai.otel.ab_arm: "vllm026-dp4-ep-fdo-gpu04"
       nearai.otel.vllm_revision: "0.26.0"
       nearai.otel.engine_image: "770fe65b2c73"
@@ -916,7 +919,7 @@ configs:
                       ip: "${HOST_IP}"
                       port: "8000"
                       instance: "1"
-                      config_variant: "dsv4-0731-vllm026-dp4-ep-fdo"
+                      config_variant: "dsv4-0731-vllm026-dp4-ep-fdo-mbt2k"
                       decode_mode: "target_only"
                       parallelism: "dp4-tp1-ep"
                       cuda_graph_mode: "full-decode-only"
@@ -925,7 +928,7 @@ configs:
                       prefix_caching: "on"
                       max_model_len: "1048576"
                       max_num_seqs: "64"
-                      max_num_batched_tokens: "16384"
+                      max_num_batched_tokens: "2048"
                       ab_arm: "vllm026-dp4-ep-fdo-gpu04"
                       vllm_revision: "0.26.0"
                       engine_image: "770fe65b2c73"
