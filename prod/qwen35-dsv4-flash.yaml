@@ -75,6 +75,10 @@ x-vllm-glm53-flash-common: &vllm-glm53-flash-common
     - HF_HUB_DISABLE_TELEMETRY=1
     - DO_NOT_TRACK=1
     - VLLM_LOGGING_LEVEL=INFO
+    # The pinned image uses CUDA 13.0, while this CVM uses a pre-580 driver.
+    # Enable the image's bundled CUDA forward-compatibility libraries; CUDA
+    # 13.0 otherwise requires driver >= 580.65.06.
+    - VLLM_ENABLE_CUDA_COMPATIBILITY=1
     - NVIDIA_DRIVER_CAPABILITIES=compute,utility
     - OPENBLAS_L2_SIZE=2097152
     - NCCL_DEBUG=WARN
