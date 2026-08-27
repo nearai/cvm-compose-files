@@ -39,6 +39,8 @@ x-vllm-glm53-flash-common: &vllm-glm53-flash-common
   # FP8 weights, BF16 KV cache, and no MTP speculative decoding.
   # The pinned image was also directly verified to accept the BooleanOptional
   # `--no-enable-flashinfer-autotune` form used by the qualified launcher.
+  # Keep weights frozen at 84c6a6a while pinning the corrected upstream chat
+  # template separately; the older template can loop without a final answer.
   image: vllm/vllm-openai@sha256:2c6da6c6f16ed15c91e412d896dba13701f25fe1861eaec9ddaa4db34d1d21c4
   command: >
       /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/84c6a6aa9497188e15a635ba793b0f95a79b1033
@@ -49,6 +51,8 @@ x-vllm-glm53-flash-common: &vllm-glm53-flash-common
       --reasoning-parser glm45
       --tool-call-parser glm47
       --enable-auto-tool-choice
+      --chat-template /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/3f1971b7b5f7a528c9c4ef6212c8785298a8c24a/chat_template.jinja
+      --chat-template-content-format openai
       --gpu-memory-utilization 0.82
       --max-model-len 1048576
       --max-num-seqs 32
@@ -165,6 +169,8 @@ services:
         set -e
         echo "Downloading zai-org/GLM-5.3-Flash..."
         uvx --from 'huggingface_hub[hf_xet]' hf download zai-org/GLM-5.3-Flash --revision 84c6a6aa9497188e15a635ba793b0f95a79b1033
+        echo "Downloading corrected GLM-5.3-Flash chat template..."
+        uvx --from 'huggingface_hub[hf_xet]' hf download zai-org/GLM-5.3-Flash chat_template.jinja --revision 3f1971b7b5f7a528c9c4ef6212c8785298a8c24a
         echo "Downloading deepseek-ai/DeepSeek-V4-Flash..."
         uvx --from 'huggingface_hub[hf_xet]' hf download deepseek-ai/DeepSeek-V4-Flash --revision 553034d7dd9e06c2eeaee68cf85a17d6d4754cf0
         echo "Downloading deepseek-ai/DeepSeek-V4-Flash-0731..."
