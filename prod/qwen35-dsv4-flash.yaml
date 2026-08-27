@@ -41,7 +41,7 @@ x-vllm-glm53-flash-common: &vllm-glm53-flash-common
   # `--no-enable-flashinfer-autotune` form used by the qualified launcher.
   image: vllm/vllm-openai@sha256:2c6da6c6f16ed15c91e412d896dba13701f25fe1861eaec9ddaa4db34d1d21c4
   command: >
-      zai-org/GLM-5.3-Flash
+      /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/84c6a6aa9497188e15a635ba793b0f95a79b1033
       --revision 84c6a6aa9497188e15a635ba793b0f95a79b1033
       --served-model-name z-ai/glm-5.3-flash
       --tensor-parallel-size 4
@@ -61,7 +61,11 @@ x-vllm-glm53-flash-common: &vllm-glm53-flash-common
     - vllm_cache:/root/.cache/vllm
   environment:
     - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
-    - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0}
+    # The qualified launcher used the immutable local snapshot. The
+    # GLM5Next multimodal processor opens processor_config.json directly from
+    # this path, so passing the repo ID makes startup fail before weight load.
+    - HF_HUB_OFFLINE=1
+    - TRANSFORMERS_OFFLINE=1
     - HF_HUB_DISABLE_TELEMETRY=1
     - DO_NOT_TRACK=1
     - VLLM_LOGGING_LEVEL=INFO
