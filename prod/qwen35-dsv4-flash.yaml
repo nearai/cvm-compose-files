@@ -37,6 +37,8 @@ x-vllm-glm53-flash-common: &vllm-glm53-flash-common
   # Qualified on one four-H200 NVLink island with the full native 1,048,576
   # context window. Keep the initial production cut on this baseline: native
   # FP8 weights, BF16 KV cache, and no MTP speculative decoding.
+  # The pinned image was also directly verified to accept the BooleanOptional
+  # `--no-enable-flashinfer-autotune` form used by the qualified launcher.
   image: vllm/vllm-openai@sha256:2c6da6c6f16ed15c91e412d896dba13701f25fe1861eaec9ddaa4db34d1d21c4
   command: >
       zai-org/GLM-5.3-Flash
@@ -176,7 +178,7 @@ services:
     image: nginx@sha256:1d13701a5f9f3fb01aaa88cef2344d65b6b5bf6b7d9fa4cf0dca557a8d7702ba
     container_name: nginx
     depends_on:
-      - proxy-glm53-flash
+      - proxy-qwen35-122b
       - proxy-dsv4-flash
     command: /bin/sh -c 'while :; do sleep 6h; nginx -s reload; done & nginx -g "daemon off;"'
     ports:
@@ -224,9 +226,11 @@ services:
 
   # --- GLM-5.3-Flash proxy ---
 
-  proxy-glm53-flash:
+  # Keep this legacy service/container key for one in-place Compose rollout.
+  # Renaming it here would leave the retired proxy as an orphan.
+  proxy-qwen35-122b:
     <<: *vllm-proxy-common
-    container_name: proxy-glm53-flash
+    container_name: proxy-qwen35-122b
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - CLOUD_API_URL=https://cloud-api.near.ai
@@ -238,7 +242,7 @@ services:
       - TOKEN=${PROXY_TOKEN}
       - FUSION_ENABLED=${FUSION_ENABLED}
       - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
-      - VLLM_BASE_URL=http://model-vllm-glm53-flash-fp8-tp4:8000
+      - VLLM_BASE_URL=http://model-sg-qwen35-122b-fp8-tp4:8000
       - VLLM_PROXY_MAX_REQUEST_SIZE=104857600
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
@@ -250,7 +254,7 @@ services:
       nearai.otel.job: "inference-proxy"
       nearai.otel.service: "vllm-proxy"
       nearai.otel.source: "vllm-proxy"
-      nearai.otel.container_name: "proxy-glm53-flash"
+      nearai.otel.container_name: "proxy-qwen35-122b"
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "z-ai/glm-5.3-flash"
@@ -263,9 +267,11 @@ services:
 
   # --- GLM-5.3-Flash instance 1 (GPUs 0-3) ---
 
-  model-vllm-glm53-flash-fp8-tp4:
+  # Keep this legacy service/container key so Compose stops and replaces the
+  # Qwen engine before starting GLM on the same GPUs instead of orphaning it.
+  model-sg-qwen35-122b-fp8-tp4:
     <<: *vllm-glm53-flash-common
-    container_name: model-vllm-glm53-flash-fp8-tp4
+    container_name: model-sg-qwen35-122b-fp8-tp4
     depends_on:
       model-downloader:
         condition: service_completed_successfully
@@ -282,7 +288,7 @@ services:
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
       nearai.otel.source: "vllm"
-      nearai.otel.container_name: "model-vllm-glm53-flash-fp8-tp4"
+      nearai.otel.container_name: "model-sg-qwen35-122b-fp8-tp4"
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "zai-org/GLM-5.3-Flash"
@@ -387,9 +393,10 @@ services:
 
   # --- Per-model dcgm-exporters: device_ids scopes NVML to each model's GPUs ---
 
-  dcgm-glm53-flash:
+  # Same in-place migration rule as the engine and proxy above.
+  dcgm-qwen35-122b:
     <<: *dcgm-common
-    container_name: dcgm-glm53-flash
+    container_name: dcgm-qwen35-122b
     deploy:
       resources:
         reservations:
@@ -403,7 +410,7 @@ services:
       nearai.otel.job: "dcgm"
       nearai.otel.service: "dcgm-exporter"
       nearai.otel.source: "dcgm-exporter"
-      nearai.otel.container_name: "dcgm-glm53-flash"
+      nearai.otel.container_name: "dcgm-qwen35-122b"
       nearai.otel.port: "9400"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "zai-org/GLM-5.3-Flash"
@@ -536,6 +543,10 @@ configs:
               on_error: send_quiet
             - type: regex_parser
               parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'served_model:(?P<served_model>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
               regex: 'model_path:(?P<model_path>[^",\]]+)'
               on_error: send_quiet
             - type: regex_parser
@@ -577,15 +588,15 @@ configs:
         prometheus/apps:
           config:
             scrape_configs:
-              - job_name: vllm-model-vllm-glm53-flash-fp8-tp4
+              - job_name: vllm-model-sg-qwen35-122b-fp8-tp4
                 scrape_interval: 15s
                 metrics_path: /metrics
                 static_configs:
-                  - targets: ['model-vllm-glm53-flash-fp8-tp4:8000']
+                  - targets: ['model-sg-qwen35-122b-fp8-tp4:8000']
                     labels:
                       service: "vllm"
                       source: "vllm"
-                      container_name: "model-vllm-glm53-flash-fp8-tp4"
+                      container_name: "model-sg-qwen35-122b-fp8-tp4"
                       model: "zai-org/GLM-5.3-Flash"
                       served_model: "z-ai/glm-5.3-flash"
                       precision: "fp8"
@@ -633,15 +644,15 @@ configs:
                       schedule_conservativeness: "1.3"
                       sglang_revision: "nightly-c0b6474-near-v1"
                       engine_image: "5bc4bc0dfd36"
-              - job_name: dcgm-dcgm-glm53-flash
+              - job_name: dcgm-dcgm-qwen35-122b
                 scrape_interval: 15s
                 metrics_path: /metrics
                 static_configs:
-                  - targets: ['dcgm-glm53-flash:9400']
+                  - targets: ['dcgm-qwen35-122b:9400']
                     labels:
                       service: "dcgm-exporter"
                       source: "dcgm-exporter"
-                      container_name: "dcgm-glm53-flash"
+                      container_name: "dcgm-qwen35-122b"
                       model: "zai-org/GLM-5.3-Flash"
                       served_model: "z-ai/glm-5.3-flash"
                       deployment: "qwen35-dsv4-flash"
@@ -670,15 +681,15 @@ configs:
                       port: "9400"
                       ab_arm: "tp4-target-only-sparse-on-gpu30"
                       sparse_prefill: "on"
-              - job_name: inference-proxy-proxy-glm53-flash
+              - job_name: inference-proxy-proxy-qwen35-122b
                 scrape_interval: 15s
                 metrics_path: /metrics
                 static_configs:
-                  - targets: ['proxy-glm53-flash:8000']
+                  - targets: ['proxy-qwen35-122b:8000']
                     labels:
                       service: "vllm-proxy"
                       source: "vllm-proxy"
-                      container_name: "proxy-glm53-flash"
+                      container_name: "proxy-qwen35-122b"
                       model: "z-ai/glm-5.3-flash"
                       deployment: "qwen35-dsv4-flash"
                       env: "${ENV}"
@@ -771,6 +782,7 @@ configs:
             - source
             - log.iostream
             - model
+            - served_model
             - model_path
             - precision
             - deployment
@@ -1018,7 +1030,7 @@ configs:
       # :8000 - GLM-5.3-Flash
       server {
         listen 8000;
-        location / { proxy_pass http://proxy-glm53-flash:8000; }
+        location / { proxy_pass http://proxy-qwen35-122b:8000; }
       }
 
       # :8001 - DeepSeek-V4-Flash replica 1 (registrar probe path for the 8444 backend)
@@ -1044,7 +1056,7 @@ configs:
         # PINGs (http2_keep_alive_while_idle).
         keepalive_timeout 1h;
         keepalive_requests 1000000;
-        location / { proxy_pass http://proxy-glm53-flash:8000; }
+        location / { proxy_pass http://proxy-qwen35-122b:8000; }
       }
 
       server {
