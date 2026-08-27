@@ -187,6 +187,15 @@ services:
     labels:
       com.datadoghq.ad.logs: '[{"source":"model-downloader","service":"model-downloader","tags":["model:zai-org/GLM-5.3-Flash","served_model:z-ai/glm-5.3-flash","deployment:qwen35-dsv4-flash","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
 
+  # Dormant during normal deploys. Target this service explicitly with the
+  # maintenance profile when one model's shared HF cache must be evicted.
+  hf-cleanup:
+    extends:
+      file: ../cleanup-hf-model.yaml
+      service: hf-cleanup
+    image: alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
+    profiles: ["maintenance"]
+
   nginx:
     image: nginx@sha256:1d13701a5f9f3fb01aaa88cef2344d65b6b5bf6b7d9fa4cf0dca557a8d7702ba
     container_name: nginx
