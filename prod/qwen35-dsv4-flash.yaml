@@ -5,9 +5,9 @@ x-logging-conf: &logging-conf
     max-file: "10"
     labels: "com.datadoghq.ad.logs,com.docker.compose.service"
 
-# gpu30 production layout: GLM-5.3-Flash TP4 on GPUs 0-3 and one
-# DeepSeek-V4-Flash-0731 TP4 replica spanning GPUs 4-7. Retiring Qwen3.5
-# releases the complete 0-3 NVLink island, so this swap moves no GPU workloads.
+# gpu30 production layout: one DeepSeek-V4-Flash-0731 TP4 replica on GPUs 0-3
+# and GLM-5.3-Flash TP4 on GPUs 4-7. Keep each model within one complete NVLink
+# island; this placement uses the alternate island for GLM's correctness gate.
 
 x-nvidia: &nvidia
   runtime: nvidia
@@ -287,7 +287,7 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
-  # --- GLM-5.3-Flash instance 1 (GPUs 0-3) ---
+  # --- GLM-5.3-Flash instance 1 (GPUs 4-7) ---
 
   # Keep this legacy service/container key so Compose stops and replaces the
   # Qwen engine before starting GLM on the same GPUs instead of orphaning it.
@@ -302,7 +302,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["0","1","2","3"]
+              device_ids: ["4","5","6","7"]
               capabilities: [gpu]
     labels:
       com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:zai-org/GLM-5.3-Flash","served_model:z-ai/glm-5.3-flash","precision:fp8","deployment:qwen35-dsv4-flash","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:1"]}]'
@@ -322,7 +322,7 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
-  # --- DeepSeek-V4-Flash proxy (single TP4 replica on GPUs 4-7) ---
+  # --- DeepSeek-V4-Flash proxy (single TP4 replica on GPUs 0-3) ---
 
   proxy-dsv4-flash:
     <<: *vllm-proxy-common
@@ -376,7 +376,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["4","5","6","7"]
+              device_ids: ["0","1","2","3"]
               capabilities: [gpu]
     labels:
       com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:deepseek-ai/DeepSeek-V4-Flash-0731","model_path:deepseek-ai/DeepSeek-V4-Flash-0731","model_revision:7872f01b1d1fe23eabc4c98b48bffcef5a386062","deployment:qwen35-dsv4-flash","config_variant:dsv4-0731-tp4-target-only-sparse-on","decode_mode:target_only","sparse_prefill:on","chunk_size:8192","ab_arm:tp4-target-only-sparse-on-gpu30","max_prefill_tokens:16384","continuous_decode_steps:1","chunked_prefill_admission_reserve:4096","compress_state_dtype:bf16","watchdog_timeout:1800","cuda_graph:1","max_running_requests:64","max_queued_requests:16","schedule_conservativeness:1.3","sglang_revision:nightly-c0b6474-near-v1","engine_image:5bc4bc0dfd36","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8001","instance:1"]}]'
@@ -424,7 +424,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["0","1","2","3"]
+              device_ids: ["4","5","6","7"]
               capabilities: [gpu]
     labels:
       com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:zai-org/GLM-5.3-Flash","served_model:z-ai/glm-5.3-flash","deployment:qwen35-dsv4-flash","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
@@ -452,7 +452,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["4","5","6","7"]
+              device_ids: ["0","1","2","3"]
               capabilities: [gpu]
     labels:
       com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:deepseek-ai/DeepSeek-V4-Flash","deployment:qwen35-dsv4-flash","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ab_arm:tp4-target-only-sparse-on-gpu30","sparse_prefill:on"]}]'
