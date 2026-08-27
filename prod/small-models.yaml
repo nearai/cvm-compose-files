@@ -2230,6 +2230,13 @@ configs:
           server_name gpt-oss-120b.completions.near.ai
                       gpt-oss-120b.completions-stg.near.ai
                       ~^gpt-oss-120b-i\d+\.completions(-stg)?\.near\.ai$$;
+          # cloud-api multiplexes unrelated H2 requests over one bucket-pinned connection.
+          # Raise the request budget so nginx does not close it at 1000 requests and kill
+          # every in-flight SSE stream. Keep it alive across idle gaps so a reconnect does
+          # not open a new TCP through model-proxy's L4 LB, land on a different backend,
+          # and make the signature lookup return 404.
+          keepalive_timeout 1h;
+          keepalive_requests 1000000;
           location / { proxy_pass http://proxy-gptoss-120b:8000; }
       }
 
@@ -2238,6 +2245,9 @@ configs:
           server_name flux2-klein.completions.near.ai
                       flux2-klein.completions-stg.near.ai
                       ~^flux2-klein-i\d+\.completions(-stg)?\.near\.ai$$;
+          # Non-streaming endpoint; keep fleet-wide HTTP/2 connection handling uniform.
+          keepalive_timeout 1h;
+          keepalive_requests 1000000;
           location / { proxy_pass http://proxy-flux2-klein-4b:8000; }
       }
 
@@ -2246,6 +2256,13 @@ configs:
           server_name qwen3-vl-30b.completions.near.ai
                       qwen3-vl-30b.completions-stg.near.ai
                       ~^qwen3-vl-30b-i\d+\.completions(-stg)?\.near\.ai$$;
+          # cloud-api multiplexes unrelated H2 requests over one bucket-pinned connection.
+          # Raise the request budget so nginx does not close it at 1000 requests and kill
+          # every in-flight SSE stream. Keep it alive across idle gaps so a reconnect does
+          # not open a new TCP through model-proxy's L4 LB, land on a different backend,
+          # and make the signature lookup return 404.
+          keepalive_timeout 1h;
+          keepalive_requests 1000000;
           location / { proxy_pass http://proxy-qwen3vl-30b-a3b:8000; }
       }
 
@@ -2254,6 +2271,9 @@ configs:
           server_name qwen3-embedding.completions.near.ai
                       qwen3-embedding.completions-stg.near.ai
                       ~^qwen3-embedding-i\d+\.completions(-stg)?\.near\.ai$$;
+          # Non-streaming endpoint; keep fleet-wide HTTP/2 connection handling uniform.
+          keepalive_timeout 1h;
+          keepalive_requests 1000000;
           location / { proxy_pass http://proxy-qwen3-embedding-0.6b:8000; }
       }
 
@@ -2262,6 +2282,9 @@ configs:
           server_name qwen3-reranker.completions.near.ai
                       qwen3-reranker.completions-stg.near.ai
                       ~^qwen3-reranker-i\d+\.completions(-stg)?\.near\.ai$$;
+          # Non-streaming endpoint; keep fleet-wide HTTP/2 connection handling uniform.
+          keepalive_timeout 1h;
+          keepalive_requests 1000000;
           location / { proxy_pass http://proxy-qwen3-reranker-0.6b:8000; }
       }
 
@@ -2270,6 +2293,9 @@ configs:
           server_name whisper-large-v3.completions.near.ai
                       whisper-large-v3.completions-stg.near.ai
                       ~^whisper-large-v3-i\d+\.completions(-stg)?\.near\.ai$$;
+          # Non-streaming endpoint; keep fleet-wide HTTP/2 connection handling uniform.
+          keepalive_timeout 1h;
+          keepalive_requests 1000000;
           location / { proxy_pass http://proxy-whisper-large-v3:8000; }
       }
 
@@ -2278,6 +2304,9 @@ configs:
           server_name privacy-filter.completions.near.ai
                       privacy-filter.completions-stg.near.ai
                       ~^privacy-filter-i\d+\.completions(-stg)?\.near\.ai$$;
+          # Non-streaming endpoint; keep fleet-wide HTTP/2 connection handling uniform.
+          keepalive_timeout 1h;
+          keepalive_requests 1000000;
           location / { proxy_pass http://proxy-privacy-filter:8000; }
       }
 
@@ -2286,6 +2315,13 @@ configs:
           server_name qwen3-6-35b.completions.near.ai
                       qwen3-6-35b.completions-stg.near.ai
                       ~^qwen3-6-35b-i\d+\.completions(-stg)?\.near\.ai$$;
+          # cloud-api multiplexes unrelated H2 requests over one bucket-pinned connection.
+          # Raise the request budget so nginx does not close it at 1000 requests and kill
+          # every in-flight SSE stream. Keep it alive across idle gaps so a reconnect does
+          # not open a new TCP through model-proxy's L4 LB, land on a different backend,
+          # and make the signature lookup return 404.
+          keepalive_timeout 1h;
+          keepalive_requests 1000000;
           location / { proxy_pass http://proxy-qwen36-35b-a3b:8000; }
       }
 
