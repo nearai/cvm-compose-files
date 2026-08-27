@@ -549,6 +549,10 @@ configs:
               on_error: send_quiet
             - type: regex_parser
               parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'served_model:(?P<served_model>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
               regex: 'model_path:(?P<model_path>[^",\]]+)'
               on_error: send_quiet
             - type: regex_parser
@@ -781,6 +785,7 @@ configs:
             - source
             - log.iostream
             - model
+            - served_model
             - model_path
             - precision
             - deployment

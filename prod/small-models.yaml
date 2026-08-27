@@ -7,6 +7,18 @@ x-logging-conf: &logging-conf
 
 # Non-chat models (FLUX, embedding, reranker, whisper) use /v1/models
 
+# ONE-TIME MIGRATION ORDERING (remove once gpu13 is on this layout):
+# This revision moves GLM-5.1 from GPUs 3-6 to 0-3 and the Qwen3.6-35B
+# replicas onto GPUs 4-6. A single `compose up` does not guarantee the old
+# GLM-5.1 container releases GPUs 4-6 before the Qwen replicas claim them, and
+# Docker does not make GPU assignment exclusive -- both would start and
+# contend for the same device memory. Deploy in two steps:
+#   1. docker compose up -d model-sg-glm51-awq-tp4 nginx
+#      wait until GLM-5.1 is serving and GPUs 4-6 show no processes
+#   2. docker compose up -d
+# Once gpu13 is running this layout the two-step is no longer needed --
+# GLM-5.1 (0-3) and the Qwen replicas (4-6) are disjoint.
+
 x-nvidia: &nvidia
   runtime: nvidia
   ipc: host

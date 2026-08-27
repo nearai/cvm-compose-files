@@ -39,6 +39,8 @@ If a config fails any item, it stays in `experiments/` with a header comment doc
 
 > **Use the `/rolling-deploy` skill.** It automates one-host-at-a-time rollouts with health checks and graceful drain for slow-shutdown models (GLM-5.x, DeepSeek). Manual `compose/up` drops in-flight requests on models that take minutes to drain.
 
+gpu13 has a one-time two-step migration requirement documented in the header of `prod/small-models.yaml`: start `model-sg-glm51-awq-tp4` and `nginx` first, verify GLM-5.1 is serving and GPUs 4–6 are idle, then start the remaining services. Deploy gpu13 before gpu04, and do not remove gpu04's Qwen3.6-35B replica until gpu13's third replica is live.
+
 ### Tag age gate
 
 `compose-manager` enforces `MIN_TAG_AGE_HOURS` (default 48h), gated on the **commit** date, not the tag date. The `auto-tag.yaml` workflow creates `v0.0.N` annotated tags on every merge to main — but those tags point at fresh commits, so they only become deployable ~48h after merge.
