@@ -60,51 +60,6 @@ x-sglang-env:
     - VLLM_CACHE_ROOT=/root/.cache/vllm
     - SGLANG_CACHE_DIT_ENABLED=true
 
-x-gpt-oss-common: &gpt-oss-common
-  <<: *vllm-common
-  image: vllm/vllm-openai@sha256:6766ce0c459e24b76f3e9ba14ffc0442131ef4248c904efdcbf0d89e38be01fe
-  # Cache subpath is configurable so a corrupted torch.compile artifact in the
-  # shared vllm_cache volume can be sidestepped without a new tag: pass
-  # env={"GPT_OSS_CACHE_SUBPATH":"v3"} to /compose/up to force a fresh cache.
-  # Default is "v2" because v1 (the original /root/.cache/vllm root) holds the
-  # corrupted 1603e894a6/... artifact from a prior interrupted compile.
-  # --max-num-batched-tokens 16384 (was 8192): a ~13.8k-token prompt prefills in one chunk
-  # instead of two, packing more tokens/step into the MXFP4 MoE GEMM -> +2-4% throughput
-  # across the concurrency range on H200 (internal 12:1 serving sweep), no quality/stability
-  # change. MXFP4-via-Marlin (VLLM_MXFP4_USE_MARLIN=1) stays — benched fastest on this engine
-  # for the practical range; the Triton matmul_ogs default was slower and unstable at c>=16.
-  # --async-scheduling REMOVED (benchmarked 2026-07-10, gpu02 dev CVM, single H200 CC-on, TP1,
-  # in1024/out1024 @ conc64, MXFP4 Marlin, prod image). Under GPU-CC the async output-drain /
-  # next-step-prep overlap is void — the secure-copy bridge serializes the small D2H drains — so
-  # the flag is a net loss here: OFF beat ON by +5.2% output tok/s and -5.1% TPOT, reproduced
-  # across two ON deploys with clean arm separation. Matches arXiv:2606.23969 (Phala): async's
-  # benefit "stops at parity" on Hopper under CC and turns slightly negative for MoE decode
-  # (irreducible per-step expert-routing crossings). Do NOT re-add without re-benchmarking on CC.
-  command: >
-      openai/gpt-oss-120b
-      --revision b5c939de8f754692c1647ca79fbf85e8c1e70f8a
-      --tensor-parallel-size 1
-      --gpu-memory-utilization 0.90
-      --enable-prefix-caching
-      --max-num-seqs 64
-      --tool-call-parser openai
-      --enable-auto-tool-choice
-      --max-model-len 128K
-      --max-num-batched-tokens 16384
-      --load-format runai_streamer
-      --model-loader-extra-config '{"distributed":true, "concurrency":48}'
-      --enable-prompt-tokens-details
-  volumes:
-    - hugginface_cache:/root/.cache/huggingface
-    - vllm_cache:/root/.cache/vllm
-  environment:
-    - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
-    - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0}
-    - VLLM_LOGGING_LEVEL=INFO
-    - NVIDIA_DRIVER_CAPABILITIES=compute,utility
-    - VLLM_MXFP4_USE_MARLIN=1
-    - VLLM_CACHE_ROOT=/root/.cache/vllm/${GPT_OSS_CACHE_SUBPATH:-v2}
-
 x-qwen3-6-common: &qwen3-6-common
   <<: *nvidia
   init: true
@@ -193,8 +148,8 @@ x-flux-common: &flux-common
 # This engine joins the existing uniform glm-5-1.completions.near.ai pool
 # (today: gpu03 and gpu02), all backends serving zai-org/GLM-5.1-FP8 on the
 # same recipe, so there is no context-tier hazard.
-# The TP4 engine sits on GPUs 3-6 so the single-copy gpt-oss and qwen3.6 r1
-# keep their existing GPUs and are never recreated during this rollout.
+# The TP4 engine uses the complete GPUs 0-3 NVLink island. Three Qwen3.6
+# replicas occupy GPUs 4-6, while the single-homed shared stack stays on GPU 7.
 # The recipe is copied from prod/dsv4-qwen38-glm51.yaml — keep the two in sync,
 # do not retune here.
 # This engine uses build: (the sglang#28305 patch), so a deploy must run
@@ -509,7 +464,6 @@ services:
     image: nginx@sha256:1d13701a5f9f3fb01aaa88cef2344d65b6b5bf6b7d9fa4cf0dca557a8d7702ba
     container_name: nginx
     depends_on:
-      - proxy-gptoss-120b
       - proxy-qwen36-35b-a3b
       - proxy-glm51
       - proxy-flux2-klein-4b
@@ -521,7 +475,6 @@ services:
     command: /bin/sh -c 'while :; do sleep 6h; nginx -s reload; done & nginx -g "daemon off;"'
     ports:
       - "80:80"
-      - "8001:8001"
       - "8002:8002"
       - "8003:8003"
       - "8004:8004"
@@ -540,7 +493,7 @@ services:
     restart: unless-stopped
     logging: *logging-conf
     labels:
-      com.datadoghq.ad.logs: '[{"source":"nginx","service":"nginx","tags":["model:openai/gpt-oss-120b","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000"]}]'
+      com.datadoghq.ad.logs: '[{"source":"nginx","service":"nginx","tags":["model:black-forest-labs/FLUX.2-klein-4B","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8002"]}]'
 
   model-proxy-registrar:
     image: curlimages/curl@sha256:d94d07ba9e7d6de898b6d96c1a072f6f8266c687af78a74f380087a0addf5d17
@@ -566,75 +519,9 @@ services:
         mode: 0755
     logging: *logging-conf
     labels:
-      com.datadoghq.ad.logs: '[{"source":"model-proxy-registrar","service":"model-proxy-registrar","tags":["model:openai/gpt-oss-120b","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.logs: '[{"source":"model-proxy-registrar","service":"model-proxy-registrar","tags":["model:black-forest-labs/FLUX.2-klein-4B","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
 
-  # --- GPT-OSS x1 (GPU 0) — single proxy, single backend ---
-
-  proxy-gptoss-120b:
-    <<: *vllm-proxy-common
-    container_name: proxy-gptoss-120b
-    environment:
-      - NVIDIA_VISIBLE_DEVICES=all
-      - CLOUD_API_URL=https://cloud-api.near.ai
-      - CLOUD_API_USAGE_TOKEN=${CLOUD_API_USAGE_TOKEN}
-      - COMPOSE_MANAGER_URL=http://compose-manager:8080
-      - LOG_FORMAT=json
-      - MODEL_NAME=openai/gpt-oss-120b
-      - OHTTP_ENABLED=true
-      - TOKEN=${PROXY_TOKEN}
-      - FUSION_ENABLED=${FUSION_ENABLED}
-      - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
-      - VLLM_BACKEND_URLS=http://model-vllm-gptoss-120b-mxfp4-tp1-r3:8000
-      - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
-      - USE_NV_ATTESTATION_SDK=true
-      - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
-      - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
-    labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:openai/gpt-oss-120b","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8001"]}]'
-      nearai.otel.scrape: "true"
-      nearai.otel.job: "inference-proxy"
-      nearai.otel.service: "vllm-proxy"
-      nearai.otel.source: "vllm-proxy"
-      nearai.otel.container_name: "proxy-gptoss-120b"
-      nearai.otel.port: "8000"
-      nearai.otel.path: "/metrics"
-      nearai.otel.model: "openai/gpt-oss-120b"
-      nearai.otel.deployment: "small-models"
-      nearai.otel.env: "${ENV}"
-      nearai.otel.host: "${CVM_HOST}"
-      nearai.otel.host_machine: "${CVM_HOST}"
-      nearai.otel.cvm_name: "${CVM_NAME}"
-      nearai.otel.ip: "${HOST_IP}"
-
-  # Keep the legacy -r3 service name so the running GPU-0 container is never recreated.
-  model-vllm-gptoss-120b-mxfp4-tp1-r3:
-    <<: *gpt-oss-common
-    container_name: model-vllm-gptoss-120b-mxfp4-tp1-r3
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              device_ids: ["0"]
-              capabilities: [gpu]
-    labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:openai/gpt-oss-120b","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8001","instance:3"]}]'
-      nearai.otel.scrape: "true"
-      nearai.otel.job: "vllm"
-      nearai.otel.service: "vllm"
-      nearai.otel.source: "vllm"
-      nearai.otel.container_name: "model-vllm-gptoss-120b-mxfp4-tp1-r3"
-      nearai.otel.port: "8000"
-      nearai.otel.path: "/metrics"
-      nearai.otel.model: "openai/gpt-oss-120b"
-      nearai.otel.deployment: "small-models"
-      nearai.otel.env: "${ENV}"
-      nearai.otel.host: "${CVM_HOST}"
-      nearai.otel.host_machine: "${CVM_HOST}"
-      nearai.otel.cvm_name: "${CVM_NAME}"
-      nearai.otel.ip: "${HOST_IP}"
-
-  # --- Qwen3.6-35B-A3B-FP8 x2 (GPUs 1, 2) — SGLang, TP=1, EAGLE-v2 spec, single proxy multi-backend ---
+  # --- Qwen3.6-35B-A3B-FP8 x3 (GPUs 4, 5, 6) — SGLang, TP=1, EAGLE-v2 spec, single proxy multi-backend ---
 
   proxy-qwen36-35b-a3b:
     <<: *vllm-proxy-common
@@ -650,7 +537,7 @@ services:
       - TOKEN=${PROXY_TOKEN}
       - FUSION_ENABLED=${FUSION_ENABLED}
       - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
-      - VLLM_BACKEND_URLS=http://model-sg-qwen36-35b-a3b-fp8-tp1-r1:8000,http://model-sg-qwen36-35b-a3b-fp8-tp1-r2:8000
+      - VLLM_BACKEND_URLS=http://model-sg-qwen36-35b-a3b-fp8-tp1-r1:8000,http://model-sg-qwen36-35b-a3b-fp8-tp1-r2:8000,http://model-sg-qwen36-35b-a3b-fp8-tp1-r3:8000
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
       - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
@@ -680,7 +567,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["1"]
+              device_ids: ["4"]
               capabilities: [gpu]
     labels:
       com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:Qwen/Qwen3.6-35B-A3B-FP8","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8008","instance:1"]}]'
@@ -707,7 +594,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["2"]
+              device_ids: ["5"]
               capabilities: [gpu]
     labels:
       com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:Qwen/Qwen3.6-35B-A3B-FP8","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8008","instance:2"]}]'
@@ -716,6 +603,33 @@ services:
       nearai.otel.service: "sglang"
       nearai.otel.source: "sglang"
       nearai.otel.container_name: "model-sg-qwen36-35b-a3b-fp8-tp1-r2"
+      nearai.otel.port: "8000"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "Qwen/Qwen3.6-35B-A3B-FP8"
+      nearai.otel.deployment: "small-models"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
+
+  model-sg-qwen36-35b-a3b-fp8-tp1-r3:
+    <<: *qwen3-6-common
+    container_name: model-sg-qwen36-35b-a3b-fp8-tp1-r3
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["6"]
+              capabilities: [gpu]
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:Qwen/Qwen3.6-35B-A3B-FP8","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8008","instance:3"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "sglang"
+      nearai.otel.service: "sglang"
+      nearai.otel.source: "sglang"
+      nearai.otel.container_name: "model-sg-qwen36-35b-a3b-fp8-tp1-r3"
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "Qwen/Qwen3.6-35B-A3B-FP8"
@@ -781,7 +695,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["3","4","5","6"]
+              device_ids: ["0","1","2","3"]
               capabilities: [gpu]
     restart: unless-stopped
     stop_grace_period: 5m
@@ -1223,33 +1137,6 @@ services:
   # device_ids, so all NVML/DCGM metrics it emits are correctly attributable to
   # one model. Filter dashboards/monitors on `model:<HF id>`.
 
-  dcgm-gptoss-120b:
-    <<: *dcgm-common
-    container_name: dcgm-gptoss-120b
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              device_ids: ["0"]
-              capabilities: [gpu]
-    labels:
-      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:openai/gpt-oss-120b","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
-      nearai.otel.scrape: "true"
-      nearai.otel.job: "dcgm"
-      nearai.otel.service: "dcgm-exporter"
-      nearai.otel.source: "dcgm-exporter"
-      nearai.otel.container_name: "dcgm-gptoss-120b"
-      nearai.otel.port: "9400"
-      nearai.otel.path: "/metrics"
-      nearai.otel.model: "openai/gpt-oss-120b"
-      nearai.otel.deployment: "small-models"
-      nearai.otel.env: "${ENV}"
-      nearai.otel.host: "${CVM_HOST}"
-      nearai.otel.host_machine: "${CVM_HOST}"
-      nearai.otel.cvm_name: "${CVM_NAME}"
-      nearai.otel.ip: "${HOST_IP}"
-
   dcgm-qwen36-35b-a3b:
     <<: *dcgm-common
     container_name: dcgm-qwen36-35b-a3b
@@ -1258,7 +1145,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["1","2"]
+              device_ids: ["4","5","6"]
               capabilities: [gpu]
     labels:
       com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:Qwen/Qwen3.6-35B-A3B-FP8","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
@@ -1285,7 +1172,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["3","4","5","6"]
+              device_ids: ["0","1","2","3"]
               capabilities: [gpu]
     labels:
       com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:QuantTrio/GLM-5.1-AWQ","served_model:zai-org/GLM-5.1-FP8","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
@@ -1470,24 +1357,6 @@ configs:
         prometheus/apps:
           config:
             scrape_configs:
-              - job_name: vllm-model-vllm-gptoss-120b-mxfp4-tp1-r3
-                scrape_interval: 15s
-                metrics_path: /metrics
-                static_configs:
-                  - targets: ['model-vllm-gptoss-120b-mxfp4-tp1-r3:8000']
-                    labels:
-                      service: "vllm"
-                      source: "vllm"
-                      container_name: "model-vllm-gptoss-120b-mxfp4-tp1-r3"
-                      model: "openai/gpt-oss-120b"
-                      deployment: "small-models"
-                      env: "${ENV}"
-                      host: "${CVM_HOST}"
-                      host_machine: "${CVM_HOST}"
-                      cvm_name: "${CVM_NAME}"
-                      ip: "${HOST_IP}"
-                      port: "8001"
-                      instance: "3"
               - job_name: sglang-model-sg-qwen36-35b-a3b-fp8-tp1-r1
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -1524,6 +1393,24 @@ configs:
                       ip: "${HOST_IP}"
                       port: "8008"
                       instance: "2"
+              - job_name: sglang-model-sg-qwen36-35b-a3b-fp8-tp1-r3
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['model-sg-qwen36-35b-a3b-fp8-tp1-r3:8000']
+                    labels:
+                      service: "sglang"
+                      source: "sglang"
+                      container_name: "model-sg-qwen36-35b-a3b-fp8-tp1-r3"
+                      model: "Qwen/Qwen3.6-35B-A3B-FP8"
+                      deployment: "small-models"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      port: "8008"
+                      instance: "3"
               - job_name: sglang-model-sg-glm51-awq-tp4
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -1629,23 +1516,6 @@ configs:
                       cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "8006"
-              - job_name: dcgm-dcgm-gptoss-120b
-                scrape_interval: 15s
-                metrics_path: /metrics
-                static_configs:
-                  - targets: ['dcgm-gptoss-120b:9400']
-                    labels:
-                      service: "dcgm-exporter"
-                      source: "dcgm-exporter"
-                      container_name: "dcgm-gptoss-120b"
-                      model: "openai/gpt-oss-120b"
-                      deployment: "small-models"
-                      env: "${ENV}"
-                      host: "${CVM_HOST}"
-                      host_machine: "${CVM_HOST}"
-                      cvm_name: "${CVM_NAME}"
-                      ip: "${HOST_IP}"
-                      port: "9400"
               - job_name: dcgm-dcgm-qwen36-35b-a3b
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -1698,23 +1568,6 @@ configs:
                       cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "9400"
-              - job_name: inference-proxy-proxy-gptoss-120b
-                scrape_interval: 15s
-                metrics_path: /metrics
-                static_configs:
-                  - targets: ['proxy-gptoss-120b:8000']
-                    labels:
-                      service: "vllm-proxy"
-                      source: "vllm-proxy"
-                      container_name: "proxy-gptoss-120b"
-                      model: "openai/gpt-oss-120b"
-                      deployment: "small-models"
-                      env: "${ENV}"
-                      host: "${CVM_HOST}"
-                      host_machine: "${CVM_HOST}"
-                      cvm_name: "${CVM_NAME}"
-                      ip: "${HOST_IP}"
-                      port: "8001"
               - job_name: inference-proxy-proxy-qwen36-35b-a3b
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -1990,7 +1843,7 @@ configs:
       TLS_PORT=8444
 
       # Track registration state per port
-      for port in 8001 8002 8003 8004 8005 8006 8007 8008 8009; do
+      for port in 8002 8003 8004 8005 8006 8007 8008 8009; do
         eval "REG_$$port=false"
         eval "FAIL_COUNT_$$port=0"
       done
@@ -2018,7 +1871,7 @@ configs:
 
       cleanup() {
         echo "SIGTERM received, unregistering all endpoints"
-        for port in 8001 8002 8003 8004 8005 8006 8007 8008 8009; do
+        for port in 8002 8003 8004 8005 8006 8007 8008 8009; do
           unregister_endpoint "$${HOST_IP}:$$port"
         done
         exit 0
@@ -2029,7 +1882,7 @@ configs:
       # compose service DNS name. A service-name probe fails with curl (6)
       # "Could not resolve host" if the registrar loses compose-network DNS
       # (e.g. after a backend container is recreated independently), wedging
-      # every port's health check so all 9 models silently drop to 0 backends.
+      # every port's health check so all 8 models silently drop to 0 backends.
       # HOST_IP:<port> is the endpoint model-proxy actually routes to and never
       # depends on inter-container DNS. See cvm-compose-files#57. ($1 = host:port)
       check_chat() {
@@ -2049,7 +1902,6 @@ configs:
 
       check_port() {
         case $$1 in
-          8001) check_chat "$${HOST_IP}:8001" "openai/gpt-oss-120b" ;;
           8002) check_models "$${HOST_IP}:8002" ;;
           8003) check_chat "$${HOST_IP}:8003" "Qwen/Qwen3-VL-30B-A3B-Instruct" ;;
           8004) check_models "$${HOST_IP}:8004" ;;
@@ -2069,7 +1921,7 @@ configs:
       # Bounded + loud so a persistent probe failure falls through to the
       # registration loop (which health-checks each backend directly) instead
       # of hanging here forever. See cvm-compose-files#57.
-      READY_URL="http://$${HOST_IP}:8001/v1/models"
+      READY_URL="http://$${HOST_IP}:8002/v1/models"
       echo "Waiting for first model to be ready (probing $$READY_URL)..."
       ready_attempts=0
       until curl --connect-timeout 5 --max-time 10 -sf \
@@ -2086,7 +1938,7 @@ configs:
       echo "First model ready, starting registration loop"
 
       while true; do
-        for port in 8001 8002 8003 8004 8005 8006 8007 8008 8009; do
+        for port in 8002 8003 8004 8005 8006 8007 8008 8009; do
           # Liveness marker for the container healthcheck (see service def);
           # refreshed each port so a slow-but-progressing serial loop (these
           # probes can take minutes in aggregate) is not falsely marked
@@ -2110,7 +1962,6 @@ configs:
         done
 
         # Model-to-domain mappings
-        register_model "openai/gpt-oss-120b" "gpt-oss-120b.completions.near.ai"
         register_model "black-forest-labs/FLUX.2-klein-4B" "flux2-klein.completions.near.ai"
         register_model "Qwen/Qwen3-VL-30B-A3B-Instruct" "qwen3-vl-30b.completions.near.ai"
         register_model "Qwen/Qwen3-Embedding-0.6B" "qwen3-embedding.completions.near.ai"
@@ -2154,12 +2005,6 @@ configs:
       proxy_read_timeout 3600s;
       client_max_body_size 100m;
       client_body_buffer_size 1m;
-
-      # :8001 - GPT-OSS (single proxy, single backend)
-      server {
-          listen 8001;
-          location / { proxy_pass http://proxy-gptoss-120b:8000; }
-      }
 
       # :8002 - FLUX (single proxy, 4 backends)
       server {
@@ -2224,14 +2069,6 @@ configs:
       # signing pubkey, breaking E2EE on staging — see nearai/infra#143
       # (rotation-SNI variant) and nearai/infra#164 (staging-SNI variant),
       # plus the L4-SNI-rewrite analysis in nearai/model-proxy#30.
-
-      server {
-          listen 443 ssl http2;
-          server_name gpt-oss-120b.completions.near.ai
-                      gpt-oss-120b.completions-stg.near.ai
-                      ~^gpt-oss-120b-i\d+\.completions(-stg)?\.near\.ai$$;
-          location / { proxy_pass http://proxy-gptoss-120b:8000; }
-      }
 
       server {
           listen 443 ssl http2;
