@@ -22,7 +22,9 @@ from typing import Final
 
 
 ROOT: Final = Path(__file__).resolve().parents[1]
-HTTP2_LISTEN: Final = re.compile(r"\blisten\s+443\s+ssl\s+http2\s*;")
+HTTP2_LISTEN: Final = re.compile(r"\blisten\b[^;]*\bhttp2\b[^;]*;")
+SSL_LISTEN: Final = re.compile(r"\blisten\b[^;]*\bssl\b[^;]*;")
+HTTP2_ON: Final = re.compile(r"\bhttp2\s+on\s*;")
 KEEPALIVE_TIMEOUT: Final = re.compile(r"\bkeepalive_timeout\s+[^;]+;")
 KEEPALIVE_REQUESTS: Final = re.compile(r"\bkeepalive_requests\s+\d+;")
 PROXY_PASS: Final = re.compile(
@@ -59,17 +61,6 @@ YZjfdolZZvVmt4cw0SRJA/5gMzShRANCAASH1MnAn0aOXsVwPZ91lqdR210vugzN
 Ij+s4MtWETeldbRk+lhQPQghRvHxJvAaQ+HyqfAdUmYSBteSySA/OlEB
 -----END PRIVATE KEY-----
 """
-
-NON_STREAMING_HTTP2_PROXIES: Final = frozenset(
-    {
-        ("prod/small-models.yaml", "proxy-flux2-klein-4b"),
-        ("prod/small-models.yaml", "proxy-privacy-filter"),
-        ("prod/small-models.yaml", "proxy-qwen3-embedding-0.6b"),
-        ("prod/small-models.yaml", "proxy-qwen3-reranker-0.6b"),
-        ("prod/small-models.yaml", "proxy-whisper-large-v3"),
-    }
-)
-
 
 def server_blocks(content: str) -> tuple[tuple[str, ...], str, bool]:
     """Return nginx server blocks, shared http prelude, and balance state."""
@@ -221,15 +212,15 @@ def validate_nginx(path: Path) -> str | None:
     return None
 
 
-def validate_compose(path: Path) -> list[str]:
-    """Return violations for streaming-chat HTTP/2 server blocks in one compose file."""
+def validate_compose(path: Path) -> tuple[list[str], int]:
+    """Return violations and the HTTP/2 server count for one compose file."""
     content = NGINX_COMMENT.sub("", path.read_text())
     file_name = path.relative_to(ROOT).as_posix()
-    blocks, _prelude, is_balanced = server_blocks(content)
-    errors: list[str] = []
+    blocks, prelude, is_balanced = server_blocks(content)
     if not is_balanced:
-        errors.append(f"{file_name}: unbalanced nginx server block")
-        return errors
+        return [f"{file_name}: unbalanced nginx server block"], 0
+    errors: list[str] = []
+    http2_blocks = 0
     for block in blocks:
         depth = 0
         scope_chars: list[str] = []
@@ -241,32 +232,34 @@ def validate_compose(path: Path) -> list[str]:
             elif depth == 1:
                 scope_chars.append(character)
         server_scope = "".join(scope_chars)
-        is_http2 = bool(HTTP2_LISTEN.search(server_scope))
+        local_http2 = HTTP2_LISTEN.search(server_scope) or HTTP2_ON.search(server_scope)
+        is_http2 = bool(local_http2 or HTTP2_ON.search(prelude) and SSL_LISTEN.search(server_scope))
         if not is_http2:
             continue
+        http2_blocks += 1
         has_keepalive = bool(KEEPALIVE_TIMEOUT.search(server_scope)) and bool(
             KEEPALIVE_REQUESTS.search(server_scope)
         )
         for service_name in PROXY_PASS.findall(block):
-            key = (file_name, service_name)
-            if not service_name.startswith("proxy-") or key in NON_STREAMING_HTTP2_PROXIES:
+            if not service_name.startswith("proxy-") or has_keepalive:
                 continue
-            if not has_keepalive:
-                errors.append(
-                    f"{file_name}: HTTP/2 server for {service_name} lacks keepalive_timeout "
-                    "and keepalive_requests in server scope"
-                )
-    return errors
+            errors.append(
+                f"{file_name}: HTTP/2 server for {service_name} lacks keepalive_timeout "
+                "and keepalive_requests in server scope"
+            )
+    return errors, http2_blocks
 
 
 def main() -> int:
     """Print GitHub annotations for every contract violation."""
     paths = sorted((ROOT / "prod").glob("*.yaml"))
+    validations = [validate_compose(path) for path in paths]
     errors = [
         error
-        for path in paths
-        for error in validate_compose(path)
+        for validation_errors, _http2_blocks in validations
+        for error in validation_errors
     ]
+    http2_blocks_checked = sum(http2_blocks for _errors, http2_blocks in validations)
     if not errors:
         errors = [error for path in paths if (error := validate_nginx(path)) is not None]
     if errors:
@@ -274,7 +267,10 @@ def main() -> int:
             file_name = error.split(":", 1)[0]
             print(f"::error file={file_name}::{error.replace(chr(10), '%0A')}")
         return 1
-    print("Streaming HTTP/2 keepalive contract OK")
+    print(
+        "Streaming HTTP/2 keepalive contract OK "
+        f"({http2_blocks_checked} blocks checked in prod/)"
+    )
     return 0
 
 
