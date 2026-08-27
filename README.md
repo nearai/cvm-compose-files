@@ -28,7 +28,7 @@ Deployed by `compose-manager` (running inside each inference CVM) which checks o
 A config in `experiments/` graduates to `prod/` only when **all** of the following are true:
 
 1. **Soaked in staging.** Ran on a real CVM under load for ≥30 min with 0 request failures, against the model-onboarding soak harness (see `ansible-playbooks/docs/model-onboarding-workflow.md`). The 30-min soak is the gate, not a suggestion — it catches the detokenizer-wedge / queue-saturation class of bugs that don't surface in a smoke test.
-2. **Full monitoring stack present.** Every model config must include: `inference-proxy`, `proxy-nginx`, `model-proxy-registrar`, `model-downloader`, `dcgm-exporter`, `otelcol-contrib`, and the model engine service — all carrying the correct Datadog `com.datadoghq.ad.*` labels **and** `nearai.otel.*` scrape labels. The CI validator (`scripts/validate_otel_labels.rb`) enforces the label contract.
+2. **Full monitoring stack present.** Every model config must include: `inference-proxy`, `proxy-nginx`, `model-proxy-registrar`, `model-downloader`, `dcgm-exporter`, `otelcol-contrib`, and the model engine service — with retained `com.datadoghq.ad.logs` metadata for the OTel log pipeline and the correct `nearai.otel.*` scrape labels. The CI validator (`scripts/validate_otel_labels.rb`) enforces the label contract.
 3. **Digest-pinned images.** Every `image:` field uses `@sha256:…`, never `:latest`, `:dev`, or a bare tag. The HuggingFace model is pinned to a specific `--revision` (commit SHA). This is required for attestation reproducibility — the compose hash is registered with the KMS contract.
 4. **Registrar healthcheck + readiness probe.** The `model-proxy-registrar` service has the liveness healthcheck (`/tmp/registrar_alive` marker, 180s threshold) and the 30-attempt readiness probe before registration. See `prod/GLM-5.2-SGL-FP8-TP8.yaml` for the canonical pattern (added in cvm-compose-files#57 to surface silent registrar failures).
 5. **Graceful drain in nginx.** The TLS `server` block sets `keepalive_timeout 1h` + `keepalive_requests 1000000` so H2 connections from cloud-api survive long idle gaps. Without this, the next request opens a new TCP via model-proxy's L4 LB, may land on a different backend, and the signature 404s.
@@ -78,9 +78,9 @@ Full deploy recipes (graceful drain for slow-shutdown models, env-var fetch, for
 | `prod/GLM-5.1-SGL-AWQ-TP4.yaml` | `zai-org/GLM-5.1-FP8` | SGLang 2× TP4 (AWQ W4A16). gpu03 + gpu13 + gpu26. Uses `build:` (inline SGLang patch) — see header. Replaced the archived FP8 TP8 config. |
 | `prod/dsv4-qwen38-glm51.yaml` | `deepseek-ai/DeepSeek-V4-Flash`, `Qwen/Qwen3.8-27B`, `zai-org/GLM-5.1-FP8` | gpu02 mixed pack: DS4F TP2 on GPUs 0–1, two Qwen3.8 FP8 TP1 replicas on GPUs 2 and 3, and GLM-5.1 AWQ TP4 on GPUs 4–7. |
 | `prod/Qwen3.5-122B.yaml` | `Qwen/Qwen3.5-122B-A10B` | SGLang 2× TP4 on the official FP8 checkpoint. gpu30. |
-| `prod/qwen35-dsv4-flash.yaml` | `Qwen/Qwen3.5-122B-A10B`, `deepseek-ai/DeepSeek-V4-Flash` | gpu30 mixed pack: 1× Qwen3.5 TP4 replica plus the DeepSeek-V4-Flash FP4 TP4 target-only sparse-prefill-on control. |
+| `prod/qwen35-dsv4-flash.yaml` | `z-ai/glm-5.3-flash`, `deepseek-ai/DeepSeek-V4-Flash` | gpu30 mixed pack: 1× GLM-5.3-Flash vLLM TP4 replica with full 1M context plus DeepSeek-V4-Flash FP4 TP4 target-only with sparse prefill and overlap scheduling enabled. The legacy filename and Qwen service keys are retained for an orphan-free in-place rollout. |
 | `prod/small-models.yaml` | gpt-oss-120b, FLUX.2-klein, Qwen3-VL-30B, Qwen3-Embedding, Qwen3-Reranker, whisper-large-v3, privacy-filter, Qwen3.6-35B-A3B-FP8, gemma-4-31B-it | Multi-model pack, gpu07 + gpu11. 10 services across 8 GPUs. |
-| `prod/dsv4-qwen36-gemma4.yaml` | DeepSeek-V4-Flash, Qwen3.6-27B-FP8, google/gemma-4-31B-it, Qwen3.6-35B-A3B-FP8 | gpu04 mixed pack: DeepSeek-V4-Flash FP4 TP4 target-only sparse-prefill-off treatment on GPUs 0–3, Qwen3.6 TP1 services on GPUs 4–5, and two Gemma 4 TP1 replicas on GPUs 6–7. |
+| `prod/dsv4-qwen36-gemma4.yaml` | DeepSeek-V4-Flash, Qwen3.6-27B-FP8, google/gemma-4-31B-it, Qwen3.6-35B-A3B-FP8 | gpu04 mixed pack: DeepSeek-V4-Flash FP4 TP4 target-only with sparse prefill and overlap scheduling enabled on GPUs 0–3, Qwen3.6 TP1 services on GPUs 4–5, and two Gemma 4 TP1 replicas on GPUs 6–7. |
 
 Configs in `experiments/` are WIP (AWQ/int4/nvfp4 quantization sweeps, otel test harnesses, alternative engine configs) and are not deployed to prod. See their header comments for status. `experiments/GLM-5.1-FP8-TP8-archived.yaml` is the previous GLM-5.1 prod config (SGLang TP8, official FP8) — superseded by `prod/GLM-5.1-SGL-AWQ-TP4.yaml`, kept for reference.
 
@@ -88,7 +88,7 @@ Configs in `experiments/` are WIP (AWQ/int4/nvfp4 quantization sweeps, otel test
 
 `.github/workflows/validate-compose.yaml` runs on every push/PR:
 
-1. **OTel label contract** (`scripts/validate_otel_labels.rb`) — enforces that Datadog `ad.logs` tags and OTel scrape labels match across every service, and that the OTel collector env vars are present. `cleanup-hf-model.yaml` is excluded.
+1. **OTel label contract** (`scripts/validate_otel_labels.rb`) — enforces that the retained `com.datadoghq.ad.logs` tags and the `nearai.otel.*` scrape labels match across every service, that the OTel collector env vars are present, and that the removed Datadog Agent check labels (`com.datadoghq.ad.check_names`, `com.datadoghq.ad.init_configs`, and `com.datadoghq.ad.instances`) are rejected if reintroduced. `cleanup-hf-model.yaml` is excluded.
 2. **Proxy dependency/env contracts** (`scripts/validate_proxy_dependencies.rb`, `scripts/validate_proxy_environment.rb`) — enforces the proxy dependency and required env var wiring.
 3. **Prod registrar auth contract** (`scripts/validate_registrar_auth.rb`) — enforces that prod registrar health probes authenticate when probing inference-proxy endpoints.
 4. **Compose syntax** — `docker compose -f <file> config` against every `*.yaml`, with dummy env vars for the `${VAR:?required}` fail-fast markers.
@@ -117,6 +117,6 @@ The end-to-end onboarding flow (staging `PATCH /v1/admin/models` → auto-genera
 1. **Choose the served model name and SNI domain first** — see [`AGENT.md` → Model naming and SNI domains](AGENT.md#model-naming-and-sni-domains). These are external identifiers: prefer the OpenRouter slug, no quantization suffix, no variant info. Pick them before writing the config so they don't need changing later.
 2. Start the config in `experiments/<Model>-<variant>.yaml`. Copy from the closest existing prod config as a template.
 3. Pin the image digests and HF `--revision`.
-4. Add the Datadog + OTel labels (copy from `prod/GLM-5.2-SGL-FP8-TP8.yaml` — the label set is exact).
+4. Add the retained `com.datadoghq.ad.logs` metadata and OTel scrape labels (copy from `prod/GLM-5.2-SGL-FP8-TP8.yaml` — the label set is exact).
 5. Soak in staging. Iterate.
 6. When the checklist passes, move to `prod/` and open a PR. CI validates; the merge auto-tags.

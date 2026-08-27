@@ -269,10 +269,7 @@ services:
               device_ids: ["0","1"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.check_names: '["openmetrics"]'
-      com.datadoghq.ad.init_configs: "[{}]"
       com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:deepseek-ai/DeepSeek-V4-Flash","deployment:dsv4-flash-gpu02","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8001","instance:1","gpu_pair:0-1","ppcie:true","config_variant:gpu02-capacity-v1","eagle:1","eagle_prefill_fairness:0","chunk_size:8192","watchdog_timeout:1800","cuda_graph:1","max_running_requests:64","max_queued_requests:16","schedule_conservativeness:1.3","sglang_revision:7de33ce8","engine_image:6bb5fee34b6c"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-sg-dsv4-flash-fp4-tp2-r1:8000/metrics","metrics":["sglang:*"],"histogram_buckets_as_distributions":true,"service":"sglang","tags":["model:deepseek-ai/DeepSeek-V4-Flash","deployment:dsv4-flash-gpu02","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8001","instance:1","gpu_pair:0-1","ppcie:true","config_variant:gpu02-capacity-v1","eagle:1","eagle_prefill_fairness:0","chunk_size:8192","watchdog_timeout:1800","cuda_graph:1","max_running_requests:64","max_queued_requests:16","schedule_conservativeness:1.3","sglang_revision:7de33ce8","engine_image:6bb5fee34b6c"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -316,10 +313,7 @@ services:
               device_ids: ["2","3"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.check_names: '["openmetrics"]'
-      com.datadoghq.ad.init_configs: "[{}]"
       com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:deepseek-ai/DeepSeek-V4-Flash","deployment:dsv4-flash-gpu02","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8002","instance:2","gpu_pair:2-3","ppcie:true","config_variant:gpu02-capacity-v1","eagle:1","eagle_prefill_fairness:0","chunk_size:8192","watchdog_timeout:1800","cuda_graph:1","max_running_requests:64","max_queued_requests:16","schedule_conservativeness:1.3","sglang_revision:7de33ce8","engine_image:6bb5fee34b6c"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-sg-dsv4-flash-fp4-tp2-r2:8000/metrics","metrics":["sglang:*"],"histogram_buckets_as_distributions":true,"service":"sglang","tags":["model:deepseek-ai/DeepSeek-V4-Flash","deployment:dsv4-flash-gpu02","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8002","instance:2","gpu_pair:2-3","ppcie:true","config_variant:gpu02-capacity-v1","eagle:1","eagle_prefill_fairness:0","chunk_size:8192","watchdog_timeout:1800","cuda_graph:1","max_running_requests:64","max_queued_requests:16","schedule_conservativeness:1.3","sglang_revision:7de33ce8","engine_image:6bb5fee34b6c"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -360,9 +354,6 @@ services:
               device_ids: ["0","1","2","3"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.check_names: '["dcgm"]'
-      com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://%%host%%:9400/metrics","tags":["model:deepseek-ai/DeepSeek-V4-Flash","deployment:dsv4-flash-gpu02","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","gpu_pair:0-3","ppcie:true","config_variant:gpu02-capacity-v1"]}]'
       com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:deepseek-ai/DeepSeek-V4-Flash","deployment:dsv4-flash-gpu02","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","gpu_pair:0-3","ppcie:true","config_variant:gpu02-capacity-v1"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "dcgm"

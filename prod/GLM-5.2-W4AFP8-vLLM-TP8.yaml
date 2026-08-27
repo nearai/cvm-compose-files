@@ -175,10 +175,7 @@ services:
     stop_grace_period: 5m
     logging: *logging-conf
     labels:
-      com.datadoghq.ad.check_names: '["vllm"]'
-      com.datadoghq.ad.init_configs: "[{}]"
       com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:z-ai/glm-5.2","model_path:PhalaCloud/GLM-5.2-W4AFP8","precision:w4afp8","deployment:GLM-5.2-W4AFP8-vLLM-TP8","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000"]}]'
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-vllm-glm52-w4afp8-tp8:8000/metrics","histogram_buckets_as_distributions":true,"service":"vllm","tags":["model:z-ai/glm-5.2","model_path:PhalaCloud/GLM-5.2-W4AFP8","precision:w4afp8","deployment:GLM-5.2-W4AFP8-vLLM-TP8","ip:${HOST_IP}","port:8000"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
@@ -214,9 +211,6 @@ services:
     restart: unless-stopped
     logging: *logging-conf
     labels:
-      com.datadoghq.ad.check_names: '["dcgm"]'
-      com.datadoghq.ad.init_configs: "[{}]"
-      com.datadoghq.ad.instances: '[{"openmetrics_endpoint": "http://%%host%%:9400/metrics", "tags":["model:z-ai/glm-5.2","deployment:GLM-5.2-W4AFP8-vLLM-TP8","ip:${HOST_IP}"]}]'
       com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:z-ai/glm-5.2","deployment:GLM-5.2-W4AFP8-vLLM-TP8","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "dcgm"
