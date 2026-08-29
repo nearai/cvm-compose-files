@@ -13,7 +13,7 @@ detail and must not change `MODEL_NAME`, `--served-model-name`, or the
 
 This build-context change is the first half of the release. The derivative must
 be merged, published, and qualified before a separate deployment PR can pin its
-registry digest in `prod/qwen35-dsv4-flash.yaml` for the gpu30 canary.
+registry digest in `prod/glm53-flash-dsv4-flash.yaml` for the gpu30 canary.
 
 ## Provenance
 
@@ -142,7 +142,7 @@ passed at 2.086-2.118 seconds. Rebase onto nightly requires repeating that gate.
 ## gpu30 canary and rollback
 
 After publication and qualification, the deployment PR should change only the
-gpu30 DS4F service in `prod/qwen35-dsv4-flash.yaml`:
+gpu30 DS4F service in `prod/glm53-flash-dsv4-flash.yaml`:
 
 - pin the new derivative digest;
 - retain TP4, target-only decode, the current sparse-prefill setting, 8192-token

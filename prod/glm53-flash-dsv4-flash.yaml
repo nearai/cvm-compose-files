@@ -6,7 +6,8 @@ x-logging-conf: &logging-conf
     labels: "com.datadoghq.ad.logs,com.docker.compose.service"
 
 # gpu30 production layout (2026-08-29): DeepSeek-V4-Flash-0731 TP4 on GPUs 0-3
-# (SGLang, unchanged from prod/qwen35-dsv4-flash.yaml @ v0.0.373) and
+# (SGLang, unchanged from the since-removed
+# prod/qwen35-dsv4-flash.yaml @ v0.0.373) and
 # GLM-5.3-Flash TP4 on GPUs 4-7, now on SGLang. Each model stays within one
 # complete NVLink island.
 #
@@ -15,9 +16,10 @@ x-logging-conf: &logging-conf
 # attention selector wants FLASHINFER_MLA_SPARSE_SM90, but the image's
 # FlashInfer is too old, so it falls back to the FlashAttention only_qv
 # dummy-tensor path; re-enabling the CUDA compat libraries did not change that
-# (#210). The SGLang TP8 test (experiments/GLM-5.3-Flash-SGL-TP8-test.yaml,
-# #209, v0.0.374) produced coherent output with real logprobs, with TDX and
-# NVIDIA attestation verified.
+# (#210). The SGLang TP8 test
+# (experiments/GLM-5.3-Flash-SGL-TP8-test.yaml @ v0.0.374, #209; since
+# removed) produced coherent output with real logprobs, with TDX and NVIDIA
+# attestation verified.
 #
 # TP4 for GLM-5.3-Flash on SGLang is validated only by us: the cookbook's
 # verified H200 cells are TP8/EP8. Memory: the FP8 weights are ~306 GiB, so
@@ -29,10 +31,11 @@ x-logging-conf: &logging-conf
 # all run natively on the 595 driver. /var/run/dstack.sock is unchanged in
 # 0.5.11 (guest agent systemd socket unit; dstack-types dstack_agent_address()).
 #
-# Supersedes prod/qwen35-dsv4-flash.yaml (vLLM GLM engine, legacy Qwen service
-# keys); delete that file once this one is live on gpu30. Service keys here are
-# the AGENT.md names, so deploying this file is a fresh service set, not an
-# in-place rollout of the old keys (`--remove-orphans` retires them).
+# Superseded prod/qwen35-dsv4-flash.yaml (vLLM GLM engine, legacy Qwen service
+# keys), which was removed from the repo once this file was live on gpu30; its
+# last version is at tag v0.0.376. Service keys here are the AGENT.md names, so
+# deploying this file was a fresh service set, not an in-place rollout of the
+# old keys (`--remove-orphans` retired them).
 
 x-nvidia: &nvidia
   runtime: nvidia
@@ -64,8 +67,9 @@ x-sg-glm53-flash-common: &sg-glm53-flash-common
   # of that tag's index sha256:e6f5482505e7502f791fe4615ad1fbec118cbbd6b44e98f2479b16b98b985ad6.
   # The image reports SGLANG_BUILD_COMMIT=unknown (cookbook-specific build).
   image: lmsysorg/sglang@sha256:0836f0160fa785e424e68d13ef88ddd548f87e6e11ad9f0e4de982e4f9188aaf
-  # Same configuration as experiments/GLM-5.3-Flash-SGL-TP8-test.yaml (validated
-  # on gpu30, #209), reduced to TP4/EP4 so GLM shares the host with
+  # Same configuration as the TP8 test config
+  # experiments/GLM-5.3-Flash-SGL-TP8-test.yaml @ v0.0.374 (validated on gpu30,
+  # #209; since removed), reduced to TP4/EP4 so GLM shares the host with
   # DeepSeek-V4-Flash. TP4 is our layout choice: the SGLang cookbook's verified
   # H200 cells (https://docs.sglang.io/cookbook/autoregressive/GLM/GLM-5.3-Flash,
   # source docs/src/snippets/configs/zai-org/glm-5.3-flash.jsx) are TP8/EP8;
