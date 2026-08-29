@@ -7,6 +7,25 @@ on:
 jobs:
   validate:
     runs-on: [self-hosted, infra]
+    env:
+      # gpu31 derives these fail-closed values from live UUID/NUMA topology.
+      # CI uses representative values only to render every Compose file.
+      GPU_R1_CPUSET: 4-7
+      GPU_R1_MEMS: "0"
+      GPU_R1_0: GPU-11111111-1111-1111-1111-111111111111
+      GPU_R1_1: GPU-22222222-2222-2222-2222-222222222222
+      GPU_R2_CPUSET: 8-11
+      GPU_R2_MEMS: "0"
+      GPU_R2_0: GPU-33333333-3333-3333-3333-333333333333
+      GPU_R2_1: GPU-44444444-4444-4444-4444-444444444444
+      GPU_R3_CPUSET: 68-71
+      GPU_R3_MEMS: "1"
+      GPU_R3_0: GPU-55555555-5555-5555-5555-555555555555
+      GPU_R3_1: GPU-66666666-6666-6666-6666-666666666666
+      GPU_R4_CPUSET: 72-75
+      GPU_R4_MEMS: "1"
+      GPU_R4_0: GPU-77777777-7777-7777-7777-777777777777
+      GPU_R4_1: GPU-88888888-8888-8888-8888-888888888888
     steps:
       - uses: actions/checkout@v4
 
@@ -51,6 +70,14 @@ jobs:
             -w /repo \
             ruby:3.3-alpine \
             ruby scripts/validate_registrar_auth.rb
+
+      - name: Validate gpu31 bare-metal experiment contract
+        run: |
+          docker run --rm \
+            -v "$PWD:/repo" \
+            -w /repo \
+            ruby:3.3-alpine \
+            ruby scripts/validate_gpu31_bare_experiment.rb
 
       - name: Validate docker compose files
         # Compose files reference env vars that are populated at deploy time
