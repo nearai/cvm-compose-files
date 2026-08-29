@@ -9,6 +9,16 @@ x-logging-conf: &logging-conf
 # and GLM-5.3-Flash TP4 on GPUs 4-7. Keep each model within one complete NVLink
 # island; this placement uses the alternate island for GLM's correctness gate.
 
+# Qualified for the dstack-nvidia-0.5.11 guest image (in-guest NVIDIA driver
+# 595.58.03, CUDA 13-class) on gpu30 — 2026-08-29. The engine images are CUDA
+# 13.0 builds and the inference-proxy image is a CUDA 12.8 build; both run
+# natively on a 595 driver, so no image or command changes are required. The one
+# guest-specific knob is VLLM_ENABLE_CUDA_COMPATIBILITY (GLM anchor below): it
+# must stay 0 on this guest because the image's bundled cuda-compat-13-0
+# libraries only support pre-580 drivers. /var/run/dstack.sock is unchanged in
+# 0.5.11 (served by the guest agent's systemd socket unit; see
+# dstack-types/src/lib.rs dstack_agent_address()).
+
 x-nvidia: &nvidia
   runtime: nvidia
   ipc: host
@@ -75,10 +85,14 @@ x-vllm-glm53-flash-common: &vllm-glm53-flash-common
     - HF_HUB_DISABLE_TELEMETRY=1
     - DO_NOT_TRACK=1
     - VLLM_LOGGING_LEVEL=INFO
-    # The pinned image uses CUDA 13.0, while this CVM uses a pre-580 driver.
-    # Enable the image's bundled CUDA forward-compatibility libraries; CUDA
-    # 13.0 otherwise requires driver >= 580.65.06.
-    - VLLM_ENABLE_CUDA_COMPATIBILITY=1
+    # The pinned image is a CUDA 13.0 build and bundles cuda-compat-13-0. On the
+    # dstack-nvidia-0.5.11 guest (driver 595.58.03 >= 580.65.06) CUDA 13.0 runs
+    # natively, and vLLM's compat switch is unconditional: when set to 1 it
+    # prepends /usr/local/cuda-13.0/compat to LD_LIBRARY_PATH before importing
+    # torch, which would load the older 580-class compat libcuda on a 595 kernel
+    # module (unsupported combination). Keep it 0 on this guest; set it to 1 only
+    # when running this file on a pre-580 (dstack-nvidia-0.5.5) guest, as in #205.
+    - VLLM_ENABLE_CUDA_COMPATIBILITY=0
     - NVIDIA_DRIVER_CAPABILITIES=compute,utility
     - OPENBLAS_L2_SIZE=2097152
     - NCCL_DEBUG=WARN
