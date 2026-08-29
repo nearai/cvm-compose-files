@@ -207,12 +207,60 @@ services:
 
   # Dormant during normal deploys. Target this service explicitly with the
   # maintenance profile when one model's shared HF cache must be evicted.
+  # Inlined copy of the root cleanup-hf-model.yaml service: compose-manager's
+  # compose/up fetches only the requested file, so cross-file `extends:` /
+  # `include:` must not be used here (they fail at config load).
   hf-cleanup:
-    extends:
-      file: ../cleanup-hf-model.yaml
-      service: hf-cleanup
     image: alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
+    container_name: hf-cleanup
     profiles: ["maintenance"]
+    restart: "no"
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        set -eu
+        : "$${MODEL_NAME:?MODEL_NAME env var is required (e.g. zai-org/GLM-5-FP8)}"
+
+        echo "=== Disk usage ==="
+        df -h /root/.cache 2>/dev/null || df -h /
+
+        echo ""
+        echo "=== Cached model weights ==="
+        HUB=/root/.cache/huggingface/hub
+        if ls "$$HUB"/models--* >/dev/null 2>&1; then
+          du -sh "$$HUB"/models--* | sort -rh
+        else
+          echo "(none)"
+        fi
+        echo ""
+        echo "Total HF cache: $$(du -sh $$HUB 2>/dev/null | cut -f1)"
+
+        echo ""
+        echo "=== Cleanup ==="
+        SAFE=$$(printf '%s' "$$MODEL_NAME" | sed 's|/|--|g')
+        TARGET="$$HUB/models--$$SAFE"
+        echo "MODEL_NAME=$$MODEL_NAME"
+        echo "TARGET=$$TARGET"
+        if [ ! -d "$$TARGET" ]; then
+          echo "Not found — nothing to remove."
+          exit 0
+        fi
+        echo "Removing $$(du -sh "$$TARGET" | cut -f1) ..."
+        rm -rf "$$TARGET"
+        echo "Removed $$TARGET"
+        echo "Disk after: $$(df -h /root/.cache 2>/dev/null | tail -1 || df -h / | tail -1)"
+    volumes:
+      - huggingface_cache:/root/.cache/huggingface
+    environment:
+      - MODEL_NAME=${MODEL_NAME}
+    # Verbatim from cleanup-hf-model.yaml (not the file-wide *logging-conf) so the
+    # rendered service is unchanged from the previous `extends` result.
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+        labels: "com.datadoghq.ad.logs"
 
   nginx:
     image: nginx@sha256:1d13701a5f9f3fb01aaa88cef2344d65b6b5bf6b7d9fa4cf0dca557a8d7702ba
