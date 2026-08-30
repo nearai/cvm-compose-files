@@ -25,9 +25,9 @@ x-logging-conf: &logging-conf
 # mount the dev-qualified request middleware that defaults an omitted
 # thinking_token_budget to 8,192 while preserving every explicit client value
 # (including JSON null). clear_thinking=true is supplied to the pinned template.
-# This experiment intentionally enables complete request logging and targeted
-# KPool/NCCL/C++ diagnostics while qualification is in progress. Remove the
-# payload logging after the stable production config is selected.
+# This experiment intentionally enables full-length request metadata logging
+# and targeted KPool/NCCL/C++ diagnostics while qualification is in progress.
+# Remove the verbose request logging after the stable config is selected.
 #
 # gpu31 isolated the startup/CUDA corruption to KPool-tail metadata in the
 # pinned vLLM image: target and MTP-draft metadata both dropped `positions`,
@@ -672,7 +672,7 @@ services:
               device_ids: ["4","5","6","7"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:zai-org/GLM-5.3-Flash","served_model:z-ai/glm-5.3-flash","precision:fp8","deployment:glm53-flash-dsv4-flash","config_variant:vllm-tp4-mtp5-kpool-tail-v1","patch_set:kpool-target-draft-inplace-mamba-copy-race-slot-bounds","request_payloads:enabled","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:1"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:zai-org/GLM-5.3-Flash","served_model:z-ai/glm-5.3-flash","precision:fp8","deployment:glm53-flash-dsv4-flash","config_variant:vllm-tp4-mtp5-kpool-tail-v1","patch_set:kpool-target-draft-inplace-mamba-copy-race-slot-bounds","request_logging:full-length-metadata","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:1"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
@@ -685,7 +685,7 @@ services:
       nearai.otel.deployment: "glm53-flash-dsv4-flash"
       nearai.otel.config_variant: "vllm-tp4-mtp5-kpool-tail-v1"
       nearai.otel.patch_set: "kpool-target-draft-inplace-mamba-copy-race-slot-bounds"
-      nearai.otel.request_payloads: "enabled"
+      nearai.otel.request_logging: "full-length-metadata"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
       nearai.otel.host_machine: "${CVM_HOST}"
@@ -1100,7 +1100,7 @@ configs:
                       deployment: "glm53-flash-dsv4-flash"
                       config_variant: "vllm-tp4-mtp5-kpool-tail-v1"
                       patch_set: "kpool-target-draft-inplace-mamba-copy-race-slot-bounds"
-                      request_payloads: "enabled"
+                      request_logging: "full-length-metadata"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
                       host_machine: "${CVM_HOST}"
