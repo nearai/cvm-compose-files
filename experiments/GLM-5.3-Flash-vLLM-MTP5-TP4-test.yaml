@@ -14,7 +14,7 @@ x-logging-conf: &logging-conf
 # on GPUs 0-3. GLM-5.3-Flash uses GPUs 4-7 as one complete NVLink island.
 #
 # The GLM arm is the exact runtime configuration exercised on a four-H200 gpu31
-# dev arm: pinned vLLM base plus six fail-loud patched files, native FP8 weights,
+# dev arm: pinned vLLM base plus seven fail-loud patched files, native FP8 weights,
 # BF16 KV cache on Hopper, TP4, normal CUDA graphs and custom all-reduce,
 # official MTP5, the corrected chat template, full 1,048,576-token context,
 # 0.82 GPU-memory utilization, 32 sequences, and an 8,192-token batch ceiling.
@@ -23,8 +23,10 @@ x-logging-conf: &logging-conf
 # Production-specific additions are intentionally narrow: retain the stable
 # served name z-ai/glm-5.3-flash, report cached prompt tokens for billing, and
 # mount the dev-qualified request middleware that defaults an omitted
-# thinking_token_budget to 8,192 while preserving every explicit client value
-# (including JSON null). clear_thinking=true is supplied to the pinned template.
+# thinking_token_budget to the smaller of 8,192 or one quarter of an explicit
+# output-token limit. This keeps hidden reasoning from consuming a short
+# response budget while preserving every explicit client value (including JSON
+# null). clear_thinking=true is supplied to the pinned template.
 # This experiment intentionally enables full-length request metadata logging
 # and targeted KPool/NCCL/C++ diagnostics while qualification is in progress.
 # Remove the verbose request logging after the stable config is selected.
@@ -36,7 +38,9 @@ x-logging-conf: &logging-conf
 # not retain. The inline build applies the KPool fix from vLLM #53906 to both
 # target and MTP-draft paths, rewrites the persistent slot tensor in place,
 # backports the overlapping Mamba state-copy fix (vLLM #50729), and
-# bounds-checks the generic slot-table loads (#54296).
+# bounds-checks the generic slot-table loads (#54296). It also backports the
+# MRV2 greedy-sampling guard from vLLM #52284: without it, a request whose only
+# logits processor is thinking_token_budget bypasses budget enforcement.
 # The targeted assertion remains enabled so any missed KPool caller fails at
 # startup instead of becoming an asynchronous CUDA fault.
 #
@@ -70,8 +74,8 @@ x-vllm-proxy-common: &vllm-proxy-common
 # Exact gpu31 candidate: the PR branch support changes plus the independent
 # Mamba state-copy and generic slot-table guards. The base-file checks make the
 # build fail closed if the pinned image no longer matches the audited source;
-# the post-patch checks make all six installed source files byte-identical to
-# the gpu31 a10 candidate.
+# the post-patch checks make all seven installed source files byte-identical to
+# the gpu31 candidates.
 x-vllm-glm53-flash-build: &vllm-glm53-flash-build
   context: .
   dockerfile_inline: |
@@ -84,6 +88,7 @@ x-vllm-glm53-flash-build: &vllm-glm53-flash-build
           '936d65f7e9e85e0c67ada8210ce26108cf7868c4f991f76d0ad3bc125c07dc3a' 'vllm/v1/worker/mamba_utils.py' \
           'da4e6011514c883dbb6bf0f59675294e6a6e76cfcd0e4b534bc575cb4d7adfc5' 'vllm/v1/worker/gpu/block_table.py' \
           '258280309e3e117480416254361d0911f7eeeeb838a4bcb86a10e18c535b4145' 'vllm/v1/worker/block_table.py' \
+          '76070739447fc9f7563ef164ef80c0777208d1ea07dec3a6f6d2a0755188d7ae' 'vllm/v1/worker/gpu/sample/sampler.py' \
         | sha256sum -c -
     RUN patch --batch --forward --fuzz=0 -p0 <<'PATCH_EOF'
     --- vllm/v1/worker/gpu/model_states/mamba_hybrid.py
@@ -274,6 +279,13 @@ x-vllm-glm53-flash-build: &vllm-glm53-flash-build
              tl.store(curr_dst_ptr, data, mask=mask)
 
 
+    --- vllm/v1/worker/gpu/sample/sampler.py
+    +++ vllm/v1/worker/gpu/sample/sampler.py
+    @@ -226,0 +227,4 @@
+    +        if self.thinking_budget_state.enabled and np.any(
+    +            self.thinking_budget_state.use_thinking_budget[idx_mapping_np]
+    +        ):
+    +            return True
     --- vllm/v1/worker/gpu/block_table.py
     +++ vllm/v1/worker/gpu/block_table.py
     @@ -304,13 +304,17 @@
@@ -329,6 +341,7 @@ x-vllm-glm53-flash-build: &vllm-glm53-flash-build
           vllm/v1/worker/mamba_utils.py \
           vllm/v1/worker/gpu/block_table.py \
           vllm/v1/worker/block_table.py \
+          vllm/v1/worker/gpu/sample/sampler.py \
         && printf '%s  %s\n' \
           'd178adfd823b8feab39aacac7b78da4b199cd9da384c62df67418a73616aa529' 'vllm/v1/worker/gpu/model_states/mamba_hybrid.py' \
           '8add7015a6302a49c81941446c108c1f371364c730a98a9a18e3b300157e9f2e' 'vllm/v1/worker/gpu/spec_decode/speculator.py' \
@@ -336,11 +349,12 @@ x-vllm-glm53-flash-build: &vllm-glm53-flash-build
           '4ed961afa7af30fd4030dbb3af8a1785ac70de5ff9555c5d4838e9edc95d6d2c' 'vllm/v1/worker/mamba_utils.py' \
           '6b571e5b1aaec48da08b510c47a78d61db2fc9e6174531d99306be141dd7664a' 'vllm/v1/worker/gpu/block_table.py' \
           '4ad1e13f0c0f271e1a2a24675454e200b7469c136def742b796b8530357a90ae' 'vllm/v1/worker/block_table.py' \
+          '8704177287c6a622e34953f210012b764b4833803e626910c064e31ab8ece297' 'vllm/v1/worker/gpu/sample/sampler.py' \
         | sha256sum -c -
     # Preserve the base image runtime contract for its `vllm serve` entrypoint.
     WORKDIR /vllm-workspace
     LABEL org.opencontainers.image.base.digest="sha256:2c6da6c6f16ed15c91e412d896dba13701f25fe1861eaec9ddaa4db34d1d21c4" \
-          ai.near.glm53.patch-set="kpool-target-draft-inplace+mamba-copy-race+slot-bounds" \
+          ai.near.glm53.patch-set="kpool-target-draft-inplace+mamba-copy-race+slot-bounds+greedy-thinking-budget" \
           ai.near.glm53.model-revision="84c6a6aa9497188e15a635ba793b0f95a79b1033"
 
 x-vllm-glm53-flash-common: &vllm-glm53-flash-common
@@ -350,7 +364,7 @@ x-vllm-glm53-flash-common: &vllm-glm53-flash-common
   # model and corrected template revisions are already fetched by the shared
   # downloader. A fresh compile-cache namespace prevents reuse of gpu30's
   # earlier baseline artifacts without changing the runtime implementation.
-  image: nearai/glm53-vllm-mtp5:kpool-tail-v1
+  image: nearai/glm53-vllm-mtp5:kpool-tail-v2
   build: *vllm-glm53-flash-build
   command: >
       /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/84c6a6aa9497188e15a635ba793b0f95a79b1033
@@ -390,7 +404,7 @@ x-vllm-glm53-flash-common: &vllm-glm53-flash-common
     - DO_NOT_TRACK=1
     - VLLM_ENABLE_CUDA_COMPATIBILITY=0
     - VLLM_ENGINE_READY_TIMEOUT_S=3600
-    - VLLM_CACHE_ROOT=/root/.cache/vllm/glm53-flash-tp4-mtp5-kpool-tail-v2
+    - VLLM_CACHE_ROOT=/root/.cache/vllm/glm53-flash-tp4-mtp5-kpool-tail-v3
     # DEBUG turns on a breakable-CUDA-graph pointer invariant in this exact
     # vLLM build; warmup legitimately changes the top-level 3 -> 2 inputs for
     # batch 224, so that diagnostic mode is not a valid serving gate.
@@ -672,7 +686,7 @@ services:
               device_ids: ["4","5","6","7"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:zai-org/GLM-5.3-Flash","served_model:z-ai/glm-5.3-flash","precision:fp8","deployment:glm53-flash-dsv4-flash","config_variant:vllm-tp4-mtp5-kpool-tail-v1","patch_set:kpool-target-draft-inplace-mamba-copy-race-slot-bounds","request_logging:full-length-metadata","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:1"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:zai-org/GLM-5.3-Flash","served_model:z-ai/glm-5.3-flash","precision:fp8","deployment:glm53-flash-dsv4-flash","config_variant:vllm-tp4-mtp5-kpool-tail-v3","patch_set:kpool-target-draft-inplace-mamba-copy-race-slot-bounds-greedy-thinking-budget","thinking_budget_policy:max8192-quarter-output","request_logging:full-length-metadata","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:1"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
@@ -683,8 +697,9 @@ services:
       nearai.otel.model: "zai-org/GLM-5.3-Flash"
       nearai.otel.served_model: "z-ai/glm-5.3-flash"
       nearai.otel.deployment: "glm53-flash-dsv4-flash"
-      nearai.otel.config_variant: "vllm-tp4-mtp5-kpool-tail-v1"
-      nearai.otel.patch_set: "kpool-target-draft-inplace-mamba-copy-race-slot-bounds"
+      nearai.otel.config_variant: "vllm-tp4-mtp5-kpool-tail-v3"
+      nearai.otel.patch_set: "kpool-target-draft-inplace-mamba-copy-race-slot-bounds-greedy-thinking-budget"
+      nearai.otel.thinking_budget_policy: "max8192-quarter-output"
       nearai.otel.request_logging: "full-length-metadata"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
@@ -919,6 +934,21 @@ configs:
           return budget
 
 
+      def _bounded_default_budget(payload: dict, configured_budget: int) -> int:
+          """Reserve at least three quarters of an explicit limit for output."""
+
+          max_output_tokens = payload.get("max_completion_tokens")
+          if not isinstance(max_output_tokens, int) or isinstance(
+              max_output_tokens, bool
+          ):
+              max_output_tokens = payload.get("max_tokens")
+          if not isinstance(max_output_tokens, int) or isinstance(
+              max_output_tokens, bool
+          ):
+              return configured_budget
+          return min(configured_budget, max(0, max_output_tokens // 4))
+
+
       class RequestDefaultsMiddleware:
           """Set a thinking budget only when the client omitted the field."""
 
@@ -959,7 +989,9 @@ configs:
                   and "thinking_token_budget" not in payload
               ):
                   payload["thinking_token_budget"] = (
-                      self.default_thinking_token_budget
+                      _bounded_default_budget(
+                          payload, self.default_thinking_token_budget
+                      )
                   )
                   effective_body = json.dumps(
                       payload,
@@ -1098,8 +1130,9 @@ configs:
                       served_model: "z-ai/glm-5.3-flash"
                       precision: "fp8"
                       deployment: "glm53-flash-dsv4-flash"
-                      config_variant: "vllm-tp4-mtp5-kpool-tail-v1"
-                      patch_set: "kpool-target-draft-inplace-mamba-copy-race-slot-bounds"
+                      config_variant: "vllm-tp4-mtp5-kpool-tail-v3"
+                      patch_set: "kpool-target-draft-inplace-mamba-copy-race-slot-bounds-greedy-thinking-budget"
+                      thinking_budget_policy: "max8192-quarter-output"
                       request_logging: "full-length-metadata"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
