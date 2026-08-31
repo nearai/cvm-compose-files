@@ -28,7 +28,10 @@ x-logging-conf: &logging-conf
 # response budget while preserving every explicit client value (including JSON
 # null). clear_thinking=true is supplied to the pinned template.
 # This experiment intentionally enables full-length request metadata logging
-# and targeted KPool/NCCL/C++ diagnostics while qualification is in progress.
+# and targeted synchronous CUDA/KPool/NCCL/C++ diagnostics while qualification
+# is in progress. CUDA_LAUNCH_BLOCKING is temporary: gpu30's first PR boot
+# reached the sampler warmup after graph capture, where all four ranks reported
+# an asynchronous ScatterGatherKernel index assertion.
 # Remove the verbose request logging after the stable config is selected.
 #
 # gpu31 isolated the startup/CUDA corruption to KPool-tail metadata in the
@@ -410,6 +413,7 @@ x-vllm-glm53-flash-common: &vllm-glm53-flash-common
     # batch 224, so that diagnostic mode is not a valid serving gate.
     - VLLM_LOGGING_LEVEL=INFO
     - NEARAI_GLM53_KPOOL_ASSERT=1
+    - CUDA_LAUNCH_BLOCKING=1
     - TORCH_SHOW_CPP_STACKTRACES=1
     # PyTorch otherwise launches addr2line for expected compile-probe
     # exceptions and can stall graph-memory profiling indefinitely.
