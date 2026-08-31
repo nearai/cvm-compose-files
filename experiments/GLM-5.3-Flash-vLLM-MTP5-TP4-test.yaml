@@ -519,6 +519,99 @@ x-dsv4-flash-common: &dsv4-flash-common
   logging: *logging-conf
 
 services:
+  # One-shot, opt-in diagnostics for comparing the CVM runtime and the pinned
+  # model snapshot with the public release. Never starts during normal deploys.
+  glm53-diagnostics:
+    image: vllm/vllm-openai@sha256:2c6da6c6f16ed15c91e412d896dba13701f25fe1861eaec9ddaa4db34d1d21c4
+    container_name: glm53-diagnostics
+    profiles: ["diagnostics"]
+    entrypoint: ["/bin/bash", "-lc"]
+    command:
+      - |
+        set -euo pipefail
+        snapshot=/root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/84c6a6aa9497188e15a635ba793b0f95a79b1033
+        test -d "$$snapshot"
+
+        nvidia-smi \
+          --query-gpu=driver_version,name,pci.bus_id \
+          --format=csv,noheader
+        python3 - <<'PY'
+        import importlib.metadata
+        import json
+
+        import torch
+
+        package_names = ("vllm", "torch", "triton", "flashinfer-python")
+        packages = {}
+        for package_name in package_names:
+            try:
+                packages[package_name] = importlib.metadata.version(package_name)
+            except importlib.metadata.PackageNotFoundError:
+                packages[package_name] = None
+
+        properties = torch.cuda.get_device_properties(0)
+        print(json.dumps({
+            "event": "runtime",
+            "packages": packages,
+            "torch_cuda": torch.version.cuda,
+            "gpu_name": properties.name,
+            "compute_capability": list(torch.cuda.get_device_capability(0)),
+            "total_memory": properties.total_memory,
+        }, sort_keys=True))
+        PY
+
+        python3 - "$$snapshot" <<'PY'
+        import glob
+        import hashlib
+        import json
+        import os
+        import sys
+
+        snapshot = sys.argv[1]
+        weight_files = sorted(glob.glob(os.path.join(snapshot, "*.safetensors")))
+        link_manifest = hashlib.sha256()
+        total_bytes = 0
+        for path in weight_files:
+            stat = os.stat(path)
+            total_bytes += stat.st_size
+            record = (
+                f"{os.path.basename(path)}\t{stat.st_size}\t"
+                f"{os.path.basename(os.path.realpath(path))}\n"
+            )
+            link_manifest.update(record.encode())
+        print(json.dumps({
+            "event": "snapshot",
+            "weight_files": len(weight_files),
+            "weight_bytes": total_bytes,
+            "link_manifest_sha256": link_manifest.hexdigest(),
+        }, sort_keys=True))
+        PY
+
+        weights_content_manifest_sha256=$$(
+          for weight_file in "$$snapshot"/*.safetensors; do
+            weight_name=$$(basename "$$weight_file")
+            weight_sha256=$$(sha256sum "$$weight_file" | cut -d' ' -f1)
+            printf '%s  %s\n' "$$weight_sha256" "$$weight_name"
+          done | sort | sha256sum | cut -d' ' -f1
+        )
+        echo "weights_content_manifest_sha256=$$weights_content_manifest_sha256"
+        echo "diagnostics_complete"
+    volumes:
+      - huggingface_cache:/root/.cache/huggingface:ro
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["0"]
+              capabilities: [gpu]
+    restart: "no"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "2"
+
   model-downloader:
     image: ghcr.io/astral-sh/uv:python3.11-bookworm-slim@sha256:4f5d923c9dcea037f57bda425dd209f3ec643da2f0b74227f68d09dab0b3bb36
     container_name: model-downloader
