@@ -876,8 +876,8 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
-  # Parallel baseline on the four free GPUs. This changes no kernels or engine
-  # settings; it only logs finite/non-finite raw logits before sampling.
+  # Parallel Model Runner V2 baseline on the four free GPUs. This keeps the
+  # serving configuration unchanged while making the runner choice explicit.
   model-vllm-glm53-debug-tp4:
     <<: *vllm-glm53-flash-common
     container_name: model-vllm-glm53-debug-tp4
@@ -895,7 +895,6 @@ services:
       --chat-template-content-format openai
       --default-chat-template-kwargs '{"clear_thinking":true}'
       --middleware glm53_request_defaults.RequestDefaultsMiddleware
-      --logits-processors glm53_logits_debug:FiniteLogitsDebug
       --gpu-memory-utilization 0.82
       --max-model-len 1048576
       --max-num-seqs 32
@@ -909,9 +908,6 @@ services:
       - source: glm53_request_defaults
         target: /opt/nearai/glm53_request_defaults.py
         mode: 0444
-      - source: glm53_logits_debug
-        target: /opt/nearai/glm53_logits_debug.py
-        mode: 0444
     environment:
       - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
       - HF_HUB_OFFLINE=1
@@ -920,11 +916,11 @@ services:
       - DO_NOT_TRACK=1
       - VLLM_ENABLE_CUDA_COMPATIBILITY=0
       - VLLM_ENGINE_READY_TIMEOUT_S=3600
-      - VLLM_CACHE_ROOT=/root/.cache/vllm/glm53-flash-tp4-debug-baseline-v1
+      - VLLM_CACHE_ROOT=/root/.cache/vllm/glm53-flash-tp4-debug-baseline-v2
       - VLLM_LOGGING_LEVEL=DEBUG
+      - VLLM_USE_V2_MODEL_RUNNER=1
       - PYTHONPATH=/opt/nearai
       - NEARAI_DEFAULT_THINKING_TOKEN_BUDGET=8192
-      - NEARAI_GLM53_LOGITS_DEBUG_STEPS=64
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
     deploy:
       resources:
@@ -934,7 +930,7 @@ services:
               device_ids: ["0", "1", "2", "3"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:zai-org/GLM-5.3-Flash","served_model:z-ai/glm-5.3-flash","precision:fp8","deployment:glm53-debug-isolated","config_variant:vllm-tp4-baseline-logits-debug","patch_set:none-pinned-upstream-image","request_logging:debug","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:debug"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:zai-org/GLM-5.3-Flash","served_model:z-ai/glm-5.3-flash","precision:fp8","deployment:glm53-debug-isolated","config_variant:vllm-tp4-baseline-runner-v2","patch_set:none-pinned-upstream-image","request_logging:debug","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:debug"]}]'
 
   # --- DeepSeek-V4-Flash proxy (single TP4 replica on GPUs 0-3) ---
 
@@ -1244,123 +1240,6 @@ configs:
 
       if __name__ == "__main__":
           main()
-
-  glm53_logits_debug:
-    content: |
-      """Report raw-logit finiteness without changing model output."""
-
-      from __future__ import annotations
-
-      import json
-      import os
-
-      import torch
-
-      from vllm.config import VllmConfig
-      from vllm.sampling_params import SamplingParams
-      from vllm.v1.sample.logits_processor import BatchUpdate, LogitsProcessor
-      from vllm.v1.sample.logits_processor.builtin import process_dict_updates
-
-
-      class FiniteLogitsDebug(LogitsProcessor):
-          @classmethod
-          def validate_params(cls, params: SamplingParams) -> None:
-              return None
-
-          def __init__(
-              self,
-              vllm_config: VllmConfig,
-              device: torch.device,
-              is_pin_memory: bool,
-          ) -> None:
-              self.requests: dict[int, bool] = {}
-              self.steps = 0
-              self.max_steps = int(
-                  os.environ.get("NEARAI_GLM53_LOGITS_DEBUG_STEPS", "64")
-              )
-
-          def is_argmax_invariant(self) -> bool:
-              return False
-
-          def update_state(self, batch_update: BatchUpdate | None) -> None:
-              process_dict_updates(
-                  self.requests,
-                  batch_update,
-                  lambda params, prompt_ids, output_ids: True,
-              )
-
-          def apply(self, logits: torch.Tensor) -> torch.Tensor:
-              if not self.requests or self.steps >= self.max_steps:
-                  return logits
-
-              rows = sorted(
-                  row for row in self.requests if 0 <= row < logits.shape[0]
-              )
-              if not rows:
-                  return logits
-
-              with torch.no_grad():
-                  selected = logits[rows].detach()
-                  finite = torch.isfinite(selected)
-                  finite_count = finite.sum(dim=1)
-                  nan_count = torch.isnan(selected).sum(dim=1)
-                  posinf_count = torch.isposinf(selected).sum(dim=1)
-                  neginf_count = torch.isneginf(selected).sum(dim=1)
-                  finite_min = torch.where(
-                      finite, selected, torch.full_like(selected, float("inf"))
-                  ).amin(dim=1)
-                  finite_max = torch.where(
-                      finite, selected, torch.full_like(selected, float("-inf"))
-                  ).amax(dim=1)
-                  finite_sum = torch.where(
-                      finite, selected, torch.zeros_like(selected)
-                  ).float().sum(dim=1)
-                  finite_mean = finite_sum / finite_count.clamp_min(1).float()
-                  safe = torch.nan_to_num(
-                      selected.float(),
-                      nan=float("-inf"),
-                      posinf=torch.finfo(torch.float32).max,
-                      neginf=torch.finfo(torch.float32).min,
-                  )
-                  top_values, top_ids = torch.topk(
-                      safe, k=min(5, safe.shape[1]), dim=1
-                  )
-
-                  records = []
-                  for offset, row in enumerate(rows):
-                      count = int(finite_count[offset].item())
-                      records.append({
-                          "row": row,
-                          "finite": count,
-                          "nan": int(nan_count[offset].item()),
-                          "posinf": int(posinf_count[offset].item()),
-                          "neginf": int(neginf_count[offset].item()),
-                          "finite_min": (
-                              float(finite_min[offset].item()) if count else None
-                          ),
-                          "finite_max": (
-                              float(finite_max[offset].item()) if count else None
-                          ),
-                          "finite_mean": (
-                              float(finite_mean[offset].item()) if count else None
-                          ),
-                          "top_ids": top_ids[offset].cpu().tolist(),
-                          "top_values": top_values[offset].cpu().tolist(),
-                      })
-
-                  print(
-                      "GLM53_LOGITS_DEBUG "
-                      + json.dumps({
-                          "step": self.steps,
-                          "shape": list(logits.shape),
-                          "dtype": str(logits.dtype),
-                          "records": records,
-                      }, sort_keys=True),
-                      flush=True,
-                  )
-                  self.steps += 1
-
-              return logits
 
   glm53_request_defaults:
     content: |
