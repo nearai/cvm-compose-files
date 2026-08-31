@@ -294,37 +294,37 @@ x-vllm-glm53-flash-build: &vllm-glm53-flash-build
      import torch
 
     @@ -213,7 +214,30 @@
-             return logits
+                 return logits
 
-         # Apply top_k and/or top_p. This might or might not return a new tensor.
-    -    return self.sampling_states.apply_top_k_top_p(
-    -        logits, expanded_idx_mapping, idx_mapping_np
-    +    top_k, top_p = self.sampling_states.get_top_k_top_p(
-    +        expanded_idx_mapping, idx_mapping_np
-         )
-    +    if top_k is None and top_p is None:
-    +        return logits
-    +    if top_k is not None:
-    +        logits_vocab_size = logits.shape[-1]
-    +        invalid_top_k = (top_k <= 0) | (top_k > logits_vocab_size)
-    +        if (
-    +            os.getenv("NEARAI_GLM53_SAMPLER_DEBUG", "0") == "1"
-    +            and bool(torch.any(invalid_top_k).item())
-    +        ):
-    +            print(
-    +                "GLM53_SAMPLER_DEBUG: normalizing invalid top_k values; "
-    +                f"logits_shape={tuple(logits.shape)} "
-    +                f"state_vocab_size={self.sampling_states.vocab_size} "
-    +                f"top_k={top_k.detach().cpu().tolist()} "
-    +                "expanded_idx_mapping="
-    +                f"{expanded_idx_mapping.detach().cpu().tolist()} "
-    +                f"idx_mapping_np={idx_mapping_np.tolist()}",
-    +                flush=True,
-    +            )
-    +        # Match SamplingStates.add_request: invalid/disabled top_k means
-    +        # keep the complete *actual* logits vocabulary for this tensor.
-    +        top_k = torch.where(invalid_top_k, logits_vocab_size, top_k)
-    +    return apply_top_k_top_p(logits, top_k, top_p)
+             # Apply top_k and/or top_p. This might or might not return a new tensor.
+    -        return self.sampling_states.apply_top_k_top_p(
+    -            logits, expanded_idx_mapping, idx_mapping_np
+    +        top_k, top_p = self.sampling_states.get_top_k_top_p(
+    +            expanded_idx_mapping, idx_mapping_np
+             )
+    +        if top_k is None and top_p is None:
+    +            return logits
+    +        if top_k is not None:
+    +            logits_vocab_size = logits.shape[-1]
+    +            invalid_top_k = (top_k <= 0) | (top_k > logits_vocab_size)
+    +            if (
+    +                os.getenv("NEARAI_GLM53_SAMPLER_DEBUG", "0") == "1"
+    +                and bool(torch.any(invalid_top_k).item())
+    +            ):
+    +                print(
+    +                    "GLM53_SAMPLER_DEBUG: normalizing invalid top_k values; "
+    +                    f"logits_shape={tuple(logits.shape)} "
+    +                    f"state_vocab_size={self.sampling_states.vocab_size} "
+    +                    f"top_k={top_k.detach().cpu().tolist()} "
+    +                    "expanded_idx_mapping="
+    +                    f"{expanded_idx_mapping.detach().cpu().tolist()} "
+    +                    f"idx_mapping_np={idx_mapping_np.tolist()}",
+    +                    flush=True,
+    +                )
+    +            # Match SamplingStates.add_request: invalid/disabled top_k means
+    +            # keep the complete *actual* logits vocabulary for this tensor.
+    +            top_k = torch.where(invalid_top_k, logits_vocab_size, top_k)
+    +        return apply_top_k_top_p(logits, top_k, top_p)
 
     @@ -226,0 +251,4 @@
     +        if self.thinking_budget_state.enabled and np.any(
