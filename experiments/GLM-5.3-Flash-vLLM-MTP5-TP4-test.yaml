@@ -293,7 +293,7 @@ x-vllm-glm53-flash-build: &vllm-glm53-flash-build
      import numpy as np
      import torch
 
-    @@ -213,7 +214,30 @@
+    @@ -213,9 +214,32 @@
                  return logits
 
              # Apply top_k and/or top_p. This might or might not return a new tensor.
@@ -326,11 +326,19 @@ x-vllm-glm53-flash-build: &vllm-glm53-flash-build
     +            top_k = torch.where(invalid_top_k, logits_vocab_size, top_k)
     +        return apply_top_k_top_p(logits, top_k, top_p)
 
-    @@ -226,0 +251,4 @@
+         def _requires_logits_processing(self, idx_mapping_np: np.ndarray) -> bool:
+             if np.any(self.logit_bias_state.use_logit_bias[idx_mapping_np]):
+    @@ -224,6 +248,10 @@
+                 return True
+             if np.any(self.bad_words_state.num_bad_words.np[idx_mapping_np] > 0):
+                 return True
     +        if self.thinking_budget_state.enabled and np.any(
     +            self.thinking_budget_state.use_thinking_budget[idx_mapping_np]
     +        ):
     +            return True
+
+             states = self.sampling_states
+             temperatures = states.temperature.np[idx_mapping_np]
     --- vllm/v1/worker/gpu/block_table.py
     +++ vllm/v1/worker/gpu/block_table.py
     @@ -304,13 +304,17 @@
