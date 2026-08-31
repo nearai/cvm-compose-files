@@ -16,9 +16,12 @@ x-logging-conf: &logging-conf
 # The GLM arm is the exact runtime configuration exercised on a four-H200 gpu31
 # dev arm: pinned vLLM base plus seven fail-loud patched files, native FP8 weights,
 # BF16 KV cache on Hopper, TP4, normal CUDA graphs and custom all-reduce,
-# official MTP5, the corrected chat template, full 1,048,576-token context,
+# the corrected chat template, full 1,048,576-token context,
 # 0.82 GPU-memory utilization, 32 sequences, and an 8,192-token batch ceiling.
-# The patched arm exposes 2,120,753 aggregate KV-cache tokens.
+# The preceding MTP5 arm exposed 2,090,408 aggregate KV-cache tokens;
+# this target-only isolation pass will remeasure capacity after startup.
+# MTP5 is temporarily disabled for this semantic-isolation pass: the
+# patched MTP arm booted but emitted repetitive token soup from its first token.
 #
 # Production-specific additions are intentionally narrow: retain the stable
 # served name z-ai/glm-5.3-flash, report cached prompt tokens for billing, and
@@ -431,7 +434,6 @@ x-vllm-glm53-flash-common: &vllm-glm53-flash-common
       --chat-template /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/3f1971b7b5f7a528c9c4ef6212c8785298a8c24a/chat_template.jinja
       --chat-template-content-format openai
       --default-chat-template-kwargs '{"clear_thinking":true}'
-      --speculative-config '{"method":"mtp","num_speculative_tokens":5}'
       --middleware glm53_request_defaults.RequestDefaultsMiddleware
       --gpu-memory-utilization 0.82
       --max-model-len 1048576
@@ -457,7 +459,7 @@ x-vllm-glm53-flash-common: &vllm-glm53-flash-common
     - DO_NOT_TRACK=1
     - VLLM_ENABLE_CUDA_COMPATIBILITY=0
     - VLLM_ENGINE_READY_TIMEOUT_S=3600
-    - VLLM_CACHE_ROOT=/root/.cache/vllm/glm53-flash-tp4-mtp5-kpool-tail-v3
+    - VLLM_CACHE_ROOT=/root/.cache/vllm/glm53-flash-tp4-no-mtp-isolation-v4
     # DEBUG turns on a breakable-CUDA-graph pointer invariant in this exact
     # vLLM build; warmup legitimately changes the top-level 3 -> 2 inputs for
     # batch 224, so that diagnostic mode is not a valid serving gate.
@@ -726,7 +728,7 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
-  # --- GLM-5.3-Flash engine (vLLM TP4 + MTP5, GPUs 4-7) ---
+  # --- GLM-5.3-Flash engine (vLLM TP4, MTP isolation off, GPUs 4-7) ---
   model-vllm-glm53-fp8-tp4:
     <<: *vllm-glm53-flash-common
     container_name: model-vllm-glm53-fp8-tp4
@@ -741,7 +743,7 @@ services:
               device_ids: ["4","5","6","7"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:zai-org/GLM-5.3-Flash","served_model:z-ai/glm-5.3-flash","precision:fp8","deployment:glm53-flash-dsv4-flash","config_variant:vllm-tp4-mtp5-kpool-tail-v3","patch_set:kpool-target-draft-inplace-mamba-copy-race-slot-bounds-greedy-thinking-budget","thinking_budget_policy:max8192-quarter-output","request_logging:full-length-metadata","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:1"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:zai-org/GLM-5.3-Flash","served_model:z-ai/glm-5.3-flash","precision:fp8","deployment:glm53-flash-dsv4-flash","config_variant:vllm-tp4-no-mtp-isolation-v4","patch_set:kpool-target-draft-inplace-mamba-copy-race-slot-bounds-greedy-thinking-budget","thinking_budget_policy:max8192-quarter-output","request_logging:full-length-metadata","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:1"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
@@ -752,7 +754,7 @@ services:
       nearai.otel.model: "zai-org/GLM-5.3-Flash"
       nearai.otel.served_model: "z-ai/glm-5.3-flash"
       nearai.otel.deployment: "glm53-flash-dsv4-flash"
-      nearai.otel.config_variant: "vllm-tp4-mtp5-kpool-tail-v3"
+      nearai.otel.config_variant: "vllm-tp4-no-mtp-isolation-v4"
       nearai.otel.patch_set: "kpool-target-draft-inplace-mamba-copy-race-slot-bounds-greedy-thinking-budget"
       nearai.otel.thinking_budget_policy: "max8192-quarter-output"
       nearai.otel.request_logging: "full-length-metadata"
@@ -1185,7 +1187,7 @@ configs:
                       served_model: "z-ai/glm-5.3-flash"
                       precision: "fp8"
                       deployment: "glm53-flash-dsv4-flash"
-                      config_variant: "vllm-tp4-mtp5-kpool-tail-v3"
+                      config_variant: "vllm-tp4-no-mtp-isolation-v4"
                       patch_set: "kpool-target-draft-inplace-mamba-copy-race-slot-bounds-greedy-thinking-budget"
                       thinking_budget_policy: "max8192-quarter-output"
                       request_logging: "full-length-metadata"
