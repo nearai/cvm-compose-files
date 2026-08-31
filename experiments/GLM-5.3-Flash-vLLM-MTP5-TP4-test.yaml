@@ -13,15 +13,14 @@ x-logging-conf: &logging-conf
 # gpu30 retry layout (2026-08-29): DeepSeek-V4-Flash-0731 remains unchanged
 # on GPUs 0-3. GLM-5.3-Flash uses GPUs 4-7 as one complete NVLink island.
 #
-# The GLM arm is the exact runtime configuration exercised on a four-H200 gpu31
-# dev arm: pinned vLLM base plus seven fail-loud patched files, native FP8 weights,
-# BF16 KV cache on Hopper, TP4, normal CUDA graphs and custom all-reduce,
-# the corrected chat template, full 1,048,576-token context,
+# The active GLM arm is the exact target-only runtime exercised on a four-H200
+# gpu31 dev arm: pinned upstream vLLM image, native FP8 weights, BF16 KV cache
+# on Hopper, TP4, normal CUDA graphs and custom all-reduce, the corrected chat
+# template, full 1,048,576-token context,
 # 0.82 GPU-memory utilization, 32 sequences, and an 8,192-token batch ceiling.
 # The preceding MTP5 arm exposed 2,090,408 aggregate KV-cache tokens;
 # this target-only isolation pass will remeasure capacity after startup.
-# MTP5 is temporarily disabled for this semantic-isolation pass: the
-# patched MTP arm booted but emitted repetitive token soup from its first token.
+# MTP5 is temporarily disabled for this semantic-isolation pass.
 #
 # Production-specific additions are intentionally narrow: retain the stable
 # served name z-ai/glm-5.3-flash, report cached prompt tokens for billing, and
@@ -30,26 +29,13 @@ x-logging-conf: &logging-conf
 # output-token limit. This keeps hidden reasoning from consuming a short
 # response budget while preserving every explicit client value (including JSON
 # null). clear_thinking=true is supplied to the pinned template.
-# This experiment intentionally enables full-length request metadata logging
-# and targeted synchronous CUDA/KPool/sampler/NCCL/C++ diagnostics while
-# qualification is in progress. CUDA_LAUNCH_BLOCKING is temporary: a TP4
-# qualification boot reached sampler warmup after graph capture, where all four
-# ranks reported a ScatterGatherKernel index assertion. A synchronous rerun
-# localized it to unchecked top-k indices in the MTP rejection sampler.
+# Full-length request metadata logging remains enabled while qualification is
+# in progress. The partial KPool backport is intentionally inactive: an
+# in-place tail mapping corrupted shared attention metadata and emitted `lock`
+# from token one, while the cloned derived tensor hit an illegal address during
+# CUDA-graph replay. Use the pinned, gpu31-qualified upstream image until the
+# complete upstream GLM-5.3 integration can be consumed as one revision.
 # Remove the verbose request logging after the stable config is selected.
-#
-# The first gpu30 retry changed the KPool-tail rewrite from the upstream/base
-# clone to an in-place write. It booted but emitted repetitive `lock` tokens
-# from token one with and without MTP. Upstream vLLM #53906 and the known-good
-# gpu31 image both retain the clone because the common slot-mapping tensor is
-# shared with other attention metadata. This pass restores that clone while
-# retaining fail-loud `positions` propagation for target and MTP-draft paths,
-# the overlapping Mamba state-copy fix (vLLM #50729), and bounds checks on the
-# generic slot-table loads (#54296). It also backports the
-# MRV2 greedy-sampling guard from vLLM #52284: without it, a request whose only
-# logits processor is thinking_token_budget bypasses budget enforcement.
-# The targeted assertion remains enabled so any missed KPool caller fails at
-# startup instead of becoming an asynchronous CUDA fault.
 #
 # This complete pack is derived from prod/glm53-flash-dsv4-flash.yaml at
 # v0.0.377. DeepSeek, proxy security, nginx, registrar, DCGM, and OTel plumbing
@@ -78,11 +64,9 @@ x-vllm-proxy-common: &vllm-proxy-common
   restart: unless-stopped
   logging: *logging-conf
 
-# Exact gpu31 candidate: the PR branch support changes plus the independent
-# Mamba state-copy and generic slot-table guards. The base-file checks make the
-# build fail closed if the pinned image no longer matches the audited source;
-# the post-patch checks make all seven installed source files byte-identical to
-# the gpu31 candidates.
+# Inactive failed partial-backport artifact retained for review while this
+# experiment converges. No active service references this extension; the GLM
+# service below runs the pinned upstream image directly.
 x-vllm-glm53-flash-build: &vllm-glm53-flash-build
   context: .
   dockerfile_inline: |
@@ -407,12 +391,11 @@ x-vllm-glm53-flash-build: &vllm-glm53-flash-build
 x-vllm-glm53-flash-common: &vllm-glm53-flash-common
   <<: *nvidia
   init: true
-  # Exact image and capacity settings from the healthy dev MTP5 arm. The
+# Exact image and capacity settings from the healthy dev target-only arm. The
   # model and corrected template revisions are already fetched by the shared
   # downloader. A fresh compile-cache namespace prevents reuse of gpu30's
   # earlier baseline artifacts without changing the runtime implementation.
-  image: nearai/glm53-vllm-mtp5:kpool-clone-v3
-  build: *vllm-glm53-flash-build
+  image: vllm/vllm-openai@sha256:2c6da6c6f16ed15c91e412d896dba13701f25fe1861eaec9ddaa4db34d1d21c4
   command: >
       /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/84c6a6aa9497188e15a635ba793b0f95a79b1033
       --revision 84c6a6aa9497188e15a635ba793b0f95a79b1033
@@ -450,21 +433,8 @@ x-vllm-glm53-flash-common: &vllm-glm53-flash-common
     - DO_NOT_TRACK=1
     - VLLM_ENABLE_CUDA_COMPATIBILITY=0
     - VLLM_ENGINE_READY_TIMEOUT_S=3600
-    - VLLM_CACHE_ROOT=/root/.cache/vllm/glm53-flash-tp4-no-mtp-kpool-clone-v5
-    # DEBUG turns on a breakable-CUDA-graph pointer invariant in this exact
-    # vLLM build; warmup legitimately changes the top-level 3 -> 2 inputs for
-    # batch 224, so that diagnostic mode is not a valid serving gate.
+    - VLLM_CACHE_ROOT=/root/.cache/vllm/glm53-flash-tp4-base-target-v6
     - VLLM_LOGGING_LEVEL=INFO
-    - NEARAI_GLM53_KPOOL_ASSERT=1
-    - NEARAI_GLM53_SAMPLER_DEBUG=1
-    - CUDA_LAUNCH_BLOCKING=1
-    - TORCH_SHOW_CPP_STACKTRACES=1
-    # PyTorch otherwise launches addr2line for expected compile-probe
-    # exceptions and can stall graph-memory profiling indefinitely.
-    - TORCH_DISABLE_ADDR2LINE=1
-    - TORCH_CPP_LOG_LEVEL=INFO
-    - NCCL_DEBUG=INFO
-    - NCCL_DEBUG_SUBSYS=INIT,COLL
     - PYTHONPATH=/opt/nearai
     - NEARAI_DEFAULT_THINKING_TOKEN_BUDGET=8192
     - NVIDIA_DRIVER_CAPABILITIES=compute,utility
@@ -719,7 +689,7 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
-  # --- GLM-5.3-Flash engine (vLLM TP4, MTP isolation off, GPUs 4-7) ---
+  # --- GLM-5.3-Flash engine (pinned upstream vLLM TP4 target, GPUs 4-7) ---
   model-vllm-glm53-fp8-tp4:
     <<: *vllm-glm53-flash-common
     container_name: model-vllm-glm53-fp8-tp4
@@ -734,7 +704,7 @@ services:
               device_ids: ["4","5","6","7"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:zai-org/GLM-5.3-Flash","served_model:z-ai/glm-5.3-flash","precision:fp8","deployment:glm53-flash-dsv4-flash","config_variant:vllm-tp4-no-mtp-kpool-clone-v5","patch_set:kpool-target-draft-clone-mamba-copy-race-slot-bounds-greedy-thinking-budget","thinking_budget_policy:max8192-quarter-output","request_logging:full-length-metadata","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:1"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:zai-org/GLM-5.3-Flash","served_model:z-ai/glm-5.3-flash","precision:fp8","deployment:glm53-flash-dsv4-flash","config_variant:vllm-tp4-base-target-v6","patch_set:none-pinned-upstream-image","thinking_budget_policy:max8192-quarter-output","request_logging:full-length-metadata","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:1"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
@@ -745,8 +715,8 @@ services:
       nearai.otel.model: "zai-org/GLM-5.3-Flash"
       nearai.otel.served_model: "z-ai/glm-5.3-flash"
       nearai.otel.deployment: "glm53-flash-dsv4-flash"
-      nearai.otel.config_variant: "vllm-tp4-no-mtp-kpool-clone-v5"
-      nearai.otel.patch_set: "kpool-target-draft-clone-mamba-copy-race-slot-bounds-greedy-thinking-budget"
+      nearai.otel.config_variant: "vllm-tp4-base-target-v6"
+      nearai.otel.patch_set: "none-pinned-upstream-image"
       nearai.otel.thinking_budget_policy: "max8192-quarter-output"
       nearai.otel.request_logging: "full-length-metadata"
       nearai.otel.env: "${ENV}"
@@ -1178,8 +1148,8 @@ configs:
                       served_model: "z-ai/glm-5.3-flash"
                       precision: "fp8"
                       deployment: "glm53-flash-dsv4-flash"
-                      config_variant: "vllm-tp4-no-mtp-kpool-clone-v5"
-                      patch_set: "kpool-target-draft-clone-mamba-copy-race-slot-bounds-greedy-thinking-budget"
+                      config_variant: "vllm-tp4-base-target-v6"
+                      patch_set: "none-pinned-upstream-image"
                       thinking_budget_policy: "max8192-quarter-output"
                       request_logging: "full-length-metadata"
                       env: "${ENV}"
