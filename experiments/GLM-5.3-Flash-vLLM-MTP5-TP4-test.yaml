@@ -612,6 +612,38 @@ services:
         max-size: "10m"
         max-file: "2"
 
+  # Exercises vLLM's eager and CUDA-graph custom-all-reduce paths on the four
+  # otherwise-idle GPUs without loading model weights.
+  glm53-allreduce-diagnostics:
+    image: vllm/vllm-openai@sha256:2c6da6c6f16ed15c91e412d896dba13701f25fe1861eaec9ddaa4db34d1d21c4
+    container_name: glm53-allreduce-diagnostics
+    profiles: ["diagnostics"]
+    entrypoint: ["/bin/bash", "-lc"]
+    command:
+      - |
+        set -euo pipefail
+        torchrun --standalone --nnodes=1 --nproc-per-node=4 \
+          /opt/nearai/glm53_allreduce_diagnostics.py
+    configs:
+      - source: glm53_allreduce_diagnostics
+        target: /opt/nearai/glm53_allreduce_diagnostics.py
+        mode: 0444
+    environment:
+      - VLLM_LOGGING_LEVEL=INFO
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["0", "1", "2", "3"]
+              capabilities: [gpu]
+    restart: "no"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "2"
+
   model-downloader:
     image: ghcr.io/astral-sh/uv:python3.11-bookworm-slim@sha256:4f5d923c9dcea037f57bda425dd209f3ec643da2f0b74227f68d09dab0b3bb36
     container_name: model-downloader
@@ -1013,6 +1045,118 @@ volumes:
     name: certs
 
 configs:
+  glm53_allreduce_diagnostics:
+    content: |
+      #!/usr/bin/env python3
+      """Compare vLLM custom all-reduce with an exact scalar sum."""
+
+      from __future__ import annotations
+
+      import json
+      import os
+
+      import torch
+
+      from vllm.config import VllmConfig, set_current_vllm_config
+      from vllm.distributed import (
+          ensure_model_parallel_initialized,
+          init_distributed_environment,
+      )
+      from vllm.distributed.communication_op import (
+          tensor_model_parallel_all_reduce,
+      )
+      from vllm.distributed.parallel_state import graph_capture
+
+
+      def check_result(
+          output: torch.Tensor,
+          expected: float,
+      ) -> tuple[bool, float]:
+          finite = bool(torch.isfinite(output).all().item())
+          max_abs_error = float((output.float() - expected).abs().max().item())
+          return finite, max_abs_error
+
+
+      def main() -> None:
+          world_size = int(os.environ["WORLD_SIZE"])
+          rank = int(os.environ["RANK"])
+          local_rank = int(os.environ["LOCAL_RANK"])
+          device = torch.device(f"cuda:{local_rank}")
+          torch.accelerator.set_device_index(device)
+
+          with set_current_vllm_config(VllmConfig()):
+              init_distributed_environment(
+                  world_size=world_size,
+                  rank=rank,
+                  distributed_init_method="env://",
+                  local_rank=local_rank,
+              )
+              ensure_model_parallel_initialized(world_size, 1)
+
+              warmup = torch.ones(1024, dtype=torch.bfloat16, device=device)
+              tensor_model_parallel_all_reduce(warmup)
+              torch.accelerator.synchronize()
+
+              expected = float(world_size * (world_size + 1) // 2)
+              sizes = (1024, 7168, 28672, 262144, 1048576, 2097152)
+              dtypes = (torch.bfloat16, torch.float32)
+              results: list[dict] = []
+              for dtype in dtypes:
+                  for size in sizes:
+                      eager_input = torch.full(
+                          (size,), rank + 1, dtype=dtype, device=device
+                      )
+                      eager_output = tensor_model_parallel_all_reduce(eager_input)
+                      torch.accelerator.synchronize()
+                      eager_finite, eager_max_abs_error = check_result(
+                          eager_output, expected
+                      )
+
+                      graph_input = torch.full(
+                          (size,), rank + 1, dtype=dtype, device=device
+                      )
+                      with graph_capture(device=device) as capture_context:
+                          graph = torch.cuda.CUDAGraph()
+                          with torch.cuda.graph(
+                              graph, stream=capture_context.stream
+                          ):
+                              graph_output = tensor_model_parallel_all_reduce(
+                                  graph_input
+                              )
+                      graph.replay()
+                      torch.accelerator.synchronize()
+                      graph_finite, graph_max_abs_error = check_result(
+                          graph_output, expected
+                      )
+
+                      result = {
+                          "dtype": str(dtype),
+                          "size": size,
+                          "eager_finite": eager_finite,
+                          "eager_max_abs_error": eager_max_abs_error,
+                          "graph_finite": graph_finite,
+                          "graph_max_abs_error": graph_max_abs_error,
+                      }
+                      results.append(result)
+                      if not eager_finite or eager_max_abs_error != 0.0:
+                          raise RuntimeError(f"eager all-reduce mismatch: {result}")
+                      if not graph_finite or graph_max_abs_error != 0.0:
+                          raise RuntimeError(f"graph all-reduce mismatch: {result}")
+
+              torch.distributed.barrier()
+              if rank == 0:
+                  print(json.dumps({
+                      "event": "allreduce_diagnostics",
+                      "world_size": world_size,
+                      "expected": expected,
+                      "results": results,
+                  }, sort_keys=True), flush=True)
+                  print("allreduce_diagnostics_complete", flush=True)
+
+
+      if __name__ == "__main__":
+          main()
+
   glm53_request_defaults:
     content: |
       #!/usr/bin/env python3
