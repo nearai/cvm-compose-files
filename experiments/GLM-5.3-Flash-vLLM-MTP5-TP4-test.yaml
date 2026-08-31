@@ -606,11 +606,9 @@ services:
     container_name: nginx
     depends_on:
       - proxy-glm53
-      - proxy-dsv4-flash
     command: /bin/sh -c 'while :; do sleep 6h; nginx -s reload; done & nginx -g "daemon off;"'
     ports:
       - "8000:8000"
-      - "8001:8001"
       - "8444:443"
     volumes:
       - certs:/etc/letsencrypt:ro
@@ -1585,12 +1583,6 @@ configs:
         location / { proxy_pass http://proxy-glm53:8000; }
       }
 
-      # :8001 - DeepSeek-V4-Flash replica 1 (registrar probe path for the 8444 backend)
-      server {
-        listen 8001;
-        location / { proxy_pass http://proxy-dsv4-flash:8000; }
-      }
-
       ssl_certificate /etc/letsencrypt/live/completions.near.ai/fullchain.pem;
       ssl_certificate_key /etc/letsencrypt/live/completions.near.ai/privkey.pem;
       ssl_protocols TLSv1.2 TLSv1.3;
@@ -1609,13 +1601,4 @@ configs:
         keepalive_timeout 1h;
         keepalive_requests 1000000;
         location / { proxy_pass http://proxy-glm53:8000; }
-      }
-
-      server {
-        listen 443 ssl http2;
-        server_name dsv4-flash.completions.near.ai
-                    ~^dsv4-flash-i\d+\.completions\.near\.ai$$;
-        keepalive_timeout 1h;
-        keepalive_requests 1000000;
-        location / { proxy_pass http://proxy-dsv4-flash:8000; }
       }
