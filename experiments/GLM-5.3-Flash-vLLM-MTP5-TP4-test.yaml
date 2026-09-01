@@ -966,8 +966,10 @@ services:
   # Phala's public GLM-5.3-Flash production-compatibility image, followed to its
   # latest r12 multimodal hardening layer. The target-only control passed the
   # text, streaming, tool, image, and batch-8 semantic gates. This arm adds the
-  # SGLang-verified H200 adaptive 5/1/6 low-latency recipe. Hopper uses BF16 KV
-  # with TileLang DSA; FP8 KV is a Blackwell-only operating point for this model.
+  # SGLang-verified H200 adaptive 5/1/6 low-latency recipe. Static cache is kept
+  # at 0.70 because a successful 1,048,031-token prefill at 0.75 repeatedly hit
+  # caught allocator OOMs for its runtime workspace. Hopper uses BF16 KV with
+  # TileLang DSA; FP8 KV is a Blackwell-only operating point for this model.
   model-sg-glm53-phala-r12-tp8:
     <<: *nvidia
     init: true
@@ -981,7 +983,7 @@ services:
       --served-model-name z-ai/glm-5.3-flash
       --tp-size 8
       --ep-size 8
-      --mem-fraction-static 0.75
+      --mem-fraction-static 0.70
       --dsa-prefill-backend tilelang
       --dsa-decode-backend tilelang
       --kv-cache-dtype bfloat16
@@ -1028,7 +1030,7 @@ services:
     stop_grace_period: 5m
     logging: *logging-conf
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","served_model:z-ai/glm-5.3-flash","precision:fp8-weights-bf16-kv","deployment:glm53-sglang-phala-r12-isolated","config_variant:phala-r12-h200-tp8-ep8-eagle-adaptive-5-1-6","request_logging:debug","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:debug"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","served_model:z-ai/glm-5.3-flash","precision:fp8-weights-bf16-kv","deployment:glm53-sglang-phala-r12-isolated","config_variant:phala-r12-h200-tp8-ep8-eagle-adaptive-5-1-6-mem70","request_logging:debug","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:debug"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -1039,7 +1041,7 @@ services:
       nearai.otel.model: "z-ai/glm-5.3-flash"
       nearai.otel.served_model: "z-ai/glm-5.3-flash"
       nearai.otel.deployment: "glm53-sglang-phala-r12-isolated"
-      nearai.otel.config_variant: "phala-r12-h200-tp8-ep8-eagle-adaptive-5-1-6"
+      nearai.otel.config_variant: "phala-r12-h200-tp8-ep8-eagle-adaptive-5-1-6-mem70"
       nearai.otel.request_logging: "debug"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
