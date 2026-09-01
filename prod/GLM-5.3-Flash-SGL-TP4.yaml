@@ -53,7 +53,7 @@ x-glm53-build: &glm53-build
     FROM ghcr.io/phala-network/sglang@sha256:2488ca13aee77ffd24ba2181b1b05dcf5e1c76e6477002c7b2f074b44fa49193
     WORKDIR /sgl-workspace/sglang
     RUN printf '%s  %s\n' \
-          'd067099408d05b23f89f0a85ab1b12c05450a36ce7c824fed40cca4fd7c3aa4f' \
+          '29dbee58926a9d9a91d60733d36e80c3a2e24cd8c98296823ee408bce9ef5f16' \
           'python/sglang/srt/entrypoints/openai/protocol.py' \
         | sha256sum -c -
     RUN python3 - <<'PY'
@@ -61,6 +61,9 @@ x-glm53-build: &glm53-build
 
     path = Path("python/sglang/srt/entrypoints/openai/protocol.py")
     source = path.read_text()
+    import_anchor = '''    StrictBool,
+        field_serializer,
+    '''
     field_anchor = '''    custom_logit_processor: Optional[Union[List[Optional[str]], str]] = None
         custom_params: Optional[Dict] = None
     '''
@@ -90,8 +93,17 @@ x-glm53-build: &glm53-build
             return values
 
     '''
-    if source.count(field_anchor) != 1 or source.count(validator_anchor) != 1:
+    if (
+        source.count(import_anchor) != 1
+        or source.count(field_anchor) != 1
+        or source.count(validator_anchor) != 1
+    ):
         raise SystemExit("protocol.py layout changed; refusing to apply budget adapter")
+    source = source.replace(
+        import_anchor,
+        "    StrictBool,\n    StrictInt,\n    field_serializer,\n",
+        1,
+    )
     source = source.replace(
         field_anchor,
         field_anchor + "    thinking_token_budget: Optional[StrictInt] = Field(default=None, ge=0)\n",
@@ -102,9 +114,46 @@ x-glm53-build: &glm53-build
     PY
     RUN python3 -m py_compile python/sglang/srt/entrypoints/openai/protocol.py \
       && printf '%s  %s\n' \
-          '7b0dd789faa59e27efb2de36f4d4ed3cb263d350389074b3be4a41f69a0f0df7' \
+          'c3c7a7a324f2b7fa3d726e7f13dbf59389e57498647d26bfb2f796ff10012a87' \
           'python/sglang/srt/entrypoints/openai/protocol.py' \
         | sha256sum -c -
+    RUN python3 - <<'PY'
+    from pydantic import ValidationError
+    from sglang.srt.entrypoints.openai.protocol import ChatCompletionRequest
+
+    base = {
+        "model": "z-ai/glm-5.3-flash",
+        "messages": [{"role": "user", "content": "Say OK"}],
+    }
+
+    def validate(extra, expected_custom, should_fail=False):
+        try:
+            request = ChatCompletionRequest.model_validate({**base, **extra})
+        except ValidationError:
+            if should_fail:
+                return
+            raise
+        if should_fail:
+            raise SystemExit(f"invalid budget was accepted: {extra!r}")
+        if request.custom_params != expected_custom:
+            raise SystemExit(
+                f"budget adapter mismatch: {request.custom_params!r} != {expected_custom!r}"
+            )
+
+    validate({}, {"thinking_budget": 8192})
+    validate({"thinking_token_budget": 4096}, {"thinking_budget": 4096})
+    validate({"thinking_token_budget": None}, None)
+    validate(
+        {
+            "thinking_token_budget": 4096,
+            "custom_params": {"thinking_budget": 2048},
+        },
+        {"thinking_budget": 2048},
+    )
+    validate({"thinking_token_budget": True}, None, should_fail=True)
+    validate({"thinking_token_budget": -1}, None, should_fail=True)
+    validate({"thinking_token_budget": "8192"}, None, should_fail=True)
+    PY
 
 x-sg-glm53-flash-common: &sg-glm53-flash-common
   <<: *nvidia
