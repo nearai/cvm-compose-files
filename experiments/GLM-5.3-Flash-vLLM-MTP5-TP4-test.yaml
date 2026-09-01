@@ -1137,6 +1137,7 @@ services:
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
       - OPENBLAS_L2_SIZE=2097152
       - NCCL_DEBUG=INFO
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
       - TORCHINDUCTOR_CACHE_DIR=/root/.cache/torchinductor
       - TRITON_CACHE_DIR=/root/.cache/triton
     deploy:
