@@ -777,6 +777,42 @@ configs:
                       config_variant: "phala-r12-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
                       thinking_budget_policy: "default8192-public-to-native"
                       request_logging: "disabled"
+              - job_name: sglang-model-sg-dsv4-flash-fp4-tp4
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['model-sg-dsv4-flash-fp4-tp4:8000']
+                    labels:
+                      service: "sglang"
+                      source: "sglang"
+                      container_name: "model-sg-dsv4-flash-fp4-tp4"
+                      model: "deepseek-ai/DeepSeek-V4-Flash-0731"
+                      model_path: "deepseek-ai/DeepSeek-V4-Flash-0731"
+                      model_revision: "7872f01b1d1fe23eabc4c98b48bffcef5a386062"
+                      deployment: "glm53-flash-sgl-tp4"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      port: "8001"
+                      instance: "1"
+                      config_variant: "dsv4-0731-tp4-target-only-sparse-on"
+                      decode_mode: "target_only"
+                      sparse_prefill: "on"
+                      chunk_size: "8192"
+                      ab_arm: "tp4-target-only-sparse-on-gpu30"
+                      max_prefill_tokens: "16384"
+                      continuous_decode_steps: "1"
+                      chunked_prefill_admission_reserve: "4096"
+                      compress_state_dtype: "bf16"
+                      watchdog_timeout: "1800"
+                      cuda_graph: "1"
+                      max_running_requests: "64"
+                      max_queued_requests: "16"
+                      schedule_conservativeness: "1.3"
+                      sglang_revision: "nightly-c0b6474-near-v1"
+                      engine_image: "5bc4bc0dfd36"
               - job_name: dcgm-dcgm-glm53
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -813,6 +849,26 @@ configs:
                       cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "8000"
+              - job_name: inference-proxy-proxy-dsv4-flash
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['proxy-dsv4-flash:8000']
+                    labels:
+                      service: "vllm-proxy"
+                      source: "vllm-proxy"
+                      container_name: "proxy-dsv4-flash"
+                      model: "deepseek-ai/DeepSeek-V4-Flash"
+                      deployment: "glm53-flash-sgl-tp4"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      port: "8001"
+                      instance: "1"
+                      ab_arm: "tp4-target-only-sparse-on-gpu30"
+                      sparse_prefill: "on"
         prometheus/self:
           config:
             scrape_configs:
