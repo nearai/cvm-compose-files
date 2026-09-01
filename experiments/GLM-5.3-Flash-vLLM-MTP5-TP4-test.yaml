@@ -1084,8 +1084,9 @@ services:
   # winning vLLM TP4 operating envelope. Keep Hopper's BF16 KV + TileLang DSA
   # pair; the FP8 KV + TensorRT-LLM DSA pair is a Blackwell-only recipe. At
   # TP4 each rank owns twice as many weights, so raise the static pool to 0.82
-  # while capping running requests and decode graphs at 32. Full-context
-  # capacity and semantic correctness are qualification gates, not assumptions.
+  # while capping running requests and decode graphs at 32. A 1M-token probe
+  # showed that the DSA K-pool scratch allocation scales with the prefill chunk;
+  # 4096 bounds that transient without changing the 1M context limit.
   model-sg-glm53-phala-r12-tp4:
     <<: *nvidia
     init: true
@@ -1101,7 +1102,7 @@ services:
       --ep-size 4
       --mem-fraction-static 0.82
       --max-running-requests 32
-      --chunked-prefill-size 8192
+      --chunked-prefill-size 4096
       --cuda-graph-max-bs-decode 32
       --dsa-prefill-backend tilelang
       --dsa-decode-backend tilelang
