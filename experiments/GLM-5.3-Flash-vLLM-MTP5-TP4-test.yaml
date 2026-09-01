@@ -869,6 +869,36 @@ services:
     labels:
       com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:z-ai/glm-5.3-flash","deployment:glm53-sglang-phala-r12-isolated","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8003"]}]'
 
+  # Token-protected path for the H200 TP4/EP4 qualification arm. This is a
+  # separate profile and port so switching from the verified TP8 control is an
+  # explicit managed-CVM action. The second four-GPU NVLink island stays free
+  # for a second replica or an alternate-engine compatibility probe.
+  proxy-glm53-sglang-tp4-debug:
+    <<: *vllm-proxy-common
+    container_name: proxy-glm53-sglang-tp4-debug
+    profiles: ["sglang-phala-tp4"]
+    ports:
+      - "8004:8000"
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - CLOUD_API_URL=https://cloud-api.near.ai
+      - CLOUD_API_USAGE_TOKEN=${CLOUD_API_USAGE_TOKEN}
+      - COMPOSE_MANAGER_URL=http://compose-manager:8080
+      - LOG_FORMAT=json
+      - MODEL_NAME=z-ai/glm-5.3-flash
+      - OHTTP_ENABLED=true
+      - TOKEN=${PROXY_TOKEN}
+      - FUSION_ENABLED=${FUSION_ENABLED}
+      - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
+      - VLLM_BASE_URL=http://model-sg-glm53-phala-r12-tp4:8000
+      - VLLM_PROXY_MAX_REQUEST_SIZE=104857600
+      - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
+      - USE_NV_ATTESTATION_SDK=true
+      - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
+      - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:z-ai/glm-5.3-flash","deployment:glm53-sglang-phala-r12-tp4-isolated","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8004"]}]'
+
   # --- GLM-5.3-Flash engine (pinned upstream vLLM TP4 target, GPUs 4-7) ---
   model-vllm-glm53-fp8-tp4:
     <<: *vllm-glm53-flash-common
@@ -1043,6 +1073,94 @@ services:
       nearai.otel.served_model: "z-ai/glm-5.3-flash"
       nearai.otel.deployment: "glm53-sglang-phala-r12-isolated"
       nearai.otel.config_variant: "phala-r12-h200-tp8-ep8-eagle-adaptive-5-1-6"
+      nearai.otel.request_logging: "debug"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
+
+  # H200 TP4/EP4 experiment derived from the verified TP8 control and the
+  # winning vLLM TP4 operating envelope. Keep Hopper's BF16 KV + TileLang DSA
+  # pair; the FP8 KV + TensorRT-LLM DSA pair is a Blackwell-only recipe. At
+  # TP4 each rank owns twice as many weights, so raise the static pool to 0.82
+  # while capping running requests and decode graphs at 32. Full-context
+  # capacity and semantic correctness are qualification gates, not assumptions.
+  model-sg-glm53-phala-r12-tp4:
+    <<: *nvidia
+    init: true
+    profiles: ["sglang-phala-tp4"]
+    image: ghcr.io/phala-network/sglang@sha256:2488ca13aee77ffd24ba2181b1b05dcf5e1c76e6477002c7b2f074b44fa49193
+    container_name: model-sg-glm53-phala-r12-tp4
+    command: >
+      sglang serve
+      --model-path /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/84c6a6aa9497188e15a635ba793b0f95a79b1033
+      --revision 84c6a6aa9497188e15a635ba793b0f95a79b1033
+      --served-model-name z-ai/glm-5.3-flash
+      --tp-size 4
+      --ep-size 4
+      --mem-fraction-static 0.82
+      --max-running-requests 32
+      --chunked-prefill-size 8192
+      --cuda-graph-max-bs-decode 32
+      --dsa-prefill-backend tilelang
+      --dsa-decode-backend tilelang
+      --kv-cache-dtype bfloat16
+      --moe-runner-backend deep_gemm
+      --speculative-algorithm EAGLE
+      --speculative-num-steps 5
+      --speculative-eagle-topk 1
+      --speculative-num-draft-tokens 6
+      --speculative-adaptive
+      --reasoning-parser glm45
+      --tool-call-parser glm47
+      --chat-template /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/3f1971b7b5f7a528c9c4ef6212c8785298a8c24a/chat_template.jinja
+      --context-length 1048576
+      --dist-init-addr 127.0.0.1:29510
+      --watchdog-timeout 1800
+      --enable-cache-report
+      --enable-metrics
+      --log-requests
+      --log-requests-level 2
+      --host 0.0.0.0
+      --port 8000
+    volumes:
+      - kernel_cache:/root/.cache
+      - huggingface_cache:/root/.cache/huggingface
+    environment:
+      - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+      - HF_HUB_OFFLINE=1
+      - TRANSFORMERS_OFFLINE=1
+      - HF_HUB_DISABLE_TELEMETRY=1
+      - DO_NOT_TRACK=1
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - OPENBLAS_L2_SIZE=2097152
+      - NCCL_DEBUG=INFO
+      - TORCHINDUCTOR_CACHE_DIR=/root/.cache/torchinductor
+      - TRITON_CACHE_DIR=/root/.cache/triton
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["0", "1", "2", "3"]
+              capabilities: [gpu]
+    restart: unless-stopped
+    stop_grace_period: 5m
+    logging: *logging-conf
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","served_model:z-ai/glm-5.3-flash","precision:fp8-weights-bf16-kv","deployment:glm53-sglang-phala-r12-tp4-isolated","config_variant:phala-r12-h200-tp4-ep4-eagle-adaptive-5-1-6","request_logging:debug","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:debug"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "sglang"
+      nearai.otel.service: "sglang"
+      nearai.otel.source: "sglang"
+      nearai.otel.container_name: "model-sg-glm53-phala-r12-tp4"
+      nearai.otel.port: "8000"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "z-ai/glm-5.3-flash"
+      nearai.otel.served_model: "z-ai/glm-5.3-flash"
+      nearai.otel.deployment: "glm53-sglang-phala-r12-tp4-isolated"
+      nearai.otel.config_variant: "phala-r12-h200-tp4-ep4-eagle-adaptive-5-1-6"
       nearai.otel.request_logging: "debug"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
@@ -1611,6 +1729,29 @@ configs:
                       precision: "fp8-weights-bf16-kv"
                       deployment: "glm53-sglang-phala-r12-isolated"
                       config_variant: "phala-r12-h200-tp8-ep8-target-only"
+                      request_logging: "debug"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      port: "8000"
+                      instance: "debug"
+
+              - job_name: sglang-model-sg-glm53-phala-r12-tp4
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['model-sg-glm53-phala-r12-tp4:8000']
+                    labels:
+                      service: "sglang"
+                      source: "sglang"
+                      container_name: "model-sg-glm53-phala-r12-tp4"
+                      model: "z-ai/glm-5.3-flash"
+                      served_model: "z-ai/glm-5.3-flash"
+                      precision: "fp8-weights-bf16-kv"
+                      deployment: "glm53-sglang-phala-r12-tp4-isolated"
+                      config_variant: "phala-r12-h200-tp4-ep4-eagle-adaptive-5-1-6"
                       request_logging: "debug"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
