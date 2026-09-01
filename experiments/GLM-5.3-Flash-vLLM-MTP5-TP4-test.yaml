@@ -1170,6 +1170,53 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
+  # Isolated TensorRT-LLM compatibility probe on the otherwise idle H200s.
+  # NVIDIA's current support registry covers GlmMoeDsaForCausalLM (GLM-5),
+  # while this checkpoint declares Glm5NextForConditionalGeneration. Keep the
+  # probe private to the compose network and one-shot until that architecture
+  # can load successfully; there is intentionally no inference proxy or host
+  # port for an unqualified engine.
+  model-trtllm-glm53-compat-tp4:
+    <<: *nvidia
+    init: true
+    profiles: ["trtllm-glm53-compat"]
+    image: nvcr.io/nvidia/tensorrt-llm/release@sha256:2366e4b4bdb385fcb38642a4555cbd091c4f8b1a27ff567a47acbe815dd49e86
+    container_name: model-trtllm-glm53-compat-tp4
+    command: >
+      trtllm-serve
+      /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/84c6a6aa9497188e15a635ba793b0f95a79b1033
+      --backend pytorch
+      --tp_size 4
+      --ep_size 4
+      --max_seq_len 1048576
+      --max_num_tokens 4096
+      --max_batch_size 32
+      --free_gpu_memory_fraction 0.82
+      --served_model_name z-ai/glm-5.3-flash
+      --chat_template /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/3f1971b7b5f7a528c9c4ef6212c8785298a8c24a/chat_template.jinja
+      --trust_remote_code
+      --host 0.0.0.0
+      --port 8000
+    volumes:
+      - huggingface_cache:/root/.cache/huggingface
+    environment:
+      - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+      - HF_HUB_OFFLINE=1
+      - TRANSFORMERS_OFFLINE=1
+      - HF_HUB_DISABLE_TELEMETRY=1
+      - DO_NOT_TRACK=1
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - PYTHONUNBUFFERED=1
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["4", "5", "6", "7"]
+              capabilities: [gpu]
+    restart: "no"
+    logging: *logging-conf
+
   # --- DeepSeek-V4-Flash proxy (single TP4 replica on GPUs 0-3) ---
 
   proxy-dsv4-flash:
