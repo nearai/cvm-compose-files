@@ -23,6 +23,13 @@ x-logging-conf: &logging-conf
 #
 # The vLLM GLM-5.3-Flash path is not used: its Hopper NVFP4/MLA path produced
 # non-finite logits and repetitive output. Replica 2 is replaced by DeepSeek-V4-Flash for the mixed-root E2EE affinity test.
+#
+# GPU telemetry uses one full-host DCGM exporter with a checked-in H200
+# operational collector. The collector keeps utilization, power and profiling
+# signals while enabling the reliability families that NVIDIA ships commented
+# out by default (XID totals, ECC, retired pages, GPU health and NVLink faults).
+# This service can be recreated independently; changing it must not restart the
+# SGLang workers, proxy, registrar or nginx.
 
 x-nvidia: &nvidia
   runtime: nvidia
@@ -214,10 +221,15 @@ x-sg-glm53-flash-common: &sg-glm53-flash-common
   logging: *logging-conf
 
 x-dcgm-common: &dcgm-common
-  image: nvcr.io/nvidia/k8s/dcgm-exporter:4.5.2-4.8.1-distroless
+  image: nvcr.io/nvidia/k8s/dcgm-exporter@sha256:613ab03c11d442fd960ff515f547e9921537454a712d08160bc8f677f89f1c35
+  command: ["-f", "/etc/dcgm-exporter/nearai-h200.csv"]
   runtime: nvidia
   cap_add:
     - SYS_ADMIN
+  configs:
+    - source: dcgm_h200_metrics
+      target: /etc/dcgm-exporter/nearai-h200.csv
+      mode: 0444
   restart: unless-stopped
   logging: *logging-conf
 
@@ -663,6 +675,78 @@ volumes:
     name: certs
 
 configs:
+  dcgm_h200_metrics:
+    content: |
+      # NEAR AI H200 operational collector for DCGM 4.6.0 / exporter 4.8.3.
+      # Format: DCGM field, Prometheus type, help message.
+
+      # Clocks, temperature, power and cumulative GPU-board energy.
+      DCGM_FI_DEV_SM_CLOCK, gauge, SM clock frequency in MHz.
+      DCGM_FI_DEV_MEM_CLOCK, gauge, Memory clock frequency in MHz.
+      DCGM_FI_DEV_MEMORY_TEMP, gauge, Memory temperature in C.
+      DCGM_FI_DEV_GPU_TEMP, gauge, GPU temperature in C.
+      DCGM_FI_DEV_POWER_USAGE, gauge, GPU board power draw in W.
+      DCGM_FI_DEV_TOTAL_ENERGY_CONSUMPTION, counter, GPU board energy consumed since boot in mJ.
+
+      # Utilization, framebuffer and PCIe.
+      DCGM_FI_DEV_GPU_UTIL, gauge, GPU utilization in percent.
+      DCGM_FI_DEV_MEM_COPY_UTIL, gauge, Memory copy utilization in percent.
+      DCGM_FI_DEV_FB_FREE, gauge, Framebuffer memory free in MiB.
+      DCGM_FI_DEV_FB_USED, gauge, Framebuffer memory used in MiB.
+      DCGM_FI_DEV_FB_RESERVED, gauge, Framebuffer memory reserved in MiB.
+      DCGM_FI_PROF_PCIE_TX_BYTES, gauge, PCIe transmit throughput in bytes per second.
+      DCGM_FI_PROF_PCIE_RX_BYTES, gauge, PCIe receive throughput in bytes per second.
+      DCGM_FI_DEV_PCIE_REPLAY_COUNTER, counter, Total PCIe replay events.
+
+      # Raw and exporter-owned incident signals. Windowed counts provide a
+      # stable zero series; cumulative totals preserve observed event labels.
+      DCGM_FI_DEV_XID_ERRORS, gauge, Last XID error encountered.
+      DCGM_EXP_XID_ERRORS_COUNT, gauge, XID records observed in the configured window.
+      DCGM_EXP_XID_ERRORS_TOTAL, counter, XID records observed since exporter start.
+      DCGM_EXP_CLOCK_EVENTS_COUNT, gauge, Clock events observed in the configured window.
+      DCGM_EXP_CLOCK_EVENTS_TOTAL, counter, Clock event transitions observed since exporter start.
+      DCGM_EXP_GPU_HEALTH_STATUS, gauge, Current DCGM GPU health status by health watch.
+      DCGM_EXP_P2P_STATUS, gauge, Current NVLink P2P status for each ordered GPU pair.
+
+      # Throttling and reliability constraints.
+      DCGM_FI_DEV_POWER_VIOLATION, counter, Throttling duration due to power constraints in ns.
+      DCGM_FI_DEV_THERMAL_VIOLATION, counter, Throttling duration due to thermal constraints in ns.
+      DCGM_FI_DEV_SYNC_BOOST_VIOLATION, counter, Throttling duration due to sync boost constraints in ns.
+      DCGM_FI_DEV_BOARD_LIMIT_VIOLATION, counter, Throttling duration due to board constraints in ns.
+      DCGM_FI_DEV_LOW_UTIL_VIOLATION, counter, Throttling duration due to low utilization in ns.
+      DCGM_FI_DEV_RELIABILITY_VIOLATION, counter, Throttling duration due to reliability constraints in ns.
+
+      # ECC, retired pages and row remapping.
+      DCGM_FI_DEV_ECC_SBE_VOL_TOTAL, counter, Total volatile single-bit ECC errors.
+      DCGM_FI_DEV_ECC_DBE_VOL_TOTAL, counter, Total volatile double-bit ECC errors.
+      DCGM_FI_DEV_ECC_SBE_AGG_TOTAL, counter, Total aggregate single-bit ECC errors.
+      DCGM_FI_DEV_ECC_DBE_AGG_TOTAL, counter, Total aggregate double-bit ECC errors.
+      DCGM_FI_DEV_RETIRED_SBE, counter, Total pages retired due to single-bit errors.
+      DCGM_FI_DEV_RETIRED_DBE, counter, Total pages retired due to double-bit errors.
+      DCGM_FI_DEV_RETIRED_PENDING, counter, Pages pending retirement.
+      DCGM_FI_DEV_UNCORRECTABLE_REMAPPED_ROWS, counter, Total uncorrectable remapped rows.
+      DCGM_FI_DEV_CORRECTABLE_REMAPPED_ROWS, counter, Total correctable remapped rows.
+      DCGM_FI_DEV_ROW_REMAP_FAILURE, gauge, Whether row remapping has failed.
+
+      # NVLink traffic and integrity.
+      DCGM_FI_DEV_NVLINK_BANDWIDTH_TOTAL, gauge, Aggregate NVLink traffic rate across all lanes.
+      DCGM_FI_DEV_NVLINK_CRC_FLIT_ERROR_COUNT_TOTAL, counter, Total NVLink flow-control CRC errors.
+      DCGM_FI_DEV_NVLINK_CRC_DATA_ERROR_COUNT_TOTAL, counter, Total NVLink data CRC errors.
+      DCGM_FI_DEV_NVLINK_REPLAY_ERROR_COUNT_TOTAL, counter, Total NVLink replay errors.
+      DCGM_FI_DEV_NVLINK_RECOVERY_ERROR_COUNT_TOTAL, counter, Total NVLink recovery errors.
+
+      # Workload profiling. Unsupported fields are skipped by DCGM and must be
+      # represented as unsupported in Grafana rather than coerced to zero.
+      DCGM_FI_PROF_GR_ENGINE_ACTIVE, gauge, Ratio of time the graphics engine is active.
+      DCGM_FI_PROF_PIPE_TENSOR_ACTIVE, gauge, Ratio of cycles the tensor pipe is active.
+      DCGM_FI_PROF_DRAM_ACTIVE, gauge, Ratio of time the device memory interface is active.
+
+      # Stable software identity labels attached to emitted GPU metrics.
+      DCGM_FI_DRIVER_VERSION, label, NVIDIA driver version.
+      DCGM_FI_NVML_VERSION, label, NVML version.
+      DCGM_FI_DEV_BRAND, label, GPU product brand.
+      DCGM_FI_DEV_VBIOS_VERSION, label, GPU VBIOS version.
+
   otelcol_app_config:
     content: |
       receivers:
@@ -815,6 +899,7 @@ configs:
                       engine_image: "5bc4bc0dfd36"
               - job_name: dcgm-dcgm-glm53
                 scrape_interval: 15s
+                scrape_timeout: 10s
                 metrics_path: /metrics
                 static_configs:
                   - targets: ['dcgm-glm53:9400']
