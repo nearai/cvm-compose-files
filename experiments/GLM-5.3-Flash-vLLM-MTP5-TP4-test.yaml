@@ -1083,10 +1083,13 @@ services:
   # H200 TP4/EP4 experiment derived from the verified TP8 control and the
   # winning vLLM TP4 operating envelope. Keep Hopper's BF16 KV + TileLang DSA
   # pair; the FP8 KV + TensorRT-LLM DSA pair is a Blackwell-only recipe. At
-  # TP4 each rank owns twice as many weights, so raise the static pool to 0.82
-  # while capping running requests and decode graphs at 32. A 1M-token probe
-  # showed that the DSA K-pool scratch allocation scales with the prefill chunk;
-  # 4096 bounds that transient without changing the 1M context limit.
+  # TP4 each rank owns twice as many weights, so use a 0.80 static pool while
+  # capping running requests and decode graphs at 32. A 1M-token probe at 0.82
+  # passed but left only 0.13 GiB free while late K-pool kernels loaded. The
+  # lower fraction restores about 2.8 GiB/GPU of workspace while retaining more
+  # than 1M tokens of KV capacity. The same probe showed that DSA K-pool scratch
+  # scales with the prefill chunk; 4096 bounds that transient without changing
+  # the 1M context limit.
   model-sg-glm53-phala-r12-tp4:
     <<: *nvidia
     init: true
@@ -1100,7 +1103,7 @@ services:
       --served-model-name z-ai/glm-5.3-flash
       --tp-size 4
       --ep-size 4
-      --mem-fraction-static 0.82
+      --mem-fraction-static 0.80
       --max-running-requests 32
       --chunked-prefill-size 4096
       --cuda-graph-max-bs-decode 32
