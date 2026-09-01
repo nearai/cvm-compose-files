@@ -1067,6 +1067,8 @@ services:
       --speculative-num-draft-tokens 6
       --speculative-adaptive
       --reasoning-parser glm45
+      --enable-strict-thinking
+      --grammar-backend xgrammar
       --tool-call-parser glm47
       --chat-template /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/3f1971b7b5f7a528c9c4ef6212c8785298a8c24a/chat_template.jinja
       --context-length 1048576
@@ -1134,8 +1136,9 @@ services:
   # the 1M context limit. SGLang strict-thinking honors the native
   # custom_params.thinking_budget field. The OpenAI chat adapter currently
   # overwrites a preferred nested custom_params default with null, so the
-  # gateway must translate/default the budget into that native field. The
-  # shadow replica remains unchanged until that translation is in place.
+  # gateway must translate/default the budget into that native field. Both
+  # replicas enable strict thinking so a translated public budget has identical
+  # semantics; neither engine configuration manufactures an omitted default.
   model-sg-glm53-phala-r12-tp4:
     <<: *nvidia
     init: true
@@ -1252,6 +1255,8 @@ services:
       --speculative-num-draft-tokens 6
       --speculative-adaptive
       --reasoning-parser glm45
+      --enable-strict-thinking
+      --grammar-backend xgrammar
       --tool-call-parser glm47
       --chat-template /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/3f1971b7b5f7a528c9c4ef6212c8785298a8c24a/chat_template.jinja
       --context-length 1048576
@@ -1289,7 +1294,7 @@ services:
     stop_grace_period: 5m
     logging: *logging-conf
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","served_model:z-ai/glm-5.3-flash","precision:fp8-weights-bf16-kv","deployment:glm53-sglang-phala-r12-tp4-shadow","config_variant:phala-r12-h200-tp4-ep4-eagle-adaptive-5-1-6","request_logging:debug","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:2"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","served_model:z-ai/glm-5.3-flash","precision:fp8-weights-bf16-kv","deployment:glm53-sglang-phala-r12-tp4-shadow","config_variant:phala-r12-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-custom-budget","thinking_budget_policy:sglang-strict-custom-param","request_logging:debug","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:2"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -1300,7 +1305,8 @@ services:
       nearai.otel.model: "z-ai/glm-5.3-flash"
       nearai.otel.served_model: "z-ai/glm-5.3-flash"
       nearai.otel.deployment: "glm53-sglang-phala-r12-tp4-shadow"
-      nearai.otel.config_variant: "phala-r12-h200-tp4-ep4-eagle-adaptive-5-1-6"
+      nearai.otel.config_variant: "phala-r12-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-custom-budget"
+      nearai.otel.thinking_budget_policy: "sglang-strict-custom-param"
       nearai.otel.request_logging: "debug"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
@@ -1470,6 +1476,39 @@ services:
       nearai.otel.model: "zai-org/GLM-5.3-Flash"
       nearai.otel.served_model: "z-ai/glm-5.3-flash"
       nearai.otel.deployment: "glm53-flash-dsv4-flash"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
+
+  # Independent hardware telemetry for the primary SGLang TP4 island. The
+  # existing dcgm-glm53 exporter remains scoped to GPUs 4-7 so the two replicas
+  # can be compared without summing unrelated devices.
+  dcgm-glm53-r1:
+    <<: *dcgm-common
+    profiles: ["sglang-phala-tp4"]
+    container_name: dcgm-glm53-r1
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["0","1","2","3"]
+              capabilities: [gpu]
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:z-ai/glm-5.3-flash","served_model:z-ai/glm-5.3-flash","deployment:glm53-sglang-phala-r12-tp4-isolated","instance:1","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "dcgm"
+      nearai.otel.service: "dcgm-exporter"
+      nearai.otel.source: "dcgm-exporter"
+      nearai.otel.container_name: "dcgm-glm53-r1"
+      nearai.otel.port: "9400"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "z-ai/glm-5.3-flash"
+      nearai.otel.served_model: "z-ai/glm-5.3-flash"
+      nearai.otel.deployment: "glm53-sglang-phala-r12-tp4-isolated"
+      nearai.otel.instance: "1"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
       nearai.otel.host_machine: "${CVM_HOST}"
@@ -1977,7 +2016,8 @@ configs:
                       served_model: "z-ai/glm-5.3-flash"
                       precision: "fp8-weights-bf16-kv"
                       deployment: "glm53-sglang-phala-r12-tp4-isolated"
-                      config_variant: "phala-r12-h200-tp4-ep4-eagle-adaptive-5-1-6"
+                      config_variant: "phala-r12-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-custom-budget"
+                      thinking_budget_policy: "sglang-strict-custom-param"
                       request_logging: "debug"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
@@ -2000,7 +2040,8 @@ configs:
                       served_model: "z-ai/glm-5.3-flash"
                       precision: "fp8-weights-bf16-kv"
                       deployment: "glm53-sglang-phala-r12-tp4-shadow"
-                      config_variant: "phala-r12-h200-tp4-ep4-eagle-adaptive-5-1-6"
+                      config_variant: "phala-r12-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-custom-budget"
+                      thinking_budget_policy: "sglang-strict-custom-param"
                       request_logging: "debug"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
@@ -2058,6 +2099,25 @@ configs:
                       model: "zai-org/GLM-5.3-Flash"
                       served_model: "z-ai/glm-5.3-flash"
                       deployment: "glm53-flash-dsv4-flash"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      port: "9400"
+              - job_name: dcgm-dcgm-glm53-r1
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['dcgm-glm53-r1:9400']
+                    labels:
+                      service: "dcgm-exporter"
+                      source: "dcgm-exporter"
+                      container_name: "dcgm-glm53-r1"
+                      model: "z-ai/glm-5.3-flash"
+                      served_model: "z-ai/glm-5.3-flash"
+                      deployment: "glm53-sglang-phala-r12-tp4-isolated"
+                      instance: "1"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
                       host_machine: "${CVM_HOST}"
