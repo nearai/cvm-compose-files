@@ -876,8 +876,10 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
-  # Parallel Model Runner V2 baseline on the four free GPUs. This keeps the
-  # serving configuration unchanged while making the runner choice explicit.
+  # Clean Model Runner V1 control on the four free GPUs. V2 fails during
+  # piecewise CUDA-graph warmup because its captured input addresses change
+  # between capture and replay; this arm removes the diagnostic logits hook
+  # while keeping the serving configuration unchanged.
   model-vllm-glm53-debug-tp4:
     <<: *vllm-glm53-flash-common
     container_name: model-vllm-glm53-debug-tp4
@@ -916,9 +918,9 @@ services:
       - DO_NOT_TRACK=1
       - VLLM_ENABLE_CUDA_COMPATIBILITY=0
       - VLLM_ENGINE_READY_TIMEOUT_S=3600
-      - VLLM_CACHE_ROOT=/root/.cache/vllm/glm53-flash-tp4-debug-baseline-v2
+      - VLLM_CACHE_ROOT=/root/.cache/vllm/glm53-flash-tp4-debug-baseline-v1
       - VLLM_LOGGING_LEVEL=DEBUG
-      - VLLM_USE_V2_MODEL_RUNNER=1
+      - VLLM_USE_V2_MODEL_RUNNER=0
       - PYTHONPATH=/opt/nearai
       - NEARAI_DEFAULT_THINKING_TOKEN_BUDGET=8192
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
@@ -930,7 +932,7 @@ services:
               device_ids: ["0", "1", "2", "3"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:zai-org/GLM-5.3-Flash","served_model:z-ai/glm-5.3-flash","precision:fp8","deployment:glm53-debug-isolated","config_variant:vllm-tp4-baseline-runner-v2","patch_set:none-pinned-upstream-image","request_logging:debug","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:debug"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:zai-org/GLM-5.3-Flash","served_model:z-ai/glm-5.3-flash","precision:fp8","deployment:glm53-debug-isolated","config_variant:vllm-tp4-baseline-runner-v1","patch_set:none-pinned-upstream-image","request_logging:debug","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:debug"]}]'
 
   # --- DeepSeek-V4-Flash proxy (single TP4 replica on GPUs 0-3) ---
 
