@@ -964,10 +964,10 @@ services:
       com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:zai-org/GLM-5.3-Flash","served_model:z-ai/glm-5.3-flash","precision:fp8","deployment:glm53-debug-isolated","config_variant:vllm-tp4-baseline-runner-v1","patch_set:none-pinned-upstream-image","request_logging:debug","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:debug"]}]'
 
   # Phala's public GLM-5.3-Flash production-compatibility image, followed to its
-  # latest r12 multimodal hardening layer. The initial control deliberately
-  # leaves MTP off so engine correctness is isolated before measuring the
-  # verified adaptive 5/1/6 low-latency recipe. Hopper uses BF16 KV with
-  # TileLang DSA; FP8 KV is a Blackwell-only operating point for this model.
+  # latest r12 multimodal hardening layer. The target-only control passed the
+  # text, streaming, tool, image, and batch-8 semantic gates. This arm adds the
+  # SGLang-verified H200 adaptive 5/1/6 low-latency recipe. Hopper uses BF16 KV
+  # with TileLang DSA; FP8 KV is a Blackwell-only operating point for this model.
   model-sg-glm53-phala-r12-tp8:
     <<: *nvidia
     init: true
@@ -986,6 +986,11 @@ services:
       --dsa-decode-backend tilelang
       --kv-cache-dtype bfloat16
       --moe-runner-backend deep_gemm
+      --speculative-algorithm EAGLE
+      --speculative-num-steps 5
+      --speculative-eagle-topk 1
+      --speculative-num-draft-tokens 6
+      --speculative-adaptive
       --reasoning-parser glm45
       --tool-call-parser glm47
       --chat-template /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/3f1971b7b5f7a528c9c4ef6212c8785298a8c24a/chat_template.jinja
@@ -1023,7 +1028,7 @@ services:
     stop_grace_period: 5m
     logging: *logging-conf
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","served_model:z-ai/glm-5.3-flash","precision:fp8-weights-bf16-kv","deployment:glm53-sglang-phala-r12-isolated","config_variant:phala-r12-h200-tp8-ep8-target-only","request_logging:debug","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:debug"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","served_model:z-ai/glm-5.3-flash","precision:fp8-weights-bf16-kv","deployment:glm53-sglang-phala-r12-isolated","config_variant:phala-r12-h200-tp8-ep8-eagle-adaptive-5-1-6","request_logging:debug","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:debug"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -1034,7 +1039,7 @@ services:
       nearai.otel.model: "z-ai/glm-5.3-flash"
       nearai.otel.served_model: "z-ai/glm-5.3-flash"
       nearai.otel.deployment: "glm53-sglang-phala-r12-isolated"
-      nearai.otel.config_variant: "phala-r12-h200-tp8-ep8-target-only"
+      nearai.otel.config_variant: "phala-r12-h200-tp8-ep8-eagle-adaptive-5-1-6"
       nearai.otel.request_logging: "debug"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
