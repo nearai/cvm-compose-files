@@ -1131,9 +1131,11 @@ services:
   # lower fraction restores about 2.8 GiB/GPU of workspace while retaining more
   # than 1M tokens of KV capacity. The same probe showed that DSA K-pool scratch
   # scales with the prefill chunk; 4096 bounds that transient without changing
-  # the 1M context limit. On this isolated arm, SGLang strict-thinking applies
-  # the same 8,192-token default used by gpu31 when the request omits a budget;
-  # the shadow replica remains unchanged until this native path passes replay.
+  # the 1M context limit. SGLang strict-thinking honors the native
+  # custom_params.thinking_budget field. The OpenAI chat adapter currently
+  # overwrites a preferred nested custom_params default with null, so the
+  # gateway must translate/default the budget into that native field. The
+  # shadow replica remains unchanged until that translation is in place.
   model-sg-glm53-phala-r12-tp4:
     <<: *nvidia
     init: true
@@ -1163,7 +1165,6 @@ services:
       --reasoning-parser glm45
       --enable-strict-thinking
       --grammar-backend xgrammar
-      --preferred-sampling-params '{"custom_params":{"thinking_budget":8192}}'
       --tool-call-parser glm47
       --chat-template /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/3f1971b7b5f7a528c9c4ef6212c8785298a8c24a/chat_template.jinja
       --context-length 1048576
@@ -1201,7 +1202,7 @@ services:
     stop_grace_period: 5m
     logging: *logging-conf
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","served_model:z-ai/glm-5.3-flash","precision:fp8-weights-bf16-kv","deployment:glm53-sglang-phala-r12-tp4-isolated","config_variant:phala-r12-h200-tp4-ep4-eagle-adaptive-5-1-6-strict8192","request_logging:debug","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:debug"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","served_model:z-ai/glm-5.3-flash","precision:fp8-weights-bf16-kv","deployment:glm53-sglang-phala-r12-tp4-isolated","config_variant:phala-r12-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-custom-budget","request_logging:debug","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:debug"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -1212,8 +1213,8 @@ services:
       nearai.otel.model: "z-ai/glm-5.3-flash"
       nearai.otel.served_model: "z-ai/glm-5.3-flash"
       nearai.otel.deployment: "glm53-sglang-phala-r12-tp4-isolated"
-      nearai.otel.config_variant: "phala-r12-h200-tp4-ep4-eagle-adaptive-5-1-6-strict8192"
-      nearai.otel.thinking_budget_policy: "sglang-strict-default8192"
+      nearai.otel.config_variant: "phala-r12-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-custom-budget"
+      nearai.otel.thinking_budget_policy: "sglang-strict-custom-param"
       nearai.otel.request_logging: "debug"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
