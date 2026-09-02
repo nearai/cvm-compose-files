@@ -167,7 +167,7 @@ x-sg-glm53-flash-common: &sg-glm53-flash-common
       --served-model-name z-ai/glm-5.3-flash
       --tp-size 4
       --ep-size 4
-      --mem-fraction-static 0.75
+      --mem-fraction-static 0.77
       --max-running-requests 32
       --max-queued-requests 32
       --chunked-prefill-size 4096
@@ -402,7 +402,7 @@ services:
               device_ids: ["0","1","2","3"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:zai-org/GLM-5.3-Flash","served_model:z-ai/glm-5.3-flash","precision:fp8-weights-bf16-kv","deployment:glm53-flash-sgl-tp4","config_variant:phala-r12-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192-mem075","request_logging:disabled","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:1"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:zai-org/GLM-5.3-Flash","served_model:z-ai/glm-5.3-flash","precision:fp8-weights-bf16-kv","deployment:glm53-flash-sgl-tp4","config_variant:phala-r12-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192-mem077","request_logging:disabled","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:1"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -414,7 +414,7 @@ services:
       nearai.otel.model_path: "zai-org/GLM-5.3-Flash"
       nearai.otel.served_model: "z-ai/glm-5.3-flash"
       nearai.otel.deployment: "glm53-flash-sgl-tp4"
-      nearai.otel.config_variant: "phala-r12-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192-mem075"
+      nearai.otel.config_variant: "phala-r12-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192-mem077"
       nearai.otel.thinking_budget_policy: "default8192-public-to-native"
       nearai.otel.request_logging: "disabled"
       nearai.otel.instance: "1"
@@ -439,7 +439,7 @@ services:
               device_ids: ["4","5","6","7"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:zai-org/GLM-5.3-Flash","served_model:z-ai/glm-5.3-flash","precision:fp8-weights-bf16-kv","deployment:glm53-flash-sgl-tp4","config_variant:phala-r12-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192-mem075","request_logging:disabled","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:2"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:zai-org/GLM-5.3-Flash","served_model:z-ai/glm-5.3-flash","precision:fp8-weights-bf16-kv","deployment:glm53-flash-sgl-tp4","config_variant:phala-r12-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192-mem077","request_logging:disabled","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:2"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -451,7 +451,7 @@ services:
       nearai.otel.model_path: "zai-org/GLM-5.3-Flash"
       nearai.otel.served_model: "z-ai/glm-5.3-flash"
       nearai.otel.deployment: "glm53-flash-sgl-tp4"
-      nearai.otel.config_variant: "phala-r12-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192-mem075"
+      nearai.otel.config_variant: "phala-r12-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192-mem077"
       nearai.otel.thinking_budget_policy: "default8192-public-to-native"
       nearai.otel.request_logging: "disabled"
       nearai.otel.instance: "2"
@@ -649,7 +649,7 @@ configs:
                       ip: "${HOST_IP}"
                       port: "8000"
                       instance: "1"
-                      config_variant: "phala-r12-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192-mem075"
+                      config_variant: "phala-r12-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192-mem077"
                       thinking_budget_policy: "default8192-public-to-native"
                       request_logging: "disabled"
               - job_name: sglang-model-sg-glm53-fp8-tp4-r2
@@ -673,7 +673,7 @@ configs:
                       ip: "${HOST_IP}"
                       port: "8000"
                       instance: "2"
-                      config_variant: "phala-r12-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192-mem075"
+                      config_variant: "phala-r12-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192-mem077"
                       thinking_budget_policy: "default8192-public-to-native"
                       request_logging: "disabled"
               - job_name: dcgm-dcgm-glm53
