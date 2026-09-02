@@ -4,9 +4,6 @@
 # - one TDX CVM launched with PPCIe and all eight H200 GPUs/NVSwitches attached;
 # - two DeepSeek-V4-Flash TP2 replicas use guest GPUs 0-1 and 6-7;
 # - two independent Qwen3.8-27B FP8 TP1 replicas use guest GPUs 2 and 3;
-# - one Qwen3.6-27B FP8 TP1 engine uses guest GPU 4;
-# - one Qwen3.6-35B-A3B FP8 TP1 engine uses guest GPU 5;
-# - the existing DeepSeek proxy pools both replicas behind the same endpoint;
 # - all inference proxies collect NVIDIA attestation from the PPCIe-attached CVM.
 #
 # The DeepSeek replica uses the qualified DeepSeek-V4-Flash-0731 target-only TP2
@@ -165,42 +162,6 @@ x-sglang-env:
     - OPENBLAS_L2_SIZE=2097152
     - NCCL_DEBUG=WARN
 
-x-qwen3-6-27b-common: &qwen3-6-27b-common
-  <<: *nvidia
-  init: true
-  image: lmsysorg/sglang:v0.5.16-cu129@sha256:984699c298a95b73c469b2191403ddc85fd780506e13c39c4afff3845e27bc6c
-  command: >
-      sglang serve
-      --model-path Qwen/Qwen3.6-27B-FP8
-      --tp 1
-      --reasoning-parser qwen3
-      --tool-call-parser qwen3_coder
-      --mamba-radix-cache-strategy no_buffer
-      --disable-overlap-schedule
-      --disable-prefill-cuda-graph
-      --mm-feature-transport cpu
-      --mem-fraction-static 0.85
-      --max-running-requests 128
-      --context-length 262144
-      --num-continuous-decode-steps 5
-      --model-loader-extra-config '{"enable_multithread_load": "true", "num_threads": 64}'
-      --enable-mixed-chunk
-      --chunked-prefill-size 16384
-      --port 8000
-      --host 0.0.0.0
-      --enable-cache-report
-      --enable-metrics
-      --trust-remote-code
-      --log-requests-level 0
-      --served-model-name Qwen/Qwen3.6-27B-FP8
-  volumes:
-    - huggingface_cache:/root/.cache/huggingface
-    - kernel_cache:/root/.cache/deep_gemm
-  environment: *sglang-env
-  restart: unless-stopped
-  stop_grace_period: 5m
-  logging: *logging-conf
-
 x-qwen3-6-35b-a3b-common: &qwen3-6-35b-a3b-common
   <<: *nvidia
   init: true
@@ -258,8 +219,6 @@ services:
         uvx --from 'huggingface_hub[hf_xet]' hf download deepseek-ai/DeepSeek-V4-Flash-0731 --revision 7872f01b1d1fe23eabc4c98b48bffcef5a386062
         echo "Downloading Qwen/Qwen3.8-27B-FP8..."
         uvx --from 'huggingface_hub[hf_xet]' hf download Qwen/Qwen3.8-27B-FP8 --revision 017b9c7af6b5689d5dd426a76e0bc077eb5ca20a
-        echo "Downloading Qwen/Qwen3.6-27B-FP8..."
-        uvx --from 'huggingface_hub[hf_xet]' hf download Qwen/Qwen3.6-27B-FP8
         echo "Downloading Qwen/Qwen3.6-35B-A3B-FP8..."
         uvx --from 'huggingface_hub[hf_xet]' hf download Qwen/Qwen3.6-35B-A3B-FP8
         echo "Downloads complete."
@@ -276,7 +235,6 @@ services:
     depends_on:
       - proxy-dsv4-flash
       - proxy-qwen38-27b
-      - proxy-qwen36-27b
       - proxy-qwen36-35b-a3b
     command: /bin/sh -c 'while :; do sleep 6h; nginx -s reload; done & nginx -g "daemon off;"'
     ports:
@@ -284,8 +242,6 @@ services:
       - "8002:8002"
       - "8444:443"
       - "8003:8003"
-      - "8004:8004"
-      - "8005:8005"
       - "8006:8006"
       - "8007:8007"
     volumes:
@@ -314,7 +270,6 @@ services:
       - HOST_IP=${HOST_IP}
       - TLS_PORT=${TLS_PORT:-8444}
       - TLS_PORT_2=${TLS_PORT_2:-8003}
-      - TLS_PORT_QWEN36_27B=${TLS_PORT_QWEN36_27B:-8005}
       - TLS_PORT_QWEN36_35B=${TLS_PORT_QWEN36_35B:-8007}
       - MODEL_PROXY_TOKEN=${MODEL_PROXY_TOKEN}
       - PROXY_TOKEN=${PROXY_TOKEN}
@@ -408,46 +363,6 @@ services:
       nearai.otel.ppcie: "true"
       nearai.otel.config_variant: "qwen38-h200-tp1-nonspec"
 
-  proxy-qwen36-27b:
-    <<: *vllm-proxy-common
-    image: nearaidev/vllm-proxy-rs@sha256:b183677a5d32267539b9b21ec45327a4f3be0a013afeb608c68c4d76e9472e36
-    container_name: proxy-qwen36-27b
-    environment:
-      - NVIDIA_VISIBLE_DEVICES=all
-      - CLOUD_API_URL=https://cloud-api.near.ai
-      - CLOUD_API_USAGE_TOKEN=${CLOUD_API_USAGE_TOKEN}
-      - COMPOSE_MANAGER_URL=http://compose-manager:8080
-      - LOG_FORMAT=json
-      - MODEL_NAME=Qwen/Qwen3.6-27B-FP8
-      - OHTTP_ENABLED=true
-      - TOKEN=${PROXY_TOKEN}
-      - FUSION_ENABLED=${FUSION_ENABLED}
-      - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
-      - VLLM_BASE_URL=http://model-sg-qwen36-27b-fp8-tp1:8000
-      - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
-      - USE_NV_ATTESTATION_SDK=true
-      - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
-      - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
-    labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:Qwen/Qwen3.6-27B-FP8","deployment:qwen36-gpu02","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8004","gpu_pair:4","ppcie:true","config_variant:qwen36-sglang-v0516"]}]'
-      nearai.otel.scrape: "true"
-      nearai.otel.job: "inference-proxy"
-      nearai.otel.service: "vllm-proxy"
-      nearai.otel.source: "vllm-proxy"
-      nearai.otel.container_name: "proxy-qwen36-27b"
-      nearai.otel.port: "8000"
-      nearai.otel.path: "/metrics"
-      nearai.otel.model: "Qwen/Qwen3.6-27B-FP8"
-      nearai.otel.deployment: "qwen36-gpu02"
-      nearai.otel.env: "${ENV}"
-      nearai.otel.host: "${CVM_HOST}"
-      nearai.otel.host_machine: "${CVM_HOST}"
-      nearai.otel.cvm_name: "${CVM_NAME}"
-      nearai.otel.ip: "${HOST_IP}"
-      nearai.otel.gpu_pair: "4"
-      nearai.otel.ppcie: "true"
-      nearai.otel.config_variant: "qwen36-sglang-v0516"
-
   proxy-qwen36-35b-a3b:
     <<: *vllm-proxy-common
     image: nearaidev/vllm-proxy-rs@sha256:b183677a5d32267539b9b21ec45327a4f3be0a013afeb608c68c4d76e9472e36
@@ -463,13 +378,13 @@ services:
       - TOKEN=${PROXY_TOKEN}
       - FUSION_ENABLED=${FUSION_ENABLED}
       - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
-      - VLLM_BASE_URL=http://model-sg-qwen36-35b-a3b-fp8-tp1:8000
+      - VLLM_BACKEND_URLS=http://model-sg-qwen36-35b-a3b-fp8-tp1:8000,http://model-sg-qwen36-35b-a3b-fp8-tp1-r2:8000
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
       - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
       - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:Qwen/Qwen3.6-35B-A3B-FP8","deployment:qwen36-gpu02","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8006","gpu_pair:5","ppcie:true","config_variant:qwen36-sglang-v0516"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:Qwen/Qwen3.6-35B-A3B-FP8","deployment:qwen36-gpu02","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8006","ppcie:true","config_variant:qwen36-sglang-v0516"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "inference-proxy"
       nearai.otel.service: "vllm-proxy"
@@ -484,7 +399,6 @@ services:
       nearai.otel.host_machine: "${CVM_HOST}"
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
-      nearai.otel.gpu_pair: "5"
       nearai.otel.ppcie: "true"
       nearai.otel.config_variant: "qwen36-sglang-v0516"
 
@@ -674,39 +588,6 @@ services:
       nearai.otel.sglang_revision: "qwen38.27b.g561c8f3"
       nearai.otel.engine_image: "febfb971c735"
 
-  model-sg-qwen36-27b-fp8-tp1:
-    <<: *qwen3-6-27b-common
-    container_name: model-sg-qwen36-27b-fp8-tp1
-    depends_on:
-      model-downloader:
-        condition: service_completed_successfully
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              device_ids: ["4"]
-              capabilities: [gpu]
-    labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:Qwen/Qwen3.6-27B-FP8","deployment:qwen36-gpu02","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8004","gpu_pair:4","ppcie:true","config_variant:qwen36-sglang-v0516"]}]'
-      nearai.otel.scrape: "true"
-      nearai.otel.job: "sglang"
-      nearai.otel.service: "sglang"
-      nearai.otel.source: "sglang"
-      nearai.otel.container_name: "model-sg-qwen36-27b-fp8-tp1"
-      nearai.otel.port: "8000"
-      nearai.otel.path: "/metrics"
-      nearai.otel.model: "Qwen/Qwen3.6-27B-FP8"
-      nearai.otel.deployment: "qwen36-gpu02"
-      nearai.otel.env: "${ENV}"
-      nearai.otel.host: "${CVM_HOST}"
-      nearai.otel.host_machine: "${CVM_HOST}"
-      nearai.otel.cvm_name: "${CVM_NAME}"
-      nearai.otel.ip: "${HOST_IP}"
-      nearai.otel.gpu_pair: "4"
-      nearai.otel.ppcie: "true"
-      nearai.otel.config_variant: "qwen36-sglang-v0516"
-
   model-sg-qwen36-35b-a3b-fp8-tp1:
     <<: *qwen3-6-35b-a3b-common
     container_name: model-sg-qwen36-35b-a3b-fp8-tp1
@@ -737,6 +618,39 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.gpu_pair: "5"
+      nearai.otel.ppcie: "true"
+      nearai.otel.config_variant: "qwen36-sglang-v0516"
+
+  model-sg-qwen36-35b-a3b-fp8-tp1-r2:
+    <<: *qwen3-6-35b-a3b-common
+    container_name: model-sg-qwen36-35b-a3b-fp8-tp1-r2
+    depends_on:
+      model-downloader:
+        condition: service_completed_successfully
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["4"]
+              capabilities: [gpu]
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:Qwen/Qwen3.6-35B-A3B-FP8","deployment:qwen36-gpu02","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8006","instance:2","gpu_pair:4","ppcie:true","config_variant:qwen36-sglang-v0516"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "sglang"
+      nearai.otel.service: "sglang"
+      nearai.otel.source: "sglang"
+      nearai.otel.container_name: "model-sg-qwen36-35b-a3b-fp8-tp1-r2"
+      nearai.otel.port: "8000"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "Qwen/Qwen3.6-35B-A3B-FP8"
+      nearai.otel.deployment: "qwen36-gpu02"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
+      nearai.otel.gpu_pair: "4"
       nearai.otel.ppcie: "true"
       nearai.otel.config_variant: "qwen36-sglang-v0516"
 
@@ -831,36 +745,6 @@ services:
       nearai.otel.ppcie: "true"
       nearai.otel.config_variant: "qwen38-h200-tp1-nonspec"
 
-  dcgm-qwen36-27b:
-    <<: *dcgm-common
-    container_name: dcgm-qwen36-27b
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              device_ids: ["4"]
-              capabilities: [gpu]
-    labels:
-      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:Qwen/Qwen3.6-27B-FP8","deployment:qwen36-gpu02","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","gpu_pair:4","ppcie:true","config_variant:qwen36-sglang-v0516"]}]'
-      nearai.otel.scrape: "true"
-      nearai.otel.job: "dcgm"
-      nearai.otel.service: "dcgm-exporter"
-      nearai.otel.source: "dcgm-exporter"
-      nearai.otel.container_name: "dcgm-qwen36-27b"
-      nearai.otel.port: "9400"
-      nearai.otel.path: "/metrics"
-      nearai.otel.model: "Qwen/Qwen3.6-27B-FP8"
-      nearai.otel.deployment: "qwen36-gpu02"
-      nearai.otel.env: "${ENV}"
-      nearai.otel.host: "${CVM_HOST}"
-      nearai.otel.host_machine: "${CVM_HOST}"
-      nearai.otel.cvm_name: "${CVM_NAME}"
-      nearai.otel.ip: "${HOST_IP}"
-      nearai.otel.gpu_pair: "4"
-      nearai.otel.ppcie: "true"
-      nearai.otel.config_variant: "qwen36-sglang-v0516"
-
   dcgm-qwen36-35b-a3b:
     <<: *dcgm-common
     container_name: dcgm-qwen36-35b-a3b
@@ -888,6 +772,36 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.gpu_pair: "5"
+      nearai.otel.ppcie: "true"
+      nearai.otel.config_variant: "qwen36-sglang-v0516"
+
+  dcgm-qwen36-35b-a3b-r2:
+    <<: *dcgm-common
+    container_name: dcgm-qwen36-35b-a3b-r2
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["4"]
+              capabilities: [gpu]
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:Qwen/Qwen3.6-35B-A3B-FP8","deployment:qwen36-gpu02","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","gpu_pair:4","instance:2","ppcie:true","config_variant:qwen36-sglang-v0516"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "dcgm"
+      nearai.otel.service: "dcgm-exporter"
+      nearai.otel.source: "dcgm-exporter"
+      nearai.otel.container_name: "dcgm-qwen36-35b-a3b-r2"
+      nearai.otel.port: "9400"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "Qwen/Qwen3.6-35B-A3B-FP8"
+      nearai.otel.deployment: "qwen36-gpu02"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
+      nearai.otel.gpu_pair: "4"
       nearai.otel.ppcie: "true"
       nearai.otel.config_variant: "qwen36-sglang-v0516"
 
@@ -1182,26 +1096,6 @@ configs:
                       max_queued_requests: "128"
                       sglang_revision: "qwen38.27b.g561c8f3"
                       engine_image: "febfb971c735"
-              - job_name: sglang-model-sg-qwen36-27b-fp8-tp1
-                scrape_interval: 15s
-                metrics_path: /metrics
-                static_configs:
-                  - targets: ['model-sg-qwen36-27b-fp8-tp1:8000']
-                    labels:
-                      service: "sglang"
-                      source: "sglang"
-                      container_name: "model-sg-qwen36-27b-fp8-tp1"
-                      model: "Qwen/Qwen3.6-27B-FP8"
-                      deployment: "qwen36-gpu02"
-                      env: "${ENV}"
-                      host: "${CVM_HOST}"
-                      host_machine: "${CVM_HOST}"
-                      cvm_name: "${CVM_NAME}"
-                      ip: "${HOST_IP}"
-                      port: "8004"
-                      gpu_pair: "4"
-                      ppcie: "true"
-                      config_variant: "qwen36-sglang-v0516"
               - job_name: sglang-model-sg-qwen36-35b-a3b-fp8-tp1
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -1220,6 +1114,27 @@ configs:
                       ip: "${HOST_IP}"
                       port: "8006"
                       gpu_pair: "5"
+                      ppcie: "true"
+                      config_variant: "qwen36-sglang-v0516"
+              - job_name: sglang-model-sg-qwen36-35b-a3b-fp8-tp1-r2
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['model-sg-qwen36-35b-a3b-fp8-tp1-r2:8000']
+                    labels:
+                      service: "sglang"
+                      source: "sglang"
+                      container_name: "model-sg-qwen36-35b-a3b-fp8-tp1-r2"
+                      model: "Qwen/Qwen3.6-35B-A3B-FP8"
+                      deployment: "qwen36-gpu02"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      port: "8006"
+                      instance: "2"
+                      gpu_pair: "4"
                       ppcie: "true"
                       config_variant: "qwen36-sglang-v0516"
               - job_name: dcgm-dcgm-dsv4-flash
@@ -1283,26 +1198,6 @@ configs:
                       gpu_pair: "2-3"
                       ppcie: "true"
                       config_variant: "qwen38-h200-tp1-nonspec"
-              - job_name: dcgm-dcgm-qwen36-27b
-                scrape_interval: 15s
-                metrics_path: /metrics
-                static_configs:
-                  - targets: ['dcgm-qwen36-27b:9400']
-                    labels:
-                      service: "dcgm-exporter"
-                      source: "dcgm-exporter"
-                      container_name: "dcgm-qwen36-27b"
-                      model: "Qwen/Qwen3.6-27B-FP8"
-                      deployment: "qwen36-gpu02"
-                      env: "${ENV}"
-                      host: "${CVM_HOST}"
-                      host_machine: "${CVM_HOST}"
-                      cvm_name: "${CVM_NAME}"
-                      ip: "${HOST_IP}"
-                      port: "9400"
-                      gpu_pair: "4"
-                      ppcie: "true"
-                      config_variant: "qwen36-sglang-v0516"
               - job_name: dcgm-dcgm-qwen36-35b-a3b
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -1321,6 +1216,27 @@ configs:
                       ip: "${HOST_IP}"
                       port: "9400"
                       gpu_pair: "5"
+                      ppcie: "true"
+                      config_variant: "qwen36-sglang-v0516"
+              - job_name: dcgm-dcgm-qwen36-35b-a3b-r2
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['dcgm-qwen36-35b-a3b-r2:9400']
+                    labels:
+                      service: "dcgm-exporter"
+                      source: "dcgm-exporter"
+                      container_name: "dcgm-qwen36-35b-a3b-r2"
+                      model: "Qwen/Qwen3.6-35B-A3B-FP8"
+                      deployment: "qwen36-gpu02"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      port: "9400"
+                      instance: "2"
+                      gpu_pair: "4"
                       ppcie: "true"
                       config_variant: "qwen36-sglang-v0516"
               - job_name: inference-proxy-proxy-dsv4-flash
@@ -1363,26 +1279,6 @@ configs:
                       gpu_pair: "2-3"
                       ppcie: "true"
                       config_variant: "qwen38-h200-tp1-nonspec"
-              - job_name: inference-proxy-proxy-qwen36-27b
-                scrape_interval: 15s
-                metrics_path: /metrics
-                static_configs:
-                  - targets: ['proxy-qwen36-27b:8000']
-                    labels:
-                      service: "vllm-proxy"
-                      source: "vllm-proxy"
-                      container_name: "proxy-qwen36-27b"
-                      model: "Qwen/Qwen3.6-27B-FP8"
-                      deployment: "qwen36-gpu02"
-                      env: "${ENV}"
-                      host: "${CVM_HOST}"
-                      host_machine: "${CVM_HOST}"
-                      cvm_name: "${CVM_NAME}"
-                      ip: "${HOST_IP}"
-                      port: "8004"
-                      gpu_pair: "4"
-                      ppcie: "true"
-                      config_variant: "qwen36-sglang-v0516"
               - job_name: inference-proxy-proxy-qwen36-35b-a3b
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -1400,7 +1296,6 @@ configs:
                       cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "8006"
-                      gpu_pair: "5"
                       ppcie: "true"
                       config_variant: "qwen36-sglang-v0516"
 
@@ -1547,7 +1442,7 @@ configs:
 
       MAX_RETRIES=3
 
-      for port in 8001 8002 8004 8006; do
+      for port in 8001 8002 8006; do
         eval "REG_$$port=false"
         eval "FAIL_COUNT_$$port=0"
       done
@@ -1555,7 +1450,6 @@ configs:
       routing_port_for() {
         case $$1 in
           8002) echo "$${TLS_PORT_2}" ;;
-          8004) echo "$${TLS_PORT_QWEN36_27B}" ;;
           8006) echo "$${TLS_PORT_QWEN36_35B}" ;;
           *) echo "$${TLS_PORT}" ;;
         esac
@@ -1564,7 +1458,6 @@ configs:
       model_for() {
         case $$1 in
           8002) echo "Qwen/Qwen3.8-27B" ;;
-          8004) echo "Qwen/Qwen3.6-27B-FP8" ;;
           8006) echo "Qwen/Qwen3.6-35B-A3B-FP8" ;;
           *) echo "deepseek-ai/DeepSeek-V4-Flash" ;;
         esac
@@ -1573,7 +1466,6 @@ configs:
       domain_for() {
         case $$1 in
           8002) echo "qwen3-8-27b.completions.near.ai" ;;
-          8004) echo "qwen3-6-27b.completions.near.ai" ;;
           8006) echo "qwen3-6-35b.completions.near.ai" ;;
           *) echo "dsv4-flash.completions.near.ai" ;;
         esac
@@ -1602,7 +1494,7 @@ configs:
 
       cleanup() {
         echo "SIGTERM received, unregistering all endpoints"
-        for port in 8001 8002 8004 8006; do
+        for port in 8001 8002 8006; do
           unregister_endpoint "$${HOST_IP}:$$port"
         done
         exit 0
@@ -1680,7 +1572,7 @@ configs:
       done
 
       while true; do
-        for port in 8001 8002 8004 8006; do
+        for port in 8001 8002 8006; do
           date +%s > /tmp/registrar_alive
           endpoint="$${HOST_IP}:$$port"
           eval "was_reg=\$$REG_$$port"
@@ -1705,7 +1597,6 @@ configs:
 
         register_model "deepseek-ai/DeepSeek-V4-Flash" "dsv4-flash.completions.near.ai"
         register_model "Qwen/Qwen3.8-27B" "qwen3-8-27b.completions.near.ai"
-        register_model "Qwen/Qwen3.6-27B-FP8" "qwen3-6-27b.completions.near.ai"
         register_model "Qwen/Qwen3.6-35B-A3B-FP8" "qwen3-6-35b.completions.near.ai"
         date +%s > /tmp/registrar_alive
         sleep 60
@@ -1753,11 +1644,6 @@ configs:
       }
 
       server {
-        listen 8004;
-        location / { proxy_pass http://proxy-qwen36-27b:8000; }
-      }
-
-      server {
         listen 8006;
         location / { proxy_pass http://proxy-qwen36-35b-a3b:8000; }
       }
@@ -1782,15 +1668,6 @@ configs:
         keepalive_timeout 1h;
         keepalive_requests 1000000;
         location / { proxy_pass http://proxy-qwen38-27b:8000; }
-      }
-
-      server {
-        listen 8005 ssl http2;
-        server_name qwen3-6-27b.completions.near.ai
-                    ~^qwen3-6-27b-i\d+\.completions\.near\.ai$$;
-        keepalive_timeout 1h;
-        keepalive_requests 1000000;
-        location / { proxy_pass http://proxy-qwen36-27b:8000; }
       }
 
       server {
