@@ -2,19 +2,19 @@
 #
 # Runtime topology:
 # - one TDX CVM launched with PPCIe and all eight H200 GPUs/NVSwitches attached;
-# - the remaining DeepSeek-V4-Flash TP2 replica uses guest GPUs 0-1;
+# - two DeepSeek-V4-Flash TP2 replicas use guest GPUs 0-1 and 6-7;
 # - two independent Qwen3.8-27B FP8 TP1 replicas use guest GPUs 2 and 3;
 # - one Qwen3.6-27B FP8 TP1 engine uses guest GPU 4;
 # - one Qwen3.6-35B-A3B FP8 TP1 engine uses guest GPU 5;
-# - guest GPUs 6-7 remain unused;
+# - the existing DeepSeek proxy pools both replicas behind the same endpoint;
 # - all inference proxies collect NVIDIA attestation from the PPCIe-attached CVM.
 #
 # The DeepSeek replica uses the qualified DeepSeek-V4-Flash-0731 target-only TP2
 # configuration: SGLang 0.5.16, FP4 Marlin, FP8 KV, 8192-token mixed prefill,
 # 16384 max prefill tokens, one continuous decode step, graph max batch 64,
 # memory 0.83, running/queued 64/16, and scheduler conservativeness 1.3.
-# Its legacy -r1 service name is retained intentionally to avoid an unnecessary
-# engine recreation during rollout.
+# The legacy -r1 service name is retained intentionally to avoid an unnecessary
+# engine recreation during rollout; the new -r2 replica uses the free GPUs 6-7.
 #
 # The Qwen replicas use the gpu31-qualified H200 recipe: pinned FP8 checkpoint
 # and SGLang image, FlashInfer with FA3 multimodal attention, 8192-token mixed
@@ -341,14 +341,14 @@ services:
       - TOKEN=${PROXY_TOKEN}
       - FUSION_ENABLED=${FUSION_ENABLED}
       - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
-      - VLLM_BASE_URL=http://model-sg-dsv4-flash-fp4-tp2-r1:8000
+      - VLLM_BACKEND_URLS=http://model-sg-dsv4-flash-fp4-tp2-r1:8000,http://model-sg-dsv4-flash-fp4-tp2-r2:8000
       - VLLM_PROXY_MAX_REQUEST_SIZE=104857600
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
       - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
       - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:deepseek-ai/DeepSeek-V4-Flash","deployment:dsv4-flash-gpu02","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8001","instance:1","gpu_pair:0-1","ppcie:true","config_variant:gpu02-capacity-v1","stream_idle_timeout:20"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:deepseek-ai/DeepSeek-V4-Flash","deployment:dsv4-flash-gpu02","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8001","ppcie:true","config_variant:gpu02-capacity-v1","stream_idle_timeout:20"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "inference-proxy"
       nearai.otel.service: "vllm-proxy"
@@ -363,8 +363,6 @@ services:
       nearai.otel.host_machine: "${CVM_HOST}"
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
-      nearai.otel.instance: "1"
-      nearai.otel.gpu_pair: "0-1"
       nearai.otel.ppcie: "true"
       nearai.otel.config_variant: "gpu02-capacity-v1"
       nearai.otel.stream_idle_timeout: "20"
@@ -523,6 +521,54 @@ services:
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.instance: "1"
       nearai.otel.gpu_pair: "0-1"
+      nearai.otel.ppcie: "true"
+      nearai.otel.config_variant: "dsv4-0731-prod-target-only"
+      nearai.otel.decode_mode: "target_only"
+      nearai.otel.chunk_size: "4096"
+      nearai.otel.max_prefill_tokens: "16384"
+      nearai.otel.continuous_decode_steps: "1"
+      nearai.otel.chunked_prefill_admission_reserve: "4096"
+      nearai.otel.watchdog_timeout: "1800"
+      nearai.otel.cuda_graph: "1"
+      nearai.otel.max_running_requests: "64"
+      nearai.otel.max_queued_requests: "16"
+      nearai.otel.schedule_conservativeness: "1.3"
+      nearai.otel.sglang_revision: "0.5.16-near-dsv4-0731"
+      nearai.otel.engine_image: "ec518148762e"
+
+  model-sg-dsv4-flash-fp4-tp2-r2:
+    <<: *dsv4-flash-common
+    container_name: model-sg-dsv4-flash-fp4-tp2-r2
+    depends_on:
+      model-downloader:
+        condition: service_completed_successfully
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["6","7"]
+              capabilities: [gpu]
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:deepseek-ai/DeepSeek-V4-Flash-0731","model_path:deepseek-ai/DeepSeek-V4-Flash-0731","model_revision:7872f01b1d1fe23eabc4c98b48bffcef5a386062","deployment:dsv4-flash-gpu02","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8001","instance:2","gpu_pair:6-7","ppcie:true","config_variant:dsv4-0731-prod-target-only","decode_mode:target_only","chunk_size:4096","max_prefill_tokens:16384","continuous_decode_steps:1","chunked_prefill_admission_reserve:4096","watchdog_timeout:1800","cuda_graph:1","max_running_requests:64","max_queued_requests:16","schedule_conservativeness:1.3","sglang_revision:0.5.16-near-dsv4-0731","engine_image:ec518148762e"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "sglang"
+      nearai.otel.service: "sglang"
+      nearai.otel.source: "sglang"
+      nearai.otel.container_name: "model-sg-dsv4-flash-fp4-tp2-r2"
+      nearai.otel.port: "8000"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "deepseek-ai/DeepSeek-V4-Flash-0731"
+      nearai.otel.model_path: "deepseek-ai/DeepSeek-V4-Flash-0731"
+      nearai.otel.model_revision: "7872f01b1d1fe23eabc4c98b48bffcef5a386062"
+      nearai.otel.deployment: "dsv4-flash-gpu02"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
+      nearai.otel.instance: "2"
+      nearai.otel.gpu_pair: "6-7"
       nearai.otel.ppcie: "true"
       nearai.otel.config_variant: "dsv4-0731-prod-target-only"
       nearai.otel.decode_mode: "target_only"
@@ -721,6 +767,36 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.gpu_pair: "0-1"
+      nearai.otel.ppcie: "true"
+      nearai.otel.config_variant: "gpu02-capacity-v1"
+
+  dcgm-dsv4-flash-r2:
+    <<: *dcgm-common
+    container_name: dcgm-dsv4-flash-r2
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["6","7"]
+              capabilities: [gpu]
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:deepseek-ai/DeepSeek-V4-Flash","deployment:dsv4-flash-gpu02","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","gpu_pair:6-7","ppcie:true","config_variant:gpu02-capacity-v1"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "dcgm"
+      nearai.otel.service: "dcgm-exporter"
+      nearai.otel.source: "dcgm-exporter"
+      nearai.otel.container_name: "dcgm-dsv4-flash-r2"
+      nearai.otel.port: "9400"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "deepseek-ai/DeepSeek-V4-Flash"
+      nearai.otel.deployment: "dsv4-flash-gpu02"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
+      nearai.otel.gpu_pair: "6-7"
       nearai.otel.ppcie: "true"
       nearai.otel.config_variant: "gpu02-capacity-v1"
 
@@ -1007,6 +1083,41 @@ configs:
                       schedule_conservativeness: "1.3"
                       sglang_revision: "0.5.16-near-dsv4-0731"
                       engine_image: "ec518148762e"
+              - job_name: sglang-model-sg-dsv4-flash-fp4-tp2-r2
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['model-sg-dsv4-flash-fp4-tp2-r2:8000']
+                    labels:
+                      service: "sglang"
+                      source: "sglang"
+                      container_name: "model-sg-dsv4-flash-fp4-tp2-r2"
+                      model: "deepseek-ai/DeepSeek-V4-Flash-0731"
+                      model_path: "deepseek-ai/DeepSeek-V4-Flash-0731"
+                      deployment: "dsv4-flash-gpu02"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      port: "8001"
+                      instance: "2"
+                      gpu_pair: "6-7"
+                      ppcie: "true"
+                      model_revision: "7872f01b1d1fe23eabc4c98b48bffcef5a386062"
+                      config_variant: "dsv4-0731-prod-target-only"
+                      decode_mode: "target_only"
+                      chunk_size: "4096"
+                      max_prefill_tokens: "16384"
+                      continuous_decode_steps: "1"
+                      chunked_prefill_admission_reserve: "4096"
+                      watchdog_timeout: "1800"
+                      cuda_graph: "1"
+                      max_running_requests: "64"
+                      max_queued_requests: "16"
+                      schedule_conservativeness: "1.3"
+                      sglang_revision: "0.5.16-near-dsv4-0731"
+                      engine_image: "ec518148762e"
               - job_name: sglang-model-sg-qwen38-27b-fp8-tp1-r1
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -1131,6 +1242,26 @@ configs:
                       gpu_pair: "0-1"
                       ppcie: "true"
                       config_variant: "gpu02-capacity-v1"
+              - job_name: dcgm-dcgm-dsv4-flash-r2
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['dcgm-dsv4-flash-r2:9400']
+                    labels:
+                      service: "dcgm-exporter"
+                      source: "dcgm-exporter"
+                      container_name: "dcgm-dsv4-flash-r2"
+                      model: "deepseek-ai/DeepSeek-V4-Flash"
+                      deployment: "dsv4-flash-gpu02"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      port: "9400"
+                      gpu_pair: "6-7"
+                      ppcie: "true"
+                      config_variant: "gpu02-capacity-v1"
               - job_name: dcgm-dcgm-qwen38-27b
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -1209,8 +1340,6 @@ configs:
                       cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "8001"
-                      instance: "1"
-                      gpu_pair: "0-1"
                       ppcie: "true"
                       config_variant: "gpu02-capacity-v1"
                       stream_idle_timeout: "20"
