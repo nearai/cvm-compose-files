@@ -4,8 +4,6 @@
 # - one TDX CVM launched with PPCIe and all eight H200 GPUs/NVSwitches attached;
 # - two DeepSeek-V4-Flash TP2 replicas use guest GPUs 0-1 and 6-7;
 # - two independent Qwen3.8-27B FP8 TP1 replicas use guest GPUs 2 and 3;
-# - one Qwen3.6-35B-A3B FP8 TP1 engine uses guest GPU 5;
-# - the existing DeepSeek proxy pools both replicas behind the same endpoint;
 # - all inference proxies collect NVIDIA attestation from the PPCIe-attached CVM.
 #
 # The DeepSeek replica uses the qualified DeepSeek-V4-Flash-0731 target-only TP2
@@ -380,7 +378,7 @@ services:
       - TOKEN=${PROXY_TOKEN}
       - FUSION_ENABLED=${FUSION_ENABLED}
       - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
-      - VLLM_BASE_URL=http://model-sg-qwen36-35b-a3b-fp8-tp1:8000
+      - VLLM_BACKEND_URLS=http://model-sg-qwen36-35b-a3b-fp8-tp1:8000,http://model-sg-qwen36-35b-a3b-fp8-tp1-r2:8000
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
       - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
@@ -624,6 +622,39 @@ services:
       nearai.otel.ppcie: "true"
       nearai.otel.config_variant: "qwen36-sglang-v0516"
 
+  model-sg-qwen36-35b-a3b-fp8-tp1-r2:
+    <<: *qwen3-6-35b-a3b-common
+    container_name: model-sg-qwen36-35b-a3b-fp8-tp1-r2
+    depends_on:
+      model-downloader:
+        condition: service_completed_successfully
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["4"]
+              capabilities: [gpu]
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:Qwen/Qwen3.6-35B-A3B-FP8","deployment:qwen36-gpu02","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8006","instance:2","gpu_pair:4","ppcie:true","config_variant:qwen36-sglang-v0516"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "sglang"
+      nearai.otel.service: "sglang"
+      nearai.otel.source: "sglang"
+      nearai.otel.container_name: "model-sg-qwen36-35b-a3b-fp8-tp1-r2"
+      nearai.otel.port: "8000"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "Qwen/Qwen3.6-35B-A3B-FP8"
+      nearai.otel.deployment: "qwen36-gpu02"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
+      nearai.otel.gpu_pair: "4"
+      nearai.otel.ppcie: "true"
+      nearai.otel.config_variant: "qwen36-sglang-v0516"
+
   dcgm-dsv4-flash:
     <<: *dcgm-common
     container_name: dcgm-dsv4-flash
@@ -742,6 +773,36 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.gpu_pair: "5"
+      nearai.otel.ppcie: "true"
+      nearai.otel.config_variant: "qwen36-sglang-v0516"
+
+  dcgm-qwen36-35b-a3b-r2:
+    <<: *dcgm-common
+    container_name: dcgm-qwen36-35b-a3b-r2
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["4"]
+              capabilities: [gpu]
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:Qwen/Qwen3.6-35B-A3B-FP8","deployment:qwen36-gpu02","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","gpu_pair:4","instance:2","ppcie:true","config_variant:qwen36-sglang-v0516"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "dcgm"
+      nearai.otel.service: "dcgm-exporter"
+      nearai.otel.source: "dcgm-exporter"
+      nearai.otel.container_name: "dcgm-qwen36-35b-a3b-r2"
+      nearai.otel.port: "9400"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "Qwen/Qwen3.6-35B-A3B-FP8"
+      nearai.otel.deployment: "qwen36-gpu02"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
+      nearai.otel.gpu_pair: "4"
       nearai.otel.ppcie: "true"
       nearai.otel.config_variant: "qwen36-sglang-v0516"
 
@@ -1056,6 +1117,27 @@ configs:
                       gpu_pair: "5"
                       ppcie: "true"
                       config_variant: "qwen36-sglang-v0516"
+              - job_name: sglang-model-sg-qwen36-35b-a3b-fp8-tp1-r2
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['model-sg-qwen36-35b-a3b-fp8-tp1-r2:8000']
+                    labels:
+                      service: "sglang"
+                      source: "sglang"
+                      container_name: "model-sg-qwen36-35b-a3b-fp8-tp1-r2"
+                      model: "Qwen/Qwen3.6-35B-A3B-FP8"
+                      deployment: "qwen36-gpu02"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      port: "8006"
+                      instance: "2"
+                      gpu_pair: "4"
+                      ppcie: "true"
+                      config_variant: "qwen36-sglang-v0516"
               - job_name: dcgm-dcgm-dsv4-flash
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -1135,6 +1217,27 @@ configs:
                       ip: "${HOST_IP}"
                       port: "9400"
                       gpu_pair: "5"
+                      ppcie: "true"
+                      config_variant: "qwen36-sglang-v0516"
+              - job_name: dcgm-dcgm-qwen36-35b-a3b-r2
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['dcgm-qwen36-35b-a3b-r2:9400']
+                    labels:
+                      service: "dcgm-exporter"
+                      source: "dcgm-exporter"
+                      container_name: "dcgm-qwen36-35b-a3b-r2"
+                      model: "Qwen/Qwen3.6-35B-A3B-FP8"
+                      deployment: "qwen36-gpu02"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      port: "9400"
+                      instance: "2"
+                      gpu_pair: "4"
                       ppcie: "true"
                       config_variant: "qwen36-sglang-v0516"
               - job_name: inference-proxy-proxy-dsv4-flash
