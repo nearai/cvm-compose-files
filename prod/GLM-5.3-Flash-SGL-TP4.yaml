@@ -372,7 +372,7 @@ services:
     volumes:
       - huggingface_cache:/root/.cache/huggingface
     environment:
-      - MODEL_NAME=${MODEL_NAME}
+      - MODEL_NAME=${MODEL_NAME:-}
     # Verbatim from cleanup-hf-model.yaml (not the file-wide *logging-conf) so the
     # rendered service is unchanged from the previous `extends` result.
     logging:
