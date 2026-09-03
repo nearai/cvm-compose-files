@@ -271,47 +271,123 @@ x-privacy-filter-common: &privacy-filter-common
               return default
 
 
-      # Left unbounded, the HF pipeline's CUDA caching allocator ratchets its
-      # reserved memory up under traffic and never releases it, slowly hoarding GPU0
-      # until the filter process OOMs.
+      # Dedicated GPU 0 has served privacy-filter since 33b77d5. Left unbounded,
+      # the HF pipeline's CUDA caching allocator ratchets its reserved memory up
+      # under traffic and never releases it, eventually filling the card.
       # Defence in depth (all tunable via env, no rebuild):
       #   * PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True (set in compose) is the
       #     root-cause fix — reserved segments can shrink again instead of ratcheting.
       #   * A watchdog returns idle cached blocks to the driver on an interval (never
       #     per request: empty_cache() is a synchronizing cudaFree that would stall
-      #     the GPU) and hard-restarts the container if this process's VRAM
-      #     ever climbs toward starving its neighbours — a real restart (clean reclaim)
-      #     rather than silently serving 500s behind a still-healthy /v1/models probe.
+      #     the GPU) and hard-restarts the container if this process exceeds its VRAM
+      #     budget — a real restart (clean reclaim) rather than silently serving 500s
+      #     behind a still-healthy /v1/models probe.
       #   * An acute CUDA-OOM in a request also exits, for the same clean recycle.
-      # The model accepts up to 128k tokens and uses O(n^2) attention, so ONE long
-      # document alone reserves tens of GB (measured: ~13 GB over baseline at 16k
-      # tokens, ~36 GB around 25-30k) and trips the watchdog / OOMs — PRIVACY_BATCH_SIZE
-      # bounds the NUMBER of texts, not their LENGTH, so it never bounded this.
-      # We still must not truncate (a privacy filter has to see the whole text), so
-      # instead we cap the per-forward window: setting the pipeline tokenizer's
-      # model_max_length makes the token-classification pipeline split a long input
-      # into MAX_LENGTH-token chunks (STRIDE-token overlap so boundary spans survive),
-      # classify each, and merge the spans back over the full text. Peak memory is then
-      # bounded by ~BATCH_SIZE * MAX_LENGTH^2, INDEPENDENT of input length, while still
-      # covering the whole document. Verified: chunked output is span-for-span identical
-      # to a full single pass (0 PII lost) and peak stays flat as the doc grows.
+      # The model's sliding_window is 128, so a non-eager attention implementation
+      # makes attention cost linear in sequence length, not quadratic. That permits a
+      # single 131072-token pass at batch 1. Eager attention measured ~13 GB over
+      # baseline at only 16k tokens and cannot safely use the full window, so explicit
+      # eager mode or a rejected non-eager implementation clamps MAX_LENGTH to 4096
+      # and retains STRIDE-token overlapping chunks without truncating the document.
       BATCH_SIZE = max(1, _env("PRIVACY_BATCH_SIZE", 8, int))
       MAX_LENGTH = max(8, _env("PRIVACY_MAX_LENGTH", 4096, int))
       STRIDE = max(0, min(_env("PRIVACY_STRIDE", 256, int), MAX_LENGTH - 1))
+      ATTN_IMPL = _env("PRIVACY_ATTN_IMPL", "sdpa", str)
       GPU_MEM_LIMIT_GB = max(1.0, _env("GPU_MEM_LIMIT_GB", 32.0, float))
       WATCHDOG_INTERVAL_S = max(1.0, _env("WATCHDOG_INTERVAL_S", 30.0, float))
 
       USE_CUDA = torch.cuda.is_available()
 
-      clf = pipeline(
-          "token-classification",
-          model=MODEL_ID,
-          revision=MODEL_REVISION,
-          aggregation_strategy="simple",
-          device=0 if USE_CUDA else -1,
-          torch_dtype=torch.bfloat16,
-          trust_remote_code=True,
-      )
+      if ATTN_IMPL == "eager":
+          MAX_LENGTH = 4096
+          clf = pipeline(
+              "token-classification",
+              model=MODEL_ID,
+              revision=MODEL_REVISION,
+              aggregation_strategy="simple",
+              device=0 if USE_CUDA else -1,
+              torch_dtype=torch.bfloat16,
+              trust_remote_code=True,
+          )
+      else:
+          try:
+              clf = pipeline(
+                  "token-classification",
+                  model=MODEL_ID,
+                  revision=MODEL_REVISION,
+                  aggregation_strategy="simple",
+                  device=0 if USE_CUDA else -1,
+                  torch_dtype=torch.bfloat16,
+                  trust_remote_code=True,
+                  model_kwargs={"attn_implementation": ATTN_IMPL},
+              )
+              cfg = getattr(getattr(clf, "model", None), "config", None)
+              # The private field may change; try the public form too, and safely
+              # clamp below if neither is available.
+              effective_attn_impl = (
+                  getattr(cfg, "_attn_implementation", None)
+                  or getattr(cfg, "attn_implementation", None)
+              )
+              if effective_attn_impl is None:
+                  MAX_LENGTH = 4096
+                  sys.stderr.write(
+                      "privacy-filter: requested=%s attention implementation could not "
+                      "be confirmed; clamping MAX_LENGTH=%d\n"
+                      % (ATTN_IMPL, MAX_LENGTH)
+                  )
+                  sys.stderr.flush()
+              elif effective_attn_impl != ATTN_IMPL:
+                  MAX_LENGTH = 4096
+                  sys.stderr.write(
+                      "privacy-filter: requested=%s effective=%s attention implementation "
+                      "mismatch; falling back to eager + MAX_LENGTH=%d\n"
+                      % (ATTN_IMPL, effective_attn_impl, MAX_LENGTH)
+                  )
+                  sys.stderr.flush()
+                  clf = pipeline(
+                      "token-classification",
+                      model=MODEL_ID,
+                      revision=MODEL_REVISION,
+                      aggregation_strategy="simple",
+                      device=0 if USE_CUDA else -1,
+                      torch_dtype=torch.bfloat16,
+                      trust_remote_code=True,
+                  )
+          except Exception as exc:
+              error_text = str(exc).lower()
+              is_attention_rejection = "attn_implementation" in error_text or (
+                  "attention" in error_text
+                  and any(
+                      marker in error_text
+                      for marker in ("reject", "not supported", "does not support", "unsupported")
+                  )
+              )
+              if not is_attention_rejection:
+                  sys.stderr.write(
+                      "privacy-filter: non-attention initialization failure (%s); "
+                      "treating as transient and restarting\n" % exc
+                  )
+                  sys.stderr.flush()
+                  raise
+
+              MAX_LENGTH = 4096
+              sys.stderr.write(
+                  "privacy-filter: attn_implementation=%s rejected (%s); "
+                  "falling back to eager + MAX_LENGTH=%d\n"
+                  % (ATTN_IMPL, exc, MAX_LENGTH)
+              )
+              sys.stderr.flush()
+              # Let failures in the eager rebuild propagate for a clean restart.
+              clf = pipeline(
+                  "token-classification",
+                  model=MODEL_ID,
+                  revision=MODEL_REVISION,
+                  aggregation_strategy="simple",
+                  device=0 if USE_CUDA else -1,
+                  torch_dtype=torch.bfloat16,
+                  trust_remote_code=True,
+              )
+      STRIDE = max(0, min(STRIDE, MAX_LENGTH - 1))
       # Cap the pipeline's per-forward window. The pipeline chunks inputs longer than
       # this into model_max_length-token windows (see the classify() stride= arg below).
       clf.tokenizer.model_max_length = MAX_LENGTH
@@ -418,18 +494,17 @@ x-privacy-filter-common: &privacy-filter-common
     # Root-cause fix for the VRAM leak: let the CUDA caching allocator shrink
     # reserved segments instead of ratcheting them up and hoarding GPU memory.
     - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-    # Watchdog/batch knobs consumed by server.py — tunable per host, no rebuild.
-    # GPU_MEM_LIMIT_GB caps this process's blast radius on the 140 GB H200 (~10x
-    # the classifier's footprint). With chunking in place it is now a backstop,
-    # not the primary bound.
-    - GPU_MEM_LIMIT_GB=32
-    # MAX_LENGTH = per-forward token window; STRIDE = chunk overlap so spans on a
-    # boundary aren't split. Peak VRAM ~ BATCH_SIZE * MAX_LENGTH^2, independent of
-    # input length. BATCH_SIZE lowered 32->8 so the worst case (a 128k input = a
-    # full batch of chunks) stays well under GPU_MEM_LIMIT_GB.
-    - PRIVACY_BATCH_SIZE=8
-    - PRIVACY_MAX_LENGTH=4096
+    # Dedicated GPU 0 is a 141 GB H200. The 110 GB watchdog remains a real
+    # backstop while leaving ~30 GB for the driver, fragmentation, and DCGM.
+    - GPU_MEM_LIMIT_GB=110
+    # sliding_window=128 makes attention linear in sequence length with SDPA, so
+    # batch 1 can classify 131072 tokens in one pass. Explicit eager mode, or a
+    # rejected non-eager implementation, clamps MAX_LENGTH to 4096 and chunks with
+    # STRIDE overlap; eager measured ~13 GB over baseline at only 16k tokens.
+    - PRIVACY_BATCH_SIZE=1
+    - PRIVACY_MAX_LENGTH=131072
     - PRIVACY_STRIDE=256
+    - PRIVACY_ATTN_IMPL=sdpa
   restart: unless-stopped
   stop_grace_period: 5m
   logging: *logging-conf
