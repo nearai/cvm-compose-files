@@ -2132,11 +2132,17 @@ configs:
           location / { proxy_pass http://proxy-privacy-filter:8000; }
       }
 
+      # qwen3-30b.* is a model-proxy domain alias for qwen3-6-35b (retired Qwen3-30B).
+      # model-proxy passes the ClientHello through unchanged, so the legacy SNI must be
+      # accepted here or it falls through to the default vhost.
       server {
           listen 443 ssl http2;
           server_name qwen3-6-35b.completions.near.ai
                       qwen3-6-35b.completions-stg.near.ai
-                      ~^qwen3-6-35b-i\d+\.completions(-stg)?\.near\.ai$$;
+                      qwen3-30b.completions.near.ai
+                      qwen3-30b.completions-stg.near.ai
+                      ~^qwen3-6-35b-i\d+\.completions(-stg)?\.near\.ai$$
+                      ~^qwen3-30b-i\d+\.completions(-stg)?\.near\.ai$$;
           # cloud-api multiplexes unrelated H2 requests over one bucket-pinned connection.
           # Raise the request budget so nginx does not close it at 1000 requests and kill
           # every in-flight SSE stream. Keep it alive across idle gaps so a reconnect does
