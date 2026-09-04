@@ -9,7 +9,11 @@ x-logging-conf: &logging-conf
 # replica stays within one four-GPU NVLink island; one inference-proxy uses its native
 # least-connections backend pool for health-aware balancing and failover.
 #
-# The pinned Phala SGLang r12 image is the qualified Hopper runtime. The
+# The engine source is pinned to PierreLeGuen/sglang-upstream commit 51daaea,
+# derived from official SGLang main plus the official GLM-5.3 branch. It contains
+# upstream disconnect cleanup (#35255), the final-prefill abort fix (#34153),
+# the strict thinking-budget adapter, and two narrow DSA import-cycle fixes. The
+# official CUDA 13 SGLang image is the pinned build base. The
 # serving envelope is intentionally conservative: BF16 KV, 0.80 static memory,
 # 32 running requests, a bounded 32-request queue, 4096-token prefill chunks,
 # decode graphs capped at batch 32, TileLang DSA, DeepGEMM, and adaptive EAGLE
@@ -56,115 +60,30 @@ x-vllm-proxy-common: &vllm-proxy-common
 x-glm53-build: &glm53-build
   context: .
   dockerfile_inline: |
-    FROM ghcr.io/phala-network/sglang@sha256:2488ca13aee77ffd24ba2181b1b05dcf5e1c76e6477002c7b2f074b44fa49193
-    WORKDIR /sgl-workspace/sglang
+    FROM lmsysorg/sglang@sha256:eb090e39434085f713d39421cb2e5b6d342424aa95c3d9ecdfe8cadd4289e99b
+    ADD https://github.com/PierreLeGuen/sglang-upstream/archive/51daaea035448a1b2b639f21d9f201a2a236fab6.tar.gz /tmp/sglang.tar.gz
     RUN printf '%s  %s\n' \
-          '29dbee58926a9d9a91d60733d36e80c3a2e24cd8c98296823ee408bce9ef5f16' \
-          'python/sglang/srt/entrypoints/openai/protocol.py' \
+          'a93dba481fa9427359daf2df73d3756fc987cb1ee2375b365aa1f1780ddcebd0' \
+          '/tmp/sglang.tar.gz' \
         | sha256sum -c -
-    RUN python3 - <<'PY'
-    from pathlib import Path
-
-    path = Path("python/sglang/srt/entrypoints/openai/protocol.py")
-    source = path.read_text()
-    import_anchor = '''    StrictBool,
-        field_serializer,
-    '''
-    field_anchor = '''    custom_logit_processor: Optional[Union[List[Optional[str]], str]] = None
-        custom_params: Optional[Dict] = None
-    '''
-    validator_anchor = '''    @model_validator(mode="before")
-        @classmethod
-        def set_tool_choice_default(cls, values):
-    '''
-    validator = '''    @model_validator(mode="before")
-        @classmethod
-        def normalize_thinking_token_budget(cls, values):
-            if not isinstance(values, dict):
-                return values
-            custom_params = values.get("custom_params")
-            if custom_params is None:
-                custom_params = {}
-            if not isinstance(custom_params, dict) or "thinking_budget" in custom_params:
-                return values
-            if "thinking_token_budget" in values:
-                budget = values.get("thinking_token_budget")
-            else:
-                budget = 8192
-            if isinstance(budget, int) and not isinstance(budget, bool) and budget >= 0:
-                values = dict(values)
-                custom_params = dict(custom_params)
-                custom_params["thinking_budget"] = budget
-                values["custom_params"] = custom_params
-            return values
-
-    '''
-    if (
-        source.count(import_anchor) != 1
-        or source.count(field_anchor) != 1
-        or source.count(validator_anchor) != 1
-    ):
-        raise SystemExit("protocol.py layout changed; refusing to apply budget adapter")
-    source = source.replace(
-        import_anchor,
-        "    StrictBool,\n    StrictInt,\n    field_serializer,\n",
-        1,
-    )
-    source = source.replace(
-        field_anchor,
-        field_anchor + "    thinking_token_budget: Optional[StrictInt] = Field(default=None, ge=0)\n",
-        1,
-    )
-    source = source.replace(validator_anchor, validator + validator_anchor, 1)
-    path.write_text(source)
-    PY
-    RUN python3 -m py_compile python/sglang/srt/entrypoints/openai/protocol.py \
-      && printf '%s  %s\n' \
-          'c3c7a7a324f2b7fa3d726e7f13dbf59389e57498647d26bfb2f796ff10012a87' \
-          'python/sglang/srt/entrypoints/openai/protocol.py' \
-        | sha256sum -c -
-    RUN python3 - <<'PY'
-    from pydantic import ValidationError
-    from sglang.srt.entrypoints.openai.protocol import ChatCompletionRequest
-
-    base = {
-        "model": "z-ai/glm-5.3-flash",
-        "messages": [{"role": "user", "content": "Say OK"}],
-    }
-
-    def validate(extra, expected_custom, should_fail=False):
-        try:
-            request = ChatCompletionRequest.model_validate({**base, **extra})
-        except ValidationError:
-            if should_fail:
-                return
-            raise
-        if should_fail:
-            raise SystemExit(f"invalid budget was accepted: {extra!r}")
-        if request.custom_params != expected_custom:
-            raise SystemExit(
-                f"budget adapter mismatch: {request.custom_params!r} != {expected_custom!r}"
-            )
-
-    validate({}, {"thinking_budget": 8192})
-    validate({"thinking_token_budget": 4096}, {"thinking_budget": 4096})
-    validate({"thinking_token_budget": None}, None)
-    validate(
-        {
-            "thinking_token_budget": 4096,
-            "custom_params": {"thinking_budget": 2048},
-        },
-        {"thinking_budget": 2048},
-    )
-    validate({"thinking_token_budget": True}, None, should_fail=True)
-    validate({"thinking_token_budget": -1}, None, should_fail=True)
-    validate({"thinking_token_budget": "8192"}, None, should_fail=True)
-    PY
+    RUN rm -rf /sgl-workspace/sglang \
+        && mkdir -p /sgl-workspace/sglang \
+        && tar -xzf /tmp/sglang.tar.gz --strip-components=1 -C /sgl-workspace/sglang \
+        && rm /tmp/sglang.tar.gz
+    WORKDIR /sgl-workspace/sglang
+    RUN python3 -m pip install setuptools-rust==1.13.0 setuptools-scm==10.2.3 pytest-asyncio==1.4.0
+    RUN --mount=type=cache,target=/sgl-workspace/sglang/rust/target \
+        --mount=type=cache,target=/sgl-workspace/sglang/rust/sglang-radix-tree/target \
+        CARGO_BUILD_JOBS=8 SETUPTOOLS_SCM_PRETEND_VERSION=0.5.16.dev20260904 \
+        python3 -m pip install --no-deps --no-build-isolation -e python
+    LABEL org.opencontainers.image.source="https://github.com/PierreLeGuen/sglang-upstream" \
+          org.opencontainers.image.revision="51daaea035448a1b2b639f21d9f201a2a236fab6"
+    RUN python3 -c "import sglang; from sglang.srt.entrypoints.openai.protocol import ChatCompletionRequest; print(sglang.__file__)"
 
 x-sg-glm53-flash-common: &sg-glm53-flash-common
   <<: *nvidia
   init: true
-  image: nearai/glm53-sglang-r12-budget:local
+  image: nearai/glm53-sglang-upstream-51daaea:local
   build: *glm53-build
   command: >
       sglang serve
@@ -485,7 +404,7 @@ services:
               device_ids: ["0","1","2","3"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:zai-org/GLM-5.3-Flash","served_model:z-ai/glm-5.3-flash","precision:fp8-weights-bf16-kv","deployment:glm53-flash-sgl-tp4","config_variant:phala-r12-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192","request_logging:disabled","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:1"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:zai-org/GLM-5.3-Flash","served_model:z-ai/glm-5.3-flash","precision:fp8-weights-bf16-kv","deployment:glm53-flash-sgl-tp4","config_variant:official-upstream-51daaea-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192","request_logging:disabled","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:1"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -497,7 +416,7 @@ services:
       nearai.otel.model_path: "zai-org/GLM-5.3-Flash"
       nearai.otel.served_model: "z-ai/glm-5.3-flash"
       nearai.otel.deployment: "glm53-flash-sgl-tp4"
-      nearai.otel.config_variant: "phala-r12-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
+      nearai.otel.config_variant: "official-upstream-51daaea-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
       nearai.otel.thinking_budget_policy: "default8192-public-to-native"
       nearai.otel.request_logging: "disabled"
       nearai.otel.instance: "1"
@@ -858,7 +777,7 @@ configs:
                       ip: "${HOST_IP}"
                       port: "8000"
                       instance: "1"
-                      config_variant: "phala-r12-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
+                      config_variant: "official-upstream-51daaea-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
                       thinking_budget_policy: "default8192-public-to-native"
                       request_logging: "disabled"
               - job_name: sglang-model-sg-dsv4-flash-fp4-tp4
