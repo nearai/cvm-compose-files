@@ -9,7 +9,7 @@ x-logging-conf: &logging-conf
 # replica stays within one four-GPU NVLink island; one inference-proxy uses its native
 # least-connections backend pool for health-aware balancing and failover.
 #
-# The pinned Phala SGLang r12 image is the qualified Hopper runtime. The
+# The pinned Phala SGLang r13 image is the qualified Hopper runtime. The
 # serving envelope is intentionally conservative: BF16 KV, 0.80 static memory,
 # 32 running requests, a bounded 32-request queue, 4096-token prefill chunks,
 # decode graphs capped at batch 32, TileLang DSA, DeepGEMM, and adaptive EAGLE
@@ -20,6 +20,8 @@ x-logging-conf: &logging-conf
 # to SGLang strict-thinking's custom_params.thinking_budget. Omitted values
 # default to 8192; explicit null remains an opt-out; an explicit native
 # custom_params.thinking_budget wins. Request/response payload logging is off.
+# The scheduler patch serializes the short deferred-cleanup window after a
+# chunked-prefill abort so concurrent disconnects cannot orphan KV/Mamba state.
 #
 # The vLLM GLM-5.3-Flash path is not used: its Hopper NVFP4/MLA path produced
 # non-finite logits and repetitive output. Replica 2 is replaced by DeepSeek-V4-Flash for the mixed-root E2EE affinity test.
@@ -160,11 +162,43 @@ x-glm53-build: &glm53-build
     validate({"thinking_token_budget": -1}, None, should_fail=True)
     validate({"thinking_token_budget": "8192"}, None, should_fail=True)
     PY
+    RUN printf '%s  %s\n' \
+          'd9fb5baa0830eda3b959961c64c49b382d449107da5573f7d0a784d816dc4fd2' \
+          'python/sglang/srt/managers/scheduler.py' \
+        | sha256sum -c -
+    RUN python3 - <<'PY'
+    from pathlib import Path
+
+    path = Path("python/sglang/srt/managers/scheduler.py")
+    source = path.read_text()
+    anchor = '''    ) -> Tuple[Optional[ScheduleBatch], ScheduleBatch]:
+            # Check if the grammar is ready in the grammar queue
+    '''
+    replacement = '''    ) -> Tuple[Optional[ScheduleBatch], ScheduleBatch]:
+            # A chunked request whose abort is waiting for an overlap result still
+            # owns KV and Mamba allocations. Do not admit another prefill until that
+            # request is released: _pending_chunked_abort_req is intentionally a
+            # single owner slot, and replacing it would orphan the previous request's
+            # final chunk.
+            if self._pending_chunked_abort_req is not None:
+                return None, running_batch
+
+            # Check if the grammar is ready in the grammar queue
+    '''
+    if source.count(anchor) != 1:
+        raise SystemExit("scheduler.py layout changed; refusing to apply abort fix")
+    path.write_text(source.replace(anchor, replacement, 1))
+    PY
+    RUN python3 -m py_compile python/sglang/srt/managers/scheduler.py \
+      && printf '%s  %s\n' \
+          'efe028e921af471ec7941cebe37ce156a2fc4ccf44450d673a34d75c25dadba7' \
+          'python/sglang/srt/managers/scheduler.py' \
+        | sha256sum -c -
 
 x-sg-glm53-flash-common: &sg-glm53-flash-common
   <<: *nvidia
   init: true
-  image: nearai/glm53-sglang-r12-budget:local
+  image: nearai/glm53-sglang-r13-abortfix:local
   build: *glm53-build
   command: >
       sglang serve
@@ -485,7 +519,7 @@ services:
               device_ids: ["0","1","2","3"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:zai-org/GLM-5.3-Flash","served_model:z-ai/glm-5.3-flash","precision:fp8-weights-bf16-kv","deployment:glm53-flash-sgl-tp4","config_variant:phala-r12-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192","request_logging:disabled","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:1"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:zai-org/GLM-5.3-Flash","served_model:z-ai/glm-5.3-flash","precision:fp8-weights-bf16-kv","deployment:glm53-flash-sgl-tp4","config_variant:phala-r13-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192-abortfix","request_logging:disabled","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:1"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -497,7 +531,7 @@ services:
       nearai.otel.model_path: "zai-org/GLM-5.3-Flash"
       nearai.otel.served_model: "z-ai/glm-5.3-flash"
       nearai.otel.deployment: "glm53-flash-sgl-tp4"
-      nearai.otel.config_variant: "phala-r12-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
+      nearai.otel.config_variant: "phala-r13-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192-abortfix"
       nearai.otel.thinking_budget_policy: "default8192-public-to-native"
       nearai.otel.request_logging: "disabled"
       nearai.otel.instance: "1"
@@ -858,7 +892,7 @@ configs:
                       ip: "${HOST_IP}"
                       port: "8000"
                       instance: "1"
-                      config_variant: "phala-r12-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
+                      config_variant: "phala-r13-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192-abortfix"
                       thinking_budget_policy: "default8192-public-to-native"
                       request_logging: "disabled"
               - job_name: sglang-model-sg-dsv4-flash-fp4-tp4
