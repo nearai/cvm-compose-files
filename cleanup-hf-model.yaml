@@ -5,20 +5,28 @@ x-logging-conf: &logging-conf
     max-file: "3"
     labels: "com.datadoghq.ad.logs"
 
-# One-shot cleanup: removes a specific model from the shared `huggingface_cache`
-# volume on a CVM.
+# One-shot cleanup: removes one or more models from an existing HuggingFace
+# cache volume on a CVM.
 #
-# Usage (compose-manager `compose/up`):
+# Recommended usage (compose-manager `compose/up`):
 #   curl -sS 'http://<host_ip>:8080/compose/up' \
-#     -H 'Authorization: Bearer <CM_TOKEN>' \
-#     -H 'Content-Type: application/json' \
-#     -d '{"tag":"<tag>","file":"cleanup-hf-model.yaml","force_recreate":true,
-#          "env":{"MODEL_NAME":"zai-org/GLM-5-FP8"}}'
+#     -H 'Authorization: Bearer <CM_TOKEN>' -H 'Content-Type: application/json' \
+#     -d '{"tag":"<tag>","file":"cleanup-hf-model.yaml","project":"cleanup",
+#          "force_recreate":true,
+#          "env":{"MODEL_NAME":"zai-org/GLM-5-FP8, Qwen/Qwen3.6-27B-FP8",
+#                 "HF_CACHE_VOLUME":"work_hugginface_cache"}}'
 #
 # Notes:
-# - Maps `org/repo` to the on-disk `models--org--repo` directory.
-# - The `huggingface_cache:` volume name MUST match the inference compose files
-#   so it resolves to the same `<project>_huggingface_cache` Docker volume.
+# - MODEL_NAME accepts one or more `org/repo` values separated by commas and/or
+#   whitespace and maps each to its on-disk `models--org--repo` directory.
+# - HF_CACHE_VOLUME selects an EXISTING Docker volume by its full name (default:
+#   `work_huggingface_cache`). The external declaration makes Compose fail fast
+#   instead of silently creating an empty project-scoped volume.
+# - Older `small-models.yaml` / `dsv4-qwen36-gemma4.yaml` packs produced the
+#   misspelled `work_hugginface_cache` volume; select it explicitly when needed.
+# - WARNING: Running without `"project":"cleanup"` uses the default `work`
+#   project, where compose-manager's `--remove-orphans` will stop live model
+#   containers. The separate `cleanup` project avoids touching the live stack.
 # - Safe to run while inference is up: weights are already loaded into GPU
 #   memory; only a future restart would need to re-download.
 # - `force_recreate:true` is required to re-run on the same instance with a
@@ -33,6 +41,29 @@ services:
       - |
         set -eu
         : "$${MODEL_NAME:?MODEL_NAME env var is required (e.g. zai-org/GLM-5-FP8)}"
+
+        echo "HF_CACHE_VOLUME=$$HF_CACHE_VOLUME"
+
+        set -f
+        MODELS=$$(printf '%s' "$$MODEL_NAME" | tr ',' ' ')
+        set -- $$MODELS
+        if [ "$$#" -eq 0 ]; then
+          echo "Invalid MODEL_NAME: at least one org/repo is required." >&2
+          exit 1
+        fi
+        for MODEL in "$$@"; do
+          case "$$MODEL" in
+            /*|*/|*/*/*|*..*)
+              echo "Invalid model token '$$MODEL': expected exactly one org/repo with no leading slash or '..'." >&2
+              exit 1
+              ;;
+            */*) ;;
+            *)
+              echo "Invalid model token '$$MODEL': expected exactly one org/repo with no leading slash or '..'." >&2
+              exit 1
+              ;;
+          esac
+        done
 
         echo "=== Disk usage ==="
         df -h /root/.cache 2>/dev/null || df -h /
@@ -50,22 +81,29 @@ services:
 
         echo ""
         echo "=== Cleanup ==="
-        SAFE=$$(printf '%s' "$$MODEL_NAME" | sed 's|/|--|g')
-        TARGET="$$HUB/models--$$SAFE"
-        echo "MODEL_NAME=$$MODEL_NAME"
-        echo "TARGET=$$TARGET"
-        if [ ! -d "$$TARGET" ]; then
-          echo "Not found — nothing to remove."
-          exit 0
-        fi
-        echo "Removing $$(du -sh "$$TARGET" | cut -f1) ..."
-        rm -rf "$$TARGET"
-        echo "Removed $$TARGET"
+        TOTAL=$$#
+        REMOVED=0
+        for MODEL in "$$@"; do
+          SAFE=$$(printf '%s' "$$MODEL" | sed 's|/|--|g')
+          TARGET="$$HUB/models--$$SAFE"
+          echo "MODEL_NAME=$$MODEL"
+          echo "TARGET=$$TARGET"
+          if [ ! -d "$$TARGET" ]; then
+            echo "Not found — nothing to remove."
+            continue
+          fi
+          echo "Removing $$(du -sh "$$TARGET" | cut -f1) ..."
+          rm -rf "$$TARGET"
+          REMOVED=$$((REMOVED + 1))
+          echo "Removed $$TARGET"
+        done
         echo "Disk after: $$(df -h /root/.cache 2>/dev/null | tail -1 || df -h / | tail -1)"
+        echo "Removed $$REMOVED of $$TOTAL requested model(s)."
     volumes:
       - huggingface_cache:/root/.cache/huggingface
     environment:
       - MODEL_NAME=${MODEL_NAME}
+      - HF_CACHE_VOLUME=${HF_CACHE_VOLUME:-work_huggingface_cache}
     logging: *logging-conf
 
 networks:
@@ -75,3 +113,5 @@ networks:
 
 volumes:
   huggingface_cache:
+    external: true
+    name: ${HF_CACHE_VOLUME:-work_huggingface_cache}
