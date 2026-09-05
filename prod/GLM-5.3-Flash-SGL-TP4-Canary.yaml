@@ -505,6 +505,8 @@ services:
   # No GPU allocation, host mounts, Docker socket, credentials, or published ports.
   glm53-perception-check:
     image: nearai/glm53-sglang-upstream-fc91d24:local
+    # Reuse the in-CVM build staged for r2; this tag is not a registry artifact.
+    pull_policy: never
     container_name: glm53-perception-check
     profiles: ["verification"]
     runtime: runc
