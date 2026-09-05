@@ -9,7 +9,7 @@ x-logging-conf: &logging-conf
 # replica stays within one four-GPU NVLink island; one inference-proxy uses its native
 # least-connections backend pool for health-aware balancing and failover.
 #
-# The engine source is pinned to PierreLeGuen/sglang-upstream commit 87228dd,
+# The engine source is pinned to PierreLeGuen/sglang-upstream commit 850c45a,
 # derived from official SGLang main plus the official GLM-5.3 branch. It contains
 # upstream disconnect cleanup (#35255), the final-prefill abort fix (#34153),
 # the strict thinking-budget adapter, and two narrow DSA import-cycle fixes. The
@@ -61,9 +61,9 @@ x-glm53-build: &glm53-build
   context: .
   dockerfile_inline: |
     FROM lmsysorg/sglang@sha256:eb090e39434085f713d39421cb2e5b6d342424aa95c3d9ecdfe8cadd4289e99b
-    ADD https://github.com/PierreLeGuen/sglang-upstream/archive/87228dd89259e0b6206e244491b132e2267aeb19.tar.gz /tmp/sglang.tar.gz
+    ADD https://github.com/PierreLeGuen/sglang-upstream/archive/850c45a8b167439062a97a0e173c9b7e9c4f0e44.tar.gz /tmp/sglang.tar.gz
     RUN printf '%s  %s\n' \
-          '1ecfaa9821dea90370773c293a30e6d5110399115084671c32054a53bd553f4e' \
+          '10800b8a944bcad0c338fa8ac410474e752a4f802a0f44463150b28dd0c52506' \
           '/tmp/sglang.tar.gz' \
         | sha256sum -c -
     RUN rm -rf /sgl-workspace/sglang \
@@ -77,13 +77,13 @@ x-glm53-build: &glm53-build
         CARGO_BUILD_JOBS=8 SETUPTOOLS_SCM_PRETEND_VERSION=0.5.16.dev20260904 \
         python3 -m pip install --no-deps --no-build-isolation -e python
     LABEL org.opencontainers.image.source="https://github.com/PierreLeGuen/sglang-upstream" \
-          org.opencontainers.image.revision="87228dd89259e0b6206e244491b132e2267aeb19"
+          org.opencontainers.image.revision="850c45a8b167439062a97a0e173c9b7e9c4f0e44"
     RUN python3 -c "import sglang; from sglang.srt.entrypoints.openai.protocol import ChatCompletionRequest; print(sglang.__file__)"
 
 x-sg-glm53-flash-common: &sg-glm53-flash-common
   <<: *nvidia
   init: true
-  image: nearai/glm53-sglang-upstream-87228dd:local
+  image: nearai/glm53-sglang-upstream-850c45a:local
   build: *glm53-build
   command: >
       sglang serve
@@ -404,7 +404,7 @@ services:
               device_ids: ["0","1","2","3"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:zai-org/GLM-5.3-Flash","served_model:z-ai/glm-5.3-flash","precision:fp8-weights-bf16-kv","deployment:glm53-flash-sgl-tp4","config_variant:official-upstream-87228dd-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192","request_logging:disabled","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:1"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:zai-org/GLM-5.3-Flash","served_model:z-ai/glm-5.3-flash","precision:fp8-weights-bf16-kv","deployment:glm53-flash-sgl-tp4","config_variant:official-upstream-850c45a-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192","request_logging:disabled","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:1"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -416,7 +416,7 @@ services:
       nearai.otel.model_path: "zai-org/GLM-5.3-Flash"
       nearai.otel.served_model: "z-ai/glm-5.3-flash"
       nearai.otel.deployment: "glm53-flash-sgl-tp4"
-      nearai.otel.config_variant: "official-upstream-87228dd-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
+      nearai.otel.config_variant: "official-upstream-850c45a-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
       nearai.otel.thinking_budget_policy: "default8192-public-to-native"
       nearai.otel.request_logging: "disabled"
       nearai.otel.instance: "1"
@@ -777,7 +777,7 @@ configs:
                       ip: "${HOST_IP}"
                       port: "8000"
                       instance: "1"
-                      config_variant: "official-upstream-87228dd-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
+                      config_variant: "official-upstream-850c45a-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
                       thinking_budget_policy: "default8192-public-to-native"
                       request_logging: "disabled"
               - job_name: sglang-model-sg-dsv4-flash-fp4-tp4
