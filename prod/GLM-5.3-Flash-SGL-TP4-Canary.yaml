@@ -116,6 +116,8 @@ x-sg-glm53-flash-common: &sg-glm53-flash-common
       --enable-metrics
       --enable-cache-report
       --log-requests-level 0
+      --disable-fast-image-processor
+      --limit-mm-data-per-request '{"image": 64}'
   volumes:
     - kernel_cache:/root/.cache
     - huggingface_cache:/root/.cache/huggingface
