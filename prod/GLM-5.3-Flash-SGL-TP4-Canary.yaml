@@ -42,7 +42,7 @@ x-nvidia: &nvidia
       hard: 65535
 
 x-vllm-proxy-common: &vllm-proxy-common
-  image: nearaidev/vllm-proxy-rs@sha256:b183677a5d32267539b9b21ec45327a4f3be0a013afeb608c68c4d76e9472e36
+  image: nearaidev/vllm-proxy-rs@sha256:27265f5a10abcacc3fe80604a00ed2ba32c6e082895115e4b652b40525cb554d
   user: root
   privileged: true
   <<: *nvidia
@@ -290,6 +290,9 @@ services:
       - FUSION_ENABLED=${FUSION_ENABLED}
       - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
       - VLLM_BACKEND_URLS=http://model-sg-glm53-fp8-tp4-r1:8000,http://model-sg-glm53-fp8-tp4-r2:8000
+      # Keep append-only conversations on the replica that already holds their prefix cache
+      # (inference-proxy #227); new conversations still balance by least-connections.
+      - VLLM_BACKEND_CONVERSATION_AFFINITY=1
       - VLLM_PROXY_MAX_REQUEST_SIZE=104857600
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
