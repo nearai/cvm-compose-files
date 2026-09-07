@@ -1064,10 +1064,19 @@ configs:
       client_max_body_size 100m;
       client_body_buffer_size 1m;
 
+      # Resolve proxy-glm53 through Docker's embedded DNS at request time
+      # (proxy_pass with a variable) instead of once at startup, so a recreated
+      # proxy container with a new IP is picked up immediately rather than at
+      # the next 6-hourly reload. Same pattern as the soak relay above.
+      resolver 127.0.0.11 valid=5s ipv6=off;
+
       # :8000 - GLM-5.3-Flash
       server {
         listen 8000;
-        location / { proxy_pass http://proxy-glm53:8000; }
+        location / {
+          set $$proxy_glm53 http://proxy-glm53:8000;
+          proxy_pass $$proxy_glm53;
+        }
       }
 
       ssl_certificate /etc/letsencrypt/live/completions.near.ai/fullchain.pem;
@@ -1087,5 +1096,8 @@ configs:
         # PINGs (http2_keep_alive_while_idle).
         keepalive_timeout 1h;
         keepalive_requests 1000000;
-        location / { proxy_pass http://proxy-glm53:8000; }
+        location / {
+          set $$proxy_glm53 http://proxy-glm53:8000;
+          proxy_pass $$proxy_glm53;
+        }
       }
