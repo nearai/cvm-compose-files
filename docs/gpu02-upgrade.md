@@ -34,6 +34,9 @@ dependency absent from this table blocks shutdown until it is accounted for.
   it or restart its multi-model registrar. Use a validated connection-preserving
   handover; otherwise stop preparation. Keeping model engines running alone does
   not prove their routes or active streams survive an ingress replacement.
+  Follow the [gpu13 handover](gpu13-qwen-handover.md): keep shared nginx/registrar
+  identities, preserve signatures across both proxy transitions and use dedicated
+  Qwen3.8 HTTP8000/TLS8010, not a new port on the shared ingress.
 - Inspect exact dry-run plans before each apply. Compose-manager uses
   `--remove-orphans` even with explicit services. A final file that omits an old
   replica must not be used while that replica is still serving. Drain/remove it

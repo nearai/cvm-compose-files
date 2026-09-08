@@ -1,7 +1,7 @@
 # Qwen consolidation and post-upgrade GLM5.3 capacity
 
 **The old gpu02 CVM must be fully evacuated before shutdown.** Follow the
-[controlling upgrade runbook in #235](https://github.com/nearai/cvm-compose-files/blob/capacity/ds4f-gpu03-migration/docs/gpu02-upgrade.md).
+[controlling upgrade runbook](gpu02-upgrade.md).
 The former in-place DS4F slot-move procedure is superseded; do not run it.
 
 ## Two different stages, two different files
@@ -17,6 +17,10 @@ the old host's serving/rollback recipe. The Compose project can remain `work`;
 the old and new guests are never run concurrently with split PPCIe GPU ownership.
 
 ## Before shutdown: prepare only gpu13
+
+Use the [connection-preserving handover](gpu13-qwen-handover.md) for this stage.
+The shared nginx and registrar are unchanged; Qwen3.8 gets its own HTTP8000 /
+TLS8010 listener and registrar. Do not execute the final file as a whole-stack up.
 
 1. Snapshot actual deployed revisions, container IDs, full environment maps, GPU
    UUID/slot mapping and routing on every live model-proxy peer.
