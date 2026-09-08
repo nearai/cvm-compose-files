@@ -1,0 +1,1453 @@
+# Temporary bridge: GLM5.1 TP4 on 0-3, two DS4F TP2 replicas on 4-5 and 6-7.
+# One PPCIe GPU CVM. Drain/remove GLM5.1 r2 BEFORE applying this file.
+# Start ds4f-migration-registrar explicitly only after qualification.
+# Reuses GLM5.1 v0.0.344 and DS4F v0.0.385; do not whole-stack apply.
+---
+services:
+  model-downloader:
+    image: ghcr.io/astral-sh/uv:python3.11-bookworm-slim@sha256:4f5d923c9dcea037f57bda425dd209f3ec643da2f0b74227f68d09dab0b3bb36
+    entrypoint:
+      - sh
+      - "-c"
+    restart: "no"
+    logging: &1
+      driver: json-file
+      options:
+        max-size: 100m
+        max-file: "10"
+        labels: com.datadoghq.ad.logs,com.docker.compose.service
+    container_name: model-downloader
+    command:
+      - |
+        set -e
+        echo "Downloading QuantTrio/GLM-5.1-AWQ..."
+        uvx --from 'huggingface_hub[hf_xet]' hf download QuantTrio/GLM-5.1-AWQ --revision 8f60817aa28023f2607850d1a1e51d21aa34817a
+        echo "Download complete."
+    volumes:
+      - huggingface_cache:/root/.cache/huggingface
+    environment:
+      - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"model-downloader","service":"model-downloader","tags":["model:QuantTrio/GLM-5.1-AWQ","deployment:GLM-5.1-SGL-AWQ-TP4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+  nginx:
+    image: nginx@sha256:1d13701a5f9f3fb01aaa88cef2344d65b6b5bf6b7d9fa4cf0dca557a8d7702ba
+    container_name: nginx
+    depends_on:
+      - proxy-glm51
+      - proxy-dsv4-flash
+    command:
+      /bin/sh -c 'while :; do sleep 6h; nginx -s reload; done & nginx -g "daemon
+      off;"'
+    ports:
+      - 8000:80
+      - 8444:443
+      - 8001:8001
+    volumes:
+      - certs:/etc/letsencrypt:ro
+    configs:
+      - source: nginx_conf
+        target: /etc/nginx/conf.d/default.conf
+        mode: 420
+    restart: unless-stopped
+    logging: *1
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"nginx","service":"nginx","tags":["model:QuantTrio/GLM-5.1-AWQ","deployment:GLM-5.1-SGL-AWQ-TP4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000"]}]'
+  model-proxy-registrar:
+    image: curlimages/curl@sha256:d94d07ba9e7d6de898b6d96c1a072f6f8266c687af78a74f380087a0addf5d17
+    container_name: model-proxy-registrar
+    entrypoint:
+      - sh
+      - "/register.sh"
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - "[ $$(( $$(date +%s) - $$(cat /tmp/registrar_alive 2>/dev/null || echo 0)
+          )) -lt 180 ]"
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 1200s
+    environment:
+      - HOST_IP=${HOST_IP}
+      - HTTP_PORT=${HTTP_PORT:-8000}
+      - TLS_PORT=${TLS_PORT:-8444}
+      - MODEL_PROXY_TOKEN=${MODEL_PROXY_TOKEN}
+      - PROXY_TOKEN=${PROXY_TOKEN}
+    configs:
+      - source: registrar_script
+        target: "/register.sh"
+        mode: 493
+    logging: *1
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"model-proxy-registrar","service":"model-proxy-registrar","tags":["model:QuantTrio/GLM-5.1-AWQ","deployment:GLM-5.1-SGL-AWQ-TP4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+  proxy-glm51:
+    image: nearaidev/vllm-proxy-rs@sha256:b183677a5d32267539b9b21ec45327a4f3be0a013afeb608c68c4d76e9472e36
+    user: root
+    privileged: true
+    runtime: nvidia
+    ipc: host
+    ulimits: &2
+      memlock: -1
+      nofile:
+        soft: 65535
+        hard: 65535
+    extra_hosts:
+      - compose-manager:host-gateway
+    volumes:
+      - "/var/run/dstack.sock:/var/run/dstack.sock"
+      - certs:/etc/letsencrypt:ro
+    restart: unless-stopped
+    logging: *1
+    container_name: proxy-glm51
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - CLOUD_API_URL=https://cloud-api.near.ai
+      - CLOUD_API_USAGE_TOKEN=${CLOUD_API_USAGE_TOKEN}
+      - COMPOSE_MANAGER_URL=http://compose-manager:8080
+      - LOG_FORMAT=json
+      - MODEL_NAME=zai-org/GLM-5.1-FP8
+      - OHTTP_ENABLED=true
+      - TOKEN=${PROXY_TOKEN}
+      - FUSION_ENABLED=${FUSION_ENABLED}
+      - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
+      - VLLM_BACKEND_URLS=http://model-sg-glm51-awq-tp4-r1:8000
+      - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
+      - USE_NV_ATTESTATION_SDK=true
+      - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
+      - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:zai-org/GLM-5.1-FP8","deployment:GLM-5.1-SGL-AWQ-TP4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: inference-proxy
+      nearai.otel.service: vllm-proxy
+      nearai.otel.source: vllm-proxy
+      nearai.otel.container_name: proxy-glm51
+      nearai.otel.port: "8000"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: zai-org/GLM-5.1-FP8
+      nearai.otel.deployment: GLM-5.1-SGL-AWQ-TP4
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
+  model-sg-glm51-awq-tp4-r1:
+    runtime: nvidia
+    ipc: host
+    ulimits: *2
+    init: true
+    depends_on:
+      model-downloader:
+        condition: service_completed_successfully
+    image: glm51-sgl-awq-tp4-patched:local
+    build:
+      dockerfile_inline: |
+        FROM lmsysorg/sglang:dev-cu12@sha256:aac6b242680daeb74d2ab1d85f70575357552d7d165d2e5d30eb362797db54a1
+        RUN python3 - <<'PYEOF'
+        import re
+        f = "/sgl-workspace/sglang/python/sglang/srt/models/deepseek_common/deepseek_weight_loader.py"
+        s = open(f).read()
+        pat = re.compile(r"(?P<i> +)cat_dim = 1\n\n(?P<j> +)fused_weight = torch\.cat\(")
+        def repl(m):
+            j = m.group("j")
+            return (
+                m.group("i") + "cat_dim = 1\n\n"
+                + j + "if (\n"
+                + j + "    q_a_proj_weight.dim() == 2\n"
+                + j + "    and q_a_proj_weight.shape[1 - cat_dim]\n"
+                + j + "    != kv_a_proj_weight.shape[1 - cat_dim]\n"
+                + j + "):\n"
+                + j + "    cat_dim = 1 - cat_dim\n\n"
+                + j + "fused_weight = torch.cat("
+            )
+        s2, n = pat.subn(repl, s, count=1)
+        assert n == 1, "sglang#28305 cat_dim patch anchor not found (loader changed)"
+        open(f, "w").write(s2)
+        print("[sglang#28305] fused qkv_a_proj cat_dim fix applied")
+        PYEOF
+    container_name: model-sg-glm51-awq-tp4-r1
+    command:
+      "sglang serve --model-path QuantTrio/GLM-5.1-AWQ --revision 8f60817aa28023f2607850d1a1e51d21aa34817a
+      --served-model-name zai-org/GLM-5.1-FP8 --tp 4 --dist-init-addr 127.0.0.1:29500
+      --disable-shared-experts-fusion --kv-cache-dtype fp8_e4m3 --reasoning-parser
+      glm45 --tool-call-parser glm47 --log-requests-level 0 --mem-fraction-static
+      0.85 --max-running-requests 128 --max-queued-requests 16 --speculative-algorithm
+      EAGLE --speculative-num-steps 3 --speculative-eagle-topk 1 --speculative-num-draft-tokens
+      4 --watchdog-timeout 1800 --port 8000 --host 0.0.0.0 --enable-cache-report --enable-metrics
+      --trust-remote-code
+
+      "
+    volumes:
+      - compile_cache_a:/root/.cache
+      - huggingface_cache:/root/.cache/huggingface
+    environment:
+      HF_TOKEN: "${HUGGING_FACE_HUB_TOKEN}"
+      HF_HUB_OFFLINE: "${HF_HUB_OFFLINE:-0}"
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+      OPENBLAS_L2_SIZE: "2097152"
+      NCCL_DEBUG: WARN
+      SGLANG_ENABLE_SPEC_V2: "1"
+      TORCHINDUCTOR_CACHE_DIR: "/root/.cache/torchinductor"
+      TRITON_CACHE_DIR: "/root/.cache/triton"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids:
+                - "0"
+                - "1"
+                - "2"
+                - "3"
+              capabilities:
+                - gpu
+    restart: unless-stopped
+    stop_grace_period: 5m
+    logging: *1
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:QuantTrio/GLM-5.1-AWQ","deployment:GLM-5.1-SGL-AWQ-TP4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:1"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: sglang
+      nearai.otel.service: sglang
+      nearai.otel.source: sglang
+      nearai.otel.container_name: model-sg-glm51-awq-tp4-r1
+      nearai.otel.port: "8000"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: QuantTrio/GLM-5.1-AWQ
+      nearai.otel.deployment: GLM-5.1-SGL-AWQ-TP4
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
+  dcgm-glm51:
+    image: nvcr.io/nvidia/k8s/dcgm-exporter@sha256:ed594cf53fe6942e84b07b0740cdcbb249fa4b39cb21feeebf93881ae51f0b5e
+    container_name: dcgm-glm51
+    runtime: nvidia
+    cap_add:
+      - SYS_ADMIN
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=0,1,2,3
+    ports:
+      - 9400:9400
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              capabilities:
+                - gpu
+              device_ids:
+                - "0"
+                - "1"
+                - "2"
+                - "3"
+    restart: unless-stopped
+    logging: *1
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:QuantTrio/GLM-5.1-AWQ","deployment:GLM-5.1-SGL-AWQ-TP4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: dcgm
+      nearai.otel.service: dcgm-exporter
+      nearai.otel.source: dcgm-exporter
+      nearai.otel.container_name: dcgm-glm51
+      nearai.otel.port: "9400"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: QuantTrio/GLM-5.1-AWQ
+      nearai.otel.deployment: GLM-5.1-SGL-AWQ-TP4
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
+  otelcol-contrib:
+    image: otel/opentelemetry-collector-contrib@sha256:85ac41c2db88d0df9bd6145e608a3cb023f5d8443868adbfbbf66efb51087917
+    container_name: otelcol-contrib
+    command:
+      - "--config=/etc/otelcol-contrib/config.yaml"
+    user: "0:0"
+    mem_limit: 768m
+    environment:
+      - MONITORING_INGEST_TOKEN=${MONITORING_INGEST_TOKEN:-}
+      - CVM_NAME=${CVM_NAME:-unknown}
+      - CVM_HOST=${CVM_HOST:-unknown}
+      - DD_HOSTNAME=${DD_HOSTNAME:-unknown}
+      - ENV=${ENV:-unknown}
+      - HOST_IP=${HOST_IP:-unknown}
+    expose:
+      - "4317"
+      - "4318"
+    volumes:
+      - "/var/lib/docker/containers:/var/lib/docker/containers:ro"
+      - otelcol_app_storage:/var/lib/otelcol-contrib
+    configs:
+      - source: otelcol_app_config
+        target: "/etc/otelcol-contrib/config.yaml"
+        mode: 292
+    restart: unless-stopped
+    logging:
+      driver: local
+      options:
+        max-size: 20m
+        max-file: "3"
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"otelcol-contrib","service":"otelcol-contrib","tags":["deployment:GLM-5.1-SGL-AWQ-TP4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+  proxy-dsv4-flash:
+    image: nearaidev/vllm-proxy-rs@sha256:b0c5cd0786b19dfa46144107be15e340b7a338b1c341d02ffa994c9f1ea77dfd
+    user: root
+    privileged: true
+    runtime: nvidia
+    ipc: host
+    ulimits:
+      memlock: -1
+      nofile:
+        soft: 65535
+        hard: 65535
+    extra_hosts:
+      - compose-manager:host-gateway
+    volumes:
+      - "/var/run/dstack.sock:/var/run/dstack.sock"
+      - certs:/etc/letsencrypt:ro
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: 100m
+        max-file: "10"
+        labels: com.datadoghq.ad.logs,com.docker.compose.service
+    container_name: proxy-dsv4-flash
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - VLLM_PROXY_STREAM_IDLE_TIMEOUT_SECS=20
+      - CLOUD_API_URL=https://cloud-api.near.ai
+      - CLOUD_API_USAGE_TOKEN=${CLOUD_API_USAGE_TOKEN}
+      - COMPOSE_MANAGER_URL=http://compose-manager:8080
+      - LOG_FORMAT=json
+      - MODEL_NAME=deepseek-ai/DeepSeek-V4-Flash
+      - OHTTP_ENABLED=true
+      - TOKEN=${PROXY_TOKEN}
+      - FUSION_ENABLED=${FUSION_ENABLED}
+      - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
+      - VLLM_BACKEND_URLS=http://model-sg-dsv4-flash-fp4-tp2-r1:8000,http://model-sg-dsv4-flash-fp4-tp2-r2:8000
+      - VLLM_PROXY_MAX_REQUEST_SIZE=104857600
+      - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
+      - USE_NV_ATTESTATION_SDK=true
+      - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
+      - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:deepseek-ai/DeepSeek-V4-Flash","deployment:dsv4-flash-migration","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8001","ppcie:true","config_variant:ds4f-migration-v1","stream_idle_timeout:20"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: inference-proxy
+      nearai.otel.service: vllm-proxy
+      nearai.otel.source: vllm-proxy
+      nearai.otel.container_name: proxy-dsv4-flash
+      nearai.otel.port: "8000"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: deepseek-ai/DeepSeek-V4-Flash
+      nearai.otel.deployment: dsv4-flash-migration
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
+      nearai.otel.ppcie: "true"
+      nearai.otel.config_variant: ds4f-migration-v1
+      nearai.otel.stream_idle_timeout: "20"
+  model-sg-dsv4-flash-fp4-tp2-r1:
+    runtime: nvidia
+    ipc: host
+    ulimits:
+      memlock: -1
+      nofile:
+        soft: 65535
+        hard: 65535
+    init: true
+    image: docker.io/nearaidev/sglang@sha256:ec518148762ea02c23aa8615f69ca79b0c18bcd59b3c21c10229db3df323c615
+    command:
+      'sglang serve --trust-remote-code --model-path deepseek-ai/DeepSeek-V4-Flash-0731
+      --revision 7872f01b1d1fe23eabc4c98b48bffcef5a386062 --tp-size 2 --kv-cache-dtype
+      fp8_e4m3 --moe-runner-backend marlin --cuda-graph-max-bs 64 --mem-fraction-static
+      0.83 --max-running-requests 64 --max-queued-requests 16 --schedule-conservativeness
+      1.3 --num-continuous-decode-steps 1 --enable-mixed-chunk --chunked-prefill-size
+      4096 --max-prefill-tokens 16384 --swa-full-tokens-ratio 0.1 --watchdog-timeout
+      1800 --disable-custom-all-reduce --tool-call-parser deepseekv4 --reasoning-parser
+      deepseek-v4 --json-model-override-args ''{"dsv4_reasoning_effort_profile":"official"}''
+      --port 8000 --host 0.0.0.0 --enable-cache-report --enable-metrics --log-requests-level
+      0 --served-model-name deepseek-ai/DeepSeek-V4-Flash ${DSV4_RETURN_HIDDEN_STATES:+--enable-return-hidden-states}
+
+      '
+    volumes:
+      - huggingface_cache:/root/.cache/huggingface
+      - kernel_cache:/root/.cache/deep_gemm
+    environment:
+      - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+      - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0}
+      - VLLM_LOGGING_LEVEL=INFO
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - OPENBLAS_L2_SIZE=2097152
+      - NCCL_DEBUG=WARN
+      - SGLANG_ENABLE_SPEC_V2=1
+      - SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE=4096
+      - SGLANG_DSV4_FP4_EXPERTS=1
+      - SGLANG_ENABLE_UNIFIED_RADIX_TREE=1
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+    restart: unless-stopped
+    stop_grace_period: 5m
+    logging:
+      driver: json-file
+      options:
+        max-size: 100m
+        max-file: "10"
+        labels: com.datadoghq.ad.logs,com.docker.compose.service
+    container_name: model-sg-dsv4-flash-fp4-tp2-r1
+    depends_on:
+      model-downloader-dsv4:
+        condition: service_completed_successfully
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids:
+                - "4"
+                - "5"
+              capabilities:
+                - gpu
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:deepseek-ai/DeepSeek-V4-Flash-0731","model_path:deepseek-ai/DeepSeek-V4-Flash-0731","model_revision:7872f01b1d1fe23eabc4c98b48bffcef5a386062","deployment:dsv4-flash-migration","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8001","instance:1","gpu_pair:4-5","ppcie:true","config_variant:dsv4-0731-prod-target-only","decode_mode:target_only","chunk_size:4096","max_prefill_tokens:16384","continuous_decode_steps:1","chunked_prefill_admission_reserve:4096","watchdog_timeout:1800","cuda_graph:1","max_running_requests:64","max_queued_requests:16","schedule_conservativeness:1.3","sglang_revision:0.5.16-near-dsv4-0731","engine_image:ec518148762e"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: sglang
+      nearai.otel.service: sglang
+      nearai.otel.source: sglang
+      nearai.otel.container_name: model-sg-dsv4-flash-fp4-tp2-r1
+      nearai.otel.port: "8000"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: deepseek-ai/DeepSeek-V4-Flash-0731
+      nearai.otel.model_path: deepseek-ai/DeepSeek-V4-Flash-0731
+      nearai.otel.model_revision: 7872f01b1d1fe23eabc4c98b48bffcef5a386062
+      nearai.otel.deployment: dsv4-flash-migration
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
+      nearai.otel.instance: "1"
+      nearai.otel.gpu_pair: 4-5
+      nearai.otel.ppcie: "true"
+      nearai.otel.config_variant: dsv4-0731-prod-target-only
+      nearai.otel.decode_mode: target_only
+      nearai.otel.chunk_size: "4096"
+      nearai.otel.max_prefill_tokens: "16384"
+      nearai.otel.continuous_decode_steps: "1"
+      nearai.otel.chunked_prefill_admission_reserve: "4096"
+      nearai.otel.watchdog_timeout: "1800"
+      nearai.otel.cuda_graph: "1"
+      nearai.otel.max_running_requests: "64"
+      nearai.otel.max_queued_requests: "16"
+      nearai.otel.schedule_conservativeness: "1.3"
+      nearai.otel.sglang_revision: 0.5.16-near-dsv4-0731
+      nearai.otel.engine_image: ec518148762e
+  model-sg-dsv4-flash-fp4-tp2-r2:
+    runtime: nvidia
+    ipc: host
+    ulimits:
+      memlock: -1
+      nofile:
+        soft: 65535
+        hard: 65535
+    init: true
+    image: docker.io/nearaidev/sglang@sha256:ec518148762ea02c23aa8615f69ca79b0c18bcd59b3c21c10229db3df323c615
+    command:
+      'sglang serve --trust-remote-code --model-path deepseek-ai/DeepSeek-V4-Flash-0731
+      --revision 7872f01b1d1fe23eabc4c98b48bffcef5a386062 --tp-size 2 --kv-cache-dtype
+      fp8_e4m3 --moe-runner-backend marlin --cuda-graph-max-bs 64 --mem-fraction-static
+      0.83 --max-running-requests 64 --max-queued-requests 16 --schedule-conservativeness
+      1.3 --num-continuous-decode-steps 1 --enable-mixed-chunk --chunked-prefill-size
+      4096 --max-prefill-tokens 16384 --swa-full-tokens-ratio 0.1 --watchdog-timeout
+      1800 --disable-custom-all-reduce --tool-call-parser deepseekv4 --reasoning-parser
+      deepseek-v4 --json-model-override-args ''{"dsv4_reasoning_effort_profile":"official"}''
+      --port 8000 --host 0.0.0.0 --enable-cache-report --enable-metrics --log-requests-level
+      0 --served-model-name deepseek-ai/DeepSeek-V4-Flash ${DSV4_RETURN_HIDDEN_STATES:+--enable-return-hidden-states}
+
+      '
+    volumes:
+      - huggingface_cache:/root/.cache/huggingface
+      - kernel_cache:/root/.cache/deep_gemm
+    environment:
+      - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+      - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0}
+      - VLLM_LOGGING_LEVEL=INFO
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - OPENBLAS_L2_SIZE=2097152
+      - NCCL_DEBUG=WARN
+      - SGLANG_ENABLE_SPEC_V2=1
+      - SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE=4096
+      - SGLANG_DSV4_FP4_EXPERTS=1
+      - SGLANG_ENABLE_UNIFIED_RADIX_TREE=1
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+    restart: unless-stopped
+    stop_grace_period: 5m
+    logging:
+      driver: json-file
+      options:
+        max-size: 100m
+        max-file: "10"
+        labels: com.datadoghq.ad.logs,com.docker.compose.service
+    container_name: model-sg-dsv4-flash-fp4-tp2-r2
+    depends_on:
+      model-downloader-dsv4:
+        condition: service_completed_successfully
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids:
+                - "6"
+                - "7"
+              capabilities:
+                - gpu
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:deepseek-ai/DeepSeek-V4-Flash-0731","model_path:deepseek-ai/DeepSeek-V4-Flash-0731","model_revision:7872f01b1d1fe23eabc4c98b48bffcef5a386062","deployment:dsv4-flash-migration","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8001","instance:2","gpu_pair:6-7","ppcie:true","config_variant:dsv4-0731-prod-target-only","decode_mode:target_only","chunk_size:4096","max_prefill_tokens:16384","continuous_decode_steps:1","chunked_prefill_admission_reserve:4096","watchdog_timeout:1800","cuda_graph:1","max_running_requests:64","max_queued_requests:16","schedule_conservativeness:1.3","sglang_revision:0.5.16-near-dsv4-0731","engine_image:ec518148762e"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: sglang
+      nearai.otel.service: sglang
+      nearai.otel.source: sglang
+      nearai.otel.container_name: model-sg-dsv4-flash-fp4-tp2-r2
+      nearai.otel.port: "8000"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: deepseek-ai/DeepSeek-V4-Flash-0731
+      nearai.otel.model_path: deepseek-ai/DeepSeek-V4-Flash-0731
+      nearai.otel.model_revision: 7872f01b1d1fe23eabc4c98b48bffcef5a386062
+      nearai.otel.deployment: dsv4-flash-migration
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
+      nearai.otel.instance: "2"
+      nearai.otel.gpu_pair: 6-7
+      nearai.otel.ppcie: "true"
+      nearai.otel.config_variant: dsv4-0731-prod-target-only
+      nearai.otel.decode_mode: target_only
+      nearai.otel.chunk_size: "4096"
+      nearai.otel.max_prefill_tokens: "16384"
+      nearai.otel.continuous_decode_steps: "1"
+      nearai.otel.chunked_prefill_admission_reserve: "4096"
+      nearai.otel.watchdog_timeout: "1800"
+      nearai.otel.cuda_graph: "1"
+      nearai.otel.max_running_requests: "64"
+      nearai.otel.max_queued_requests: "16"
+      nearai.otel.schedule_conservativeness: "1.3"
+      nearai.otel.sglang_revision: 0.5.16-near-dsv4-0731
+      nearai.otel.engine_image: ec518148762e
+  dcgm-dsv4-flash:
+    image: nvcr.io/nvidia/k8s/dcgm-exporter@sha256:ed594cf53fe6942e84b07b0740cdcbb249fa4b39cb21feeebf93881ae51f0b5e
+    runtime: nvidia
+    cap_add:
+      - SYS_ADMIN
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: 100m
+        max-file: "10"
+        labels: com.datadoghq.ad.logs,com.docker.compose.service
+    container_name: dcgm-dsv4-flash
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids:
+                - "4"
+                - "5"
+                - "6"
+                - "7"
+              capabilities:
+                - gpu
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:deepseek-ai/DeepSeek-V4-Flash","deployment:dsv4-flash-migration","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","gpu_pair:4-7","ppcie:true","config_variant:ds4f-migration-v1"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: dcgm
+      nearai.otel.service: dcgm-exporter
+      nearai.otel.source: dcgm-exporter
+      nearai.otel.container_name: dcgm-dsv4-flash
+      nearai.otel.port: "9400"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: deepseek-ai/DeepSeek-V4-Flash
+      nearai.otel.deployment: dsv4-flash-migration
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
+      nearai.otel.gpu_pair: 4-7
+      nearai.otel.ppcie: "true"
+      nearai.otel.config_variant: ds4f-migration-v1
+  model-downloader-dsv4:
+    image: ghcr.io/astral-sh/uv:python3.11-bookworm-slim@sha256:4f5d923c9dcea037f57bda425dd209f3ec643da2f0b74227f68d09dab0b3bb36
+    entrypoint:
+      - sh
+      - "-c"
+    restart: "no"
+    logging:
+      driver: json-file
+      options:
+        max-size: 100m
+        max-file: "10"
+        labels: com.datadoghq.ad.logs,com.docker.compose.service
+    container_name: model-downloader-dsv4
+    command:
+      - |
+        set -eu
+        uvx --from 'huggingface_hub[hf_xet]' hf download deepseek-ai/DeepSeek-V4-Flash-0731 --revision 7872f01b1d1fe23eabc4c98b48bffcef5a386062
+    volumes:
+      - huggingface_cache:/root/.cache/huggingface
+    environment:
+      - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"model-downloader","service":"model-downloader","tags":["model:deepseek-ai/DeepSeek-V4-Flash-0731","deployment:dsv4-flash-migration","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+  ds4f-migration-registrar:
+    image: curlimages/curl@sha256:d94d07ba9e7d6de898b6d96c1a072f6f8266c687af78a74f380087a0addf5d17
+    container_name: ds4f-migration-registrar
+    entrypoint:
+      - sh
+      - "/register.sh"
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - "[ $$(( $$(date +%s) - $$(cat /tmp/registrar_alive 2>/dev/null || echo 0)
+          )) -lt 180 ]"
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 1200s
+    environment:
+      - HOST_IP=${HOST_IP}
+      - HTTP_PORT=8001
+      - TLS_PORT=${TLS_PORT:-8444}
+      - MODEL_PROXY_TOKEN=${MODEL_PROXY_TOKEN}
+      - PROXY_TOKEN=${PROXY_TOKEN}
+    configs:
+      - source: ds4f_registrar_script
+        target: "/register.sh"
+        mode: 493
+    logging:
+      driver: json-file
+      options:
+        max-size: 100m
+        max-file: "10"
+        labels: com.datadoghq.ad.logs,com.docker.compose.service
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"model-proxy-registrar","service":"model-proxy-registrar","tags":["model:deepseek-ai/DeepSeek-V4-Flash","deployment:dsv4-flash-migration","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+    profiles:
+      - register-ds4f
+networks:
+  default:
+    external: true
+    name: dstack_default
+volumes:
+  otelcol_app_storage:
+  huggingface_cache:
+  compile_cache_a:
+  compile_cache_b:
+  certs:
+    external: true
+    name: certs
+  kernel_cache:
+configs:
+  otelcol_app_config:
+    content: |
+      ---
+      receivers:
+        otlp:
+          protocols:
+            grpc:
+              endpoint: 0.0.0.0:4317
+            http:
+              endpoint: 0.0.0.0:4318
+        filelog/docker_containers:
+          include:
+          - "/var/lib/docker/containers/*/*-json.log"
+          start_at: end
+          storage: file_storage
+          include_file_path: true
+          operators:
+          - type: json_parser
+            parse_from: body
+            parse_to: attributes
+            timestamp:
+              parse_from: attributes.time
+              layout_type: gotime
+              layout: 2006-01-02T15:04:05.999999999Z07:00
+            on_error: send_quiet
+          - type: move
+            from: attributes.log
+            to: body
+            if: attributes.log != nil
+          - type: move
+            from: attributes.stream
+            to: attributes["log.iostream"]
+            if: attributes.stream != nil
+          - type: remove
+            field: attributes.time
+            if: attributes.time != nil
+          - type: regex_parser
+            parse_from: attributes["log.file.path"]
+            regex: "/var/lib/docker/containers/(?P<container_id>[a-f0-9]{12})[a-f0-9]*/"
+            on_error: send_quiet
+          - type: regex_parser
+            parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+            regex: model:(?P<model>[^",\]]+)
+            on_error: send_quiet
+          - type: regex_parser
+            parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+            regex: model_path:(?P<model_path>[^",\]]+)
+            on_error: send_quiet
+          - type: regex_parser
+            parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+            regex: precision:(?P<precision>[^",\]]+)
+            on_error: send_quiet
+          - type: regex_parser
+            parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+            regex: deployment:(?P<deployment>[^",\]]+)
+            on_error: send_quiet
+          - type: regex_parser
+            parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+            regex: ip:(?P<ip>[^",\]]+)
+            on_error: send_quiet
+          - type: regex_parser
+            parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+            regex: port:(?P<port>[^",\]]+)
+            on_error: send_quiet
+          - type: regex_parser
+            parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+            regex: env:(?P<env>[^",\]]+)
+            on_error: send_quiet
+          - type: regex_parser
+            parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+            regex: host:(?P<host>[^",\]]+)
+            on_error: send_quiet
+          - type: regex_parser
+            parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+            regex: instance:(?P<instance>[^",\]]+)
+            on_error: send_quiet
+          - type: regex_parser
+            parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+            regex: replica:(?P<replica>[^",\]]+)
+            on_error: send_quiet
+          - type: add
+            field: attributes["service.name"]
+            value: cvm-docker
+        prometheus/apps:
+          config:
+            scrape_configs:
+            - job_name: sglang-model-sg-glm51-awq-tp4-r1
+              scrape_interval: 15s
+              metrics_path: "/metrics"
+              static_configs:
+              - targets:
+                - model-sg-glm51-awq-tp4-r1:8000
+                labels:
+                  service: sglang
+                  source: sglang
+                  container_name: model-sg-glm51-awq-tp4-r1
+                  model: QuantTrio/GLM-5.1-AWQ
+                  deployment: GLM-5.1-SGL-AWQ-TP4
+                  env: "${ENV}"
+                  host: "${CVM_HOST}"
+                  host_machine: "${CVM_HOST}"
+                  cvm_name: "${CVM_NAME}"
+                  ip: "${HOST_IP}"
+                  port: '8000'
+                  instance: '1'
+            - job_name: dcgm-dcgm-glm51
+              scrape_interval: 15s
+              metrics_path: "/metrics"
+              static_configs:
+              - targets:
+                - dcgm-glm51:9400
+                labels:
+                  service: dcgm-exporter
+                  source: dcgm-exporter
+                  container_name: dcgm-glm51
+                  model: QuantTrio/GLM-5.1-AWQ
+                  deployment: GLM-5.1-SGL-AWQ-TP4
+                  env: "${ENV}"
+                  host: "${CVM_HOST}"
+                  host_machine: "${CVM_HOST}"
+                  cvm_name: "${CVM_NAME}"
+                  ip: "${HOST_IP}"
+                  port: '9400'
+            - job_name: inference-proxy-proxy-glm51
+              scrape_interval: 15s
+              metrics_path: "/metrics"
+              static_configs:
+              - targets:
+                - proxy-glm51:8000
+                labels:
+                  service: vllm-proxy
+                  source: vllm-proxy
+                  container_name: proxy-glm51
+                  model: zai-org/GLM-5.1-FP8
+                  deployment: GLM-5.1-SGL-AWQ-TP4
+                  env: "${ENV}"
+                  host: "${CVM_HOST}"
+                  host_machine: "${CVM_HOST}"
+                  cvm_name: "${CVM_NAME}"
+                  ip: "${HOST_IP}"
+                  port: '8000'
+            - job_name: sglang-model-sg-dsv4-flash-fp4-tp2-r1
+              scrape_interval: 15s
+              metrics_path: "/metrics"
+              static_configs:
+              - targets:
+                - model-sg-dsv4-flash-fp4-tp2-r1:8000
+                labels:
+                  service: sglang
+                  source: sglang
+                  container_name: model-sg-dsv4-flash-fp4-tp2-r1
+                  model: deepseek-ai/DeepSeek-V4-Flash-0731
+                  model_path: deepseek-ai/DeepSeek-V4-Flash-0731
+                  deployment: dsv4-flash-migration
+                  env: "${ENV}"
+                  host: "${CVM_HOST}"
+                  host_machine: "${CVM_HOST}"
+                  cvm_name: "${CVM_NAME}"
+                  ip: "${HOST_IP}"
+                  port: '8001'
+                  instance: '1'
+                  gpu_pair: 4-5
+                  ppcie: 'true'
+                  model_revision: 7872f01b1d1fe23eabc4c98b48bffcef5a386062
+                  config_variant: dsv4-0731-prod-target-only
+                  decode_mode: target_only
+                  chunk_size: '4096'
+                  max_prefill_tokens: '16384'
+                  continuous_decode_steps: '1'
+                  chunked_prefill_admission_reserve: '4096'
+                  watchdog_timeout: '1800'
+                  cuda_graph: '1'
+                  max_running_requests: '64'
+                  max_queued_requests: '16'
+                  schedule_conservativeness: '1.3'
+                  sglang_revision: 0.5.16-near-dsv4-0731
+                  engine_image: ec518148762e
+            - job_name: sglang-model-sg-dsv4-flash-fp4-tp2-r2
+              scrape_interval: 15s
+              metrics_path: "/metrics"
+              static_configs:
+              - targets:
+                - model-sg-dsv4-flash-fp4-tp2-r2:8000
+                labels:
+                  service: sglang
+                  source: sglang
+                  container_name: model-sg-dsv4-flash-fp4-tp2-r2
+                  model: deepseek-ai/DeepSeek-V4-Flash-0731
+                  model_path: deepseek-ai/DeepSeek-V4-Flash-0731
+                  deployment: dsv4-flash-migration
+                  env: "${ENV}"
+                  host: "${CVM_HOST}"
+                  host_machine: "${CVM_HOST}"
+                  cvm_name: "${CVM_NAME}"
+                  ip: "${HOST_IP}"
+                  port: '8001'
+                  instance: '2'
+                  gpu_pair: 6-7
+                  ppcie: 'true'
+                  model_revision: 7872f01b1d1fe23eabc4c98b48bffcef5a386062
+                  config_variant: dsv4-0731-prod-target-only
+                  decode_mode: target_only
+                  chunk_size: '4096'
+                  max_prefill_tokens: '16384'
+                  continuous_decode_steps: '1'
+                  chunked_prefill_admission_reserve: '4096'
+                  watchdog_timeout: '1800'
+                  cuda_graph: '1'
+                  max_running_requests: '64'
+                  max_queued_requests: '16'
+                  schedule_conservativeness: '1.3'
+                  sglang_revision: 0.5.16-near-dsv4-0731
+                  engine_image: ec518148762e
+            - job_name: dcgm-dcgm-dsv4-flash
+              scrape_interval: 15s
+              metrics_path: "/metrics"
+              static_configs:
+              - targets:
+                - dcgm-dsv4-flash:9400
+                labels:
+                  service: dcgm-exporter
+                  source: dcgm-exporter
+                  container_name: dcgm-dsv4-flash
+                  model: deepseek-ai/DeepSeek-V4-Flash
+                  deployment: dsv4-flash-migration
+                  env: "${ENV}"
+                  host: "${CVM_HOST}"
+                  host_machine: "${CVM_HOST}"
+                  cvm_name: "${CVM_NAME}"
+                  ip: "${HOST_IP}"
+                  port: '9400'
+                  gpu_pair: 4-7
+                  ppcie: 'true'
+                  config_variant: ds4f-migration-v1
+            - job_name: inference-proxy-proxy-dsv4-flash
+              scrape_interval: 15s
+              metrics_path: "/metrics"
+              static_configs:
+              - targets:
+                - proxy-dsv4-flash:8000
+                labels:
+                  service: vllm-proxy
+                  source: vllm-proxy
+                  container_name: proxy-dsv4-flash
+                  model: deepseek-ai/DeepSeek-V4-Flash
+                  deployment: dsv4-flash-migration
+                  env: "${ENV}"
+                  host: "${CVM_HOST}"
+                  host_machine: "${CVM_HOST}"
+                  cvm_name: "${CVM_NAME}"
+                  ip: "${HOST_IP}"
+                  port: '8001'
+                  ppcie: 'true'
+                  config_variant: ds4f-migration-v1
+                  stream_idle_timeout: '20'
+        prometheus/self:
+          config:
+            scrape_configs:
+            - job_name: otelcol-app
+              scrape_interval: 30s
+              static_configs:
+              - targets:
+                - localhost:8888
+      processors:
+        memory_limiter:
+          check_interval: 1s
+          limit_mib: 512
+          spike_limit_mib: 128
+        resource:
+          attributes:
+          - key: host.name
+            value: "$${env:DD_HOSTNAME}"
+            action: upsert
+          - key: cvm.name
+            value: "$${env:CVM_NAME}"
+            action: upsert
+          - key: host.machine
+            value: "$${env:CVM_HOST}"
+            action: insert
+          - key: deployment.environment
+            value: "$${env:ENV}"
+            action: upsert
+          - key: service.namespace
+            value: near-ai
+            action: insert
+        transform/docker_metadata:
+          error_mode: ignore
+          log_statements:
+          - context: log
+            statements:
+            - set(attributes["service.name"], attributes["attrs"]["com.docker.compose.service"])
+              where attributes["attrs"] != nil and attributes["attrs"]["com.docker.compose.service"]
+              != nil
+            - set(attributes["service.name"], ParseJSON(attributes["attrs"]["com.datadoghq.ad.logs"])[0]["service"])
+              where attributes["attrs"] != nil and attributes["attrs"]["com.datadoghq.ad.logs"]
+              != nil
+            - set(attributes["log.source"], ParseJSON(attributes["attrs"]["com.datadoghq.ad.logs"])[0]["source"])
+              where attributes["attrs"] != nil and attributes["attrs"]["com.datadoghq.ad.logs"]
+              != nil
+            - set(attributes["service"], attributes["service.name"]) where attributes["attrs"]
+              != nil and attributes["attrs"]["com.datadoghq.ad.logs"] != nil and attributes["service.name"]
+              != nil
+            - set(attributes["source"], attributes["log.source"]) where attributes["attrs"]
+              != nil and attributes["attrs"]["com.datadoghq.ad.logs"] != nil and attributes["log.source"]
+              != nil
+            - set(attributes["container.name"], attributes["attrs"]["com.docker.compose.service"])
+              where attributes["attrs"] != nil and attributes["attrs"]["com.docker.compose.service"]
+              != nil
+        filter/app_logs:
+          error_mode: ignore
+          logs:
+            log_record:
+            - attributes["model"] == nil and attributes["deployment"] == nil
+            - attributes["service.name"] == "compose-manager"
+            - attributes["service.name"] == "compose-manager-launcher"
+            - attributes["service.name"] == "otelcol-management"
+            - attributes["service.name"] == "otelcol-contrib"
+            - attributes["service.name"] == "datadog-agent"
+        groupbyattrs/docker_service:
+          keys:
+          - service.name
+          - service
+          - container.name
+          - log.source
+          - source
+          - log.iostream
+          - model
+          - model_path
+          - precision
+          - deployment
+          - env
+          - host
+          - ip
+          - port
+          - instance
+          - replica
+        batch:
+          send_batch_size: 1024
+          send_batch_max_size: 2048
+          timeout: 5s
+      exporters:
+        otlphttp/gateway:
+          endpoint: https://telemetry.infra.near.ai
+          headers:
+            Authorization: Bearer $${env:MONITORING_INGEST_TOKEN}
+          sending_queue:
+            num_consumers: 1
+            queue_size: 128
+            storage: file_storage
+      extensions:
+        file_storage:
+          directory: "/var/lib/otelcol-contrib/storage"
+          create_directory: true
+      service:
+        extensions:
+        - file_storage
+        pipelines:
+          logs/app:
+            receivers:
+            - filelog/docker_containers
+            processors:
+            - memory_limiter
+            - resource
+            - transform/docker_metadata
+            - filter/app_logs
+            - groupbyattrs/docker_service
+            - batch
+            exporters:
+            - otlphttp/gateway
+          metrics/app:
+            receivers:
+            - prometheus/apps
+            processors:
+            - memory_limiter
+            - resource
+            - batch
+            exporters:
+            - otlphttp/gateway
+          metrics/otlp:
+            receivers:
+            - otlp
+            processors:
+            - memory_limiter
+            - resource
+            - batch
+            exporters:
+            - otlphttp/gateway
+          metrics/self:
+            receivers:
+            - prometheus/self
+            processors:
+            - memory_limiter
+            - resource
+            - batch
+            exporters:
+            - otlphttp/gateway
+          traces:
+            receivers:
+            - otlp
+            processors:
+            - memory_limiter
+            - resource
+            - batch
+            exporters:
+            - otlphttp/gateway
+        telemetry:
+          metrics:
+            address: localhost:8888
+          logs:
+            level: info
+  registrar_script:
+    content: |
+      #!/bin/sh
+      PROXY_URL="https://completions.near.ai"
+      TOKEN="$${MODEL_PROXY_TOKEN}"
+      INFERENCE_TOKEN="$${PROXY_TOKEN}"
+
+      if [ -z "$$TOKEN" ] || [ -z "$$INFERENCE_TOKEN" ]; then
+        echo "ERROR: MODEL_PROXY_TOKEN and PROXY_TOKEN are required for model-proxy registration"
+        exit 1
+      fi
+
+      ENDPOINT="$${HOST_IP}:$${HTTP_PORT}"
+      REGISTERED=false
+      FAILURE_COUNT=0
+      MAX_RETRIES=3
+
+      register_endpoint() {
+        echo "Registering endpoint $$1 with routing port $$2"
+        curl -sS --max-time 10 -X POST "$$PROXY_URL/register/endpoint" \
+          -H "Authorization: Bearer $$TOKEN" \
+          -H "Content-Type: application/json" \
+          -d "{\"endpoint\":\"$$1\",\"routing_port\":$$2}"
+      }
+
+      unregister_endpoint() {
+        echo "Unregistering endpoint $$1"
+        curl -sS --max-time 10 -X POST "$$PROXY_URL/unregister/endpoint" \
+          -H "Authorization: Bearer $$TOKEN" \
+          -H "Content-Type: application/json" \
+          -d "{\"endpoint\":\"$$1\"}"
+      }
+
+      register_model() {
+        curl -sS --max-time 10 -X POST "$$PROXY_URL/register/model" \
+          -H "Authorization: Bearer $$TOKEN" \
+          -H "Content-Type: application/json" \
+          -d "{\"model\":\"$$1\",\"domain\":\"$$2\"}"
+      }
+
+      cleanup() {
+        echo "SIGTERM received, unregistering $$ENDPOINT"
+        unregister_endpoint "$$ENDPOINT"
+        REGISTERED=false
+        exit 0
+      }
+      trap cleanup TERM INT
+
+      mark_registered() {
+        register_endpoint "$$ENDPOINT" "$${TLS_PORT}"
+        register_model "zai-org/GLM-5.1-FP8" "glm-5-1.completions.near.ai"
+        if [ "$$REGISTERED" = false ]; then
+          echo "[GLM-5.1-SGL-AWQ-TP4] Registered zai-org/GLM-5.1-FP8 (1x AWQ TP4) at $$ENDPOINT"
+        fi
+        REGISTERED=true
+      }
+
+      # Readiness gate: probe the proxy pool via the host nginx port. The proxy's
+      # backend_pool health-manages a/b at runtime, so the box is "ready" once the
+      # path resolves; per-backend failover is handled downstream.
+      check_inference() {
+        echo "Performing health check on model endpoint..."
+        status=$$(curl -sS --connect-timeout 10 --max-time 45 -o /dev/null -w "%{http_code}" \
+          -X POST "http://$${HOST_IP}:$${HTTP_PORT}/v1/chat/completions" \
+          -H "Authorization: Bearer $$INFERENCE_TOKEN" \
+          -H "Content-Type: application/json" \
+          -d '{"model":"zai-org/GLM-5.1-FP8","messages":[{"role":"user","content":"hi"}],"max_tokens":1}')
+        curl_status=$$?
+
+        if [ "$$curl_status" -ne 0 ]; then
+          case "$$curl_status" in
+            52|56)
+              echo "[GLM-5.1-SGL-AWQ-TP4] Health probe hit connection-level backpressure (curl $$curl_status); treating as alive but saturated"
+              return 2
+              ;;
+          esac
+          echo "[GLM-5.1-SGL-AWQ-TP4] Health probe curl failed with status $$curl_status"
+          return 1
+        fi
+
+        case "$$status" in
+          2*)
+            return 0
+            ;;
+          503)
+            echo "[GLM-5.1-SGL-AWQ-TP4] Backend returned 503; treating as alive but saturated"
+            return 2
+            ;;
+          *)
+            echo "[GLM-5.1-SGL-AWQ-TP4] Backend returned HTTP $$status"
+            return 1
+            ;;
+        esac
+      }
+
+      READY_URL="http://$${HOST_IP}:$${HTTP_PORT}/v1/models"
+      echo "Waiting for model to be ready (probing $$READY_URL)..."
+      ready_attempts=0
+      until curl --connect-timeout 5 --max-time 10 -sf \
+        -H "Authorization: Bearer $$INFERENCE_TOKEN" \
+        "$$READY_URL" > /dev/null 2>&1; do
+        ready_attempts=$$((ready_attempts + 1))
+        if [ "$$ready_attempts" -ge 30 ]; then
+          echo "WARN: model not reachable at $$READY_URL after $$ready_attempts attempts (~20m); entering registration loop anyway"
+          break
+        fi
+        echo "Model not ready yet (attempt $$ready_attempts/30), retrying in 30s..."
+        sleep 30
+      done
+      echo "Model ready, starting registration loop"
+
+      while true; do
+        date +%s > /tmp/registrar_alive
+        check_inference
+        health_status=$$?
+        case "$$health_status" in
+          0)
+            FAILURE_COUNT=0
+            mark_registered
+            ;;
+          2)
+            FAILURE_COUNT=0
+            echo "[GLM-5.1-SGL-AWQ-TP4] Keeping $$ENDPOINT registered while backend is saturated"
+            mark_registered
+            ;;
+          *)
+            FAILURE_COUNT=$$((FAILURE_COUNT + 1))
+            echo "[GLM-5.1-SGL-AWQ-TP4] Health check failed ($$FAILURE_COUNT/$$MAX_RETRIES)"
+            if [ "$$REGISTERED" = true ] && [ "$$FAILURE_COUNT" -ge "$$MAX_RETRIES" ]; then
+              echo "[GLM-5.1-SGL-AWQ-TP4] Retry limit reached, unregistering $$ENDPOINT"
+              unregister_endpoint "$$ENDPOINT"
+              REGISTERED=false
+              echo "[GLM-5.1-SGL-AWQ-TP4] Exiting to refresh DNS (container will auto-restart)"
+              exit 1
+            fi
+            ;;
+        esac
+        sleep 60
+      done
+  nginx_conf:
+    content: |
+      log_format json_combined escape=json
+        '{'  '"time":"$$time_iso8601"'
+        ',"request_id":"$$http_x_request_id"'
+        ',"org_id":"$$http_x_org_id"'
+        ',"workspace_id":"$$http_x_workspace_id"'
+        ',"http_host":"$$host"'
+        ',"method":"$$request_method"'
+        ',"uri":"$$uri"'
+        ',"status":$$status'
+        ',"request_length":$$request_length'
+        ',"bytes_sent":$$bytes_sent'
+        ',"request_time":$$request_time'
+        ',"upstream_addr":"$$upstream_addr"'
+        '}';
+
+      server {
+          listen 80 default_server;
+          access_log /var/log/nginx/access.log json_combined;
+          client_max_body_size 100m;
+          client_body_buffer_size 1m;
+          location / {
+              proxy_pass http://proxy-glm51:8000;
+              proxy_http_version 1.1;
+              proxy_set_header Host $$host;
+              proxy_set_header X-Real-IP $$remote_addr;
+              proxy_set_header X-Forwarded-For $$proxy_add_x_forwarded_for;
+              proxy_set_header X-Forwarded-Proto $$scheme;
+              proxy_set_header Connection '';
+              proxy_buffering off;
+              proxy_cache off;
+              proxy_read_timeout 3600s;
+          }
+      }
+
+      server {
+          listen 443 ssl http2;
+          server_name glm-5-1.completions.near.ai;
+          ssl_certificate /etc/letsencrypt/live/completions.near.ai/fullchain.pem;
+          ssl_certificate_key /etc/letsencrypt/live/completions.near.ai/privkey.pem;
+          ssl_protocols TLSv1.2 TLSv1.3;
+          keepalive_timeout 1h;
+          keepalive_requests 1000000;
+          access_log /var/log/nginx/access.log json_combined;
+          client_max_body_size 100m;
+          client_body_buffer_size 1m;
+          location / {
+              proxy_pass http://proxy-glm51:8000;
+              proxy_http_version 1.1;
+              proxy_set_header Host $$host;
+              proxy_set_header X-Real-IP $$remote_addr;
+              proxy_set_header X-Forwarded-For $$proxy_add_x_forwarded_for;
+              proxy_set_header X-Forwarded-Proto $$scheme;
+              proxy_set_header Connection '';
+              proxy_buffering off;
+              proxy_cache off;
+              proxy_read_timeout 3600s;
+          }
+      }
+
+      server {
+          listen 8001;
+          access_log /var/log/nginx/access.log json_combined;
+          client_max_body_size 100m;
+          client_body_buffer_size 1m;
+          location / {
+              proxy_pass http://proxy-dsv4-flash:8000;
+              proxy_http_version 1.1;
+              proxy_set_header Host $$host;
+              proxy_set_header X-Real-IP $$remote_addr;
+              proxy_set_header X-Forwarded-For $$proxy_add_x_forwarded_for;
+              proxy_set_header X-Forwarded-Proto $$scheme;
+              proxy_set_header Connection '';
+              proxy_buffering off;
+              proxy_cache off;
+              proxy_read_timeout 3600s;
+          }
+      }
+
+      server {
+          listen 443 ssl http2;
+          server_name dsv4-flash.completions.near.ai ~^dsv4-flash-i\d+\.completions\.near\.ai$$;
+          ssl_certificate /etc/letsencrypt/live/completions.near.ai/fullchain.pem;
+          ssl_certificate_key /etc/letsencrypt/live/completions.near.ai/privkey.pem;
+          ssl_protocols TLSv1.2 TLSv1.3;
+          keepalive_timeout 1h;
+          keepalive_requests 1000000;
+          access_log /var/log/nginx/access.log json_combined;
+          client_max_body_size 100m;
+          client_body_buffer_size 1m;
+          location / {
+              proxy_pass http://proxy-dsv4-flash:8000;
+              proxy_http_version 1.1;
+              proxy_set_header Host $$host;
+              proxy_set_header X-Real-IP $$remote_addr;
+              proxy_set_header X-Forwarded-For $$proxy_add_x_forwarded_for;
+              proxy_set_header X-Forwarded-Proto $$scheme;
+              proxy_set_header Connection '';
+              proxy_buffering off;
+              proxy_cache off;
+              proxy_read_timeout 3600s;
+          }
+      }
+  ds4f_registrar_script:
+    content: |
+      #!/bin/sh
+      PROXY_URL="https://completions.near.ai"
+      TOKEN="$${MODEL_PROXY_TOKEN}"
+      INFERENCE_TOKEN="$${PROXY_TOKEN}"
+
+      if [ -z "$$TOKEN" ] || [ -z "$$INFERENCE_TOKEN" ]; then
+        echo "ERROR: MODEL_PROXY_TOKEN and PROXY_TOKEN are required for model-proxy registration"
+        exit 1
+      fi
+
+      ENDPOINT="$${HOST_IP}:$${HTTP_PORT}"
+      REGISTERED=false
+      FAILURE_COUNT=0
+      MAX_RETRIES=3
+
+      register_endpoint() {
+        echo "Registering endpoint $$1 with routing port $$2"
+        curl -sS --max-time 10 -X POST "$$PROXY_URL/register/endpoint" \
+          -H "Authorization: Bearer $$TOKEN" \
+          -H "Content-Type: application/json" \
+          -d "{\"endpoint\":\"$$1\",\"routing_port\":$$2}"
+      }
+
+      unregister_endpoint() {
+        echo "Unregistering endpoint $$1"
+        curl -sS --max-time 10 -X POST "$$PROXY_URL/unregister/endpoint" \
+          -H "Authorization: Bearer $$TOKEN" \
+          -H "Content-Type: application/json" \
+          -d "{\"endpoint\":\"$$1\"}"
+      }
+
+      register_model() {
+        curl -sS --max-time 10 -X POST "$$PROXY_URL/register/model" \
+          -H "Authorization: Bearer $$TOKEN" \
+          -H "Content-Type: application/json" \
+          -d "{\"model\":\"$$1\",\"domain\":\"$$2\"}"
+      }
+
+      cleanup() {
+        echo "SIGTERM received, unregistering $$ENDPOINT"
+        unregister_endpoint "$$ENDPOINT"
+        REGISTERED=false
+        exit 0
+      }
+      trap cleanup TERM INT
+
+      mark_registered() {
+        register_endpoint "$$ENDPOINT" "$${TLS_PORT}"
+        register_model "deepseek-ai/DeepSeek-V4-Flash" "dsv4-flash.completions.near.ai"
+        if [ "$$REGISTERED" = false ]; then
+          echo "[DSV4-Flash-Migration] Registered deepseek-ai/DeepSeek-V4-Flash (2x TP2) at $$ENDPOINT"
+        fi
+        REGISTERED=true
+      }
+
+      # Readiness gate: probe the proxy pool via the host nginx port. The proxy's
+      # backend_pool health-manages a/b at runtime, so the box is "ready" once the
+      # path resolves; per-backend failover is handled downstream.
+      check_inference() {
+        echo "Performing health check on model endpoint..."
+        status=$$(curl -sS --connect-timeout 10 --max-time 45 -o /dev/null -w "%{http_code}" \
+          -X POST "http://$${HOST_IP}:$${HTTP_PORT}/v1/chat/completions" \
+          -H "Authorization: Bearer $$INFERENCE_TOKEN" \
+          -H "Content-Type: application/json" \
+          -d '{"model":"deepseek-ai/DeepSeek-V4-Flash","messages":[{"role":"user","content":"hi"}],"max_tokens":1}')
+        curl_status=$$?
+
+        if [ "$$curl_status" -ne 0 ]; then
+          case "$$curl_status" in
+            52|56)
+              echo "[DSV4-Flash-Migration] Health probe hit connection-level backpressure (curl $$curl_status); treating as alive but saturated"
+              return 2
+              ;;
+          esac
+          echo "[DSV4-Flash-Migration] Health probe curl failed with status $$curl_status"
+          return 1
+        fi
+
+        case "$$status" in
+          2*)
+            return 0
+            ;;
+          503)
+            echo "[DSV4-Flash-Migration] Backend returned 503; treating as alive but saturated"
+            return 2
+            ;;
+          *)
+            echo "[DSV4-Flash-Migration] Backend returned HTTP $$status"
+            return 1
+            ;;
+        esac
+      }
+
+      READY_URL="http://$${HOST_IP}:$${HTTP_PORT}/v1/models"
+      echo "Waiting for model to be ready (probing $$READY_URL)..."
+      ready_attempts=0
+      until curl --connect-timeout 5 --max-time 10 -sf \
+        -H "Authorization: Bearer $$INFERENCE_TOKEN" \
+        "$$READY_URL" > /dev/null 2>&1; do
+        ready_attempts=$$((ready_attempts + 1))
+        if [ "$$ready_attempts" -ge 30 ]; then
+          echo "WARN: model not reachable at $$READY_URL after $$ready_attempts attempts (~20m); entering registration loop anyway"
+          break
+        fi
+        echo "Model not ready yet (attempt $$ready_attempts/30), retrying in 30s..."
+        sleep 30
+      done
+      echo "Model ready, starting registration loop"
+
+      while true; do
+        date +%s > /tmp/registrar_alive
+        check_inference
+        health_status=$$?
+        case "$$health_status" in
+          0)
+            FAILURE_COUNT=0
+            mark_registered
+            ;;
+          2)
+            FAILURE_COUNT=0
+            echo "[DSV4-Flash-Migration] Keeping $$ENDPOINT registered while backend is saturated"
+            mark_registered
+            ;;
+          *)
+            FAILURE_COUNT=$$((FAILURE_COUNT + 1))
+            echo "[DSV4-Flash-Migration] Health check failed ($$FAILURE_COUNT/$$MAX_RETRIES)"
+            if [ "$$REGISTERED" = true ] && [ "$$FAILURE_COUNT" -ge "$$MAX_RETRIES" ]; then
+              echo "[DSV4-Flash-Migration] Retry limit reached, unregistering $$ENDPOINT"
+              unregister_endpoint "$$ENDPOINT"
+              REGISTERED=false
+              echo "[DSV4-Flash-Migration] Exiting to refresh DNS (container will auto-restart)"
+              exit 1
+            fi
+            ;;
+        esac
+        sleep 60
+      done

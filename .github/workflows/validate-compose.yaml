@@ -44,6 +44,14 @@ jobs:
             python:3.12-slim \
             python3 scripts/validate_streaming_keepalive.py
 
+      - name: Validate DS4F migration contracts
+        run: |
+          docker run --rm \
+            -v "$PWD:/repo" \
+            -w /repo \
+            ruby:3.3-alpine \
+            ruby scripts/validate_ds4f_migration.rb
+
       - name: Validate registrar auth contracts
         run: |
           docker run --rm \
