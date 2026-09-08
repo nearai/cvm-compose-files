@@ -85,6 +85,15 @@ jobs:
             ruby:3.3-alpine \
             ruby scripts/validate_qwen_glm53_capacity.rb
 
+      - name: Validate connection-preserving Qwen handover
+        run: |
+          qwen_test_dir=$(mktemp -d)
+          python3 -m venv "$qwen_test_dir"
+          "$qwen_test_dir/bin/pip" install PyYAML==6.0.3
+          "$qwen_test_dir/bin/python" scripts/render_qwen_handover.py --check
+          "$qwen_test_dir/bin/python" scripts/validate_qwen_handover.py
+          "$qwen_test_dir/bin/python" scripts/validate_qwen_qualification.py
+
       - name: Validate docker compose files
         # Compose files reference env vars that are populated at deploy time
         # by compose-manager (or the operator). CI doesn't have the real
