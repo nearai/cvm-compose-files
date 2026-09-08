@@ -5,7 +5,9 @@ require "json"
 require "yaml"
 
 ROOT = File.expand_path("..", __dir__)
-EXCLUDED_FILES = ["cleanup-hf-model.yaml"].freeze
+# Standalone one-shot tools, not serving stacks. The GPU diagnostic's isolation
+# and evidence contract is independently enforced by validate_migration_gpu_preflight.rb.
+EXCLUDED_FILES = ["cleanup-hf-model.yaml", "migration-gpu-preflight.yaml"].freeze
 REQUIRED_COLLECTOR_ENV = %w[
   MONITORING_INGEST_TOKEN
   CVM_NAME

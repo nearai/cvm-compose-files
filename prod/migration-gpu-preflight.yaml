@@ -1,0 +1,162 @@
+name: migration-preflight
+
+x-gpu-preflight-script: &gpu_preflight_script |
+  import ctypes
+  import json
+  import re
+  import subprocess
+  import sys
+  import time
+  import uuid
+  import xml.etree.ElementTree as ET
+  from datetime import datetime, timezone
+
+  HEALTH_SECTIONS = (
+      "ecc_mode", "ecc_errors", "retired_pages", "remapped_rows",
+      "gpu_recovery_action", "gpu_reset_status", "reset_status",
+  )
+
+  def tree(element):
+      if not list(element):
+          return (element.text or "").strip()
+      return {child.tag: tree(child) for child in element}
+
+  def parse_gpu_xml(text):
+      root = ET.fromstring(text)
+      rows = []
+      for gpu in root.findall("gpu"):
+          uuid = gpu.findtext("uuid")
+          if not uuid or not uuid.startswith("GPU-"):
+              raise ValueError("GPU identity missing")
+          rows.append({
+              "uuid": uuid,
+              "pci_bus_id": gpu.get("id"),
+              "health": {key: tree(gpu.find(key)) if gpu.find(key) is not None else None for key in HEALTH_SECTIONS},
+          })
+      if not rows or len({row["uuid"] for row in rows}) != len(rows):
+          raise ValueError("GPU inventory missing or duplicated")
+      return {"driver_version": root.findtext("driver_version"), "gpus": rows}
+
+  def kernel_summary(text, now, lookback=7200):
+      patterns = {
+          "xid": re.compile(r"NVRM:.*Xid", re.I),
+          "uncorrectable_ecc": re.compile(r"uncorrectable.*ECC|ECC.*uncorrectable", re.I),
+          "pcie_fatal": re.compile(r"AER:.*(?:Uncorrected|fatal)", re.I),
+          "oom_kill": re.compile(r"Out of memory: Killed process|oom-kill:", re.I),
+      }
+      counts = {name: 0 for name in patterns}
+      times = []
+      latest = {}
+      unparsed = 0
+      for line in text.splitlines():
+          match = re.match(r"^(?:<\d+>)?\[\s*(\d+(?:\.\d+)?)\]\s?(.*)", line)
+          if not match:
+              unparsed += 1
+              continue
+          stamp, message = float(match[1]), match[2]
+          times.append(stamp)
+          # printk and /proc/uptime can diverge. Conservatively include future
+          # records and expose the skew instead of silently dropping errors.
+          if stamp < max(0, now - lookback):
+              continue
+          for name, pattern in patterns.items():
+              if pattern.search(message):
+                  counts[name] += 1
+                  latest[name] = stamp
+      return {
+          "ok": bool(times), "lookback_seconds": lookback,
+          "uptime_seconds": now, "oldest_record_seconds": min(times) if times else None,
+          "newest_record_seconds": max(times) if times else None,
+          "future_records": sum(stamp > now + 5 for stamp in times),
+          "max_future_offset_seconds": max(0, max(times) - now) if times else None,
+          "clock_alignment_ok": bool(times) and max(times) <= now + 5,
+          "full_window_available": bool(times) and min(times) <= max(1, now - lookback),
+          "unparsed_lines": unparsed, "counts": counts, "latest_match_seconds": latest,
+      }
+
+  def read_kernel():
+      libc = ctypes.CDLL(None, use_errno=True)
+      libc.klogctl.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_int]
+      libc.klogctl.restype = ctypes.c_int
+      size = libc.klogctl(10, None, 0)  # SYSLOG_ACTION_SIZE_BUFFER
+      if not 0 < size <= 16777216:
+          return {"ok": False, "stage": "size", "errno": ctypes.get_errno()}
+      buffer = ctypes.create_string_buffer(size)
+      received = libc.klogctl(3, buffer, size)  # SYSLOG_ACTION_READ_ALL; does NOT clear
+      if received < 0:
+          return {"ok": False, "stage": "read", "errno": ctypes.get_errno()}
+      # Never emit or persist kernel message text.
+      with open("/proc/uptime") as uptime:
+          now = float(uptime.read().split()[0])
+      return kernel_summary(buffer.raw[:received].decode("utf-8", errors="replace"), now)
+
+  def main():
+      kernel_only = sys.argv[1:] == ["--kernel-only"]
+      if sys.argv[1:] and not kernel_only:
+          raise SystemExit("Unsupported mode")
+      run_id = uuid.uuid4().hex
+      # Give start-at-end log shippers time to discover the new file. Retrieval
+      # of the final result is still required; the delay is not delivery proof.
+      print(json.dumps({"read_only": True, "stage": "collecting", "run_id": run_id}), flush=True)
+      time.sleep(2)
+      out = {"utc": datetime.now(timezone.utc).isoformat(), "run_id": run_id, "read_only": True, "mode": "kernel-only" if kernel_only else "gpu-and-kernel"}
+      if not kernel_only:
+          try:
+              result = subprocess.run(["nvidia-smi", "-q", "-x"], capture_output=True, text=True, timeout=30)
+              out["smi_exit_code"] = result.returncode
+              if result.returncode == 0:
+                  out.update(parse_gpu_xml(result.stdout))
+              else:
+                  out["gpu_query_ok"] = False
+          except Exception as error:
+              out["gpu_query_error"] = type(error).__name__
+      try:
+          out["kernel"] = read_kernel()
+      except Exception as error:
+          out["kernel"] = {"ok": False, "error_type": type(error).__name__}
+      out["collection_ok"] = (kernel_only or bool(out.get("gpus"))) and out["kernel"]["ok"]
+      print(json.dumps(out, sort_keys=True))
+      # A successful collection is NOT a health/admission verdict. Inspect
+      # counters, unknown fields and kernel-window coverage before proceeding.
+      return 0 if out["collection_ok"] else 1
+
+  if __name__ == "__main__":
+      raise SystemExit(main())
+
+# Run explicitly in its own project (for example migration-preflight), never work.
+# Observation only: this does not reset devices, clear counters or change serving.
+x-preflight-common: &preflight-common
+    image: ghcr.io/astral-sh/uv:python3.11-bookworm-slim@sha256:4f5d923c9dcea037f57bda425dd209f3ec643da2f0b74227f68d09dab0b3bb36
+    profiles: [migration-preflight]
+    entrypoint: [python3, -c]
+    network_mode: none
+    read_only: true
+    user: "0:0"
+    cap_drop: [ALL]
+    # klogctl READ_ALL/SIZE_BUFFER only; no clear, console-level or write action.
+    cap_add: [SYSLOG]
+    security_opt: [no-new-privileges:true]
+    restart: "no"
+    command: [*gpu_preflight_script]
+    labels:
+      # Existing app collectors accept deployment-tagged logs. No fake model
+      # identity or management-service label, and no collector restart needed.
+      com.datadoghq.ad.logs: '[{"source":"migration-preflight","service":"migration-preflight","tags":["deployment:migration-preflight"]}]'
+    logging:
+      driver: json-file
+      options:
+        max-size: 1m
+        max-file: "2"
+        labels: com.datadoghq.ad.logs,com.docker.compose.service
+
+services:
+  migration-gpu-preflight:
+    <<: *preflight-common
+    runtime: nvidia
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: utility
+  migration-kernel-preflight:
+    <<: *preflight-common
+    # Exercise the identical kernel collector on CPU-only staging CVMs.
+    command: [*gpu_preflight_script, --kernel-only]
