@@ -42,11 +42,9 @@ def patched_sources(sources):
                     data, cls.gpu_image_decode and not envs.SGLANG_MM_CPU_PREPROCESS.get()
                 )
 ''')
-    out[base] = replace_once(out[base], '                return load_video(data, frame_count_limit)\n', '''                return load_video(
-                    data,
-                    use_gpu=False if envs.SGLANG_MM_CPU_PREPROCESS.get() else frame_count_limit,
-                )
-''')
+    # Leave load_video's arguments untouched. In this pinned runtime its second
+    # parameter is use_gpu, despite the caller naming it frame_count_limit.
+    # VideoDecoderWrapper enforces CPU below without changing this call contract.
     before = '''        except ValueError as e:
             # Bad input (e.g. invalid base64) -> 400, not 500.
             data_str = str(data)

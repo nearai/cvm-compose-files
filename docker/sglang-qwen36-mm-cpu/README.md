@@ -30,7 +30,12 @@ was malformed rather than exposing a decoder bug.
 - Actual base packages: torch2.11.0+cu130, torchvision0.26.0+cu130,
   torchcodec0.11.1+cu130, transformers5.12.1. Do not infer CUDA ABI from a tag name.
 - Every edited source has a checked SHA256 preimage; changed/already-patched
-  inputs fail the build. All15 method regressions run before applying the patch.
+  inputs fail the build. All 16 method regressions run before applying the patch.
+- The pinned `load_video(video_file, use_gpu=True)` has no frame-limit argument.
+  Its existing caller passes a variable named `frame_count_limit` in that slot.
+  This mitigation leaves that call unchanged and forces CPU in the decoder
+  wrapper; tests verify original arguments in both modes. It does not introduce
+  or claim to fix the runtime's separate frame-sampling policy.
 - The real-media smoke uses the pinned Qwen processor, synthetic PNG/JPEG/H264,
   concurrent video decoders and **no GPU devices**. It must leave CUDA uninitialized.
   This verifies preprocessing, not inference performance or real-CVM serving.

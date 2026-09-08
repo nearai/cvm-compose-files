@@ -103,11 +103,22 @@ class PatchTests(unittest.TestCase):
         self.assertIs(load('synthetic', Modality.IMAGE), image)
         self.assertEqual(observed, [False])
 
-    def test_cpu_disables_video_cuda(self):
-        observed = []
-        load = self.loader(video=lambda data, **kw: observed.append(kw) or 'decoded')
-        self.assertEqual(load('synthetic', Modality.VIDEO, frame_count_limit=128), 'decoded')
-        self.assertEqual(observed, [{'use_gpu': False}])
+    def test_video_loader_preserves_pinned_call_contract(self):
+        # The pinned load_video takes (video_file, use_gpu=True), NOT a frame
+        # limit. Keep its original arguments in both modes; the wrapper below
+        # chooses CPU independently. Do not invent a new sampling policy here.
+        for enabled in (False, True):
+            for limit in (None, 0, 1, 128):
+                with self.subTest(enabled=enabled, limit=limit):
+                    seen = []
+                    def video(data, *args, **kwargs):
+                        seen.append((data, args, kwargs))
+                        return 'decoded'
+                    for source in (ORIGINAL[BASE], PATCHED[BASE]):
+                        load = self.loader(enabled=enabled, video=video, source=source)
+                        self.assertEqual(load('synthetic', Modality.VIDEO,
+                                              frame_count_limit=limit), 'decoded')
+                    self.assertEqual(seen, [('synthetic', (limit,), {})] * 2)
 
     def test_nonpositive_frame_dimensions_become_client_error(self):
         for dimension in ('height', 'width'):
@@ -176,6 +187,15 @@ class PatchTests(unittest.TestCase):
         run = method(PATCHED[VIDEO], 'VideoDecoderWrapper', '__init__', ns)
         run(NS(), b'synthetic', device='cuda')
         self.assertEqual(seen, [{'dimension_order': 'NHWC'}])
+
+    def test_disabled_video_constructor_preserves_cuda_selection(self):
+        ns = context(enabled=False)
+        seen = []
+        ns.update(_BACKEND='torchcodec', VideoDecoder=lambda source, **kw: seen.append(kw) or object(),
+                  _try_cuda_backend=lambda: True)
+        run = method(PATCHED[VIDEO], 'VideoDecoderWrapper', '__init__', ns)
+        run(NS(), b'synthetic', device='cuda')
+        self.assertEqual(seen, [{'dimension_order': 'NHWC', 'device': 'cuda'}])
 
     def test_cpu_video_frames_do_not_pin_memory_or_initialize_cuda(self):
         ns = context()

@@ -58,7 +58,11 @@ encoded = next(ast.literal_eval(n.value) for n in tree.body if isinstance(n, ast
                and any(isinstance(t, ast.Name) and t.id == 'BLUE_VIDEO' for t in n.targets))
 clip = base64.b64decode(encoded)
 def decode(_):
-    with VideoDecoderWrapper(clip, device='cuda') as decoder:
+    # Exercise the complete loader -> decoder chain. The pinned loader passes
+    # this nonzero argument into use_gpu, so the CPU wrapper guard is required.
+    with base.BaseMultimodalProcessor._load_single_item(
+        clip, Modality.VIDEO, frame_count_limit=128
+    ) as decoder:
         assert len(decoder) == 4
         frames = decoder.get_frames_as_tensor([0, 1, 2, 3])
         assert frames.device.type == 'cpu' and tuple(frames.shape) == (4, 224, 224, 3)
