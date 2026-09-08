@@ -1,10 +1,11 @@
+name: migration-preflight
+
 x-gpu-preflight-script: &gpu_preflight_script |
   import ctypes
   import json
   import re
   import subprocess
   import sys
-  import time
   import xml.etree.ElementTree as ET
   from datetime import datetime, timezone
 
@@ -52,7 +53,9 @@ x-gpu-preflight-script: &gpu_preflight_script |
               continue
           stamp, message = float(match[1]), match[2]
           times.append(stamp)
-          if stamp < max(0, now - lookback) or stamp > now + 5:
+          # printk and /proc/uptime can diverge. Conservatively include future
+          # records and expose the skew instead of silently dropping errors.
+          if stamp < max(0, now - lookback):
               continue
           for name, pattern in patterns.items():
               if pattern.search(message):
@@ -62,6 +65,9 @@ x-gpu-preflight-script: &gpu_preflight_script |
           "ok": bool(times), "lookback_seconds": lookback,
           "uptime_seconds": now, "oldest_record_seconds": min(times) if times else None,
           "newest_record_seconds": max(times) if times else None,
+          "future_records": sum(stamp > now + 5 for stamp in times),
+          "max_future_offset_seconds": max(0, max(times) - now) if times else None,
+          "clock_alignment_ok": bool(times) and max(times) <= now + 5,
           "full_window_available": bool(times) and min(times) <= max(1, now - lookback),
           "unparsed_lines": unparsed, "counts": counts, "latest_match_seconds": latest,
       }

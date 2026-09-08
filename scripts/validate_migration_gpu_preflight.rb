@@ -4,6 +4,7 @@ require 'open3'
 require 'json'
 root = File.expand_path('..', __dir__)
 doc = YAML.load_file(File.join(root, 'prod/migration-gpu-preflight.yaml'), aliases: true)
+raise 'Unsafe default project' unless doc['name'] == 'migration-preflight'
 raise 'Unexpected service' unless doc.fetch('services').keys == ['migration-gpu-preflight', 'migration-kernel-preflight']
 doc['services'].each_value do |service|
 raise 'Isolation missing' unless service['network_mode'] == 'none' && service['read_only'] == true
@@ -37,6 +38,11 @@ tests = <<~'PY'
   result = ns['kernel_summary'](text, 8000, 7200)
   assert result['full_window_available'] and result['unparsed_lines'] == 0
   assert result['counts'] == {'xid':1, 'uncorrectable_ecc':1, 'pcie_fatal':1, 'oom_kill':1}
+  assert result['clock_alignment_ok'] and result['future_records'] == 0
+  future = ns['kernel_summary']('[ 100.0] boot\n[ 8071.0] NVRM: Xid (PCI:synthetic): 31', 8000)
+  assert future['counts']['xid'] == 1
+  assert not future['clock_alignment_ok'] and future['future_records'] == 1
+  assert future['max_future_offset_seconds'] == 71
   recent = ns['kernel_summary'](text, 8000, 300)
   assert recent['counts']['xid'] == 0 and recent['counts']['oom_kill'] == 1
   partial = ns['kernel_summary']('[ 7900.0] clean', 8000, 7200)

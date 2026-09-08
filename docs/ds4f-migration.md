@@ -50,18 +50,29 @@ Destination: `prod/GLM-5.1-DSV4-Migration.yaml`:
    Check fresh engine/proxy/DCGM labels, GPU claims, queues, errors, and CUDA/OOM/XID
    signals for each replica. HTTP 200/readiness/one-token probes alone do not qualify
    the replicas. Do not withdraw source capacity until both destination replicas pass.
-7. Explicitly start the destination DS4F registrar. Verify registration on every peer
+7. Before admission, run the [read-only GPU preflight](migration-gpu-preflight.md)
+   on the actual destination CVM, after both engines have warmed and passed the
+   functional checks. Use `prod/migration-gpu-preflight.yaml`, the reviewed commit,
+   API `project: migration-preflight` and only `migration-gpu-preflight` (not the
+   CPU-only variant). Dry-run the exact isolated-project request; then inspect
+   its scoped JSON logs. Require the expected eight unique devices and account
+   for ECC/retirement/reset/recovery fields, retained kernel coverage, timestamp
+   alignment and recent XID/ECC/AER/OOM counts. Unknown or nonzero results require
+   investigation, not a zero-error assumption. Compare repeated samples plus
+   fresh inference/metrics. Preserve every serving container identity; do not
+   start the registrar until the evidence supports admission.
+8. Explicitly start the destination DS4F registrar. Verify registration on every peer
    and routed client completions before withdrawing the source.
-8. **Do not withdraw source DS4F in isolation for this upgrade.** First complete
+9. **Do not withdraw source DS4F in isolation for this upgrade.** First complete
    and qualify both off-host Qwen paths from #234. Then follow the controlling
    runbook to stop gpu02's old registrar once and withdraw all three source model
    routes together. Do not restart the registrar with `REGISTER_DSV4=false`; the
    Qwen routes must remain off gpu02 too. The switch remains a backward-compatible
    standalone migration option, not the full-host evacuation procedure.
-9. Drain all source engines and client sessions as specified in the controlling
+10. Drain all source engines and client sessions as specified in the controlling
    runbook. Registry removal and zero queued/running gauges alone do not establish
    that HTTP/2 streams are drained. Keep the old CVM available for rollback.
-10. Record the shutdown go/no-go evidence and validate public serving with the old
+11. Record the shutdown go/no-go evidence and validate public serving with the old
     inference stack stopped before the upgrade operator shuts down the CVM.
 
 ## Rollback

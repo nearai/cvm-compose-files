@@ -54,6 +54,10 @@ dependency absent from this table blocks shutdown until it is accounted for.
   metrics, bounded queues/latency, and no new errors, aborts, CUDA/OOM/XID events.
   Carry over #234's representative single-replica capacity gate; if it fails, keep
   source replicas and do not shut down the CVM.
+- Complete the [destination GPU-health execution gate](ds4f-migration.md#execution-gates)
+  before DS4F registration. Run the isolated read-only preflight on each changed
+  destination CVM as part of qualification; inspect actual GPU fields and kernel
+  coverage/clock alignment, not just successful collection or missing metrics.
 - Finish destination proxy/ingress/registrar changes before entering withdrawal.
   At that point all three models must already have independently working off-host
   routes. Do not treat model-list, readiness, CI or registration alone as proof.
