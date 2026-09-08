@@ -60,6 +60,15 @@ jobs:
             ruby:3.3-alpine \
             ruby scripts/validate_registrar_auth.rb
 
+      - name: Validate read-only GPU preflight
+        run: |
+          set -o pipefail
+          docker run --rm -v "$PWD:/repo:ro" -w /repo ruby:3.3-alpine \
+            ruby scripts/validate_migration_gpu_preflight.rb --emit-python-tests | \
+            docker run --rm -i --network none --read-only --cap-drop ALL \
+              ghcr.io/astral-sh/uv:python3.11-bookworm-slim@sha256:4f5d923c9dcea037f57bda425dd209f3ec643da2f0b74227f68d09dab0b3bb36 \
+              python3 -
+
       - name: Validate GLM-5.3 DCGM telemetry contract
         run: |
           docker run --rm \
