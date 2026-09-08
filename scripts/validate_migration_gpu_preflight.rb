@@ -4,15 +4,20 @@ require 'open3'
 require 'json'
 root = File.expand_path('..', __dir__)
 doc = YAML.load_file(File.join(root, 'prod/migration-gpu-preflight.yaml'), aliases: true)
-raise 'Unexpected service' unless doc.fetch('services').keys == ['migration-gpu-preflight']
-service = doc['services']['migration-gpu-preflight']
+raise 'Unexpected service' unless doc.fetch('services').keys == ['migration-gpu-preflight', 'migration-kernel-preflight']
+doc['services'].each_value do |service|
 raise 'Isolation missing' unless service['network_mode'] == 'none' && service['read_only'] == true
 raise 'Capability scope changed' unless service['cap_drop'] == ['ALL'] && service['cap_add'] == ['SYSLOG']
 raise 'Privilege escalation allowed' unless service['security_opt'] == ['no-new-privileges:true']
 raise 'Unexpected host attachment' unless %w[privileged volumes ports pid ipc devices depends_on].none? { |key| service.key?(key) }
-raise 'Unexpected environment' unless service['environment'] == {'NVIDIA_VISIBLE_DEVICES'=>'all', 'NVIDIA_DRIVER_CAPABILITIES'=>'utility'}
 raise 'Implicit activation' unless service['profiles'] == ['migration-preflight'] && service['restart'] == 'no'
 raise 'Image not pinned' unless service['image'].match?(/@sha256:[a-f0-9]{64}$/)
+end
+raise 'Unexpected GPU environment' unless doc['services']['migration-gpu-preflight']['environment'] == {'NVIDIA_VISIBLE_DEVICES'=>'all', 'NVIDIA_DRIVER_CAPABILITIES'=>'utility'}
+raise 'Missing GPU runtime' unless doc['services']['migration-gpu-preflight']['runtime'] == 'nvidia'
+kernel = doc['services']['migration-kernel-preflight']
+raise 'Kernel-only service accesses GPUs' if kernel.key?('runtime') || kernel.key?('environment')
+raise 'Wrong kernel-only mode' unless kernel['entrypoint'] == ['python3', '/gpu-preflight.py', '--kernel-only']
 code = doc.fetch('configs').fetch('gpu_preflight_script').fetch('content')
 tests = <<~'PY'
   import sys

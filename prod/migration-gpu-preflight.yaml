@@ -1,14 +1,9 @@
 # Run explicitly in its own project (for example migration-preflight), never work.
 # Observation only: this does not reset devices, clear counters or change serving.
-services:
-  migration-gpu-preflight:
+x-preflight-common: &preflight-common
     image: ghcr.io/astral-sh/uv:python3.11-bookworm-slim@sha256:4f5d923c9dcea037f57bda425dd209f3ec643da2f0b74227f68d09dab0b3bb36
     profiles: [migration-preflight]
     entrypoint: [python3, /gpu-preflight.py]
-    runtime: nvidia
-    environment:
-      NVIDIA_VISIBLE_DEVICES: all
-      NVIDIA_DRIVER_CAPABILITIES: utility
     network_mode: none
     read_only: true
     user: "0:0"
@@ -27,6 +22,18 @@ services:
         max-size: 1m
         max-file: "2"
 
+services:
+  migration-gpu-preflight:
+    <<: *preflight-common
+    runtime: nvidia
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: utility
+  migration-kernel-preflight:
+    <<: *preflight-common
+    # Exercise the identical kernel collector on CPU-only staging CVMs.
+    entrypoint: [python3, /gpu-preflight.py, --kernel-only]
+
 configs:
   gpu_preflight_script:
     content: |
@@ -34,6 +41,7 @@ configs:
       import json
       import re
       import subprocess
+      import sys
       import time
       import xml.etree.ElementTree as ET
       from datetime import datetime, timezone
@@ -113,21 +121,25 @@ configs:
           return kernel_summary(buffer.raw[:received].decode("utf-8", errors="replace"), now)
 
       def main():
-          out = {"utc": datetime.now(timezone.utc).isoformat(), "read_only": True}
-          try:
-              result = subprocess.run(["nvidia-smi", "-q", "-x"], capture_output=True, text=True, timeout=30)
-              out["smi_exit_code"] = result.returncode
-              if result.returncode == 0:
-                  out.update(parse_gpu_xml(result.stdout))
-              else:
-                  out["gpu_query_ok"] = False
-          except Exception as error:
-              out["gpu_query_error"] = type(error).__name__
+          kernel_only = sys.argv[1:] == ["--kernel-only"]
+          if sys.argv[1:] and not kernel_only:
+              raise SystemExit("Unsupported mode")
+          out = {"utc": datetime.now(timezone.utc).isoformat(), "read_only": True, "mode": "kernel-only" if kernel_only else "gpu-and-kernel"}
+          if not kernel_only:
+              try:
+                  result = subprocess.run(["nvidia-smi", "-q", "-x"], capture_output=True, text=True, timeout=30)
+                  out["smi_exit_code"] = result.returncode
+                  if result.returncode == 0:
+                      out.update(parse_gpu_xml(result.stdout))
+                  else:
+                      out["gpu_query_ok"] = False
+              except Exception as error:
+                  out["gpu_query_error"] = type(error).__name__
           try:
               out["kernel"] = read_kernel()
           except Exception as error:
               out["kernel"] = {"ok": False, "error_type": type(error).__name__}
-          out["collection_ok"] = bool(out.get("gpus")) and out["kernel"]["ok"]
+          out["collection_ok"] = (kernel_only or bool(out.get("gpus"))) and out["kernel"]["ok"]
           print(json.dumps(out, sort_keys=True))
           # A successful collection is NOT a health/admission verdict. Inspect
           # counters, unknown fields and kernel-window coverage before proceeding.

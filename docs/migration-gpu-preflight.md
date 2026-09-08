@@ -30,5 +30,9 @@ This closes a diagnostic gap in the staged migration from #235; it does not chan
 the no-downtime or source-preservation requirements of that runbook.
 
 Local parser/isolation checks: `ruby scripts/validate_migration_gpu_preflight.rb`.
-Run the helper on a staging CVM before its first production use and verify all
-existing serving container identities are unchanged.
+For CPU-only staging CVMs, explicitly select `migration-kernel-preflight`: it
+exercises the identical kernel collector without requesting GPUs. Its result is
+clearly marked `mode=kernel-only` and is not GPU-health evidence. Validate the
+full GPU variant on a development GPU host too, then collect the actual target
+CVM's evidence before model admission. Verify all pre-existing container identities
+remain unchanged at each step. Both services are profile-gated one-shot tools.
