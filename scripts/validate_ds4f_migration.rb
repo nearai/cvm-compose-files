@@ -5,7 +5,7 @@ require 'open3'
 root = File.expand_path('..', __dir__)
 load_compose = ->(file) { YAML.load_file(File.join(root, file), aliases: true) }
 bridge = load_compose.call('prod/GLM-5.1-DSV4-Migration.yaml')
-source = load_compose.call('prod/dsv4-qwen38-glm51.yaml')
+qwen = load_compose.call('prod/qwen36-qwen38.yaml')
 glm = load_compose.call('prod/GLM-5.1-SGL-AWQ-TP4.yaml')
 services = bridge.fetch('services')
 glm_name = 'model-sg-glm51-awq-tp4-r1'
@@ -21,9 +21,10 @@ assert.call(ids.call('dcgm-glm51') == %w[0 1 2 3], 'GLM exporter GPU scope')
 assert.call(ids.call('dcgm-dsv4-flash') == %w[4 5 6 7], 'DS4F exporter GPU scope')
 assert.call(!services.key?('model-sg-glm51-awq-tp4-r2'), 'Drained GLM replica must not restart')
 assert.call(services[glm_name] == glm['services'][glm_name], 'Retained GLM engine differs from existing config')
+assert.call(services[ds_names[0]]['image'] == 'docker.io/nearaidev/sglang@sha256:ec518148762ea02c23aa8615f69ca79b0c18bcd59b3c21c10229db3df323c615', 'Qualified DS4F image changed')
 ds_names.each do |name|
   %w[image command environment ulimits volumes runtime ipc stop_grace_period].each do |key|
-    assert.call(services[name][key] == source['services'][name][key], "DS4F runtime changed: #{name}.#{key}")
+    assert.call(services[name][key] == services[ds_names[0]][key], "DS4F replicas must use the same runtime: #{name}.#{key}")
   end
 end
 assert.call(services['ds4f-migration-registrar']['profiles'] == ['register-ds4f'], 'Registration must be explicitly gated')
@@ -53,9 +54,19 @@ dcgm = jobs.find { |job| job['job_name'] == 'dcgm-dcgm-dsv4-flash' }
 assert.call(dcgm.dig('static_configs', 0, 'labels', 'gpu_pair') == '4-7', 'DS4F DCGM scrape must cover both replicas')
 assert.call(services['dcgm-dsv4-flash'].dig('labels', 'nearai.otel.gpu_pair') == '4-7', 'DS4F DCGM service must cover both replicas')
 
-# Execute the real source registrar with shell-only HTTP stubs. No network,
+# Execute the Qwen-only registrar with shell-only HTTP stubs. No network,
 # credentials, model requests, or writes outside the disposable container.
-script = source['configs']['registrar_script']['content'].gsub('$$', '$')
+assert.call(!File.read(File.join(root, 'prod/qwen36-qwen38.yaml')).match?(/dsv4|deepseek|ds4f/i), 'Qwen recipe must not contain removed model configuration')
+{
+  'model-sg-qwen38-27b-fp8-tp1-r1' => ['2'],
+  'model-sg-qwen38-27b-fp8-tp1-r2' => ['3'],
+  'model-sg-qwen36-35b-a3b-fp8-tp1' => ['5'],
+  'model-sg-qwen36-35b-a3b-fp8-tp1-r2' => ['4']
+}.each do |name, expected|
+  devices = qwen.fetch('services').fetch(name).dig('deploy', 'resources', 'reservations', 'devices')
+  assert.call(devices.flat_map { |d| d.fetch('device_ids') } == expected, "Qwen placement changed: #{name}")
+end
+script = qwen['configs']['registrar_script']['content'].gsub('$$', '$')
 script = script.sub('sleep 60', 'exit 0')
 stub = <<~SH
   curl() {
@@ -65,19 +76,15 @@ stub = <<~SH
   }
   sleep() { :; }
 SH
-%w[true false invalid].each do |enabled|
-  env = {'MODEL_PROXY_TOKEN'=>'synthetic', 'PROXY_TOKEN'=>'synthetic', 'HOST_IP'=>'127.0.0.1',
-         'TLS_PORT'=>'8444', 'TLS_PORT_2'=>'8003', 'TLS_PORT_QWEN36_35B'=>'8007', 'REGISTER_DSV4'=>enabled}
-  # Replace the heartbeat write so the test leaves no local files behind.
-  test_script = (stub + script).gsub('date +%s > /tmp/registrar_alive', ':')
-  _, calls, status = Open3.capture3(env, 'sh', stdin_data: test_script)
-  if enabled == 'invalid'
-    assert.call(!status.success? && calls.empty?, 'Invalid gate must fail before HTTP')
-    next
-  end
-  assert.call(status.success?, "Registrar test failed: #{enabled}")
-  %w[8002 8006].each { |port| assert.call(calls.include?("127.0.0.1:#{port}"), "Qwen #{port} absent") }
-  assert.call(calls.include?('127.0.0.1:8001') == (enabled == 'true'), 'DS4F registration/readiness gate ignored')
-  assert.call(calls.include?('deepseek-ai/DeepSeek-V4-Flash') == (enabled == 'true'), 'DS4F model registration gate ignored')
+env = {'MODEL_PROXY_TOKEN'=>'synthetic', 'PROXY_TOKEN'=>'synthetic', 'HOST_IP'=>'127.0.0.1',
+       'TLS_PORT_2'=>'8003', 'TLS_PORT_QWEN36_35B'=>'8007'}
+# Replace the heartbeat write so the test leaves no local files behind.
+test_script = (stub + script).gsub('date +%s > /tmp/registrar_alive', ':')
+_, calls, status = Open3.capture3(env, 'sh', stdin_data: test_script)
+assert.call(status.success?, 'Qwen registrar test failed')
+%w[8002 8006].each { |port| assert.call(calls.include?("127.0.0.1:#{port}"), "Qwen #{port} absent") }
+%w[Qwen/Qwen3.8-27B Qwen/Qwen3.6-35B-A3B-FP8].each do |model|
+  assert.call(calls.include?(model), "Qwen model registration missing: #{model}")
 end
-puts 'DS4F migration allocation, runtime preservation, telemetry and registrar contracts OK'
+assert.call(!calls.include?('127.0.0.1:8001'), 'Qwen registrar must not probe removed endpoint')
+puts 'DS4F destination and Qwen-only allocation, telemetry and registrar contracts OK'
