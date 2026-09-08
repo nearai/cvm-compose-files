@@ -2,22 +2,81 @@
 """Synthetic, in-CVM compatibility gate. Emits no tokens, keys, chats or quotes.
 
 Checks report bindings and live signatures, not an independent Intel/NVIDIA
-certificate-chain verification. Only the two fixed local Qwen proxy names are used.
+certificate-chain verification. Uses fixed local Qwen proxy and replica names only.
 """
+import base64
 import hashlib
 import json
 import os
 from pathlib import Path
 import socket
 import ssl
+import struct
 import subprocess
 import sys
 import time
 import uuid
+import zlib
 
 MODEL = 'Qwen/Qwen3.6-35B-A3B-FP8'
 DOMAIN = 'qwen3-6-35b.completions.near.ai'
 BASES = ('http://proxy-qwen36-35b-a3b:8000', 'http://proxy-qwen36-handover:8000')
+# Synthetic 224x224 solid-blue H.264 MP4, four frames at 2 fps; generated with
+# ffmpeg's color source, with no uploaded, downloaded or customer media.
+BLUE_VIDEO = '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'
+
+
+def selected_backend():
+    replica = os.environ.get('QWEN_HANDOVER_REPLICA', 'r1')
+    check(replica in ('r1', 'r2'), 'invalid_handover_replica')
+    return replica, 'http://model-sg-qwen36-35b-a3b-fp8-tp1-' + replica + ':8000'
+
+
+def color_image(color):
+    """Small synthetic RGB PNG; no external image or customer-derived fixture."""
+    rgb = {'red': b'\xff\x00\x00', 'blue': b'\x00\x00\xff'}[color]
+    def chunk(kind, body):
+        return struct.pack('!I', len(body)) + kind + body + struct.pack('!I', zlib.crc32(kind + body))
+    raw = (b'\x00' + rgb * 224) * 224
+    png = (b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('!IIBBBBB', 224, 224, 8, 2, 0, 0, 0))
+           + chunk(b'IDAT', zlib.compress(raw)) + chunk(b'IEND', b''))
+    return 'data:image/png;base64,' + base64.b64encode(png).decode()
+
+
+def vision_check(session, base, headers=None):
+    # Different images and both response modes prevent a text-only health pass.
+    for color in ('red', 'blue'):
+        for streaming in (False, True):
+            payload = {'model': MODEL, 'temperature': 0, 'max_tokens': 256,
+                       'chat_template_kwargs': {'enable_thinking': False}, 'stream': streaming,
+                       'messages': [{'role': 'user', 'content': [
+                           {'type': 'text', 'text': 'What is the solid color of this image? Reply with only the lowercase color name.'},
+                           {'type': 'image_url', 'image_url': {'url': color_image(color)}}]}]}
+            response = session.post(base + '/v1/chat/completions', headers=headers,
+                                    json=payload, timeout=180)
+            check(response.status_code == 200, 'vision_http_' + str(response.status_code))
+            answer(response.content, stream=streaming, expected=color)
+    for streaming in (False, True):
+        payload = {'model': MODEL, 'temperature': 0, 'max_tokens': 256,
+                   'chat_template_kwargs': {'enable_thinking': False}, 'stream': streaming,
+                   'messages': [{'role': 'user', 'content': [
+                       {'type': 'text', 'text': 'What is the solid color throughout this video? Reply with only the lowercase color name.'},
+                       {'type': 'video_url', 'video_url': {'url': 'data:video/mp4;base64,' + BLUE_VIDEO}}]}]}
+        response = session.post(base + '/v1/chat/completions', headers=headers, json=payload, timeout=180)
+        check(response.status_code == 200, 'video_http_' + str(response.status_code))
+        answer(response.content, stream=streaming, expected='blue')
+    return {'image_json': True, 'image_stream': True, 'colors': 2, 'video_json': True, 'video_stream': True}
+
+
+def model_check():
+    import requests
+    replica, base = selected_backend()
+    with requests.Session() as session:
+        session.trust_env = False
+        response = session.get(base + '/v1/models', timeout=30)
+        check(response.status_code == 200, 'engine_model_listing_http')
+        check([row['id'] for row in response.json()['data']] == [MODEL], 'engine_model_listing')
+        return {'status': 'ok', 'replica': replica, 'vision': vision_check(session, base)}
 
 
 def check(condition, name):
@@ -66,11 +125,11 @@ def verify_signature(report, signed, expected_text):
         key.verify(der, digest, ec.ECDSA(utils.Prehashed(hashes.SHA256())))
 
 
-def answer(raw, stream=False):
+def answer(raw, stream=False, expected='42'):
     if not stream:
         data = json.loads(raw)
         choice = data['choices'][0]
-        check(choice['message']['content'].strip() == '42' and choice['finish_reason'] == 'stop', 'semantic_answer')
+        check(choice['message']['content'].strip() == expected and choice['finish_reason'] == 'stop', 'semantic_answer')
         return data
     text, finish, terminal = '', None, False
     for line in raw.decode().splitlines():
@@ -88,7 +147,7 @@ def answer(raw, stream=False):
         choice = choices[0]
         text += choice.get('delta', {}).get('content') or ''
         finish = choice.get('finish_reason') or finish
-    check(terminal and text.strip() == '42' and finish == 'stop', 'stream_answer')
+    check(terminal and text.strip() == expected and finish == 'stop', 'stream_answer')
 
 
 def tls_fingerprint():
@@ -104,6 +163,7 @@ def tls_fingerprint():
 def qualify():
     import requests
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+    replica, backend = selected_backend()
     token = os.environ['PROXY_TOKEN']
     check(bool(token), 'missing_proxy_token')
     session = requests.Session()
@@ -126,6 +186,8 @@ def qualify():
     payload = {'model': MODEL, 'messages': [{'role': 'user', 'content': 'What is 19 + 23? Reply with only the number.'}],
                'max_tokens': 1024, 'temperature': 0, 'chat_template_kwargs': {'enable_thinking': False}}
     try:
+        direct_vision = vision_check(session, backend)
+        temporary_vision = vision_check(session, BASES[1], headers)
         for base in BASES:
             check(get(base, '/healthz').json()['status'] == 'ok', 'proxy_health')
             check([row['id'] for row in get(base, '/v1/models').json()['data']] == [MODEL], 'model_listing')
@@ -185,6 +247,7 @@ def qualify():
             check(response.status_code == 200 and response.headers.get('Content-Type', '').split(';')[0] == media + '-res', 'ohttp_outer_response')
             answer(binary_response(exchange.response(response.content)), stream=streaming)
         return {'status': 'ok', 'checks': checks, 'signing_identities_equal': True,
+                'replica': replica, 'direct_vision': direct_vision, 'temporary_vision': temporary_vision,
                 'canonical_cached_key_on_temporary': ['standard', 'chunked', 'chunked_stream'],
                 'tls_spki_sha256': fingerprint, 'independent_quote_chain_verification': False}
     finally:
@@ -193,13 +256,16 @@ def qualify():
 
 def main():
     operation = uuid.uuid4().hex
-    print(json.dumps({'operation_id': operation, 'stage': 'started', 'mode': 'qualify'}), flush=True)
+    mode = sys.argv[3] if len(sys.argv) > 3 else 'qualify'
+    print(json.dumps({'operation_id': operation, 'stage': 'started', 'mode': mode}), flush=True)
     try:
+        check(mode in ('qualify', 'model-check'), 'invalid_qualification_mode')
+        selected_backend()
         deps()
-        result = qualify()
+        result = model_check() if mode == 'model-check' else qualify()
     except Exception as error:
         result = {'status': 'failed', 'reason': str(error) if type(error) is RuntimeError else type(error).__name__}
-    result.update(operation_id=operation, mode='qualify', terminal=True, emitted_utc=time.time())
+    result.update(operation_id=operation, mode=mode, terminal=True, emitted_utc=time.time())
     for _ in range(19):
         print(json.dumps(result, sort_keys=True), flush=True)
         time.sleep(5)

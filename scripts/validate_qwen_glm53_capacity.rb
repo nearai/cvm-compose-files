@@ -140,9 +140,13 @@ check.call(overlay.dig("volumes", "hugginface_cache") == {"external" => true, "n
 check.call(overlay.dig("volumes", "certs") == {"external" => true, "name" => "certs"}, "Wrong certificate volume")
 temp = overlay.dig("services", "proxy-qwen36-handover")
 canonical = b.dig("services", "proxy-qwen36-35b-a3b")
-%w[image privileged runtime ipc ulimits user volumes extra_hosts environment restart].each do |key|
+%w[image privileged runtime ipc ulimits user volumes extra_hosts restart].each do |key|
   check.call(temp[key] == canonical[key], "Temporary proxy #{key} must match qualified canonical surface")
 end
+temp_env = env.call(temp)
+canonical_env = env.call(canonical)
+check.call(temp_env.reject { |k, _| k == 'VLLM_BACKEND_URLS' } == canonical_env.reject { |k, _| k == 'VLLM_BACKEND_URLS' }, "Temporary proxy environment differs beyond selected replica")
+check.call(temp_env['VLLM_BACKEND_URLS'] == 'http://model-sg-qwen36-35b-a3b-fp8-tp1-${QWEN_HANDOVER_REPLICA:-r1}:8000', "Temporary proxy must select one local Qwen replica, default r1")
 overlay["services"].each do |name, service|
   check.call(service["container_name"] == name, "Handover name collision: #{name}")
   check.call(service["profiles"] == ["qwen-handover"], "Handover must be explicitly profile gated")
@@ -154,10 +158,17 @@ overlay["services"].each do |name, service|
   check.call(service["pid"].nil? || service["pid"] == "container:nginx", "Helper host PID forbidden")
 end
 qualifier = overlay.dig("services", "handover-qualify")
-check.call(qualifier["environment"] == ['PROXY_TOKEN=${PROXY_TOKEN}'], "Qualifier must receive only the proxy credential")
+check.call(qualifier["environment"] == ['PROXY_TOKEN=${PROXY_TOKEN}', 'QWEN_HANDOVER_REPLICA=${QWEN_HANDOVER_REPLICA:-r1}'], "Qualifier must receive only proxy credential and replica selection")
 check.call(qualifier["read_only"] && qualifier["cap_drop"] == ["ALL"] && !qualifier.key?("cap_add"), "Qualifier sandbox weakened")
 check.call(qualifier["security_opt"] == ["no-new-privileges:true"] && !qualifier.key?("pid") && !qualifier.key?("network_mode"), "Qualifier namespace/security changed")
 check.call(!qualifier.key?("volumes") && qualifier["tmpfs"] == ["/tmp:rw,exec,nosuid,nodev,size=256m"], "Qualifier dependencies must stay in bounded disposable tmpfs")
+model_check = overlay.dig("services", "handover-model-check")
+check.call(model_check['environment'] == ['QWEN_HANDOVER_REPLICA=${QWEN_HANDOVER_REPLICA:-r1}'], "Direct model check must receive no credentials")
+check.call(model_check['command'] == qualifier['command'] + ['model-check'], "Direct model check must use the same reviewed qualification code")
+%w[image entrypoint read_only cap_drop security_opt restart tmpfs logging labels profiles].each do |key|
+  check.call(model_check[key] == qualifier[key], "Direct model check sandbox mismatch: #{key}")
+end
+check.call(%w[ports volumes devices pid cap_add privileged runtime].none? { |key| model_check.key?(key) }, "Direct model check gains an unsafe surface")
 
 if errors.any?
   abort "Qwen/GLM capacity contract failed:\n  - #{errors.join("\n  - ")}"

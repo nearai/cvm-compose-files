@@ -20,7 +20,7 @@ Keep all source capacity until the complete destination and evacuation gates pas
   `qwen38-model-proxy-registrar` is profile-gated and only owns probe `${HOST_IP}:8000`.
   Qwen3.6 remains on shared TLS8444, preserving its address-derived backend handle.
 - The temporary proxy keeps the canonical proxy's pinned image, dstack/cert mounts,
-  privileged/NVIDIA attestation surface and single r1 backend. It has no engine GPU
+  privileged/NVIDIA attestation surface and single backend (r1 by default). It has no engine GPU
   reservation. No helper/downloader uses the NVIDIA runtime or reserves a GPU.
 - The generated overlay embeds `scripts/qwen_handover.py`; the manager fetches only
   one Compose file. Regenerate with `python3 scripts/render_qwen_handover.py`.
@@ -83,6 +83,9 @@ interrupted call. The helper project must not affect any `work` container.
    This validates structural nonce/key/TLS bindings and live request signatures,
    not an independent Intel/NVIDIA certificate-chain verification. Retrieve the
    exact-operation terminal record from Loki before proceeding.
+   The qualifier also tests two synthetic images and a four-frame synthetic video,
+   in JSON and complete streaming responses, directly on the selected engine and
+   through temporary. Text, readiness and GPU counters do not prove multimodal health.
 3. Run `handover-preflight`, requiring unchanged installed config hash, master and
    workers, successful candidate `nginx -t`, and `no_signal=true`. It stages a
    separate main config outside the live `*.conf` include. The existing periodic
@@ -140,6 +143,37 @@ interrupted call. The helper project must not affect any `work` container.
 - If Qwen3.8 fails, withdraw only its dedicated registrar, verify peer withdrawal
   and drain that listener/engine while source Qwen3.8 remains serving. Do not restore
   r2 on GPU2 until Qwen3.8 is stopped and GPU release is verified.
+
+### Recover an unhealthy retained r1 before consolidation
+
+`QWEN_HANDOVER_REPLICA` selects only `r1` (default) or `r2` for the temporary
+proxy and qualification helpers; other values fail qualification before requests.
+It never changes the canonical work-project proxy, engines, GPU allocation,
+nginx candidates or registrar. Never change it on an active temporary proxy.
+
+1. If temporary has served traffic, first complete the existing to-canonical
+   rollback, natural worker drain, proven temporary signature TTL plus120s,
+   to-steady restoration and its natural worker drain. Keep temporary until all
+   gates pass. New completion traffic restarts its cache-retention clock.
+2. Run only `handover-model-check` with `QWEN_HANDOVER_REPLICA=r2`. It receives
+   no credentials, uses the fixed local r2 engine name, and must pass fresh
+   image/video JSON and streaming tests. A failed check stops recovery.
+3. With temporary off-path and its caches expired, recreate only temporary with
+   the same explicit r2 setting. Reconcile the dry-run and actual backend config;
+   run `handover-qualify` with r2, preserving all existing crypto and TLS gates.
+4. Follow the normal preflight/long-stream/to-temp/natural-drain procedure.
+   Prove three spaced zero-work samples on r1 before a service-scoped rolling
+   r1 process recovery using its actual old work-project file and immutable
+   image/checkpoint. No GPU reset, CVM/manager restart or shared ingress restart.
+   Preserve r2, all source replicas and both proxies throughout.
+5. Run only `handover-model-check` with r1 after it is ready; inspect fresh GPU,
+   image/video error and queue evidence. Do not remove r2 on a text-only pass.
+   Roll back to canonical with temporary signature fallback, validate continuity,
+   drain and retain caches, restore steady, then return temporary to r1 off-path.
+   Repeat full qualification before resuming the original consolidation sequence.
+
+This is a recovery procedure, not a claim to fix the initiating CUDA fault. A
+repeated fault blocks consolidation and requires a separate root-cause change.
 
 ## Verification
 
