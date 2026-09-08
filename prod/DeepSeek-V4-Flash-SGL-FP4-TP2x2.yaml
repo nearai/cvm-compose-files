@@ -1,4 +1,4 @@
-# GPU02 DeepSeek-V4-Flash capacity pack.
+# Legacy DeepSeek-V4-Flash capacity pack; not a current host assignment.
 #
 # Runtime topology:
 # - one TDX CVM launched with PPCIe and all eight H200 GPUs/NVSwitches attached;
@@ -119,7 +119,7 @@ services:
       - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
     logging: *logging-conf
     labels:
-      com.datadoghq.ad.logs: '[{"source":"model-downloader","service":"model-downloader","tags":["model:deepseek-ai/DeepSeek-V4-Flash","deployment:dsv4-flash-gpu02","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:gpu02-capacity-v1"]}]'
+      com.datadoghq.ad.logs: '[{"source":"model-downloader","service":"model-downloader","tags":["model:deepseek-ai/DeepSeek-V4-Flash","deployment:dsv4-flash","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:dsv4-capacity-v1"]}]'
 
   nginx:
     image: nginx@sha256:1d13701a5f9f3fb01aaa88cef2344d65b6b5bf6b7d9fa4cf0dca557a8d7702ba
@@ -142,7 +142,7 @@ services:
     restart: unless-stopped
     logging: *logging-conf
     labels:
-      com.datadoghq.ad.logs: '[{"source":"nginx","service":"nginx","tags":["model:deepseek-ai/DeepSeek-V4-Flash","deployment:dsv4-flash-gpu02","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8001","ppcie:true","config_variant:gpu02-capacity-v1"]}]'
+      com.datadoghq.ad.logs: '[{"source":"nginx","service":"nginx","tags":["model:deepseek-ai/DeepSeek-V4-Flash","deployment:dsv4-flash","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8001","ppcie:true","config_variant:dsv4-capacity-v1"]}]'
 
   model-proxy-registrar:
     image: curlimages/curl@sha256:d94d07ba9e7d6de898b6d96c1a072f6f8266c687af78a74f380087a0addf5d17
@@ -167,7 +167,7 @@ services:
         mode: 0755
     logging: *logging-conf
     labels:
-      com.datadoghq.ad.logs: '[{"source":"model-proxy-registrar","service":"model-proxy-registrar","tags":["model:deepseek-ai/DeepSeek-V4-Flash","deployment:dsv4-flash-gpu02","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:gpu02-capacity-v1"]}]'
+      com.datadoghq.ad.logs: '[{"source":"model-proxy-registrar","service":"model-proxy-registrar","tags":["model:deepseek-ai/DeepSeek-V4-Flash","deployment:dsv4-flash","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:dsv4-capacity-v1"]}]'
 
   proxy-dsv4-flash:
     <<: *vllm-proxy-common
@@ -191,7 +191,7 @@ services:
       - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
       - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:deepseek-ai/DeepSeek-V4-Flash","deployment:dsv4-flash-gpu02","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8001","instance:1","gpu_pair:0-1","ppcie:true","config_variant:gpu02-capacity-v1","stream_idle_timeout:20"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:deepseek-ai/DeepSeek-V4-Flash","deployment:dsv4-flash","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8001","instance:1","gpu_pair:0-1","ppcie:true","config_variant:dsv4-capacity-v1","stream_idle_timeout:20"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "inference-proxy"
       nearai.otel.service: "vllm-proxy"
@@ -200,7 +200,7 @@ services:
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "deepseek-ai/DeepSeek-V4-Flash"
-      nearai.otel.deployment: "dsv4-flash-gpu02"
+      nearai.otel.deployment: "dsv4-flash"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
       nearai.otel.host_machine: "${CVM_HOST}"
@@ -209,7 +209,7 @@ services:
       nearai.otel.instance: "1"
       nearai.otel.gpu_pair: "0-1"
       nearai.otel.ppcie: "true"
-      nearai.otel.config_variant: "gpu02-capacity-v1"
+      nearai.otel.config_variant: "dsv4-capacity-v1"
       nearai.otel.stream_idle_timeout: "20"
 
   proxy-dsv4-flash-2:
@@ -234,7 +234,7 @@ services:
       - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
       - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:deepseek-ai/DeepSeek-V4-Flash","deployment:dsv4-flash-gpu02","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8002","instance:2","gpu_pair:2-3","ppcie:true","config_variant:gpu02-capacity-v1","stream_idle_timeout:20"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:deepseek-ai/DeepSeek-V4-Flash","deployment:dsv4-flash","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8002","instance:2","gpu_pair:2-3","ppcie:true","config_variant:dsv4-capacity-v1","stream_idle_timeout:20"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "inference-proxy"
       nearai.otel.service: "vllm-proxy"
@@ -243,7 +243,7 @@ services:
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "deepseek-ai/DeepSeek-V4-Flash"
-      nearai.otel.deployment: "dsv4-flash-gpu02"
+      nearai.otel.deployment: "dsv4-flash"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
       nearai.otel.host_machine: "${CVM_HOST}"
@@ -252,7 +252,7 @@ services:
       nearai.otel.instance: "2"
       nearai.otel.gpu_pair: "2-3"
       nearai.otel.ppcie: "true"
-      nearai.otel.config_variant: "gpu02-capacity-v1"
+      nearai.otel.config_variant: "dsv4-capacity-v1"
       nearai.otel.stream_idle_timeout: "20"
 
   model-sg-dsv4-flash-fp4-tp2-r1:
@@ -269,7 +269,7 @@ services:
               device_ids: ["0","1"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:deepseek-ai/DeepSeek-V4-Flash","deployment:dsv4-flash-gpu02","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8001","instance:1","gpu_pair:0-1","ppcie:true","config_variant:gpu02-capacity-v1","eagle:1","eagle_prefill_fairness:0","chunk_size:8192","watchdog_timeout:1800","cuda_graph:1","max_running_requests:64","max_queued_requests:16","schedule_conservativeness:1.3","sglang_revision:7de33ce8","engine_image:6bb5fee34b6c"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:deepseek-ai/DeepSeek-V4-Flash","deployment:dsv4-flash","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8001","instance:1","gpu_pair:0-1","ppcie:true","config_variant:dsv4-capacity-v1","eagle:1","eagle_prefill_fairness:0","chunk_size:8192","watchdog_timeout:1800","cuda_graph:1","max_running_requests:64","max_queued_requests:16","schedule_conservativeness:1.3","sglang_revision:7de33ce8","engine_image:6bb5fee34b6c"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -278,7 +278,7 @@ services:
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "deepseek-ai/DeepSeek-V4-Flash"
-      nearai.otel.deployment: "dsv4-flash-gpu02"
+      nearai.otel.deployment: "dsv4-flash"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
       nearai.otel.host_machine: "${CVM_HOST}"
@@ -287,7 +287,7 @@ services:
       nearai.otel.instance: "1"
       nearai.otel.gpu_pair: "0-1"
       nearai.otel.ppcie: "true"
-      nearai.otel.config_variant: "gpu02-capacity-v1"
+      nearai.otel.config_variant: "dsv4-capacity-v1"
       nearai.otel.eagle: "1"
       nearai.otel.eagle_prefill_fairness: "0"
       nearai.otel.chunk_size: "8192"
@@ -313,7 +313,7 @@ services:
               device_ids: ["2","3"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:deepseek-ai/DeepSeek-V4-Flash","deployment:dsv4-flash-gpu02","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8002","instance:2","gpu_pair:2-3","ppcie:true","config_variant:gpu02-capacity-v1","eagle:1","eagle_prefill_fairness:0","chunk_size:8192","watchdog_timeout:1800","cuda_graph:1","max_running_requests:64","max_queued_requests:16","schedule_conservativeness:1.3","sglang_revision:7de33ce8","engine_image:6bb5fee34b6c"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:deepseek-ai/DeepSeek-V4-Flash","deployment:dsv4-flash","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8002","instance:2","gpu_pair:2-3","ppcie:true","config_variant:dsv4-capacity-v1","eagle:1","eagle_prefill_fairness:0","chunk_size:8192","watchdog_timeout:1800","cuda_graph:1","max_running_requests:64","max_queued_requests:16","schedule_conservativeness:1.3","sglang_revision:7de33ce8","engine_image:6bb5fee34b6c"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -322,7 +322,7 @@ services:
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "deepseek-ai/DeepSeek-V4-Flash"
-      nearai.otel.deployment: "dsv4-flash-gpu02"
+      nearai.otel.deployment: "dsv4-flash"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
       nearai.otel.host_machine: "${CVM_HOST}"
@@ -331,7 +331,7 @@ services:
       nearai.otel.instance: "2"
       nearai.otel.gpu_pair: "2-3"
       nearai.otel.ppcie: "true"
-      nearai.otel.config_variant: "gpu02-capacity-v1"
+      nearai.otel.config_variant: "dsv4-capacity-v1"
       nearai.otel.eagle: "1"
       nearai.otel.eagle_prefill_fairness: "0"
       nearai.otel.chunk_size: "8192"
@@ -354,7 +354,7 @@ services:
               device_ids: ["0","1","2","3"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:deepseek-ai/DeepSeek-V4-Flash","deployment:dsv4-flash-gpu02","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","gpu_pair:0-3","ppcie:true","config_variant:gpu02-capacity-v1"]}]'
+      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:deepseek-ai/DeepSeek-V4-Flash","deployment:dsv4-flash","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","gpu_pair:0-3","ppcie:true","config_variant:dsv4-capacity-v1"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "dcgm"
       nearai.otel.service: "dcgm-exporter"
@@ -363,7 +363,7 @@ services:
       nearai.otel.port: "9400"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "deepseek-ai/DeepSeek-V4-Flash"
-      nearai.otel.deployment: "dsv4-flash-gpu02"
+      nearai.otel.deployment: "dsv4-flash"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
       nearai.otel.host_machine: "${CVM_HOST}"
@@ -371,7 +371,7 @@ services:
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.gpu_pair: "0-3"
       nearai.otel.ppcie: "true"
-      nearai.otel.config_variant: "gpu02-capacity-v1"
+      nearai.otel.config_variant: "dsv4-capacity-v1"
 
   otelcol-contrib:
     image: otel/opentelemetry-collector-contrib@sha256:85ac41c2db88d0df9bd6145e608a3cb023f5d8443868adbfbbf66efb51087917
@@ -403,7 +403,7 @@ services:
         max-size: "20m"
         max-file: "3"
     labels:
-      com.datadoghq.ad.logs: '[{"source":"otelcol-contrib","service":"otelcol-contrib","tags":["deployment:dsv4-flash-gpu02","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:gpu02-capacity-v1"]}]'
+      com.datadoghq.ad.logs: '[{"source":"otelcol-contrib","service":"otelcol-contrib","tags":["deployment:dsv4-flash","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:dsv4-capacity-v1"]}]'
 
 networks:
   default:
@@ -527,7 +527,7 @@ configs:
                       source: "sglang"
                       container_name: "model-sg-dsv4-flash-fp4-tp2-r1"
                       model: "deepseek-ai/DeepSeek-V4-Flash"
-                      deployment: "dsv4-flash-gpu02"
+                      deployment: "dsv4-flash"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
                       host_machine: "${CVM_HOST}"
@@ -537,7 +537,7 @@ configs:
                       instance: "1"
                       gpu_pair: "0-1"
                       ppcie: "true"
-                      config_variant: "gpu02-capacity-v1"
+                      config_variant: "dsv4-capacity-v1"
                       eagle: "1"
                       eagle_prefill_fairness: "0"
                       chunk_size: "8192"
@@ -558,7 +558,7 @@ configs:
                       source: "sglang"
                       container_name: "model-sg-dsv4-flash-fp4-tp2-r2"
                       model: "deepseek-ai/DeepSeek-V4-Flash"
-                      deployment: "dsv4-flash-gpu02"
+                      deployment: "dsv4-flash"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
                       host_machine: "${CVM_HOST}"
@@ -568,7 +568,7 @@ configs:
                       instance: "2"
                       gpu_pair: "2-3"
                       ppcie: "true"
-                      config_variant: "gpu02-capacity-v1"
+                      config_variant: "dsv4-capacity-v1"
                       eagle: "1"
                       eagle_prefill_fairness: "0"
                       chunk_size: "8192"
@@ -589,7 +589,7 @@ configs:
                       source: "dcgm-exporter"
                       container_name: "dcgm-dsv4-flash"
                       model: "deepseek-ai/DeepSeek-V4-Flash"
-                      deployment: "dsv4-flash-gpu02"
+                      deployment: "dsv4-flash"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
                       host_machine: "${CVM_HOST}"
@@ -598,7 +598,7 @@ configs:
                       port: "9400"
                       gpu_pair: "0-3"
                       ppcie: "true"
-                      config_variant: "gpu02-capacity-v1"
+                      config_variant: "dsv4-capacity-v1"
               - job_name: inference-proxy-proxy-dsv4-flash
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -609,7 +609,7 @@ configs:
                       source: "vllm-proxy"
                       container_name: "proxy-dsv4-flash"
                       model: "deepseek-ai/DeepSeek-V4-Flash"
-                      deployment: "dsv4-flash-gpu02"
+                      deployment: "dsv4-flash"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
                       host_machine: "${CVM_HOST}"
@@ -619,7 +619,7 @@ configs:
                       instance: "1"
                       gpu_pair: "0-1"
                       ppcie: "true"
-                      config_variant: "gpu02-capacity-v1"
+                      config_variant: "dsv4-capacity-v1"
                       stream_idle_timeout: "20"
               - job_name: inference-proxy-proxy-dsv4-flash-2
                 scrape_interval: 15s
@@ -631,7 +631,7 @@ configs:
                       source: "vllm-proxy"
                       container_name: "proxy-dsv4-flash-2"
                       model: "deepseek-ai/DeepSeek-V4-Flash"
-                      deployment: "dsv4-flash-gpu02"
+                      deployment: "dsv4-flash"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
                       host_machine: "${CVM_HOST}"
@@ -641,7 +641,7 @@ configs:
                       instance: "2"
                       gpu_pair: "2-3"
                       ppcie: "true"
-                      config_variant: "gpu02-capacity-v1"
+                      config_variant: "dsv4-capacity-v1"
                       stream_idle_timeout: "20"
 
         prometheus/self:

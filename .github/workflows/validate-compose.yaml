@@ -77,28 +77,6 @@ jobs:
             ruby:3.3-alpine \
             ruby scripts/validate_glm53_dcgm_metrics.rb
 
-      - name: Validate Qwen consolidation and GLM GPU-island contract
-        run: |
-          docker run --rm \
-            -v "$PWD:/repo" \
-            -w /repo \
-            ruby:3.3-alpine \
-            ruby scripts/validate_qwen_glm53_capacity.rb
-
-      - name: Validate connection-preserving Qwen handover
-        run: |
-          qwen_test_dir=$(mktemp -d)
-          # The self-hosted runner lacks ensurepip/python3-venv. Reuse uv from
-          # the pinned helper image; do not modify the runner's system Python.
-          docker run --rm -v "$qwen_test_dir:/test-tools" \
-            ghcr.io/astral-sh/uv:python3.11-bookworm-slim@sha256:4f5d923c9dcea037f57bda425dd209f3ec643da2f0b74227f68d09dab0b3bb36 \
-            cp /usr/local/bin/uv /test-tools/uv
-          "$qwen_test_dir/uv" venv --python python3 "$qwen_test_dir/venv"
-          "$qwen_test_dir/uv" pip install --python "$qwen_test_dir/venv/bin/python" PyYAML==6.0.3
-          "$qwen_test_dir/venv/bin/python" scripts/render_qwen_handover.py --check
-          "$qwen_test_dir/venv/bin/python" scripts/validate_qwen_handover.py
-          "$qwen_test_dir/venv/bin/python" scripts/validate_qwen_qualification.py
-
       - name: Validate docker compose files
         # Compose files reference env vars that are populated at deploy time
         # by compose-manager (or the operator). CI doesn't have the real
