@@ -1,55 +1,77 @@
-# Qwen consolidation / one additional GLM-5.3-Flash replica
+# Qwen consolidation and post-upgrade GLM5.3 capacity
 
-Proposed configuration, not an executed rollout. Production changes require separate authorization.
+**The old gpu02 CVM must be fully evacuated before shutdown.** Follow the
+[controlling upgrade runbook in #235](https://github.com/nearai/cvm-compose-files/blob/capacity/ds4f-gpu03-migration/docs/gpu02-upgrade.md).
+The former in-place DS4F slot-move procedure is superseded; do not run it.
 
-| Host | GPUs | Before | After |
-|---|---|---|---|
-| gpu02 | 0–1 | DS4F r1 | Unchanged |
-| gpu02 | 2–3 | Two Qwen3.8 replicas | DS4F r2, moved from 6–7 |
-| gpu02 | 4–7 | Two Qwen3.6 replicas + DS4F r2 | One GLM-5.3-Flash TP4 replica |
-| gpu13 | 1 | Qwen3.6 r1 | Unchanged |
-| gpu13 | 2 | Qwen3.6 r2 | One Qwen3.8 replica |
+## Two different stages, two different files
 
-- GLM must occupy a complete NVLink island: **0–3 or 4–7**, never 2–5. This plan uses 4–7.
-- Qwen3.6: 4 → 1 GPUs. Qwen3.8: 2 → 1. GLM-5.3-Flash: 8 → 12. DS4F remains 4.
-- Four GPUs are reassigned, not deprovisioned; fleet allocation and GPU-hour burn do not decrease.
-- Both Qwens lose replica redundancy and share one host. Memory fit does not establish peak throughput/latency capacity; a one-replica load gate is required before removing fallback capacity.
-- The legacy `prod/dsv4-qwen38-glm51.yaml` filename remains to avoid changing the Compose project/file identity during migration. `prod/small-models.yaml` is the gpu13 pack.
-- GLM registration defaults off (`REGISTER_GLM53=false`) so the registrar can keep DS4F available while GLM is being qualified. Enable it explicitly only after the direct gate passes.
+| Stage | File | Scope |
+|---|---|---|
+| Before shutdown | `prod/small-models.yaml` | gpu13: Qwen3.6 on GPU 1, Qwen3.8 on GPU 2 |
+| During evacuation | `prod/dsv4-qwen38-glm51.yaml` | Existing gpu02 stack retained for serving and rollback; unchanged by this PR |
+| After upgrade | `prod/DSV4-GLM53-After-Upgrade.yaml` | New gpu02 CVM only: DS4F on 0–3, GLM5.3 on 4–7 |
 
-## Preflight and staging gates
+A separate final file prevents the replacement-CVM configuration from overwriting
+the old host's serving/rollback recipe. The Compose project can remain `work`;
+the old and new guests are never run concurrently with split PPCIe GPU ownership.
 
-- Snapshot the actual deployed tags, file hashes, container IDs, GPU claims, routing endpoints, and the complete environment map from gpu-manager. Use those exact snapshots for rollback, not whatever is currently on main.
-- Keep the current Compose project identity and service-scoped applies. Do not use a whole-stack `up`, broad `down`, `--remove-orphans`, GPU reset, or volume deletion. Keep all existing model weights/caches for rollback.
-- Build GLM's source-pinned inline recipe and verify its immutable image ID and OCI source revision (`fc91d2403cc210a86bd5fc715c6609f58c932e5a`). The `:local` name is a build output, not a pullable registry artifact. This reuses the current canary recipe, including CPU image preprocessing and the 64-image limit; it is not a new engine upgrade.
-- Pre-download with `model-downloader-glm53` on gpu02 and `model-downloader-qwen38` on gpu13. Confirm disk headroom and the pinned GLM weights/chat-template and Qwen checkpoint revisions before draining anything.
-- Validate on a real staging CVM for at least 30 minutes with zero failures: representative prompt lengths/concurrency, text, strict streaming completion, tool calls, vision, cached-token reporting, proxy auth/signatures and attestation. Reject regressions in latency, queue growth, CUDA/XID errors, or unrelated workloads. Static Compose/CI validation does not satisfy this gate.
-- Verify the real GPU UUID → index → NVLink-island mapping before placement. Require the moved Qwen runtime/attestation contract to work on gpu13; do not infer that from gpu02 qualification alone.
+## Before shutdown: prepare only gpu13
 
-## Ordered production migration, after authorization
+1. Snapshot actual deployed revisions, container IDs, full environment maps, GPU
+   UUID/slot mapping and routing on every live model-proxy peer.
+2. Prepare the Qwen3.6 one-backend drain while retaining its current r2 until idle.
+   Never apply a final file that omits a serving replica: compose-manager passes
+   `--remove-orphans` even on service-scoped calls. Inspect the exact dry-run and
+   prepare a safe drain-only transition if needed. Preserve the r1 engine.
+3. After r2 is no longer selected and has three fresh zero-work samples, remove it
+   and release GPU 2 using the actual old materialized configuration; retain caches.
+4. Bring up the pinned Qwen3.8 engine on GPU 2. Verify both consolidated Qwens on
+   the real destination CVM before retiring source capacity: semantic completions,
+   full streams, tools, auth/attestation and at least 30 minutes of representative
+   single-replica load without failures, growing queues or latency regression.
+5. Establish and verify both gpu13 routes on every peer and through Cloud API.
+   Shared nginx/registrar changes must preserve existing routes and streams for
+   utility models and GLM5.1 too. A blind container restart is not a safe handover.
+   If a connection-preserving transition is unavailable or unverified, stop.
+6. Reconcile Qwen3.6 GPU 1 and Qwen3.8 GPU 2 engine/DCGM/OTel claims. Keep all gpu02
+   engines serving until gpu03's two DS4F replicas from #235 are also qualified.
 
-1. **Prepare gpu13.** Apply only `proxy-qwen36-35b-a3b` with the new one-backend configuration, refreshing nginx to resolve the proxy's new address. Verify r1 remains healthy. Wait for r2 running, queued, and proxy-active requests to reach zero before explicitly stopping/removing `model-sg-qwen36-35b-a3b-fp8-tp1-r2` using the old deployed configuration. Recreate only `dcgm-qwen36-35b-a3b` with its GPU1-only claim. Confirm GPU2 has no remaining engine/exporter claim.
-2. **Bring up the relocated Qwen3.8.** Start `model-downloader-qwen38`, `model-sg-qwen38-27b-fp8-tp1`, `proxy-qwen38-27b`, and `dcgm-qwen38-27b`; update nginx for HTTP 8010 and the existing Qwen3.8 SNI on TLS 8444. Verify directly before starting the updated registrar. Keep both gpu02 Qwen3.8 replicas until the new route and single-replica load gate pass. Refresh gpu13 `otelcol-contrib` and confirm Qwen3.6/Qwen3.8 each count exactly one distinct GPU.
-3. **Drain the gpu02 Qwens.** Stop the old registrar so it cannot re-register retired endpoints. Unregister only the old Qwen endpoints (`gpu02:8002` and `gpu02:8006`) and confirm their removal. Start the updated registrar with `REGISTER_GLM53=false` to re-establish DS4F independently of GLM. Allow in-flight requests and existing connections to drain; verify surviving Qwen routes and queue/latency health. Explicitly remove the nine old services listed below with the old deployed configuration. Confirm GPUs 2–5 have no old engine/exporter claims. Keep their cache volumes.
-4. **Move DS4F r2.** Set `DSV4_BACKEND_URLS=http://model-sg-dsv4-flash-fp4-tp2-r1:8000` in the full environment map and apply only `proxy-dsv4-flash`, then refresh nginx. Verify r1; wait for r2 to drain before stopping/removing r2 and `dcgm-dsv4-flash-r2`. Start those two services with GPU IDs 2–3. Verify direct text/streaming/tool calls and attestation; then unset the temporary override, restore the normal two-backend proxy pool, and refresh nginx. Never restart r1. Proxy/nginx transitions can interrupt connections; schedule and monitor them explicitly.
-5. **Add GLM.** After confirming all of GPUs 4–7 are free of old engine/exporter claims, start the prebuilt `model-sg-glm53-fp8-tp4`, `proxy-glm53`, and `dcgm-glm53`. Add nginx HTTP 8000/TLS 8008. Verify direct functional, streaming, vision, cache, and attestation checks, then set `REGISTER_GLM53=true` in the full environment map and apply only the registrar to admit traffic. Existing GLM replicas on other hosts remain unchanged.
-6. **Refresh and reconcile.** Recreate gpu02 `otelcol-contrib` using the new scrape list. Verify only current targets are up, eight unique GPU UUIDs on each affected host, DS4F 4, Qwen3.6 1, Qwen3.8 1, and GLM-5.3-Flash 12 fleet-wide. Confirm the admin allocation/usage-value/burn table refreshes without double-counting or stale Qwen exporters. Verify unrelated gpu13 model container IDs remain unchanged.
+## Evacuate and shut down gpu02
 
-gpu02 services removed in step 3:
+- This is coordinated by #235's controlling runbook, not a separate Qwen-only
+  withdrawal. All three models must already serve off-host before stopping the old
+  gpu02 registrar; do not briefly withdraw the only working route for another model.
+- Stop old source registration once, remove all source routes on every peer, allow
+  discovery caches to settle, and drain existing inference work and HTTP/2 sessions.
+- Prove public model serving with the evacuated inference stack gracefully stopped
+  while the CVM is still recoverable. Only after the full shutdown checklist passes
+  may the operator stop/rebuild the production GPU CVM.
+- Do not move DS4F from 6–7 to 2–3 in the old guest. Do not pre-build GLM there and
+  assume its local tag or weights survive the destructive guest replacement.
 
-- `model-sg-qwen38-27b-fp8-tp1-r1`
-- `model-sg-qwen38-27b-fp8-tp1-r2`
-- `model-sg-qwen36-35b-a3b-fp8-tp1`
-- `model-sg-qwen36-35b-a3b-fp8-tp1-r2`
-- `proxy-qwen38-27b`
-- `proxy-qwen36-35b-a3b`
-- `dcgm-qwen38-27b`
-- `dcgm-qwen36-35b-a3b`
-- `dcgm-qwen36-35b-a3b-r2`
+## After the upgraded CVM is ready
+
+- Verify the internally reviewed VMM/guest and KMS-compatible host configuration, one
+  GPU-enabled CVM, certificates/secrets, metrics, GPU health and both NVLink islands.
+- On the new CVM, use `prod/DSV4-GLM53-After-Upgrade.yaml`: DS4F r1 on 0–1, r2 on
+  2–3, GLM5.3 TP4 on the complete 4–7 island. Never allocate GLM across 2–5.
+- Rebuild and prove the source-pinned GLM image by immutable image ID/OCI revision
+  `fc91d2403cc210a86bd5fc715c6609f58c932e5a`. Download the pinned weights into the
+  new guest. Keep gpu03 DS4F and existing GLM hosts serving throughout qualification.
+- The new registrar is profile-gated. Start it explicitly only after both returning
+  DS4F replicas pass; keep `REGISTER_GLM53=false` until GLM also passes its text,
+  streaming, tools, vision, cache, auth/attestation and stability gates.
+- Return DS4F routing to gpu02 only after qualification; drain/remove gpu03 DS4F and
+  restore gpu03 GLM r2 in a later guarded cutover. Never whole-apply overlapping
+  old/new GPU allocations as rollback.
+- Final intended counts remain DS4F 4 GPUs, Qwen3.6 1, Qwen3.8 1, GLM5.3 12.
+  Qwens lose replica and host redundancy; capacity qualification is mandatory.
 
 ## Stop / rollback
 
-- Stop before retiring fallback capacity if either consolidated Qwen fails its load/latency gate. Do not increase queue limits to conceal insufficient capacity.
-- If GLM fails qualification, leave it unregistered and keep the existing GLM hosts serving. Its allocation is not available for rollback until its engine and exporter are drained/stopped and GPU release is confirmed.
-- Restore in reverse allocation order: free GLM's 4–7; drain DS4F r2 from 2–3 and restore it to 6–7 while r1 serves; restore the old gpu02 Qwen services/routes/telemetry; verify them before removing gpu13 Qwen3.8 and restoring gpu13 Qwen3.6 r2.
-- Restore proxy pools, registrars, nginx, and collectors from the recorded per-host snapshot. Verify exact GPU ownership and route functionality at each phase. No blind whole-stack rollback: old and new placements overlap.
+Before destructive rebuild, any failed gate means retain or requalify the old CVM
+and restore its recorded source routes; verify client success before withdrawing
+destinations. After rebuild, keep users on the verified off-host replicas until the
+new host passes. No forced connection termination, queue-limit inflation, volume
+deletion or blind whole-stack rollback to get past a failed gate.

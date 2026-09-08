@@ -6,9 +6,10 @@ require "set"
 root = File.expand_path("..", __dir__)
 load_yaml = ->(file) { YAML.load_file(File.join(root, file), aliases: true) }
 packs = {
-  "gpu02" => load_yaml.call("prod/dsv4-qwen38-glm51.yaml"),
+  "gpu02" => load_yaml.call("prod/DSV4-GLM53-After-Upgrade.yaml"),
   "gpu13" => load_yaml.call("prod/small-models.yaml")
 }
+legacy = load_yaml.call("prod/dsv4-qwen38-glm51.yaml")
 expected = {
   "gpu02" => {
     "model-sg-dsv4-flash-fp4-tp2-r1" => %w[0 1],
@@ -43,6 +44,13 @@ exporters = {
 }
 errors = []
 check = ->(condition, message) { errors << message unless condition }
+%w[model-sg-dsv4-flash-fp4-tp2-r1 model-sg-dsv4-flash-fp4-tp2-r2
+   model-sg-qwen38-27b-fp8-tp1-r1 model-sg-qwen38-27b-fp8-tp1-r2
+   model-sg-qwen36-35b-a3b-fp8-tp1 model-sg-qwen36-35b-a3b-fp8-tp1-r2].each do |name|
+  check.call(legacy.fetch("services").key?(name), "Legacy serving/rollback file lost #{name}")
+end
+check.call(!legacy.fetch("services").key?("model-sg-glm53-fp8-tp4"), "Final GLM stack must not replace the legacy serving file")
+check.call(packs["gpu02"].dig("services", "model-proxy-registrar", "profiles") == ["register-upgraded-models"], "Replacement-CVM registrar must require explicit post-qualification activation")
 devices = ->(service) {
   Array(service&.dig("deploy", "resources", "reservations", "devices")).flat_map { |d| Array(d["device_ids"]) }
 }
