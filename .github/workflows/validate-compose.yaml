@@ -60,6 +60,14 @@ jobs:
             ruby:3.3-alpine \
             ruby scripts/validate_glm53_dcgm_metrics.rb
 
+      - name: Validate DS4F migration contracts
+        run: |
+          docker run --rm \
+            -v "$PWD:/repo" \
+            -w /repo \
+            ruby:3.3-alpine \
+            ruby scripts/validate_ds4f_migration.rb
+
       - name: Validate docker compose files
         # Compose files reference env vars that are populated at deploy time
         # by compose-manager (or the operator). CI doesn't have the real

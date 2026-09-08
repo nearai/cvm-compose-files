@@ -250,7 +250,7 @@ services:
       - TOKEN=${PROXY_TOKEN}
       - FUSION_ENABLED=${FUSION_ENABLED}
       - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
-      - VLLM_BACKEND_URLS=http://model-sg-glm51-awq-tp4-r1:8000,http://model-sg-glm51-awq-tp4-r2:8000
+      - VLLM_BACKEND_URLS=${GLM51_BACKEND_URLS:-http://model-sg-glm51-awq-tp4-r1:8000,http://model-sg-glm51-awq-tp4-r2:8000}
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
       - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}

@@ -271,6 +271,7 @@ services:
       - TLS_PORT=${TLS_PORT:-8444}
       - TLS_PORT_2=${TLS_PORT_2:-8003}
       - TLS_PORT_QWEN36_35B=${TLS_PORT_QWEN36_35B:-8007}
+      - REGISTER_DSV4=${REGISTER_DSV4:-true}
       - MODEL_PROXY_TOKEN=${MODEL_PROXY_TOKEN}
       - PROXY_TOKEN=${PROXY_TOKEN}
     configs:
@@ -1442,7 +1443,14 @@ configs:
 
       MAX_RETRIES=3
 
-      for port in 8001 8002 8006; do
+      # Withdraw DS4F independently while the Qwen endpoints keep serving.
+      case "$${REGISTER_DSV4:-true}" in
+        true) PORTS="8001 8002 8006" ;;
+        false) PORTS="8002 8006" ;;
+        *) echo "ERROR: REGISTER_DSV4 must be true or false"; exit 1 ;;
+      esac
+
+      for port in $$PORTS; do
         eval "REG_$$port=false"
         eval "FAIL_COUNT_$$port=0"
       done
@@ -1493,8 +1501,8 @@ configs:
       }
 
       cleanup() {
-        echo "SIGTERM received, unregistering all endpoints"
-        for port in 8001 8002 8006; do
+        echo "SIGTERM received, unregistering managed endpoints"
+        for port in $$PORTS; do
           unregister_endpoint "$${HOST_IP}:$$port"
         done
         exit 0
@@ -1556,6 +1564,7 @@ configs:
           && check_tls_route "$$(routing_port_for $$port)" "$$(domain_for $$port)"
       }
 
+      if [ "$${REGISTER_DSV4:-true}" = true ]; then
       READY_URL="http://$${HOST_IP}:8001/v1/models"
       echo "Waiting for first DeepSeek replica to be ready (probing $$READY_URL)..."
       ready_attempts=0
@@ -1570,9 +1579,10 @@ configs:
         echo "First DeepSeek replica not ready yet (attempt $$ready_attempts/30), retrying in 30s..."
         sleep 30
       done
+      fi
 
       while true; do
-        for port in 8001 8002 8006; do
+        for port in $$PORTS; do
           date +%s > /tmp/registrar_alive
           endpoint="$${HOST_IP}:$$port"
           eval "was_reg=\$$REG_$$port"
@@ -1595,7 +1605,9 @@ configs:
           fi
         done
 
-        register_model "deepseek-ai/DeepSeek-V4-Flash" "dsv4-flash.completions.near.ai"
+        if [ "$${REGISTER_DSV4:-true}" = true ]; then
+          register_model "deepseek-ai/DeepSeek-V4-Flash" "dsv4-flash.completions.near.ai"
+        fi
         register_model "Qwen/Qwen3.8-27B" "qwen3-8-27b.completions.near.ai"
         register_model "Qwen/Qwen3.6-35B-A3B-FP8" "qwen3-6-35b.completions.near.ai"
         date +%s > /tmp/registrar_alive
