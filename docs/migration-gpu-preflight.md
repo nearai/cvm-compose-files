@@ -28,6 +28,10 @@ requested diagnostic service under the `migration-preflight-` prefix. Then send
 the identical payload with `dry_run: false`. Use that same project/file/service
 for scoped `POST /compose/logs`, and for cleanup with `volumes: false`.
 If the deployed manager cannot select this project, stop; do not use `work`.
+Project-scoped log reads require nearai/compose-manager#60. Older managers accept
+the field but silently ignore it and can return empty logs from `work`; an empty
+result is not a successful diagnostic. Validate log retrieval on staging before
+using this helper in production.
 
 The one-shot container has no network, credentials, host filesystem mounts or
 Docker socket. NVIDIA's utility-only runtime exposes `nvidia-smi`; the only added
