@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """Synthetic regression tests in the exact hash-locked qualification sandbox."""
 import json
+import base64
+import os
 from pathlib import Path
 import subprocess
 import sys
 import unittest
+from unittest.mock import patch
 
 
 def inside():
@@ -21,6 +24,51 @@ def inside():
     from Crypto.Hash import keccak
 
     class Tests(unittest.TestCase):
+        def test_fixed_replica_selection(self):
+            for replica in ('r1', 'r2'):
+                with patch.dict(os.environ, {'QWEN_HANDOVER_REPLICA': replica}):
+                    name, url = gate.selected_backend()
+                    self.assertEqual(name, replica)
+                    self.assertEqual(url, 'http://model-sg-qwen36-35b-a3b-fp8-tp1-' + replica + ':8000')
+            for value in ('', 'r3', 'r1:8000,http://other', 'http://other'):
+                with patch.dict(os.environ, {'QWEN_HANDOVER_REPLICA': value}):
+                    with self.assertRaises(RuntimeError): gate.selected_backend()
+
+        def test_multimodal_gate_exercises_images_video_and_both_modes(self):
+            calls = []
+            class Session:
+                def post(self, url, *, headers, json, timeout):
+                    calls.append(json)
+                    media = json['messages'][0]['content'][1]
+                    if media['type'] == 'video_url':
+                        color = 'blue'
+                        raw = base64.b64decode(media['video_url']['url'].split(',')[1])
+                        assert raw[4:8] == b'ftyp' and b'avc1' in raw
+                    else:
+                        uri = media['image_url']['url']
+                        color = 'red' if uri == gate.color_image('red') else 'blue'
+                        assert base64.b64decode(uri.split(',')[1]).startswith(b'\x89PNG\r\n\x1a\n')
+                    if json['stream']:
+                        raw = ('data: {"choices":[{"delta":{"content":"' + color +
+                               '"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n').encode()
+                    else:
+                        raw = ('{"choices":[{"message":{"content":"' + color +
+                               '"},"finish_reason":"stop"}]}').encode()
+                    return type('Response', (), {'status_code': 200, 'content': raw})()
+            result = gate.vision_check(Session(), 'http://synthetic')
+            self.assertEqual(len(calls), 6)
+            self.assertTrue(result['image_json'] and result['image_stream'] and result['video_json'] and result['video_stream'])
+            self.assertEqual([c['stream'] for c in calls], [False, True] * 3)
+            class FailedSession:
+                def post(self, *args, **kwargs):
+                    return type('Response', (), {'status_code': 500, 'content': b'private body not emitted'})()
+            with self.assertRaisesRegex(RuntimeError, '^vision_http_500$'):
+                gate.vision_check(FailedSession(), 'http://synthetic')
+            for stream in (False, True):
+                raw = (b'data: {"choices":[{"delta":{"content":"red"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n' if stream
+                       else b'{"choices":[{"message":{"content":"red"},"finish_reason":"stop"}]}')
+                with self.assertRaises(RuntimeError): gate.answer(raw, stream, expected='blue')
+
         def test_plain_semantics_and_finish(self):
             gate.answer(json.dumps({'choices': [{'message': {'content': '42'}, 'finish_reason': 'stop'}]}))
             for content, finish in [('41', 'stop'), ('42', 'length')]:
