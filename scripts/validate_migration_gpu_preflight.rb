@@ -13,6 +13,8 @@ raise 'Privilege escalation allowed' unless service['security_opt'] == ['no-new-
 raise 'Unexpected host attachment' unless %w[privileged volumes ports pid ipc devices depends_on].none? { |key| service.key?(key) }
 raise 'Implicit activation' unless service['profiles'] == ['migration-preflight'] && service['restart'] == 'no'
 raise 'Image not pinned' unless service['image'].match?(/@sha256:[a-f0-9]{64}$/)
+raise 'Diagnostic log metadata missing' unless JSON.parse(service.fetch('labels').fetch('com.datadoghq.ad.logs')) == [{'source'=>'migration-preflight', 'service'=>'migration-preflight', 'tags'=>['deployment:migration-preflight']}]
+raise 'Diagnostic metadata not exported' unless service.dig('logging', 'options', 'labels') == 'com.datadoghq.ad.logs,com.docker.compose.service'
 end
 raise 'Unexpected GPU environment' unless doc['services']['migration-gpu-preflight']['environment'] == {'NVIDIA_VISIBLE_DEVICES'=>'all', 'NVIDIA_DRIVER_CAPABILITIES'=>'utility'}
 raise 'Missing GPU runtime' unless doc['services']['migration-gpu-preflight']['runtime'] == 'nvidia'
@@ -49,6 +51,28 @@ tests = <<~'PY'
   assert not partial['full_window_available']
   empty = ns['kernel_summary']('unparseable', 8000)
   assert not empty['ok'] and empty['unparsed_lines'] == 1
+  # Both modes emit a start marker and a distinct final result with one run ID.
+  import contextlib, io
+  ns['read_kernel'] = lambda: {'ok': True}
+  ns['time'].sleep = lambda seconds: None
+  sys.argv = ['test', '--kernel-only']
+  output = io.StringIO()
+  with contextlib.redirect_stdout(output):
+      assert ns['main']() == 0
+  start, final = map(ns['json'].loads, output.getvalue().splitlines())
+  assert start['stage'] == 'collecting' and 'collection_ok' not in start
+  assert start['run_id'] == final['run_id'] and len(final['run_id']) == 32
+  assert final['collection_ok'] and final['mode'] == 'kernel-only'
+  import types
+  ns['subprocess'].run = lambda *args, **kwargs: types.SimpleNamespace(returncode=0, stdout=xml)
+  sys.argv = ['test']
+  output = io.StringIO()
+  with contextlib.redirect_stdout(output):
+      assert ns['main']() == 0
+  start, final = map(ns['json'].loads, output.getvalue().splitlines())
+  assert start['run_id'] == final['run_id']
+  assert final['collection_ok'] and final['mode'] == 'gpu-and-kernel'
+  assert final['gpus'][0]['uuid'] == 'GPU-synthetic'
   print('GPU preflight isolation and sanitized evidence parser tests passed')
 PY
 if ARGV == ['--emit-python-tests']

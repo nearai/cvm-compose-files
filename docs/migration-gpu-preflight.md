@@ -28,10 +28,14 @@ requested diagnostic service under the `migration-preflight-` prefix. Then send
 the identical payload with `dry_run: false`. Use that same project/file/service
 for scoped `POST /compose/logs`, and for cleanup with `volumes: false`.
 If the deployed manager cannot select this project, stop; do not use `work`.
-Project-scoped log reads require nearai/compose-manager#60. Older managers accept
+Project-scoped API log reads require nearai/compose-manager#60. Older managers accept
 the field but silently ignore it and can return empty logs from `work`; an empty
-result is not a successful diagnostic. Validate log retrieval on staging before
-using this helper in production.
+result is not a successful diagnostic. Validate API log retrieval on staging.
+On destinations with the existing app log collector, the helper's exported
+`deployment:migration-preflight` metadata also permits sanitized result retrieval
+through the existing log backend, without updating the production manager or
+collector. Verify that route independently; do not restart a serving CVM for logs.
+The CPU-only management collector deliberately excludes these app diagnostics.
 
 The one-shot container has no network, credentials, host filesystem mounts or
 Docker socket. NVIDIA's utility-only runtime exposes `nvidia-smi`; the only added
@@ -39,7 +43,12 @@ Linux capability is `SYSLOG` for kernel-ring **read-all** and size operations.
 It does not clear logs/counters, change clocks/ECC settings or reset GPUs.
 There is no privileged mode, host PID namespace or serving restart.
 
-Read its single JSON result through scoped compose logs. Only selected GPU-health
+Read its final JSON result through scoped compose logs or the verified app-log path.
+The initial `stage: collecting` marker and final result share a unique `run_id`;
+only the final result includes `collection_ok`. Require the expected host, new
+container/run identity and fresh timestamp. A short discovery delay helps existing
+start-at-end shippers notice the file, but is not proof of log delivery. Missing
+or stale output fails the evidence gate. Only selected GPU-health
 fields and kernel error counts/timestamps are emitted, never raw kernel messages.
 Unknown/missing fields remain unknown, failed reads report errors, and
 `full_window_available=false` explicitly marks incomplete retained kernel history.

@@ -6,6 +6,8 @@ x-gpu-preflight-script: &gpu_preflight_script |
   import re
   import subprocess
   import sys
+  import time
+  import uuid
   import xml.etree.ElementTree as ET
   from datetime import datetime, timezone
 
@@ -92,7 +94,12 @@ x-gpu-preflight-script: &gpu_preflight_script |
       kernel_only = sys.argv[1:] == ["--kernel-only"]
       if sys.argv[1:] and not kernel_only:
           raise SystemExit("Unsupported mode")
-      out = {"utc": datetime.now(timezone.utc).isoformat(), "read_only": True, "mode": "kernel-only" if kernel_only else "gpu-and-kernel"}
+      run_id = uuid.uuid4().hex
+      # Give start-at-end log shippers time to discover the new file. Retrieval
+      # of the final result is still required; the delay is not delivery proof.
+      print(json.dumps({"read_only": True, "stage": "collecting", "run_id": run_id}), flush=True)
+      time.sleep(2)
+      out = {"utc": datetime.now(timezone.utc).isoformat(), "run_id": run_id, "read_only": True, "mode": "kernel-only" if kernel_only else "gpu-and-kernel"}
       if not kernel_only:
           try:
               result = subprocess.run(["nvidia-smi", "-q", "-x"], capture_output=True, text=True, timeout=30)
@@ -131,11 +138,16 @@ x-preflight-common: &preflight-common
     security_opt: [no-new-privileges:true]
     restart: "no"
     command: [*gpu_preflight_script]
+    labels:
+      # Existing app collectors accept deployment-tagged logs. No fake model
+      # identity or management-service label, and no collector restart needed.
+      com.datadoghq.ad.logs: '[{"source":"migration-preflight","service":"migration-preflight","tags":["deployment:migration-preflight"]}]'
     logging:
       driver: json-file
       options:
         max-size: 1m
         max-file: "2"
+        labels: com.datadoghq.ad.logs,com.docker.compose.service
 
 services:
   migration-gpu-preflight:
