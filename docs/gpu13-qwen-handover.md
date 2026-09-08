@@ -30,8 +30,12 @@ network, never host PID or the Docker socket. They need SYS_PTRACE, SYS_CHROOT,
 DAC_OVERRIDE and KILL, plus AppArmor unconfined, to reach `/proc/<master>/root` and
 signal that one verified master. Their own root is read-only. Only their small
 state volume and nginx's candidate/config files are writable through this surface.
-Preflight never signals nginx or replaces its live config. Missing capabilities,
+Preflight never signals nginx or replaces its live config. It inspects the target
+mount table and filesystem flags, and atomically writes/removes a hidden sibling
+outside the nginx include glob to prove directory writability. Missing capabilities,
 read-only/bind-mounted configs or ambiguous master identity are stop conditions.
+The regression deploys the actual inline `configs.content` mechanism with Compose;
+this is not a substitute for checking the already-running CVM's mount layout.
 
 ## Preconditions
 
@@ -146,8 +150,11 @@ Compose down preserving a peer/external network. This does not replace the real-
 cryptographic, capacity, telemetry and log-delivery gates above.
 `validate_qwen_qualification.py` installs the hash-locked dependencies in the exact
 read-only helper sandbox and checks semantic/stream termination, both signature
-algorithms and payload binding, binary HTTP bounds, encrypted response integrity,
-mandatory authenticated final markers and truncated-response rejection.
+algorithms and payload binding, binary HTTP field/trailer bounds and zero padding,
+encrypted response integrity, mandatory authenticated final markers and truncated
+encrypted-response rejection. Entirely empty binary HTTP trailers may be omitted
+as required by [RFC9292 section3.8](https://datatracker.ietf.org/doc/html/rfc9292#section-3.8);
+partial nonempty sections and invalid padding are rejected.
 
 Related: #234, #235, GPU diagnostic #237 and project-scoped logs
 [compose-manager#60](https://github.com/nearai/compose-manager/pull/60). Production

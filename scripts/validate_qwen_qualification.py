@@ -101,6 +101,20 @@ def inside():
             for bad in [b'', config[:-1], config[:37] + b'\0\2\0\2']:
                 with self.assertRaises(AssertionError): wire.Exchange(bad)
 
+        def test_binary_http_trailers_padding_and_permitted_omission(self):
+            body = b'synthetic response'
+            trailer = wire.field('x-test') + wire.field('ok')
+            known = b'\x01' + wire.vint(200) + b'\0' + wire.field(body)
+            unknown = b'\x03' + wire.vint(200) + b'\0' + wire.field(body) + b'\0'
+            for base, supplied in [(known, wire.field(trailer)), (unknown, trailer + b'\0')]:
+                # Omission of an entirely empty trailer is explicitly legal in
+                # RFC9292 3.8. Partial lengths/fields or nonzero padding are not.
+                for suffix in [b'', b'\0', b'\0\0\0', supplied, supplied + b'\0\0']:
+                    self.assertEqual(wire.binary_response(base + suffix), body)
+                for suffix in [b'\x40', supplied[:-1], b'\0\x01', b'\x04ab']:
+                    with self.assertRaises(AssertionError): wire.binary_response(base + suffix)
+            with self.assertRaises(AssertionError): wire.binary_response(known + wire.field(b'\0\0'))
+
     result = unittest.TextTestRunner(verbosity=2).run(unittest.defaultTestLoader.loadTestsFromTestCase(Tests))
     return 0 if result.wasSuccessful() else 1
 

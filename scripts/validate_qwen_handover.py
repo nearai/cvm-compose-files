@@ -96,14 +96,22 @@ def main():
             run(*args, UTILITY, 'python3', '-c', BACKEND)
             created.append(name)
         image = pack['services']['nginx']['image']
-        run('docker', 'create', '--name', target, '--network', network, '-p', '127.0.0.1::443',
-            '--entrypoint', '/bin/sh', image, '-c', pack['services']['nginx']['command'].split("'", 1)[1][:-1])
+        # Use actual Compose configs.content, not docker cp, for the live file.
+        # File-backed/read-only configs must fail the helper's production guard.
+        fixture = {'services': {'nginx': {
+            'image': image, 'container_name': target,
+            'command': pack['services']['nginx']['command'],
+            'ports': ['127.0.0.1::443'],
+            'configs': [
+                *pack['services']['nginx']['configs'],
+                {'source': 'test_cert', 'target': '/etc/letsencrypt/live/completions.near.ai/fullchain.pem'},
+                {'source': 'test_key', 'target': '/etc/letsencrypt/live/completions.near.ai/privkey.pem'}]}},
+            'configs': {'nginx_conf': pack['configs']['nginx_conf'],
+                        'test_cert': {'content': TEST_CERTIFICATE}, 'test_key': {'content': TEST_PRIVATE_KEY}},
+            'networks': {'default': {'external': True, 'name': network}}}
         created.append(target)
-        copy_files(target, {'/etc/nginx/conf.d/default.conf': cfg['steady'],
-                            '/etc/letsencrypt/live/completions.near.ai/fullchain.pem': TEST_CERTIFICATE,
-                            '/etc/letsencrypt/live/completions.near.ai/privkey.pem': TEST_PRIVATE_KEY})
-        # Lower only fixture worker count, preserving the production include.
-        run('docker', 'start', target)
+        run('docker', 'compose', '-f', '-', '-p', network + '-ingress', 'up', '-d',
+            input=yaml.safe_dump(fixture).encode())
         original_id = run('docker', 'inspect', '-f', '{{.Id}}', target).stdout
         tls_port = port(target, 443)
 
@@ -144,7 +152,8 @@ def main():
                 assert time.monotonic() < deadline, f'new connections stayed on {observed!r}, expected {expected!r}'
                 time.sleep(0.1)
 
-        assert helper('preflight')['no_signal']
+        preflight = helper('preflight')
+        assert preflight['no_signal'] and preflight['config_regular_unmounted'] and preflight['config_directory_writable']
         wrong = dict(cfg, steady='wrong pre-state')
         assert helper('to-temp', wrong, check=False).returncode != 0
         bad = dict(cfg, **{'to-temp': 'invalid nginx syntax;\n'})
@@ -233,6 +242,7 @@ def main():
         print('PASS: same nginx; two HTTP/2 streams complete; forward/reverse signature fallback; no POST retry; exact steady restore; negative guards; natural worker drain')
         print('PASS: scoped Compose down preserves peer identity and external network')
         print('PASS: separate Qwen3.8 HTTP probe and HTTP/2 TLS listener with canonical/indexed SNI')
+        print('PASS: real Compose inline-config handover, writable-directory preflight and unmounted live-file guard')
     finally:
         for process in streams:
             process.terminate()

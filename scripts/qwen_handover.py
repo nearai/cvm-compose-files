@@ -87,7 +87,9 @@ def target_root(topo):
 def read_config(root):
     path = root / CONFIG.lstrip('/')
     require(stat.S_ISREG(path.lstat().st_mode), 'config_not_regular')
-    require(not os.path.ismount(path), 'config_is_mountpoint')
+    mounts = [line.split()[4] for line in (root.parent / 'mountinfo').read_text().splitlines()]
+    require(CONFIG not in mounts and not os.path.ismount(path), 'config_is_mountpoint')
+    require(not os.statvfs(path).f_flag & os.ST_RDONLY, 'config_filesystem_readonly')
     return path, path.read_bytes()
 
 
@@ -177,11 +179,19 @@ def operate(mode, candidates, operation):
         require(prior['phase'] == previous and prior['master'] == topo['master'], 'unexpected_prior_transition')
         require(not any(alive(p) for p in prior['old_workers']), 'prior_workers_not_drained')
     candidate = candidates[phase].encode()
+    # Prove the actual config directory supports atomic writes before signaling.
+    # The hidden sibling is outside nginx's *.conf glob; the live file is intact.
+    probe = path.with_name('.handover-write-probe-' + operation)
+    try:
+        atomic_write(probe, b'probe')
+    finally:
+        probe.unlink(missing_ok=True)
     validate_candidate(root, candidate, operation)
     require(topology() == topo and read_config(root)[1] == original, 'concurrent_reload_or_config_change')
     if mode == 'preflight':
         return {'status': 'ok', 'config_sha': current_sha, 'candidate_sha': sha(candidate),
-                'master': topo['master'], 'workers': topo['workers'], 'no_signal': True}
+                'master': topo['master'], 'workers': topo['workers'], 'no_signal': True,
+                'config_regular_unmounted': True, 'config_directory_writable': True}
 
     record = {'phase': phase, 'status': 'pending', 'operation_id': operation,
               'master': topo['master'], 'old_workers': topo['workers'],

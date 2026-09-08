@@ -76,15 +76,32 @@ def binary_response(raw):
     assert framing in (1, 3)
     status = reader.integer()
     assert status == 200
+
+    def fields(known, trailers=False):
+        # RFC9292 3.8 permits an omitted *empty* trailing section, not a partial
+        # nonempty field or length. Consume every supplied section and padding.
+        if reader.offset == len(reader.data): return
+        section = Reader(reader.field()) if known else reader
+        while not known or section.offset < len(section.data):
+            name = section.field()
+            if not known and not name: return
+            assert name and (not trailers or not name.startswith(b':'))
+            section.field()
+
     if framing == 1:
-        reader.field()  # bounded, known-length header section
-        return reader.field()
-    while reader.field():
-        reader.field()
-    chunks = []
-    while part := reader.field():
-        chunks.append(part)
-    return b''.join(chunks)
+        fields(True)
+        body = reader.field() if reader.offset < len(raw) else b''
+        fields(True, trailers=True)
+    else:
+        fields(False)
+        chunks = []
+        if reader.offset < len(raw):
+            while part := reader.field():
+                chunks.append(part)
+        body = b''.join(chunks)
+        fields(False, trailers=True)
+    assert all(value == 0 for value in reader.take(len(raw) - reader.offset)), 'nonzero_binary_http_padding'
+    return body
 
 
 class Exchange:
