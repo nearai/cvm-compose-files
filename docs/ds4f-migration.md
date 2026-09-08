@@ -1,6 +1,9 @@
 # DS4F temporary relocation
 
-This is the prerequisite for #234, not the host-upgrade or Qwen-consolidation rollout.
+This is the DS4F portion of the [evacuate-before-shutdown plan](gpu02-upgrade.md),
+coordinated with the gpu13 Qwen portion of #234. Neither PR's complete old runbook
+should be executed independently for this upgrade. All three gpu02 models must be
+serving off-host before source registration is stopped or the old CVM is shut down.
 One GPU-enabled PPCIe CVM per host. No host reset, VMM/KMS change or dev-host use.
 
 Destination: `prod/GLM-5.1-DSV4-Migration.yaml`:
@@ -44,19 +47,17 @@ Destination: `prod/GLM-5.1-DSV4-Migration.yaml`:
    the replicas. Do not withdraw source capacity until both destination replicas pass.
 7. Explicitly start the destination DS4F registrar. Verify registration on every peer
    and routed client completions before withdrawing the source.
-8. Set source `REGISTER_DSV4=false` in its full environment and apply **only** its
-   registrar in `prod/dsv4-qwen38-glm51.yaml`. The old registrar's shutdown unregisters
-   all three endpoints: immediately restore/verify both source Qwen registrations,
-   then verify the new registrar renews only Qwens for at least two cycles. Do not
-   stop or recreate any Qwen engine, proxy or ingress. Explicitly confirm source
-   DS4F is absent from every peer before draining its engines.
-9. Unregistration does not terminate existing HTTP/2 connections. Wait for three
-   fresh zero-work samples on both source DS4F engines and active proxy requests;
-   verify destination capacity and failures throughout. Selectively down only DS4F
-   engines and exporter, preserving source proxy/nginx while Qwens share the pack.
-   Confirm source DS4F GPU claims disappear and the destination remains healthy.
-10. Record final topology and runtime identities. Host upgrade is a separate operation;
-    the source Qwens still need an approved migration before its CVM can be reset.
+8. **Do not withdraw source DS4F in isolation for this upgrade.** First complete
+   and qualify both off-host Qwen paths from #234. Then follow the controlling
+   runbook to stop gpu02's old registrar once and withdraw all three source model
+   routes together. Do not restart the registrar with `REGISTER_DSV4=false`; the
+   Qwen routes must remain off gpu02 too. The switch remains a backward-compatible
+   standalone migration option, not the full-host evacuation procedure.
+9. Drain all source engines and client sessions as specified in the controlling
+   runbook. Registry removal and zero queued/running gauges alone do not establish
+   that HTTP/2 streams are drained. Keep the old CVM available for rollback.
+10. Record the shutdown go/no-go evidence and validate public serving with the old
+    inference stack stopped before the upgrade operator shuts down the CVM.
 
 ## Rollback
 
