@@ -1,4 +1,4 @@
-# Temporary bridge: GLM5.1 TP4 on 0-3, DS4F TP2 on 4-5, 6-7 unused.
+# Temporary bridge: GLM5.1 TP4 on 0-3, two DS4F TP2 replicas on 4-5 and 6-7.
 # One PPCIe GPU CVM. Drain/remove GLM5.1 r2 BEFORE applying this file.
 # Start ds4f-migration-registrar explicitly only after qualification.
 # Reuses GLM5.1 v0.0.344 and DS4F v0.0.385; do not whole-stack apply.
@@ -329,7 +329,7 @@ services:
       - TOKEN=${PROXY_TOKEN}
       - FUSION_ENABLED=${FUSION_ENABLED}
       - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
-      - VLLM_BACKEND_URLS=http://model-sg-dsv4-flash-fp4-tp2-r1:8000
+      - VLLM_BACKEND_URLS=http://model-sg-dsv4-flash-fp4-tp2-r1:8000,http://model-sg-dsv4-flash-fp4-tp2-r2:8000
       - VLLM_PROXY_MAX_REQUEST_SIZE=104857600
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
@@ -448,6 +448,100 @@ services:
       nearai.otel.schedule_conservativeness: "1.3"
       nearai.otel.sglang_revision: 0.5.16-near-dsv4-0731
       nearai.otel.engine_image: ec518148762e
+  model-sg-dsv4-flash-fp4-tp2-r2:
+    runtime: nvidia
+    ipc: host
+    ulimits:
+      memlock: -1
+      nofile:
+        soft: 65535
+        hard: 65535
+    init: true
+    image: docker.io/nearaidev/sglang@sha256:ec518148762ea02c23aa8615f69ca79b0c18bcd59b3c21c10229db3df323c615
+    command:
+      'sglang serve --trust-remote-code --model-path deepseek-ai/DeepSeek-V4-Flash-0731
+      --revision 7872f01b1d1fe23eabc4c98b48bffcef5a386062 --tp-size 2 --kv-cache-dtype
+      fp8_e4m3 --moe-runner-backend marlin --cuda-graph-max-bs 64 --mem-fraction-static
+      0.83 --max-running-requests 64 --max-queued-requests 16 --schedule-conservativeness
+      1.3 --num-continuous-decode-steps 1 --enable-mixed-chunk --chunked-prefill-size
+      4096 --max-prefill-tokens 16384 --swa-full-tokens-ratio 0.1 --watchdog-timeout
+      1800 --disable-custom-all-reduce --tool-call-parser deepseekv4 --reasoning-parser
+      deepseek-v4 --json-model-override-args ''{"dsv4_reasoning_effort_profile":"official"}''
+      --port 8000 --host 0.0.0.0 --enable-cache-report --enable-metrics --log-requests-level
+      0 --served-model-name deepseek-ai/DeepSeek-V4-Flash ${DSV4_RETURN_HIDDEN_STATES:+--enable-return-hidden-states}
+
+      '
+    volumes:
+      - huggingface_cache:/root/.cache/huggingface
+      - kernel_cache:/root/.cache/deep_gemm
+    environment:
+      - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+      - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0}
+      - VLLM_LOGGING_LEVEL=INFO
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - OPENBLAS_L2_SIZE=2097152
+      - NCCL_DEBUG=WARN
+      - SGLANG_ENABLE_SPEC_V2=1
+      - SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE=4096
+      - SGLANG_DSV4_FP4_EXPERTS=1
+      - SGLANG_ENABLE_UNIFIED_RADIX_TREE=1
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+    restart: unless-stopped
+    stop_grace_period: 5m
+    logging:
+      driver: json-file
+      options:
+        max-size: 100m
+        max-file: "10"
+        labels: com.datadoghq.ad.logs,com.docker.compose.service
+    container_name: model-sg-dsv4-flash-fp4-tp2-r2
+    depends_on:
+      model-downloader-dsv4:
+        condition: service_completed_successfully
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids:
+                - "6"
+                - "7"
+              capabilities:
+                - gpu
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:deepseek-ai/DeepSeek-V4-Flash-0731","model_path:deepseek-ai/DeepSeek-V4-Flash-0731","model_revision:7872f01b1d1fe23eabc4c98b48bffcef5a386062","deployment:dsv4-flash-migration","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8001","instance:2","gpu_pair:6-7","ppcie:true","config_variant:dsv4-0731-prod-target-only","decode_mode:target_only","chunk_size:4096","max_prefill_tokens:16384","continuous_decode_steps:1","chunked_prefill_admission_reserve:4096","watchdog_timeout:1800","cuda_graph:1","max_running_requests:64","max_queued_requests:16","schedule_conservativeness:1.3","sglang_revision:0.5.16-near-dsv4-0731","engine_image:ec518148762e"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: sglang
+      nearai.otel.service: sglang
+      nearai.otel.source: sglang
+      nearai.otel.container_name: model-sg-dsv4-flash-fp4-tp2-r2
+      nearai.otel.port: "8000"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: deepseek-ai/DeepSeek-V4-Flash-0731
+      nearai.otel.model_path: deepseek-ai/DeepSeek-V4-Flash-0731
+      nearai.otel.model_revision: 7872f01b1d1fe23eabc4c98b48bffcef5a386062
+      nearai.otel.deployment: dsv4-flash-migration
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
+      nearai.otel.instance: "2"
+      nearai.otel.gpu_pair: 6-7
+      nearai.otel.ppcie: "true"
+      nearai.otel.config_variant: dsv4-0731-prod-target-only
+      nearai.otel.decode_mode: target_only
+      nearai.otel.chunk_size: "4096"
+      nearai.otel.max_prefill_tokens: "16384"
+      nearai.otel.continuous_decode_steps: "1"
+      nearai.otel.chunked_prefill_admission_reserve: "4096"
+      nearai.otel.watchdog_timeout: "1800"
+      nearai.otel.cuda_graph: "1"
+      nearai.otel.max_running_requests: "64"
+      nearai.otel.max_queued_requests: "16"
+      nearai.otel.schedule_conservativeness: "1.3"
+      nearai.otel.sglang_revision: 0.5.16-near-dsv4-0731
+      nearai.otel.engine_image: ec518148762e
   dcgm-dsv4-flash:
     image: nvcr.io/nvidia/k8s/dcgm-exporter@sha256:ed594cf53fe6942e84b07b0740cdcbb249fa4b39cb21feeebf93881ae51f0b5e
     runtime: nvidia
@@ -469,10 +563,12 @@ services:
               device_ids:
                 - "4"
                 - "5"
+                - "6"
+                - "7"
               capabilities:
                 - gpu
     labels:
-      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:deepseek-ai/DeepSeek-V4-Flash","deployment:dsv4-flash-migration","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","gpu_pair:4-5","ppcie:true","config_variant:ds4f-migration-v1"]}]'
+      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:deepseek-ai/DeepSeek-V4-Flash","deployment:dsv4-flash-migration","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","gpu_pair:4-7","ppcie:true","config_variant:ds4f-migration-v1"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: dcgm
       nearai.otel.service: dcgm-exporter
@@ -487,7 +583,7 @@ services:
       nearai.otel.host_machine: "${CVM_HOST}"
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
-      nearai.otel.gpu_pair: 4-5
+      nearai.otel.gpu_pair: 4-7
       nearai.otel.ppcie: "true"
       nearai.otel.config_variant: ds4f-migration-v1
   model-downloader-dsv4:
@@ -740,6 +836,42 @@ configs:
                   schedule_conservativeness: '1.3'
                   sglang_revision: 0.5.16-near-dsv4-0731
                   engine_image: ec518148762e
+            - job_name: sglang-model-sg-dsv4-flash-fp4-tp2-r2
+              scrape_interval: 15s
+              metrics_path: "/metrics"
+              static_configs:
+              - targets:
+                - model-sg-dsv4-flash-fp4-tp2-r2:8000
+                labels:
+                  service: sglang
+                  source: sglang
+                  container_name: model-sg-dsv4-flash-fp4-tp2-r2
+                  model: deepseek-ai/DeepSeek-V4-Flash-0731
+                  model_path: deepseek-ai/DeepSeek-V4-Flash-0731
+                  deployment: dsv4-flash-migration
+                  env: "${ENV}"
+                  host: "${CVM_HOST}"
+                  host_machine: "${CVM_HOST}"
+                  cvm_name: "${CVM_NAME}"
+                  ip: "${HOST_IP}"
+                  port: '8001'
+                  instance: '2'
+                  gpu_pair: 6-7
+                  ppcie: 'true'
+                  model_revision: 7872f01b1d1fe23eabc4c98b48bffcef5a386062
+                  config_variant: dsv4-0731-prod-target-only
+                  decode_mode: target_only
+                  chunk_size: '4096'
+                  max_prefill_tokens: '16384'
+                  continuous_decode_steps: '1'
+                  chunked_prefill_admission_reserve: '4096'
+                  watchdog_timeout: '1800'
+                  cuda_graph: '1'
+                  max_running_requests: '64'
+                  max_queued_requests: '16'
+                  schedule_conservativeness: '1.3'
+                  sglang_revision: 0.5.16-near-dsv4-0731
+                  engine_image: ec518148762e
             - job_name: dcgm-dcgm-dsv4-flash
               scrape_interval: 15s
               metrics_path: "/metrics"
@@ -758,7 +890,7 @@ configs:
                   cvm_name: "${CVM_NAME}"
                   ip: "${HOST_IP}"
                   port: '9400'
-                  gpu_pair: 4-5
+                  gpu_pair: 4-7
                   ppcie: 'true'
                   config_variant: ds4f-migration-v1
             - job_name: inference-proxy-proxy-dsv4-flash
@@ -1232,7 +1364,7 @@ configs:
         register_endpoint "$$ENDPOINT" "$${TLS_PORT}"
         register_model "deepseek-ai/DeepSeek-V4-Flash" "dsv4-flash.completions.near.ai"
         if [ "$$REGISTERED" = false ]; then
-          echo "[DSV4-Flash-Migration] Registered deepseek-ai/DeepSeek-V4-Flash (1x TP2) at $$ENDPOINT"
+          echo "[DSV4-Flash-Migration] Registered deepseek-ai/DeepSeek-V4-Flash (2x TP2) at $$ENDPOINT"
         fi
         REGISTERED=true
       }

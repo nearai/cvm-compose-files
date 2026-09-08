@@ -6,7 +6,8 @@ One GPU-enabled PPCIe CVM per host. No host reset, VMM/KMS change or dev-host us
 Destination: `prod/GLM-5.1-DSV4-Migration.yaml`:
 
 - GLM5.1 r1 retains GPUs 0–3; drain and remove r2 before applying this file.
-- One DS4F TP2 replica uses GPUs 4–5; 6–7 remain unused.
+- Two DS4F TP2 replicas use GPUs 4–5 and 6–7. All eight GPUs remain assigned;
+  DS4F retains its existing two-replica/four-GPU capacity after the move.
 - Preserve the destination GLM engine container identity. Its runtime is unchanged;
   only obsolete Datadog check labels differ from the older deployed file.
 - DS4F image, checkpoint revision and inference arguments match the source pack.
@@ -32,13 +33,15 @@ Destination: `prod/GLM-5.1-DSV4-Migration.yaml`:
 4. Require three fresh samples with r2 running, queued and active inference all zero.
    Selectively down only GLM r2 using the original file, `volumes=false`. Verify GPU
    release and both retained GLM replicas. Never evict caches or prune volumes.
-5. Apply the mixed file in stages: destination DS4F downloader, engine/proxy/exporters,
+5. Apply the mixed file in stages: destination DS4F downloader, both engines/proxy/exporters,
    then collector/shared ingress. Do not select the retained GLM engine. Inspect
    dry-run dependencies and orphans before each step. DS4F remains unregistered.
-6. On the real destination CVM validate exact model listing, adequate-budget semantic
+6. Qualify **both destination DS4F replicas**, not just a successful pooled request.
+   On the real destination CVM validate exact model listing, adequate-budget semantic
    completions, streaming to a terminal event, tool calling, TLS/SNI, and attestation.
    Check fresh engine/proxy/DCGM labels, GPU claims, queues, errors, and CUDA/OOM/XID
-   signals. HTTP 200/readiness/one-token probes alone do not qualify the replica.
+   signals for each replica. HTTP 200/readiness/one-token probes alone do not qualify
+   the replicas. Do not withdraw source capacity until both destination replicas pass.
 7. Explicitly start the destination DS4F registrar. Verify registration on every peer
    and routed client completions before withdrawing the source.
 8. Set source `REGISTER_DSV4=false` in its full environment and apply **only** its
@@ -58,10 +61,10 @@ Destination: `prod/GLM-5.1-DSV4-Migration.yaml`:
 ## Rollback
 
 - Before cutover, leave source DS4F serving; withdraw the destination DS4F registrar
-  before stopping its engine. Use mixed-file scoped operations; preserve GLM r1.
+  before stopping its engines. Use mixed-file scoped operations; preserve GLM r1.
 - After cutover, start the original source DS4F services from the recorded immutable
   reference and qualify them before restoring `REGISTER_DSV4=true` and routing.
 - To restore destination GLM r2, first withdraw and fully drain destination DS4F,
-  remove its engine/exporter, verify GPUs 4–7 are free, then restore GLM r2 and its
+  remove both DS4F engines/exporter, verify GPUs 4–7 are free, then restore GLM r2 and its
   original two-backend pool. Never whole-apply the old file over live DS4F services.
 - A failed guard requires investigation, not an automatic retry or forced recreation.

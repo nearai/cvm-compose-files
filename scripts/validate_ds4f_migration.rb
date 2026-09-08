@@ -9,25 +9,41 @@ source = load_compose.call('prod/dsv4-qwen38-glm51.yaml')
 glm = load_compose.call('prod/GLM-5.1-SGL-AWQ-TP4.yaml')
 services = bridge.fetch('services')
 glm_name = 'model-sg-glm51-awq-tp4-r1'
-ds_name = 'model-sg-dsv4-flash-fp4-tp2-r1'
+ds_names = %w[model-sg-dsv4-flash-fp4-tp2-r1 model-sg-dsv4-flash-fp4-tp2-r2]
 assert = ->(value, message) { raise message unless value }
 ids = ->(name) { services.fetch(name).dig('deploy', 'resources', 'reservations', 'devices').flat_map { |d| d.fetch('device_ids') } }
 assert.call(ids.call(glm_name) == %w[0 1 2 3], 'GLM must retain GPUs 0-3')
-assert.call(ids.call(ds_name) == %w[4 5], 'DS4F must use GPUs 4-5')
+assert.call(ids.call(ds_names[0]) == %w[4 5], 'DS4F r1 must use GPUs 4-5')
+assert.call(ids.call(ds_names[1]) == %w[6 7], 'DS4F r2 must use GPUs 6-7')
+engine_ids = ([glm_name] + ds_names).flat_map { |name| ids.call(name) }
+assert.call(engine_ids.sort == %w[0 1 2 3 4 5 6 7], 'All eight GPUs must be assigned exactly once to engines')
 assert.call(ids.call('dcgm-glm51') == %w[0 1 2 3], 'GLM exporter GPU scope')
-assert.call(ids.call('dcgm-dsv4-flash') == %w[4 5], 'DS4F exporter GPU scope')
+assert.call(ids.call('dcgm-dsv4-flash') == %w[4 5 6 7], 'DS4F exporter GPU scope')
 assert.call(!services.key?('model-sg-glm51-awq-tp4-r2'), 'Drained GLM replica must not restart')
-assert.call(!services.key?('model-sg-dsv4-flash-fp4-tp2-r2'), 'Only one destination DS4F replica')
 assert.call(services[glm_name] == glm['services'][glm_name], 'Retained GLM engine differs from existing config')
-%w[image command environment ulimits volumes runtime ipc stop_grace_period].each do |key|
-  assert.call(services[ds_name][key] == source['services'][ds_name][key], "DS4F runtime changed: #{key}")
+ds_names.each do |name|
+  %w[image command environment ulimits volumes runtime ipc stop_grace_period].each do |key|
+    assert.call(services[name][key] == source['services'][name][key], "DS4F runtime changed: #{name}.#{key}")
+  end
 end
 assert.call(services['ds4f-migration-registrar']['profiles'] == ['register-ds4f'], 'Registration must be explicitly gated')
-assert.call(services['proxy-dsv4-flash']['environment'].include?("VLLM_BACKEND_URLS=http://#{ds_name}:8000"), 'DS4F pool must contain only destination r1')
+pool = ds_names.map { |name| "http://#{name}:8000" }.join(',')
+assert.call(services['proxy-dsv4-flash']['environment'].include?("VLLM_BACKEND_URLS=#{pool}"), 'DS4F pool must contain both destination replicas')
 collector = YAML.safe_load(bridge['configs']['otelcol_app_config']['content'])
 jobs = collector['receivers']['prometheus/apps']['config']['scrape_configs']
-assert.call(jobs.length == 6, 'Expected one engine, proxy and DCGM scrape per model')
-assert.call(jobs.none? { |job| job['job_name'].end_with?('-r2') }, 'Removed replicas must not be scraped')
+assert.call(jobs.length == 7, 'Expected three engine scrapes, two proxies and two exporters')
+assert.call(jobs.none? { |job| job['job_name'] == 'sglang-model-sg-glm51-awq-tp4-r2' }, 'Removed GLM replica must not be scraped')
+ds_names.each_with_index do |name, index|
+  scrape = jobs.find { |job| job['job_name'] == "sglang-#{name}" }
+  assert.call(scrape&.dig('static_configs', 0, 'targets') == ["#{name}:8000"], "Missing DS4F scrape: #{name}")
+  pair = index.zero? ? '4-5' : '6-7'
+  assert.call(scrape.dig('static_configs', 0, 'labels', 'gpu_pair') == pair, "Wrong DS4F scrape pair: #{name}")
+  assert.call(scrape.dig('static_configs', 0, 'labels', 'instance') == (index + 1).to_s, "Wrong DS4F scrape instance: #{name}")
+  assert.call(services[name].dig('labels', 'nearai.otel.gpu_pair') == pair, "Wrong DS4F service pair: #{name}")
+end
+dcgm = jobs.find { |job| job['job_name'] == 'dcgm-dcgm-dsv4-flash' }
+assert.call(dcgm.dig('static_configs', 0, 'labels', 'gpu_pair') == '4-7', 'DS4F DCGM scrape must cover both replicas')
+assert.call(services['dcgm-dsv4-flash'].dig('labels', 'nearai.otel.gpu_pair') == '4-7', 'DS4F DCGM service must cover both replicas')
 
 # Execute the real source registrar with shell-only HTTP stubs. No network,
 # credentials, model requests, or writes outside the disposable container.
