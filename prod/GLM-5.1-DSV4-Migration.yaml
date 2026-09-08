@@ -29,6 +29,25 @@ services:
       - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
     labels:
       com.datadoghq.ad.logs: '[{"source":"model-downloader","service":"model-downloader","tags":["model:QuantTrio/GLM-5.1-AWQ","deployment:GLM-5.1-SGL-AWQ-TP4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+  migration-disk-preflight:
+    image: ghcr.io/astral-sh/uv:python3.11-bookworm-slim@sha256:4f5d923c9dcea037f57bda425dd209f3ec643da2f0b74227f68d09dab0b3bb36
+    container_name: migration-disk-preflight
+    profiles: [migration-preflight]
+    entrypoint: [python3, -B, -c]
+    command:
+      - |
+        import json, shutil
+        disk = shutil.disk_usage('/cache')
+        print(json.dumps(dict(zip(('total_bytes', 'used_bytes', 'free_bytes'), disk))))
+    volumes:
+      - huggingface_cache:/cache:ro
+    network_mode: none
+    read_only: true
+    user: "65534:65534"
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: "no"
+    logging: *1
   nginx:
     image: nginx@sha256:1d13701a5f9f3fb01aaa88cef2344d65b6b5bf6b7d9fa4cf0dca557a8d7702ba
     container_name: nginx

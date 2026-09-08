@@ -39,6 +39,11 @@ Destination: `prod/GLM-5.1-DSV4-Migration.yaml`:
 5. Apply the mixed file in stages: destination DS4F downloader, both engines/proxy/exporters,
    then collector/shared ingress. Do not select the retained GLM engine. Inspect
    dry-run dependencies and orphans before each step. DS4F remains unregistered.
+   Before downloading weights, explicitly run `migration-disk-preflight` (profile
+   `migration-preflight`) and inspect its JSON output through compose-manager logs.
+   Compare guest cache free space with the required checkpoint/image download and
+   retain working headroom. Host filesystem capacity is not guest free space. This
+   check mounts only the existing cache read-only, with no network, credentials or GPU.
 6. Qualify **both destination DS4F replicas**, not just a successful pooled request.
    On the real destination CVM validate exact model listing, adequate-budget semantic
    completions, streaming to a terminal event, tool calling, TLS/SNI, and attestation.

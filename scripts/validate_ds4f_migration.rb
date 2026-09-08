@@ -27,6 +27,14 @@ ds_names.each do |name|
   end
 end
 assert.call(services['ds4f-migration-registrar']['profiles'] == ['register-ds4f'], 'Registration must be explicitly gated')
+disk_check = services.fetch('migration-disk-preflight')
+assert.call(disk_check['profiles'] == ['migration-preflight'], 'Disk check must be explicitly gated')
+assert.call(disk_check['image'] == services['model-downloader']['image'], 'Disk check must reuse the pinned downloader image')
+assert.call(disk_check['volumes'] == ['huggingface_cache:/cache:ro'], 'Disk check must mount only the read-only cache')
+assert.call(disk_check['network_mode'] == 'none' && disk_check['read_only'] == true, 'Disk check must be isolated and read-only')
+assert.call(disk_check['user'] == '65534:65534' && disk_check['cap_drop'] == ['ALL'], 'Disk check must be unprivileged')
+assert.call(disk_check['security_opt'] == ['no-new-privileges:true'], 'Disk check must forbid privilege escalation')
+assert.call(%w[environment ports deploy runtime privileged].none? { |key| disk_check.key?(key) }, 'Disk check must not receive credentials, ports or GPUs')
 pool = ds_names.map { |name| "http://#{name}:8000" }.join(',')
 assert.call(services['proxy-dsv4-flash']['environment'].include?("VLLM_BACKEND_URLS=#{pool}"), 'DS4F pool must contain both destination replicas')
 collector = YAML.safe_load(bridge['configs']['otelcol_app_config']['content'])
