@@ -134,6 +134,16 @@ def main():
                          'python3', '-c', code, mode, json.dumps(mapping), check=check)
             return json.loads(result.stdout) if result.returncode == 0 else result
 
+        def route_is(expected):
+            # HUP is asynchronous: observing a forked worker is not yet proof
+            # that the master finished transferring new-connection admission.
+            deadline = time.monotonic() + 15
+            while True:
+                observed = curl()
+                if observed == expected: return
+                assert time.monotonic() < deadline, f'new connections stayed on {observed!r}, expected {expected!r}'
+                time.sleep(0.1)
+
         assert helper('preflight')['no_signal']
         wrong = dict(cfg, steady='wrong pre-state')
         assert helper('to-temp', wrong, check=False).returncode != 0
@@ -147,7 +157,7 @@ def main():
         result = helper('to-temp')
         assert result['status'] == 'ok' and result['old_workers'] and result['new_workers']
         assert not helper('drain')['drained']
-        assert curl() == 'new'
+        route_is('new')
         assert curl('/v1/signature/old') == 'old'
         assert curl('/v1/signature/new') == 'new'
         assert curl('/v1/chat/completions', extra=('-X', 'POST', '--write-out', '%{http_code}')) == '503'
@@ -167,7 +177,7 @@ def main():
 
         drained()
         assert helper('to-canonical')['status'] == 'ok'
-        assert curl() == 'old'
+        route_is('old')
         assert curl('/v1/signature/new') == 'new'
         assert curl('/v1/signature/old') == 'old'
         drained()
