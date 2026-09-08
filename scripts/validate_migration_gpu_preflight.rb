@@ -17,8 +17,9 @@ raise 'Unexpected GPU environment' unless doc['services']['migration-gpu-preflig
 raise 'Missing GPU runtime' unless doc['services']['migration-gpu-preflight']['runtime'] == 'nvidia'
 kernel = doc['services']['migration-kernel-preflight']
 raise 'Kernel-only service accesses GPUs' if kernel.key?('runtime') || kernel.key?('environment')
-raise 'Wrong kernel-only mode' unless kernel['entrypoint'] == ['python3', '/gpu-preflight.py', '--kernel-only']
-code = doc.fetch('configs').fetch('gpu_preflight_script').fetch('content')
+code = doc.fetch('x-gpu-preflight-script')
+raise 'Wrong kernel-only mode' unless kernel['entrypoint'] == ['python3', '-c'] && kernel['command'] == [code, '--kernel-only']
+raise 'Wrong full collection mode' unless doc['services']['migration-gpu-preflight']['command'] == [code]
 tests = <<~'PY'
   import sys
   ns = {'__name__': 'test'}
