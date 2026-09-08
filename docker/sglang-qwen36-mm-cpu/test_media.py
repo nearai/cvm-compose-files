@@ -26,7 +26,8 @@ REVISION = '95a723d08a9490559dae23d0cff1d9466213d989'
 assert envs.SGLANG_MM_CPU_PREPROCESS.get()
 assert not torch.cuda.is_available(), 'This smoke must run without GPU devices'
 assert not torch.cuda.is_initialized()
-processor = AutoProcessor.from_pretrained(MODEL, revision=REVISION, trust_remote_code=False)
+processor = AutoProcessor.from_pretrained(MODEL, revision=REVISION,
+                                         trust_remote_code=False, token=False)
 args = NS(base_gpu_id=0, rl_on_policy_target=None)
 instance = NS(_processor=processor, image_config={}, video_config={}, audio_config={},
               disable_fast_image_processor=False, _tokenizer_auto_adds_specials=False,

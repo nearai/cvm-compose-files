@@ -42,8 +42,8 @@ docker run --rm --read-only --cpus 4 --memory 8g \
   --tmpfs /tmp:rw,size=1g --tmpfs /root/.cache:rw,size=1g \
   --cap-drop ALL --security-opt no-new-privileges:true \
   -e TRITON_CACHE_DIR=/tmp/triton \
+  -e HF_HOME=/tmp/huggingface -e HF_HUB_DISABLE_IMPLICIT_TOKEN=1 \
   -v "$PWD:/repo:ro" \
-  -v qwen-mm-processor-cache:/root/.cache/huggingface \
   --entrypoint python3 "$(< /tmp/qwen-mm-candidate.id)" \
   /repo/docker/sglang-qwen36-mm-cpu/test_media.py
 ```

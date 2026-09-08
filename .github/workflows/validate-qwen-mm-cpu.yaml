@@ -28,12 +28,11 @@ jobs:
         run: |
           set -euo pipefail
           qwen_mm_image=$(< "$RUNNER_TEMP/qwen-mm-image.id")
-          qwen_mm_cache=$(mktemp -d "$RUNNER_TEMP/qwen-mm-cache.XXXXXX")
           docker run --rm --read-only --cpus 4 --memory 8g \
             --tmpfs /tmp:rw,size=1g --tmpfs /root/.cache:rw,size=1g \
             --cap-drop ALL --security-opt no-new-privileges:true \
             -e TRITON_CACHE_DIR=/tmp/triton \
+            -e HF_HOME=/tmp/huggingface -e HF_HUB_DISABLE_IMPLICIT_TOKEN=1 \
             -v "$GITHUB_WORKSPACE:/repo:ro" \
-            -v "$qwen_mm_cache:/root/.cache/huggingface" \
             --entrypoint python3 "$qwen_mm_image" \
             /repo/docker/sglang-qwen36-mm-cpu/test_media.py
