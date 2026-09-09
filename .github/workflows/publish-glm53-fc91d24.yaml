@@ -188,7 +188,7 @@ jobs:
             --format '{{json .SBOM.SPDX}}' \
             "$IMAGE_IMMUTABLE_REF" > sbom.spdx.json
           jq -e \
-            '.spdxVersion | startswith("SPDX-") and (.packages | length > 0)' \
+            '(.spdxVersion | startswith("SPDX-")) and (.packages | length > 0)' \
             sbom.spdx.json
 
       - name: Scan the published digest
@@ -252,7 +252,6 @@ jobs:
           fi
 
       - name: Attest build provenance
-        if: inputs.resume_digest == ''
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4
         with:
           subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_REPOSITORY }}
