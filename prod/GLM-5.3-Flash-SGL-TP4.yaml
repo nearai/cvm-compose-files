@@ -675,7 +675,6 @@ configs:
       DCGM_FI_DEV_BRAND, label, GPU product brand.
       DCGM_FI_DEV_VBIOS_VERSION, label, GPU VBIOS version.
 
-
   otelcol_app_config:
     content: |
       receivers:
@@ -994,7 +993,7 @@ configs:
 
       register_endpoint() {
         echo "Registering endpoint $$1 with routing port $$2"
-        curl -sS --max-time 10 -X POST "$$PROXY_URL/register/endpoint" \
+        curl -fsS --max-time 10 -X POST "$$PROXY_URL/register/endpoint" \
           -H "Authorization: Bearer $$TOKEN" \
           -H "Content-Type: application/json" \
           -d "{\"endpoint\":\"$$1\",\"routing_port\":$$2}"
@@ -1002,14 +1001,14 @@ configs:
 
       unregister_endpoint() {
         echo "Unregistering endpoint $$1"
-        curl -sS --max-time 10 -X POST "$$PROXY_URL/unregister/endpoint" \
+        curl -fsS --max-time 10 -X POST "$$PROXY_URL/unregister/endpoint" \
           -H "Authorization: Bearer $$TOKEN" \
           -H "Content-Type: application/json" \
           -d "{\"endpoint\":\"$$1\"}"
       }
 
       register_model() {
-        curl -sS --max-time 10 -X POST "$$PROXY_URL/register/model" \
+        curl -fsS --max-time 10 -X POST "$$PROXY_URL/register/model" \
           -H "Authorization: Bearer $$TOKEN" \
           -H "Content-Type: application/json" \
           -d "{\"model\":\"$$1\",\"domain\":\"$$2\"}"
@@ -1024,13 +1023,25 @@ configs:
       trap cleanup TERM INT
 
       mark_registered() {
-        register_endpoint "$$ENDPOINT" "$${TLS_PORT}"
-        register_model "z-ai/glm-5.3-flash" "glm-5-3-flash.completions.near.ai"
+        if ! register_endpoint "$$ENDPOINT" "$${TLS_PORT}"; then
+          echo "[GLM-5.3-Flash-SGL-TP4] Endpoint registration failed; retrying on the next loop"
+          return 1
+        fi
+        if ! register_model "z-ai/glm-5.3-flash" "glm-5-3-flash.completions.near.ai"; then
+          echo "[GLM-5.3-Flash-SGL-TP4] Model registration failed; retrying on the next loop"
+          return 1
+        fi
         if [ "$$REGISTERED" = false ]; then
           echo "[GLM-5.3-Flash-SGL-TP4] Registered z-ai/glm-5.3-flash (2x TP4/EP4) at $$ENDPOINT"
         fi
         REGISTERED=true
       }
+
+      # The previous mixed stack published its retired co-resident engine on
+      # port 8001. Remove only this host-local endpoint; the global model-domain
+      # mapping must remain while other hosts may still serve that model.
+      unregister_endpoint "$${HOST_IP}:8001" || \
+        echo "[GLM-5.3-Flash-SGL-TP4] WARN: legacy endpoint cleanup failed; continuing"
 
       # Probe the host-published nginx port. The inference-proxy health-manages
       # both internal replicas, so registration represents the pooled endpoint.
@@ -1090,13 +1101,19 @@ configs:
         health_status=$$?
         case "$$health_status" in
           0)
-            FAILURE_COUNT=0
-            mark_registered
+            if mark_registered; then
+              FAILURE_COUNT=0
+            else
+              FAILURE_COUNT=$$((FAILURE_COUNT + 1))
+            fi
             ;;
           2)
-            FAILURE_COUNT=0
             echo "[GLM-5.3-Flash-SGL-TP4] Keeping $$ENDPOINT registered while backend is saturated"
-            mark_registered
+            if mark_registered; then
+              FAILURE_COUNT=0
+            else
+              FAILURE_COUNT=$$((FAILURE_COUNT + 1))
+            fi
             ;;
           *)
             FAILURE_COUNT=$$((FAILURE_COUNT + 1))
