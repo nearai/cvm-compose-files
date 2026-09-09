@@ -1,15 +1,13 @@
 #!/usr/bin/env ruby
 # Protect the canonical two-replica GLM-5.3 Flash production contract.
 
-require "digest"
 require "shellwords"
 require "yaml"
 
 ROOT = File.expand_path("..", __dir__)
 COMPOSE_FILE = File.join(ROOT, "prod", "GLM-5.3-Flash-SGL-TP4.yaml")
 LEGACY_CANARY_FILE = File.join(ROOT, "prod", "GLM-5.3-Flash-SGL-TP4-Canary.yaml")
-ENGINE_IMAGE = "nearai/glm53-sglang-upstream-fc91d24:local"
-ENGINE_BUILD_SHA256 = "9d559a2f7c5e7ce9c4a0c2377c0552aab74d9f5e26416bd17e19d9b8643e03be"
+ENGINE_IMAGE = "docker.io/nearaidev/sglang@sha256:a7b7136abcf5e07522289d96e96fec9b42a1a30f9dfda57e957f142680d2d67b"
 PROXY_IMAGE = "nearaidev/vllm-proxy-rs@sha256:27265f5a10abcacc3fe80604a00ed2ba32c6e082895115e4b652b40525cb554d"
 REPLICAS = {
   "model-sg-glm53-fp8-tp4-r1" => %w[0 1 2 3],
@@ -128,11 +126,7 @@ REPLICAS.each do |name, expected_devices|
 
   replica_services << service
   errors << "#{name} image must be #{ENGINE_IMAGE}" unless service["image"] == ENGINE_IMAGE
-
-  build = service["build"] || {}
-  errors << "#{name} build context must be ." unless build["context"] == "."
-  build_sha256 = Digest::SHA256.hexdigest(build["dockerfile_inline"].to_s)
-  errors << "#{name} engine build recipe changed (expected SHA-256 #{ENGINE_BUILD_SHA256}, got #{build_sha256})" unless build_sha256 == ENGINE_BUILD_SHA256
+  errors << "#{name} must use the prebuilt signed image, not a host-local build" if service.key?("build")
 
   validate_command(errors, name, service["command"].to_s)
 
@@ -144,6 +138,12 @@ end
 if replica_services.length == REPLICAS.length
   runtime_contracts = replica_services.map { |service| runtime_contract(service) }
   errors << "GLM-5.3 replicas must use identical runtime configuration outside identity, labels, and GPU allocation" unless runtime_contracts.uniq.length == 1
+end
+
+perception_check = services["glm53-perception-check"]
+if perception_check
+  errors << "glm53-perception-check image must be #{ENGINE_IMAGE}" unless perception_check["image"] == ENGINE_IMAGE
+  errors << "glm53-perception-check must use the prebuilt signed image, not a host-local build" if perception_check.key?("build")
 end
 
 proxy = services["proxy-glm53"]
