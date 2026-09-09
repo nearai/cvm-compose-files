@@ -12,8 +12,10 @@ x-logging-conf: &logging-conf
 # replica stays within one four-GPU NVLink island; one inference-proxy uses its native
 # least-connections backend pool for health-aware balancing and failover.
 #
-# The engine source is pinned to PierreLeGuen/sglang-upstream commit fc91d24,
-# derived from official SGLang main plus the official GLM-5.3 branch. It contains
+# The engine is published by the repository's GitHub Actions workflow and pinned
+# here by its signed immutable registry digest. Its source is pinned to
+# PierreLeGuen/sglang-upstream commit fc91d24, derived from official SGLang main
+# plus the official GLM-5.3 branch. It contains
 # upstream disconnect cleanup (#35255), the final-prefill abort fix (#34153),
 # the strict thinking-budget adapter, and two narrow DSA import-cycle fixes. The
 # official CUDA 13 SGLang image is the pinned build base. The serving envelope
@@ -54,34 +56,10 @@ x-vllm-proxy-common: &vllm-proxy-common
   restart: unless-stopped
   logging: *logging-conf
 
-x-glm53-build: &glm53-build
-  context: .
-  dockerfile_inline: |
-    FROM lmsysorg/sglang@sha256:eb090e39434085f713d39421cb2e5b6d342424aa95c3d9ecdfe8cadd4289e99b
-    ADD https://github.com/PierreLeGuen/sglang-upstream/archive/fc91d2403cc210a86bd5fc715c6609f58c932e5a.tar.gz /tmp/sglang.tar.gz
-    RUN printf '%s  %s\n' \
-          '1e4340ed7e476696f36f4094e027f2c7648bcca98934f0df3220b307bdcd1673' \
-          '/tmp/sglang.tar.gz' \
-        | sha256sum -c -
-    RUN rm -rf /sgl-workspace/sglang \
-        && mkdir -p /sgl-workspace/sglang \
-        && tar -xzf /tmp/sglang.tar.gz --strip-components=1 -C /sgl-workspace/sglang \
-        && rm /tmp/sglang.tar.gz
-    WORKDIR /sgl-workspace/sglang
-    RUN python3 -m pip install setuptools-rust==1.13.0 setuptools-scm==10.2.3 pytest-asyncio==1.4.0
-    RUN --mount=type=cache,target=/sgl-workspace/sglang/rust/target \
-        --mount=type=cache,target=/sgl-workspace/sglang/rust/sglang-radix-tree/target \
-        CARGO_BUILD_JOBS=8 SETUPTOOLS_SCM_PRETEND_VERSION=0.5.16.dev20260904 \
-        python3 -m pip install --no-deps --no-build-isolation -e python
-    LABEL org.opencontainers.image.source="https://github.com/PierreLeGuen/sglang-upstream" \
-          org.opencontainers.image.revision="fc91d2403cc210a86bd5fc715c6609f58c932e5a"
-    RUN python3 -c "import sglang; from sglang.srt.entrypoints.openai.protocol import ChatCompletionRequest; print(sglang.__file__)"
-
 x-sg-glm53-flash-common: &sg-glm53-flash-common
   <<: *nvidia
   init: true
-  image: nearai/glm53-sglang-upstream-fc91d24:local
-  build: *glm53-build
+  image: docker.io/nearaidev/sglang@sha256:a7b7136abcf5e07522289d96e96fec9b42a1a30f9dfda57e957f142680d2d67b
   command: >
       sglang serve
       --model-path /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/84c6a6aa9497188e15a635ba793b0f95a79b1033
@@ -398,9 +376,7 @@ services:
   # Runs the candidate's synthetic fixture gate against each replica at concurrency 1.
   # No GPU allocation, host mounts, Docker socket, credentials, or published ports.
   glm53-perception-check:
-    image: nearai/glm53-sglang-upstream-fc91d24:local
-    # Reuse the in-CVM build staged for r2; this tag is not a registry artifact.
-    pull_policy: never
+    image: docker.io/nearaidev/sglang@sha256:a7b7136abcf5e07522289d96e96fec9b42a1a30f9dfda57e957f142680d2d67b
     container_name: glm53-perception-check
     profiles: ["verification"]
     runtime: runc
