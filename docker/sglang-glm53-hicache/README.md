@@ -54,23 +54,56 @@ docker buildx imagetools inspect --format '{{json .SBOM.SPDX}}' "$IMAGE"
 | --- | --- | --- |
 | Image | Existing signed production digest | New signed derivative digest |
 | HiCache | Disabled | Enabled |
-| Host cache size | None | `--hicache-size 64` per rank, nominal 256 GB for TP4 |
+| Host cache budget | None | `GLM53_HICACHE_RAM_BUDGET=80%` across all TP ranks |
 | Write policy | None | `write_through` |
 | I/O and host layout | None | `direct`, `page_first_direct` |
 | Transfers | Existing runtime | `SGLANG_HICACHE_POOLED_TRANSFERS=1` |
 | Persistent staging | None | `SGLANG_HICACHE_STAGING_PAGES=64` per pool/direction/rank |
 
-The 64 GB choice keeps the host KV tier larger than the device KV tier for
-this serving envelope. The 32 GB diagnostic allocation was smaller than the
-device pool and is unsuitable as the default eviction canary.
+Set `GLM53_HICACHE_RAM_BUDGET` in the deployment `env_vars` map (or in the
+Docker Compose environment / `.env`). The generated r2 service forwards it as
+`SGLANG_HICACHE_RAM_BUDGET=${GLM53_HICACHE_RAM_BUDGET:-80%}`. Examples:
 
-The cache-size argument is in decimal GB and is **not a container memory cap**.
-Allow additional RAM for Python/tokenizers, pinned allocator/page rounding,
-draft sidecars where applicable, shared memory and the other replica. Check
-available memory inside the CVM before starting the candidate. Host cache holds
-KV/index pages and finite recurrent checkpoints; token capacity alone does not
-determine how many conversations can resume. There is no conversation-length
-admission policy in this change.
+```text
+GLM53_HICACHE_RAM_BUDGET=80%     # default: 80% of available RAM at startup
+GLM53_HICACHE_RAM_BUDGET=60%     # leave more headroom for other services
+GLM53_HICACHE_RAM_BUDGET=256GiB  # explicit total budget across all four ranks
+GLM53_HICACHE_RAM_BUDGET=256GB   # decimal GB, also supported
+```
+
+For direct `docker run` or SGLang launches, set `SGLANG_HICACHE_RAM_BUDGET`
+instead. Do not also set `--hicache-size`: the old CLI option is per rank, while
+this environment setting is the **total for one TP replica**. Changing the
+setting requires recreating/restarting that replica; no image rebuild is needed.
+Pools stay fixed until the next restart. r1 does not receive the setting.
+
+All TP ranks rendezvous after model loading and before host-cache allocation.
+Available RAM is the minimum of guest `MemAvailable` and remaining hard cgroup
+memory limits (v2 or v1, including visible parents). Swap is excluded; cgroup
+usage includes charged file cache, so the result can be conservative. The
+physical host's RAM outside the CVM is never included. The smallest rank
+snapshot determines one common budget, divided by the number of local ranks.
+For example, 1,000 GiB available gives an 800 GiB budget: 200 GiB per TP4 rank.
+A minimum 10 GiB reserve may lower the percentage result on small guests;
+an explicit size that cannot leave that reserve fails startup.
+
+KV, packed MTP, DSA index and recurrent-state pools share that budget. Their
+actual rounded payload allocations are charged cumulatively; page counts
+round down in budget mode. Metadata, Python/tokenizers, staging and other
+services use the remaining RAM. This is a host-cache payload cap, **not a
+container memory limit or a guarantee against unrelated processes growing**.
+Start the control replica and other substantial consumers first when sizing a
+shared CVM. Independently started cache replicas do not coordinate budgets.
+Hidden cgroup ancestors cannot be discovered from inside a cgroup namespace;
+set an explicit container limit if a tighter host-side parent budget matters.
+Startup logs report available, total, per-rank and allocated pool bytes.
+
+This first implementation supports the single-node TP hybrid KV + recurrent
+state stack used by this GLM deployment. PP, DP, DCP and external storage
+backends are rejected. The pooled-transfer implementation is unchanged.
+Token capacity alone does not determine how many conversations can resume:
+recurrent checkpoints are finite. There is no conversation-length admission
+policy in this change.
 
 Pooling packs many small layer transfers into a persistent device buffer,
 copies complete pages with CUDA DMA, then scatters them on the GPU. Triton

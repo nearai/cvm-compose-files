@@ -13,12 +13,12 @@ COMPOSE = Path('prod/GLM-5.3-Flash-SGL-TP4.yaml')
 RELEASE = Path('docker/sglang-glm53-hicache/RELEASED_IMAGE')
 VARIANT = 'fc91d24-hicache-pooled-v1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192'
 OPTIONS = {
-    '--hicache-size': '64',
     '--hicache-write-policy': 'write_through',
     '--hicache-io-backend': 'direct',
     '--hicache-mem-layout': 'page_first_direct',
 }
 ENVIRONMENT = {
+    'SGLANG_HICACHE_RAM_BUDGET': '${GLM53_HICACHE_RAM_BUDGET:-80%}',
     'SGLANG_HICACHE_POOLED_TRANSFERS': '1',
     'SGLANG_HICACHE_STAGING_PAGES': '64',
 }

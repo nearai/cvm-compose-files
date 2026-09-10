@@ -1249,6 +1249,92 @@
 +    print(json.dumps({"rank": rank, "all_four_ranks_passed": True}), flush=True)
 +    dist.destroy_process_group()
 --- /dev/null
++++ b/test/manual/test_startup_ram_budget_tp.py
+@@ -0,0 +1,83 @@
++"""Real Gloo rendezvous and cgroup sampling; no GPUs or large allocations.
++
++torchrun --nnodes=1 --nproc-per-node=4 --master-addr=127.0.0.1 \
++  --master-port=29500 test/manual/test_startup_ram_budget_tp.py
++"""
++
++import os
++from contextlib import ExitStack
++from types import SimpleNamespace
++from unittest.mock import MagicMock, patch
++
++import torch.distributed as dist
++
++from sglang.srt.mem_cache import startup_ram_budget as ram
++
++dist.init_process_group("gloo")
++rank, size = dist.get_rank(), dist.get_world_size()
++try:
++    with ExitStack() as stack:
++        # No allocation occurs here. Small CI guests cannot leave the production
++        # 10 GiB reserve; unit tests separately enforce that policy.
++        stack.enter_context(patch.object(ram, "RESERVE_BYTES", 0))
++        stack.enter_context(
++            patch(
++                "sglang.srt.distributed.parallel_state.get_world_group",
++                return_value=SimpleNamespace(
++                    cpu_group=dist.group.WORLD, world_size=size
++                ),
++            )
++        )
++        stack.enter_context(
++            patch(
++                "sglang.srt.runtime_context.get_parallel",
++                return_value=SimpleNamespace(
++                    nnodes=1, tp_size=size, pp_size=1, dp_size=1, dcp_enabled=False
++                ),
++            )
++        )
++        memory = SimpleNamespace(hicache_size=0, hicache_storage_backend=None)
++        stack.enter_context(
++            patch("sglang.srt.runtime_context.get_memory", return_value=memory)
++        )
++        context = MagicMock()
++        stack.enter_context(
++            patch("sglang.srt.runtime_context.get_context", return_value=context)
++        )
++        os.environ[ram.ENV] = "80%"
++        with ram.startup_ram_budget(supported=True) as budget:
++            totals = [None] * size
++            dist.all_gather_object(totals, budget.total_bytes)
++            assert len(set(totals)) == 1
++            assert budget.rank_bytes * size <= budget.total_bytes
++            context.override.assert_called_once_with(
++                source=ram.ENV, hicache_size=budget.rank_bytes / 1e9
++            )
++            ram.reserve_startup_bytes(budget.rank_bytes)
++            try:
++                ram.reserve_startup_bytes(1)
++            except ValueError:
++                pass
++            else:
++                raise AssertionError("Rank exceeded the shared budget")
++        assert ram.active_budget() is None
++        # One bad rank fails every rank BEFORE any pool construction.
++        os.environ[ram.ENV] = "bad" if rank == 0 else "80%"
++        try:
++            with ram.startup_ram_budget(supported=True):
++                raise AssertionError("Bad peer configuration was ignored")
++        except ValueError as exc:
++            assert "startup RAM sizing failed" in str(exc)
++        os.environ[ram.ENV] = "80%"
++        memory.hicache_size = 64 if rank == 0 else 0
++        try:
++            with ram.startup_ram_budget(supported=True):
++                raise AssertionError("Conflicting CLI size was ignored")
++        except ValueError as exc:
++            assert "--hicache-size" in str(exc)
++        print(
++            f"rank={rank} shared_budget_bytes={totals[0]} real_cgroup_and_peer_failure_checks=passed",
++            flush=True,
++        )
++finally:
++    dist.destroy_process_group()
+--- /dev/null
 +++ b/test/registered/unit/mem_cache/test_compressed_dsa_checkpoint_roundtrip.py
 @@ -0,0 +1,402 @@
 +"""A cached recurrent state must describe exactly the prefix that owns it."""
@@ -2742,6 +2828,191 @@
 +
  if __name__ == "__main__":
      unittest.main()
+--- /dev/null
++++ b/test/registered/unit/mem_cache/test_startup_ram_budget.py
+@@ -0,0 +1,182 @@
++"""Synthetic startup sizing: no GPUs, model files or large allocations needed."""
++
++import tempfile
++import unittest
++from pathlib import Path
++from unittest.mock import patch
++
++from sglang.srt.mem_cache import startup_ram_budget as ram
++
++GiB = 1024**3
++
++
++def records(config="80%", available=100 * GiB, ranks=4):
++    return [
++        dict(config=config, available_bytes=available, error=None) for _ in range(ranks)
++    ]
++
++
++class StartupBudgetTest(unittest.TestCase):
++    def test_fraction_is_shared_across_ranks(self):
++        for ranks in (1, 2, 4, 8):
++            budget = ram.resolve_budget(records(ranks=ranks))
++            self.assertEqual(budget.total_bytes, 80 * GiB)
++            self.assertEqual(budget.rank_bytes, 80 * GiB // ranks)
++
++    def test_explicit_units_and_least_available_rank(self):
++        self.assertEqual(ram.resolve_budget(records("64GB")).total_bytes, 64 * 10**9)
++        self.assertEqual(ram.resolve_budget(records("64GiB")).total_bytes, 64 * GiB)
++        peers = records()
++        peers[2]["available_bytes"] = 80 * GiB
++        self.assertEqual(ram.resolve_budget(peers).total_bytes, 64 * GiB)
++
++    def test_low_ram_reserve_and_oversized_fixed_budget(self):
++        self.assertEqual(
++            ram.resolve_budget(records(available=20 * GiB)).total_bytes, 10 * GiB
++        )
++        for config, available in (
++            ("95GiB", 100 * GiB),
++            ("80%", 10 * GiB),
++            ("0.000000001GB", 20 * GiB),
++        ):
++            with self.subTest(config=config), self.assertRaises(ValueError):
++                ram.resolve_budget(records(config, available))
++
++    def test_invalid_config_and_peer_errors(self):
++        for value in (
++            "",
++            "0",
++            "-1GiB",
++            "100%",
++            "0%",
++            "80",
++            "NaN%",
++            "infGB",
++            "8TB",
++            " 80%",
++            "80%\n",
++        ):
++            with self.subTest(value=value), self.assertRaises(ValueError):
++                ram.parse_budget(value)
++        peers = records()
++        peers[1]["config"] = "70%"
++        with self.assertRaisesRegex(ValueError, "differs"):
++            ram.resolve_budget(peers)
++        peers[1]["error"] = "unreadable cgroup"
++        with self.assertRaisesRegex(ValueError, "unreadable cgroup"):
++            ram.resolve_budget(peers)
++
++    def test_cumulative_claims_and_page_rounding(self):
++        budget = ram.RankBudget(4000, 4)
++        token = ram._active.set(budget)
++        self.addCleanup(ram._active.reset, token)
++        self.assertEqual(ram.host_page_count(256, 64), 4)
++        self.assertEqual(ram.host_page_count(255, 64), 3)
++        with self.assertRaises(ValueError):
++            ram.host_page_count(63, 64)
++        # KV, recurrent state and index all spend the SAME rank allowance.
++        for size in (600, 300, 100):
++            ram.reserve_startup_bytes(size)
++        self.assertEqual(budget.remaining_bytes, 0)
++        with self.assertRaises(ValueError):
++            ram.reserve_startup_bytes(1)
++
++    def test_disabled_leaves_upstream_sizing_unchanged(self):
++        with patch.dict("os.environ", {}, clear=True):
++            with ram.startup_ram_budget(supported=False):
++                self.assertIsNone(ram.active_budget())
++                self.assertEqual(ram.host_page_count(256, 64), 5)
++                ram.reserve_startup_bytes(10**15)
++
++
++class CgroupTest(unittest.TestCase):
++    def setUp(self):
++        temp = tempfile.TemporaryDirectory()
++        self.addCleanup(temp.cleanup)
++        self.root = Path(temp.name)
++        self.proc = self.root / "proc"
++        (self.proc / "self").mkdir(parents=True)
++        self.mount = self.root / "cgroup"
++        self.mount.mkdir()
++
++    def mountinfo(self, *, kind="cgroup2", membership="/job/rank", root="/"):
++        controllers = "" if kind == "cgroup2" else "memory"
++        (self.proc / "self/cgroup").write_text(f"0:{controllers}:{membership}\n")
++        opts = "rw" if kind == "cgroup2" else "rw,memory"
++        (self.proc / "self/mountinfo").write_text(
++            f"1 2 0:1 {root} {self.mount} rw - {kind} cgroup {opts}\n"
++        )
++
++    def limit(self, path, limit, used, *, kind="cgroup2"):
++        directory = self.mount / path
++        directory.mkdir(parents=True, exist_ok=True)
++        limit_file, usage_file = (
++            ("memory.max", "memory.current")
++            if kind == "cgroup2"
++            else ("memory.limit_in_bytes", "memory.usage_in_bytes")
++        )
++        (directory / limit_file).write_text(str(limit))
++        (directory / usage_file).write_text(str(used))
++
++    def test_v2_parent_limit_tighter_than_container(self):
++        self.mountinfo()
++        self.limit("job/rank", 1000, 100)
++        self.limit("job", 2000, 1500)
++        self.limit("", "max", 2000)
++        self.assertEqual(ram.cgroup_headrooms(self.proc), [900, 500])
++
++    def test_namespaced_mount_and_unlimited(self):
++        self.mountinfo(membership="/", root="/")
++        self.limit("", "max", 2000)
++        self.assertEqual(ram.cgroup_headrooms(self.proc), [])
++        self.limit("", 4000, 3000)
++        self.assertEqual(ram.cgroup_headrooms(self.proc), [1000])
++
++    def test_subtree_mount(self):
++        self.mountinfo(membership="/job/rank", root="/job")
++        self.limit("rank", 4000, 1000)
++        self.limit("", 8000, 6000)
++        self.assertEqual(ram.cgroup_headrooms(self.proc), [3000, 2000])
++
++    def test_v1_and_exhausted_parent(self):
++        self.mountinfo(kind="cgroup")
++        for path, limit, used in (
++            ("job/rank", 1000, 100),
++            ("job", 2000, 2500),
++            ("", 2**63 - 4096, 3000),
++        ):
++            self.limit(path, limit, used, kind="cgroup")
++        self.assertEqual(min(ram.cgroup_headrooms(self.proc)), 0)
++
++    def test_missing_or_malformed_limit_fails(self):
++        self.mountinfo()
++        with self.assertRaises(ValueError):
++            ram.cgroup_headrooms(self.proc)
++        self.limit("job/rank", "garbage", 0)
++        with self.assertRaises(ValueError):
++            ram.cgroup_headrooms(self.proc)
++        self.limit("job/rank", 1000, 0)
++        (self.mount / "job/rank/memory.current").unlink()
++        with self.assertRaises(FileNotFoundError):
++            ram.cgroup_headrooms(self.proc)
++
++    def test_guest_memory_and_container_headroom_both_bound_budget(self):
++        from types import SimpleNamespace
++
++        for available, headrooms, expected in (
++            (500, [200, 300], 200),
++            (100, [200], 100),
++            (100, [], 100),
++        ):
++            with (
++                patch(
++                    "psutil.virtual_memory",
++                    return_value=SimpleNamespace(available=available),
++                ),
++                patch.object(ram, "cgroup_headrooms", return_value=headrooms),
++            ):
++                self.assertEqual(ram.available_ram_bytes(), expected)
++
++
++if __name__ == "__main__":
++    unittest.main()
 --- a/test/registered/unit/mem_cache/test_unified_cache_linker.py
 +++ b/test/registered/unit/mem_cache/test_unified_cache_linker.py
 @@ -99,7 +99,9 @@

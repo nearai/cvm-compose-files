@@ -63,12 +63,12 @@ REPLICA_IDENTITY_FIELDS = %w[container_name deploy labels].freeze
 CANARY_IMAGE_FILE = File.join(ROOT, "docker", "sglang-glm53-hicache", "RELEASED_IMAGE")
 CANARY_IMAGE = File.exist?(CANARY_IMAGE_FILE) ? File.read(CANARY_IMAGE_FILE).strip : nil
 HICACHE_OPTIONS = {
-  "--hicache-size" => "64",
   "--hicache-write-policy" => "write_through",
   "--hicache-io-backend" => "direct",
   "--hicache-mem-layout" => "page_first_direct",
 }.freeze
 HICACHE_ENV = {
+  "SGLANG_HICACHE_RAM_BUDGET" => "${GLM53_HICACHE_RAM_BUDGET:-80%}",
   "SGLANG_HICACHE_POOLED_TRANSFERS" => "1",
   "SGLANG_HICACHE_STAGING_PAGES" => "64",
 }.freeze
