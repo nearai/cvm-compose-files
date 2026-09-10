@@ -85,6 +85,11 @@ jobs:
             ruby:3.3-alpine \
             ruby scripts/validate_glm53_prod_config.rb
 
+      - name: Test GLM-5.3 HiCache canary promotion
+        run: |
+          docker run --rm -v "$PWD:/repo:ro" -w /repo ruby:3.3-alpine \
+            sh -c 'apk add --no-cache python3 >/dev/null && python3 scripts/test_glm53_hicache_canary.py'
+
       - name: Validate docker compose files
         # Compose files reference env vars that are populated at deploy time
         # by compose-manager (or the operator). CI doesn't have the real
