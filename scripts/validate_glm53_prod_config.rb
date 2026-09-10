@@ -60,6 +60,20 @@ REQUIRED_SWITCHES = %w[
   --disable-fast-image-processor
 ].freeze
 REPLICA_IDENTITY_FIELDS = %w[container_name deploy labels].freeze
+CANARY_IMAGE_FILE = File.join(ROOT, "docker", "sglang-glm53-hicache", "RELEASED_IMAGE")
+CANARY_IMAGE = File.exist?(CANARY_IMAGE_FILE) ? File.read(CANARY_IMAGE_FILE).strip : nil
+HICACHE_OPTIONS = {
+  "--hicache-write-policy" => "write_through",
+  "--hicache-io-backend" => "direct",
+  "--hicache-mem-layout" => "page_first_direct",
+}.freeze
+HICACHE_ENV = {
+  "SGLANG_HICACHE_RAM_BUDGET" => "${GLM53_HICACHE_RAM_BUDGET:-80%}",
+  "SGLANG_HICACHE_POOLED_TRANSFERS" => "1",
+  "SGLANG_HICACHE_STAGING_PAGES" => "64",
+}.freeze
+CANARY_VARIANT = "fc91d24-hicache-pooled-v1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
+
 
 def yaml_load(content)
   YAML.load(content, aliases: true)
@@ -106,6 +120,9 @@ def runtime_contract(service)
 end
 
 errors = []
+if CANARY_IMAGE && (!CANARY_IMAGE.match?(%r{\Adocker\.io/nearaidev/sglang@sha256:[a-f0-9]{64}\z}) || CANARY_IMAGE == ENGINE_IMAGE)
+  errors << "HiCache release must pin a distinct immutable image from the signed publishing workflow"
+end
 errors << "legacy canary compose file must be removed" if File.exist?(LEGACY_CANARY_FILE)
 
 compose = yaml_load(File.read(COMPOSE_FILE))
@@ -125,7 +142,8 @@ REPLICAS.each do |name, expected_devices|
   end
 
   replica_services << service
-  errors << "#{name} image must be #{ENGINE_IMAGE}" unless service["image"] == ENGINE_IMAGE
+  expected_image = name.end_with?("-r2") && CANARY_IMAGE ? CANARY_IMAGE : ENGINE_IMAGE
+  errors << "#{name} image must be #{expected_image}" unless service["image"] == expected_image
   errors << "#{name} must use the prebuilt signed image, not a host-local build" if service.key?("build")
 
   validate_command(errors, name, service["command"].to_s)
@@ -136,8 +154,45 @@ REPLICAS.each do |name, expected_devices|
 end
 
 if replica_services.length == REPLICAS.length
-  runtime_contracts = replica_services.map { |service| runtime_contract(service) }
-  errors << "GLM-5.3 replicas must use identical runtime configuration outside identity, labels, and GPU allocation" unless runtime_contracts.uniq.length == 1
+  control, canary = replica_services
+  control_arguments = Shellwords.split(control["command"].to_s)
+  if control_arguments.any? { |arg| arg.include?("hicache") || arg == "--enable-hierarchical-cache" } ||
+     environment_map(control).keys.any? { |key| key.start_with?("SGLANG_HICACHE_") }
+    errors << "r1 must remain the HiCache-disabled control"
+  end
+  if CANARY_IMAGE
+    normalized = Marshal.load(Marshal.dump(canary))
+    arguments = Shellwords.split(normalized["command"].to_s)
+    errors << "r2 must enable HiCache exactly once" unless arguments.count("--enable-hierarchical-cache") == 1
+    arguments.delete("--enable-hierarchical-cache")
+    HICACHE_OPTIONS.each do |key, expected|
+      positions = arguments.each_index.select { |index| arguments[index] == key }
+      if positions.length != 1 || arguments[positions.first.to_i + 1] != expected
+        errors << "r2 must set #{key} #{expected} exactly once"
+      else
+        arguments.slice!(positions.first, 2)
+      end
+    end
+    errors << "r2 must preserve all control serving arguments outside HiCache" unless arguments == control_arguments
+    env = environment_map(normalized)
+    HICACHE_ENV.each do |key, expected|
+      errors << "r2 must set #{key}=#{expected}" unless env.delete(key) == expected
+    end
+    errors << "r2 must preserve all control environment outside pooled transfers" unless env == environment_map(control)
+    normalized["image"] = control["image"]
+    normalized["command"] = control["command"]
+    normalized["environment"] = control["environment"]
+    errors << "r2 must preserve the control runtime outside HiCache" unless runtime_contract(normalized) == runtime_contract(control)
+    labels = canary.fetch("labels", {})
+    errors << "r2 must identify the pooled canary in metric labels" unless labels["nearai.otel.config_variant"] == CANARY_VARIANT
+    errors << "r2 must identify the pooled canary in log metadata" unless labels["com.datadoghq.ad.logs"].to_s.include?("config_variant:#{CANARY_VARIANT}")
+    collector = yaml_load(compose.dig("configs", "otelcol_app_config", "content"))
+    scrape = collector.dig("receivers", "prometheus/apps", "config", "scrape_configs").find { |job| job["job_name"] == "sglang-model-sg-glm53-fp8-tp4-r2" }
+    errors << "r2 collector must carry the pooled canary variant" unless scrape.dig("static_configs", 0, "labels", "config_variant") == CANARY_VARIANT
+  else
+    runtime_contracts = replica_services.map { |service| runtime_contract(service) }
+    errors << "GLM-5.3 replicas must use identical runtime configuration until a signed HiCache image is pinned" unless runtime_contracts.uniq.length == 1
+  end
 end
 
 perception_check = services["glm53-perception-check"]

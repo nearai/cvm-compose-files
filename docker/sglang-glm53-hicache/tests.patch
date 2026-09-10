@@ -1,0 +1,3052 @@
+--- /dev/null
++++ b/test/manual/test_hicache_chunked_prefix.py
+@@ -0,0 +1,339 @@
++#!/usr/bin/env python3
++"""Exercise chunked-prefix reuse and host restoration through a running server.
++
++Use an isolated GLM-5.3-Flash server with page_size=64, index_kpool=4,
++chunked_prefill_size=max_prefill_tokens=320, HiCache write-through, cache
++reporting, metrics, and the glm47 tool parser enabled. Set device KV capacity to
++twice --pressure-tokens (8192 with the default). Host capacity must be larger.
++Run this client with CUDA hidden. It never imports SGLang or executes kernels.
++
++Cold repeats establish the numerical comparison. Different requests then reuse
++512- and 768-token prefixes, both on device and after counters prove a host hit.
++Only the last 64 prompt tokens are scored, avoiding a full-prompt logits buffer.
++Scored requests generate one token; the primer generates 32 to reach a checkpoint.
++A separate coding request must complete valid read_file tool calls naturally,
++including after device eviction and confirmed host restoration.
++The numerical smoke check does not establish exact checkpoint correctness;
++test_compressed_dsa_checkpoint_roundtrip.py checks the saved state contents.
++"""
++
++import argparse
++import json
++import math
++import os
++import re
++import statistics
++import time
++import urllib.request
++import uuid
++from pathlib import Path
++
++CORPUS = """This is a code review of a small job queue. The queue stores immutable
++job descriptions and a separate status record. A worker claims a queued job,
++executes it once, and records either success or a retryable failure. Duplicate
++notifications must not execute a completed job again. The API must validate
++inputs before writing a job. Tests should cover two workers racing to claim
++the same job, retries after a timeout, and a process restarting between claim
++and completion. A completed job's result must survive a restart. The cache is
++only an optimization: evicting it must not change which job the worker sees.
++The implementation lives in src/queue.py and tests live in tests/test_queue.py.
++"""
++
++
++def request(base, path, body=None):
++    headers = {"Content-Type": "application/json"}
++    if os.environ.get("SGLANG_API_KEY"):
++        headers["Authorization"] = "Bearer " + os.environ["SGLANG_API_KEY"]
++    req = urllib.request.Request(
++        base + path,
++        data=None if body is None else json.dumps(body).encode(),
++        headers=headers,
++    )
++    with urllib.request.urlopen(req, timeout=1800) as response:
++        return response.read()
++
++
++def metrics(base):
++    result = {}
++    for line in request(base, "/metrics").decode().splitlines():
++        if not line.startswith("sglang:prefill_effective_tokens_total{"):
++            continue
++        labels = dict(re.findall(r'(\w+)="([^"]*)"', line))
++        if labels.get("tp_rank") not in (None, "0"):
++            continue
++        mode = labels.get("mode")
++        result[mode] = result.get(mode, 0) + float(line.rsplit(" ", 1)[1])
++    if not result:
++        raise AssertionError("Host-hit metrics are required to prove restoration")
++    result.setdefault("host_hit", 0)
++    result.setdefault("device_hit", 0)
++    return result
++
++
++def generate(base, ids, salt, *, score=False, max_new_tokens=1):
++    body = {
++        "input_ids": ids,
++        "cache_salt": salt,
++        "sampling_params": {"temperature": 0, "max_new_tokens": max_new_tokens},
++    }
++    if score:
++        body.update(return_logprob=True, logprob_start_len=len(ids) - 64)
++    return json.loads(request(base, "/generate", body))
++
++
++def scores(response):
++    values = response["meta_info"]["input_token_logprobs"]
++    return [(float(lp), token) for lp, token, *_ in values if lp is not None]
++
++
++def compare(reference, actual):
++    a, b = scores(reference), scores(actual)
++    assert len(a) >= 60 and len(a) == len(b), (len(a), len(b))
++    assert [x[1] for x in a] == [x[1] for x in b]
++    delta = [abs(x[0] - y[0]) for x, y in zip(a, b, strict=True)]
++    assert all(math.isfinite(d) for d in delta)
++    return {
++        "tokens": len(delta),
++        "mean_abs_logprob_delta": statistics.mean(delta),
++        "max_abs_logprob_delta": max(delta),
++    }
++
++
++def valid_tool_response(response):
++    choice = response["choices"][0]
++    calls = choice["message"].get("tool_calls") or []
++    if choice["finish_reason"] == "length" or not calls:
++        return False
++    paths = []
++    for call in calls:
++        try:
++            function = call["function"]
++            arguments = json.loads(function["arguments"])
++            if (
++                function["name"] != "read_file"
++                or not isinstance(arguments, dict)
++                or set(arguments) != {"path"}
++                or arguments["path"] not in ("src/queue.py", "tests/test_queue.py")
++            ):
++                return False
++            paths.append(arguments["path"])
++        except (KeyError, TypeError, ValueError):
++            return False
++    # Reading the referenced tests is a valid extra action. Require the source
++    # read and well-formed calls, without demanding identical generated text.
++    return "src/queue.py" in paths and len(paths) == len(set(paths))
++
++
++def coding_tool_request(base, salt):
++    body = {
++        "model": "glm-5.3-flash",
++        "messages": [
++            {"role": "system", "content": "You are a careful programming assistant."},
++            {
++                "role": "user",
++                "content": CORPUS
++                * 12
++                + "\nReview src/queue.py for concurrency bugs. Begin by reading that file. "
++                "Do not infer its implementation from the design notes above.",
++            },
++        ],
++        "tools": [
++            {
++                "type": "function",
++                "function": {
++                    "name": "read_file",
++                    "description": "Read a source file before reviewing its implementation.",
++                    "parameters": {
++                        "type": "object",
++                        "properties": {"path": {"type": "string"}},
++                        "required": ["path"],
++                        "additionalProperties": False,
++                    },
++                },
++            }
++        ],
++        "cache_salt": salt,
++        "temperature": 0,
++        "max_tokens": 2048,
++    }
++    response = json.loads(request(base, "/v1/chat/completions", body))
++    return {"response": response, "passed": valid_tool_response(response)}
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--base-url", default="http://127.0.0.1:18000")
++    parser.add_argument("--tokenizer", required=True)
++    parser.add_argument("--output", type=Path, required=True)
++    parser.add_argument("--pressure-tokens", type=int, default=4096)
++    parser.add_argument("--cycles", type=int, default=2)
++    args = parser.parse_args()
++    from transformers import AutoTokenizer
++
++    tokenizer = AutoTokenizer.from_pretrained(args.tokenizer, trust_remote_code=True)
++    template = tokenizer.apply_chat_template(
++        [
++            {"role": "system", "content": "You are a careful programming assistant."},
++            {"role": "user", "content": "DOCUMENT_PLACEHOLDER"},
++        ],
++        tokenize=False,
++        add_generation_prompt=True,
++    )
++    lead, tail = template.split("DOCUMENT_PLACEHOLDER")
++
++    def encode(text):
++        return tokenizer.encode(text, add_special_tokens=False)
++
++    lead_ids, tail_ids = encode(lead), encode(tail)
++    corpus_ids = encode(CORPUS * 100)
++
++    def prompt(length, heading="Review this design.\n"):
++        front = lead_ids + encode(heading)
++        needed = length - len(front) - len(tail_ids)
++        assert 0 < needed <= len(corpus_ids)
++        return front + corpus_ids[:needed] + tail_ids
++
++    primer = prompt(1000)
++    results = {"definition": __doc__, "cases": [], "tool_cases": [], "passed": True}
++    nonce = uuid.uuid4().hex
++    for shared in (512, 768):
++        # The second request has genuinely different content after the shared
++        # prefix, so its state must not include the primer's following tokens.
++        branch = (
++            primer[:shared]
++            + encode(
++                "\n\nThe excerpt above ends here. A different review now follows. "
++                "Please explain why two workers cannot both own one queue job. "
++                "Discuss atomic claims, idempotency keys and recovery after a "
++                "worker crashes. A status cache may disappear at any time. "
++                "The durable job record is authoritative. A database transaction "
++                "must make the claim conditional on the queued status. "
++                "How should a regression reproduce a crash between recording "
++                "a successful result and acknowledging the notification?"
++            )
++            + tail_ids
++        )
++        common = next(
++            (i for i, (a, b) in enumerate(zip(primer, branch)) if a != b),
++            min(len(primer), len(branch)),
++        )
++        assert common // 256 * 256 == shared, common
++        salt = f"{nonce}-{shared}-shared"
++        cold = generate(args.base_url, branch, f"{salt}-cold-a", score=True)
++        repeat = generate(args.base_url, branch, f"{salt}-cold-b", score=True)
++        assert cold["meta_info"]["cached_tokens"] == 0
++        assert repeat["meta_info"]["cached_tokens"] == 0
++        control = compare(cold, repeat)
++        # Chunked insertions alone do not initiate write-through. Let normal
++        # decoding cross 1024 so finishing publishes this path to host too.
++        primed = generate(args.base_url, primer, salt, max_new_tokens=32)
++        assert primed["meta_info"]["completion_tokens"] >= 25
++        time.sleep(1)  # allow write-through completion before inducing eviction
++        row = {
++            "shared_tokens": shared,
++            "primer_tokens": len(primer),
++            "branch_tokens": len(branch),
++            "primer_ids": primer,
++            "branch_ids": branch,
++            "cold_repeat": control,
++            "cold_scores": scores(cold),
++            "repeat_scores": scores(repeat),
++            "replays": [],
++        }
++        # BF16 state / FP8 KV can differ slightly with prefill partitioning.
++        # Keep the same bounds for the broken and repaired revisions.
++        mean_limit = max(0.05, 5 * control["mean_abs_logprob_delta"])
++        max_limit = max(0.5, 5 * control["max_abs_logprob_delta"])
++        row["limits"] = {"mean": mean_limit, "max": max_limit}
++        results["cases"].append(row)
++        args.output.write_text(json.dumps(results, indent=2) + "\n")
++        print(
++            json.dumps(
++                {
++                    "shared_tokens": shared,
++                    "cold_repeat": control,
++                    "limits": row["limits"],
++                }
++            ),
++            flush=True,
++        )
++        for cycle in range(args.cycles + 1):
++            if cycle:
++                # Do not replay between pressure requests: doing so refreshes
++                # this entry's LRU position and can prevent its eviction.
++                for pressure_round in range(2):
++                    pressure = prompt(
++                        args.pressure_tokens,
++                        f"Independent queue audit {nonce} {shared} {cycle} {pressure_round}.\n",
++                    )
++                    generate(
++                        args.base_url,
++                        pressure,
++                        f"{salt}-pressure-{cycle}-{pressure_round}",
++                    )
++                time.sleep(1)
++            before = metrics(args.base_url)
++            replay = generate(args.base_url, branch, salt, score=True)
++            after = metrics(args.base_url)
++            delta = compare(cold, replay)
++            cached = replay["meta_info"]["cached_tokens"]
++            hit = {k: after.get(k, 0) - before.get(k, 0) for k in after}
++            passed = (
++                delta["mean_abs_logprob_delta"] <= mean_limit
++                and delta["max_abs_logprob_delta"] <= max_limit
++                and cached >= shared
++                and (
++                    hit["host_hit"] >= shared
++                    if cycle
++                    else hit["device_hit"] >= shared and hit["host_hit"] == 0
++                )
++            )
++            row["replays"].append(
++                {
++                    "path": "host" if cycle else "device",
++                    "cycle": cycle,
++                    "cached_tokens": cached,
++                    "hit_tokens": hit,
++                    "scores": scores(replay),
++                    **delta,
++                    "passed": passed,
++                }
++            )
++            results["passed"] &= passed
++            args.output.write_text(json.dumps(results, indent=2) + "\n")
++            print(
++                json.dumps(
++                    {k: v for k, v in row["replays"][-1].items() if k != "scores"}
++                ),
++                flush=True,
++            )
++    tool_salt = f"{nonce}-coding-tool"
++    for cycle in range(args.cycles + 2):
++        if cycle >= 2:
++            for pressure_round in range(2):
++                generate(
++                    args.base_url,
++                    prompt(args.pressure_tokens),
++                    f"{tool_salt}-pressure-{cycle}-{pressure_round}",
++                )
++            time.sleep(1)
++        before = metrics(args.base_url)
++        row = coding_tool_request(args.base_url, tool_salt)
++        after = metrics(args.base_url)
++        hit = {k: after.get(k, 0) - before.get(k, 0) for k in after}
++        row.update(cycle=cycle, hit_tokens=hit)
++        if cycle == 0:
++            row["passed"] &= hit["device_hit"] == hit["host_hit"] == 0
++        elif cycle == 1:
++            row["passed"] &= hit["device_hit"] >= 256 and hit["host_hit"] == 0
++        else:
++            row["passed"] &= hit["host_hit"] >= 256
++        results["passed"] &= row["passed"]
++        results["tool_cases"].append(row)
++        args.output.write_text(json.dumps(results, indent=2) + "\n")
++        print(json.dumps({k: v for k, v in row.items() if k != "response"}), flush=True)
++    raise SystemExit(0 if results["passed"] else 1)
++
++
++if __name__ == "__main__":
++    main()
+--- /dev/null
++++ b/test/manual/test_hicache_draft_sidecar_gpu.py
+@@ -0,0 +1,264 @@
++#!/usr/bin/env python3
++"""Byte-exact mixed-geometry HiCache fallback test; run on an isolated GPU.
++
++Uses real DSA device/host pools, the draft planner and sidecar assembler, and
++the controller's transfer lists and asynchronous L2 engine. Backs up in two
++pieces, poisons device storage, then restores onto shuffled physical pages.
++"""
++
++import json
++from types import SimpleNamespace
++from unittest.mock import patch
++
++import torch
++
++from sglang.srt.mem_cache.hicache_storage import PoolName, PoolTransfer
++from sglang.srt.mem_cache.hybrid_cache.hybrid_cache_controller import (
++    HybridCacheController,
++)
++from sglang.srt.mem_cache.hybrid_cache.hybrid_pool_assembler import (
++    _build_hybrid_dsa_index_entry,
++    _build_mha_mla_host_pool,
++    build_hicache_draft_sidecars,
++    build_pool_entry,
++)
++from sglang.srt.mem_cache.l2_transfer import L2TransferEngine
++from sglang.srt.mem_cache.memory_pool import DSATokenToKVPool, HybridLinearKVPool
++from sglang.srt.mem_cache.pool_host import HostPoolGroup
++from sglang.srt.runtime_context import publish, reset_context
++from sglang.srt.server_args import ServerArgs
++from sglang.srt.speculative.base_spec_worker import BaseSpecWorker, HiCacheDraftMode
++from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
++
++
++def make_pool(dtype, dim, live, compress):
++    return DSATokenToKVPool(
++        size=1024,
++        page_size=64,
++        kv_lora_rank=512,
++        qk_rope_head_dim=64,
++        kv_cache_dim=dim,
++        dtype=dtype,
++        layer_num=len(live),
++        device="cuda",
++        index_head_dim=128,
++        enable_memory_saver=False,
++        index_kpool=4 if compress else 1,
++        index_kpool_compress=compress,
++        max_running_requests=4,
++        skip_topk_layers=[not x for x in live],
++    )
++
++
++def wrap(pool, hybrid):
++    if not hybrid:
++        return pool
++    result = object.__new__(HybridLinearKVPool)
++    result.full_kv_pool = pool
++    return result
++
++
++def tokens(pages):
++    return (pages[:, None] * 64 + torch.arange(64, device=pages.device)).flatten()
++
++
++def run_case(layout, backend, target_geometry, draft_geometry, hybrid, live, compress):
++    publish(
++        ServerArgs(
++            model_path="dummy",
++            enable_hierarchical_cache=True,
++            hicache_mem_layout=layout,
++            hicache_io_backend=backend,
++        ),
++        role="scheduler",
++    )
++    target = make_pool(*target_geometry, (True, False, True), compress)
++    draft = make_pool(*draft_geometry, (live,), compress)
++    target_runner = SimpleNamespace(
++        token_to_kv_pool=wrap(target, hybrid), spec_algorithm=SpeculativeAlgorithm.EAGLE
++    )
++    runner = SimpleNamespace(
++        token_to_kv_pool=wrap(draft, hybrid),
++        model_config=SimpleNamespace(
++            num_nextn_predict_layers=1,
++            hf_config=SimpleNamespace(architectures=["Glm5NextForCausalLMMTP"]),
++        ),
++    )
++    worker = SimpleNamespace(
++        target_worker=SimpleNamespace(model_runner=target_runner),
++        _draft_model_runners=lambda: (runner,),
++    )
++    plan = BaseSpecWorker._build_hicache_draft_plan(worker)
++    assert plan.mode == HiCacheDraftMode.SIDECAR
++    assert target_runner.mtp_draft_device_pools == ()
++    prefix = "sglang.srt.mem_cache.hybrid_cache.hybrid_pool_assembler."
++    with patch(prefix + "_get_allocator_type", return_value="default"):
++        host = _build_mha_mla_host_pool(
++            pool=target,
++            host_to_device_ratio=2,
++            page_size=64,
++            layout=layout,
++            allocator_type="default",
++            pool_label="target",
++        )
++        mapping = dict(enumerate(range(target.layer_num)))
++        anchor = build_pool_entry(
++            name=PoolName.KV,
++            host_pool=host,
++            device_pool=target,
++            layer_mapping=mapping,
++            transfer_layer_num=target.layer_num,
++            is_anchor=True,
++        )
++        index = _build_hybrid_dsa_index_entry(
++            kv_pool=target,
++            kv_host_pool=host,
++            layer_mapping=mapping,
++            transfer_layer_num=target.layer_num,
++        )
++        group = HostPoolGroup([anchor, index])
++        controller = object.__new__(HybridCacheController)
++        controller.mem_pool_host = group
++        controller.page_size = 64
++        controller.layer_num = target.layer_num
++        specs, entries = build_hicache_draft_sidecars(
++            draft_device_pools=plan.device_pools,
++            tree_cache=SimpleNamespace(cache_controller=controller),
++        )
++        for entry in entries:
++            group.add_entry(entry)
++    assert group.get_pool(PoolName.DRAFT).dtype == draft.store_dtype
++    assert (
++        group.get_pool(PoolName.DRAFT)._host_kv_cache_dim(draft) == draft.kv_cache_dim
++    )
++    assert (PoolName.DRAFT_INDEXER in group.entry_map) == live
++    assert all(spec.indices_from_pool == PoolName.KV for spec in specs)
++
++    generator = torch.Generator().manual_seed(38212)
++    originals = []
++    for pool in (target, draft):
++        for buffer in pool.kv_buffer:
++            view = buffer.view(torch.uint8)
++            expected = torch.randint(
++                0, 256, view.shape, dtype=torch.uint8, generator=generator
++            )
++            view.copy_(expected)
++            originals.append((view, expected, False))
++        for buffer in pool.index_k_with_scale_buffer:
++            if not buffer.numel():
++                continue
++            expected = torch.randint(
++                0, 256, buffer.shape, dtype=torch.uint8, generator=generator
++            )
++            buffer.copy_(expected)
++            originals.append((buffer, expected, True))
++    source_pages = torch.tensor([0, 1, 2, 3, 8, 9, 10, 11])
++    host_pages = torch.tensor([16, 17, 18, 19, 4, 5, 6, 7])
++    dest_pages = torch.tensor([12, 13, 14, 15, 4, 5, 6, 7])
++    index_device = "cuda" if backend == "kernel" else "cpu"
++    src, cached, dst = [
++        tokens(p.to(index_device)) for p in (source_pages, host_pages, dest_pages)
++    ]
++    engine = L2TransferEngine(backend)
++
++    def transfers(host_indices, device_indices, backup):
++        aux = [
++            PoolTransfer(
++                name,
++                host_indices=host_indices,
++                device_indices=device_indices,
++                indices_from_pool=PoolName.KV,
++            )
++            for name in group.entry_map
++            if name != PoolName.KV
++        ]
++        result = controller._l2_load_transfers(host_indices, device_indices, aux)
++        if backup:
++            result = [
++                t._replace(host_indices=t.host_indices.cpu())
++                if t.host_pool.can_use_write_back_jit
++                else t
++                for t in result
++            ]
++        return result
++
++    for start in (0, 256):
++        completion = engine.submit_device_to_host(
++            transfers(cached[start : start + 256], src[start : start + 256], True)
++        )
++    torch.cuda.current_stream().wait_event(completion.finish_event)
++    for buffer, _, _ in originals:
++        buffer.fill_(173)
++    restored = engine.submit_host_to_device(
++        transfers(cached, dst, False), layer_num=target.layer_num
++    )
++    restored.finish_event.synchronize()
++    compared = 0
++    for buffer, expected, is_index in originals:
++        actual = buffer.cpu()[dest_pages if is_index else tokens(dest_pages)]
++        expected = expected[source_pages if is_index else tokens(source_pages)]
++        assert torch.equal(actual, expected), (
++            layout,
++            backend,
++            target_geometry,
++            draft_geometry,
++            is_index,
++        )
++        compared += actual.numel()
++    for entry in group.entries:
++        entry.host_pool.destroy()
++    reset_context()
++    print(
++        json.dumps(
++            dict(
++                layout=layout,
++                backend=backend,
++                target=str(target_geometry),
++                draft=str(draft_geometry),
++                hybrid=hybrid,
++                index_live=live,
++                compressed=compress,
++                bytes_compared=compared,
++                passed=True,
++            )
++        ),
++        flush=True,
++    )
++
++
++def main():
++    assert torch.cuda.is_available(), "requires an isolated CUDA test environment"
++    print(
++        json.dumps(
++            dict(
++                gpu=torch.cuda.get_device_name(),
++                capability=torch.cuda.get_device_capability(),
++            )
++        ),
++        flush=True,
++    )
++    fp8, bf16 = torch.float8_e4m3fn, torch.bfloat16
++    cases = 0
++    with torch.inference_mode():
++        for layout, backend in (
++            ("page_first", "kernel"),
++            ("layer_first", "kernel"),
++            ("layer_first", "direct"),
++            ("page_first_direct", "direct"),
++        ):
++            for target, draft in (
++                ((fp8, 656), (fp8, 528)),
++                ((fp8, 656), (bf16, 576)),
++                ((bf16, 576), (fp8, 576)),
++            ):
++                for hybrid in (False, True):
++                    for live in (False, True):
++                        run_case(layout, backend, target, draft, hybrid, live, True)
++                        cases += 1
++            run_case(layout, backend, (fp8, 656), (bf16, 576), False, True, False)
++            cases += 1
++    print(f"HiCache draft sidecar GPU byte oracle: {cases}/{cases} passed", flush=True)
++
++
++if __name__ == "__main__":
++    main()
+--- /dev/null
++++ b/test/manual/test_hybrid_dsa_hicache_gpu.py
+@@ -0,0 +1,296 @@
++#!/usr/bin/env python3
++"""Exact-image GPU byte oracle. Run only in an isolated qualification Job.
++
++Exercises the real index sidecar builder and unmodified CPU/GPU copy paths,
++including noncontiguous physical pages, incremental backup, draft layers,
++and restoration onto different physical pages after poisoning device memory.
++"""
++
++import json
++from types import SimpleNamespace
++from unittest.mock import MagicMock, patch
++
++import torch
++
++from sglang.srt.mem_cache.hicache_storage import PoolName, PoolTransfer
++from sglang.srt.mem_cache.hybrid_cache.hybrid_cache_controller import (
++    HybridCacheController,
++)
++from sglang.srt.mem_cache.hybrid_cache.hybrid_pool_assembler import (
++    _build_hybrid_dsa_index_entry,
++    _DsaStrategy,
++    build_hybrid_mamba_stack,
++)
++from sglang.srt.mem_cache.memory_pool import DSATokenToKVPool
++from sglang.srt.mem_cache.pool_host import HostPoolGroup, PoolEntry
++
++
++def check_derived_slot_lifecycle():
++    """The INDEXER borrows KV addresses; it must never allocate/free its own."""
++    pools = {
++        name: MagicMock() for name in (PoolName.KV, PoolName.MAMBA, PoolName.INDEXER)
++    }
++    group = HostPoolGroup(
++        [
++            PoolEntry(
++                name=name,
++                host_pool=pool,
++                device_pool=None,
++                layer_mapper=lambda layer: layer,
++                is_primary_index_anchor=name == PoolName.KV,
++            )
++            for name, pool in pools.items()
++        ]
++    )
++    controller = object.__new__(HybridCacheController)
++    controller.mem_pool_host = group
++    controller.write_queue = []
++    controller.start_writing = MagicMock()
++    for iteration in range(100):
++        # Reuse a bounded host range after each prior operation was released.
++        size = 512 if iteration % 2 == 0 else 256
++        host = torch.arange(size, dtype=torch.int64)
++        device = host + 1024
++        pools[PoolName.KV].alloc.return_value = host
++        pools[PoolName.MAMBA].alloc.return_value = torch.tensor([iteration % 4])
++        pools[PoolName.MAMBA].free.return_value = 1
++        result = controller.write(
++            device,
++            node_id=iteration,
++            extra_pools=[
++                PoolTransfer(PoolName.INDEXER, indices_from_pool=PoolName.KV),
++                PoolTransfer(PoolName.MAMBA, device_indices=torch.tensor([3])),
++            ],
++        )
++        assert result is host
++        operation = controller.write_queue.pop()
++        derived = next(
++            t for t in operation.pool_transfers if t.name == PoolName.INDEXER
++        )
++        assert derived.host_indices is host
++        assert derived.device_indices is device
++        assert group.release_transfers(operation.pool_transfers) == 1
++        # A published node may split only at a whole compression group.
++        for child in host.split(256):
++            group.free(child)
++    pools[PoolName.INDEXER].alloc.assert_not_called()
++    pools[PoolName.INDEXER].free.assert_not_called()
++    assert pools[PoolName.MAMBA].free.call_count == 100
++    assert pools[PoolName.KV].free.call_count == 150
++    print("Derived INDEXER controller lifecycle: 100/100 passed", flush=True)
++
++
++def check_ratio_mode():
++    prefix = "sglang.srt.mem_cache.hybrid_cache.hybrid_pool_assembler."
++    target = make_pool((True, True))
++    target.kv_cache_dim = 656
++    memory = SimpleNamespace(
++        hicache_size=0,
++        hicache_ratio=2.5,
++        hicache_mem_layout="page_first",
++        hicache_write_policy="write_through",
++        hicache_io_backend="kernel",
++        hicache_host_memory_mode=None,
++    )
++    params = SimpleNamespace(
++        page_size=64,
++        mtp_draft_device_pools=(),
++        req_to_token_pool=SimpleNamespace(mamba_allocator=MagicMock()),
++        token_to_kv_pool_allocator=MagicMock(),
++        tp_cache_group=None,
++        attn_cp_cache_group=None,
++        attn_tp_cache_group=None,
++        pp_cache_group=None,
++    )
++    with (
++        patch(prefix + "get_memory", return_value=memory),
++        patch(prefix + "_get_allocator_type", return_value="default"),
++        patch(prefix + "_split_hicache_size") as split,
++        patch(prefix + "build_kv_host_pool") as build_kv,
++        patch(prefix + "MambaPoolHost"),
++        patch(prefix + "DeepSeekV4PagedHostPool") as index_host,
++        patch(prefix + "HybridCacheController"),
++    ):
++        build_kv.return_value.page_num = 20
++        group, _ = build_hybrid_mamba_stack(
++            params=params,
++            kv_pool=target,
++            mamba_pool=MagicMock(),
++            full_layer_mapping={0: 0, 3: 1},
++            mamba_layer_mapping={1: 0, 2: 1},
++            load_cache_event=None,
++            storage_backend=None,
++            use_mla=True,
++        )
++        split.assert_not_called()
++        assert build_kv.call_args.kwargs["host_size"] is None
++        assert index_host.call_args.kwargs["num_host_pages"] == 20
++        assert PoolName.INDEXER in group.entry_map
++    print("Hybrid DSA ratio-mode assembly: passed", flush=True)
++
++
++def make_pool(live_layers):
++    pool = object.__new__(DSATokenToKVPool)
++    pool.page_size = 64
++    pool.index_kpool = 4
++    pool.kpool_use_compress = True
++    pool.layer_num = len(live_layers)
++    pool.index_key_cache = SimpleNamespace(
++        buffer=[
++            torch.zeros((8 if live else 0, 64 * 132), dtype=torch.uint8, device="cuda")
++            for live in live_layers
++        ]
++    )
++    return pool
++
++
++def tokens(pages):
++    return (pages[:, None] * 64 + torch.arange(64, device=pages.device)).flatten()
++
++
++def run_case(layout, backend, trial, *, standalone=False):
++    target = make_pool((True, False, True))
++    draft = make_pool((True,))
++    prefix = "sglang.srt.mem_cache.hybrid_cache.hybrid_pool_assembler."
++    memory = SimpleNamespace(
++        hicache_mem_layout=layout,
++        hicache_write_policy="write_through",
++        hicache_io_backend=backend,
++        hicache_host_memory_mode=None,
++    )
++    with (
++        patch(prefix + "get_memory", return_value=memory),
++        patch(prefix + "_get_allocator_type", return_value="default"),
++    ):
++        if standalone:
++            target.kv_cache_dim = 656
++            params = SimpleNamespace(
++                mtp_draft_device_pools=(draft,),
++                page_size=64,
++                token_to_kv_pool_allocator=MagicMock(),
++                tp_cache_group=None,
++                attn_cp_cache_group=None,
++                attn_tp_cache_group=None,
++                pp_cache_group=None,
++            )
++            with (
++                patch(prefix + "build_kv_host_pool") as anchor,
++                patch(prefix + "HybridCacheController"),
++            ):
++                anchor.return_value.page_num = 16
++                result = _DsaStrategy().build(
++                    cache=MagicMock(),
++                    kvcache=target,
++                    params=params,
++                    server_args=None,
++                    load_cache_event=None,
++                )
++            entry = result.host_pool_group.get_entry(PoolName.INDEXER)
++            assert entry.layer_mapper(1) is None
++            assert entry.layer_mapper(3) == 2
++        else:
++            entry = _build_hybrid_dsa_index_entry(
++                kv_pool=target,
++                kv_host_pool=SimpleNamespace(page_num=16),
++                layer_mapping={0: 0, 4: 1, 8: 2, 45: 3},
++                transfer_layer_num=46,
++                draft_pools=(draft,),
++            )
++            assert entry.layer_mapper(4) is None
++            assert entry.layer_mapper(45) == 2
++    host = entry.host_pool
++    assert len(host.device_buffers) == 3
++    assert host.item_bytes == 8448
++    generator = torch.Generator(device="cpu").manual_seed(37625 + trial)
++    originals = []
++    for buffer in host.device_buffers:
++        original = torch.randint(
++            0, 256, buffer.shape, dtype=torch.uint8, generator=generator
++        )
++        buffer.copy_(original)
++        originals.append(original)
++    source_pages = torch.randperm(8, generator=generator)
++    host_pages = torch.randperm(16, generator=generator)[:8]
++    dest_pages = torch.randperm(8, generator=generator)
++    index_device = "cuda" if backend == "kernel" else "cpu"
++    src = tokens(source_pages.to(index_device))
++    dst = tokens(dest_pages.to(index_device))
++    cached = tokens(host_pages.to(index_device))
++    # The staged page-first D2H path consumes CPU destination indices,
++    # exactly as HybridCacheController._move_write_operation supplies them.
++    backup_cached = cached.cpu() if host.can_use_write_back_jit else cached
++    # Explicit dependencies model asynchronous transfers without relying on
++    # the default stream's implicit ordering.
++    backup_stream = torch.cuda.Stream()
++    restore_stream = torch.cuda.Stream()
++    backup_stream.wait_stream(torch.cuda.current_stream())
++    with torch.cuda.stream(backup_stream):
++        for start in (0, 256):
++            host.backup_from_device_all_layer(
++                target,
++                backup_cached[start : start + 256],
++                src[start : start + 256],
++                backend,
++            )
++        backed_up = backup_stream.record_event()
++    torch.cuda.current_stream().wait_event(backed_up)
++    for buffer in host.device_buffers:
++        buffer.fill_(173)
++    restore_stream.wait_stream(torch.cuda.current_stream())
++    with torch.cuda.stream(restore_stream):
++        for layer in range(3):
++            host.load_to_device_per_layer(target, cached, dst, layer, backend)
++        restored = restore_stream.record_event()
++    restored.synchronize()
++    for layer, buffer in enumerate(host.device_buffers):
++        actual = buffer.cpu()[dest_pages]
++        expected = originals[layer][source_pages]
++        assert torch.equal(actual, expected), (layout, backend, trial, layer)
++    # Each trial owns a registered host buffer. Release its registration before
++    # a later trial can reuse that address for a new host allocation.
++    host.destroy()
++    print(
++        json.dumps(
++            {
++                "layout": layout,
++                "backend": backend,
++                "trial": trial,
++                "standalone": standalone,
++                "layers": 3,
++                "pages": 8,
++                "bytes_compared": 3 * 8 * 8448,
++                "passed": True,
++            }
++        ),
++        flush=True,
++    )
++
++
++def main():
++    assert torch.cuda.is_available(), "requires an isolated CUDA Job"
++    print(
++        json.dumps(
++            {
++                "gpu": torch.cuda.get_device_name(),
++                "capability": torch.cuda.get_device_capability(),
++            }
++        ),
++        flush=True,
++    )
++    with torch.inference_mode():
++        check_derived_slot_lifecycle()
++        check_ratio_mode()
++        for layout, backend in (
++            ("page_first", "kernel"),
++            ("layer_first", "kernel"),
++            ("layer_first", "direct"),
++            ("page_first_direct", "direct"),
++        ):
++            for trial in range(5):
++                for standalone in (False, True):
++                    run_case(layout, backend, trial, standalone=standalone)
++    print("Hybrid DSA HiCache GPU byte oracle: 40/40 passed", flush=True)
++
++
++if __name__ == "__main__":
++    main()
+--- /dev/null
++++ b/test/manual/test_pooled_kda_clone.py
+@@ -0,0 +1,80 @@
++"""Byte-exact recurrent-state cloning with GLM's TP4 head geometry."""
++
++import json
++import torch
++from sglang.srt.configs.mamba_utils import KimiLinearStateShape, KimiLinearCacheParams
++from sglang.srt.mem_cache.memory_pool import MambaPool
++from sglang.srt.mem_cache.pool_host.mamba import MambaPoolHost
++from sglang.srt.mem_cache.l2_transfer import L2Transfer, L2TransferEngine
++from sglang.srt.runtime_context import publish, reset_context
++from sglang.srt.server_args import ServerArgs
++
++
++def main():
++    publish(ServerArgs(model_path="dummy"), role="scheduler")
++    shape = KimiLinearStateShape.create(
++        tp_world_size=4, num_heads=64, head_dim=128, conv_kernel_size=4
++    )
++    layer_ids = list(range(34))
++    pool = MambaPool(
++        size=8,
++        spec_state_size=0,
++        cache_params=KimiLinearCacheParams(shape=shape, layers=layer_ids),
++        mamba_layer_ids=layer_ids,
++        device="cuda",
++    )
++    host = MambaPoolHost(pool, 2, 0, layout="page_first_direct")
++    gen = torch.Generator().manual_seed(53534)
++    originals = []
++    for b in [pool.mamba_cache.temporal, *pool.mamba_cache.conv]:
++        view = b.view(torch.uint8)
++        original = torch.randint(0, 256, view.shape, dtype=torch.uint8, generator=gen)
++        view.copy_(original)
++        originals.append(original)
++    hi = torch.tensor([2])
++    src = torch.tensor([1])
++    dst = torch.tensor([4])
++    clone = torch.tensor([6])
++    mapper = lambda layer: layer
++    engine = L2TransferEngine("direct")
++    assert engine._pooled_io
++    completion = engine.submit_device_to_host([L2Transfer(host, pool, hi, src, mapper)])
++    torch.cuda.current_stream().wait_event(completion.finish_event)
++    for b in [pool.mamba_cache.temporal, *pool.mamba_cache.conv]:
++        b.view(torch.uint8).fill_(173)
++    completion = engine.submit_host_to_device(
++        [
++            L2Transfer(host, pool, hi, dst, mapper),
++            L2Transfer(host, pool, hi, clone, mapper),
++        ],
++        layer_num=34,
++    )
++    completion.finish_event.synchronize()
++    compared = 0
++    for b, o in zip([pool.mamba_cache.temporal, *pool.mamba_cache.conv], originals):
++        got = b.view(torch.uint8).cpu()
++        for dest in (dst, clone):
++            assert torch.equal(got[:, dest], o[:, src])
++            compared += got[:, dest].numel()
++    assert "GDN-H2D-then-GPU-clone" in engine._pooled_io.logged
++    host.destroy()
++    reset_context()
++    print(
++        json.dumps(
++            {
++                "case": "GLM_KDA_TP4_state_geometry",
++                "layers": 34,
++                "heads_per_rank": 16,
++                "state_dtype": "float32",
++                "convolution_dtype": "bfloat16",
++                "bytes_compared": compared,
++                "passed": True,
++            }
++        ),
++        flush=True,
++    )
++
++
++if __name__ == "__main__":
++    with torch.inference_mode():
++        main()
+--- /dev/null
++++ b/test/manual/test_pooled_packed_mtp.py
+@@ -0,0 +1,153 @@
++"""Packed target+MTP HiCache: complete pooled restore before both consumers."""
++
++import torch
++from types import SimpleNamespace
++from unittest.mock import MagicMock, patch
++from test_hicache_draft_sidecar_gpu import make_pool, tokens
++from sglang.srt.mem_cache.pool_host.mla import MLATokenToKVPoolHost
++from sglang.srt.mem_cache.hybrid_cache.hybrid_pool_assembler import (
++    _build_hybrid_dsa_index_entry,
++    build_pool_entry,
++)
++from sglang.srt.mem_cache.hybrid_cache.hybrid_cache_controller import (
++    HybridCacheController,
++)
++from sglang.srt.mem_cache.pool_host import HostPoolGroup
++from sglang.srt.mem_cache.hicache_storage import PoolName, PoolTransfer
++from sglang.srt.mem_cache.l2_transfer import L2TransferEngine
++from sglang.srt.runtime_context import publish, reset_context
++from sglang.srt.server_args import ServerArgs
++
++
++def run_packed():
++    publish(
++        ServerArgs(
++            model_path="dummy",
++            enable_hierarchical_cache=True,
++            hicache_mem_layout="page_first_direct",
++            hicache_io_backend="direct",
++        ),
++        role="scheduler",
++    )
++    target = make_pool(torch.bfloat16, 576, (True, False, True), True)
++    draft = make_pool(torch.bfloat16, 576, (True,), True)
++    host = MLATokenToKVPoolHost(
++        target,
++        2,
++        0,
++        64,
++        "page_first_direct",
++        override_kv_cache_dim=576,
++        mtp_draft_device_pools=(draft,),
++    )
++    mapping = {0: 0, 1: 1, 2: 2, 3: 3}
++    entry = build_pool_entry(
++        name=PoolName.KV,
++        host_pool=host,
++        device_pool=target,
++        layer_mapping=mapping,
++        transfer_layer_num=4,
++        is_anchor=True,
++        packed_draft_device_pools=(draft,),
++    )
++    with patch(
++        "sglang.srt.mem_cache.hybrid_cache.hybrid_pool_assembler._get_allocator_type",
++        return_value="default",
++    ):
++        index = _build_hybrid_dsa_index_entry(
++            kv_pool=target,
++            kv_host_pool=host,
++            layer_mapping=mapping,
++            transfer_layer_num=4,
++            draft_pools=(draft,),
++        )
++    controller = object.__new__(HybridCacheController)
++    controller.mem_pool_host = HostPoolGroup([entry, index])
++    controller.layer_num = 3
++    srcpages = torch.tensor([0, 1, 2, 3, 8, 9, 10, 11])
++    dstpages = torch.tensor([12, 13, 14, 15, 4, 5, 6, 7])
++    hostpages = torch.tensor([16, 17, 18, 19, 4, 5, 6, 7])
++    src, dst, hi = [tokens(x) for x in (srcpages, dstpages, hostpages)]
++    original = []
++    gen = torch.Generator().manual_seed(53531)
++    for pool in (target, draft):
++        for is_index, buffers in [
++            (False, pool.kv_buffer),
++            (True, pool.index_k_with_scale_buffer),
++        ]:
++            for b in buffers:
++                if not b.numel():
++                    continue
++                view = b.view(torch.uint8)
++                expected = torch.randint(
++                    0, 256, view.shape, dtype=torch.uint8, generator=gen
++                )
++                view.copy_(expected)
++                original.append((view, expected, is_index))
++
++    def transfers(h, d):
++        return controller._l2_load_transfers(
++            h,
++            d,
++            [
++                PoolTransfer(
++                    PoolName.INDEXER,
++                    host_indices=h,
++                    device_indices=d,
++                    indices_from_pool=PoolName.KV,
++                )
++            ],
++        )
++
++    # Backups have one descriptor per host pool, not per draft consumer.
++    down = controller._l2_transfers(
++        hi,
++        src,
++        [
++            PoolTransfer(
++                PoolName.INDEXER,
++                host_indices=hi,
++                device_indices=src,
++                indices_from_pool=PoolName.KV,
++            )
++        ],
++    )
++    engine = L2TransferEngine("direct")
++    assert engine._pooled_io
++    completion = engine.submit_device_to_host(down)
++    torch.cuda.current_stream().wait_event(completion.finish_event)
++    for b, _, _ in original:
++        b.fill_(173)
++    callbacks = []
++    up = transfers(hi, dst)
++    assert len(up) == 4
++    # Count fallback calls; all target/draft KV/index rows must use staging.
++    with (
++        patch.object(
++            host,
++            "load_to_device_per_layer",
++            side_effect=AssertionError("KV restore fell back"),
++        ),
++        patch.object(
++            index.host_pool,
++            "load_to_device_per_layer",
++            side_effect=AssertionError("index restore fell back"),
++        ),
++    ):
++        completion = engine.submit_host_to_device(
++            up, layer_num=3, on_layer_done=callbacks.append
++        )
++    completion.finish_event.synchronize()
++    assert callbacks == [0, 1, 2]
++    for b, expected, is_index in original:
++        assert torch.equal(
++            b.cpu()[dstpages if is_index else dst],
++            expected[srcpages if is_index else src],
++        )
++    for e in controller.mem_pool_host.entries:
++        e.host_pool.destroy()
++    reset_context()
++    print(
++        "Packed target+MTP KV+index pooled restore: all bytes and both consumer descriptors passed",
++        flush=True,
++    )
+--- /dev/null
++++ b/test/manual/test_pooled_pooled_tp4.py
+@@ -0,0 +1,100 @@
++"""Synthetic exact-byte checks on all four ranks, plus a NCCL collective."""
++
++import os
++import json
++import torch
++import torch.distributed as dist
++from test_hicache_draft_sidecar_gpu import run_case
++from test_pooled_packed_mtp import run_packed
++from sglang.srt.mem_cache.pooled_pages import PooledPages
++
++
++def check_pages(rank):
++    gen = torch.Generator().manual_seed(5353 + rank)
++    # More than one staging chunk, shuffled sparse addresses, raw BF16 and
++    # packed index rows. Target+MTP are carried as twelve attention layers.
++    for layers, row, dtype in [
++        (12, 64 * 512 * 2, torch.bfloat16),
++        (7, 64 * 132, torch.uint8),
++    ]:
++        dev = [
++            torch.empty((96, row // dtype.itemsize), dtype=dtype, device="cuda")
++            for _ in range(layers)
++        ]
++        original = [
++            torch.randint(0, 256, (96, row), dtype=torch.uint8, generator=gen)
++            for _ in dev
++        ]
++        for d, o in zip(dev, original):
++            d.view(torch.uint8).copy_(o)
++        host = torch.empty((192, layers, 1, row), dtype=torch.uint8, pin_memory=True)
++        down = PooledPages(dev, host, tokens_per_page=64, staging_pages=7)
++        up = PooledPages(dev, host, tokens_per_page=64, staging_pages=7)
++        src = torch.randperm(96, generator=gen)[:73]
++        hp = torch.randperm(192, generator=gen)[:73]
++        dst = torch.randperm(96, generator=gen)[:73]
++        tokens = lambda p: (p[:, None] * 64 + torch.arange(64)).flatten()
++        ds, hs = torch.cuda.Stream(), torch.cuda.Stream()
++        ds.wait_stream(torch.cuda.current_stream())
++        with torch.cuda.stream(ds):
++            down.transfer(tokens(hp[:31]), tokens(src[:31]), restore=False)
++            down.transfer(tokens(hp[31:]), tokens(src[31:]), restore=False)
++            done = ds.record_event()
++        torch.cuda.current_stream().wait_event(done)
++        for d in dev:
++            d.view(torch.uint8).fill_(173)
++        hs.wait_stream(torch.cuda.current_stream())
++        with torch.cuda.stream(hs):
++            up.transfer(tokens(hp), tokens(dst), restore=True)
++            done = hs.record_event()
++        done.synchronize()
++        for layer, (d, o) in enumerate(zip(dev, original)):
++            assert torch.equal(d.view(torch.uint8).cpu()[dst], o[src]), (
++                rank,
++                layer,
++                row,
++            )
++            assert torch.equal(host[:, layer, 0][hp], o[src]), (
++                "host",
++                rank,
++                layer,
++                row,
++            )
++        print(
++            json.dumps(
++                {
++                    "rank": rank,
++                    "kind": "pooled_pages",
++                    "layers": layers,
++                    "bytes_each_direction": layers * 73 * row,
++                    "passed": True,
++                }
++            ),
++            flush=True,
++        )
++    run_packed()
++    # Mixed draft geometry forces separate KV/index sidecars; exercises the
++    # actual L2 engine plan and all-layer completion rather than only a kernel.
++    for live in (False, True):
++        run_case(
++            "page_first_direct",
++            "direct",
++            (torch.float8_e4m3fn, 656),
++            (torch.bfloat16, 576),
++            True,
++            live,
++            True,
++        )
++
++
++if __name__ == "__main__":
++    rank = int(os.environ["LOCAL_RANK"])
++    torch.cuda.set_device(rank)
++    dist.init_process_group("nccl")
++    with torch.inference_mode():
++        check_pages(rank)
++    count = torch.tensor(1, device="cuda")
++    dist.all_reduce(count)
++    assert count.item() == 4
++    print(json.dumps({"rank": rank, "all_four_ranks_passed": True}), flush=True)
++    dist.destroy_process_group()
+--- /dev/null
++++ b/test/manual/test_startup_ram_budget_tp.py
+@@ -0,0 +1,83 @@
++"""Real Gloo rendezvous and cgroup sampling; no GPUs or large allocations.
++
++torchrun --nnodes=1 --nproc-per-node=4 --master-addr=127.0.0.1 \
++  --master-port=29500 test/manual/test_startup_ram_budget_tp.py
++"""
++
++import os
++from contextlib import ExitStack
++from types import SimpleNamespace
++from unittest.mock import MagicMock, patch
++
++import torch.distributed as dist
++
++from sglang.srt.mem_cache import startup_ram_budget as ram
++
++dist.init_process_group("gloo")
++rank, size = dist.get_rank(), dist.get_world_size()
++try:
++    with ExitStack() as stack:
++        # No allocation occurs here. Small CI guests cannot leave the production
++        # 10 GiB reserve; unit tests separately enforce that policy.
++        stack.enter_context(patch.object(ram, "RESERVE_BYTES", 0))
++        stack.enter_context(
++            patch(
++                "sglang.srt.distributed.parallel_state.get_world_group",
++                return_value=SimpleNamespace(
++                    cpu_group=dist.group.WORLD, world_size=size
++                ),
++            )
++        )
++        stack.enter_context(
++            patch(
++                "sglang.srt.runtime_context.get_parallel",
++                return_value=SimpleNamespace(
++                    nnodes=1, tp_size=size, pp_size=1, dp_size=1, dcp_enabled=False
++                ),
++            )
++        )
++        memory = SimpleNamespace(hicache_size=0, hicache_storage_backend=None)
++        stack.enter_context(
++            patch("sglang.srt.runtime_context.get_memory", return_value=memory)
++        )
++        context = MagicMock()
++        stack.enter_context(
++            patch("sglang.srt.runtime_context.get_context", return_value=context)
++        )
++        os.environ[ram.ENV] = "80%"
++        with ram.startup_ram_budget(supported=True) as budget:
++            totals = [None] * size
++            dist.all_gather_object(totals, budget.total_bytes)
++            assert len(set(totals)) == 1
++            assert budget.rank_bytes * size <= budget.total_bytes
++            context.override.assert_called_once_with(
++                source=ram.ENV, hicache_size=budget.rank_bytes / 1e9
++            )
++            ram.reserve_startup_bytes(budget.rank_bytes)
++            try:
++                ram.reserve_startup_bytes(1)
++            except ValueError:
++                pass
++            else:
++                raise AssertionError("Rank exceeded the shared budget")
++        assert ram.active_budget() is None
++        # One bad rank fails every rank BEFORE any pool construction.
++        os.environ[ram.ENV] = "bad" if rank == 0 else "80%"
++        try:
++            with ram.startup_ram_budget(supported=True):
++                raise AssertionError("Bad peer configuration was ignored")
++        except ValueError as exc:
++            assert "startup RAM sizing failed" in str(exc)
++        os.environ[ram.ENV] = "80%"
++        memory.hicache_size = 64 if rank == 0 else 0
++        try:
++            with ram.startup_ram_budget(supported=True):
++                raise AssertionError("Conflicting CLI size was ignored")
++        except ValueError as exc:
++            assert "--hicache-size" in str(exc)
++        print(
++            f"rank={rank} shared_budget_bytes={totals[0]} real_cgroup_and_peer_failure_checks=passed",
++            flush=True,
++        )
++finally:
++    dist.destroy_process_group()
+--- /dev/null
++++ b/test/registered/unit/mem_cache/test_compressed_dsa_checkpoint_roundtrip.py
+@@ -0,0 +1,402 @@
++"""A cached recurrent state must describe exactly the prefix that owns it."""
++
++import unittest
++from array import array
++from itertools import product
++from types import SimpleNamespace
++
++import torch
++
++from sglang.srt.configs.mamba_utils import Mamba2CacheParams, Mamba2StateShape
++from sglang.srt.layers.attention.hybrid_linear_attn_backend import MambaAttnBackendBase
++from sglang.srt.managers.schedule_batch import Req, ScheduleBatch
++from sglang.srt.managers.schedule_policy import match_prefix_for_req
++from sglang.srt.mem_cache.allocator import TokenToKVPoolAllocator
++from sglang.srt.mem_cache.allocator.swa import SWATokenToKVPoolAllocator
++from sglang.srt.mem_cache.base_prefix_cache import MatchPrefixParams
++from sglang.srt.mem_cache.cache_init_params import CacheInitParams
++from sglang.srt.mem_cache.memory_pool import (
++    DSATokenToKVPool,
++    HybridLinearKVPool,
++    HybridReqToTokenPool,
++)
++from sglang.srt.mem_cache.radix_cache import RadixKey
++from sglang.srt.mem_cache.swa_memory_pool import SWAKVPool
++from sglang.srt.mem_cache.unified_cache.components import ComponentType
++from sglang.srt.mem_cache.unified_radix_cache import UnifiedRadixCache
++from sglang.srt.runtime_context import mamba_extra_buffer_lazy_enabled, publish, reset_context
++from sglang.srt.sampling.sampling_params import SamplingParams
++from sglang.srt.server_args import ServerArgs
++from sglang.test.ci.ci_register import register_cpu_ci
++
++register_cpu_ci(est_time=5, suite="base-a-test-cpu")
++
++
++class TestCompressedDsaCheckpointRoundtrip(unittest.TestCase):
++    def tearDown(self):
++        reset_context()
++
++    def _fixture(self, *, lazy=False, swa=False, mamba_first=False, no_buffer=False):
++        page_size = 1 if swa else 64
++        args = ServerArgs(
++            model_path="dummy",
++            page_size=page_size,
++            mamba_radix_cache_strategy=(
++                "no_buffer"
++                if no_buffer
++                else "extra_buffer_lazy"
++                if lazy
++                else "extra_buffer"
++            ),
++        )
++        args._mamba_cache_chunk_size = 64
++        publish(args, role="scheduler")
++        self.assertEqual(mamba_extra_buffer_lazy_enabled(), lazy)
++        shape = Mamba2StateShape.create(
++            tp_world_size=1,
++            intermediate_size=16,
++            n_groups=1,
++            num_heads=1,
++            head_dim=16,
++            state_size=2,
++            conv_kernel=4,
++        )
++        req_pool = HybridReqToTokenPool(
++            size=4,
++            mamba_size=32,
++            mamba_spec_state_size=4,
++            max_context_len=2048,
++            device="cpu",
++            enable_memory_saver=False,
++            cache_params=Mamba2CacheParams(shape=shape, layers=[0]),
++            mamba_layer_ids=[0],
++            enable_mamba_extra_buffer=not no_buffer,
++            enable_mamba_extra_buffer_lazy=lazy,
++        )
++        # No attention kernel runs here; the real DSA pool type supplies the
++        # ownership geometry while real CPU pools own KV indices and SSM slots.
++        dsa = object.__new__(DSATokenToKVPool)
++        dsa.page_size = 64
++        dsa.index_kpool = 4
++        dsa.kpool_use_compress = True
++        kv_pool = object.__new__(HybridLinearKVPool)
++        kv_pool.full_kv_pool = dsa
++        allocator = TokenToKVPoolAllocator(
++            size=4096,
++            dtype=torch.bfloat16,
++            device="cpu",
++            kvcache=kv_pool,
++            need_sort=False,
++        )
++        components = (ComponentType.FULL, ComponentType.MAMBA)
++        if swa:
++            kv_pool = SWAKVPool(
++                size=4096,
++                size_swa=4096,
++                page_size=1,
++                dtype=torch.bfloat16,
++                head_num=1,
++                head_dim=16,
++                swa_attention_layer_ids=[1],
++                full_attention_layer_ids=[0],
++                device="cpu",
++            )
++            allocator = SWATokenToKVPoolAllocator(
++                size=4096,
++                size_swa=4096,
++                page_size=1,
++                dtype=torch.bfloat16,
++                device="cpu",
++                kvcache=kv_pool,
++                need_sort=False,
++            )
++            components = (ComponentType.FULL, ComponentType.SWA, ComponentType.MAMBA)
++            if mamba_first:
++                components = (
++                    ComponentType.FULL,
++                    ComponentType.MAMBA,
++                    ComponentType.SWA,
++                )
++        cache = UnifiedRadixCache(
++            CacheInitParams(
++                disable=False,
++                req_to_token_pool=req_pool,
++                token_to_kv_pool_allocator=allocator,
++                page_size=page_size,
++                tree_components=components,
++                sliding_window_size=64 if swa else None,
++                enable_mamba_extra_buffer=not no_buffer,
++                enable_mamba_extra_buffer_lazy=lazy,
++            )
++        )
++        return cache, allocator, req_pool
++
++    def _request(self, cache, allocator, req_pool, *, length=1000):
++        sampling = SamplingParams(max_new_tokens=1)
++        sampling.normalize(None)
++        req = Req(
++            rid="chunked",
++            origin_input_text="",
++            origin_input_ids=array("q", [1] * length),
++            sampling_params=sampling,
++            vocab_size=128,
++        )
++        req_pool.alloc([req])
++        req.full_untruncated_fill_ids = array("q", req.origin_input_ids)
++        values = allocator.alloc(length)
++        req_pool.write((req.kv.req_pool_idx, slice(0, length)), values)
++        req.kv.kv_allocated_len = length
++        req.last_node = cache.root_node_handle()
++        req.prefix_indices = torch.empty(0, dtype=torch.int64)
++        return req
++
++    def _run_chunk(self, cache, req_pool, req, end, *, publish_checkpoint=True):
++        prefix = len(req.prefix_indices)
++        req.set_extend_range(prefix, end)
++        req.kv.kv_committed_len = end
++        if not cache.enable_mamba_extra_buffer:
++            # This strategy keeps the live state instead of selecting a saved
++            # intermediate snapshot. Give that state its actual prefix depth.
++            states = req_pool.mamba_pool.mamba_cache.temporal
++            states[:, req.kv.mamba_pool_idx].fill_(end)
++            for conv in req_pool.mamba_pool.mamba_cache.conv:
++                conv[:, req.kv.mamba_pool_idx] = (
++                    torch.arange(conv.shape[-1]) + end - conv.shape[-1] + 1
++                ).to(conv.dtype)
++            if publish_checkpoint:
++                cache.cache_unfinished_req(req, chunked=True)
++            return end, None
++        batch = ScheduleBatch(reqs=[req])
++        batch.model_config = SimpleNamespace(
++            hf_text_config=SimpleNamespace(mamba_chunk_size=64)
++        )
++        batch.tree_cache = cache
++        batch.req_to_token_pool = req_pool
++        entry = batch._mamba_radix_cache_v2_req_prepare_for_extend(req)
++
++        # Distinct state markers represent s[n] = n. Let the real backend
++        # select the marker to save, so a wrong h/final-state index is visible.
++        forward = SimpleNamespace(
++            extend_seq_lens=torch.tensor([end - prefix]),
++            extend_prefix_lens=torch.tensor([prefix]),
++            mamba_track_seqlens=torch.tensor([entry.track_seqlen]),
++            mamba_track_mask=torch.tensor([entry.track_mask]),
++            mamba_track_indices=torch.tensor([entry.track_index]),
++        )
++        indices = MambaAttnBackendBase._init_track_ssm_indices(
++            SimpleNamespace(device="cpu", mamba_chunk_size=64),
++            req.kv.mamba_pool_idx.unsqueeze(0),
++            forward,
++        )
++        h_src, h_dst, final_src, final_dst = indices[:4]
++        states = req_pool.mamba_pool.mamba_cache.temporal
++        states[:, req.kv.mamba_pool_idx].fill_(end)
++        for src, dst in zip(h_src.tolist(), h_dst.tolist()):
++            states[:, dst].fill_(prefix + src * 64)
++        for src, dst in zip(final_src.tolist(), final_dst.tolist()):
++            states[:, dst].copy_(states[:, src])
++        for conv in req_pool.mamba_pool.mamba_cache.conv:
++            positions = MambaAttnBackendBase._init_track_conv_indices(
++                SimpleNamespace(device="cpu", conv_states_shape=conv.shape[2:]),
++                torch.tensor([0, end - prefix]),
++                forward,
++            )
++            if entry.track_mask:
++                conv[:, entry.track_index] = (prefix + positions[0] + 1).to(conv.dtype)
++        checkpoint = req.kv.mamba_last_track_seqlen
++        if publish_checkpoint:
++            cache.cache_unfinished_req(req, chunked=True)
++        return checkpoint, entry
++
++    def _assert_cached_state_matches_prefix(self, cache, req_pool, tokens, expected):
++        match = cache.match_prefix(MatchPrefixParams(key=RadixKey(tokens)))
++        self.assertEqual(len(match.device_indices), expected)
++        if expected:
++            slot = cache.tree_core.get_component_device_value(
++                match.best_match_node, ComponentType.MAMBA
++            )
++            self.assertIsNotNone(slot)
++            state = req_pool.mamba_pool.mamba_cache.temporal[:, slot]
++            self.assertTrue(
++                torch.all(state == expected).item(),
++                f"prefix {expected} owns recurrent state {state.flatten()[0].item()}",
++            )
++            for conv in req_pool.mamba_pool.mamba_cache.conv:
++                expected_window = (
++                    torch.arange(conv.shape[-1]) + expected - conv.shape[-1] + 1
++                ).to(conv.dtype)
++                self.assertTrue(torch.all(conv[:, slot] == expected_window).item())
++
++    def test_successive_320_token_chunks_publish_the_matching_state(self):
++        for lazy in (False, True):
++            with self.subTest(lazy=lazy):
++                cache, allocator, req_pool = self._fixture(lazy=lazy)
++                req = self._request(cache, allocator, req_pool)
++                for end, expected in [(320, 256), (640, 512), (960, 768), (1000, 768)]:
++                    with self.subTest(end=end):
++                        self._run_chunk(cache, req_pool, req, end)
++                        self.assertEqual(len(req.prefix_indices), end)
++                        self._assert_cached_state_matches_prefix(
++                            cache, req_pool, req.origin_input_ids[:end], expected
++                        )
++
++    def test_short_chunks_track_when_they_cross_an_absolute_boundary(self):
++        cache, allocator, req_pool = self._fixture()
++        req = self._request(cache, allocator, req_pool)
++        for end in range(64, 961, 64):
++            with self.subTest(end=end):
++                self._run_chunk(cache, req_pool, req, end)
++                self._assert_cached_state_matches_prefix(
++                    cache, req_pool, req.origin_input_ids[:end], end // 256 * 256
++                )
++
++    def test_second_request_copies_the_state_at_its_matched_prefix(self):
++        for lazy in (False, True):
++            with self.subTest(lazy=lazy):
++                cache, allocator, req_pool = self._fixture(lazy=lazy)
++                req = self._request(cache, allocator, req_pool)
++                self._run_chunk(cache, req_pool, req, 320)
++                self._run_chunk(cache, req_pool, req, 640)
++                other = self._request(cache, allocator, req_pool, length=700)
++                other.origin_input_ids[512:] = array("q", [2] * 188)
++                match = cache.match_prefix(
++                    MatchPrefixParams(
++                        key=RadixKey(other.origin_input_ids), req=other, cow_mamba=True
++                    )
++                )
++                self.assertEqual(len(match.device_indices), 512)
++                batch = ScheduleBatch(reqs=[other])
++                batch._collect_deferred_mamba_cow_and_clear([other])
++                self.assertIsNotNone(batch.mamba_cow_src_indices)
++                req_pool.mamba_pool.copy_from(
++                    batch.mamba_cow_src_indices, batch.mamba_cow_dst_indices
++                )
++                state = req_pool.mamba_pool.mamba_cache.temporal[
++                    :, other.kv.mamba_pool_idx
++                ]
++                self.assertTrue(torch.all(state == 512).item())
++                # Copy-on-write must leave the tree's checkpoint independent.
++                state.fill_(-1)
++                self._assert_cached_state_matches_prefix(
++                    cache, req_pool, other.origin_input_ids, 512
++                )
++
++    def test_branch_checkpoint_must_be_on_the_absolute_tree_grid(self):
++        for branch, expected in ((448, 768), (512, 512)):
++            with self.subTest(branch=branch):
++                cache, allocator, req_pool = self._fixture()
++                req = self._request(cache, allocator, req_pool)
++                self._run_chunk(cache, req_pool, req, 320)
++                req.mamba_branching_seqlen = branch
++                checkpoint, _ = self._run_chunk(cache, req_pool, req, 960)
++                self.assertEqual(checkpoint, expected)
++                self._assert_cached_state_matches_prefix(
++                    cache, req_pool, req.origin_input_ids[:960], expected
++                )
++
++    def test_unrepresentable_snapshot_is_not_published(self):
++        cache, allocator, req_pool = self._fixture()
++        req = self._request(cache, allocator, req_pool)
++        self._run_chunk(cache, req_pool, req, 324)
++        checkpoint, entry = self._run_chunk(cache, req_pool, req, 644)
++        self.assertFalse(entry.track_mask)
++        self.assertIsNone(checkpoint)
++        self._assert_cached_state_matches_prefix(
++            cache, req_pool, req.origin_input_ids[:644], 256
++        )
++
++    def test_finished_request_donates_exact_checkpoint_and_frees_other_slots(self):
++        for lazy in (False, True):
++            with self.subTest(lazy=lazy):
++                cache, allocator, req_pool = self._fixture(lazy=lazy)
++                available = req_pool.mamba_allocator.available_size()
++                req = self._request(cache, allocator, req_pool)
++                self._run_chunk(cache, req_pool, req, 320)
++                self._run_chunk(cache, req_pool, req, 640, publish_checkpoint=False)
++                cache.cache_finished_req(req, kv_len_to_handle=640)
++                self._assert_cached_state_matches_prefix(
++                    cache, req_pool, req.origin_input_ids[:640], 512
++                )
++                self.assertEqual(
++                    req_pool.mamba_allocator.available_size(), available - 2
++                )
++
++    def test_invalid_checkpoint_is_not_rounded_to_a_different_prefix(self):
++        for finished in (False, True):
++            for checkpoint, token_count in ((576, 640), (768, 640), (None, 640)):
++                with self.subTest(finished=finished, checkpoint=checkpoint):
++                    cache, allocator, req_pool = self._fixture()
++                    available = req_pool.mamba_allocator.available_size()
++                    req = self._request(cache, allocator, req_pool)
++                    req.set_extend_range(0, token_count)
++                    req.kv.kv_committed_len = token_count
++                    req.kv.mamba_last_track_seqlen = checkpoint
++                    before = req_pool.mamba_allocator.available_size()
++                    if finished:
++                        cache.cache_finished_req(req, kv_len_to_handle=token_count)
++                        self.assertEqual(
++                            req_pool.mamba_allocator.available_size(), available
++                        )
++                    else:
++                        cache.cache_unfinished_req(req, chunked=True)
++                        self.assertEqual(
++                            req_pool.mamba_allocator.available_size(), before
++                        )
++                    self._assert_cached_state_matches_prefix(
++                        cache, req_pool, req.origin_input_ids[:token_count], 0
++                    )
++
++    @unittest.skip("fc91d24 predates SWA request branch metadata; GLM uses FULL+MAMBA, without SWA")
++    def test_swa_branch_cannot_shorten_a_recurrent_checkpoint(self):
++        for strategy, finished, mamba_first in product(
++            ("extra_buffer", "extra_buffer_lazy", "no_buffer"),
++            (False, True),
++            (False, True),
++        ):
++            with self.subTest(
++                strategy=strategy, finished=finished, mamba_first=mamba_first
++            ):
++                cache, allocator, req_pool = self._fixture(
++                    lazy=strategy == "extra_buffer_lazy",
++                    swa=True,
++                    mamba_first=mamba_first,
++                    no_buffer=strategy == "no_buffer",
++                )
++                first = self._request(cache, allocator, req_pool, length=128)
++                self._run_chunk(cache, req_pool, first, 64)
++                available = req_pool.mamba_allocator.available_size()
++                other = self._request(cache, allocator, req_pool, length=96)
++                other.origin_input_ids[32:] = array("q", [2] * 64)
++                other.full_untruncated_fill_ids = array("q", other.origin_input_ids)
++                # Real matching splits the old 64-token node at 32. SWA
++                # can branch there, but no recurrent state exists at 32.
++                match_prefix_for_req(cache, other)
++                self.assertEqual(other.swa_branching_seqlen, 32)
++                self.assertIsNone(other.mamba_branching_seqlen)
++                self.assertEqual(len(other.prefix_indices), 0)
++                before = req_pool.mamba_allocator.available_size()
++                self._run_chunk(
++                    cache, req_pool, other, 64, publish_checkpoint=not finished
++                )
++                if finished:
++                    cache.cache_finished_req(other, kv_len_to_handle=64)
++                # The newly saved state is for 64 tokens. It cannot be
++                # attached to the SWA-limited 32-token key or leaked.
++                match = cache.match_prefix(
++                    MatchPrefixParams(key=RadixKey(other.origin_input_ids))
++                )
++                self._assert_cached_state_matches_prefix(
++                    cache, req_pool, other.origin_input_ids, len(match.device_indices)
++                )
++                self.assertEqual(len(match.device_indices), 0)
++                self.assertEqual(
++                    req_pool.mamba_allocator.available_size(),
++                    available if finished else before,
++                )
++                self._assert_cached_state_matches_prefix(
++                    cache, req_pool, first.origin_input_ids, 64
++                )
++
++
++if __name__ == "__main__":
++    unittest.main()
+--- /dev/null
++++ b/test/registered/unit/mem_cache/test_hicache_draft_plan.py
+@@ -0,0 +1,182 @@
++"""HiCache must select separate host rows before allocating incompatible MTP KV."""
++
++import unittest
++from types import SimpleNamespace
++from unittest.mock import patch
++
++import torch
++
++from sglang.srt.mem_cache.memory_pool import (
++    HybridLinearKVPool,
++    MLATokenToKVPool,
++    MLATokenToKVPoolFP4,
++)
++from sglang.srt.speculative.base_spec_worker import BaseSpecWorker, HiCacheDraftMode
++from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
++from sglang.test.ci.ci_register import register_cpu_ci
++
++register_cpu_ci(est_time=1, suite="base-a-test-cpu")
++
++
++def mla_pool(dtype=torch.uint8, dim=656, *, hybrid=False):
++    pool = object.__new__(MLATokenToKVPool)
++    pool.store_dtype = dtype
++    pool.kv_cache_dim = dim
++    if hybrid:
++        wrapper = object.__new__(HybridLinearKVPool)
++        wrapper.full_kv_pool = pool
++        return wrapper
++    return pool
++
++
++def build_plan(
++    target_pool,
++    draft_pools,
++    *,
++    algorithm=SpeculativeAlgorithm.EAGLE,
++    nextn=1,
++    enabled=True,
++    backup="none",
++    architecture="Glm5NextForCausalLMMTP",
++):
++    target = SimpleNamespace(
++        token_to_kv_pool=target_pool,
++        spec_algorithm=algorithm,
++        mtp_draft_device_pools=("stale",),
++    )
++    runners = tuple(
++        SimpleNamespace(
++            token_to_kv_pool=pool,
++            model_config=SimpleNamespace(
++                num_nextn_predict_layers=nextn,
++                hf_config=SimpleNamespace(architectures=[architecture]),
++            ),
++        )
++        for pool in draft_pools
++    )
++    worker = SimpleNamespace(
++        target_worker=SimpleNamespace(model_runner=target),
++        _draft_model_runners=lambda: runners,
++    )
++    prefix = "sglang.srt.speculative.base_spec_worker."
++    with (
++        patch(
++            prefix + "get_memory",
++            return_value=SimpleNamespace(enable_hierarchical_cache=enabled),
++        ),
++        patch(
++            prefix + "get_disagg",
++            return_value=SimpleNamespace(
++                disaggregation_decode_retraction_backup=backup
++            ),
++        ),
++    ):
++        plan = BaseSpecWorker._build_hicache_draft_plan(worker)
++    return plan, target
++
++
++class TestHiCacheDraftPlan(unittest.TestCase):
++    def test_fp4_target_or_draft_is_rejected_before_selecting_a_plan(self):
++        fp4 = object.__new__(MLATokenToKVPoolFP4)
++        fp4.store_dtype = torch.uint8
++        fp4.kv_cache_dim = 656
++        for target, draft in (
++            (fp4, mla_pool(torch.bfloat16, 576)),
++            (mla_pool(torch.bfloat16, 576), fp4),
++            (fp4, mla_pool()),
++            (mla_pool(), fp4),
++        ):
++            for hybrid in (False, True):
++                with self.subTest(
++                    target_fp4=target is fp4,
++                    hybrid=hybrid,
++                    draft_dtype=draft.store_dtype,
++                ):
++                    if hybrid:
++                        wrapper = object.__new__(HybridLinearKVPool)
++                        wrapper.full_kv_pool = target
++                        target_pool = wrapper
++                    else:
++                        target_pool = target
++                    with self.assertRaisesRegex(NotImplementedError, "FP4 MLA KV"):
++                        build_plan(target_pool, (draft,))
++
++    def test_mismatched_mla_uses_sidecar(self):
++        for target_hybrid in (False, True):
++            for draft_hybrid in (False, True):
++                for dtype, dim in (
++                    (torch.uint8, 528),
++                    (torch.bfloat16, 656),
++                    (torch.bfloat16, 576),
++                    (torch.bfloat16, 328),
++                ):
++                    with self.subTest(
++                        target_hybrid=target_hybrid,
++                        draft_hybrid=draft_hybrid,
++                        dtype=dtype,
++                        dim=dim,
++                    ):
++                        draft = mla_pool(dtype, dim, hybrid=draft_hybrid)
++                        plan, target = build_plan(
++                            mla_pool(hybrid=target_hybrid), (draft,)
++                        )
++                        self.assertEqual(plan.mode, HiCacheDraftMode.SIDECAR)
++                        self.assertEqual(plan.device_pools, (draft,))
++                        self.assertEqual(target.mtp_draft_device_pools, ())
++
++    def test_matching_mla_keeps_all_packed_depths(self):
++        for hybrid in (False, True):
++            for count in (1, 3):
++                with self.subTest(hybrid=hybrid, count=count):
++                    drafts = tuple(mla_pool(hybrid=hybrid) for _ in range(count))
++                    plan, target = build_plan(mla_pool(hybrid=hybrid), drafts)
++                    self.assertEqual(plan.mode, HiCacheDraftMode.PACKED)
++                    self.assertEqual(plan.device_pools, drafts)
++                    self.assertEqual(target.mtp_draft_device_pools, drafts)
++
++    def test_later_mtp_depth_cannot_be_silently_dropped(self):
++        drafts = (mla_pool(), mla_pool(torch.bfloat16, 576))
++        with self.assertRaisesRegex(
++            NotImplementedError, "sidecar fallback supports one"
++        ):
++            build_plan(mla_pool(), drafts)
++
++    def test_disabled_cache_and_no_draft_clear_packed_state(self):
++        for drafts, enabled in (((mla_pool(),), False), ((), True)):
++            with self.subTest(enabled=enabled):
++                plan, target = build_plan(mla_pool(), drafts, enabled=enabled)
++                self.assertEqual(plan.mode, HiCacheDraftMode.NONE)
++                self.assertEqual(target.mtp_draft_device_pools, ())
++
++    def test_host_retraction_backup_also_uses_fallback(self):
++        plan, target = build_plan(
++            mla_pool(),
++            (mla_pool(torch.bfloat16, 576),),
++            enabled=False,
++            backup="host_pool",
++        )
++        self.assertEqual(plan.mode, HiCacheDraftMode.SIDECAR)
++        self.assertEqual(target.mtp_draft_device_pools, ())
++
++    def test_non_mtp_eagle_keeps_legacy_sidecar(self):
++        drafts = (mla_pool(), mla_pool())
++        plan, target = build_plan(mla_pool(), drafts, nextn=0)
++        self.assertEqual(plan.mode, HiCacheDraftMode.SIDECAR)
++        self.assertEqual(plan.device_pools, drafts[:1])
++        self.assertEqual(target.mtp_draft_device_pools, ())
++
++    def test_non_mla_dspark_packing_is_unchanged(self):
++        drafts = (object(),)
++        plan, target = build_plan(
++            object(),
++            drafts,
++            algorithm=SpeculativeAlgorithm.DSPARK,
++            nextn=0,
++            architecture="DeepseekV4ForCausalLMDSpark",
++        )
++        self.assertEqual(plan.mode, HiCacheDraftMode.PACKED)
++        self.assertEqual(target.mtp_draft_device_pools, drafts)
++
++
++if __name__ == "__main__":
++    unittest.main()
+--- /dev/null
++++ b/test/registered/unit/mem_cache/test_hybrid_dsa_hicache.py
+@@ -0,0 +1,574 @@
++"""CPU regressions for hybrid DSA index ownership and HiCache assembly."""
++
++import unittest
++from types import SimpleNamespace
++from unittest.mock import MagicMock, patch
++
++import torch
++
++from sglang.srt.mem_cache.base_prefix_cache import InsertParams, MatchPrefixParams
++from sglang.srt.mem_cache.cache_init_params import CacheInitParams
++from sglang.srt.mem_cache.hicache_storage import PoolName, PoolTransfer
++from sglang.srt.mem_cache.hybrid_cache.hybrid_cache_controller import (
++    HybridCacheController,
++)
++from sglang.srt.mem_cache.hybrid_cache.hybrid_pool_assembler import (
++    _build_hybrid_dsa_index_entry,
++    _DsaStrategy,
++    _MambaStrategy,
++    build_full_draft_pools,
++    build_hybrid_mamba_stack,
++    build_pool_entry,
++)
++from sglang.srt.mem_cache.memory_pool import (
++    DSATokenToKVPool,
++    HybridLinearKVPool,
++    HybridReqToTokenPool,
++)
++from sglang.srt.mem_cache.pool_host import HostPoolGroup
++from sglang.srt.mem_cache.radix_cache import RadixKey
++from sglang.srt.mem_cache.unified_cache.components import ComponentType, MambaComponent
++from sglang.srt.mem_cache.unified_radix_cache import (
++    UnifiedRadixCache,
++    _compressed_index_tree_params,
++)
++from sglang.srt.runtime_context import publish, reset_context
++from sglang.srt.server_args import ServerArgs
++from sglang.test.ci.ci_register import register_cpu_ci
++
++register_cpu_ci(est_time=2, suite="base-a-test-cpu")
++
++
++def dsa_pool(*, live_layers=(True, True), compress=True, kpool=4):
++    pool = object.__new__(DSATokenToKVPool)
++    pool.page_size = 64
++    pool.index_kpool = kpool
++    pool.kpool_use_compress = compress
++    pool.layer_num = len(live_layers)
++    pool.index_key_cache = SimpleNamespace(
++        buffer=[
++            torch.zeros((8 if live else 0, 64 * 132), dtype=torch.uint8)
++            for live in live_layers
++        ]
++    )
++    return pool
++
++
++def cache_params(pool, *, page_size=64, hybrid=True):
++    if hybrid:
++        wrapper = object.__new__(HybridLinearKVPool)
++        wrapper.full_kv_pool = pool
++        pool = wrapper
++    return CacheInitParams(
++        disable=False,
++        req_to_token_pool=SimpleNamespace(),
++        token_to_kv_pool_allocator=SimpleNamespace(
++            get_kvcache=lambda: pool,
++            device=torch.device("cpu"),
++            size=2048,
++            free=MagicMock(),
++            free_segment=MagicMock(),
++        ),
++        page_size=page_size,
++        tree_components=(ComponentType.FULL,),
++    )
++
++
++class TestCompressedIndexOwnership(unittest.TestCase):
++    def setUp(self):
++        server_args = ServerArgs(model_path="dummy")
++        server_args._mamba_cache_chunk_size = 64
++        publish(server_args, role="scheduler")
++        self.addCleanup(reset_context)
++
++    def test_tree_alignment_does_not_change_transfer_params(self):
++        for hybrid in (False, True):
++            with self.subTest(hybrid=hybrid):
++                params = cache_params(dsa_pool(), hybrid=hybrid)
++                tree_params = _compressed_index_tree_params(params)
++                self.assertEqual(tree_params.page_size, 256)
++                self.assertEqual(params.page_size, 64)
++                self.assertIs(
++                    tree_params.token_to_kv_pool_allocator,
++                    params.token_to_kv_pool_allocator,
++                )
++                self.assertEqual(
++                    _compressed_index_tree_params(
++                        cache_params(dsa_pool(), page_size=512, hybrid=hybrid)
++                    ).page_size,
++                    512,
++                )
++
++    def test_uncompressed_and_non_dsa_pools_are_unchanged(self):
++        for hybrid in (False, True):
++            for pool in (dsa_pool(compress=False), SimpleNamespace()):
++                with self.subTest(hybrid=hybrid, pool=type(pool).__name__):
++                    params = cache_params(pool, hybrid=hybrid)
++                    self.assertIs(_compressed_index_tree_params(params), params)
++
++    def test_mamba_checkpoint_grid_follows_index_ownership_not_transfer_pages(self):
++        params = cache_params(dsa_pool())
++        params.req_to_token_pool = object.__new__(HybridReqToTokenPool)
++        params.enable_mamba_extra_buffer = True
++        tree_params = _compressed_index_tree_params(params)
++        component = MambaComponent(MagicMock(), tree_params)
++        self.assertEqual(component.mamba_cache_chunk_size, 64)
++        self.assertEqual(component.mamba_checkpoint_grid, 256)
++        self.assertEqual(params.page_size, 64)
++
++    def test_branch_inside_group_cannot_share_first_index_page(self):
++        for hybrid, common in (
++            (hybrid, common)
++            for hybrid in (False, True)
++            for common in (64, 128, 192, 320, 384, 448)
++        ):
++            with self.subTest(hybrid=hybrid, common=common):
++                cache = UnifiedRadixCache(cache_params(dsa_pool(), hybrid=hybrid))
++                a = [1] * 512
++                cache.insert(InsertParams(key=RadixKey(a), value=torch.arange(64, 576)))
++                b = [1] * common + [2] * (512 - common)
++                match = cache.match_prefix(MatchPrefixParams(key=RadixKey(b)))
++                self.assertEqual(len(match.device_indices), common // 256 * 256)
++                # Neither matching nor inserting the branch may create a node
++                # that divides one compressed index row between two children.
++                cache.insert(
++                    InsertParams(key=RadixKey(b), value=torch.arange(640, 1152))
++                )
++                for node in cache.tree_core._node_arena.values():
++                    self.assertEqual(len(node.key) % 256, 0)
++
++    def test_partial_group_is_not_published_then_extended_in_place(self):
++        for hybrid in (False, True):
++            with self.subTest(hybrid=hybrid):
++                cache = UnifiedRadixCache(cache_params(dsa_pool(), hybrid=hybrid))
++                for length in (64, 128, 192):
++                    key = RadixKey([1] * length)
++                    cache.insert(
++                        InsertParams(key=key, value=torch.arange(64, 64 + length))
++                    )
++                    match = cache.match_prefix(MatchPrefixParams(key=key))
++                    self.assertEqual(len(match.device_indices), 0)
++                cache.insert(
++                    InsertParams(key=RadixKey([1] * 256), value=torch.arange(64, 320))
++                )
++                match = cache.match_prefix(MatchPrefixParams(key=RadixKey([1] * 320)))
++                self.assertEqual(len(match.device_indices), 256)
++
++    def test_runtime_storage_attach_rejects_different_hash_page_size(self):
++        cache = UnifiedRadixCache(cache_params(dsa_pool()))
++        cache.cache_controller = SimpleNamespace(page_size=64)
++        cache._storage_attachment = MagicMock()
++        success, message = cache.attach_storage_backend("file")
++        self.assertFalse(success)
++        self.assertIn("L2 HiCache only", message)
++        cache._storage_attachment.attach.assert_not_called()
++
++    def test_external_linker_rejects_different_hash_page_size(self):
++        cache = UnifiedRadixCache(cache_params(dsa_pool()))
++        with self.assertRaisesRegex(ValueError, "external cache linker"):
++            cache.init_cache_linker(MagicMock())
++
++    def test_startup_storage_rejects_different_hash_page_size(self):
++        params = cache_params(dsa_pool())
++        cache = UnifiedRadixCache(params)
++        with (
++            patch(
++                "sglang.srt.mem_cache.unified_radix_cache.get_memory",
++                return_value=SimpleNamespace(
++                    hicache_host_memory_mode="cache", hicache_storage_backend="file"
++                ),
++            ),
++            self.assertRaisesRegex(ValueError, "L2 HiCache only"),
++        ):
++            cache.init_hicache(ServerArgs(model_path="dummy"), params)
++
++
++class TestHybridIndexSidecar(unittest.TestCase):
++    def setUp(self):
++        self.prefix = "sglang.srt.mem_cache.hybrid_cache.hybrid_pool_assembler."
++        self.memory = SimpleNamespace(hicache_mem_layout="layer_first")
++
++    def test_standalone_compressed_stack_roundtrip_with_skipped_layers(self):
++        from collections import defaultdict
++
++        def allocate(shape, *, dtype, device, **_):
++            return torch.empty(shape, dtype=dtype, device=device)
++
++        def copy_pages(*, src_layers, dst_layers, src_indices, dst_indices, page_size):
++            self.assertEqual(page_size, 1)
++            for src, dst in zip(src_layers, dst_layers, strict=True):
++                dst[dst_indices] = src[src_indices]
++
++        for live, with_draft in (
++            ((True, False, True), False),
++            ((True, False, True), True),
++            ((False, False), False),
++        ):
++            with self.subTest(live=live, with_draft=with_draft):
++                pool = dsa_pool(live_layers=live)
++                drafts = (dsa_pool(live_layers=(True,)),) if with_draft else ()
++                for p in (pool, *drafts):
++                    p.kv_cache_dim = 656
++                    p.store_dtype = torch.uint8
++                    p.device = "cpu"
++                    p.start_layer, p.end_layer = 0, p.layer_num
++                    p.index_head_dim, p.quant_block_size = 128, 128
++                params = cache_params(pool, hybrid=False)
++                params.mtp_draft_device_pools = drafts
++                memory = SimpleNamespace(
++                    hicache_mem_layout="layer_first",
++                    hicache_write_policy="write_through",
++                    hicache_io_backend="direct",
++                    hicache_host_memory_mode=None,
++                )
++                with (
++                    patch(self.prefix + "get_memory", return_value=memory),
++                    patch(self.prefix + "_get_allocator_type", return_value="default"),
++                    patch(self.prefix + "build_kv_host_pool") as build_kv,
++                    patch(self.prefix + "HybridCacheController"),
++                    patch(
++                        "sglang.srt.mem_cache.memory_pool_host.ALLOC_MEMORY_FUNCS",
++                        defaultdict(lambda: allocate),
++                    ),
++                    patch(
++                        "sglang.srt.mem_cache.pool_host.dsa.ALLOC_MEMORY_FUNCS",
++                        defaultdict(lambda: allocate),
++                    ),
++                ):
++                    build_kv.return_value = SimpleNamespace(
++                        page_num=16,
++                        size=1024,
++                        page_size=64,
++                        device="cpu",
++                        logical_size=1024,
++                        can_use_write_back_jit=False,
++                        mtp_draft_device_pools=drafts,
++                        layout="layer_first",
++                    )
++                    result = _DsaStrategy().build(
++                        cache=MagicMock(),
++                        kvcache=pool,
++                        params=params,
++                        server_args=None,
++                        load_cache_event=None,
++                    )
++                group = result.host_pool_group
++                if not any(live) and not with_draft:
++                    self.assertEqual(result.sidecars, [])
++                    self.assertNotIn(PoolName.INDEXER, group.entry_map)
++                    continue
++                entry = group.get_entry(PoolName.INDEXER)
++                buffers = [
++                    b for p in (pool, *drafts) for b in p.index_k_with_scale_buffer
++                ]
++                originals = []
++                for i, buffer in enumerate(buffers):
++                    buffer.copy_(torch.arange(buffer.numel()).reshape_as(buffer) + i)
++                    originals.append(buffer.clone())
++                src_pages = torch.tensor([5, 1, 7, 3])
++                host_pages = torch.tensor([9, 4, 13, 1])
++                dst_pages = torch.tensor([2, 6, 4, 0])
++
++                def tokens(pages):
++                    return (pages[:, None] * 64 + torch.arange(64)).flatten()
++
++                # Real host pools and index conversion; only the CUDA copy is
++                # replaced. An attempted copy from an empty layer fails here.
++                with (
++                    patch(
++                        "sglang.srt.mem_cache.memory_pool_host.transfer_kv_direct",
++                        side_effect=copy_pages,
++                        create=True,
++                    ),
++                    patch(
++                        "sglang.srt.mem_cache.pool_host.dsa.transfer_kv_direct",
++                        side_effect=copy_pages,
++                        create=True,
++                    ),
++                ):
++                    entry.host_pool.backup_from_device_all_layer(
++                        pool, tokens(host_pages), tokens(src_pages), "direct"
++                    )
++                    for buffer in buffers:
++                        buffer.fill_(173)
++                    for layer, buffer in enumerate(buffers):
++                        mapped = entry.layer_mapper(layer)
++                        if not buffer.numel():
++                            self.assertIsNone(mapped)
++                            continue
++                        entry.host_pool.load_to_device_per_layer(
++                            pool,
++                            tokens(host_pages),
++                            tokens(dst_pages),
++                            mapped,
++                            "direct",
++                        )
++                        self.assertTrue(
++                            torch.equal(buffer[dst_pages], originals[layer][src_pages])
++                        )
++
++    def test_draft_sidecar_omits_empty_index_layers(self):
++        for live in ((True, False, True), (False, False)):
++            with self.subTest(live=live):
++                pool = dsa_pool(live_layers=live)
++                pool.size = 512
++                draft_host = SimpleNamespace(layer_num=len(live), page_num=16)
++                cache = SimpleNamespace(
++                    cache_controller=SimpleNamespace(
++                        page_size=64, mem_pool_host=SimpleNamespace(logical_size=1024)
++                    )
++                )
++                with (
++                    patch(self.prefix + "get_memory", return_value=self.memory),
++                    patch(self.prefix + "_get_allocator_type", return_value="default"),
++                    patch(
++                        self.prefix + "_build_mha_mla_host_pool",
++                        return_value=draft_host,
++                    ),
++                    patch(self.prefix + "DeepSeekV4PagedHostPool") as host_cls,
++                    patch(self.prefix + "DSAIndexerPoolHost") as legacy,
++                ):
++                    specs, entries = build_full_draft_pools(
++                        draft_kv_pool=pool, tree_cache=cache
++                    )
++                legacy.assert_not_called()
++                expected = [PoolName.DRAFT] + (
++                    [PoolName.DRAFT_INDEXER] if any(live) else []
++                )
++                self.assertEqual([s.pool_name for s in specs], expected)
++                self.assertEqual([e.name for e in entries], expected)
++                self.assertTrue(all(s.indices_from_pool == PoolName.KV for s in specs))
++                if any(live):
++                    self.assertEqual(
++                        host_cls.call_args.kwargs["pool_name"],
++                        str(PoolName.DRAFT_INDEXER),
++                    )
++                    self.assertEqual(host_cls.call_args.kwargs["item_bytes"], 8448)
++                    self.assertEqual(
++                        len(host_cls.call_args.kwargs["device_buffers"]), 2
++                    )
++                    self.assertEqual(entries[-1].layer_mapper(0), 0)
++                    self.assertIsNone(entries[-1].layer_mapper(1))
++                    self.assertEqual(entries[-1].layer_mapper(2), 1)
++                else:
++                    host_cls.assert_not_called()
++
++    def build_entry(self, pool, *, drafts=(), mapping=None, layer_num=6):
++        if mapping is None:
++            mapping = {0: 0, 3: 1}
++        with (
++            patch(self.prefix + "get_memory", return_value=self.memory),
++            patch(self.prefix + "_get_allocator_type", return_value="default"),
++            patch(self.prefix + "DeepSeekV4PagedHostPool") as host_cls,
++        ):
++            entry = _build_hybrid_dsa_index_entry(
++                kv_pool=pool,
++                kv_host_pool=SimpleNamespace(page_num=16),
++                layer_mapping=mapping,
++                transfer_layer_num=layer_num + len(drafts),
++                draft_pools=drafts,
++            )
++        return entry, host_cls
++
++    def test_non_dsa_has_no_sidecar(self):
++        entry, host_cls = self.build_entry(SimpleNamespace())
++        self.assertIsNone(entry)
++        host_cls.assert_not_called()
++
++    def test_real_stack_registers_indexer_within_fixed_host_budget(self):
++        pool = dsa_pool()
++        draft = dsa_pool(live_layers=(True,))
++        for item in (pool, draft):
++            item.kv_cache_dim = 656
++            item.store_dtype = torch.uint8
++        wrapper = object.__new__(HybridLinearKVPool)
++        wrapper.full_kv_pool = draft
++        params = cache_params(pool)
++        params.req_to_token_pool.mamba_allocator = MagicMock()
++        params.mtp_draft_device_pools = (wrapper,)
++        memory = SimpleNamespace(
++            hicache_size=32,
++            hicache_ratio=2.0,
++            hicache_mem_layout="layer_first",
++            hicache_write_policy="write_through",
++            hicache_io_backend="direct",
++            hicache_host_memory_mode=None,
++        )
++        with (
++            patch(self.prefix + "get_memory", return_value=memory),
++            patch(self.prefix + "_get_allocator_type", return_value="default"),
++            patch(self.prefix + "_split_hicache_size", return_value=(20.0, 12.0)),
++            patch(self.prefix + "build_kv_host_pool") as build_kv,
++            patch(self.prefix + "MambaPoolHost"),
++            patch(self.prefix + "DeepSeekV4PagedHostPool"),
++            patch(self.prefix + "HybridCacheController"),
++        ):
++            build_kv.return_value.page_num = 16
++            group, _ = build_hybrid_mamba_stack(
++                params=params,
++                kv_pool=pool,
++                mamba_pool=MagicMock(),
++                full_layer_mapping={0: 0, 3: 1},
++                mamba_layer_mapping={1: 0, 2: 1},
++                load_cache_event=None,
++                storage_backend=None,
++                use_mla=True,
++            )
++        self.assertIn(PoolName.INDEXER, group.entry_map)
++        self.assertEqual(build_kv.call_args.kwargs["page_size"], 64)
++        kv_budget = build_kv.call_args.kwargs["host_size"]
++        self.assertAlmostEqual(kv_budget, 20.0 * 656 / (656 + 132))
++        self.assertAlmostEqual(kv_budget * (1 + 132 / 656), 20.0)
++        self.assertEqual(group.get_entry(PoolName.INDEXER).layer_mapper(4), 2)
++
++    def test_complete_group_roundtrip_with_noncontiguous_pages(self):
++        # Exercise the real host pool and physical-page index conversion. Only
++        # the CUDA copy primitive is replaced by an equivalent CPU byte copy.
++        def allocate(shape, *, dtype, device, **_):
++            return torch.empty(shape, dtype=dtype, device=device)
++
++        def copy_pages(*, src_layers, dst_layers, src_indices, dst_indices, page_size):
++            self.assertEqual(page_size, 1)
++            for src, dst in zip(src_layers, dst_layers, strict=True):
++                dst[dst_indices] = src[src_indices]
++
++        from collections import defaultdict
++
++        from sglang.srt.layers.attention.dsa.kpool_fp8_index import (
++            compute_pooled_write_locs,
++        )
++
++        pool = dsa_pool()
++        draft = dsa_pool(live_layers=(True,))
++        with (
++            patch(self.prefix + "get_memory", return_value=self.memory),
++            patch(self.prefix + "_get_allocator_type", return_value="default"),
++            patch(
++                "sglang.srt.mem_cache.memory_pool_host.ALLOC_MEMORY_FUNCS",
++                defaultdict(lambda: allocate),
++            ),
++        ):
++            entry = _build_hybrid_dsa_index_entry(
++                kv_pool=pool,
++                kv_host_pool=SimpleNamespace(page_num=16),
++                layer_mapping={0: 0, 3: 1, 6: 2},
++                transfer_layer_num=7,
++                draft_pools=(draft,),
++            )
++        host = entry.host_pool
++        originals = []
++        for layer, buffer in enumerate(host.device_buffers):
++            buffer.copy_(torch.arange(buffer.numel()).reshape_as(buffer) + layer)
++            originals.append(buffer.clone())
++        src_pages = torch.tensor([5, 1, 7, 3, 0, 6, 2, 4])
++        host_pages = torch.tensor([9, 4, 13, 1, 8, 14, 3, 7])
++        dst_pages = torch.tensor([2, 6, 4, 0, 7, 3, 5, 1])
++
++        def tokens(pages):
++            return (pages[:, None] * 64 + torch.arange(64)[None, :]).flatten()
++
++        with patch(
++            "sglang.srt.mem_cache.memory_pool_host.transfer_kv_direct",
++            side_effect=copy_pages,
++            create=True,
++        ):
++            # Backup prefix, then its extension without revisiting the prefix.
++            for start in (0, 4):
++                host.backup_from_device_all_layer(
++                    pool,
++                    tokens(host_pages[start : start + 4]),
++                    tokens(src_pages[start : start + 4]),
++                    "direct",
++                )
++            for buffer in host.device_buffers:
++                buffer.fill_(173)
++            for layer in range(len(host.device_buffers)):
++                host.load_to_device_per_layer(
++                    pool, tokens(host_pages), tokens(dst_pages), layer, "direct"
++                )
++                self.assertTrue(
++                    torch.equal(
++                        host.device_buffers[layer][dst_pages],
++                        originals[layer][src_pages],
++                    )
++                )
++            # The pooled-key reader selects each restored group's first page.
++            locs = compute_pooled_write_locs(dst_pages, torch.arange(128), 4)
++            self.assertTrue(torch.equal(locs[:64], 2 * 64 + torch.arange(64)))
++            self.assertTrue(torch.equal(locs[64:], 7 * 64 + torch.arange(64)))
++
++    def test_skipped_target_layers_and_packed_draft_are_layer_mapped(self):
++        pool = dsa_pool(live_layers=(True, False, True))
++        draft = dsa_pool(live_layers=(True,))
++        entry, host_cls = self.build_entry(
++            pool, drafts=(draft,), mapping={0: 0, 2: 1, 4: 2, 6: 3}
++        )
++        buffers = host_cls.call_args.kwargs["device_buffers"]
++        self.assertEqual(len(buffers), 3)
++        self.assertIs(buffers[0], pool.index_k_with_scale_buffer[0])
++        self.assertIs(buffers[1], pool.index_k_with_scale_buffer[2])
++        self.assertIs(buffers[2], draft.index_k_with_scale_buffer[0])
++        self.assertEqual(entry.layer_mapper(0), 0)
++        self.assertIsNone(entry.layer_mapper(2))
++        self.assertEqual(entry.layer_mapper(4), 1)
++        self.assertEqual(entry.layer_mapper(6), 2)
++        self.assertEqual(host_cls.call_args.kwargs["slot_page_size"], 64)
++        self.assertTrue(host_cls.call_args.kwargs["page_aligned_only"])
++
++        # Exercise the actual load-transfer builder: the draft's index must
++        # restore on its first transfer layer, not the target's last layer.
++        anchor = build_pool_entry(
++            name=PoolName.KV,
++            host_pool=MagicMock(layout="layer_first"),
++            device_pool=pool,
++            layer_mapping={0: 0},
++            transfer_layer_num=6,
++            is_anchor=True,
++        )
++        controller = object.__new__(HybridCacheController)
++        controller.mem_pool_host = HostPoolGroup([anchor, entry])
++        controller.layer_num = 6
++        indices = torch.arange(64)
++        transfers = controller._l2_load_transfers(
++            indices,
++            indices,
++            [
++                PoolTransfer(
++                    PoolName.INDEXER, host_indices=indices, device_indices=indices
++                )
++            ],
++        )
++        draft_transfers = [t for t in transfers if t.is_draft]
++        self.assertEqual(len(draft_transfers), 1)
++        self.assertEqual(draft_transfers[0].layer_mapper(0), 2)
++        self.assertIsNone(draft_transfers[0].layer_mapper(1))
++
++    def test_strategy_registers_the_index_transfer_spec(self):
++        pool = dsa_pool()
++        entry, _ = self.build_entry(pool)
++        group = MagicMock()
++        group.entry_map = {PoolName.INDEXER: entry}
++        params = MagicMock()
++        params.req_to_token_pool.mamba_map = {1: 0, 2: 1}
++        kvcache = SimpleNamespace(
++            full_attention_layer_id_mapping={0: 0, 3: 1},
++            full_kv_pool=pool,
++            use_mla=True,
++        )
++        with patch(
++            self.prefix + "build_hybrid_mamba_stack", return_value=(group, MagicMock())
++        ):
++            result = _MambaStrategy().build(
++                cache=MagicMock(),
++                kvcache=kvcache,
++                params=params,
++                server_args=MagicMock(),
++                load_cache_event=None,
++            )
++        self.assertEqual(len(result.sidecars), 1)
++        self.assertEqual(result.sidecars[0].pool_name, PoolName.INDEXER)
++        self.assertEqual(result.sidecars[0].indices_from_pool, PoolName.KV)
++
++
++if __name__ == "__main__":
++    unittest.main()
+--- a/test/registered/unit/mem_cache/test_hybrid_pool_assembler.py
++++ b/test/registered/unit/mem_cache/test_hybrid_pool_assembler.py
+@@ -1,8 +1,11 @@
+ """Unit tests for hybrid HiCache pool assembly."""
+ 
+ import unittest
++from contextlib import ExitStack
+ from types import SimpleNamespace
+ from unittest.mock import MagicMock, patch
++
++import torch
+ 
+ from sglang.srt.mem_cache.base_prefix_cache import EvictParams
+ from sglang.srt.mem_cache.hybrid_cache.hybrid_pool_assembler import (
+@@ -10,8 +13,11 @@
+     _evict_swa_for_device_alloc,
+     _split_hicache_size,
+     build_full_draft_pools,
++    build_hybrid_mamba_stack,
+ )
+-from sglang.srt.mem_cache.memory_pool import HybridLinearKVPool
++from sglang.srt.mem_cache.memory_pool import HybridLinearKVPool, MLATokenToKVPoolFP4
++from sglang.srt.mem_cache.pool_host.common import alloc_with_host_register
++from sglang.srt.mem_cache.pool_host.mla import MLATokenToKVPoolHost
+ from sglang.test.ci.ci_register import register_cpu_ci
+ from sglang.test.test_utils import CustomTestCase
+ 
+@@ -128,5 +134,299 @@
+         self.assertIs(entries[0].host_pool, draft_host_pool)
+ 
+ 
++class _PackedRowGeometryFixtures:
++    """Fake MLA device pools with nominal-width and packed (wider) rows.
++
++    DSA device pools store packed rows wider than kv_lora_rank +
++    qk_rope_head_dim, the width the MLA host pool assumes without an
++    override.
++    """
++
++    KV_LORA_RANK = 8
++    QK_ROPE_HEAD_DIM = 4
++    NOMINAL_KV_CACHE_DIM = KV_LORA_RANK + QK_ROPE_HEAD_DIM
++    PACKED_KV_CACHE_DIM = 16  # > NOMINAL_KV_CACHE_DIM
++    PAGE_SIZE = 4
++    LAYER_NUM = 2
++
++    def _fake_device_pool(self, *, store_dtype, kv_cache_dim, layer_num=LAYER_NUM):
++        return SimpleNamespace(
++            size=64,
++            store_dtype=store_dtype,
++            kv_lora_rank=self.KV_LORA_RANK,
++            qk_rope_head_dim=self.QK_ROPE_HEAD_DIM,
++            kv_cache_dim=kv_cache_dim,
++            layer_num=layer_num,
++            start_layer=0,
++            end_layer=layer_num,
++            device="cpu",
++            layers_to_capture=None,
++            layer_shard_enabled=False,
++            data_ptrs=torch.zeros(layer_num, dtype=torch.uint64),
++            kv_buffer=[torch.empty(0, dtype=store_dtype) for _ in range(layer_num)],
++        )
++
++    def _fake_packed_device_pool(self, layer_num=LAYER_NUM):
++        return self._fake_device_pool(
++            store_dtype=torch.uint8,
++            kv_cache_dim=self.PACKED_KV_CACHE_DIM,
++            layer_num=layer_num,
++        )
++
++    def _fake_nominal_device_pool(self, layer_num=LAYER_NUM):
++        return self._fake_device_pool(
++            store_dtype=torch.bfloat16,
++            kv_cache_dim=self.NOMINAL_KV_CACHE_DIM,
++            layer_num=layer_num,
++        )
++
++    @staticmethod
++    def _alloc_unpinned(dims, dtype, device, pin_memory, allocator, **kwargs):
++        # Host rows are allocated without pinning so no CUDA context is needed.
++        return alloc_with_host_register(dims, dtype, device, False, allocator, **kwargs)
++
++
++class TestHybridMambaStackHostRowWidth(_PackedRowGeometryFixtures, CustomTestCase):
++    """The hybrid Mamba stack's MLA host pool must mirror the device rows.
++
++    Packed MTP draft layers share the target's host rows, so a draft pool
++    with a different row geometry must be rejected.
++    """
++
++    def _build_stack(self, kv_pool, *, use_mla, draft_pools=(), extra_patches=()):
++        """Build the hybrid Mamba stack with the real KV host pool class.
++
++        Patched: the published memory/parallel config and allocator lookup,
++        the MLA host pool's allocator (unpinned), plus the Mamba host pool,
++        host pool group, and cache controller, which are not under test.
++        Returns the HostPoolGroup constructor mock.
++        """
++        params = MagicMock()
++        params.page_size = self.PAGE_SIZE
++        wrapped_draft_pools = []
++        for pool in draft_pools:
++            wrapper = object.__new__(HybridLinearKVPool)
++            wrapper.full_kv_pool = pool
++            wrapped_draft_pools.append(wrapper)
++        params.mtp_draft_device_pools = tuple(wrapped_draft_pools)
++        memory = SimpleNamespace(
++            hicache_size=0,
++            hicache_ratio=2.0,
++            hicache_mem_layout="layer_first",
++            hicache_write_policy="write_through",
++            hicache_io_backend="direct",
++            hicache_host_memory_mode=None,
++        )
++        parallel = SimpleNamespace(dcp_enabled=False)
++        prefix = "sglang.srt.mem_cache.hybrid_cache.hybrid_pool_assembler."
++
++        with ExitStack() as stack:
++            stack.enter_context(patch(prefix + "get_memory", return_value=memory))
++            stack.enter_context(patch(prefix + "get_parallel", return_value=parallel))
++            stack.enter_context(
++                patch(prefix + "_get_allocator_type", return_value="default")
++            )
++            stack.enter_context(
++                patch(
++                    "sglang.srt.mem_cache.pool_host.mla.ALLOC_MEMORY_FUNCS",
++                    {"cpu": self._alloc_unpinned},
++                )
++            )
++            stack.enter_context(patch(prefix + "MambaPoolHost"))
++            host_pool_group = stack.enter_context(patch(prefix + "HostPoolGroup"))
++            stack.enter_context(patch(prefix + "HybridCacheController"))
++            for extra_patch in extra_patches:
++                stack.enter_context(extra_patch)
++            build_hybrid_mamba_stack(
++                params=params,
++                kv_pool=kv_pool,
++                mamba_pool=MagicMock(),
++                full_layer_mapping={i: i for i in range(kv_pool.layer_num)},
++                mamba_layer_mapping={kv_pool.layer_num: kv_pool.layer_num},
++                load_cache_event=None,
++                storage_backend=None,
++                use_mla=use_mla,
++            )
++        return host_pool_group
++
++    def _kv_host_pool(self, host_pool_group):
++        entries = host_pool_group.call_args.args[0]
++        return entries[0].host_pool
++
++    def test_mla_host_pool_row_width_matches_packed_device_rows(self):
++        kv_pool = self._fake_packed_device_pool()
++        self.assertGreater(kv_pool.kv_cache_dim, self.NOMINAL_KV_CACHE_DIM)
++
++        kv_host_pool = self._kv_host_pool(self._build_stack(kv_pool, use_mla=True))
++
++        self.assertIsInstance(kv_host_pool, MLATokenToKVPoolHost)
++        self.assertEqual(kv_host_pool.kv_cache_dim, kv_pool.kv_cache_dim)
++        self.assertEqual(
++            kv_host_pool.token_stride_size,
++            kv_pool.kv_cache_dim * kv_pool.store_dtype.itemsize,
++        )
++        self.assertEqual(kv_host_pool.kv_buffer.shape[-1], kv_pool.kv_cache_dim)
++
++    def test_non_mla_pool_exposing_kv_cache_dim_gets_no_override(self):
++        # MHA host pool constructors take no override_kv_cache_dim; a non-MLA
++        # pool that happens to expose kv_cache_dim must not trigger one.
++        kv_pool = self._fake_packed_device_pool()
++        mha_host_cls = MagicMock(name="MHAHostPool")
++        prefix = "sglang.srt.mem_cache.hybrid_cache.hybrid_pool_assembler."
++
++        self._build_stack(
++            kv_pool,
++            use_mla=False,
++            extra_patches=(
++                patch(prefix + "get_mha_host_pool_cls", return_value=mha_host_cls),
++            ),
++        )
++
++        mha_host_cls.assert_called_once()
++        self.assertNotIn("override_kv_cache_dim", mha_host_cls.call_args.kwargs)
++
++    def test_packed_draft_pool_with_target_geometry_is_accepted(self):
++        kv_pool = self._fake_packed_device_pool()
++        draft_pool = self._fake_packed_device_pool(layer_num=1)
++
++        kv_host_pool = self._kv_host_pool(
++            self._build_stack(kv_pool, use_mla=True, draft_pools=(draft_pool,))
++        )
++
++        self.assertEqual(kv_host_pool.layer_num, kv_pool.layer_num + 1)
++        self.assertEqual(kv_host_pool.kv_cache_dim, kv_pool.kv_cache_dim)
++        self.assertEqual(kv_host_pool.kv_buffer.shape[0], kv_pool.layer_num + 1)
++
++    def test_packed_draft_pool_with_narrower_rows_is_rejected(self):
++        # fp8 packed target, bf16 nominal-width draft.
++        kv_pool = self._fake_packed_device_pool()
++        draft_pool = self._fake_nominal_device_pool(layer_num=1)
++
++        with self.assertRaisesRegex(ValueError, "draft pool 0"):
++            self._build_stack(kv_pool, use_mla=True, draft_pools=(draft_pool,))
++
++    def test_packed_draft_pool_with_wider_rows_is_rejected(self):
++        # bf16 nominal-width target, fp8 packed draft.
++        kv_pool = self._fake_nominal_device_pool()
++        draft_pool = self._fake_packed_device_pool(layer_num=1)
++
++        with self.assertRaisesRegex(ValueError, "draft pool 0"):
++            self._build_stack(kv_pool, use_mla=True, draft_pools=(draft_pool,))
++
++    def test_same_dtype_draft_pool_with_different_width_is_rejected(self):
++        # Same store dtype, so only the row width differs: fp8 packed target,
++        # fp8 nominal-width draft.
++        kv_pool = self._fake_packed_device_pool()
++        draft_pool = self._fake_device_pool(
++            store_dtype=torch.uint8,
++            kv_cache_dim=self.NOMINAL_KV_CACHE_DIM,
++            layer_num=1,
++        )
++        self.assertEqual(draft_pool.store_dtype, kv_pool.store_dtype)
++
++        with self.assertRaisesRegex(ValueError, "draft pool 0"):
++            self._build_stack(kv_pool, use_mla=True, draft_pools=(draft_pool,))
++
++
++class TestMLAHostPoolRowGeometry(_PackedRowGeometryFixtures, CustomTestCase):
++    """MLATokenToKVPoolHost itself must refuse rows narrower than the device's.
++
++    Exercises the constructor directly so the check does not depend on a
++    builder passing the override.
++    """
++
++    def _host_pool(self, kv_pool, **kwargs):
++        with patch(
++            "sglang.srt.mem_cache.pool_host.mla.ALLOC_MEMORY_FUNCS",
++            {"cpu": self._alloc_unpinned},
++        ):
++            return MLATokenToKVPoolHost(
++                kv_pool,
++                host_to_device_ratio=2.0,
++                host_size=0,
++                page_size=self.PAGE_SIZE,
++                layout="layer_first",
++                pin_memory=False,
++                device="cpu",
++                **kwargs,
++            )
++
++    def test_fp4_rows_are_rejected_before_host_allocation(self):
++        fp4 = object.__new__(MLATokenToKVPoolFP4)
++        fp4.__dict__.update(self._fake_packed_device_pool(layer_num=1).__dict__)
++        # The logical dimension agrees, but the physical values use half a
++        # byte per element and scales live in a different buffer.
++        fp4.kv_buffer = [torch.zeros((68, 1, 8), dtype=torch.uint8)]
++        fp4.kv_scale_buffer = [torch.zeros((68, 1, 1), dtype=torch.uint8)]
++        ordinary = self._fake_packed_device_pool(layer_num=1)
++        for target, drafts in ((fp4, ()), (ordinary, (fp4,))):
++            with self.subTest(target_fp4=target is fp4):
++                allocate = MagicMock(side_effect=self._alloc_unpinned)
++                with (
++                    patch(
++                        "sglang.srt.mem_cache.pool_host.mla.ALLOC_MEMORY_FUNCS",
++                        {"cpu": allocate},
++                    ),
++                    self.assertRaisesRegex(NotImplementedError, "FP4 MLA KV"),
++                ):
++                    MLATokenToKVPoolHost(
++                        target,
++                        host_to_device_ratio=2,
++                        host_size=0,
++                        page_size=self.PAGE_SIZE,
++                        layout="layer_first",
++                        pin_memory=False,
++                        device="cpu",
++                        override_kv_cache_dim=target.kv_cache_dim,
++                        mtp_draft_device_pools=drafts,
++                    )
++                allocate.assert_not_called()
++
++    def test_packed_device_pool_without_override_is_rejected(self):
++        kv_pool = self._fake_packed_device_pool()
++
++        with self.assertRaisesRegex(ValueError, "override_kv_cache_dim"):
++            self._host_pool(kv_pool)
++
++    def test_packed_device_pool_without_override_and_nominal_draft_is_rejected(self):
++        # Without the override the assumed host width equals the nominal
++        # width, so a same-dtype nominal-width draft matches the assumed
++        # width while both differ from the packed device rows. The draft
++        # must be compared against the device pool's kv_cache_dim, not the
++        # assumed width.
++        kv_pool = self._fake_packed_device_pool()
++        draft_pool = self._fake_device_pool(
++            store_dtype=kv_pool.store_dtype,
++            kv_cache_dim=self.NOMINAL_KV_CACHE_DIM,
++            layer_num=1,
++        )
++
++        with self.assertRaisesRegex(ValueError, "row geometry"):
++            self._host_pool(kv_pool, mtp_draft_device_pools=(draft_pool,))
++
++    def test_packed_device_pool_with_override_and_matching_draft(self):
++        kv_pool = self._fake_packed_device_pool()
++        draft_pool = self._fake_packed_device_pool(layer_num=1)
++
++        host_pool = self._host_pool(
++            kv_pool,
++            override_kv_cache_dim=kv_pool.kv_cache_dim,
++            mtp_draft_device_pools=(draft_pool,),
++        )
++
++        self.assertEqual(host_pool.kv_cache_dim, kv_pool.kv_cache_dim)
++        self.assertEqual(host_pool.layer_num, kv_pool.layer_num + 1)
++        self.assertEqual(host_pool.kv_buffer.shape[-1], kv_pool.kv_cache_dim)
++
++    def test_nominal_device_pool_needs_no_override(self):
++        # Flat MLA callers pass no override; a nominal-width pool must still
++        # construct because its kv_cache_dim equals the assumed width.
++        kv_pool = self._fake_nominal_device_pool()
++
++        host_pool = self._host_pool(kv_pool)
++
++        self.assertEqual(host_pool.kv_cache_dim, self.NOMINAL_KV_CACHE_DIM)
++
++
+ if __name__ == "__main__":
+     unittest.main()
+--- /dev/null
++++ b/test/registered/unit/mem_cache/test_startup_ram_budget.py
+@@ -0,0 +1,182 @@
++"""Synthetic startup sizing: no GPUs, model files or large allocations needed."""
++
++import tempfile
++import unittest
++from pathlib import Path
++from unittest.mock import patch
++
++from sglang.srt.mem_cache import startup_ram_budget as ram
++
++GiB = 1024**3
++
++
++def records(config="80%", available=100 * GiB, ranks=4):
++    return [
++        dict(config=config, available_bytes=available, error=None) for _ in range(ranks)
++    ]
++
++
++class StartupBudgetTest(unittest.TestCase):
++    def test_fraction_is_shared_across_ranks(self):
++        for ranks in (1, 2, 4, 8):
++            budget = ram.resolve_budget(records(ranks=ranks))
++            self.assertEqual(budget.total_bytes, 80 * GiB)
++            self.assertEqual(budget.rank_bytes, 80 * GiB // ranks)
++
++    def test_explicit_units_and_least_available_rank(self):
++        self.assertEqual(ram.resolve_budget(records("64GB")).total_bytes, 64 * 10**9)
++        self.assertEqual(ram.resolve_budget(records("64GiB")).total_bytes, 64 * GiB)
++        peers = records()
++        peers[2]["available_bytes"] = 80 * GiB
++        self.assertEqual(ram.resolve_budget(peers).total_bytes, 64 * GiB)
++
++    def test_low_ram_reserve_and_oversized_fixed_budget(self):
++        self.assertEqual(
++            ram.resolve_budget(records(available=20 * GiB)).total_bytes, 10 * GiB
++        )
++        for config, available in (
++            ("95GiB", 100 * GiB),
++            ("80%", 10 * GiB),
++            ("0.000000001GB", 20 * GiB),
++        ):
++            with self.subTest(config=config), self.assertRaises(ValueError):
++                ram.resolve_budget(records(config, available))
++
++    def test_invalid_config_and_peer_errors(self):
++        for value in (
++            "",
++            "0",
++            "-1GiB",
++            "100%",
++            "0%",
++            "80",
++            "NaN%",
++            "infGB",
++            "8TB",
++            " 80%",
++            "80%\n",
++        ):
++            with self.subTest(value=value), self.assertRaises(ValueError):
++                ram.parse_budget(value)
++        peers = records()
++        peers[1]["config"] = "70%"
++        with self.assertRaisesRegex(ValueError, "differs"):
++            ram.resolve_budget(peers)
++        peers[1]["error"] = "unreadable cgroup"
++        with self.assertRaisesRegex(ValueError, "unreadable cgroup"):
++            ram.resolve_budget(peers)
++
++    def test_cumulative_claims_and_page_rounding(self):
++        budget = ram.RankBudget(4000, 4)
++        token = ram._active.set(budget)
++        self.addCleanup(ram._active.reset, token)
++        self.assertEqual(ram.host_page_count(256, 64), 4)
++        self.assertEqual(ram.host_page_count(255, 64), 3)
++        with self.assertRaises(ValueError):
++            ram.host_page_count(63, 64)
++        # KV, recurrent state and index all spend the SAME rank allowance.
++        for size in (600, 300, 100):
++            ram.reserve_startup_bytes(size)
++        self.assertEqual(budget.remaining_bytes, 0)
++        with self.assertRaises(ValueError):
++            ram.reserve_startup_bytes(1)
++
++    def test_disabled_leaves_upstream_sizing_unchanged(self):
++        with patch.dict("os.environ", {}, clear=True):
++            with ram.startup_ram_budget(supported=False):
++                self.assertIsNone(ram.active_budget())
++                self.assertEqual(ram.host_page_count(256, 64), 5)
++                ram.reserve_startup_bytes(10**15)
++
++
++class CgroupTest(unittest.TestCase):
++    def setUp(self):
++        temp = tempfile.TemporaryDirectory()
++        self.addCleanup(temp.cleanup)
++        self.root = Path(temp.name)
++        self.proc = self.root / "proc"
++        (self.proc / "self").mkdir(parents=True)
++        self.mount = self.root / "cgroup"
++        self.mount.mkdir()
++
++    def mountinfo(self, *, kind="cgroup2", membership="/job/rank", root="/"):
++        controllers = "" if kind == "cgroup2" else "memory"
++        (self.proc / "self/cgroup").write_text(f"0:{controllers}:{membership}\n")
++        opts = "rw" if kind == "cgroup2" else "rw,memory"
++        (self.proc / "self/mountinfo").write_text(
++            f"1 2 0:1 {root} {self.mount} rw - {kind} cgroup {opts}\n"
++        )
++
++    def limit(self, path, limit, used, *, kind="cgroup2"):
++        directory = self.mount / path
++        directory.mkdir(parents=True, exist_ok=True)
++        limit_file, usage_file = (
++            ("memory.max", "memory.current")
++            if kind == "cgroup2"
++            else ("memory.limit_in_bytes", "memory.usage_in_bytes")
++        )
++        (directory / limit_file).write_text(str(limit))
++        (directory / usage_file).write_text(str(used))
++
++    def test_v2_parent_limit_tighter_than_container(self):
++        self.mountinfo()
++        self.limit("job/rank", 1000, 100)
++        self.limit("job", 2000, 1500)
++        self.limit("", "max", 2000)
++        self.assertEqual(ram.cgroup_headrooms(self.proc), [900, 500])
++
++    def test_namespaced_mount_and_unlimited(self):
++        self.mountinfo(membership="/", root="/")
++        self.limit("", "max", 2000)
++        self.assertEqual(ram.cgroup_headrooms(self.proc), [])
++        self.limit("", 4000, 3000)
++        self.assertEqual(ram.cgroup_headrooms(self.proc), [1000])
++
++    def test_subtree_mount(self):
++        self.mountinfo(membership="/job/rank", root="/job")
++        self.limit("rank", 4000, 1000)
++        self.limit("", 8000, 6000)
++        self.assertEqual(ram.cgroup_headrooms(self.proc), [3000, 2000])
++
++    def test_v1_and_exhausted_parent(self):
++        self.mountinfo(kind="cgroup")
++        for path, limit, used in (
++            ("job/rank", 1000, 100),
++            ("job", 2000, 2500),
++            ("", 2**63 - 4096, 3000),
++        ):
++            self.limit(path, limit, used, kind="cgroup")
++        self.assertEqual(min(ram.cgroup_headrooms(self.proc)), 0)
++
++    def test_missing_or_malformed_limit_fails(self):
++        self.mountinfo()
++        with self.assertRaises(ValueError):
++            ram.cgroup_headrooms(self.proc)
++        self.limit("job/rank", "garbage", 0)
++        with self.assertRaises(ValueError):
++            ram.cgroup_headrooms(self.proc)
++        self.limit("job/rank", 1000, 0)
++        (self.mount / "job/rank/memory.current").unlink()
++        with self.assertRaises(FileNotFoundError):
++            ram.cgroup_headrooms(self.proc)
++
++    def test_guest_memory_and_container_headroom_both_bound_budget(self):
++        from types import SimpleNamespace
++
++        for available, headrooms, expected in (
++            (500, [200, 300], 200),
++            (100, [200], 100),
++            (100, [], 100),
++        ):
++            with (
++                patch(
++                    "psutil.virtual_memory",
++                    return_value=SimpleNamespace(available=available),
++                ),
++                patch.object(ram, "cgroup_headrooms", return_value=headrooms),
++            ):
++                self.assertEqual(ram.available_ram_bytes(), expected)
++
++
++if __name__ == "__main__":
++    unittest.main()
+--- a/test/registered/unit/mem_cache/test_unified_cache_linker.py
++++ b/test/registered/unit/mem_cache/test_unified_cache_linker.py
+@@ -99,7 +99,9 @@
+     cache.tree_core = SimpleNamespace(
+         enable_external_cache_linker=False,
+         write_through_threshold=256,
+-    )
++        page_size=64,
++    )
++    cache._transfer_page_size = 64
+     cache.linker = None
+     linker = _FakeLinker()
+ 
+--- a/test/registered/unit/mem_cache/test_unified_radix_cache_unittest.py
++++ b/test/registered/unit/mem_cache/test_unified_radix_cache_unittest.py
+@@ -1601,6 +1601,10 @@
+             )
+ 
+         prompt_aligned = (len(prompt_ids) // ps) * ps
++        # A checkpoint taken after the stripped output cannot describe the
++        # shorter prompt. It must be freed instead of donated under that key.
++        if self.cfg.has_mamba and self.cfg.enable_mamba_extra_buffer:
++            prompt_aligned = 0
+         # Thinking+answer must not be reachable past the prompt.
+         m = cache.match_prefix(
+             MatchPrefixParams(key=RadixKey(array("q", prompt_ids + output_ids)))
+@@ -1807,7 +1811,9 @@
+             len(req.prefix_indices), len(req.full_untruncated_fill_ids)
+         )
+         if self.cfg.has_mamba:
+-            req.kv.mamba_last_track_seqlen = kv_len
++            # The real producer checkpoints at an aligned boundary, not at
++            # the end of the partial page whose KV is about to be freed.
++            req.kv.mamba_last_track_seqlen = kv_len // ps * ps
+ 
+         avail_before = allocator.available_size()
+         cache.cache_finished_req(

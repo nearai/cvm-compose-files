@@ -1,0 +1,11 @@
+base_image=docker.io/nearaidev/sglang@sha256:a7b7136abcf5e07522289d96e96fec9b42a1a30f9dfda57e957f142680d2d67b
+source_repository=https://github.com/PierreLeGuen/sglang-upstream
+source_revision=fc91d2403cc210a86bd5fc715c6609f58c932e5a
+upstream_restore_fix=https://github.com/sgl-project/sglang/pull/38212
+upstream_restore_fix_revision=230102db838cbbe6eca7952c729518ee6d93c3a9
+restore_adaptation=fc91d24 MLA constructor and older CPU test API; includes PR37534 dependency
+pooled_transfer_implementation=rank-local persistent GPU staging; page-first direct DMA; recurrent GPU clones
+runtime_opt_in=SGLANG_HICACHE_POOLED_TRANSFERS=1
+staging_pages=SGLANG_HICACHE_STAGING_PAGES=64
+build_recipe=docker/sglang-glm53-hicache/Dockerfile
+startup_ram_budget=SGLANG_HICACHE_RAM_BUDGET; percentage or explicit GB/GiB across single-node TP ranks; guest and cgroup headroom; cumulative pool accounting
