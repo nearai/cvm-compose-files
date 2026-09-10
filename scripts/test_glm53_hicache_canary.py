@@ -82,8 +82,9 @@ class PromotionTest(unittest.TestCase):
         self.assertFalse((self.root / promotion.RELEASE).exists())
 
     def test_invalid_and_repeated_promotion(self):
+        control_image = parse_yaml(self.path)['services']['model-sg-glm53-fp8-tp4-r1']['image']
         for image in ('nearaidev/sglang:latest', FIXTURE_IMAGE + '\n',
-                      FIXTURE_IMAGE.replace('nearaidev', 'untrusted')):
+                      FIXTURE_IMAGE.replace('nearaidev', 'untrusted'), control_image):
             with self.assertRaises(ValueError):
                 promotion.candidate(self.original, image)
         self.activate()

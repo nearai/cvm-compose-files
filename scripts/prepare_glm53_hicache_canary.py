@@ -32,6 +32,8 @@ def candidate(text, image):
     start = text.index('x-sg-glm53-flash-common:')
     end = text.index('\nx-dcgm-common:', start)
     common = text[start:end]
+    if f'  image: {image}\n' in common:
+        raise ValueError('The control image does not contain the HiCache patch')
     command = common[common.index('  command: >'):common.index('  volumes:')]
     environment = common[common.index('  environment:'):common.index('  restart:')]
     command = ''.join('  ' + line if line.strip() else line for line in command.splitlines(True))
