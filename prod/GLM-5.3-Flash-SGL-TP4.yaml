@@ -339,6 +339,64 @@ services:
   model-sg-glm53-fp8-tp4-r2:
     <<: *sg-glm53-flash-common
     container_name: model-sg-glm53-fp8-tp4-r2
+    image: docker.io/nearaidev/sglang@sha256:67cf951972594cdbf7437faf315145556ae6f3a643355ff4d3078fb670a12b9f
+    command: >
+        sglang serve
+        --model-path /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/84c6a6aa9497188e15a635ba793b0f95a79b1033
+        --revision 84c6a6aa9497188e15a635ba793b0f95a79b1033
+        --served-model-name z-ai/glm-5.3-flash
+        --tp-size 4
+        --ep-size 4
+        --mem-fraction-static 0.80
+        --max-running-requests 32
+        --max-queued-requests 32
+        --chunked-prefill-size 4096
+        --cuda-graph-max-bs-decode 32
+        --dsa-prefill-backend tilelang
+        --dsa-decode-backend tilelang
+        --kv-cache-dtype bfloat16
+        --moe-runner-backend deep_gemm
+        --speculative-algorithm EAGLE
+        --speculative-num-steps 5
+        --speculative-eagle-topk 1
+        --speculative-num-draft-tokens 6
+        --speculative-adaptive
+        --reasoning-parser glm45
+        --enable-strict-thinking
+        --grammar-backend xgrammar
+        --tool-call-parser glm47
+        --chat-template /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/3f1971b7b5f7a528c9c4ef6212c8785298a8c24a/chat_template.jinja
+        --context-length 1048576
+        --dist-init-addr 127.0.0.1:29510
+        --watchdog-timeout 1800
+        --host 0.0.0.0
+        --port 8000
+        --enable-metrics
+        --enable-cache-report
+        --log-requests-level 0
+        --disable-fast-image-processor
+        --limit-mm-data-per-request '{"image": 64}'
+        --enable-hierarchical-cache
+        --hicache-write-policy write_through
+        --hicache-io-backend direct
+        --hicache-mem-layout page_first_direct
+    environment:
+      - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+      # Local snapshot path; nothing is fetched at engine start.
+      - HF_HUB_OFFLINE=1
+      - TRANSFORMERS_OFFLINE=1
+      - HF_HUB_DISABLE_TELEMETRY=1
+      - DO_NOT_TRACK=1
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - OPENBLAS_L2_SIZE=2097152
+      - NCCL_DEBUG=WARN
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+      - TORCHINDUCTOR_CACHE_DIR=/root/.cache/torchinductor
+      - TRITON_CACHE_DIR=/root/.cache/triton
+      - SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE=1
+      - SGLANG_HICACHE_RAM_BUDGET=${GLM53_HICACHE_RAM_BUDGET:-80%}
+      - SGLANG_HICACHE_POOLED_TRANSFERS=1
+      - SGLANG_HICACHE_STAGING_PAGES=64
     depends_on:
       model-downloader:
         condition: service_completed_successfully
@@ -350,7 +408,7 @@ services:
               device_ids: ["4","5","6","7"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:zai-org/GLM-5.3-Flash","served_model:z-ai/glm-5.3-flash","precision:fp8-weights-bf16-kv","deployment:glm53-flash-sgl-tp4","config_variant:official-upstream-fc91d24-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192","request_logging:disabled","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:2"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:zai-org/GLM-5.3-Flash","served_model:z-ai/glm-5.3-flash","precision:fp8-weights-bf16-kv","deployment:glm53-flash-sgl-tp4","config_variant:fc91d24-hicache-pooled-v1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192","request_logging:disabled","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:2"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -362,7 +420,7 @@ services:
       nearai.otel.model_path: "zai-org/GLM-5.3-Flash"
       nearai.otel.served_model: "z-ai/glm-5.3-flash"
       nearai.otel.deployment: "glm53-flash-sgl-tp4"
-      nearai.otel.config_variant: "official-upstream-fc91d24-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
+      nearai.otel.config_variant: "fc91d24-hicache-pooled-v1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
       nearai.otel.thinking_budget_policy: "default8192-public-to-native"
       nearai.otel.request_logging: "disabled"
       nearai.otel.instance: "2"
@@ -786,7 +844,7 @@ configs:
                       ip: "${HOST_IP}"
                       port: "8000"
                       instance: "2"
-                      config_variant: "official-upstream-fc91d24-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
+                      config_variant: "fc91d24-hicache-pooled-v1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
                       thinking_budget_policy: "default8192-public-to-native"
                       request_logging: "disabled"
               - job_name: dcgm-dcgm-glm53
