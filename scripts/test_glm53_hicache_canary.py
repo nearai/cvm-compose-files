@@ -100,7 +100,7 @@ class PromotionTest(unittest.TestCase):
         # These mutations target only the candidate override, or all arguments
         # for the deliberate r1 contamination case. Each must fail the contract.
         for before, after in (
-            ('--hicache-size 32', '--hicache-size 64'),
+            ('--hicache-size 64', '--hicache-size 32'),
             ('--hicache-io-backend direct', '--hicache-io-backend kernel'),
             ('SGLANG_HICACHE_POOLED_TRANSFERS=1', 'SGLANG_HICACHE_POOLED_TRANSFERS=0'),
             ('SGLANG_HICACHE_STAGING_PAGES=64', 'SGLANG_HICACHE_STAGING_PAGES=128'),

@@ -26,6 +26,11 @@ rendezvous. No failed or incomplete attempt is included as a passed GPU run.
 The CPU harness uses an unavailable CUDA ordinal because this pinned upstream
 test utility cannot parse an empty `CUDA_VISIBLE_DEVICES` value.
 
+The native full-model boot initially used the 32 GB-per-rank diagnostic budget.
+It reported 1,179,072 host KV token slots against 1,449,280 device slots. The
+prepared canary therefore uses 64 GB per rank (nominal 256 GB total); its
+exact-topology memory allocation and serving behavior still need qualification.
+
 The signed workflow has not run for this source. Registry publication,
 signature/attestation verification, exact-topology TEE/PPCIe serving, a staging
 soak of at least 30 minutes and production canary measurements are outstanding.

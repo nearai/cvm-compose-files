@@ -54,11 +54,15 @@ docker buildx imagetools inspect --format '{{json .SBOM.SPDX}}' "$IMAGE"
 | --- | --- | --- |
 | Image | Existing signed production digest | New signed derivative digest |
 | HiCache | Disabled | Enabled |
-| Host cache size | None | `--hicache-size 32` per rank, nominal 128 GB for TP4 |
+| Host cache size | None | `--hicache-size 64` per rank, nominal 256 GB for TP4 |
 | Write policy | None | `write_through` |
 | I/O and host layout | None | `direct`, `page_first_direct` |
 | Transfers | Existing runtime | `SGLANG_HICACHE_POOLED_TRANSFERS=1` |
 | Persistent staging | None | `SGLANG_HICACHE_STAGING_PAGES=64` per pool/direction/rank |
+
+The 64 GB choice keeps the host KV tier larger than the device KV tier for
+this serving envelope. The 32 GB diagnostic allocation was smaller than the
+device pool and is unsuitable as the default eviction canary.
 
 The cache-size argument is in decimal GB and is **not a container memory cap**.
 Allow additional RAM for Python/tokenizers, pinned allocator/page rounding,
