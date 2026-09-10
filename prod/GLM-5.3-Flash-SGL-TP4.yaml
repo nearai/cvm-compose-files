@@ -1132,6 +1132,9 @@ configs:
       proxy_set_header Connection '';
       proxy_buffering off;
       proxy_cache off;
+      # Stream prompt/image bodies upstream instead of spilling requests larger
+      # than client_body_buffer_size into nginx's on-disk client-body temp files.
+      proxy_request_buffering off;
       proxy_read_timeout 3600s;
       client_max_body_size 100m;
       client_body_buffer_size 1m;
