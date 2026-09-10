@@ -14,6 +14,8 @@ native H200 GPUs with CC disabled. They are **not TEE/PPCIe qualification**.
 | Separate FP8 target/BF16 draft geometry, index live/off | All four ranks passed |
 | Four-rank collective | Passed |
 | GLM TP4 recurrent-state clone geometry | Passed, 73,809,920 bytes compared |
+| Full-model packaged-image boot, 64 GB host cache per rank | Passed; no source mounts or lab scheduler hooks |
+| Synthetic tool requests, cold and GPU-resident reuse | All nine passed, through 131,329 input tokens; exact tool name/arguments and natural completion |
 | Promotion scope and invalid-config regressions | Five tests passed, including seven invalid-config mutations |
 | Repository Ruby validators and streaming keepalive validator | Passed |
 | Compose syntax | All 31 existing files passed |
@@ -28,8 +30,12 @@ test utility cannot parse an empty `CUDA_VISIBLE_DEVICES` value.
 
 The native full-model boot initially used the 32 GB-per-rank diagnostic budget.
 It reported 1,179,072 host KV token slots against 1,449,280 device slots. The
-prepared canary therefore uses 64 GB per rank (nominal 256 GB total); its
-exact-topology memory allocation and serving behavior still need qualification.
+64 GB-per-rank candidate then booted with 2,358,144 host KV token slots, above
+the same device capacity. These are logical capacities, not multiplied by TP4.
+The native container used approximately 262 GiB after the synthetic checks.
+The nine serving checks cover cold/device reuse, not CPU restoration under
+production eviction pressure; CPU restoration is covered separately by the
+byte tests above. Exact-topology TEE memory and serving still need qualification.
 
 The signed workflow has not run for this source. Registry publication,
 signature/attestation verification, exact-topology TEE/PPCIe serving, a staging
