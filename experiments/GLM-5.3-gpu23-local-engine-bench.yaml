@@ -5,6 +5,9 @@
 # for internal replay and are launched one at a time through compose-manager:
 #   SGLang W4AFP8: host port 8002
 #   vLLM FP8:      host port 8003
+# gpu03 adds two vLLM NVFP4 candidates, also launched one at a time:
+#   vLLM NVFP4 TP4: host port 8003
+#   vLLM NVFP4 TP8: host port 8004
 #
 # SGLang follows the PhalaCloud W4AFP8 recipe plus SGLang's long-input Hopper
 # recommendations (32K chunked prefill, FP8 sparse prefill/KV kernels). vLLM
@@ -72,6 +75,27 @@ services:
     logging: *logging-conf
     labels:
       com.datadoghq.ad.logs: '[{"source":"model-downloader","service":"model-downloader","tags":["model:zai-org/GLM-5.3","served_model:z-ai/glm-5.3","deployment:glm53-gpu23-local-bench","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+
+  download-glm53-nvfp4:
+    image: ghcr.io/astral-sh/uv:python3.11-bookworm-slim@sha256:4f5d923c9dcea037f57bda425dd209f3ec643da2f0b74227f68d09dab0b3bb36
+    container_name: download-glm53-nvfp4
+    restart: "no"
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        set -eu
+        echo "Downloading underlabs/GLM-5.3-NVFP4 at the pinned revision"
+        uvx --from 'huggingface_hub[hf_xet]' hf download \
+          underlabs/GLM-5.3-NVFP4 \
+          --revision 88b9cfb6d170d31a84e58333c5658b325b5187c0
+        echo "NVFP4 download complete"
+    volumes:
+      - huggingface_cache:/root/.cache/huggingface
+    environment:
+      HF_TOKEN: ${HUGGING_FACE_HUB_TOKEN}
+    logging: *logging-conf
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"model-downloader","service":"model-downloader","tags":["model:underlabs/GLM-5.3-NVFP4","served_model:z-ai/glm-5.3","deployment:glm53-gpu03-local-bench","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
 
   model-sg-glm53-w4afp8-tp8:
     <<: *nvidia
@@ -232,6 +256,158 @@ services:
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.config_variant: "vllm-v0.29.0-fp8-tp8-long-prefill"
 
+  model-vllm-glm53-nvfp4-tp4:
+    <<: *nvidia
+    image: vllm/vllm-openai@sha256:c2914767605584b6d8f45686b82de173ecc99e781897aa3d0a66dacd72c51ae1
+    container_name: model-vllm-glm53-nvfp4-tp4
+    init: true
+    entrypoint: ["/bin/bash", "-lc"]
+    command:
+      - |
+        exec vllm serve underlabs/GLM-5.3-NVFP4 \
+          --revision 88b9cfb6d170d31a84e58333c5658b325b5187c0 \
+          --served-model-name z-ai/glm-5.3 \
+          --tensor-parallel-size 4 \
+          --trust-remote-code \
+          --enable-expert-parallel \
+          --kv-cache-dtype fp8_ds_mla \
+          --speculative-config '{"method":"mtp","num_speculative_tokens":5}' \
+          --reasoning-parser glm45 \
+          --tool-call-parser glm47 \
+          --enable-auto-tool-choice \
+          --moe-backend marlin \
+          --linear-backend marlin \
+          --gpu-memory-utilization 0.90 \
+          --max-model-len 1048576 \
+          --max-num-seqs 32 \
+          --max-num-batched-tokens 32768 \
+          --enable-prefix-caching \
+          --enable-prompt-tokens-details \
+          --disable-custom-all-reduce \
+          --api-key "$$PROXY_TOKEN" \
+          --host 0.0.0.0 \
+          --port 8000
+    ports:
+      - "8003:8000"
+    volumes:
+      - huggingface_cache:/root/.cache/huggingface
+      - vllm_cache:/root/.cache/vllm
+    environment:
+      HF_TOKEN: ${HUGGING_FACE_HUB_TOKEN}
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+      HF_HUB_DISABLE_TELEMETRY: "1"
+      DO_NOT_TRACK: "1"
+      PROXY_TOKEN: ${PROXY_TOKEN}
+      VLLM_LOGGING_LEVEL: DEBUG
+      VLLM_CACHE_ROOT: /root/.cache/vllm/glm53-nvfp4-tp4
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+      NCCL_DEBUG: INFO
+      OMP_NUM_THREADS: "4"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["0", "1", "2", "3"]
+              capabilities: [gpu]
+    restart: "no"
+    stop_grace_period: 5m
+    logging: *logging-conf
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:z-ai/glm-5.3","model_path:underlabs/GLM-5.3-NVFP4","precision:nvfp4-fp8kv","deployment:glm53-gpu03-local-bench","config_variant:vllm-v0.29.0-nvfp4-tp4-long-prefill-marlin","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8003"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "vllm"
+      nearai.otel.service: "vllm"
+      nearai.otel.source: "vllm"
+      nearai.otel.container_name: "model-vllm-glm53-nvfp4-tp4"
+      nearai.otel.port: "8000"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "z-ai/glm-5.3"
+      nearai.otel.deployment: "glm53-gpu03-local-bench"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
+      nearai.otel.config_variant: "vllm-v0.29.0-nvfp4-tp4-long-prefill-marlin"
+
+  model-vllm-glm53-nvfp4-tp8:
+    <<: *nvidia
+    image: vllm/vllm-openai@sha256:c2914767605584b6d8f45686b82de173ecc99e781897aa3d0a66dacd72c51ae1
+    container_name: model-vllm-glm53-nvfp4-tp8
+    init: true
+    entrypoint: ["/bin/bash", "-lc"]
+    command:
+      - |
+        exec vllm serve underlabs/GLM-5.3-NVFP4 \
+          --revision 88b9cfb6d170d31a84e58333c5658b325b5187c0 \
+          --served-model-name z-ai/glm-5.3 \
+          --tensor-parallel-size 8 \
+          --trust-remote-code \
+          --enable-expert-parallel \
+          --kv-cache-dtype fp8_ds_mla \
+          --speculative-config '{"method":"mtp","num_speculative_tokens":5}' \
+          --reasoning-parser glm45 \
+          --tool-call-parser glm47 \
+          --enable-auto-tool-choice \
+          --moe-backend marlin \
+          --linear-backend marlin \
+          --gpu-memory-utilization 0.90 \
+          --max-model-len 1048576 \
+          --max-num-seqs 32 \
+          --max-num-batched-tokens 32768 \
+          --enable-prefix-caching \
+          --enable-prompt-tokens-details \
+          --disable-custom-all-reduce \
+          --api-key "$$PROXY_TOKEN" \
+          --host 0.0.0.0 \
+          --port 8000
+    ports:
+      - "8004:8000"
+    volumes:
+      - huggingface_cache:/root/.cache/huggingface
+      - vllm_cache:/root/.cache/vllm
+    environment:
+      HF_TOKEN: ${HUGGING_FACE_HUB_TOKEN}
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+      HF_HUB_DISABLE_TELEMETRY: "1"
+      DO_NOT_TRACK: "1"
+      PROXY_TOKEN: ${PROXY_TOKEN}
+      VLLM_LOGGING_LEVEL: DEBUG
+      VLLM_CACHE_ROOT: /root/.cache/vllm/glm53-nvfp4-tp8
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+      NCCL_DEBUG: INFO
+      OMP_NUM_THREADS: "4"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["0", "1", "2", "3", "4", "5", "6", "7"]
+              capabilities: [gpu]
+    restart: "no"
+    stop_grace_period: 5m
+    logging: *logging-conf
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:z-ai/glm-5.3","model_path:underlabs/GLM-5.3-NVFP4","precision:nvfp4-fp8kv","deployment:glm53-gpu03-local-bench","config_variant:vllm-v0.29.0-nvfp4-tp8-long-prefill-marlin","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8004"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "vllm"
+      nearai.otel.service: "vllm"
+      nearai.otel.source: "vllm"
+      nearai.otel.container_name: "model-vllm-glm53-nvfp4-tp8"
+      nearai.otel.port: "8000"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "z-ai/glm-5.3"
+      nearai.otel.deployment: "glm53-gpu03-local-bench"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
+      nearai.otel.config_variant: "vllm-v0.29.0-nvfp4-tp8-long-prefill-marlin"
+
   dcgm-glm53-gpu23-bench:
     image: nvcr.io/nvidia/k8s/dcgm-exporter@sha256:613ab03c11d442fd960ff515f547e9921537454a712d08160bc8f677f89f1c35
     container_name: dcgm-glm53-gpu23-bench
@@ -264,6 +440,44 @@ services:
       nearai.otel.path: "/metrics"
       nearai.otel.model: "z-ai/glm-5.3"
       nearai.otel.deployment: "glm53-gpu23-local-bench"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
+
+  dcgm-glm53-gpu03-bench:
+    image: nvcr.io/nvidia/k8s/dcgm-exporter@sha256:613ab03c11d442fd960ff515f547e9921537454a712d08160bc8f677f89f1c35
+    container_name: dcgm-glm53-gpu03-bench
+    command: ["-f", "/etc/dcgm-exporter/nearai-h200.csv"]
+    runtime: nvidia
+    cap_add: [SYS_ADMIN]
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+    configs:
+      - source: dcgm_h200_metrics
+        target: /etc/dcgm-exporter/nearai-h200.csv
+        mode: 0444
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+    logging: *logging-conf
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:z-ai/glm-5.3","deployment:glm53-gpu03-local-bench","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "dcgm"
+      nearai.otel.service: "dcgm-exporter"
+      nearai.otel.source: "dcgm-exporter"
+      nearai.otel.container_name: "dcgm-glm53-gpu03-bench"
+      nearai.otel.port: "9400"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "z-ai/glm-5.3"
+      nearai.otel.deployment: "glm53-gpu03-local-bench"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
       nearai.otel.host_machine: "${CVM_HOST}"
@@ -412,6 +626,46 @@ configs:
                       cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "8003"
+              - job_name: vllm-glm53-nvfp4-tp4-gpu03
+                scrape_interval: 5s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['model-vllm-glm53-nvfp4-tp4:8000']
+                    labels:
+                      service: vllm
+                      source: vllm
+                      container_name: model-vllm-glm53-nvfp4-tp4
+                      model: z-ai/glm-5.3
+                      model_path: underlabs/GLM-5.3-NVFP4
+                      precision: nvfp4-fp8kv
+                      deployment: glm53-gpu03-local-bench
+                      config_variant: vllm-v0.29.0-nvfp4-tp4-long-prefill-marlin
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      port: "8003"
+              - job_name: vllm-glm53-nvfp4-tp8-gpu03
+                scrape_interval: 5s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['model-vllm-glm53-nvfp4-tp8:8000']
+                    labels:
+                      service: vllm
+                      source: vllm
+                      container_name: model-vllm-glm53-nvfp4-tp8
+                      model: z-ai/glm-5.3
+                      model_path: underlabs/GLM-5.3-NVFP4
+                      precision: nvfp4-fp8kv
+                      deployment: glm53-gpu03-local-bench
+                      config_variant: vllm-v0.29.0-nvfp4-tp8-long-prefill-marlin
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      port: "8004"
               - job_name: dcgm-glm53-gpu23
                 scrape_interval: 5s
                 metrics_path: /metrics
@@ -423,6 +677,23 @@ configs:
                       container_name: dcgm-glm53-gpu23-bench
                       model: z-ai/glm-5.3
                       deployment: glm53-gpu23-local-bench
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      port: "9400"
+              - job_name: dcgm-glm53-gpu03
+                scrape_interval: 5s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['dcgm-glm53-gpu03-bench:9400']
+                    labels:
+                      service: dcgm-exporter
+                      source: dcgm-exporter
+                      container_name: dcgm-glm53-gpu03-bench
+                      model: z-ai/glm-5.3
+                      deployment: glm53-gpu03-local-bench
                       env: "${ENV}"
                       host: "${CVM_HOST}"
                       host_machine: "${CVM_HOST}"
