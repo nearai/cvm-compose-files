@@ -1,0 +1,475 @@
+# GLM-5.3 (not Flash) engine comparison on the gpu23 8xH200 PPCIe CVM.
+#
+# Experiment only. This stack intentionally has no inference-proxy, nginx, or
+# model-proxy-registrar. The two engines expose token-protected direct endpoints
+# for internal replay and are launched one at a time through compose-manager:
+#   SGLang W4AFP8: host port 8002
+#   vLLM FP8:      host port 8003
+#
+# SGLang follows the PhalaCloud W4AFP8 recipe plus SGLang's long-input Hopper
+# recommendations (32K chunked prefill, FP8 sparse prefill/KV kernels). vLLM
+# follows the official GLM-5.3 FP8 recipe and uses a 500K cap because the full
+# 1M FP8 KV window is documented for 8xB200, not 8xH200. Prefix caching remains
+# enabled for the agentic replay; clean synthetic runs are recorded separately.
+
+x-logging-conf: &logging-conf
+  driver: json-file
+  options:
+    max-size: "200m"
+    max-file: "5"
+    labels: "com.datadoghq.ad.logs,com.docker.compose.service"
+
+x-nvidia: &nvidia
+  runtime: nvidia
+  ipc: host
+  ulimits:
+    memlock: -1
+    nofile:
+      soft: 65535
+      hard: 65535
+
+services:
+  download-glm53-w4afp8:
+    image: ghcr.io/astral-sh/uv:python3.11-bookworm-slim@sha256:4f5d923c9dcea037f57bda425dd209f3ec643da2f0b74227f68d09dab0b3bb36
+    container_name: download-glm53-w4afp8
+    restart: "no"
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        set -eu
+        echo "Downloading PhalaCloud/GLM-5.3-W4AFP8 at the pinned revision"
+        uvx --from 'huggingface_hub[hf_xet]' hf download \
+          PhalaCloud/GLM-5.3-W4AFP8 \
+          --revision 03179e95916f9f79a92536e76da63f9251d93d4f
+        echo "W4AFP8 download complete"
+    volumes:
+      - huggingface_cache:/root/.cache/huggingface
+    environment:
+      HF_TOKEN: ${HUGGING_FACE_HUB_TOKEN}
+    logging: *logging-conf
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"model-downloader","service":"model-downloader","tags":["model:PhalaCloud/GLM-5.3-W4AFP8","served_model:z-ai/glm-5.3","deployment:glm53-gpu23-local-bench","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+
+  download-glm53-fp8:
+    image: ghcr.io/astral-sh/uv:python3.11-bookworm-slim@sha256:4f5d923c9dcea037f57bda425dd209f3ec643da2f0b74227f68d09dab0b3bb36
+    container_name: download-glm53-fp8
+    restart: "no"
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        set -eu
+        echo "Downloading zai-org/GLM-5.3 at the pinned revision"
+        uvx --from 'huggingface_hub[hf_xet]' hf download \
+          zai-org/GLM-5.3 \
+          --revision aca966e4e02791568aa6a4ced368624b3d897f42
+        echo "FP8 download complete"
+    volumes:
+      - huggingface_cache:/root/.cache/huggingface
+    environment:
+      HF_TOKEN: ${HUGGING_FACE_HUB_TOKEN}
+    logging: *logging-conf
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"model-downloader","service":"model-downloader","tags":["model:zai-org/GLM-5.3","served_model:z-ai/glm-5.3","deployment:glm53-gpu23-local-bench","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+
+  model-sg-glm53-w4afp8-tp8:
+    <<: *nvidia
+    image: lmsysorg/sglang@sha256:d6e7288627be8b02be88e4bba38e73f6d50e2826869f753c13a4c4385ab3eda9
+    container_name: model-sg-glm53-w4afp8-tp8
+    init: true
+    entrypoint: ["/opt/nvidia/nvidia_entrypoint.sh", "/bin/bash", "-lc"]
+    command:
+      - |
+        exec sglang serve \
+          --model-path PhalaCloud/GLM-5.3-W4AFP8 \
+          --revision 03179e95916f9f79a92536e76da63f9251d93d4f \
+          --served-model-name z-ai/glm-5.3 \
+          --quantization w4afp8 \
+          --disable-shared-experts-fusion \
+          --disable-custom-all-reduce \
+          --tp 8 \
+          --kv-cache-dtype fp8_e4m3 \
+          --dsa-prefill-backend flashmla_sparse_q8 \
+          --dsa-decode-backend flashmla_kv \
+          --reasoning-parser glm45 \
+          --tool-call-parser glm47 \
+          --speculative-algorithm EAGLE \
+          --speculative-num-steps 3 \
+          --speculative-eagle-topk 1 \
+          --speculative-num-draft-tokens 4 \
+          --chunked-prefill-size 32768 \
+          --mem-fraction-static 0.75 \
+          --max-running-requests 48 \
+          --max-queued-requests 64 \
+          --cuda-graph-max-bs 64 \
+          --context-length 1048576 \
+          --dist-init-addr 127.0.0.1:29500 \
+          --watchdog-timeout 1800 \
+          --api-key "$$PROXY_TOKEN" \
+          --host 0.0.0.0 \
+          --port 8000 \
+          --enable-cache-report \
+          --enable-metrics \
+          --trust-remote-code
+    ports:
+      - "8002:8000"
+    volumes:
+      - huggingface_cache:/root/.cache/huggingface
+      - sglang_cache:/root/.cache/sglang
+      - sglang_compile_cache:/root/.cache/torchinductor
+    environment:
+      HF_TOKEN: ${HUGGING_FACE_HUB_TOKEN}
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+      HF_HUB_DISABLE_TELEMETRY: "1"
+      DO_NOT_TRACK: "1"
+      PROXY_TOKEN: ${PROXY_TOKEN}
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+      OPENBLAS_L2_SIZE: "2097152"
+      NCCL_DEBUG: INFO
+      PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+      TORCHINDUCTOR_CACHE_DIR: /root/.cache/torchinductor
+      TRITON_CACHE_DIR: /root/.cache/sglang/triton
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["0", "1", "2", "3", "4", "5", "6", "7"]
+              capabilities: [gpu]
+    restart: "no"
+    stop_grace_period: 5m
+    logging: *logging-conf
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3","model_path:PhalaCloud/GLM-5.3-W4AFP8","precision:w4afp8-fp8kv","deployment:glm53-gpu23-local-bench","config_variant:sglang-v0.5.19-w4afp8-tp8-long-prefill","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8002"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "sglang"
+      nearai.otel.service: "sglang"
+      nearai.otel.source: "sglang"
+      nearai.otel.container_name: "model-sg-glm53-w4afp8-tp8"
+      nearai.otel.port: "8000"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "z-ai/glm-5.3"
+      nearai.otel.deployment: "glm53-gpu23-local-bench"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
+      nearai.otel.config_variant: "sglang-v0.5.19-w4afp8-tp8-long-prefill"
+
+  model-vllm-glm53-fp8-tp8:
+    <<: *nvidia
+    image: vllm/vllm-openai@sha256:c2914767605584b6d8f45686b82de173ecc99e781897aa3d0a66dacd72c51ae1
+    container_name: model-vllm-glm53-fp8-tp8
+    init: true
+    entrypoint: ["/bin/bash", "-lc"]
+    command:
+      - |
+        exec vllm serve zai-org/GLM-5.3 \
+          --revision aca966e4e02791568aa6a4ced368624b3d897f42 \
+          --served-model-name z-ai/glm-5.3 \
+          --tensor-parallel-size 8 \
+          --kv-cache-dtype fp8_e4m3 \
+          --speculative-config.method mtp \
+          --speculative-config.num_speculative_tokens 5 \
+          --tool-call-parser glm47 \
+          --reasoning-parser glm45 \
+          --enable-auto-tool-choice \
+          --gpu-memory-utilization 0.80 \
+          --max-model-len 500000 \
+          --max-num-seqs 32 \
+          --max-num-batched-tokens 32768 \
+          --enable-prefix-caching \
+          --enable-prompt-tokens-details \
+          --disable-custom-all-reduce \
+          --api-key "$$PROXY_TOKEN" \
+          --host 0.0.0.0 \
+          --port 8000
+    ports:
+      - "8003:8000"
+    volumes:
+      - huggingface_cache:/root/.cache/huggingface
+      - vllm_cache:/root/.cache/vllm
+    environment:
+      HF_TOKEN: ${HUGGING_FACE_HUB_TOKEN}
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+      HF_HUB_DISABLE_TELEMETRY: "1"
+      DO_NOT_TRACK: "1"
+      PROXY_TOKEN: ${PROXY_TOKEN}
+      VLLM_LOGGING_LEVEL: INFO
+      VLLM_CACHE_ROOT: /root/.cache/vllm/glm53-fp8-tp8
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+      NCCL_DEBUG: INFO
+      OMP_NUM_THREADS: "4"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["0", "1", "2", "3", "4", "5", "6", "7"]
+              capabilities: [gpu]
+    restart: "no"
+    stop_grace_period: 5m
+    logging: *logging-conf
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:z-ai/glm-5.3","model_path:zai-org/GLM-5.3","precision:fp8-fp8kv","deployment:glm53-gpu23-local-bench","config_variant:vllm-v0.29.0-fp8-tp8-long-prefill","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8003"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "vllm"
+      nearai.otel.service: "vllm"
+      nearai.otel.source: "vllm"
+      nearai.otel.container_name: "model-vllm-glm53-fp8-tp8"
+      nearai.otel.port: "8000"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "z-ai/glm-5.3"
+      nearai.otel.deployment: "glm53-gpu23-local-bench"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
+      nearai.otel.config_variant: "vllm-v0.29.0-fp8-tp8-long-prefill"
+
+  dcgm-glm53-gpu23-bench:
+    image: nvcr.io/nvidia/k8s/dcgm-exporter@sha256:613ab03c11d442fd960ff515f547e9921537454a712d08160bc8f677f89f1c35
+    container_name: dcgm-glm53-gpu23-bench
+    command: ["-f", "/etc/dcgm-exporter/nearai-h200.csv"]
+    runtime: nvidia
+    cap_add: [SYS_ADMIN]
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+    configs:
+      - source: dcgm_h200_metrics
+        target: /etc/dcgm-exporter/nearai-h200.csv
+        mode: 0444
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+    logging: *logging-conf
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:z-ai/glm-5.3","deployment:glm53-gpu23-local-bench","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "dcgm"
+      nearai.otel.service: "dcgm-exporter"
+      nearai.otel.source: "dcgm-exporter"
+      nearai.otel.container_name: "dcgm-glm53-gpu23-bench"
+      nearai.otel.port: "9400"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "z-ai/glm-5.3"
+      nearai.otel.deployment: "glm53-gpu23-local-bench"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
+
+  otelcol-contrib:
+    image: otel/opentelemetry-collector-contrib@sha256:85ac41c2db88d0df9bd6145e608a3cb023f5d8443868adbfbbf66efb51087917
+    container_name: otelcol-glm53-gpu23-bench
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    user: "0:0"
+    mem_limit: "768m"
+    environment:
+      - MONITORING_INGEST_TOKEN=${MONITORING_INGEST_TOKEN:-}
+      - CVM_NAME=${CVM_NAME:-unknown}
+      - CVM_HOST=${CVM_HOST:-unknown}
+      - DD_HOSTNAME=${DD_HOSTNAME:-unknown}
+      - ENV=${ENV:-unknown}
+      - HOST_IP=${HOST_IP:-unknown}
+    volumes:
+      - otelcol_app_storage:/var/lib/otelcol-contrib
+    configs:
+      - source: otelcol_app_config
+        target: /etc/otelcol-contrib/config.yaml
+        mode: 0444
+    restart: unless-stopped
+    logging: *logging-conf
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"otelcol-contrib","service":"otelcol-contrib","tags":["model:z-ai/glm-5.3","deployment:glm53-gpu23-local-bench","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+
+networks:
+  default:
+    external: true
+    name: dstack_default
+
+volumes:
+  huggingface_cache:
+  sglang_cache:
+  sglang_compile_cache:
+  vllm_cache:
+  otelcol_app_storage:
+
+configs:
+  dcgm_h200_metrics:
+    content: |
+      DCGM_FI_DEV_SM_CLOCK, gauge, SM clock frequency in MHz.
+      DCGM_FI_DEV_MEM_CLOCK, gauge, Memory clock frequency in MHz.
+      DCGM_FI_DEV_MEMORY_TEMP, gauge, Memory temperature in C.
+      DCGM_FI_DEV_GPU_TEMP, gauge, GPU temperature in C.
+      DCGM_FI_DEV_POWER_USAGE, gauge, GPU board power draw in W.
+      DCGM_FI_DEV_TOTAL_ENERGY_CONSUMPTION, counter, GPU board energy consumed since boot in mJ.
+      DCGM_FI_DEV_GPU_UTIL, gauge, GPU utilization in percent.
+      DCGM_FI_DEV_MEM_COPY_UTIL, gauge, Memory copy utilization in percent.
+      DCGM_FI_DEV_FB_FREE, gauge, Framebuffer memory free in MiB.
+      DCGM_FI_DEV_FB_USED, gauge, Framebuffer memory used in MiB.
+      DCGM_FI_DEV_FB_RESERVED, gauge, Framebuffer memory reserved in MiB.
+      DCGM_FI_PROF_PCIE_TX_BYTES, gauge, PCIe transmit throughput in bytes per second.
+      DCGM_FI_PROF_PCIE_RX_BYTES, gauge, PCIe receive throughput in bytes per second.
+      DCGM_FI_DEV_PCIE_REPLAY_COUNTER, counter, Total PCIe replay events.
+      DCGM_FI_DEV_XID_ERRORS, gauge, Last XID error encountered.
+      DCGM_EXP_XID_ERRORS_COUNT, gauge, XID records observed in the configured window.
+      DCGM_EXP_XID_ERRORS_TOTAL, counter, XID records observed since exporter start.
+      DCGM_EXP_CLOCK_EVENTS_COUNT, gauge, Clock events observed in the configured window.
+      DCGM_EXP_CLOCK_EVENTS_TOTAL, counter, Clock event transitions observed since exporter start.
+      DCGM_EXP_GPU_HEALTH_STATUS, gauge, Current DCGM GPU health status by health watch.
+      DCGM_EXP_P2P_STATUS, gauge, Current NVLink P2P status for each ordered GPU pair.
+      DCGM_FI_DEV_POWER_VIOLATION, counter, Throttling duration due to power constraints in ns.
+      DCGM_FI_DEV_THERMAL_VIOLATION, counter, Throttling duration due to thermal constraints in ns.
+      DCGM_FI_DEV_SYNC_BOOST_VIOLATION, counter, Throttling duration due to sync boost constraints in ns.
+      DCGM_FI_DEV_BOARD_LIMIT_VIOLATION, counter, Throttling duration due to board constraints in ns.
+      DCGM_FI_DEV_LOW_UTIL_VIOLATION, counter, Throttling duration due to low utilization in ns.
+      DCGM_FI_DEV_RELIABILITY_VIOLATION, counter, Throttling duration due to reliability constraints in ns.
+      DCGM_FI_DEV_ECC_SBE_VOL_TOTAL, counter, Total volatile single-bit ECC errors.
+      DCGM_FI_DEV_ECC_DBE_VOL_TOTAL, counter, Total volatile double-bit ECC errors.
+      DCGM_FI_DEV_ECC_SBE_AGG_TOTAL, counter, Total aggregate single-bit ECC errors.
+      DCGM_FI_DEV_ECC_DBE_AGG_TOTAL, counter, Total aggregate double-bit ECC errors.
+      DCGM_FI_DEV_RETIRED_SBE, counter, Total pages retired due to single-bit errors.
+      DCGM_FI_DEV_RETIRED_DBE, counter, Total pages retired due to double-bit errors.
+      DCGM_FI_DEV_RETIRED_PENDING, counter, Pages pending retirement.
+      DCGM_FI_DEV_UNCORRECTABLE_REMAPPED_ROWS, counter, Total uncorrectable remapped rows.
+      DCGM_FI_DEV_CORRECTABLE_REMAPPED_ROWS, counter, Total correctable remapped rows.
+      DCGM_FI_DEV_ROW_REMAP_FAILURE, gauge, Whether row remapping has failed.
+      DCGM_FI_DEV_NVLINK_BANDWIDTH_TOTAL, gauge, Aggregate NVLink traffic rate across all lanes.
+      DCGM_FI_DEV_NVLINK_CRC_FLIT_ERROR_COUNT_TOTAL, counter, Total NVLink flow-control CRC errors.
+      DCGM_FI_DEV_NVLINK_CRC_DATA_ERROR_COUNT_TOTAL, counter, Total NVLink data CRC errors.
+      DCGM_FI_DEV_NVLINK_REPLAY_ERROR_COUNT_TOTAL, counter, Total NVLink replay errors.
+      DCGM_FI_DEV_NVLINK_RECOVERY_ERROR_COUNT_TOTAL, counter, Total NVLink recovery errors.
+      DCGM_FI_PROF_GR_ENGINE_ACTIVE, gauge, Ratio of time the graphics engine is active.
+      DCGM_FI_PROF_PIPE_TENSOR_ACTIVE, gauge, Ratio of cycles the tensor pipe is active.
+      DCGM_FI_PROF_DRAM_ACTIVE, gauge, Ratio of time the device memory interface is active.
+      DCGM_FI_DRIVER_VERSION, label, NVIDIA driver version.
+      DCGM_FI_NVML_VERSION, label, NVML version.
+      DCGM_FI_DEV_BRAND, label, GPU product brand.
+      DCGM_FI_DEV_VBIOS_VERSION, label, GPU VBIOS version.
+
+  otelcol_app_config:
+    content: |
+      receivers:
+        prometheus/apps:
+          config:
+            scrape_configs:
+              - job_name: sglang-glm53-gpu23
+                scrape_interval: 5s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['model-sg-glm53-w4afp8-tp8:8000']
+                    labels:
+                      service: sglang
+                      source: sglang
+                      container_name: model-sg-glm53-w4afp8-tp8
+                      model: z-ai/glm-5.3
+                      model_path: PhalaCloud/GLM-5.3-W4AFP8
+                      precision: w4afp8-fp8kv
+                      deployment: glm53-gpu23-local-bench
+                      config_variant: sglang-v0.5.19-w4afp8-tp8-long-prefill
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      port: "8002"
+              - job_name: vllm-glm53-gpu23
+                scrape_interval: 5s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['model-vllm-glm53-fp8-tp8:8000']
+                    labels:
+                      service: vllm
+                      source: vllm
+                      container_name: model-vllm-glm53-fp8-tp8
+                      model: z-ai/glm-5.3
+                      model_path: zai-org/GLM-5.3
+                      precision: fp8-fp8kv
+                      deployment: glm53-gpu23-local-bench
+                      config_variant: vllm-v0.29.0-fp8-tp8-long-prefill
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      port: "8003"
+              - job_name: dcgm-glm53-gpu23
+                scrape_interval: 5s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['dcgm-glm53-gpu23-bench:9400']
+                    labels:
+                      service: dcgm-exporter
+                      source: dcgm-exporter
+                      container_name: dcgm-glm53-gpu23-bench
+                      model: z-ai/glm-5.3
+                      deployment: glm53-gpu23-local-bench
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      port: "9400"
+
+      processors:
+        memory_limiter:
+          check_interval: 1s
+          limit_mib: 512
+          spike_limit_mib: 128
+        resource:
+          attributes:
+            - key: host.name
+              value: $${env:DD_HOSTNAME}
+              action: upsert
+            - key: cvm.name
+              value: $${env:CVM_NAME}
+              action: upsert
+            - key: host.machine
+              value: $${env:CVM_HOST}
+              action: insert
+            - key: deployment.environment
+              value: $${env:ENV}
+              action: upsert
+            - key: service.namespace
+              value: near-ai
+              action: insert
+        batch:
+          send_batch_size: 1024
+          send_batch_max_size: 2048
+          timeout: 5s
+
+      exporters:
+        otlphttp/gateway:
+          endpoint: https://telemetry.infra.near.ai
+          headers:
+            Authorization: "Bearer $${env:MONITORING_INGEST_TOKEN}"
+          sending_queue:
+            num_consumers: 1
+            queue_size: 128
+            storage: file_storage
+
+      extensions:
+        file_storage:
+          directory: /var/lib/otelcol-contrib/storage
+          create_directory: true
+
+      service:
+        extensions: [file_storage]
+        pipelines:
+          metrics:
+            receivers: [prometheus/apps]
+            processors: [memory_limiter, resource, batch]
+            exporters: [otlphttp/gateway]
+        telemetry:
+          logs:
+            level: info
