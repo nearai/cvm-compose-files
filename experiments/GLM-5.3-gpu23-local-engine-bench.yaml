@@ -74,7 +74,7 @@ services:
       HF_TOKEN: ${HUGGING_FACE_HUB_TOKEN}
     logging: *logging-conf
     labels:
-      com.datadoghq.ad.logs: '[{"source":"model-downloader","service":"model-downloader","tags":["model:zai-org/GLM-5.3","served_model:z-ai/glm-5.3","deployment:glm53-gpu23-local-bench","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.logs: '[{"source":"model-downloader","service":"model-downloader","tags":["model:zai-org/GLM-5.3","served_model:z-ai/glm-5.3","deployment:glm53-${CVM_HOST}-local-bench","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
 
   download-glm53-nvfp4:
     image: ghcr.io/astral-sh/uv:python3.11-bookworm-slim@sha256:4f5d923c9dcea037f57bda425dd209f3ec643da2f0b74227f68d09dab0b3bb36
@@ -239,7 +239,7 @@ services:
     stop_grace_period: 5m
     logging: *logging-conf
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:z-ai/glm-5.3","model_path:zai-org/GLM-5.3","precision:fp8-fp8kv","deployment:glm53-gpu23-local-bench","config_variant:vllm-v0.29.0-fp8-tp8-long-prefill","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8003"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:z-ai/glm-5.3","model_path:zai-org/GLM-5.3","precision:fp8-fp8kv","deployment:glm53-${CVM_HOST}-local-bench","config_variant:vllm-v0.29.0-fp8-tp8-long-prefill","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8003"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
@@ -248,7 +248,7 @@ services:
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "z-ai/glm-5.3"
-      nearai.otel.deployment: "glm53-gpu23-local-bench"
+      nearai.otel.deployment: "glm53-${CVM_HOST}-local-bench"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
       nearai.otel.host_machine: "${CVM_HOST}"
@@ -618,7 +618,7 @@ configs:
                       model: z-ai/glm-5.3
                       model_path: zai-org/GLM-5.3
                       precision: fp8-fp8kv
-                      deployment: glm53-gpu23-local-bench
+                      deployment: glm53-${CVM_HOST}-local-bench
                       config_variant: vllm-v0.29.0-fp8-tp8-long-prefill
                       env: "${ENV}"
                       host: "${CVM_HOST}"
