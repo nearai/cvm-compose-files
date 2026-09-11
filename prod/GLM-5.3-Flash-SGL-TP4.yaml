@@ -446,6 +446,62 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
+  # Operator-only HCC capability probe. It verifies the exact CUDA memory
+  # semantics needed by a host-cache fallback without loading model weights.
+  hicache-hcc-probe:
+    image: docker.io/nearaidev/sglang@sha256:67cf951972594cdbf7437faf315145556ae6f3a643355ff4d3078fb670a12b9f
+    container_name: hicache-hcc-probe
+    profiles: ["verification"]
+    runtime: nvidia
+    entrypoint: ["/usr/bin/python3", "-u", "-c"]
+    command:
+      - |
+        import json, torch
+        cudart = torch.cuda.cudart()
+        attrs = {}
+        for name in (
+            "cudaDevAttrHostRegisterSupported",
+            "cudaDevAttrPageableMemoryAccess",
+            "cudaDevAttrPageableMemoryAccessUsesHostPageTables",
+            "cudaDevAttrConcurrentManagedAccess",
+            "cudaDevAttrManagedMemory",
+        ):
+            value = getattr(cudart.cudaDeviceAttr, name, None)
+            if value is None:
+                attrs[name] = None
+                continue
+            rc, result = cudart.cudaDeviceGetAttribute(value, 0)
+            attrs[name] = {"rc": int(rc), "value": int(result)}
+        result = {"device": torch.cuda.get_device_name(0), "attributes": attrs}
+        source = torch.arange(4096, dtype=torch.uint8)
+        target = torch.empty_like(source, device="cuda")
+        kind = cudart.cudaMemcpyKind.cudaMemcpyHostToDevice
+        rc = cudart.cudaMemcpy(target.data_ptr(), source.data_ptr(), source.nbytes, kind)
+        result["pageable_memcpy"] = {
+            "rc": int(rc),
+            "matches": bool(torch.equal(source, target.cpu())) if int(rc) == 0 else False,
+        }
+        try:
+            torch.empty(4096, dtype=torch.uint8, pin_memory=True)
+            result["torch_pin_memory"] = "succeeded"
+        except Exception as exc:
+            result["torch_pin_memory"] = type(exc).__name__ + ": " + str(exc)
+        print(json.dumps(result, sort_keys=True), flush=True)
+    environment:
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - PYTHONFAULTHANDLER=1
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["0"]
+              capabilities: [gpu]
+    restart: "no"
+    logging: *logging-conf
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"hicache-hcc-probe","service":"hicache-hcc-probe","tags":["model:z-ai/glm-5.3-flash","deployment:glm53-flash-hicache-gpu03","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+
   # Explicit operator-only semantic check; never starts with a normal stack apply.
   # Runs the candidate's synthetic fixture gate against each replica at concurrency 1.
   # No GPU allocation, host mounts, Docker socket, credentials, or published ports.
