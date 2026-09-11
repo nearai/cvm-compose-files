@@ -126,6 +126,7 @@ x-sg-glm53-flash-common: &sg-glm53-flash-common
     - TRITON_CACHE_DIR=/root/.cache/triton
     - SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE=1
     - SGLANG_HICACHE_RAM_BUDGET=${GLM53_HICACHE_RAM_BUDGET:-256GiB}
+    - SGLANG_HICACHE_CUDA_MANAGED_MEMORY=1
     - PYTHONFAULTHANDLER=1
   restart: unless-stopped
   stop_grace_period: 5m
@@ -328,7 +329,7 @@ services:
               device_ids: ["0","1","2","3"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:zai-org/GLM-5.3-Flash","served_model:z-ai/glm-5.3-flash","precision:fp8-weights-bf16-kv","deployment:glm53-flash-hicache-gpu03","config_variant:fc91d24-hicache-kernel-hcc-tp4-ep4-eagle-adaptive-5-1-6","request_logging:full-synthetic","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:1"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:zai-org/GLM-5.3-Flash","served_model:z-ai/glm-5.3-flash","precision:fp8-weights-bf16-kv","deployment:glm53-flash-hicache-gpu03","config_variant:fc91d24-hicache-managed-kernel-hcc-tp4-ep4-eagle-adaptive-5-1-6","request_logging:full-synthetic","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:1"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -340,7 +341,7 @@ services:
       nearai.otel.model_path: "zai-org/GLM-5.3-Flash"
       nearai.otel.served_model: "z-ai/glm-5.3-flash"
       nearai.otel.deployment: "glm53-flash-hicache-gpu03"
-      nearai.otel.config_variant: "fc91d24-hicache-kernel-hcc-tp4-ep4-eagle-adaptive-5-1-6"
+      nearai.otel.config_variant: "fc91d24-hicache-managed-kernel-hcc-tp4-ep4-eagle-adaptive-5-1-6"
       nearai.otel.thinking_budget_policy: "default8192-public-to-native"
       nearai.otel.request_logging: "full-synthetic"
       nearai.otel.instance: "1"
@@ -412,6 +413,7 @@ services:
       - TRITON_CACHE_DIR=/root/.cache/triton
       - SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE=1
       - SGLANG_HICACHE_RAM_BUDGET=${GLM53_HICACHE_RAM_BUDGET:-256GiB}
+      - SGLANG_HICACHE_CUDA_MANAGED_MEMORY=1
       - PYTHONFAULTHANDLER=1
     depends_on:
       model-downloader:
@@ -424,7 +426,7 @@ services:
               device_ids: ["4","5","6","7"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:zai-org/GLM-5.3-Flash","served_model:z-ai/glm-5.3-flash","precision:fp8-weights-bf16-kv","deployment:glm53-flash-hicache-gpu03","config_variant:fc91d24-hicache-kernel-hcc-tp4-ep4-eagle-adaptive-5-1-6","request_logging:full-synthetic","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:2"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:zai-org/GLM-5.3-Flash","served_model:z-ai/glm-5.3-flash","precision:fp8-weights-bf16-kv","deployment:glm53-flash-hicache-gpu03","config_variant:fc91d24-hicache-managed-kernel-hcc-tp4-ep4-eagle-adaptive-5-1-6","request_logging:full-synthetic","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:2"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -436,7 +438,7 @@ services:
       nearai.otel.model_path: "zai-org/GLM-5.3-Flash"
       nearai.otel.served_model: "z-ai/glm-5.3-flash"
       nearai.otel.deployment: "glm53-flash-hicache-gpu03"
-      nearai.otel.config_variant: "fc91d24-hicache-kernel-hcc-tp4-ep4-eagle-adaptive-5-1-6"
+      nearai.otel.config_variant: "fc91d24-hicache-managed-kernel-hcc-tp4-ep4-eagle-adaptive-5-1-6"
       nearai.otel.thinking_budget_policy: "default8192-public-to-native"
       nearai.otel.request_logging: "full-synthetic"
       nearai.otel.instance: "2"
@@ -941,7 +943,7 @@ configs:
                       ip: "${HOST_IP}"
                       port: "8000"
                       instance: "1"
-                      config_variant: "fc91d24-hicache-kernel-hcc-tp4-ep4-eagle-adaptive-5-1-6"
+                      config_variant: "fc91d24-hicache-managed-kernel-hcc-tp4-ep4-eagle-adaptive-5-1-6"
                       thinking_budget_policy: "default8192-public-to-native"
                       request_logging: "full-synthetic"
               - job_name: sglang-model-sg-glm53-fp8-tp4-r2
@@ -965,7 +967,7 @@ configs:
                       ip: "${HOST_IP}"
                       port: "8000"
                       instance: "2"
-                      config_variant: "fc91d24-hicache-kernel-hcc-tp4-ep4-eagle-adaptive-5-1-6"
+                      config_variant: "fc91d24-hicache-managed-kernel-hcc-tp4-ep4-eagle-adaptive-5-1-6"
                       thinking_budget_policy: "default8192-public-to-native"
                       request_logging: "full-synthetic"
               - job_name: dcgm-dcgm-glm53

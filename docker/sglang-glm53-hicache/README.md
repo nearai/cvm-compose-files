@@ -1,10 +1,10 @@
 # GLM-5.3 Flash HiCache canary
 
-This build carries complete hybrid-cache restoration and opt-in pooled transfers
-on the exact `fc91d24` production SGLang runtime. It is intended for **one TP4
-replica inside one CVM**, with the other TP4 replica retaining its existing image
-and HiCache-disabled configuration. It adds no storage backend or cross-CVM
-cache exchange.
+This build carries complete hybrid-cache restoration, opt-in pooled transfers,
+and an opt-in CUDA managed-memory host allocator on the exact `fc91d24`
+production SGLang runtime. The managed allocator is for NVIDIA confidential
+computing guests where `cudaHostRegister` is unsupported. It adds no storage
+backend or cross-CVM cache exchange.
 
 ## Release order
 
@@ -33,6 +33,11 @@ production compose untouched. After review and merge:
    retain their existing values. The generated compose remains self-contained.
 4. Qualify the signed image in staging on the intended TEE/PPCIe topology,
    including a minimum 30-minute soak, before separately authorized activation.
+
+For isolated gpu03 diagnosis, the same workflow has an explicit
+`allow_unmerged_test_build` switch. It accepts only a non-main branch and a
+`gpu03-test-*` tag, and the resulting Sigstore identity is bound to that exact
+branch. Such an image is test-only and is not a production promotion artifact.
 
 Do not substitute a local Docker image ID, a mutable tag, or the unchanged base
 digest for the published candidate digest. Image publication does not deploy.
@@ -119,6 +124,21 @@ recurrent-state reads become GPU clones only for disjoint destinations with
 matching owners, indices and layer maps. Unsupported layouts or sharding use
 the existing transfer path. The optimization requires NVIDIA CUDA and the
 `direct` backend. No lab control endpoint or scheduler interception is carried.
+
+## Hopper confidential-computing host memory
+
+Set `SGLANG_HICACHE_CUDA_MANAGED_MEMORY=1` only in a CUDA confidential-computing
+guest whose runtime rejects `cudaHostRegister`. The opt-in replaces the normal
+anonymous-mmap plus host-registration allocation with `cudaMallocManaged`, wraps
+the allocation as the same CPU PyTorch tensor shape expected by HiCache, and
+records that the pool must not be unregistered on teardown. The default path is
+unchanged when the variable is absent.
+
+The managed allocator accepts only the default in-process host store. It rejects
+SHM, Mooncake, MORI, and other external storage allocators rather than silently
+changing their ownership semantics. Start with `kernel/page_first` on HCC; use
+the direct/pooled path only after a guest-native byte round-trip proves that
+runtime's managed-memory transfer semantics and performance.
 
 ## Source and correctness
 

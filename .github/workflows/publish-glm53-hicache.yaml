@@ -9,9 +9,14 @@ on:
         type: string
         default: glm53-hicache-pooled-v1
       source_revision:
-        description: Exact merged commit on main containing the build context
+        description: Exact commit containing the build context
         required: true
         type: string
+      allow_unmerged_test_build:
+        description: Allow a gpu03-test-* image from the selected non-main branch
+        required: false
+        type: boolean
+        default: false
       resume_digest:
         description: Existing digest for a failed post-build run; must match the tag
         required: false
@@ -52,9 +57,9 @@ jobs:
           IMAGE_TAG: ${{ inputs.tag }}
           RESUME_DIGEST: ${{ inputs.resume_digest }}
           SOURCE_REVISION: ${{ inputs.source_revision }}
+          ALLOW_UNMERGED_TEST_BUILD: ${{ inputs.allow_unmerged_test_build }}
         run: |
           set -euo pipefail
-          test "$GITHUB_REF" = refs/heads/main
           if [[ ! "$IMAGE_TAG" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$ ]]; then
             echo "Invalid Docker tag: $IMAGE_TAG" >&2
             exit 1
@@ -68,15 +73,25 @@ jobs:
             exit 1
           fi
           test "$(git rev-parse HEAD)" = "$SOURCE_REVISION"
-          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
-          git merge-base --is-ancestor "$SOURCE_REVISION" origin/main
+          if [[ "$ALLOW_UNMERGED_TEST_BUILD" == "true" ]]; then
+            test "$GITHUB_REF" != refs/heads/main
+            [[ "$IMAGE_TAG" == gpu03-test-* ]]
+            git fetch --no-tags origin \
+              "+$GITHUB_REF:refs/remotes/origin/$GITHUB_REF_NAME"
+            git merge-base --is-ancestor \
+              "$SOURCE_REVISION" "refs/remotes/origin/$GITHUB_REF_NAME"
+          else
+            test "$GITHUB_REF" = refs/heads/main
+            git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+            git merge-base --is-ancestor "$SOURCE_REVISION" origin/main
+          fi
 
           test "$(sha256sum "$BUILD_CONTEXT/Dockerfile" | awk '{print $1}')" = \
-            1be3f049bb8ddc3ec51fa4d60d40078c0caad309af1830f852f00b5ed624f81b
+            7a220bcbef3c2fa6bc515b1de2b55500f159860e53aeb16d9a2c983fbc364e03
           test "$(sha256sum "$BUILD_CONTEXT/PROVENANCE" | awk '{print $1}')" = \
-            9eae8031f615f9e852a20112fdfceea823656c7fcc98341c82e892bfd5ea6446
+            7b16350c5295b7e3383a97bbd389255d6ade8feca97b54c0b5749773d1afedb5
           test "$(sha256sum "$BUILD_CONTEXT/SHA256SUMS" | awk '{print $1}')" = \
-            66c660736450b281b3098434c8d024979d55d2f7b6c00a637ea5d8ff00153bda
+            4d2768ee3135e94b102436b98703d4556b714160be7eb31fea314a08ae40bd2e
 
           echo "IMAGE_REF=${REGISTRY}/${IMAGE_REPOSITORY}:${IMAGE_TAG}" >> "$GITHUB_ENV"
 
@@ -145,7 +160,8 @@ jobs:
              .config.Labels["nearai.build.source_revision"] == $source_revision and
              .config.Labels["nearai.sglang.source_revision"] == "fc91d2403cc210a86bd5fc715c6609f58c932e5a" and
              .config.Labels["nearai.sglang.hicache_fix_revision"] == "230102db838cbbe6eca7952c729518ee6d93c3a9" and
-             .config.Labels["nearai.sglang.pooled_transfers"] == "v1-opt-in"' \
+             .config.Labels["nearai.sglang.pooled_transfers"] == "v1-opt-in" and
+             .config.Labels["nearai.sglang.hcc_managed_memory"] == "v1-opt-in"' \
             image-config.json
 
       - name: Run CPU restore regressions in the published image
@@ -288,6 +304,8 @@ jobs:
         run: cosign sign --yes "$IMAGE_IMMUTABLE_REF"
 
       - name: Verify signature
+        env:
+          WORKFLOW_IDENTITY: https://github.com/nearai/cvm-compose-files/.github/workflows/publish-glm53-hicache.yaml@${{ github.ref }}
         run: |
           set -euo pipefail
           verification_file="$(mktemp)"
@@ -295,7 +313,7 @@ jobs:
           for attempt in $(seq 1 30); do
             if cosign verify \
               --certificate-identity \
-              'https://github.com/nearai/cvm-compose-files/.github/workflows/publish-glm53-hicache.yaml@refs/heads/main' \
+              "$WORKFLOW_IDENTITY" \
               --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
               "$IMAGE_IMMUTABLE_REF" > "$verification_file"; then
               mv "$verification_file" cosign-verification.json
