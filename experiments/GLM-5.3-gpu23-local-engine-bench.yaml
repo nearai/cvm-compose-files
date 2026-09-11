@@ -30,6 +30,77 @@ x-nvidia: &nvidia
       hard: 65535
 
 services:
+  host-probe-gpu23:
+    <<: *nvidia
+    image: lmsysorg/sglang@sha256:d6e7288627be8b02be88e4bba38e73f6d50e2826869f753c13a4c4385ab3eda9
+    container_name: host-probe-gpu23
+    pid: host
+    user: "0:0"
+    entrypoint: ["/bin/bash", "-lc"]
+    command:
+      - |
+        set -euo pipefail
+        echo "probe_version=glm53-hicache-v1"
+        date -u +"timestamp=%Y-%m-%dT%H:%M:%SZ"
+        uname -a
+        echo "section=guest_meminfo"
+        grep -E '^(MemTotal|MemFree|MemAvailable|Buffers|Cached|SReclaimable|Shmem|Mlocked|Unevictable|SwapTotal|SwapFree|HugePages_Total|HugePages_Free|Hugepagesize):' /hostfs/proc/meminfo
+        echo "section=guest_cgroup_root"
+        for field in memory.current memory.max memory.high memory.swap.current memory.swap.max pids.current pids.max; do
+          if [ -r "/hostfs/sys/fs/cgroup/$$field" ]; then
+            printf '%s=' "$$field"
+            cat "/hostfs/sys/fs/cgroup/$$field"
+          fi
+        done
+        echo "section=guest_numa"
+        for node in /hostfs/sys/devices/system/node/node[0-9]*; do
+          [ -d "$$node" ] || continue
+          printf 'node=%s cpulist=' "$${node##*/}"
+          cat "$$node/cpulist"
+          grep -E '^(Node [0-9]+ (MemTotal|MemFree|MemUsed|FilePages|Mlocked|Active|Inactive)):' "$$node/meminfo" || true
+          if [ -r "$$node/distance" ]; then
+            printf 'distance='
+            cat "$$node/distance"
+          fi
+        done
+        echo "section=guest_filesystems"
+        df -B1 /hostfs /hostfs/data 2>/dev/null || df -B1 /hostfs
+        echo "section=limits"
+        printf 'memlock_kib='
+        ulimit -l
+        echo "section=gpu_inventory"
+        nvidia-smi --query-gpu=index,uuid,name,pci.bus_id,memory.total,memory.used,utilization.gpu,power.draw,temperature.gpu,clocks.sm --format=csv,noheader,nounits
+        echo "section=gpu_topology"
+        nvidia-smi topo -m
+        echo "section=model_process_memory"
+        for status in /hostfs/proc/[0-9]*/status; do
+          [ -r "$$status" ] || continue
+          name=$$(awk '/^Name:/{print $$2}' "$$status")
+          case "$$name" in
+            python|python3|sglang)
+              pid=$${status#/hostfs/proc/}; pid=$${pid%/status}
+              printf 'pid=%s name=%s ' "$$pid" "$$name"
+              awk '/^(VmRSS|VmHWM|VmLck|VmPin|RssAnon|RssFile|VmSwap|Threads):/{printf "%s=%s%s ", $$1, $$2, $$3} END{print ""}' "$$status"
+              ;;
+          esac
+        done
+    volumes:
+      - /:/hostfs:ro
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: "no"
+    logging: *logging-conf
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"host-probe","service":"host-probe","tags":["model:z-ai/glm-5.3","deployment:glm53-gpu23-local-bench","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+
   download-glm53-w4afp8:
     image: ghcr.io/astral-sh/uv:python3.11-bookworm-slim@sha256:4f5d923c9dcea037f57bda425dd209f3ec643da2f0b74227f68d09dab0b3bb36
     container_name: download-glm53-w4afp8
@@ -98,7 +169,7 @@ services:
           --speculative-eagle-topk 1 \
           --speculative-num-draft-tokens 4 \
           --chunked-prefill-size 32768 \
-          --mem-fraction-static 0.75 \
+          --mem-fraction-static 0.76 \
           --max-running-requests 48 \
           --max-queued-requests 64 \
           --cuda-graph-max-bs 64 \
