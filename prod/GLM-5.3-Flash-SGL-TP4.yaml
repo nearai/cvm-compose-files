@@ -455,7 +455,10 @@ services:
     container_name: hicache-hcc-probe
     profiles: ["verification"]
     runtime: nvidia
-    entrypoint: ["/usr/bin/python3", "-u", "-c"]
+    # PyTorch is installed in the image's /opt/sglang virtual environment.
+    # Use its interpreter explicitly so the probe exercises the exact runtime
+    # that the SGLang entry point uses.
+    entrypoint: ["/opt/sglang/bin/python3", "-u", "-c"]
     command:
       - |
         import ctypes, json, torch
