@@ -1,3 +1,7 @@
+# gpu03 experiment tag only: HCC-safe HiCache qualification with two TP4 arms.
+# The registrar is profile-gated below and must remain disabled for this test.
+# Do not promote this file; it deliberately enables full synthetic request logs.
+#
 # Canonical GLM-5.3 Flash production deployment for 8x H200 hosts.
 # Run the exact same committed tag and file on every matching host: two independent
 # TP4/EP4 replicas, one per four-GPU NVLink island, behind one inference proxy.
@@ -34,6 +38,8 @@ x-logging-conf: &logging-conf
 # non-finite logits and repetitive output. This pack also retires the previous
 # co-resident DeepSeek arm so both four-GPU islands serve GLM-5.3-Flash.
 
+name: glm53-hicache-gpu03
+
 x-nvidia: &nvidia
   runtime: nvidia
   ipc: host
@@ -59,7 +65,7 @@ x-vllm-proxy-common: &vllm-proxy-common
 x-sg-glm53-flash-common: &sg-glm53-flash-common
   <<: *nvidia
   init: true
-  image: docker.io/nearaidev/sglang@sha256:a7b7136abcf5e07522289d96e96fec9b42a1a30f9dfda57e957f142680d2d67b
+  image: docker.io/nearaidev/sglang@sha256:67cf951972594cdbf7437faf315145556ae6f3a643355ff4d3078fb670a12b9f
   command: >
       sglang serve
       --model-path /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/84c6a6aa9497188e15a635ba793b0f95a79b1033
@@ -93,9 +99,15 @@ x-sg-glm53-flash-common: &sg-glm53-flash-common
       --port 8000
       --enable-metrics
       --enable-cache-report
-      --log-requests-level 0
+      --log-level info
+      --log-requests
+      --log-requests-level 3
       --disable-fast-image-processor
       --limit-mm-data-per-request '{"image": 64}'
+      --enable-hierarchical-cache
+      --hicache-write-policy write_through
+      --hicache-io-backend kernel
+      --hicache-mem-layout page_first
   volumes:
     - kernel_cache:/root/.cache
     - huggingface_cache:/root/.cache/huggingface
@@ -113,6 +125,8 @@ x-sg-glm53-flash-common: &sg-glm53-flash-common
     - TORCHINDUCTOR_CACHE_DIR=/root/.cache/torchinductor
     - TRITON_CACHE_DIR=/root/.cache/triton
     - SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE=1
+    - SGLANG_HICACHE_RAM_BUDGET=${GLM53_HICACHE_RAM_BUDGET:-256GiB}
+    - PYTHONFAULTHANDLER=1
   restart: unless-stopped
   stop_grace_period: 5m
   logging: *logging-conf
@@ -150,7 +164,7 @@ services:
       - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
     logging: *logging-conf
     labels:
-      com.datadoghq.ad.logs: '[{"source":"model-downloader","service":"model-downloader","tags":["model:zai-org/GLM-5.3-Flash","served_model:z-ai/glm-5.3-flash","deployment:glm53-flash-sgl-tp4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.logs: '[{"source":"model-downloader","service":"model-downloader","tags":["model:zai-org/GLM-5.3-Flash","served_model:z-ai/glm-5.3-flash","deployment:glm53-flash-hicache-gpu03","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
 
   # Dormant during normal deploys. Target this service explicitly with the
   # maintenance profile when one model's shared HF cache must be evicted.
@@ -227,9 +241,10 @@ services:
     restart: unless-stopped
     logging: *logging-conf
     labels:
-      com.datadoghq.ad.logs: '[{"source":"nginx","service":"nginx","tags":["model:z-ai/glm-5.3-flash","deployment:glm53-flash-sgl-tp4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000"]}]'
+      com.datadoghq.ad.logs: '[{"source":"nginx","service":"nginx","tags":["model:z-ai/glm-5.3-flash","deployment:glm53-flash-hicache-gpu03","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000"]}]'
 
   model-proxy-registrar:
+    profiles: ["never-register-gpu03-hicache-test"]
     image: curlimages/curl@sha256:d94d07ba9e7d6de898b6d96c1a072f6f8266c687af78a74f380087a0addf5d17
     container_name: model-proxy-registrar
     entrypoint: ["sh", "/register.sh"]
@@ -255,7 +270,7 @@ services:
         mode: 0755
     logging: *logging-conf
     labels:
-      com.datadoghq.ad.logs: '[{"source":"model-proxy-registrar","service":"model-proxy-registrar","tags":["model:z-ai/glm-5.3-flash","deployment:glm53-flash-sgl-tp4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.logs: '[{"source":"model-proxy-registrar","service":"model-proxy-registrar","tags":["model:z-ai/glm-5.3-flash","deployment:glm53-flash-hicache-gpu03","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
 
   # --- GLM-5.3-Flash proxy ---
   proxy-glm53:
@@ -282,7 +297,7 @@ services:
       - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
       - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:z-ai/glm-5.3-flash","deployment:glm53-flash-sgl-tp4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:z-ai/glm-5.3-flash","deployment:glm53-flash-hicache-gpu03","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "inference-proxy"
       nearai.otel.service: "vllm-proxy"
@@ -291,7 +306,7 @@ services:
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "z-ai/glm-5.3-flash"
-      nearai.otel.deployment: "glm53-flash-sgl-tp4"
+      nearai.otel.deployment: "glm53-flash-hicache-gpu03"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
       nearai.otel.host_machine: "${CVM_HOST}"
@@ -313,7 +328,7 @@ services:
               device_ids: ["0","1","2","3"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:zai-org/GLM-5.3-Flash","served_model:z-ai/glm-5.3-flash","precision:fp8-weights-bf16-kv","deployment:glm53-flash-sgl-tp4","config_variant:official-upstream-fc91d24-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192","request_logging:disabled","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:1"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:zai-org/GLM-5.3-Flash","served_model:z-ai/glm-5.3-flash","precision:fp8-weights-bf16-kv","deployment:glm53-flash-hicache-gpu03","config_variant:fc91d24-hicache-kernel-hcc-tp4-ep4-eagle-adaptive-5-1-6","request_logging:full-synthetic","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:1"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -324,10 +339,10 @@ services:
       nearai.otel.model: "z-ai/glm-5.3-flash"
       nearai.otel.model_path: "zai-org/GLM-5.3-Flash"
       nearai.otel.served_model: "z-ai/glm-5.3-flash"
-      nearai.otel.deployment: "glm53-flash-sgl-tp4"
-      nearai.otel.config_variant: "official-upstream-fc91d24-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
+      nearai.otel.deployment: "glm53-flash-hicache-gpu03"
+      nearai.otel.config_variant: "fc91d24-hicache-kernel-hcc-tp4-ep4-eagle-adaptive-5-1-6"
       nearai.otel.thinking_budget_policy: "default8192-public-to-native"
-      nearai.otel.request_logging: "disabled"
+      nearai.otel.request_logging: "full-synthetic"
       nearai.otel.instance: "1"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
@@ -373,13 +388,15 @@ services:
         --port 8000
         --enable-metrics
         --enable-cache-report
-        --log-requests-level 0
+        --log-level info
+        --log-requests
+        --log-requests-level 3
         --disable-fast-image-processor
         --limit-mm-data-per-request '{"image": 64}'
         --enable-hierarchical-cache
         --hicache-write-policy write_through
-        --hicache-io-backend direct
-        --hicache-mem-layout page_first_direct
+        --hicache-io-backend kernel
+        --hicache-mem-layout page_first
     environment:
       - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
       # Local snapshot path; nothing is fetched at engine start.
@@ -394,9 +411,8 @@ services:
       - TORCHINDUCTOR_CACHE_DIR=/root/.cache/torchinductor
       - TRITON_CACHE_DIR=/root/.cache/triton
       - SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE=1
-      - SGLANG_HICACHE_RAM_BUDGET=${GLM53_HICACHE_RAM_BUDGET:-80%}
-      - SGLANG_HICACHE_POOLED_TRANSFERS=1
-      - SGLANG_HICACHE_STAGING_PAGES=64
+      - SGLANG_HICACHE_RAM_BUDGET=${GLM53_HICACHE_RAM_BUDGET:-256GiB}
+      - PYTHONFAULTHANDLER=1
     depends_on:
       model-downloader:
         condition: service_completed_successfully
@@ -408,7 +424,7 @@ services:
               device_ids: ["4","5","6","7"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:zai-org/GLM-5.3-Flash","served_model:z-ai/glm-5.3-flash","precision:fp8-weights-bf16-kv","deployment:glm53-flash-sgl-tp4","config_variant:fc91d24-hicache-pooled-v1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192","request_logging:disabled","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:2"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:zai-org/GLM-5.3-Flash","served_model:z-ai/glm-5.3-flash","precision:fp8-weights-bf16-kv","deployment:glm53-flash-hicache-gpu03","config_variant:fc91d24-hicache-kernel-hcc-tp4-ep4-eagle-adaptive-5-1-6","request_logging:full-synthetic","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:2"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -419,10 +435,10 @@ services:
       nearai.otel.model: "z-ai/glm-5.3-flash"
       nearai.otel.model_path: "zai-org/GLM-5.3-Flash"
       nearai.otel.served_model: "z-ai/glm-5.3-flash"
-      nearai.otel.deployment: "glm53-flash-sgl-tp4"
-      nearai.otel.config_variant: "fc91d24-hicache-pooled-v1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
+      nearai.otel.deployment: "glm53-flash-hicache-gpu03"
+      nearai.otel.config_variant: "fc91d24-hicache-kernel-hcc-tp4-ep4-eagle-adaptive-5-1-6"
       nearai.otel.thinking_budget_policy: "default8192-public-to-native"
-      nearai.otel.request_logging: "disabled"
+      nearai.otel.request_logging: "full-synthetic"
       nearai.otel.instance: "2"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
@@ -471,7 +487,7 @@ services:
         raise SystemExit(1 if failed else 0)
     logging: *logging-conf
     labels:
-      com.datadoghq.ad.logs: '[{"source":"glm53-perception-check","service":"glm53-perception-check","tags":["model:z-ai/glm-5.3-flash","deployment:glm53-flash-sgl-tp4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.logs: '[{"source":"glm53-perception-check","service":"glm53-perception-check","tags":["model:z-ai/glm-5.3-flash","deployment:glm53-flash-hicache-gpu03","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
 
   # Explicit operator-only TLS access to each replica for paired qualification.
   # Never registered with the customer router; no model/proxy dependencies.
@@ -502,7 +518,7 @@ services:
         mode: 0600
     logging: *logging-conf
     labels:
-      com.datadoghq.ad.logs: '[{"source":"nginx","service":"nginx","tags":["model:z-ai/glm-5.3-flash","deployment:glm53-flash-sgl-tp4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.logs: '[{"source":"nginx","service":"nginx","tags":["model:z-ai/glm-5.3-flash","deployment:glm53-flash-hicache-gpu03","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
 
   # --- Full-host GPU telemetry ---
 
@@ -517,7 +533,7 @@ services:
               device_ids: ["0","1","2","3","4","5","6","7"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:z-ai/glm-5.3-flash","model_path:zai-org/GLM-5.3-Flash","served_model:z-ai/glm-5.3-flash","deployment:glm53-flash-sgl-tp4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:z-ai/glm-5.3-flash","model_path:zai-org/GLM-5.3-Flash","served_model:z-ai/glm-5.3-flash","deployment:glm53-flash-hicache-gpu03","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "dcgm"
       nearai.otel.service: "dcgm-exporter"
@@ -528,7 +544,7 @@ services:
       nearai.otel.model: "z-ai/glm-5.3-flash"
       nearai.otel.model_path: "zai-org/GLM-5.3-Flash"
       nearai.otel.served_model: "z-ai/glm-5.3-flash"
-      nearai.otel.deployment: "glm53-flash-sgl-tp4"
+      nearai.otel.deployment: "glm53-flash-hicache-gpu03"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
       nearai.otel.host_machine: "${CVM_HOST}"
@@ -565,7 +581,7 @@ services:
         max-size: "20m"
         max-file: "3"
     labels:
-      com.datadoghq.ad.logs: '[{"source":"otelcol-contrib","service":"otelcol-contrib","tags":["deployment:glm53-flash-sgl-tp4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.logs: '[{"source":"otelcol-contrib","service":"otelcol-contrib","tags":["deployment:glm53-flash-hicache-gpu03","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
 
 networks:
   default:
@@ -812,7 +828,7 @@ configs:
                       model_path: "zai-org/GLM-5.3-Flash"
                       served_model: "z-ai/glm-5.3-flash"
                       precision: "fp8-weights-bf16-kv"
-                      deployment: "glm53-flash-sgl-tp4"
+                      deployment: "glm53-flash-hicache-gpu03"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
                       host_machine: "${CVM_HOST}"
@@ -820,9 +836,9 @@ configs:
                       ip: "${HOST_IP}"
                       port: "8000"
                       instance: "1"
-                      config_variant: "official-upstream-fc91d24-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
+                      config_variant: "fc91d24-hicache-kernel-hcc-tp4-ep4-eagle-adaptive-5-1-6"
                       thinking_budget_policy: "default8192-public-to-native"
-                      request_logging: "disabled"
+                      request_logging: "full-synthetic"
               - job_name: sglang-model-sg-glm53-fp8-tp4-r2
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -836,7 +852,7 @@ configs:
                       model_path: "zai-org/GLM-5.3-Flash"
                       served_model: "z-ai/glm-5.3-flash"
                       precision: "fp8-weights-bf16-kv"
-                      deployment: "glm53-flash-sgl-tp4"
+                      deployment: "glm53-flash-hicache-gpu03"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
                       host_machine: "${CVM_HOST}"
@@ -844,9 +860,9 @@ configs:
                       ip: "${HOST_IP}"
                       port: "8000"
                       instance: "2"
-                      config_variant: "fc91d24-hicache-pooled-v1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
+                      config_variant: "fc91d24-hicache-kernel-hcc-tp4-ep4-eagle-adaptive-5-1-6"
                       thinking_budget_policy: "default8192-public-to-native"
-                      request_logging: "disabled"
+                      request_logging: "full-synthetic"
               - job_name: dcgm-dcgm-glm53
                 scrape_interval: 15s
                 scrape_timeout: 10s
@@ -860,7 +876,7 @@ configs:
                       model: "z-ai/glm-5.3-flash"
                       model_path: "zai-org/GLM-5.3-Flash"
                       served_model: "z-ai/glm-5.3-flash"
-                      deployment: "glm53-flash-sgl-tp4"
+                      deployment: "glm53-flash-hicache-gpu03"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
                       host_machine: "${CVM_HOST}"
@@ -877,7 +893,7 @@ configs:
                       source: "vllm-proxy"
                       container_name: "proxy-glm53"
                       model: "z-ai/glm-5.3-flash"
-                      deployment: "glm53-flash-sgl-tp4"
+                      deployment: "glm53-flash-hicache-gpu03"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
                       host_machine: "${CVM_HOST}"
