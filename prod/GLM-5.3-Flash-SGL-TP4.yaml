@@ -462,48 +462,63 @@ services:
     command:
       - |
         import ctypes, json, torch
-        cudart = torch.cuda.cudart()
+        cudart = ctypes.CDLL("libcudart.so")
+        cudart.cudaDeviceGetAttribute.argtypes = [
+            ctypes.POINTER(ctypes.c_int), ctypes.c_int, ctypes.c_int
+        ]
+        cudart.cudaDeviceGetAttribute.restype = ctypes.c_int
+        cudart.cudaMallocManaged.argtypes = [
+            ctypes.POINTER(ctypes.c_void_p), ctypes.c_size_t, ctypes.c_uint
+        ]
+        cudart.cudaMallocManaged.restype = ctypes.c_int
+        cudart.cudaMemcpy.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int
+        ]
+        cudart.cudaMemcpy.restype = ctypes.c_int
+        cudart.cudaFree.argtypes = [ctypes.c_void_p]
+        cudart.cudaFree.restype = ctypes.c_int
         attrs = {}
-        for name in (
-            "cudaDevAttrHostRegisterSupported",
-            "cudaDevAttrPageableMemoryAccess",
-            "cudaDevAttrPageableMemoryAccessUsesHostPageTables",
-            "cudaDevAttrConcurrentManagedAccess",
-            "cudaDevAttrManagedMemory",
+        # Stable values from cudaDeviceAttr in the CUDA Runtime API.
+        for name, attribute in (
+            ("cudaDevAttrHostRegisterSupported", 99),
+            ("cudaDevAttrPageableMemoryAccess", 88),
+            ("cudaDevAttrPageableMemoryAccessUsesHostPageTables", 100),
+            ("cudaDevAttrConcurrentManagedAccess", 89),
+            ("cudaDevAttrManagedMemory", 83),
         ):
-            value = getattr(cudart.cudaDeviceAttr, name, None)
-            if value is None:
-                attrs[name] = None
-                continue
-            rc, result = cudart.cudaDeviceGetAttribute(value, 0)
-            attrs[name] = {"rc": int(rc), "value": int(result)}
+            value = ctypes.c_int()
+            rc = cudart.cudaDeviceGetAttribute(ctypes.byref(value), attribute, 0)
+            attrs[name] = {"rc": int(rc), "value": int(value.value)}
         result = {"device": torch.cuda.get_device_name(0), "attributes": attrs}
         source = torch.arange(4096, dtype=torch.uint8)
         target = torch.empty_like(source, device="cuda")
-        kind = cudart.cudaMemcpyKind.cudaMemcpyHostToDevice
-        rc = cudart.cudaMemcpy(target.data_ptr(), source.data_ptr(), source.nbytes, kind)
+        rc = cudart.cudaMemcpy(
+            ctypes.c_void_p(target.data_ptr()),
+            ctypes.c_void_p(source.data_ptr()),
+            source.nbytes,
+            1,
+        )
         result["pageable_memcpy"] = {
             "rc": int(rc),
             "matches": bool(torch.equal(source, target.cpu())) if int(rc) == 0 else False,
         }
-        managed_ptr = None
+        managed_ptr = ctypes.c_void_p()
         try:
-            malloc_result = cudart.cudaMallocManaged(4096, 1)
-            malloc_rc, managed_ptr = malloc_result
+            malloc_rc = cudart.cudaMallocManaged(ctypes.byref(managed_ptr), 4096, 1)
             managed = {
                 "malloc_rc": int(malloc_rc),
-                "ptr_nonzero": bool(managed_ptr),
+                "ptr_nonzero": bool(managed_ptr.value),
             }
             if int(malloc_rc) == 0:
-                raw = (ctypes.c_ubyte * 4096).from_address(int(managed_ptr))
+                raw = (ctypes.c_ubyte * 4096).from_address(managed_ptr.value)
                 managed_cpu = torch.frombuffer(raw, dtype=torch.uint8, count=4096)
                 managed_cpu.copy_(source)
                 managed_target = torch.empty_like(source, device="cuda")
                 h2d_rc = cudart.cudaMemcpy(
-                    managed_target.data_ptr(),
-                    managed_cpu.data_ptr(),
+                    ctypes.c_void_p(managed_target.data_ptr()),
+                    ctypes.c_void_p(managed_cpu.data_ptr()),
                     managed_cpu.nbytes,
-                    cudart.cudaMemcpyKind.cudaMemcpyHostToDevice,
+                    1,
                 )
                 managed["h2d"] = {
                     "rc": int(h2d_rc),
@@ -513,10 +528,10 @@ services:
                 }
                 managed_target.copy_(255 - managed_target)
                 d2h_rc = cudart.cudaMemcpy(
-                    managed_cpu.data_ptr(),
-                    managed_target.data_ptr(),
+                    ctypes.c_void_p(managed_cpu.data_ptr()),
+                    ctypes.c_void_p(managed_target.data_ptr()),
                     managed_cpu.nbytes,
-                    cudart.cudaMemcpyKind.cudaMemcpyDeviceToHost,
+                    2,
                 )
                 managed["d2h"] = {
                     "rc": int(d2h_rc),
@@ -528,7 +543,7 @@ services:
         except Exception as exc:
             result["managed_memory"] = type(exc).__name__ + ": " + str(exc)
         finally:
-            if managed_ptr:
+            if managed_ptr.value:
                 free_rc = cudart.cudaFree(managed_ptr)
                 result["managed_memory_free_rc"] = int(free_rc)
         try:

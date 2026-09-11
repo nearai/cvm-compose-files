@@ -12,7 +12,7 @@ index df7240298..9762087e1 100644
  import os
  from collections import defaultdict
  
-@@ -14,6 +16,98 @@ from sglang.srt.runtime_context import get_memory
+@@ -14,6 +16,116 @@ from sglang.srt.runtime_context import get_memory
  logger = logging.getLogger(__name__)
  
  _CUDA_HOST_REGISTERED_RANGES_ATTR = "_sglang_cuda_host_registered_ranges"
@@ -21,10 +21,27 @@ index df7240298..9762087e1 100644
 +
 +
 +def _cuda_error_string(cudart, rc) -> str:
-+    try:
-+        return str(cudart.cudaGetErrorString(rc))
-+    except TypeError:
++    value = cudart.cudaGetErrorString(int(rc))
++    if not value:
 +        return f"CUDA error {int(rc)}"
++    return value.decode("utf-8", errors="replace")
++
++
++def _load_cudart():
++    """Load the stable CUDA Runtime C ABI used for managed allocations."""
++
++    cudart = ctypes.CDLL("libcudart.so")
++    cudart.cudaMallocManaged.argtypes = [
++        ctypes.POINTER(ctypes.c_void_p),
++        ctypes.c_size_t,
++        ctypes.c_uint,
++    ]
++    cudart.cudaMallocManaged.restype = ctypes.c_int
++    cudart.cudaFree.argtypes = [ctypes.c_void_p]
++    cudart.cudaFree.restype = ctypes.c_int
++    cudart.cudaGetErrorString.argtypes = [ctypes.c_int]
++    cudart.cudaGetErrorString.restype = ctypes.c_char_p
++    return cudart
 +
 +
 +class _CudaManagedAllocation:
@@ -40,7 +57,7 @@ index df7240298..9762087e1 100644
 +        if not self.ptr:
 +            return
 +        ptr, self.ptr = self.ptr, 0
-+        rc = self.cudart.cudaFree(ptr)
++        rc = self.cudart.cudaFree(ctypes.c_void_p(ptr))
 +        if int(rc) != 0:
 +            logger.warning(
 +                "cudaFree failed for managed HiCache allocation "
@@ -80,20 +97,21 @@ index df7240298..9762087e1 100644
 +    if size <= 0:
 +        raise ValueError(f"Managed HiCache allocation size must be positive; got {size}")
 +
-+    cudart = torch.cuda.cudart()
-+    rc, raw_ptr = cudart.cudaMallocManaged(size, 1)
++    cudart = _load_cudart()
++    raw_ptr = ctypes.c_void_p()
++    rc = cudart.cudaMallocManaged(ctypes.byref(raw_ptr), size, 1)
 +    if int(rc) != 0:
 +        raise RuntimeError(
 +            "cudaMallocManaged failed for HiCache host allocation "
 +            f"(rc={int(rc)}, {_cuda_error_string(cudart, rc)}) size={size}"
 +        )
-+    ptr = int(raw_ptr.value) if hasattr(raw_ptr, "value") else int(raw_ptr)
++    ptr = int(raw_ptr.value or 0)
 +    try:
 +        backing = (ctypes.c_ubyte * size).from_address(ptr)
 +        byte_buffer = torch.frombuffer(backing, dtype=torch.uint8, count=size)
 +        buffer = byte_buffer.view(dtype).view(dims)
 +    except Exception:
-+        cudart.cudaFree(raw_ptr)
++        cudart.cudaFree(ctypes.c_void_p(ptr))
 +        raise
 +
 +    owner = _CudaManagedAllocation(cudart, ptr, size, backing)
@@ -111,7 +129,7 @@ index df7240298..9762087e1 100644
  
  
  class HostTensorAllocator:
-@@ -229,6 +323,14 @@ def alloc_with_host_register(
+@@ -229,6 +341,14 @@ def alloc_with_host_register(
      Allocate tensor and register host memory with cudaHostRegister.
      CudaHostRegister only applies when pin_memory=True.
      """
