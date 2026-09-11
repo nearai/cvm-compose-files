@@ -456,7 +456,7 @@ services:
     entrypoint: ["/usr/bin/python3", "-u", "-c"]
     command:
       - |
-        import json, torch
+        import ctypes, json, torch
         cudart = torch.cuda.cudart()
         attrs = {}
         for name in (
@@ -481,6 +481,51 @@ services:
             "rc": int(rc),
             "matches": bool(torch.equal(source, target.cpu())) if int(rc) == 0 else False,
         }
+        managed_ptr = None
+        try:
+            malloc_result = cudart.cudaMallocManaged(4096, 1)
+            malloc_rc, managed_ptr = malloc_result
+            managed = {
+                "malloc_rc": int(malloc_rc),
+                "ptr_nonzero": bool(managed_ptr),
+            }
+            if int(malloc_rc) == 0:
+                raw = (ctypes.c_ubyte * 4096).from_address(int(managed_ptr))
+                managed_cpu = torch.frombuffer(raw, dtype=torch.uint8, count=4096)
+                managed_cpu.copy_(source)
+                managed_target = torch.empty_like(source, device="cuda")
+                h2d_rc = cudart.cudaMemcpy(
+                    managed_target.data_ptr(),
+                    managed_cpu.data_ptr(),
+                    managed_cpu.nbytes,
+                    cudart.cudaMemcpyKind.cudaMemcpyHostToDevice,
+                )
+                managed["h2d"] = {
+                    "rc": int(h2d_rc),
+                    "matches": bool(torch.equal(source, managed_target.cpu()))
+                    if int(h2d_rc) == 0
+                    else False,
+                }
+                managed_target.copy_(255 - managed_target)
+                d2h_rc = cudart.cudaMemcpy(
+                    managed_cpu.data_ptr(),
+                    managed_target.data_ptr(),
+                    managed_cpu.nbytes,
+                    cudart.cudaMemcpyKind.cudaMemcpyDeviceToHost,
+                )
+                managed["d2h"] = {
+                    "rc": int(d2h_rc),
+                    "matches": bool(torch.equal(managed_cpu, 255 - source))
+                    if int(d2h_rc) == 0
+                    else False,
+                }
+            result["managed_memory"] = managed
+        except Exception as exc:
+            result["managed_memory"] = type(exc).__name__ + ": " + str(exc)
+        finally:
+            if managed_ptr:
+                free_rc = cudart.cudaFree(managed_ptr)
+                result["managed_memory_free_rc"] = int(free_rc)
         try:
             torch.empty(4096, dtype=torch.uint8, pin_memory=True)
             result["torch_pin_memory"] = "succeeded"
