@@ -7,9 +7,9 @@
 #   vLLM FP8:      host port 8003
 # SGLang follows the PhalaCloud W4AFP8 recipe plus SGLang's long-input Hopper
 # recommendations (32K chunked prefill, FP8 sparse prefill/KV kernels). vLLM
-# follows the official GLM-5.3 FP8 recipe and uses a 500K cap because the full
-# 1M FP8 KV window is documented for 8xB200, not 8xH200. Prefix caching remains
-# enabled for the agentic replay; clean synthetic runs are recorded separately.
+# follows the official GLM-5.3 FP8 recipe with BF16 KV (the Hopper sparse MLA
+# backends reject FP8 KV) and uses a 500K cap. Prefix caching remains enabled
+# for the agentic replay; clean synthetic runs are recorded separately.
 
 name: glm53-gpu23-bench
 
@@ -171,7 +171,6 @@ services:
           --revision aca966e4e02791568aa6a4ced368624b3d897f42 \
           --served-model-name z-ai/glm-5.3 \
           --tensor-parallel-size 8 \
-          --kv-cache-dtype fp8_e4m3 \
           --speculative-config.method mtp \
           --speculative-config.num_speculative_tokens 5 \
           --tool-call-parser glm47 \
@@ -215,7 +214,7 @@ services:
     stop_grace_period: 5m
     logging: *logging-conf
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:z-ai/glm-5.3","model_path:zai-org/GLM-5.3","precision:fp8-fp8kv","deployment:glm53-${CVM_HOST}-local-bench","config_variant:vllm-v0.29.0-fp8-tp8-long-prefill","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8003"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:z-ai/glm-5.3","model_path:zai-org/GLM-5.3","precision:fp8-bf16kv","deployment:glm53-${CVM_HOST}-local-bench","config_variant:vllm-v0.29.0-fp8-tp8-long-prefill-bf16kv","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8003"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
@@ -230,7 +229,7 @@ services:
       nearai.otel.host_machine: "${CVM_HOST}"
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
-      nearai.otel.config_variant: "vllm-v0.29.0-fp8-tp8-long-prefill"
+      nearai.otel.config_variant: "vllm-v0.29.0-fp8-tp8-long-prefill-bf16kv"
 
   dcgm-glm53-gpu23-bench:
     image: nvcr.io/nvidia/k8s/dcgm-exporter@sha256:613ab03c11d442fd960ff515f547e9921537454a712d08160bc8f677f89f1c35
@@ -439,9 +438,9 @@ configs:
                       container_name: model-vllm-glm53-fp8-tp8
                       model: z-ai/glm-5.3
                       model_path: zai-org/GLM-5.3
-                      precision: fp8-fp8kv
+                      precision: fp8-bf16kv
                       deployment: glm53-${CVM_HOST}-local-bench
-                      config_variant: vllm-v0.29.0-fp8-tp8-long-prefill
+                      config_variant: vllm-v0.29.0-fp8-tp8-long-prefill-bf16kv
                       env: "${ENV}"
                       host: "${CVM_HOST}"
                       host_machine: "${CVM_HOST}"
