@@ -300,11 +300,18 @@ networks:
     name: dstack_default
 
 volumes:
+  # Stable names let compose-manager's pre-download project hand the immutable
+  # artifacts to the default experiment project without copying hundreds of GB.
   huggingface_cache:
+    name: glm53-gpu23-bench_huggingface_cache
   sglang_cache:
+    name: glm53-gpu23-bench_sglang_cache
   sglang_compile_cache:
+    name: glm53-gpu23-bench_sglang_compile_cache
   vllm_cache:
+    name: glm53-gpu23-bench_vllm_cache
   otelcol_app_storage:
+    name: glm53-gpu23-bench_otelcol_app_storage
 
 configs:
   dcgm_h200_metrics:
