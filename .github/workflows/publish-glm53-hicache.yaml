@@ -330,7 +330,8 @@ jobs:
             echo "- immutable: \`$IMAGE_IMMUTABLE_REF\`"
             echo '- SGLang source: `PierreLeGuen/sglang-upstream@fc91d2403cc210a86bd5fc715c6609f58c932e5a`'
             echo '- HiCache restore fix: `sgl-project/sglang#38212@230102db838cbbe6eca7952c729518ee6d93c3a9`'
-            echo '- Promotion: run `scripts/prepare_glm53_hicache_canary.py --image <immutable>` and review the r2-only diff in a separate PR.'
+            echo '- Production activation is blocked: HCC/PPCIe does not support the pinned-host-memory path in this image.'
+            echo '- Native-GPU preview only: `scripts/prepare_glm53_hicache_canary.py --image <immutable>`.'
             echo '- Publishing does not modify compose files or deploy a service.'
             echo '- embedded BuildKit provenance: verified'
             echo '- embedded SPDX SBOM: verified'

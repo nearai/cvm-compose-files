@@ -32,8 +32,6 @@ class PromotionTest(unittest.TestCase):
         (self.root / promotion.RELEASE).parent.mkdir(parents=True, exist_ok=True)
         self.path = self.root / promotion.COMPOSE
         self.original = self.path.read_text()
-        # Continue exercising the transition after the activation PR is merged.
-        # The generated overrides are bounded between identity and depends_on.
         if (ROOT / promotion.RELEASE).exists():
             start = self.original.index('    container_name: model-sg-glm53-fp8-tp4-r2\n')
             start += len('    container_name: model-sg-glm53-fp8-tp4-r2\n')
@@ -56,7 +54,7 @@ class PromotionTest(unittest.TestCase):
         self.validate()
         baseline = parse_yaml(self.path)
         self.activate()
-        self.validate()
+        self.validate(False)
         updated = parse_yaml(self.path)
         changed = [name for name, service in baseline['services'].items()
                    if updated['services'][name] != service]
@@ -81,6 +79,23 @@ class PromotionTest(unittest.TestCase):
         self.assertEqual(self.path.read_text(), self.original)
         self.assertFalse((self.root / promotion.RELEASE).exists())
 
+    def test_write_is_blocked_for_hcc_production(self):
+        result = subprocess.run(
+            [
+                'python3',
+                str(self.root / 'scripts/prepare_glm53_hicache_canary.py'),
+                '--image',
+                FIXTURE_IMAGE,
+                '--write',
+            ],
+            capture_output=True,
+            text=True,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('does not support the pinned host memory', result.stderr)
+        self.assertEqual(self.path.read_text(), self.original)
+        self.assertFalse((self.root / promotion.RELEASE).exists())
+
     def test_invalid_and_repeated_promotion(self):
         control_image = parse_yaml(self.path)['services']['model-sg-glm53-fp8-tp4-r1']['image']
         for image in ('nearaidev/sglang:latest', FIXTURE_IMAGE + '\n',
@@ -93,6 +108,10 @@ class PromotionTest(unittest.TestCase):
 
     def test_rejects_unreleased_image(self):
         self.path.write_text(promotion.candidate(self.original, FIXTURE_IMAGE))
+        self.validate(False)
+
+    def test_rejects_hicache_on_hcc_production(self):
+        self.activate()
         self.validate(False)
 
     def test_rejects_runtime_drift(self):
