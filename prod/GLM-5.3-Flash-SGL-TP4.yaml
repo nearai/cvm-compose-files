@@ -590,7 +590,11 @@ networks:
 
 volumes:
   otelcol_app_storage:
+  # Reuse the isolated gpu03 pre-download volume when the engines are launched
+  # under compose-manager's observable default `work` project.
   huggingface_cache:
+    external: true
+    name: glm53-hicache-gpu03_huggingface_cache
   kernel_cache:
   certs:
     external: true
