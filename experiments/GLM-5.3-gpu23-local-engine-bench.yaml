@@ -1,10 +1,11 @@
 # GLM-5.3 (not Flash) engine comparison on the gpu23 8xH200 PPCIe CVM.
 #
 # Experiment only. This stack intentionally has no inference-proxy, nginx, or
-# model-proxy-registrar. The two engines expose token-protected direct endpoints
-# for internal replay and are launched one at a time through compose-manager:
-#   SGLang W4AFP8: host port 8002
-#   vLLM FP8:      host port 8003
+# model-proxy-registrar. The engines expose token-protected direct endpoints for
+# internal replay and are launched one at a time through compose-manager:
+#   SGLang W4AFP8 control:            host port 8002
+#   vLLM FP8 fallback:                host port 8003
+#   SGLang W4AFP8 HiCache candidate:  host port 8004
 # SGLang follows the PhalaCloud W4AFP8 recipe plus SGLang's long-input Hopper
 # recommendations (32K chunked prefill, FP8 sparse prefill/KV kernels). vLLM
 # follows the official GLM-5.3 FP8 recipe with BF16 KV (the Hopper sparse MLA
@@ -182,6 +183,10 @@ services:
           --port 8000 \
           --enable-cache-report \
           --enable-metrics \
+          --enable-trace \
+          --trace-modules request \
+          --otlp-traces-endpoint otelcol-contrib:4317 \
+          --enable-request-time-stats-logging \
           --trust-remote-code
     ports:
       - "8002:8000"
@@ -229,6 +234,102 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.config_variant: "sglang-v0.5.19-w4afp8-tp8-long-prefill"
+
+  model-sg-glm53-w4afp8-tp8-hicache:
+    <<: *nvidia
+    image: lmsysorg/sglang@sha256:d6e7288627be8b02be88e4bba38e73f6d50e2826869f753c13a4c4385ab3eda9
+    container_name: model-sg-glm53-w4afp8-tp8-hicache
+    init: true
+    entrypoint: ["/opt/nvidia/nvidia_entrypoint.sh", "/bin/bash", "-lc"]
+    command:
+      - |
+        exec sglang serve \
+          --model-path PhalaCloud/GLM-5.3-W4AFP8 \
+          --revision 03179e95916f9f79a92536e76da63f9251d93d4f \
+          --served-model-name z-ai/glm-5.3 \
+          --quantization w4afp8 \
+          --disable-shared-experts-fusion \
+          --disable-custom-all-reduce \
+          --tp 8 \
+          --kv-cache-dtype fp8_e4m3 \
+          --dsa-prefill-backend flashmla_sparse_q8 \
+          --dsa-decode-backend flashmla_kv \
+          --reasoning-parser glm45 \
+          --tool-call-parser glm47 \
+          --speculative-algorithm EAGLE \
+          --speculative-num-steps 3 \
+          --speculative-eagle-topk 1 \
+          --speculative-num-draft-tokens 4 \
+          --chunked-prefill-size 32768 \
+          --mem-fraction-static 0.76 \
+          --max-running-requests 48 \
+          --max-queued-requests 64 \
+          --cuda-graph-max-bs 64 \
+          --context-length 1048576 \
+          --dist-init-addr 127.0.0.1:29500 \
+          --watchdog-timeout 1800 \
+          --log-level info \
+          --api-key "$$PROXY_TOKEN" \
+          --host 0.0.0.0 \
+          --port 8000 \
+          --enable-cache-report \
+          --enable-metrics \
+          --enable-trace \
+          --trace-modules request \
+          --otlp-traces-endpoint otelcol-contrib:4317 \
+          --enable-request-time-stats-logging \
+          --enable-hierarchical-cache \
+          --hicache-ratio 1.5 \
+          --hicache-write-policy write_through \
+          --hicache-io-backend direct \
+          --hicache-mem-layout page_first_direct \
+          --trust-remote-code
+    ports:
+      - "8004:8000"
+    volumes:
+      - huggingface_cache:/root/.cache/huggingface
+      - sglang_cache:/root/.cache/sglang
+      - sglang_compile_cache:/root/.cache/torchinductor
+    environment:
+      HF_TOKEN: ${HUGGING_FACE_HUB_TOKEN}
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+      HF_HUB_DISABLE_TELEMETRY: "1"
+      DO_NOT_TRACK: "1"
+      PROXY_TOKEN: ${PROXY_TOKEN}
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+      OPENBLAS_L2_SIZE: "2097152"
+      NCCL_DEBUG: INFO
+      PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+      TORCHINDUCTOR_CACHE_DIR: /root/.cache/torchinductor
+      TRITON_CACHE_DIR: /root/.cache/sglang/triton
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["0", "1", "2", "3", "4", "5", "6", "7"]
+              capabilities: [gpu]
+    restart: "no"
+    stop_grace_period: 5m
+    logging: *logging-conf
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3","model_path:PhalaCloud/GLM-5.3-W4AFP8","precision:w4afp8-fp8kv","deployment:glm53-gpu23-hicache-bench","config_variant:sglang-v0.5.19-w4afp8-tp8-hicache-r1.5-direct-pfd-wt","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8004"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "sglang"
+      nearai.otel.service: "sglang"
+      nearai.otel.source: "sglang"
+      nearai.otel.container_name: "model-sg-glm53-w4afp8-tp8-hicache"
+      nearai.otel.port: "8000"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "z-ai/glm-5.3"
+      nearai.otel.deployment: "glm53-gpu23-hicache-bench"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
+      nearai.otel.config_variant: "sglang-v0.5.19-w4afp8-tp8-hicache-r1.5-direct-pfd-wt"
 
   model-vllm-glm53-fp8-tp8:
     <<: *nvidia
@@ -302,6 +403,38 @@ services:
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.config_variant: "vllm-v0.29.0-fp8-tp8-long-prefill-bf16kv"
 
+  hicache-host-exporter:
+    image: ghcr.io/astral-sh/uv:python3.11-bookworm-slim@sha256:4f5d923c9dcea037f57bda425dd209f3ec643da2f0b74227f68d09dab0b3bb36
+    container_name: hicache-host-exporter
+    pid: host
+    user: "0:0"
+    command: ["python3", "/opt/hicache-host-exporter.py"]
+    volumes:
+      - /:/hostfs:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    configs:
+      - source: hicache_host_exporter_script
+        target: /opt/hicache-host-exporter.py
+        mode: 0444
+    restart: unless-stopped
+    logging: *logging-conf
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"hicache-host-exporter","service":"hicache-host-exporter","tags":["model:z-ai/glm-5.3","deployment:glm53-gpu23-hicache-bench","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "hicache-host"
+      nearai.otel.service: "hicache-host-exporter"
+      nearai.otel.source: "hicache-host-exporter"
+      nearai.otel.container_name: "hicache-host-exporter"
+      nearai.otel.port: "9101"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "z-ai/glm-5.3"
+      nearai.otel.deployment: "glm53-gpu23-hicache-bench"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
+
   dcgm-glm53-gpu23-bench:
     image: nvcr.io/nvidia/k8s/dcgm-exporter@sha256:613ab03c11d442fd960ff515f547e9921537454a712d08160bc8f677f89f1c35
     container_name: dcgm-glm53-gpu23-bench
@@ -340,44 +473,6 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
-  dcgm-glm53-gpu03-bench:
-    image: nvcr.io/nvidia/k8s/dcgm-exporter@sha256:613ab03c11d442fd960ff515f547e9921537454a712d08160bc8f677f89f1c35
-    container_name: dcgm-glm53-gpu03-bench
-    command: ["-f", "/etc/dcgm-exporter/nearai-h200.csv"]
-    runtime: nvidia
-    cap_add: [SYS_ADMIN]
-    environment:
-      NVIDIA_VISIBLE_DEVICES: all
-    configs:
-      - source: dcgm_h200_metrics
-        target: /etc/dcgm-exporter/nearai-h200.csv
-        mode: 0444
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-    restart: unless-stopped
-    logging: *logging-conf
-    labels:
-      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:z-ai/glm-5.3","deployment:glm53-gpu03-local-bench","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
-      nearai.otel.scrape: "true"
-      nearai.otel.job: "dcgm"
-      nearai.otel.service: "dcgm-exporter"
-      nearai.otel.source: "dcgm-exporter"
-      nearai.otel.container_name: "dcgm-glm53-gpu03-bench"
-      nearai.otel.port: "9400"
-      nearai.otel.path: "/metrics"
-      nearai.otel.model: "z-ai/glm-5.3"
-      nearai.otel.deployment: "glm53-gpu03-local-bench"
-      nearai.otel.env: "${ENV}"
-      nearai.otel.host: "${CVM_HOST}"
-      nearai.otel.host_machine: "${CVM_HOST}"
-      nearai.otel.cvm_name: "${CVM_NAME}"
-      nearai.otel.ip: "${HOST_IP}"
-
   otelcol-contrib:
     image: otel/opentelemetry-collector-contrib@sha256:85ac41c2db88d0df9bd6145e608a3cb023f5d8443868adbfbbf66efb51087917
     container_name: otelcol-glm53-gpu23-bench
@@ -391,8 +486,11 @@ services:
       - DD_HOSTNAME=${DD_HOSTNAME:-unknown}
       - ENV=${ENV:-unknown}
       - HOST_IP=${HOST_IP:-unknown}
+      - CVM_HOSTMETRICS_ROOT_PATH=/hostfs
     volumes:
       - otelcol_app_storage:/var/lib/otelcol-contrib
+      - /:/hostfs:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
     configs:
       - source: otelcol_app_config
         target: /etc/otelcol-contrib/config.yaml
@@ -422,6 +520,138 @@ volumes:
     name: glm53-gpu23-bench_otelcol_app_storage
 
 configs:
+  hicache_host_exporter_script:
+    content: |
+      import http.client
+      import http.server
+      import json
+      import os
+      import socket
+
+      HOST_PROC = "/hostfs/proc"
+      DOCKER_SOCKET = "/var/run/docker.sock"
+      TARGETS = (
+          "model-sg-glm53-w4afp8-tp8",
+          "model-sg-glm53-w4afp8-tp8-hicache",
+      )
+
+      class UnixConnection(http.client.HTTPConnection):
+          def connect(self):
+              self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+              self.sock.connect(DOCKER_SOCKET)
+
+      def docker_json(path):
+          connection = UnixConnection("localhost", timeout=2)
+          try:
+              connection.request("GET", path)
+              response = connection.getresponse()
+              if response.status != 200:
+                  raise RuntimeError(f"Docker API returned {response.status}")
+              return json.loads(response.read())
+          finally:
+              connection.close()
+
+      def read_meminfo():
+          values = {}
+          with open(f"{HOST_PROC}/meminfo", encoding="ascii") as handle:
+              for line in handle:
+                  key, raw = line.split(":", 1)
+                  fields = raw.split()
+                  if fields:
+                      values[key] = int(fields[0]) * 1024
+          return values
+
+      def process_totals(container_id):
+          totals = {
+              "rss": 0, "high_water": 0, "locked": 0, "pinned": 0,
+              "anon": 0, "file": 0, "swap": 0, "minor": 0, "major": 0,
+              "threads": 0, "processes": 0,
+          }
+          marker = container_id[:12]
+          for entry in os.listdir(HOST_PROC):
+              if not entry.isdigit():
+                  continue
+              base = f"{HOST_PROC}/{entry}"
+              try:
+                  with open(f"{base}/cgroup", encoding="ascii") as handle:
+                      if marker not in handle.read():
+                          continue
+                  status = {}
+                  with open(f"{base}/status", encoding="ascii") as handle:
+                      for line in handle:
+                          if ":" not in line:
+                              continue
+                          key, raw = line.split(":", 1)
+                          fields = raw.split()
+                          if fields and fields[0].isdigit():
+                              status[key] = int(fields[0])
+                  with open(f"{base}/stat", encoding="ascii") as handle:
+                      fields = handle.read().rsplit(")", 1)[1].split()
+                  totals["rss"] += status.get("VmRSS", 0) * 1024
+                  totals["high_water"] += status.get("VmHWM", 0) * 1024
+                  totals["locked"] += status.get("VmLck", 0) * 1024
+                  totals["pinned"] += status.get("VmPin", 0) * 1024
+                  totals["anon"] += status.get("RssAnon", 0) * 1024
+                  totals["file"] += status.get("RssFile", 0) * 1024
+                  totals["swap"] += status.get("VmSwap", 0) * 1024
+                  totals["threads"] += status.get("Threads", 0)
+                  totals["minor"] += int(fields[7])
+                  totals["major"] += int(fields[9])
+                  totals["processes"] += 1
+              except (FileNotFoundError, PermissionError, ProcessLookupError, ValueError):
+                  continue
+          return totals
+
+      def collect():
+          lines = ["# TYPE nearai_hicache_probe_up gauge", "nearai_hicache_probe_up 1"]
+          meminfo = read_meminfo()
+          memory_states = {
+              "total": "MemTotal", "free": "MemFree", "available": "MemAvailable",
+              "cached": "Cached", "mlocked": "Mlocked", "unevictable": "Unevictable",
+              "slab_reclaimable": "SReclaimable", "shmem": "Shmem",
+          }
+          lines.append("# TYPE nearai_hicache_guest_memory_bytes gauge")
+          for state, key in memory_states.items():
+              lines.append(f'nearai_hicache_guest_memory_bytes{{state="{state}"}} {meminfo.get(key, 0)}')
+          for target in TARGETS:
+              try:
+                  metadata = docker_json(f"/v1.44/containers/{target}/json")
+              except Exception:
+                  continue
+              if not metadata.get("State", {}).get("Running"):
+                  continue
+              totals = process_totals(metadata["Id"])
+              label = f'container="{target}"'
+              for state in ("rss", "high_water", "locked", "pinned", "anon", "file", "swap"):
+                  lines.append(f'nearai_hicache_model_process_memory_bytes{{{label},state="{state}"}} {totals[state]}')
+              for kind in ("minor", "major"):
+                  lines.append(f'nearai_hicache_model_process_page_faults_total{{{label},type="{kind}"}} {totals[kind]}')
+              lines.append(f"nearai_hicache_model_process_threads{{{label}}} {totals['threads']}")
+              lines.append(f"nearai_hicache_model_processes{{{label}}} {totals['processes']}")
+          return "\n".join(lines) + "\n"
+
+      class Handler(http.server.BaseHTTPRequestHandler):
+          def do_GET(self):
+              if self.path != "/metrics":
+                  self.send_error(404)
+                  return
+              try:
+                  body = collect().encode()
+                  status = 200
+              except Exception:
+                  body = b"nearai_hicache_probe_up 0\n"
+                  status = 500
+              self.send_response(status)
+              self.send_header("Content-Type", "text/plain; version=0.0.4")
+              self.send_header("Content-Length", str(len(body)))
+              self.end_headers()
+              self.wfile.write(body)
+
+          def log_message(self, _format, *_args):
+              return
+
+      http.server.ThreadingHTTPServer(("0.0.0.0", 9101), Handler).serve_forever()
+
   dcgm_h200_metrics:
     content: |
       DCGM_FI_DEV_SM_CLOCK, gauge, SM clock frequency in MHz.
@@ -475,6 +705,37 @@ configs:
   otelcol_app_config:
     content: |
       receivers:
+        otlp:
+          protocols:
+            grpc:
+              endpoint: 0.0.0.0:4317
+            http:
+              endpoint: 0.0.0.0:4318
+
+        hostmetrics/hicache:
+          collection_interval: 5s
+          root_path: $${env:CVM_HOSTMETRICS_ROOT_PATH}
+          scrapers:
+            cpu: {}
+            memory: {}
+            load: {}
+            paging: {}
+            network: {}
+            disk: {}
+            filesystem:
+              exclude_mount_points:
+                mount_points: ["^/dev(/.*)?$", "^/proc(/.*)?$", "^/sys(/.*)?$", "^/run(/.*)?$", "^/var/lib/docker(/.*)?$"]
+                match_type: regexp
+
+        docker_stats/hicache:
+          endpoint: unix:///var/run/docker.sock
+          collection_interval: 5s
+          timeout: 4s
+          api_version: "1.44"
+          container_labels_to_metric_labels:
+            com.docker.compose.service: compose_service
+            com.docker.compose.project: compose_project
+
         prometheus/apps:
           config:
             scrape_configs:
@@ -518,6 +779,44 @@ configs:
                       cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "8003"
+              - job_name: sglang-glm53-gpu23-hicache
+                scrape_interval: 5s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['model-sg-glm53-w4afp8-tp8-hicache:8000']
+                    labels:
+                      service: sglang
+                      source: sglang
+                      container_name: model-sg-glm53-w4afp8-tp8-hicache
+                      model: z-ai/glm-5.3
+                      model_path: PhalaCloud/GLM-5.3-W4AFP8
+                      precision: w4afp8-fp8kv
+                      deployment: glm53-gpu23-hicache-bench
+                      config_variant: sglang-v0.5.19-w4afp8-tp8-hicache-r1.5-direct-pfd-wt
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      port: "8004"
+              - job_name: hicache-host-gpu23
+                scrape_interval: 5s
+                scrape_timeout: 4s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['hicache-host-exporter:9101']
+                    labels:
+                      service: hicache-host-exporter
+                      source: hicache-host-exporter
+                      container_name: hicache-host-exporter
+                      model: z-ai/glm-5.3
+                      deployment: glm53-gpu23-hicache-bench
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      port: "9101"
               - job_name: dcgm-glm53-gpu23
                 scrape_interval: 5s
                 scrape_timeout: 4s
@@ -536,25 +835,6 @@ configs:
                       cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "9400"
-              - job_name: dcgm-glm53-gpu03
-                scrape_interval: 5s
-                scrape_timeout: 4s
-                metrics_path: /metrics
-                static_configs:
-                  - targets: ['dcgm-glm53-gpu03-bench:9400']
-                    labels:
-                      service: dcgm-exporter
-                      source: dcgm-exporter
-                      container_name: dcgm-glm53-gpu03-bench
-                      model: z-ai/glm-5.3
-                      deployment: glm53-gpu03-local-bench
-                      env: "${ENV}"
-                      host: "${CVM_HOST}"
-                      host_machine: "${CVM_HOST}"
-                      cvm_name: "${CVM_NAME}"
-                      ip: "${HOST_IP}"
-                      port: "9400"
-
       processors:
         memory_limiter:
           check_interval: 1s
@@ -601,7 +881,11 @@ configs:
         extensions: [file_storage]
         pipelines:
           metrics:
-            receivers: [prometheus/apps]
+            receivers: [prometheus/apps, hostmetrics/hicache, docker_stats/hicache]
+            processors: [memory_limiter, resource, batch]
+            exporters: [otlphttp/gateway]
+          traces:
+            receivers: [otlp]
             processors: [memory_limiter, resource, batch]
             exporters: [otlphttp/gateway]
         telemetry:
