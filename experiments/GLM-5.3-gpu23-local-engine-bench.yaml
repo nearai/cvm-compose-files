@@ -491,6 +491,25 @@ services:
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.config_variant: "vllm-v0.29.0-fp8-tp8-long-prefill-bf16kv"
 
+  gpu23-hicache-verifier:
+    image: ghcr.io/astral-sh/uv:python3.11-bookworm-slim@sha256:4f5d923c9dcea037f57bda425dd209f3ec643da2f0b74227f68d09dab0b3bb36
+    container_name: gpu23-hicache-verifier
+    profiles: ["verification"]
+    entrypoint: ["python3", "/opt/gpu23_hicache_verify.py"]
+    environment:
+      PROXY_TOKEN: ${PROXY_TOKEN}
+      EVAL_ENDPOINT: ${EVAL_ENDPOINT:-http://model-sg-glm53-w4afp8-tp8-hicache:8000}
+      EVAL_PHASES: ${EVAL_PHASES:-smoke,full,restore}
+      EVAL_TIMEOUT_SECONDS: "2400"
+    configs:
+      - source: gpu23_hicache_verifier_script
+        target: /opt/gpu23_hicache_verify.py
+        mode: 0444
+    restart: "no"
+    logging: *logging-conf
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"hicache-verifier","service":"hicache-verifier","tags":["model:z-ai/glm-5.3","deployment:glm53-gpu23-hicache-bench","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+
   hicache-host-exporter:
     image: ghcr.io/astral-sh/uv:python3.11-bookworm-slim@sha256:4f5d923c9dcea037f57bda425dd209f3ec643da2f0b74227f68d09dab0b3bb36
     container_name: hicache-host-exporter
@@ -608,6 +627,9 @@ volumes:
     name: glm53-gpu23-bench_otelcol_app_storage
 
 configs:
+  gpu23_hicache_verifier_script:
+    file: ../scripts/gpu23_hicache_verify.py
+
   hicache_host_exporter_script:
     content: |
       import http.client
