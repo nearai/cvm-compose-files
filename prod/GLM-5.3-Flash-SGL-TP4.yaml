@@ -148,15 +148,13 @@ x-vllm-glm53-flash-common: &vllm-glm53-flash-common
   entrypoint: ["vllm", "serve"]
   # Match the retained, semantically qualified gpu31 vLLM runtime first:
   # TP4, 131072 context, default CUDA graphs, auto FP8 backends, and no MTP.
-  # gpu03 rejects vLLM custom all-reduce during final CUDA-graph capture, while
-  # NCCL reaches serving but produces invalid logits. Preserve the gpu31
-  # custom collective and isolate graph capture by using eager execution.
+  # Reproduce the exact retained gpu31 control on gpu03 devices 0-3 to isolate
+  # the physical four-GPU island from the engine configuration.
   command: >
       /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/84c6a6aa9497188e15a635ba793b0f95a79b1033
       --revision 84c6a6aa9497188e15a635ba793b0f95a79b1033
       --served-model-name z-ai/glm-5.3-flash
       --tensor-parallel-size 4
-      --enforce-eager
       --no-enable-flashinfer-autotune
       --tool-call-parser glm47
       --reasoning-parser glm45
@@ -427,10 +425,10 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["4","5","6","7"]
+              device_ids: ["0","1","2","3"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:z-ai/glm-5.3-flash","model_path:zai-org/GLM-5.3-Flash","served_model:z-ai/glm-5.3-flash","precision:fp8-weights-bf16-kv","deployment:glm53-flash-hicache-gpu03","config_variant:vllm-487ecf187-tp4-131k-custom-ar-eager","request_logging:disabled","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:2"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:z-ai/glm-5.3-flash","model_path:zai-org/GLM-5.3-Flash","served_model:z-ai/glm-5.3-flash","precision:fp8-weights-bf16-kv","deployment:glm53-flash-hicache-gpu03","config_variant:vllm-487ecf187-tp4-131k-gpu0-3-control","request_logging:disabled","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:2"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
@@ -442,7 +440,7 @@ services:
       nearai.otel.model_path: "zai-org/GLM-5.3-Flash"
       nearai.otel.served_model: "z-ai/glm-5.3-flash"
       nearai.otel.deployment: "glm53-flash-hicache-gpu03"
-      nearai.otel.config_variant: "vllm-487ecf187-tp4-131k-custom-ar-eager"
+      nearai.otel.config_variant: "vllm-487ecf187-tp4-131k-gpu0-3-control"
       nearai.otel.request_logging: "disabled"
       nearai.otel.instance: "2"
       nearai.otel.env: "${ENV}"
