@@ -430,8 +430,8 @@ services:
           --enable-hierarchical-cache \
           --hicache-size 69 \
           --hicache-write-policy write_through \
-          --hicache-io-backend kernel \
-          --hicache-mem-layout page_first \
+          --hicache-io-backend direct \
+          --hicache-mem-layout page_first_direct \
           --trust-remote-code
     ports:
       - "8004:8000"
@@ -465,7 +465,7 @@ services:
     stop_grace_period: 5m
     logging: *logging-conf
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3","model_path:PhalaCloud/GLM-5.3-W4AFP8","precision:w4afp8-fp8kv","deployment:glm53-gpu23-hicache-bench","config_variant:sglang-v0.5.19-w4afp8-tp8-hicache-managed-prefetch-69gb-kernel-pf-wt-mf81","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8004"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3","model_path:PhalaCloud/GLM-5.3-W4AFP8","precision:w4afp8-fp8kv","deployment:glm53-gpu23-hicache-bench","config_variant:sglang-v0.5.19-w4afp8-tp8-hicache-managed-prefetch-69gb-direct-pfd-wt-mf81","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8004"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -480,7 +480,7 @@ services:
       nearai.otel.host_machine: "${CVM_HOST}"
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
-      nearai.otel.config_variant: "sglang-v0.5.19-w4afp8-tp8-no-dg-jit-hicache-managed-prefetch-69gb-kernel-pf-wt-mf81"
+      nearai.otel.config_variant: "sglang-v0.5.19-w4afp8-tp8-no-dg-jit-hicache-managed-prefetch-69gb-direct-pfd-wt-mf81"
 
   model-vllm-glm53-fp8-tp8:
     <<: *nvidia
