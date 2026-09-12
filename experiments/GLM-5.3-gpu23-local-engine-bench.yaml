@@ -495,16 +495,20 @@ services:
     image: ghcr.io/astral-sh/uv:python3.11-bookworm-slim@sha256:4f5d923c9dcea037f57bda425dd209f3ec643da2f0b74227f68d09dab0b3bb36
     container_name: gpu23-hicache-verifier
     profiles: ["verification"]
-    entrypoint: ["python3", "/opt/gpu23_hicache_verify.py"]
+    entrypoint: ["python3", "-c"]
+    command:
+      - |
+        import urllib.request
+        source = urllib.request.urlopen(
+            "https://raw.githubusercontent.com/nearai/cvm-compose-files/1515f4837e90a673edd2ae10502a6cbd5ce5123b/scripts/gpu23_hicache_verify.py",
+            timeout=30,
+        ).read()
+        exec(compile(source, "gpu23_hicache_verify.py", "exec"))
     environment:
       PROXY_TOKEN: ${PROXY_TOKEN}
       EVAL_ENDPOINT: ${EVAL_ENDPOINT:-http://model-sg-glm53-w4afp8-tp8-hicache:8000}
       EVAL_PHASES: ${EVAL_PHASES:-smoke,full,restore}
       EVAL_TIMEOUT_SECONDS: "2400"
-    configs:
-      - source: gpu23_hicache_verifier_script
-        target: /opt/gpu23_hicache_verify.py
-        mode: 0444
     restart: "no"
     logging: *logging-conf
     labels:
@@ -627,9 +631,6 @@ volumes:
     name: glm53-gpu23-bench_otelcol_app_storage
 
 configs:
-  gpu23_hicache_verifier_script:
-    file: ../scripts/gpu23_hicache_verify.py
-
   hicache_host_exporter_script:
     content: |
       import http.client
