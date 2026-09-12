@@ -1,7 +1,6 @@
 # gpu03 experiment tag only: one HiCache SGLang control and one official vLLM
-# GLM-5.3-Flash TP4 candidate. The vLLM image is pinned to upstream commit
-# 385dce36bcee42309924a5ece951a96db3dce7f2 (2026-09-09), after native model
-# support and the K-pool tail metadata fixes landed.
+# GLM-5.3-Flash TP4 candidate. The vLLM image is pinned to the upstream
+# GLM-5.3-Flash build previously qualified with this exact model revision.
 # The registrar is profile-gated below and must remain disabled for this test.
 # Do not promote this file; it deliberately enables full synthetic request logs.
 #
@@ -141,13 +140,12 @@ x-sg-glm53-flash-common: &sg-glm53-flash-common
 x-vllm-glm53-flash-common: &vllm-glm53-flash-common
   <<: *nvidia
   init: true
-  image: docker.io/vllm/vllm-openai@sha256:0674a3ea3c971706cea310bca71daadff68ea1717c758d2f54affa5def001b86
+  image: docker.io/vllm/vllm-openai@sha256:2c6da6c6f16ed15c91e412d896dba13701f25fe1861eaec9ddaa4db34d1d21c4
   entrypoint: ["vllm", "serve"]
   # gpu03 exposes an NVLink bridge-only H200 island. vLLM's custom all-reduce
   # fails CUDA-graph capture on this topology with custom_all_reduce.cuh:164;
-  # use NCCL instead. Keep FlashInfer autotuning disabled and force DeepGEMM
-  # for FP8 linear layers: this vLLM revision's auto-selected FlashInfer FP8
-  # linear path produced deterministic repetitive tokens on gpu03.
+  # use NCCL instead. Keep FlashInfer autotuning disabled to match the
+  # qualified upstream GLM-5.3-Flash image configuration.
   command: >
       /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/84c6a6aa9497188e15a635ba793b0f95a79b1033
       --revision 84c6a6aa9497188e15a635ba793b0f95a79b1033
@@ -155,13 +153,13 @@ x-vllm-glm53-flash-common: &vllm-glm53-flash-common
       --tensor-parallel-size 4
       --disable-custom-all-reduce
       --no-enable-flashinfer-autotune
-      --linear-backend deep_gemm
       --speculative-config '{"method":"mtp","num_speculative_tokens":5}'
       --tool-call-parser glm47
       --reasoning-parser glm45
       --enable-auto-tool-choice
       --chat-template /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/3f1971b7b5f7a528c9c4ef6212c8785298a8c24a/chat_template.jinja
       --chat-template-content-format openai
+      --default-chat-template-kwargs '{"clear_thinking":true}'
       --gpu-memory-utilization 0.82
       --max-model-len 1048576
       --max-num-seqs 32
@@ -181,7 +179,7 @@ x-vllm-glm53-flash-common: &vllm-glm53-flash-common
     - DO_NOT_TRACK=1
     - VLLM_ENABLE_CUDA_COMPATIBILITY=0
     - VLLM_ENGINE_READY_TIMEOUT_S=3600
-    - VLLM_CACHE_ROOT=/root/.cache/vllm/glm53-flash-official-385dce36
+    - VLLM_CACHE_ROOT=/root/.cache/vllm/glm53-flash-official-487ecf187
     - VLLM_LOGGING_LEVEL=INFO
     - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
     - TORCH_SHOW_CPP_STACKTRACES=1
@@ -428,7 +426,7 @@ services:
               device_ids: ["4","5","6","7"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:z-ai/glm-5.3-flash","model_path:zai-org/GLM-5.3-Flash","served_model:z-ai/glm-5.3-flash","precision:fp8-weights-bf16-kv","deployment:glm53-flash-hicache-gpu03","config_variant:vllm-385dce36-tp4-mtp5-bf16kv-nccl-deepgemm","request_logging:disabled","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:2"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:z-ai/glm-5.3-flash","model_path:zai-org/GLM-5.3-Flash","served_model:z-ai/glm-5.3-flash","precision:fp8-weights-bf16-kv","deployment:glm53-flash-hicache-gpu03","config_variant:vllm-487ecf187-tp4-mtp5-bf16kv-nccl-no-fi-autotune","request_logging:disabled","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:2"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
@@ -440,7 +438,7 @@ services:
       nearai.otel.model_path: "zai-org/GLM-5.3-Flash"
       nearai.otel.served_model: "z-ai/glm-5.3-flash"
       nearai.otel.deployment: "glm53-flash-hicache-gpu03"
-      nearai.otel.config_variant: "vllm-385dce36-tp4-mtp5-bf16kv-nccl-deepgemm"
+      nearai.otel.config_variant: "vllm-487ecf187-tp4-mtp5-bf16kv-nccl-no-fi-autotune"
       nearai.otel.request_logging: "disabled"
       nearai.otel.instance: "2"
       nearai.otel.env: "${ENV}"
