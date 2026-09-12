@@ -115,6 +115,7 @@ services:
       - |
         set -euo pipefail
         python3 - <<'PY'
+        import ctypes
         import json
         import torch
 
@@ -171,6 +172,67 @@ services:
             }
         finally:
             del pinned
+
+        class CudaMemLocation(ctypes.Structure):
+            _fields_ = [("type", ctypes.c_int), ("id", ctypes.c_int)]
+
+        managed_ptr = ctypes.c_void_p()
+        managed_runtime = ctypes.CDLL("libcudart.so")
+        managed_runtime.cudaMallocManaged.argtypes = [
+            ctypes.POINTER(ctypes.c_void_p), ctypes.c_size_t, ctypes.c_uint
+        ]
+        managed_runtime.cudaMemAdvise.argtypes = [
+            ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int, CudaMemLocation
+        ]
+        managed_runtime.cudaMemPrefetchAsync.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_size_t,
+            CudaMemLocation,
+            ctypes.c_uint,
+            ctypes.c_void_p,
+        ]
+        managed_runtime.cudaDeviceSynchronize.argtypes = []
+        managed_runtime.cudaFree.argtypes = [ctypes.c_void_p]
+        managed_runtime.cudaGetErrorString.argtypes = [ctypes.c_int]
+        managed_runtime.cudaGetErrorString.restype = ctypes.c_char_p
+        managed_rc = managed_runtime.cudaMallocManaged(
+            ctypes.byref(managed_ptr), result["bytes"], 1
+        )
+        try:
+            if managed_rc == 0:
+                managed_rc = managed_runtime.cudaMemAdvise(
+                    managed_ptr,
+                    result["bytes"],
+                    3,
+                    CudaMemLocation(2, 0),
+                )
+            if managed_rc == 0:
+                managed_rc = managed_runtime.cudaMemAdvise(
+                    managed_ptr,
+                    result["bytes"],
+                    5,
+                    CudaMemLocation(1, 0),
+                )
+            if managed_rc == 0:
+                managed_rc = managed_runtime.cudaMemPrefetchAsync(
+                    managed_ptr,
+                    result["bytes"],
+                    CudaMemLocation(2, 0),
+                    0,
+                    None,
+                )
+            if managed_rc == 0:
+                managed_rc = managed_runtime.cudaDeviceSynchronize()
+            result["cuda_managed_cpu_prefetch"] = {
+                "ok": managed_rc == 0,
+                "rc": managed_rc,
+                "error": None
+                if managed_rc == 0
+                else managed_runtime.cudaGetErrorString(managed_rc).decode(),
+            }
+        finally:
+            if managed_ptr.value:
+                managed_runtime.cudaFree(managed_ptr)
         print(json.dumps(result, sort_keys=True), flush=True)
         PY
     environment:
