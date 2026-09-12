@@ -324,7 +324,7 @@ services:
 
   model-sg-glm53-w4afp8-tp8-hicache:
     <<: *nvidia
-    image: lmsysorg/sglang@sha256:d6e7288627be8b02be88e4bba38e73f6d50e2826869f753c13a4c4385ab3eda9
+    image: nearaidev/sglang@sha256:c2e9130e044b1d0d22fbd08ee1a9fed275ded0285091757c7efc3a43dd48c127
     container_name: model-sg-glm53-w4afp8-tp8-hicache
     init: true
     entrypoint: ["/opt/nvidia/nvidia_entrypoint.sh", "/bin/bash", "-lc"]
@@ -366,10 +366,10 @@ services:
           --otlp-traces-endpoint otelcol-contrib:4317 \
           --enable-request-time-stats-logging \
           --enable-hierarchical-cache \
-          --hicache-ratio 1.5 \
+          --hicache-size 68.72 \
           --hicache-write-policy write_through \
-          --hicache-io-backend direct \
-          --hicache-mem-layout page_first_direct \
+          --hicache-io-backend kernel \
+          --hicache-mem-layout page_first \
           --trust-remote-code
     ports:
       - "8004:8000"
@@ -391,6 +391,7 @@ services:
       TORCHINDUCTOR_CACHE_DIR: /root/.cache/torchinductor
       TRITON_CACHE_DIR: /root/.cache/sglang/triton
       SGLANG_ENABLE_JIT_DEEPGEMM: "0"
+      SGLANG_HICACHE_CUDA_MANAGED_MEMORY: "1"
     deploy:
       resources:
         reservations:
@@ -402,7 +403,7 @@ services:
     stop_grace_period: 5m
     logging: *logging-conf
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3","model_path:PhalaCloud/GLM-5.3-W4AFP8","precision:w4afp8-fp8kv","deployment:glm53-gpu23-hicache-bench","config_variant:sglang-v0.5.19-w4afp8-tp8-hicache-r1.5-direct-pfd-wt","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8004"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3","model_path:PhalaCloud/GLM-5.3-W4AFP8","precision:w4afp8-fp8kv","deployment:glm53-gpu23-hicache-bench","config_variant:sglang-v0.5.19-w4afp8-tp8-hicache-managed-68.72gb-kernel-pf-wt","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8004"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -417,7 +418,7 @@ services:
       nearai.otel.host_machine: "${CVM_HOST}"
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
-      nearai.otel.config_variant: "sglang-v0.5.19-w4afp8-tp8-no-dg-jit-hicache-r1.5-direct-pfd-wt"
+      nearai.otel.config_variant: "sglang-v0.5.19-w4afp8-tp8-no-dg-jit-hicache-managed-68.72gb-kernel-pf-wt"
 
   model-vllm-glm53-fp8-tp8:
     <<: *nvidia
