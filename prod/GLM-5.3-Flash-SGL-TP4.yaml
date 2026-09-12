@@ -65,7 +65,7 @@ x-vllm-proxy-common: &vllm-proxy-common
 x-sg-glm53-flash-common: &sg-glm53-flash-common
   <<: *nvidia
   init: true
-  image: docker.io/nearaidev/sglang@sha256:1791aea3522fedd437f1357fd5119bde187b5a335977d4df81a9a2b0fd528d9b
+  image: docker.io/nearaidev/sglang@sha256:4a1a59791bcf752ef6f8bc898f6b81b681a524f3ae61064fff744a49d2cd4946
   command: >
       sglang serve
       --model-path /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/84c6a6aa9497188e15a635ba793b0f95a79b1033
@@ -356,7 +356,7 @@ services:
   model-sg-glm53-fp8-tp4-r2:
     <<: *sg-glm53-flash-common
     container_name: model-sg-glm53-fp8-tp4-r2
-    image: docker.io/nearaidev/sglang@sha256:1791aea3522fedd437f1357fd5119bde187b5a335977d4df81a9a2b0fd528d9b
+    image: docker.io/nearaidev/sglang@sha256:4a1a59791bcf752ef6f8bc898f6b81b681a524f3ae61064fff744a49d2cd4946
     command: >
         sglang serve
         --model-path /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/84c6a6aa9497188e15a635ba793b0f95a79b1033
@@ -453,7 +453,7 @@ services:
   # Operator-only HCC capability probe. It verifies the exact CUDA memory
   # semantics needed by a host-cache fallback without loading model weights.
   hicache-hcc-probe:
-    image: docker.io/nearaidev/sglang@sha256:1791aea3522fedd437f1357fd5119bde187b5a335977d4df81a9a2b0fd528d9b
+    image: docker.io/nearaidev/sglang@sha256:4a1a59791bcf752ef6f8bc898f6b81b681a524f3ae61064fff744a49d2cd4946
     container_name: hicache-hcc-probe
     profiles: ["verification"]
     runtime: nvidia
