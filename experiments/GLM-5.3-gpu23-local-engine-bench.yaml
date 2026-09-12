@@ -102,6 +102,89 @@ services:
     labels:
       com.datadoghq.ad.logs: '[{"source":"host-probe","service":"host-probe","tags":["model:z-ai/glm-5.3","deployment:glm53-gpu23-local-bench","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
 
+  hicache-cuda-host-probe-gpu23:
+    <<: *nvidia
+    image: lmsysorg/sglang@sha256:d6e7288627be8b02be88e4bba38e73f6d50e2826869f753c13a4c4385ab3eda9
+    container_name: hicache-cuda-host-probe-gpu23
+    user: "0:0"
+    entrypoint: ["/bin/bash", "-lc"]
+    command:
+      - |
+        set -euo pipefail
+        python3 - <<'PY'
+        import json
+        import torch
+
+        from sglang.srt.mem_cache.pool_host.common import (
+            HostTensorAllocator,
+            alloc_with_host_register,
+        )
+
+        torch.cuda.set_device(0)
+        result = {
+            "probe_version": "gpu23-cuda-host-v1",
+            "device": torch.cuda.get_device_name(0),
+            "bytes": 64 * 1024 * 1024,
+        }
+        registered = None
+        try:
+            registered = alloc_with_host_register(
+                (result["bytes"],),
+                torch.uint8,
+                "cpu",
+                True,
+                HostTensorAllocator(),
+                registration_granularity_bytes=2 * 1024 * 1024,
+            )
+            registered[:4096].copy_(torch.arange(4096, dtype=torch.int64).to(torch.uint8))
+            copied = registered[:4096].to("cuda", non_blocking=True).cpu()
+            result["cuda_host_register"] = {
+                "ok": bool(torch.equal(copied, registered[:4096])),
+                "error_type": None,
+            }
+        except Exception as exc:
+            result["cuda_host_register"] = {
+                "ok": False,
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+            }
+        finally:
+            del registered
+
+        pinned = None
+        try:
+            pinned = torch.empty(result["bytes"], dtype=torch.uint8, pin_memory=True)
+            pinned[:4096].copy_(torch.arange(4096, dtype=torch.int64).to(torch.uint8))
+            copied = pinned[:4096].to("cuda", non_blocking=True).cpu()
+            result["cuda_malloc_host"] = {
+                "ok": bool(torch.equal(copied, pinned[:4096])),
+                "error_type": None,
+            }
+        except Exception as exc:
+            result["cuda_malloc_host"] = {
+                "ok": False,
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+            }
+        finally:
+            del pinned
+        print(json.dumps(result, sort_keys=True), flush=True)
+        PY
+    environment:
+      NVIDIA_VISIBLE_DEVICES: "0"
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["0"]
+              capabilities: [gpu]
+    restart: "no"
+    logging: *logging-conf
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"host-probe","service":"host-probe","tags":["model:z-ai/glm-5.3","deployment:glm53-gpu23-hicache-bench","probe:cuda-host","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+
   download-glm53-w4afp8:
     image: ghcr.io/astral-sh/uv:python3.11-bookworm-slim@sha256:4f5d923c9dcea037f57bda425dd209f3ec643da2f0b74227f68d09dab0b3bb36
     container_name: download-glm53-w4afp8
@@ -177,7 +260,7 @@ services:
           --context-length 1048576 \
           --dist-init-addr 127.0.0.1:29500 \
           --watchdog-timeout 1800 \
-          --log-level warning \
+          --log-level info \
           --api-key "$$PROXY_TOKEN" \
           --host 0.0.0.0 \
           --port 8000 \
