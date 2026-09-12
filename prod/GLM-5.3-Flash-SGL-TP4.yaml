@@ -65,7 +65,7 @@ x-vllm-proxy-common: &vllm-proxy-common
 x-sg-glm53-flash-common: &sg-glm53-flash-common
   <<: *nvidia
   init: true
-  image: docker.io/nearaidev/sglang@sha256:00368ca0dc0ab82adb9a8c1fcdf54895fe2b5ca3352a22870abde9432d2913fb
+  image: docker.io/nearaidev/sglang@sha256:1791aea3522fedd437f1357fd5119bde187b5a335977d4df81a9a2b0fd528d9b
   command: >
       sglang serve
       --model-path /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/84c6a6aa9497188e15a635ba793b0f95a79b1033
@@ -329,7 +329,7 @@ services:
               device_ids: ["0","1","2","3"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:zai-org/GLM-5.3-Flash","served_model:z-ai/glm-5.3-flash","precision:fp8-weights-bf16-kv","deployment:glm53-flash-hicache-gpu03","config_variant:fc91d24-hicache-managed-host-preferred-kernel-hcc-tp4-ep4-eagle-adaptive-5-1-6","request_logging:full-synthetic","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:1"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:zai-org/GLM-5.3-Flash","served_model:z-ai/glm-5.3-flash","precision:fp8-weights-bf16-kv","deployment:glm53-flash-hicache-gpu03","config_variant:fc91d24-hicache-managed-host-prefetch-kernel-hcc-tp4-ep4-eagle-adaptive-5-1-6","request_logging:full-synthetic","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:1"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -341,7 +341,7 @@ services:
       nearai.otel.model_path: "zai-org/GLM-5.3-Flash"
       nearai.otel.served_model: "z-ai/glm-5.3-flash"
       nearai.otel.deployment: "glm53-flash-hicache-gpu03"
-      nearai.otel.config_variant: "fc91d24-hicache-managed-host-preferred-kernel-hcc-tp4-ep4-eagle-adaptive-5-1-6"
+      nearai.otel.config_variant: "fc91d24-hicache-managed-host-prefetch-kernel-hcc-tp4-ep4-eagle-adaptive-5-1-6"
       nearai.otel.thinking_budget_policy: "default8192-public-to-native"
       nearai.otel.request_logging: "full-synthetic"
       nearai.otel.instance: "1"
@@ -355,7 +355,7 @@ services:
   model-sg-glm53-fp8-tp4-r2:
     <<: *sg-glm53-flash-common
     container_name: model-sg-glm53-fp8-tp4-r2
-    image: docker.io/nearaidev/sglang@sha256:00368ca0dc0ab82adb9a8c1fcdf54895fe2b5ca3352a22870abde9432d2913fb
+    image: docker.io/nearaidev/sglang@sha256:1791aea3522fedd437f1357fd5119bde187b5a335977d4df81a9a2b0fd528d9b
     command: >
         sglang serve
         --model-path /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/84c6a6aa9497188e15a635ba793b0f95a79b1033
@@ -426,7 +426,7 @@ services:
               device_ids: ["4","5","6","7"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:zai-org/GLM-5.3-Flash","served_model:z-ai/glm-5.3-flash","precision:fp8-weights-bf16-kv","deployment:glm53-flash-hicache-gpu03","config_variant:fc91d24-hicache-managed-host-preferred-kernel-hcc-tp4-ep4-eagle-adaptive-5-1-6","request_logging:full-synthetic","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:2"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:zai-org/GLM-5.3-Flash","served_model:z-ai/glm-5.3-flash","precision:fp8-weights-bf16-kv","deployment:glm53-flash-hicache-gpu03","config_variant:fc91d24-hicache-managed-host-prefetch-kernel-hcc-tp4-ep4-eagle-adaptive-5-1-6","request_logging:full-synthetic","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:2"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -438,7 +438,7 @@ services:
       nearai.otel.model_path: "zai-org/GLM-5.3-Flash"
       nearai.otel.served_model: "z-ai/glm-5.3-flash"
       nearai.otel.deployment: "glm53-flash-hicache-gpu03"
-      nearai.otel.config_variant: "fc91d24-hicache-managed-host-preferred-kernel-hcc-tp4-ep4-eagle-adaptive-5-1-6"
+      nearai.otel.config_variant: "fc91d24-hicache-managed-host-prefetch-kernel-hcc-tp4-ep4-eagle-adaptive-5-1-6"
       nearai.otel.thinking_budget_policy: "default8192-public-to-native"
       nearai.otel.request_logging: "full-synthetic"
       nearai.otel.instance: "2"
@@ -451,7 +451,7 @@ services:
   # Operator-only HCC capability probe. It verifies the exact CUDA memory
   # semantics needed by a host-cache fallback without loading model weights.
   hicache-hcc-probe:
-    image: docker.io/nearaidev/sglang@sha256:00368ca0dc0ab82adb9a8c1fcdf54895fe2b5ca3352a22870abde9432d2913fb
+    image: docker.io/nearaidev/sglang@sha256:1791aea3522fedd437f1357fd5119bde187b5a335977d4df81a9a2b0fd528d9b
     container_name: hicache-hcc-probe
     profiles: ["verification"]
     runtime: nvidia
@@ -987,7 +987,7 @@ configs:
                       ip: "${HOST_IP}"
                       port: "8000"
                       instance: "1"
-                      config_variant: "fc91d24-hicache-managed-host-preferred-kernel-hcc-tp4-ep4-eagle-adaptive-5-1-6"
+                      config_variant: "fc91d24-hicache-managed-host-prefetch-kernel-hcc-tp4-ep4-eagle-adaptive-5-1-6"
                       thinking_budget_policy: "default8192-public-to-native"
                       request_logging: "full-synthetic"
               - job_name: sglang-model-sg-glm53-fp8-tp4-r2
@@ -1011,7 +1011,7 @@ configs:
                       ip: "${HOST_IP}"
                       port: "8000"
                       instance: "2"
-                      config_variant: "fc91d24-hicache-managed-host-preferred-kernel-hcc-tp4-ep4-eagle-adaptive-5-1-6"
+                      config_variant: "fc91d24-hicache-managed-host-prefetch-kernel-hcc-tp4-ep4-eagle-adaptive-5-1-6"
                       thinking_budget_policy: "default8192-public-to-native"
                       request_logging: "full-synthetic"
               - job_name: dcgm-dcgm-glm53
