@@ -11,6 +11,9 @@
 # follows the official GLM-5.3 FP8 recipe with BF16 KV (the Hopper sparse MLA
 # backends reject FP8 KV) and uses a 500K cap. Prefix caching remains enabled
 # for the agentic replay; clean synthetic runs are recorded separately.
+# DeepGEMM JIT is disabled identically on the SGLang control and HiCache arms:
+# the stock first-start precompile did not expose an API after two hours. The
+# model's W4AFP8 MoE path remains the revision's CUTLASS W4A8 implementation.
 
 name: glm53-gpu23-bench
 
@@ -290,6 +293,7 @@ services:
       PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
       TORCHINDUCTOR_CACHE_DIR: /root/.cache/torchinductor
       TRITON_CACHE_DIR: /root/.cache/sglang/triton
+      SGLANG_ENABLE_JIT_DEEPGEMM: "0"
     deploy:
       resources:
         reservations:
@@ -316,7 +320,7 @@ services:
       nearai.otel.host_machine: "${CVM_HOST}"
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
-      nearai.otel.config_variant: "sglang-v0.5.19-w4afp8-tp8-long-prefill"
+      nearai.otel.config_variant: "sglang-v0.5.19-w4afp8-tp8-no-dg-jit"
 
   model-sg-glm53-w4afp8-tp8-hicache:
     <<: *nvidia
@@ -386,6 +390,7 @@ services:
       PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
       TORCHINDUCTOR_CACHE_DIR: /root/.cache/torchinductor
       TRITON_CACHE_DIR: /root/.cache/sglang/triton
+      SGLANG_ENABLE_JIT_DEEPGEMM: "0"
     deploy:
       resources:
         reservations:
@@ -412,7 +417,7 @@ services:
       nearai.otel.host_machine: "${CVM_HOST}"
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
-      nearai.otel.config_variant: "sglang-v0.5.19-w4afp8-tp8-hicache-r1.5-direct-pfd-wt"
+      nearai.otel.config_variant: "sglang-v0.5.19-w4afp8-tp8-no-dg-jit-hicache-r1.5-direct-pfd-wt"
 
   model-vllm-glm53-fp8-tp8:
     <<: *nvidia
