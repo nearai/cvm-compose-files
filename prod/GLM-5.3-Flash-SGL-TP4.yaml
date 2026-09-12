@@ -149,7 +149,9 @@ x-vllm-glm53-flash-common: &vllm-glm53-flash-common
   # gpu03 exposes an NVLink bridge-only H200 island. vLLM's custom all-reduce
   # fails CUDA-graph capture on this topology with custom_all_reduce.cuh:164;
   # use NCCL instead. Keep FlashInfer autotuning disabled to match the
-  # qualified upstream GLM-5.3-Flash image configuration.
+  # qualified upstream GLM-5.3-Flash image configuration. Force DeepGEMM for
+  # the FP8 experts to isolate the corrupt first-token output seen with the
+  # automatically selected Triton MoE path on this host.
   command: >
       /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/84c6a6aa9497188e15a635ba793b0f95a79b1033
       --revision 84c6a6aa9497188e15a635ba793b0f95a79b1033
@@ -157,6 +159,7 @@ x-vllm-glm53-flash-common: &vllm-glm53-flash-common
       --tensor-parallel-size 4
       --disable-custom-all-reduce
       --no-enable-flashinfer-autotune
+      --moe-backend deep_gemm
       --enforce-eager
       --tool-call-parser glm47
       --reasoning-parser glm45
@@ -430,7 +433,7 @@ services:
               device_ids: ["4","5","6","7"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:z-ai/glm-5.3-flash","model_path:zai-org/GLM-5.3-Flash","served_model:z-ai/glm-5.3-flash","precision:fp8-weights-bf16-kv","deployment:glm53-flash-hicache-gpu03","config_variant:vllm-487ecf187-tp4-nospec-bf16kv-nccl-eager","request_logging:disabled","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:2"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:z-ai/glm-5.3-flash","model_path:zai-org/GLM-5.3-Flash","served_model:z-ai/glm-5.3-flash","precision:fp8-weights-bf16-kv","deployment:glm53-flash-hicache-gpu03","config_variant:vllm-487ecf187-tp4-nospec-bf16kv-nccl-eager-deepgemm-moe","request_logging:disabled","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:2"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
@@ -442,7 +445,7 @@ services:
       nearai.otel.model_path: "zai-org/GLM-5.3-Flash"
       nearai.otel.served_model: "z-ai/glm-5.3-flash"
       nearai.otel.deployment: "glm53-flash-hicache-gpu03"
-      nearai.otel.config_variant: "vllm-487ecf187-tp4-nospec-bf16kv-nccl-eager"
+      nearai.otel.config_variant: "vllm-487ecf187-tp4-nospec-bf16kv-nccl-eager-deepgemm-moe"
       nearai.otel.request_logging: "disabled"
       nearai.otel.instance: "2"
       nearai.otel.env: "${ENV}"
