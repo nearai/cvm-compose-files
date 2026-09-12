@@ -348,7 +348,7 @@ services:
           --speculative-eagle-topk 1 \
           --speculative-num-draft-tokens 4 \
           --chunked-prefill-size 32768 \
-          --mem-fraction-static 0.76 \
+          --mem-fraction-static 0.81 \
           --max-running-requests 48 \
           --max-queued-requests 64 \
           --cuda-graph-max-bs 64 \
@@ -403,7 +403,7 @@ services:
     stop_grace_period: 5m
     logging: *logging-conf
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3","model_path:PhalaCloud/GLM-5.3-W4AFP8","precision:w4afp8-fp8kv","deployment:glm53-gpu23-hicache-bench","config_variant:sglang-v0.5.19-w4afp8-tp8-hicache-managed-69gb-kernel-pf-wt","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8004"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3","model_path:PhalaCloud/GLM-5.3-W4AFP8","precision:w4afp8-fp8kv","deployment:glm53-gpu23-hicache-bench","config_variant:sglang-v0.5.19-w4afp8-tp8-hicache-managed-prefetch-69gb-kernel-pf-wt-mf81","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8004"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -418,7 +418,7 @@ services:
       nearai.otel.host_machine: "${CVM_HOST}"
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
-      nearai.otel.config_variant: "sglang-v0.5.19-w4afp8-tp8-no-dg-jit-hicache-managed-69gb-kernel-pf-wt"
+      nearai.otel.config_variant: "sglang-v0.5.19-w4afp8-tp8-no-dg-jit-hicache-managed-prefetch-69gb-kernel-pf-wt-mf81"
 
   model-vllm-glm53-fp8-tp8:
     <<: *nvidia

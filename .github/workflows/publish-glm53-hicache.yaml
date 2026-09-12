@@ -87,11 +87,11 @@ jobs:
           fi
 
           test "$(sha256sum "$BUILD_CONTEXT/Dockerfile" | awk '{print $1}')" = \
-            b50cc9e3945b047cc8a312541582c9f11a770c46ea56ef9cbff53fd371183632
+            7ff8f42422a36266cffaf4bfa743d1c2827931123ea843eff16c227305cb80d5
           test "$(sha256sum "$BUILD_CONTEXT/PROVENANCE" | awk '{print $1}')" = \
-            bbe2e5759f049155f4e81887e5323a76972902ccb47747f33700c85338484027
+            a31407f86b1fec4214ba89caf7ba485a326fe70f4bd31da96f632d4731db258c
           test "$(sha256sum "$BUILD_CONTEXT/SHA256SUMS" | awk '{print $1}')" = \
-            45d26e6852477be52735372021f3e6baa93039c3b6755b246577e36e119c5adc
+            e50edfe42a52d6346684468027717c3454a71d4c72b40e50522a06a19dbd3f2e
 
           echo "IMAGE_REF=${REGISTRY}/${IMAGE_REPOSITORY}:${IMAGE_TAG}" >> "$GITHUB_ENV"
 
@@ -159,7 +159,7 @@ jobs:
              .config.Labels["nearai.build.recipe"] == "docker/sglang-glm53-hicache/Dockerfile" and
              .config.Labels["nearai.build.source_revision"] == $source_revision and
              .config.Labels["nearai.sglang.source_revision"] == "0bcd822377da7b5718e674eaf9c870d349424dd1" and
-             .config.Labels["nearai.sglang.hcc_managed_memory"] == "v2-host-preferred-opt-in"' \
+             .config.Labels["nearai.sglang.hcc_managed_memory"] == "v3-host-prefetched-opt-in"' \
             image-config.json
 
       - name: Run CPU restore regressions in the published image

@@ -3,7 +3,7 @@ new file mode 100644
 index 000000000..1ab7fefb2
 --- /dev/null
 +++ b/test/registered/unit/mem_cache/test_hicache_hcc_managed_allocator.py
-@@ -0,0 +1,147 @@
+@@ -0,0 +1,192 @@
 +import ctypes
 +import os
 +import unittest
@@ -25,6 +25,10 @@ index 000000000..1ab7fefb2
 +        self.device = 2
 +        self.advice_calls = []
 +        self.fail_advice = None
++        self.prefetch_calls = []
++        self.synchronize_calls = 0
++        self.fail_prefetch = False
++        self.fail_synchronize = False
 +
 +    def cudaMallocManaged(self, ptr_out, size: int, flags: int):
 +        assert size == len(self.backing)
@@ -41,6 +45,16 @@ index 000000000..1ab7fefb2
 +            (ptr.value, size, advice, location.type, location.id)
 +        )
 +        return 17 if advice == self.fail_advice else 0
++
++    def cudaMemPrefetchAsync(self, ptr, size: int, location, flags: int, stream):
++        self.prefetch_calls.append(
++            (ptr.value, size, location.type, location.id, flags, stream)
++        )
++        return 17 if self.fail_prefetch else 0
++
++    def cudaDeviceSynchronize(self):
++        self.synchronize_calls += 1
++        return 17 if self.fail_synchronize else 0
 +
 +    def cudaFree(self, ptr):
 +        self.freed.append(ptr.value)
@@ -132,9 +146,40 @@ index 000000000..1ab7fefb2
 +                (cudart.ptr, size, 5, 1, cudart.device),
 +            ],
 +        )
++        self.assertEqual(
++            cudart.prefetch_calls,
++            [(cudart.ptr, size, 2, 0, 0, None)],
++        )
++        self.assertEqual(cudart.synchronize_calls, 1)
 +        owner.release()
 +        owner.release()
 +        self.assertEqual(cudart.freed, [cudart.ptr])
++
++    def test_managed_allocator_frees_allocation_when_cpu_prefetch_fails(self):
++        size = 64
++        cudart = _FakeManagedCudart(size)
++        cudart.fail_prefetch = True
++        with (
++            mock.patch.object(common, "_load_cudart", return_value=cudart),
++            self.assertRaisesRegex(RuntimeError, "cudaMemPrefetchAsync to CPU"),
++        ):
++            common._alloc_cuda_managed((size,), torch.uint8, "cpu")
++
++        self.assertEqual(cudart.freed, [cudart.ptr])
++        self.assertEqual(cudart.synchronize_calls, 0)
++
++    def test_managed_allocator_frees_allocation_when_prefetch_sync_fails(self):
++        size = 64
++        cudart = _FakeManagedCudart(size)
++        cudart.fail_synchronize = True
++        with (
++            mock.patch.object(common, "_load_cudart", return_value=cudart),
++            self.assertRaisesRegex(RuntimeError, "after CPU prefetch"),
++        ):
++            common._alloc_cuda_managed((size,), torch.uint8, "cpu")
++
++        self.assertEqual(cudart.freed, [cudart.ptr])
++        self.assertEqual(cudart.synchronize_calls, 1)
 +
 +    def test_managed_allocator_frees_allocation_when_memory_advice_fails(self):
 +        size = 64

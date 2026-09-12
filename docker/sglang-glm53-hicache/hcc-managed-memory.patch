@@ -12,7 +12,7 @@ index df7240298..9762087e1 100644
  import os
  from collections import defaultdict
  
-@@ -14,6 +16,164 @@ from sglang.srt.runtime_context import get_memory
+@@ -14,6 +16,193 @@ from sglang.srt.runtime_context import get_memory
  logger = logging.getLogger(__name__)
  
  _CUDA_HOST_REGISTERED_RANGES_ATTR = "_sglang_cuda_host_registered_ranges"
@@ -54,6 +54,16 @@ index df7240298..9762087e1 100644
 +        _CudaMemLocation,
 +    ]
 +    cudart.cudaMemAdvise.restype = ctypes.c_int
++    cudart.cudaMemPrefetchAsync.argtypes = [
++        ctypes.c_void_p,
++        ctypes.c_size_t,
++        _CudaMemLocation,
++        ctypes.c_uint,
++        ctypes.c_void_p,
++    ]
++    cudart.cudaMemPrefetchAsync.restype = ctypes.c_int
++    cudart.cudaDeviceSynchronize.argtypes = []
++    cudart.cudaDeviceSynchronize.restype = ctypes.c_int
 +    cudart.cudaFree.argtypes = [ctypes.c_void_p]
 +    cudart.cudaFree.restype = ctypes.c_int
 +    cudart.cudaGetErrorString.argtypes = [ctypes.c_int]
@@ -154,6 +164,24 @@ index df7240298..9762087e1 100644
 +                    f"ptr={ptr:#x} size={size} location_type={location.type} "
 +                    f"location_id={location.id}"
 +                )
++        host_location = _CudaMemLocation(_CUDA_MEM_LOCATION_TYPE_HOST, 0)
++        rc = cudart.cudaMemPrefetchAsync(
++            ctypes.c_void_p(ptr), size, host_location, 0, None
++        )
++        if int(rc) != 0:
++            raise RuntimeError(
++                "cudaMemPrefetchAsync to CPU failed for managed HiCache memory "
++                f"(rc={int(rc)}, {_cuda_error_string(cudart, rc)}) "
++                f"ptr={ptr:#x} size={size}"
++            )
++        rc = cudart.cudaDeviceSynchronize()
++        if int(rc) != 0:
++            raise RuntimeError(
++                "cudaDeviceSynchronize after CPU prefetch failed for managed "
++                "HiCache memory "
++                f"(rc={int(rc)}, {_cuda_error_string(cudart, rc)}) "
++                f"ptr={ptr:#x} size={size}"
++            )
 +        backing = (ctypes.c_ubyte * size).from_address(ptr)
 +        byte_buffer = torch.frombuffer(backing, dtype=torch.uint8, count=size)
 +        buffer = byte_buffer.view(dtype).view(dims)
@@ -168,7 +196,8 @@ index df7240298..9762087e1 100644
 +    setattr(buffer, _CUDA_HOST_REGISTERED_RANGES_ATTR, [])
 +    logger.info(
 +        "Allocated %.2f GiB CUDA managed memory for HiCache because %s=1; "
-+        "preferred_location=cpu accessed_by_device=%d; cudaHostRegister is not used",
++        "preferred_location=cpu accessed_by_device=%d prefetched_to=cpu; "
++        "cudaHostRegister is not used",
 +        size / 1024**3,
 +        _CUDA_MANAGED_MEMORY_ENV,
 +        int(current_device.value),
@@ -177,7 +206,7 @@ index df7240298..9762087e1 100644
  
  
  class HostTensorAllocator:
-@@ -229,6 +389,14 @@ def alloc_with_host_register(
+@@ -229,6 +418,14 @@ def alloc_with_host_register(
      Allocate tensor and register host memory with cudaHostRegister.
      CudaHostRegister only applies when pin_memory=True.
      """
