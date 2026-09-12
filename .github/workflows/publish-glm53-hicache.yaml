@@ -167,7 +167,18 @@ jobs:
       - name: Run CPU restore regressions in the published image
         run: |
           set -euo pipefail
-          docker run --rm --runtime=runc --network=none --memory=16g \
+          for attempt in 1 2 3 4 5; do
+            if docker pull "$IMAGE_IMMUTABLE_REF"; then
+              break
+            fi
+            if [[ "$attempt" -eq 5 ]]; then
+              echo "Failed to pull immutable image after $attempt attempts" >&2
+              exit 1
+            fi
+            sleep "$((attempt * 10))"
+          done
+          docker image inspect "$IMAGE_IMMUTABLE_REF" >/dev/null
+          docker run --pull=never --rm --runtime=runc --network=none --memory=16g \
             --entrypoint=bash "$IMAGE_IMMUTABLE_REF" \
             /usr/share/nearai/glm53-hicache/test-cpu.sh | tee cpu-tests.txt
 
