@@ -19,3 +19,16 @@ RUN test -n "$BUILD_SOURCE_REVISION" \
     && cd /usr/share/nearai/glm53-hicache \
     && sha256sum --check --strict SHA256SUMS \
     && python3 apply-patches.py
+
+# The pinned upstream image contains an old NLTK wheel and an unused Nsight EFA
+# metrics helper that trip the fixable-critical release gate. Upgrade NLTK from
+# a hash-pinned wheel without resolving new dependencies, and remove only the
+# affected non-serving helper binary.
+RUN printf '%s\n' \
+      'nltk==3.10.3 --hash=sha256:ff9598a8e20518ee0d557745890cc4435b9578489e2dcbc69c4f81fa060caf7c' \
+      > /tmp/nltk-requirement.txt \
+    && python3 -m pip install --no-cache-dir --no-deps --require-hashes \
+      --requirement /tmp/nltk-requirement.txt \
+    && test -x /opt/nvidia/nsight-compute/2025.3.1/host/target-linux-x64/plugins/efa_metrics/nic_sampler \
+    && rm -f /opt/nvidia/nsight-compute/2025.3.1/host/target-linux-x64/plugins/efa_metrics/nic_sampler \
+    && rm -f /tmp/nltk-requirement.txt

@@ -87,11 +87,11 @@ jobs:
           fi
 
           test "$(sha256sum "$BUILD_CONTEXT/Dockerfile" | awk '{print $1}')" = \
-            5ca1c99fab1521476dda9f351b4572b9aa35e249f9f569efdfea9e6cf403127e
+            b50cc9e3945b047cc8a312541582c9f11a770c46ea56ef9cbff53fd371183632
           test "$(sha256sum "$BUILD_CONTEXT/PROVENANCE" | awk '{print $1}')" = \
             bbe2e5759f049155f4e81887e5323a76972902ccb47747f33700c85338484027
           test "$(sha256sum "$BUILD_CONTEXT/SHA256SUMS" | awk '{print $1}')" = \
-            735526def624b69e5fe22d322373f829d96d647c4296cd3ec91f407d09c26969
+            45d26e6852477be52735372021f3e6baa93039c3b6755b246577e36e119c5adc
 
           echo "IMAGE_REF=${REGISTRY}/${IMAGE_REPOSITORY}:${IMAGE_TAG}" >> "$GITHUB_ENV"
 
