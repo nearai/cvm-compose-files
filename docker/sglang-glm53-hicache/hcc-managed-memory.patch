@@ -12,12 +12,20 @@ index df7240298..9762087e1 100644
  import os
  from collections import defaultdict
  
-@@ -14,6 +16,116 @@ from sglang.srt.runtime_context import get_memory
+@@ -14,6 +16,164 @@ from sglang.srt.runtime_context import get_memory
  logger = logging.getLogger(__name__)
  
  _CUDA_HOST_REGISTERED_RANGES_ATTR = "_sglang_cuda_host_registered_ranges"
 +_CUDA_MANAGED_ALLOCATION_ATTR = "_sglang_cuda_managed_allocation"
 +_CUDA_MANAGED_MEMORY_ENV = "SGLANG_HICACHE_CUDA_MANAGED_MEMORY"
++_CUDA_MEM_LOCATION_TYPE_DEVICE = 1
++_CUDA_MEM_LOCATION_TYPE_HOST = 2
++_CUDA_MEM_ADVISE_SET_PREFERRED_LOCATION = 3
++_CUDA_MEM_ADVISE_SET_ACCESSED_BY = 5
++
++
++class _CudaMemLocation(ctypes.Structure):
++    _fields_ = [("type", ctypes.c_int), ("id", ctypes.c_int)]
 +
 +
 +def _cuda_error_string(cudart, rc) -> str:
@@ -37,6 +45,15 @@ index df7240298..9762087e1 100644
 +        ctypes.c_uint,
 +    ]
 +    cudart.cudaMallocManaged.restype = ctypes.c_int
++    cudart.cudaGetDevice.argtypes = [ctypes.POINTER(ctypes.c_int)]
++    cudart.cudaGetDevice.restype = ctypes.c_int
++    cudart.cudaMemAdvise.argtypes = [
++        ctypes.c_void_p,
++        ctypes.c_size_t,
++        ctypes.c_int,
++        _CudaMemLocation,
++    ]
++    cudart.cudaMemAdvise.restype = ctypes.c_int
 +    cudart.cudaFree.argtypes = [ctypes.c_void_p]
 +    cudart.cudaFree.restype = ctypes.c_int
 +    cudart.cudaGetErrorString.argtypes = [ctypes.c_int]
@@ -107,6 +124,36 @@ index df7240298..9762087e1 100644
 +        )
 +    ptr = int(raw_ptr.value or 0)
 +    try:
++        current_device = ctypes.c_int()
++        rc = cudart.cudaGetDevice(ctypes.byref(current_device))
++        if int(rc) != 0:
++            raise RuntimeError(
++                "cudaGetDevice failed while configuring managed HiCache memory "
++                f"(rc={int(rc)}, {_cuda_error_string(cudart, rc)})"
++            )
++        for advice, location, description in (
++            (
++                _CUDA_MEM_ADVISE_SET_PREFERRED_LOCATION,
++                _CudaMemLocation(_CUDA_MEM_LOCATION_TYPE_HOST, 0),
++                "CPU preferred location",
++            ),
++            (
++                _CUDA_MEM_ADVISE_SET_ACCESSED_BY,
++                _CudaMemLocation(
++                    _CUDA_MEM_LOCATION_TYPE_DEVICE, int(current_device.value)
++                ),
++                "current GPU access",
++            ),
++        ):
++            rc = cudart.cudaMemAdvise(ctypes.c_void_p(ptr), size, advice, location)
++            if int(rc) != 0:
++                raise RuntimeError(
++                    f"cudaMemAdvise failed for {description} on managed "
++                    "HiCache memory "
++                    f"(rc={int(rc)}, {_cuda_error_string(cudart, rc)}) "
++                    f"ptr={ptr:#x} size={size} location_type={location.type} "
++                    f"location_id={location.id}"
++                )
 +        backing = (ctypes.c_ubyte * size).from_address(ptr)
 +        byte_buffer = torch.frombuffer(backing, dtype=torch.uint8, count=size)
 +        buffer = byte_buffer.view(dtype).view(dims)
@@ -121,15 +168,16 @@ index df7240298..9762087e1 100644
 +    setattr(buffer, _CUDA_HOST_REGISTERED_RANGES_ATTR, [])
 +    logger.info(
 +        "Allocated %.2f GiB CUDA managed memory for HiCache because %s=1; "
-+        "cudaHostRegister is not used",
++        "preferred_location=cpu accessed_by_device=%d; cudaHostRegister is not used",
 +        size / 1024**3,
 +        _CUDA_MANAGED_MEMORY_ENV,
++        int(current_device.value),
 +    )
 +    return buffer
  
  
  class HostTensorAllocator:
-@@ -229,6 +341,14 @@ def alloc_with_host_register(
+@@ -229,6 +389,14 @@ def alloc_with_host_register(
      Allocate tensor and register host memory with cudaHostRegister.
      CudaHostRegister only applies when pin_memory=True.
      """

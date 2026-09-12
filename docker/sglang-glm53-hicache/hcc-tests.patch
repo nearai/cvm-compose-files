@@ -3,7 +3,7 @@ new file mode 100644
 index 000000000..1ab7fefb2
 --- /dev/null
 +++ b/test/registered/unit/mem_cache/test_hicache_hcc_managed_allocator.py
-@@ -0,0 +1,115 @@
+@@ -0,0 +1,147 @@
 +import ctypes
 +import os
 +import unittest
@@ -22,12 +22,25 @@ index 000000000..1ab7fefb2
 +        self.backing = (ctypes.c_ubyte * size)()
 +        self.ptr = ctypes.addressof(self.backing)
 +        self.freed = []
++        self.device = 2
++        self.advice_calls = []
++        self.fail_advice = None
 +
 +    def cudaMallocManaged(self, ptr_out, size: int, flags: int):
 +        assert size == len(self.backing)
 +        assert flags == 1
 +        ctypes.cast(ptr_out, ctypes.POINTER(ctypes.c_void_p))[0] = self.ptr
 +        return 0
++
++    def cudaGetDevice(self, device_out):
++        ctypes.cast(device_out, ctypes.POINTER(ctypes.c_int))[0] = self.device
++        return 0
++
++    def cudaMemAdvise(self, ptr, size: int, advice: int, location):
++        self.advice_calls.append(
++            (ptr.value, size, advice, location.type, location.id)
++        )
++        return 17 if advice == self.fail_advice else 0
 +
 +    def cudaFree(self, ptr):
 +        self.freed.append(ptr.value)
@@ -112,8 +125,27 @@ index 000000000..1ab7fefb2
 +        self.assertEqual(
 +            getattr(buffer, common._CUDA_HOST_REGISTERED_RANGES_ATTR), []
 +        )
++        self.assertEqual(
++            cudart.advice_calls,
++            [
++                (cudart.ptr, size, 3, 2, 0),
++                (cudart.ptr, size, 5, 1, cudart.device),
++            ],
++        )
 +        owner.release()
 +        owner.release()
++        self.assertEqual(cudart.freed, [cudart.ptr])
++
++    def test_managed_allocator_frees_allocation_when_memory_advice_fails(self):
++        size = 64
++        cudart = _FakeManagedCudart(size)
++        cudart.fail_advice = 5
++        with (
++            mock.patch.object(common, "_load_cudart", return_value=cudart),
++            self.assertRaisesRegex(RuntimeError, "current GPU access"),
++        ):
++            common._alloc_cuda_managed((size,), torch.uint8, "cpu")
++
 +        self.assertEqual(cudart.freed, [cudart.ptr])
 +
 +

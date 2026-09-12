@@ -3,7 +3,7 @@ FROM docker.io/nearaidev/sglang@sha256:a7b7136abcf5e07522289d96e96fec9b42a1a30f9
 
 ARG BUILD_SOURCE_REVISION
 LABEL org.opencontainers.image.title="GLM-5.3 Flash HiCache pooled-transfer canary"
-LABEL org.opencontainers.image.description="Pinned fc91d24 with complete hybrid HiCache restore, pooled DMA, and opt-in HCC managed memory"
+LABEL org.opencontainers.image.description="Pinned fc91d24 with complete hybrid HiCache restore, pooled DMA, and host-preferred HCC managed memory"
 LABEL org.opencontainers.image.source="https://github.com/nearai/cvm-compose-files"
 LABEL org.opencontainers.image.revision="${BUILD_SOURCE_REVISION}"
 LABEL org.opencontainers.image.base.name="docker.io/nearaidev/sglang"
@@ -14,7 +14,7 @@ LABEL nearai.build.source_revision="${BUILD_SOURCE_REVISION}"
 LABEL nearai.sglang.source_revision="fc91d2403cc210a86bd5fc715c6609f58c932e5a"
 LABEL nearai.sglang.hicache_fix_revision="230102db838cbbe6eca7952c729518ee6d93c3a9"
 LABEL nearai.sglang.pooled_transfers="v1-opt-in"
-LABEL nearai.sglang.hcc_managed_memory="v1-opt-in"
+LABEL nearai.sglang.hcc_managed_memory="v2-host-preferred-opt-in"
 
 COPY . /usr/share/nearai/glm53-hicache/
 RUN test -n "$BUILD_SOURCE_REVISION" \

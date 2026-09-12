@@ -131,8 +131,11 @@ Set `SGLANG_HICACHE_CUDA_MANAGED_MEMORY=1` only in a CUDA confidential-computing
 guest whose runtime rejects `cudaHostRegister`. The opt-in replaces the normal
 anonymous-mmap plus host-registration allocation with `cudaMallocManaged`, wraps
 the allocation as the same CPU PyTorch tensor shape expected by HiCache, and
-records that the pool must not be unregistered on teardown. The default path is
-unchanged when the variable is absent.
+records that the pool must not be unregistered on teardown. It sets CPU as the
+preferred location and establishes access from the current rank's GPU before
+the tensor is exposed, preventing write-through cache pages from migrating into
+HBM under pressure. Either memory-advice failure aborts allocation and frees the
+managed range. The default path is unchanged when the variable is absent.
 
 The managed allocator accepts only the default in-process host store. It rejects
 SHM, Mooncake, MORI, and other external storage allocators rather than silently

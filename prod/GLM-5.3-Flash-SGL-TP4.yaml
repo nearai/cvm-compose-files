@@ -329,7 +329,7 @@ services:
               device_ids: ["0","1","2","3"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:zai-org/GLM-5.3-Flash","served_model:z-ai/glm-5.3-flash","precision:fp8-weights-bf16-kv","deployment:glm53-flash-hicache-gpu03","config_variant:fc91d24-hicache-managed-kernel-hcc-tp4-ep4-eagle-adaptive-5-1-6","request_logging:full-synthetic","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:1"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:zai-org/GLM-5.3-Flash","served_model:z-ai/glm-5.3-flash","precision:fp8-weights-bf16-kv","deployment:glm53-flash-hicache-gpu03","config_variant:fc91d24-hicache-managed-host-preferred-kernel-hcc-tp4-ep4-eagle-adaptive-5-1-6","request_logging:full-synthetic","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:1"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -341,7 +341,7 @@ services:
       nearai.otel.model_path: "zai-org/GLM-5.3-Flash"
       nearai.otel.served_model: "z-ai/glm-5.3-flash"
       nearai.otel.deployment: "glm53-flash-hicache-gpu03"
-      nearai.otel.config_variant: "fc91d24-hicache-managed-kernel-hcc-tp4-ep4-eagle-adaptive-5-1-6"
+      nearai.otel.config_variant: "fc91d24-hicache-managed-host-preferred-kernel-hcc-tp4-ep4-eagle-adaptive-5-1-6"
       nearai.otel.thinking_budget_policy: "default8192-public-to-native"
       nearai.otel.request_logging: "full-synthetic"
       nearai.otel.instance: "1"
@@ -426,7 +426,7 @@ services:
               device_ids: ["4","5","6","7"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:zai-org/GLM-5.3-Flash","served_model:z-ai/glm-5.3-flash","precision:fp8-weights-bf16-kv","deployment:glm53-flash-hicache-gpu03","config_variant:fc91d24-hicache-managed-kernel-hcc-tp4-ep4-eagle-adaptive-5-1-6","request_logging:full-synthetic","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:2"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:zai-org/GLM-5.3-Flash","served_model:z-ai/glm-5.3-flash","precision:fp8-weights-bf16-kv","deployment:glm53-flash-hicache-gpu03","config_variant:fc91d24-hicache-managed-host-preferred-kernel-hcc-tp4-ep4-eagle-adaptive-5-1-6","request_logging:full-synthetic","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:2"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -438,7 +438,7 @@ services:
       nearai.otel.model_path: "zai-org/GLM-5.3-Flash"
       nearai.otel.served_model: "z-ai/glm-5.3-flash"
       nearai.otel.deployment: "glm53-flash-hicache-gpu03"
-      nearai.otel.config_variant: "fc91d24-hicache-managed-kernel-hcc-tp4-ep4-eagle-adaptive-5-1-6"
+      nearai.otel.config_variant: "fc91d24-hicache-managed-host-preferred-kernel-hcc-tp4-ep4-eagle-adaptive-5-1-6"
       nearai.otel.thinking_budget_policy: "default8192-public-to-native"
       nearai.otel.request_logging: "full-synthetic"
       nearai.otel.instance: "2"
@@ -462,6 +462,8 @@ services:
     command:
       - |
         import ctypes, json, torch
+        class CudaMemLocation(ctypes.Structure):
+            _fields_ = [("type", ctypes.c_int), ("id", ctypes.c_int)]
         cudart = ctypes.CDLL("libcudart.so")
         cudart.cudaDeviceGetAttribute.argtypes = [
             ctypes.POINTER(ctypes.c_int), ctypes.c_int, ctypes.c_int
@@ -471,6 +473,12 @@ services:
             ctypes.POINTER(ctypes.c_void_p), ctypes.c_size_t, ctypes.c_uint
         ]
         cudart.cudaMallocManaged.restype = ctypes.c_int
+        cudart.cudaGetDevice.argtypes = [ctypes.POINTER(ctypes.c_int)]
+        cudart.cudaGetDevice.restype = ctypes.c_int
+        cudart.cudaMemAdvise.argtypes = [
+            ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int, CudaMemLocation
+        ]
+        cudart.cudaMemAdvise.restype = ctypes.c_int
         cudart.cudaMemcpy.argtypes = [
             ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int
         ]
@@ -510,6 +518,24 @@ services:
                 "ptr_nonzero": bool(managed_ptr.value),
             }
             if int(malloc_rc) == 0:
+                current_device = ctypes.c_int()
+                get_device_rc = cudart.cudaGetDevice(ctypes.byref(current_device))
+                managed["get_device"] = {
+                    "rc": int(get_device_rc),
+                    "device": int(current_device.value),
+                }
+                host_location = CudaMemLocation(2, 0)
+                gpu_location = CudaMemLocation(1, int(current_device.value))
+                preferred_rc = cudart.cudaMemAdvise(
+                    managed_ptr, 4096, 3, host_location
+                )
+                accessed_by_rc = cudart.cudaMemAdvise(
+                    managed_ptr, 4096, 5, gpu_location
+                )
+                managed["memory_advice"] = {
+                    "preferred_cpu_rc": int(preferred_rc),
+                    "accessed_by_gpu_rc": int(accessed_by_rc),
+                }
                 raw = (ctypes.c_ubyte * 4096).from_address(managed_ptr.value)
                 managed_cpu = torch.frombuffer(raw, dtype=torch.uint8, count=4096)
                 managed_cpu.copy_(source)
@@ -961,7 +987,7 @@ configs:
                       ip: "${HOST_IP}"
                       port: "8000"
                       instance: "1"
-                      config_variant: "fc91d24-hicache-managed-kernel-hcc-tp4-ep4-eagle-adaptive-5-1-6"
+                      config_variant: "fc91d24-hicache-managed-host-preferred-kernel-hcc-tp4-ep4-eagle-adaptive-5-1-6"
                       thinking_budget_policy: "default8192-public-to-native"
                       request_logging: "full-synthetic"
               - job_name: sglang-model-sg-glm53-fp8-tp4-r2
@@ -985,7 +1011,7 @@ configs:
                       ip: "${HOST_IP}"
                       port: "8000"
                       instance: "2"
-                      config_variant: "fc91d24-hicache-managed-kernel-hcc-tp4-ep4-eagle-adaptive-5-1-6"
+                      config_variant: "fc91d24-hicache-managed-host-preferred-kernel-hcc-tp4-ep4-eagle-adaptive-5-1-6"
                       thinking_budget_policy: "default8192-public-to-native"
                       request_logging: "full-synthetic"
               - job_name: dcgm-dcgm-glm53
