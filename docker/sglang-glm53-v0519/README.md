@@ -8,6 +8,7 @@ The only filesystem addition is the machine-readable `PROVENANCE` record.
 The recipe pins:
 
 - upstream image `lmsysorg/sglang@sha256:d6e7288627be8b02be88e4bba38e73f6d50e2826869f753c13a4c4385ab3eda9`;
+- resolved Linux/amd64 manifest `sha256:37bbbd3444732a464bbc68dee4fb0164e0ce9e18e2f027f3fc967f1152d3c262`;
 - upstream SGLang commit `0bcd822377da7b5718e674eaf9c870d349424dd1`;
 - upstream build run `sgl-project/sglang/actions/runs/33912440803`;
 - the NEAR AI build recipe and exact merged source commit.

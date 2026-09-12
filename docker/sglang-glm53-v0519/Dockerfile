@@ -13,6 +13,7 @@ LABEL org.opencontainers.image.revision="0bcd822377da7b5718e674eaf9c870d349424dd
 LABEL org.opencontainers.image.documentation="https://github.com/nearai/cvm-compose-files/tree/main/docker/sglang-glm53-v0519"
 LABEL org.opencontainers.image.base.name="docker.io/lmsysorg/sglang"
 LABEL org.opencontainers.image.base.digest="sha256:d6e7288627be8b02be88e4bba38e73f6d50e2826869f753c13a4c4385ab3eda9"
+LABEL nearai.sglang.base.linux_amd64.digest="sha256:37bbbd3444732a464bbc68dee4fb0164e0ce9e18e2f027f3fc967f1152d3c262"
 LABEL nearai.build.repository="https://github.com/nearai/cvm-compose-files"
 LABEL nearai.build.recipe="docker/sglang-glm53-v0519/Dockerfile"
 LABEL nearai.build.source_revision="${BUILD_SOURCE_REVISION}"

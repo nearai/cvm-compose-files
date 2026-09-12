@@ -72,11 +72,14 @@ jobs:
           git merge-base --is-ancestor "$SOURCE_REVISION" origin/main
 
           test "$(sha256sum "$BUILD_CONTEXT/Dockerfile" | awk '{print $1}')" = \
-            5787e31cdeb46d3a98817c2a56dd0a229ec6f8697a37832bfb5be587d2799ec9
+            e87358bdbc29ed248f22e729839acd9b46702d9ef03711ac8b1400bd64bc2e07
           test "$(sha256sum "$BUILD_CONTEXT/PROVENANCE" | awk '{print $1}')" = \
-            d0f3c82cf56d17e3d089e4d2aa36cef8c9220d80c7172301ba24556a237535c1
+            efd3e9432179fa9d71cfffbeed90d9ef8286cce1b96af11e0be31fcf38acac8f
           grep -Fxq \
             'base_image=lmsysorg/sglang@sha256:d6e7288627be8b02be88e4bba38e73f6d50e2826869f753c13a4c4385ab3eda9' \
+            "$BUILD_CONTEXT/PROVENANCE"
+          grep -Fxq \
+            'base_image_linux_amd64_manifest=sha256:37bbbd3444732a464bbc68dee4fb0164e0ce9e18e2f027f3fc967f1152d3c262' \
             "$BUILD_CONTEXT/PROVENANCE"
           grep -Fxq \
             'source_repository=https://github.com/sgl-project/sglang' \
@@ -96,10 +99,25 @@ jobs:
 
           echo "IMAGE_REF=${REGISTRY}/${IMAGE_REPOSITORY}:${IMAGE_TAG}" >> "$GITHUB_ENV"
 
+      - name: Log in to Docker Hub
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v3.7.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ vars.DOCKER_REGISTRY_USER }}
+          password: ${{ secrets.DOCKER_REGISTRY_TOKEN }}
+
       - name: Verify the pinned upstream image
         run: |
           set -euo pipefail
           BASE_IMAGE='lmsysorg/sglang@sha256:d6e7288627be8b02be88e4bba38e73f6d50e2826869f753c13a4c4385ab3eda9'
+          docker buildx imagetools inspect --raw "$BASE_IMAGE" > upstream-index.json
+          UPSTREAM_AMD64_DIGEST=$(jq -r \
+            '.manifests[] | select(.platform.os == "linux" and .platform.architecture == "amd64") | .digest' \
+            upstream-index.json)
+          test "$UPSTREAM_AMD64_DIGEST" = \
+            'sha256:37bbbd3444732a464bbc68dee4fb0164e0ce9e18e2f027f3fc967f1152d3c262'
+          echo "UPSTREAM_AMD64_DIGEST=$UPSTREAM_AMD64_DIGEST" >> "$GITHUB_ENV"
+
           docker buildx imagetools inspect \
             --format '{{json .Image}}' \
             "$BASE_IMAGE" > upstream-image-config.json
@@ -119,13 +137,6 @@ jobs:
              ."linux/amd64".SLSA.buildDefinition.externalParameters.request.root.request.args["vcs:source"] == "https://github.com/sgl-project/sglang" and
              ."linux/amd64".SLSA.runDetails.metadata.finishedOn != null' \
             upstream-buildkit-provenance.json
-
-      - name: Log in to Docker Hub
-        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v3.7.0
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ vars.DOCKER_REGISTRY_USER }}
-          password: ${{ secrets.DOCKER_REGISTRY_TOKEN }}
 
       - name: Build and push with provenance and SBOM
         if: inputs.resume_digest == ''
@@ -181,6 +192,7 @@ jobs:
             '.config.Labels["org.opencontainers.image.source"] == "https://github.com/sgl-project/sglang" and
              .config.Labels["org.opencontainers.image.revision"] == "0bcd822377da7b5718e674eaf9c870d349424dd1" and
              .config.Labels["org.opencontainers.image.base.digest"] == "sha256:d6e7288627be8b02be88e4bba38e73f6d50e2826869f753c13a4c4385ab3eda9" and
+             .config.Labels["nearai.sglang.base.linux_amd64.digest"] == "sha256:37bbbd3444732a464bbc68dee4fb0164e0ce9e18e2f027f3fc967f1152d3c262" and
              .config.Labels["nearai.build.repository"] == "https://github.com/nearai/cvm-compose-files" and
              .config.Labels["nearai.build.recipe"] == "docker/sglang-glm53-v0519/Dockerfile" and
              .config.Labels["nearai.build.source_revision"] == $source_revision and
@@ -197,7 +209,9 @@ jobs:
           docker buildx imagetools inspect \
             --format '{{json .Provenance.SLSA}}' \
             "$IMAGE_IMMUTABLE_REF" > buildkit-provenance.json
-          jq -e --arg source_revision "$SOURCE_REVISION" \
+          jq -e \
+            --arg source_revision "$SOURCE_REVISION" \
+            --arg upstream_amd64_digest "$UPSTREAM_AMD64_DIGEST" \
             '.buildType == "https://mobyproject.org/buildkit@v1" and
              .metadata.buildStartedOn != null and
              .metadata.buildFinishedOn != null and
@@ -205,7 +219,7 @@ jobs:
              .metadata["https://mobyproject.org/buildkit@v1#metadata"].vcs.revision == $source_revision and
              .metadata["https://mobyproject.org/buildkit@v1#metadata"].vcs["localdir:context"] == "docker/sglang-glm53-v0519" and
              any(.materials[];
-               .digest.sha256 == "d6e7288627be8b02be88e4bba38e73f6d50e2826869f753c13a4c4385ab3eda9" and
+               .digest.sha256 == ($upstream_amd64_digest | sub("^sha256:"; "")) and
                (.uri | contains("lmsysorg/sglang")))' \
             buildkit-provenance.json
 
@@ -267,6 +281,7 @@ jobs:
             trivy-results.json
             upstream-buildkit-provenance.json
             upstream-image-config.json
+            upstream-index.json
           if-no-files-found: error
           retention-days: 30
 
