@@ -1,10 +1,12 @@
 # gpu03 experiment tag only: one HiCache SGLang control and one official vLLM
 # GLM-5.3-Flash TP4 candidate. The vLLM image is pinned to the upstream
 # GLM-5.3-Flash build previously qualified with this exact model revision.
-# Speculative decoding is disabled because this image's MTP rejection-sampler
-# warmup asserts in ScatterGatherKernel on gpu03 before the API can start.
-# Eager execution isolates the gpu03 CUDA-graph path, which otherwise starts
-# but produces deterministic repetitive tokens with this image and model.
+# Speculative decoding is disabled because the earlier MTP rejection-sampler
+# warmup asserted in ScatterGatherKernel on gpu03 before the API could start.
+# The retained gpu31 vLLM build failed custom all-reduce graph capture on both
+# gpu03 four-GPU islands and produced invalid logits with NCCL. This revision
+# isolates the newer official vLLM runtime while keeping all other diagnostic
+# control settings fixed.
 # The registrar is profile-gated below and must remain disabled for this test.
 # Do not promote this file; it deliberately enables full synthetic request logs.
 #
@@ -144,12 +146,10 @@ x-sg-glm53-flash-common: &sg-glm53-flash-common
 x-vllm-glm53-flash-common: &vllm-glm53-flash-common
   <<: *nvidia
   init: true
-  image: docker.io/vllm/vllm-openai@sha256:2c6da6c6f16ed15c91e412d896dba13701f25fe1861eaec9ddaa4db34d1d21c4
+  image: docker.io/vllm/vllm-openai@sha256:0674a3ea3c971706cea310bca71daadff68ea1717c758d2f54affa5def001b86
   entrypoint: ["vllm", "serve"]
-  # Match the retained, semantically qualified gpu31 vLLM runtime first:
-  # TP4, 131072 context, default CUDA graphs, auto FP8 backends, and no MTP.
-  # Reproduce the exact retained gpu31 control on gpu03 devices 0-3 to isolate
-  # the physical four-GPU island from the engine configuration.
+  # Change only the vLLM runtime from the retained gpu31 control: TP4, 131072
+  # context, default CUDA graphs/custom all-reduce, auto FP8 backends, no MTP.
   command: >
       /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/84c6a6aa9497188e15a635ba793b0f95a79b1033
       --revision 84c6a6aa9497188e15a635ba793b0f95a79b1033
@@ -180,7 +180,7 @@ x-vllm-glm53-flash-common: &vllm-glm53-flash-common
     - DO_NOT_TRACK=1
     - VLLM_ENABLE_CUDA_COMPATIBILITY=0
     - VLLM_ENGINE_READY_TIMEOUT_S=3600
-    - VLLM_CACHE_ROOT=/root/.cache/vllm/glm53-flash-official-487ecf187
+    - VLLM_CACHE_ROOT=/root/.cache/vllm/glm53-flash-official-385dce36
     - VLLM_LOGGING_LEVEL=INFO
     - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
     - TORCH_SHOW_CPP_STACKTRACES=1
@@ -387,7 +387,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["0","1","2","3"]
+              device_ids: ["4","5","6","7"]
               capabilities: [gpu]
     labels:
       com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:zai-org/GLM-5.3-Flash","served_model:z-ai/glm-5.3-flash","precision:fp8-weights-bf16-kv","deployment:glm53-flash-hicache-gpu03","config_variant:fc91d24-hicache-cuda-host-pooled-direct-hcc-tp4-ep4-eagle-adaptive-5-1-6","request_logging:full-synthetic","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:1"]}]'
@@ -428,7 +428,7 @@ services:
               device_ids: ["0","1","2","3"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:z-ai/glm-5.3-flash","model_path:zai-org/GLM-5.3-Flash","served_model:z-ai/glm-5.3-flash","precision:fp8-weights-bf16-kv","deployment:glm53-flash-hicache-gpu03","config_variant:vllm-487ecf187-tp4-131k-gpu0-3-control","request_logging:disabled","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:2"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:z-ai/glm-5.3-flash","model_path:zai-org/GLM-5.3-Flash","served_model:z-ai/glm-5.3-flash","precision:fp8-weights-bf16-kv","deployment:glm53-flash-hicache-gpu03","config_variant:vllm-385dce36-tp4-131k-nospec","request_logging:disabled","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:2"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
@@ -440,7 +440,7 @@ services:
       nearai.otel.model_path: "zai-org/GLM-5.3-Flash"
       nearai.otel.served_model: "z-ai/glm-5.3-flash"
       nearai.otel.deployment: "glm53-flash-hicache-gpu03"
-      nearai.otel.config_variant: "vllm-487ecf187-tp4-131k-gpu0-3-control"
+      nearai.otel.config_variant: "vllm-385dce36-tp4-131k-nospec"
       nearai.otel.request_logging: "disabled"
       nearai.otel.instance: "2"
       nearai.otel.env: "${ENV}"
