@@ -9,4 +9,4 @@ runtime_opt_in=SGLANG_HICACHE_POOLED_TRANSFERS=1
 staging_pages=SGLANG_HICACHE_STAGING_PAGES=64
 build_recipe=docker/sglang-glm53-hicache/Dockerfile
 startup_ram_budget=SGLANG_HICACHE_RAM_BUDGET; percentage or explicit GB/GiB across single-node TP ranks; guest and cgroup headroom; cumulative pool accounting
-hcc_host_allocator=SGLANG_HICACHE_CUDA_MANAGED_MEMORY=1; cudaMallocManaged opt-in; CPU preferred location and current-GPU access advice; skips unsupported cudaHostRegister
+hcc_host_allocator=SGLANG_HICACHE_CUDA_MANAGED_MEMORY=1; cudaMallocManaged opt-in; CPU preferred location and current-GPU access advice; stream-ordered CPU prefetch of touched pooled-transfer ranges; skips unsupported cudaHostRegister

@@ -12,7 +12,7 @@ index df7240298..9762087e1 100644
  import os
  from collections import defaultdict
  
-@@ -14,6 +16,164 @@ from sglang.srt.runtime_context import get_memory
+@@ -14,6 +16,242 @@ from sglang.srt.runtime_context import get_memory
  logger = logging.getLogger(__name__)
  
  _CUDA_HOST_REGISTERED_RANGES_ATTR = "_sglang_cuda_host_registered_ranges"
@@ -54,6 +54,14 @@ index df7240298..9762087e1 100644
 +        _CudaMemLocation,
 +    ]
 +    cudart.cudaMemAdvise.restype = ctypes.c_int
++    cudart.cudaMemPrefetchAsync.argtypes = [
++        ctypes.c_void_p,
++        ctypes.c_size_t,
++        _CudaMemLocation,
++        ctypes.c_uint,
++        ctypes.c_void_p,
++    ]
++    cudart.cudaMemPrefetchAsync.restype = ctypes.c_int
 +    cudart.cudaFree.argtypes = [ctypes.c_void_p]
 +    cudart.cudaFree.restype = ctypes.c_int
 +    cudart.cudaGetErrorString.argtypes = [ctypes.c_int]
@@ -98,6 +106,76 @@ index df7240298..9762087e1 100644
 +        "true",
 +        "yes",
 +    }
++
++
++def _cuda_managed_prefetch_pages_to_host(
++    buffer: torch.Tensor,
++    page_indices: torch.Tensor,
++    page_bytes: int,
++    stream,
++) -> int:
++    """Return managed HiCache page ranges to CPU after GPU transfer access."""
++
++    owner = getattr(buffer, _CUDA_MANAGED_ALLOCATION_ATTR, None)
++    if owner is None:
++        return 0
++    if page_bytes <= 0:
++        raise ValueError(f"Managed HiCache page_bytes must be positive; got {page_bytes}")
++    requested_pages = [int(page) for page in page_indices.tolist()]
++    if not requested_pages:
++        return 0
++    if any(page < 0 for page in requested_pages):
++        raise ValueError(
++            "Managed HiCache page indices must be non-negative: "
++            f"{requested_pages}"
++        )
++    # Transfer plans preserve request order, which need not be physical host
++    # order. Prefetch has no ordering semantics, so normalize before merging.
++    pages = sorted(set(requested_pages))
++
++    stream_handle = int(getattr(stream, "cuda_stream", stream))
++    base = int(buffer.data_ptr())
++    allocation_start = int(owner.ptr)
++    allocation_end = allocation_start + int(owner.size)
++    if not allocation_start or base < allocation_start or base >= allocation_end:
++        raise RuntimeError(
++            "Managed HiCache tensor does not point inside its CUDA allocation: "
++            f"base={base:#x} allocation=[{allocation_start:#x}, {allocation_end:#x})"
++        )
++
++    ranges = []
++    start = previous = pages[0]
++    for page in pages[1:]:
++        if page == previous + 1:
++            previous = page
++            continue
++        ranges.append((start, previous + 1))
++        start = previous = page
++    ranges.append((start, previous + 1))
++
++    for start_page, end_page in ranges:
++        ptr = base + start_page * page_bytes
++        size = (end_page - start_page) * page_bytes
++        if ptr + size > allocation_end:
++            raise ValueError(
++                "Managed HiCache prefetch range exceeds its allocation: "
++                f"pages=[{start_page}, {end_page}) page_bytes={page_bytes} "
++                f"range=[{ptr:#x}, {ptr + size:#x}) allocation_end={allocation_end:#x}"
++            )
++        rc = owner.cudart.cudaMemPrefetchAsync(
++            ctypes.c_void_p(ptr),
++            size,
++            _CudaMemLocation(_CUDA_MEM_LOCATION_TYPE_HOST, 0),
++            0,
++            ctypes.c_void_p(stream_handle),
++        )
++        if int(rc) != 0:
++            raise RuntimeError(
++                "cudaMemPrefetchAsync failed while returning managed HiCache "
++                f"pages to CPU (rc={int(rc)}, {_cuda_error_string(owner.cudart, rc)}) "
++                f"ptr={ptr:#x} size={size} stream={stream_handle:#x}"
++            )
++    return len(ranges)
 +
 +
 +def _alloc_cuda_managed(dims: tuple, dtype: torch.dtype, device: str) -> torch.Tensor:
@@ -177,7 +255,7 @@ index df7240298..9762087e1 100644
  
  
  class HostTensorAllocator:
-@@ -229,6 +389,14 @@ def alloc_with_host_register(
+@@ -229,6 +467,14 @@ def alloc_with_host_register(
      Allocate tensor and register host memory with cudaHostRegister.
      CudaHostRegister only applies when pin_memory=True.
      """

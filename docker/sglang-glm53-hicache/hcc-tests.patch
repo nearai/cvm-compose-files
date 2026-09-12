@@ -3,7 +3,7 @@ new file mode 100644
 index 000000000..1ab7fefb2
 --- /dev/null
 +++ b/test/registered/unit/mem_cache/test_hicache_hcc_managed_allocator.py
-@@ -0,0 +1,147 @@
+@@ -0,0 +1,195 @@
 +import ctypes
 +import os
 +import unittest
@@ -25,6 +25,8 @@ index 000000000..1ab7fefb2
 +        self.device = 2
 +        self.advice_calls = []
 +        self.fail_advice = None
++        self.prefetch_calls = []
++        self.fail_prefetch = False
 +
 +    def cudaMallocManaged(self, ptr_out, size: int, flags: int):
 +        assert size == len(self.backing)
@@ -41,6 +43,12 @@ index 000000000..1ab7fefb2
 +            (ptr.value, size, advice, location.type, location.id)
 +        )
 +        return 17 if advice == self.fail_advice else 0
++
++    def cudaMemPrefetchAsync(self, ptr, size: int, location, flags: int, stream):
++        self.prefetch_calls.append(
++            (ptr.value, size, location.type, location.id, flags, stream.value)
++        )
++        return 18 if self.fail_prefetch else 0
 +
 +    def cudaFree(self, ptr):
 +        self.freed.append(ptr.value)
@@ -147,6 +155,46 @@ index 000000000..1ab7fefb2
 +            common._alloc_cuda_managed((size,), torch.uint8, "cpu")
 +
 +        self.assertEqual(cudart.freed, [cudart.ptr])
++
++    def test_managed_prefetch_coalesces_adjacent_host_pages_on_stream(self):
++        size = 128
++        cudart = _FakeManagedCudart(size)
++        with mock.patch.object(common, "_load_cudart", return_value=cudart):
++            buffer = common._alloc_cuda_managed((size,), torch.uint8, "cpu")
++
++        calls = common._cuda_managed_prefetch_pages_to_host(
++            buffer,
++            torch.tensor([5, 2, 1, 2], dtype=torch.int64),
++            page_bytes=16,
++            stream=0x1234,
++        )
++
++        self.assertEqual(calls, 2)
++        self.assertEqual(
++            cudart.prefetch_calls,
++            [
++                (cudart.ptr + 16, 32, 2, 0, 0, 0x1234),
++                (cudart.ptr + 80, 16, 2, 0, 0, 0x1234),
++            ],
++        )
++        getattr(buffer, common._CUDA_MANAGED_ALLOCATION_ATTR).release()
++
++    def test_managed_prefetch_fails_closed_on_cuda_error(self):
++        size = 128
++        cudart = _FakeManagedCudart(size)
++        with mock.patch.object(common, "_load_cudart", return_value=cudart):
++            buffer = common._alloc_cuda_managed((size,), torch.uint8, "cpu")
++        cudart.fail_prefetch = True
++
++        with self.assertRaisesRegex(RuntimeError, "cudaMemPrefetchAsync failed"):
++            common._cuda_managed_prefetch_pages_to_host(
++                buffer,
++                torch.tensor([0], dtype=torch.int64),
++                page_bytes=16,
++                stream=0x4321,
++            )
++
++        getattr(buffer, common._CUDA_MANAGED_ALLOCATION_ATTR).release()
 +
 +
 +if __name__ == "__main__":
