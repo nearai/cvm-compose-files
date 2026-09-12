@@ -3,6 +3,8 @@
 # GLM-5.3-Flash build previously qualified with this exact model revision.
 # Speculative decoding is disabled because this image's MTP rejection-sampler
 # warmup asserts in ScatterGatherKernel on gpu03 before the API can start.
+# Eager execution isolates the gpu03 CUDA-graph path, which otherwise starts
+# but produces deterministic repetitive tokens with this image and model.
 # The registrar is profile-gated below and must remain disabled for this test.
 # Do not promote this file; it deliberately enables full synthetic request logs.
 #
@@ -155,6 +157,7 @@ x-vllm-glm53-flash-common: &vllm-glm53-flash-common
       --tensor-parallel-size 4
       --disable-custom-all-reduce
       --no-enable-flashinfer-autotune
+      --enforce-eager
       --tool-call-parser glm47
       --reasoning-parser glm45
       --enable-auto-tool-choice
@@ -427,7 +430,7 @@ services:
               device_ids: ["4","5","6","7"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:z-ai/glm-5.3-flash","model_path:zai-org/GLM-5.3-Flash","served_model:z-ai/glm-5.3-flash","precision:fp8-weights-bf16-kv","deployment:glm53-flash-hicache-gpu03","config_variant:vllm-487ecf187-tp4-nospec-bf16kv-nccl-no-fi-autotune","request_logging:disabled","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:2"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:z-ai/glm-5.3-flash","model_path:zai-org/GLM-5.3-Flash","served_model:z-ai/glm-5.3-flash","precision:fp8-weights-bf16-kv","deployment:glm53-flash-hicache-gpu03","config_variant:vllm-487ecf187-tp4-nospec-bf16kv-nccl-eager","request_logging:disabled","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:2"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
@@ -439,7 +442,7 @@ services:
       nearai.otel.model_path: "zai-org/GLM-5.3-Flash"
       nearai.otel.served_model: "z-ai/glm-5.3-flash"
       nearai.otel.deployment: "glm53-flash-hicache-gpu03"
-      nearai.otel.config_variant: "vllm-487ecf187-tp4-nospec-bf16kv-nccl-no-fi-autotune"
+      nearai.otel.config_variant: "vllm-487ecf187-tp4-nospec-bf16kv-nccl-eager"
       nearai.otel.request_logging: "disabled"
       nearai.otel.instance: "2"
       nearai.otel.env: "${ENV}"
