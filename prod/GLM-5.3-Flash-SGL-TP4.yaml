@@ -149,17 +149,15 @@ x-vllm-glm53-flash-common: &vllm-glm53-flash-common
   # Match the retained, semantically qualified gpu31 vLLM runtime first:
   # TP4, 131072 context, default CUDA graphs, auto FP8 backends, and no MTP.
   # gpu03 rejects vLLM custom all-reduce during final graph capture, so use
-  # NCCL. Both the gpu31 auto dense kernel and vLLM CUTLASS reproduce the same
-  # deterministic token loop on gpu03. Isolate the remaining collective path
-  # by disabling the all-reduce-plus-RMS fusion while retaining every other
-  # qualified gpu31 kernel choice.
+  # NCCL. Dense CUTLASS and disabling the all-reduce-plus-RMS fusion both
+  # reproduce the deterministic token loop. Retain the qualified gpu31 kernel
+  # choices and isolate the FlashInfer sampler with vLLM's native sampler.
   command: >
       /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/84c6a6aa9497188e15a635ba793b0f95a79b1033
       --revision 84c6a6aa9497188e15a635ba793b0f95a79b1033
       --served-model-name z-ai/glm-5.3-flash
       --tensor-parallel-size 4
       --disable-custom-all-reduce
-      --compilation-config '{"pass_config":{"fuse_allreduce_rms":false}}'
       --no-enable-flashinfer-autotune
       --tool-call-parser glm47
       --reasoning-parser glm45
@@ -187,6 +185,7 @@ x-vllm-glm53-flash-common: &vllm-glm53-flash-common
     - VLLM_ENGINE_READY_TIMEOUT_S=3600
     - VLLM_CACHE_ROOT=/root/.cache/vllm/glm53-flash-official-487ecf187
     - VLLM_LOGGING_LEVEL=INFO
+    - VLLM_USE_FLASHINFER_SAMPLER=0
     - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
     - TORCH_SHOW_CPP_STACKTRACES=1
     - TORCH_DISABLE_ADDR2LINE=1
@@ -433,7 +432,7 @@ services:
               device_ids: ["4","5","6","7"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:z-ai/glm-5.3-flash","model_path:zai-org/GLM-5.3-Flash","served_model:z-ai/glm-5.3-flash","precision:fp8-weights-bf16-kv","deployment:glm53-flash-hicache-gpu03","config_variant:vllm-487ecf187-tp4-131k-nccl-no-fused-ar-rms","request_logging:disabled","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:2"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:z-ai/glm-5.3-flash","model_path:zai-org/GLM-5.3-Flash","served_model:z-ai/glm-5.3-flash","precision:fp8-weights-bf16-kv","deployment:glm53-flash-hicache-gpu03","config_variant:vllm-487ecf187-tp4-131k-nccl-native-sampler","request_logging:disabled","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:2"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
@@ -445,7 +444,7 @@ services:
       nearai.otel.model_path: "zai-org/GLM-5.3-Flash"
       nearai.otel.served_model: "z-ai/glm-5.3-flash"
       nearai.otel.deployment: "glm53-flash-hicache-gpu03"
-      nearai.otel.config_variant: "vllm-487ecf187-tp4-131k-nccl-no-fused-ar-rms"
+      nearai.otel.config_variant: "vllm-487ecf187-tp4-131k-nccl-native-sampler"
       nearai.otel.request_logging: "disabled"
       nearai.otel.instance: "2"
       nearai.otel.env: "${ENV}"
@@ -1018,7 +1017,7 @@ configs:
                       ip: "${HOST_IP}"
                       port: "8000"
                       instance: "2"
-                      config_variant: "vllm-487ecf187-tp4-131k-nccl-no-fused-ar-rms"
+                      config_variant: "vllm-487ecf187-tp4-131k-nccl-native-sampler"
                       request_logging: "disabled"
               - job_name: dcgm-dcgm-glm53
                 scrape_interval: 15s
