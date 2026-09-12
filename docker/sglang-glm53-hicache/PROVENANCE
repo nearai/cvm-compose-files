@@ -1,12 +1,9 @@
-base_image=docker.io/nearaidev/sglang@sha256:a7b7136abcf5e07522289d96e96fec9b42a1a30f9dfda57e957f142680d2d67b
-source_repository=https://github.com/PierreLeGuen/sglang-upstream
-source_revision=fc91d2403cc210a86bd5fc715c6609f58c932e5a
-upstream_restore_fix=https://github.com/sgl-project/sglang/pull/38212
-upstream_restore_fix_revision=230102db838cbbe6eca7952c729518ee6d93c3a9
-restore_adaptation=fc91d24 MLA constructor and older CPU test API; includes PR37534 dependency
-pooled_transfer_implementation=rank-local persistent GPU staging; page-first direct DMA; recurrent GPU clones
-runtime_opt_in=SGLANG_HICACHE_POOLED_TRANSFERS=1
-staging_pages=SGLANG_HICACHE_STAGING_PAGES=64
+base_image=docker.io/lmsysorg/sglang@sha256:d6e7288627be8b02be88e4bba38e73f6d50e2826869f753c13a4c4385ab3eda9
+source_repository=https://github.com/sgl-project/sglang
+source_revision=0bcd822377da7b5718e674eaf9c870d349424dd1
+model=PhalaCloud/GLM-5.3-W4AFP8
+model_revision=03179e95916f9f79a92536e76da63f9251d93d4f
+runtime_opt_in=SGLANG_HICACHE_CUDA_MANAGED_MEMORY=1
+hcc_host_allocator=cudaMallocManaged; CPU preferred location; current rank GPU access advice; skips unsupported cudaHostRegister
+hicache_envelope=write_through; kernel; page_first; default in-process allocator only
 build_recipe=docker/sglang-glm53-hicache/Dockerfile
-startup_ram_budget=SGLANG_HICACHE_RAM_BUDGET; percentage or explicit GB/GiB across single-node TP ranks; guest and cgroup headroom; cumulative pool accounting
-hcc_host_allocator=SGLANG_HICACHE_CUDA_MANAGED_MEMORY=1; cudaMallocManaged opt-in; skips unsupported cudaHostRegister

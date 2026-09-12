@@ -1,4 +1,4 @@
-name: Publish GLM-5.3 HiCache canary image
+name: Publish GLM-5.3 non-Flash HiCache HCC test image
 
 on:
   workflow_dispatch:
@@ -7,13 +7,13 @@ on:
         description: Docker Hub tag; production must use the resulting digest
         required: true
         type: string
-        default: glm53-hicache-pooled-v1
+        default: gpu23-test-glm53-nonflash-hicache-managed-r1
       source_revision:
         description: Exact commit containing the build context
         required: true
         type: string
       allow_unmerged_test_build:
-        description: Allow a gpu03-test-* image from the selected non-main branch
+        description: Allow a gpu23-test-* image from the selected non-main branch
         required: false
         type: boolean
         default: false
@@ -75,7 +75,7 @@ jobs:
           test "$(git rev-parse HEAD)" = "$SOURCE_REVISION"
           if [[ "$ALLOW_UNMERGED_TEST_BUILD" == "true" ]]; then
             test "$GITHUB_REF" != refs/heads/main
-            [[ "$IMAGE_TAG" == gpu03-test-* ]]
+            [[ "$IMAGE_TAG" == gpu23-test-* ]]
             git fetch --no-tags origin \
               "+$GITHUB_REF:refs/remotes/origin/$GITHUB_REF_NAME"
             git merge-base --is-ancestor \
@@ -87,11 +87,11 @@ jobs:
           fi
 
           test "$(sha256sum "$BUILD_CONTEXT/Dockerfile" | awk '{print $1}')" = \
-            7a220bcbef3c2fa6bc515b1de2b55500f159860e53aeb16d9a2c983fbc364e03
+            5ca1c99fab1521476dda9f351b4572b9aa35e249f9f569efdfea9e6cf403127e
           test "$(sha256sum "$BUILD_CONTEXT/PROVENANCE" | awk '{print $1}')" = \
-            7b16350c5295b7e3383a97bbd389255d6ade8feca97b54c0b5749773d1afedb5
+            bbe2e5759f049155f4e81887e5323a76972902ccb47747f33700c85338484027
           test "$(sha256sum "$BUILD_CONTEXT/SHA256SUMS" | awk '{print $1}')" = \
-            4d2768ee3135e94b102436b98703d4556b714160be7eb31fea314a08ae40bd2e
+            735526def624b69e5fe22d322373f829d96d647c4296cd3ec91f407d09c26969
 
           echo "IMAGE_REF=${REGISTRY}/${IMAGE_REPOSITORY}:${IMAGE_TAG}" >> "$GITHUB_ENV"
 
@@ -155,13 +155,11 @@ jobs:
           jq -e --arg source_revision "$SOURCE_REVISION" \
             '.config.Labels["org.opencontainers.image.source"] == "https://github.com/nearai/cvm-compose-files" and
              .config.Labels["org.opencontainers.image.revision"] == $source_revision and
-             .config.Labels["org.opencontainers.image.base.digest"] == "sha256:a7b7136abcf5e07522289d96e96fec9b42a1a30f9dfda57e957f142680d2d67b" and
+             .config.Labels["org.opencontainers.image.base.digest"] == "sha256:d6e7288627be8b02be88e4bba38e73f6d50e2826869f753c13a4c4385ab3eda9" and
              .config.Labels["nearai.build.recipe"] == "docker/sglang-glm53-hicache/Dockerfile" and
              .config.Labels["nearai.build.source_revision"] == $source_revision and
-             .config.Labels["nearai.sglang.source_revision"] == "fc91d2403cc210a86bd5fc715c6609f58c932e5a" and
-             .config.Labels["nearai.sglang.hicache_fix_revision"] == "230102db838cbbe6eca7952c729518ee6d93c3a9" and
-             .config.Labels["nearai.sglang.pooled_transfers"] == "v1-opt-in" and
-             .config.Labels["nearai.sglang.hcc_managed_memory"] == "v1-opt-in"' \
+             .config.Labels["nearai.sglang.source_revision"] == "0bcd822377da7b5718e674eaf9c870d349424dd1" and
+             .config.Labels["nearai.sglang.hcc_managed_memory"] == "v2-host-preferred-opt-in"' \
             image-config.json
 
       - name: Run CPU restore regressions in the published image
@@ -187,8 +185,8 @@ jobs:
              .metadata["https://mobyproject.org/buildkit@v1#metadata"].vcs.revision == $source_revision and
              .metadata["https://mobyproject.org/buildkit@v1#metadata"].vcs["localdir:context"] == "docker/sglang-glm53-hicache" and
              any(.materials[];
-               .digest.sha256 == "a7b7136abcf5e07522289d96e96fec9b42a1a30f9dfda57e957f142680d2d67b" and
-               (.uri | contains("nearaidev/sglang")))' \
+               .digest.sha256 == "d6e7288627be8b02be88e4bba38e73f6d50e2826869f753c13a4c4385ab3eda9" and
+               (.uri | contains("lmsysorg/sglang")))' \
             buildkit-provenance.json
 
           docker buildx imagetools inspect \
@@ -346,7 +344,7 @@ jobs:
             echo
             echo "- tag: \`$IMAGE_REF\`"
             echo "- immutable: \`$IMAGE_IMMUTABLE_REF\`"
-            echo '- SGLang source: `PierreLeGuen/sglang-upstream@fc91d2403cc210a86bd5fc715c6609f58c932e5a`'
+            echo '- SGLang source: `sgl-project/sglang@0bcd822377da7b5718e674eaf9c870d349424dd1`'
             echo '- HiCache restore fix: `sgl-project/sglang#38212@230102db838cbbe6eca7952c729518ee6d93c3a9`'
             echo '- Promotion: run `scripts/prepare_glm53_hicache_canary.py --image <immutable>` and review the r2-only diff in a separate PR.'
             echo '- Publishing does not modify compose files or deploy a service.'
