@@ -146,21 +146,15 @@ x-vllm-glm53-flash-common: &vllm-glm53-flash-common
   init: true
   image: docker.io/vllm/vllm-openai@sha256:2c6da6c6f16ed15c91e412d896dba13701f25fe1861eaec9ddaa4db34d1d21c4
   entrypoint: ["vllm", "serve"]
-  # gpu03 exposes an NVLink bridge-only H200 island. vLLM's custom all-reduce
-  # fails CUDA-graph capture and also hangs during eager-mode startup on this
-  # topology, so use NCCL collectives. Keep FlashInfer sampling because the
-  # native sampler and forced linear backends stall this build after profiling.
-  # Keep the startable auto-selected dense path and DeepGEMM experts while
-  # testing GPUs 0-3 to distinguish kernel behavior from GPU-island placement.
+  # Match the retained, semantically qualified gpu31 vLLM runtime first:
+  # TP4, 131072 context, default CUDA graphs/custom all-reduce, auto FP8
+  # backends, and no MTP. Extend context only after this control passes.
   command: >
       /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/84c6a6aa9497188e15a635ba793b0f95a79b1033
       --revision 84c6a6aa9497188e15a635ba793b0f95a79b1033
       --served-model-name z-ai/glm-5.3-flash
       --tensor-parallel-size 4
       --no-enable-flashinfer-autotune
-      --disable-custom-all-reduce
-      --enforce-eager
-      --moe-backend deep_gemm
       --tool-call-parser glm47
       --reasoning-parser glm45
       --enable-auto-tool-choice
@@ -168,7 +162,7 @@ x-vllm-glm53-flash-common: &vllm-glm53-flash-common
       --chat-template-content-format openai
       --default-chat-template-kwargs '{"clear_thinking":true}'
       --gpu-memory-utilization 0.82
-      --max-model-len 1048576
+      --max-model-len 131072
       --max-num-seqs 32
       --max-num-batched-tokens 8192
       --enable-prompt-tokens-details
@@ -417,7 +411,7 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
-  # --- GLM-5.3-Flash vLLM GPU-island diagnostic (TP4, GPUs 0-3) ---
+  # --- GLM-5.3-Flash vLLM gpu31-control runtime (TP4, GPUs 4-7) ---
   model-vllm-glm53-fp8-tp4-r2:
     <<: *vllm-glm53-flash-common
     container_name: model-vllm-glm53-fp8-tp4-r2
@@ -430,10 +424,10 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["0","1","2","3"]
+              device_ids: ["4","5","6","7"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:z-ai/glm-5.3-flash","model_path:zai-org/GLM-5.3-Flash","served_model:z-ai/glm-5.3-flash","precision:fp8-weights-bf16-kv","deployment:glm53-flash-hicache-gpu03","config_variant:vllm-487ecf187-tp4-nospec-bf16kv-nccl-eager-deepgemm-moe-gpu0-3","request_logging:disabled","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:2"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:z-ai/glm-5.3-flash","model_path:zai-org/GLM-5.3-Flash","served_model:z-ai/glm-5.3-flash","precision:fp8-weights-bf16-kv","deployment:glm53-flash-hicache-gpu03","config_variant:vllm-487ecf187-tp4-131k-gpu31-control","request_logging:disabled","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:2"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
@@ -445,7 +439,7 @@ services:
       nearai.otel.model_path: "zai-org/GLM-5.3-Flash"
       nearai.otel.served_model: "z-ai/glm-5.3-flash"
       nearai.otel.deployment: "glm53-flash-hicache-gpu03"
-      nearai.otel.config_variant: "vllm-487ecf187-tp4-nospec-bf16kv-nccl-eager-deepgemm-moe-gpu0-3"
+      nearai.otel.config_variant: "vllm-487ecf187-tp4-131k-gpu31-control"
       nearai.otel.request_logging: "disabled"
       nearai.otel.instance: "2"
       nearai.otel.env: "${ENV}"
