@@ -1,10 +1,11 @@
 # GLM-5.3 Flash HiCache canary
 
 This build carries complete hybrid-cache restoration, opt-in pooled transfers,
-and an opt-in CUDA managed-memory host allocator on the exact `fc91d24`
-production SGLang runtime. The managed allocator is for NVIDIA confidential
-computing guests where `cudaHostRegister` is unsupported. It adds no storage
-backend or cross-CVM cache exchange.
+and opt-in CUDA-owned host-memory allocators on the exact `fc91d24` production
+SGLang runtime. The pinned-host allocator is for NVIDIA confidential-computing
+guests where `cudaHostRegister` is unsupported; a separately gated managed-
+memory fallback remains for diagnosis. It adds no storage backend or cross-CVM
+cache exchange.
 
 ## Release order
 
@@ -127,23 +128,23 @@ the existing transfer path. The optimization requires NVIDIA CUDA and the
 
 ## Hopper confidential-computing host memory
 
-Set `SGLANG_HICACHE_CUDA_MANAGED_MEMORY=1` only in a CUDA confidential-computing
+Set `SGLANG_HICACHE_CUDA_HOST_MEMORY=1` only in a CUDA confidential-computing
 guest whose runtime rejects `cudaHostRegister`. The opt-in replaces the normal
-anonymous-mmap plus host-registration allocation with `cudaMallocManaged`, wraps
-the allocation as the same CPU PyTorch tensor shape expected by HiCache, and
-records that the pool must not be unregistered on teardown. It sets CPU as the
-preferred location and establishes access from the current rank's GPU before
-the tensor is exposed. Because a GPU kernel can still migrate managed pages
-while writing or reading them, each pooled transfer enqueues a CPU prefetch for
-the touched, coalesced host ranges after their final consumer on the same CUDA
-stream. Memory-advice and prefetch failures fail closed. The default path is
-unchanged when the variable is absent.
+anonymous-mmap plus host-registration allocation with `cudaMallocHost`, wraps
+the CUDA-owned pinned allocation as the same CPU PyTorch tensor shape expected
+by HiCache, and records that the pool must be freed with `cudaFreeHost` rather
+than unregistered. These are host-resident pages, so pooled DMA never depends on
+Unified Memory migration or consumes HBM as the host cache fills. Allocation
+and teardown errors fail closed. The default path is unchanged when the variable
+is absent.
 
-The managed allocator accepts only the default in-process host store. It rejects
-SHM, Mooncake, MORI, and other external storage allocators rather than silently
-changing their ownership semantics. Start with `kernel/page_first` on HCC; use
-the direct/pooled path only after a guest-native byte round-trip proves that
-runtime's managed-memory transfer semantics and performance.
+`SGLANG_HICACHE_CUDA_MANAGED_MEMORY=1` retains the earlier managed-memory
+diagnostic path, including CPU preferred-location advice and stream-ordered
+prefetch of touched ranges. The two allocator variables are mutually exclusive.
+Both allocators accept only the default in-process host store and reject SHM,
+Mooncake, MORI, and other external allocators rather than silently changing
+ownership semantics. Use direct/pooled transfer on HCC only after a guest-native
+capacity allocation and bidirectional byte round trip succeeds.
 
 ## Source and correctness
 

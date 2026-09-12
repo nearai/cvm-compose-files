@@ -1,9 +1,9 @@
 diff --git a/test/registered/unit/mem_cache/test_hicache_hcc_managed_allocator.py b/test/registered/unit/mem_cache/test_hicache_hcc_managed_allocator.py
 new file mode 100644
-index 000000000..1ab7fefb2
+index 0000000..bea00de
 --- /dev/null
 +++ b/test/registered/unit/mem_cache/test_hicache_hcc_managed_allocator.py
-@@ -0,0 +1,195 @@
+@@ -0,0 +1,291 @@
 +import ctypes
 +import os
 +import unittest
@@ -22,11 +22,21 @@ index 000000000..1ab7fefb2
 +        self.backing = (ctypes.c_ubyte * size)()
 +        self.ptr = ctypes.addressof(self.backing)
 +        self.freed = []
++        self.host_freed = []
 +        self.device = 2
 +        self.advice_calls = []
 +        self.fail_advice = None
 +        self.prefetch_calls = []
 +        self.fail_prefetch = False
++
++    def cudaMallocHost(self, ptr_out, size: int):
++        assert size == len(self.backing)
++        ctypes.cast(ptr_out, ctypes.POINTER(ctypes.c_void_p))[0] = self.ptr
++        return 0
++
++    def cudaFreeHost(self, ptr):
++        self.host_freed.append(ptr.value)
++        return 0
 +
 +    def cudaMallocManaged(self, ptr_out, size: int, flags: int):
 +        assert size == len(self.backing)
@@ -59,6 +69,34 @@ index 000000000..1ab7fefb2
 +
 +
 +class TestHiCacheHccManagedAllocator(unittest.TestCase):
++    def test_host_memory_opt_in_uses_cuda_owned_allocation(self):
++        allocator = common.HostTensorAllocator()
++        host = torch.empty(1, dtype=torch.uint8)
++
++        with (
++            mock.patch.dict(
++                os.environ,
++                {
++                    "SGLANG_HICACHE_CUDA_HOST_MEMORY": "1",
++                    "SGLANG_HICACHE_CUDA_MANAGED_MEMORY": "0",
++                },
++                clear=False,
++            ),
++            mock.patch.object(
++                common, "_alloc_cuda_host", return_value=host
++            ) as allocate_host,
++            mock.patch.object(common, "_cuda_host_register") as register,
++            mock.patch.object(allocator, "allocate") as allocate_mmap,
++        ):
++            result = common.alloc_with_host_register(
++                (16,), torch.uint8, "cpu", True, allocator
++            )
++
++        self.assertIs(result, host)
++        allocate_host.assert_called_once_with((16,), torch.uint8, "cpu")
++        allocate_mmap.assert_not_called()
++        register.assert_not_called()
++
 +    def test_opt_in_uses_managed_allocator_without_mmap_or_registration(self):
 +        allocator = common.HostTensorAllocator()
 +        managed = torch.empty(1, dtype=torch.uint8)
@@ -66,7 +104,10 @@ index 000000000..1ab7fefb2
 +        with (
 +            mock.patch.dict(
 +                os.environ,
-+                {"SGLANG_HICACHE_CUDA_MANAGED_MEMORY": "1"},
++                {
++                    "SGLANG_HICACHE_CUDA_HOST_MEMORY": "0",
++                    "SGLANG_HICACHE_CUDA_MANAGED_MEMORY": "1",
++                },
 +                clear=False,
 +            ),
 +            mock.patch.object(
@@ -92,7 +133,10 @@ index 000000000..1ab7fefb2
 +        with (
 +            mock.patch.dict(
 +                os.environ,
-+                {"SGLANG_HICACHE_CUDA_MANAGED_MEMORY": "0"},
++                {
++                    "SGLANG_HICACHE_CUDA_HOST_MEMORY": "0",
++                    "SGLANG_HICACHE_CUDA_MANAGED_MEMORY": "0",
++                },
 +                clear=False,
 +            ),
 +            mock.patch.object(common, "_cuda_host_register") as register,
@@ -112,7 +156,10 @@ index 000000000..1ab7fefb2
 +        with (
 +            mock.patch.dict(
 +                os.environ,
-+                {"SGLANG_HICACHE_CUDA_MANAGED_MEMORY": "1"},
++                {
++                    "SGLANG_HICACHE_CUDA_HOST_MEMORY": "0",
++                    "SGLANG_HICACHE_CUDA_MANAGED_MEMORY": "1",
++                },
 +                clear=False,
 +            ),
 +            self.assertRaisesRegex(ValueError, "incompatible.*ShmHostTensorAllocator"),
@@ -120,6 +167,55 @@ index 000000000..1ab7fefb2
 +            common.alloc_with_host_register(
 +                (16,), torch.uint8, "cpu", True, allocator
 +            )
++
++    def test_host_allocator_rejects_external_storage_allocators(self):
++        allocator = common.ShmHostTensorAllocator()
++        with (
++            mock.patch.dict(
++                os.environ,
++                {
++                    "SGLANG_HICACHE_CUDA_HOST_MEMORY": "1",
++                    "SGLANG_HICACHE_CUDA_MANAGED_MEMORY": "0",
++                },
++                clear=False,
++            ),
++            self.assertRaisesRegex(ValueError, "incompatible.*ShmHostTensorAllocator"),
++        ):
++            common.alloc_with_host_register(
++                (16,), torch.uint8, "cpu", True, allocator
++            )
++
++    def test_host_and_managed_allocators_are_mutually_exclusive(self):
++        with (
++            mock.patch.dict(
++                os.environ,
++                {
++                    "SGLANG_HICACHE_CUDA_HOST_MEMORY": "1",
++                    "SGLANG_HICACHE_CUDA_MANAGED_MEMORY": "1",
++                },
++                clear=False,
++            ),
++            self.assertRaisesRegex(ValueError, "mutually exclusive"),
++        ):
++            common.alloc_with_host_register(
++                (16,), torch.uint8, "cpu", True, common.HostTensorAllocator()
++            )
++
++    def test_cuda_owned_host_tensor_wraps_and_releases_allocation(self):
++        size = 64
++        cudart = _FakeManagedCudart(size)
++        with mock.patch.object(common, "_load_cudart", return_value=cudart):
++            buffer = common._alloc_cuda_host((size,), torch.uint8, "cpu")
++
++        buffer.copy_(torch.arange(size, dtype=torch.uint8))
++        self.assertTrue(torch.equal(buffer, torch.arange(size, dtype=torch.uint8)))
++        owner = getattr(buffer, common._CUDA_HOST_ALLOCATION_ATTR)
++        self.assertEqual(
++            getattr(buffer, common._CUDA_HOST_REGISTERED_RANGES_ATTR), []
++        )
++        owner.release()
++        owner.release()
++        self.assertEqual(cudart.host_freed, [cudart.ptr])
 +
 +    def test_managed_tensor_wraps_and_releases_the_cuda_allocation(self):
 +        size = 64

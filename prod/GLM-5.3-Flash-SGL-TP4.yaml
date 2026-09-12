@@ -126,7 +126,8 @@ x-sg-glm53-flash-common: &sg-glm53-flash-common
     - TRITON_CACHE_DIR=/root/.cache/triton
     - SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE=1
     - SGLANG_HICACHE_RAM_BUDGET=${GLM53_HICACHE_RAM_BUDGET:-256GiB}
-    - SGLANG_HICACHE_CUDA_MANAGED_MEMORY=1
+    - SGLANG_HICACHE_CUDA_HOST_MEMORY=1
+    - SGLANG_HICACHE_CUDA_MANAGED_MEMORY=0
     - PYTHONFAULTHANDLER=1
   restart: unless-stopped
   stop_grace_period: 5m
@@ -329,7 +330,7 @@ services:
               device_ids: ["0","1","2","3"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:zai-org/GLM-5.3-Flash","served_model:z-ai/glm-5.3-flash","precision:fp8-weights-bf16-kv","deployment:glm53-flash-hicache-gpu03","config_variant:fc91d24-hicache-managed-host-prefetch-kernel-hcc-tp4-ep4-eagle-adaptive-5-1-6","request_logging:full-synthetic","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:1"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:zai-org/GLM-5.3-Flash","served_model:z-ai/glm-5.3-flash","precision:fp8-weights-bf16-kv","deployment:glm53-flash-hicache-gpu03","config_variant:fc91d24-hicache-cuda-host-kernel-hcc-tp4-ep4-eagle-adaptive-5-1-6","request_logging:full-synthetic","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:1"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -341,7 +342,7 @@ services:
       nearai.otel.model_path: "zai-org/GLM-5.3-Flash"
       nearai.otel.served_model: "z-ai/glm-5.3-flash"
       nearai.otel.deployment: "glm53-flash-hicache-gpu03"
-      nearai.otel.config_variant: "fc91d24-hicache-managed-host-prefetch-kernel-hcc-tp4-ep4-eagle-adaptive-5-1-6"
+      nearai.otel.config_variant: "fc91d24-hicache-cuda-host-kernel-hcc-tp4-ep4-eagle-adaptive-5-1-6"
       nearai.otel.thinking_budget_policy: "default8192-public-to-native"
       nearai.otel.request_logging: "full-synthetic"
       nearai.otel.instance: "1"
@@ -350,84 +351,6 @@ services:
       nearai.otel.host_machine: "${CVM_HOST}"
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
-
-  # Explicitly targeted gpu03-only diagnostic. HCC rejects registration of
-  # arbitrary host pages, so prove CUDA-owned pinned host allocations at the
-  # same per-rank capacity before switching the HiCache allocator.
-  hicache-hostalloc-probe:
-    <<: *nvidia
-    profiles: ["diagnostic"]
-    image: docker.io/nearaidev/sglang@sha256:1791aea3522fedd437f1357fd5119bde187b5a335977d4df81a9a2b0fd528d9b
-    container_name: hicache-hostalloc-probe
-    restart: "no"
-    entrypoint: ["python3", "-c"]
-    command:
-      - |
-        import ctypes
-        import gc
-        import sys
-        import torch
-
-        cudart = ctypes.CDLL("libcudart.so")
-        cudart.cudaSetDevice.argtypes = [ctypes.c_int]
-        cudart.cudaSetDevice.restype = ctypes.c_int
-        cudart.cudaMallocHost.argtypes = [ctypes.POINTER(ctypes.c_void_p), ctypes.c_size_t]
-        cudart.cudaMallocHost.restype = ctypes.c_int
-        cudart.cudaFreeHost.argtypes = [ctypes.c_void_p]
-        cudart.cudaFreeHost.restype = ctypes.c_int
-        cudart.cudaGetErrorString.argtypes = [ctypes.c_int]
-        cudart.cudaGetErrorString.restype = ctypes.c_char_p
-
-        def check(rc, operation):
-            if rc:
-                reason = cudart.cudaGetErrorString(rc)
-                raise RuntimeError(f"{operation} failed: rc={rc} error={reason!r}")
-
-        check(cudart.cudaSetDevice(0), "cudaSetDevice")
-        allocations = []
-        # Slightly exceed one production rank's four host pools in aggregate.
-        sizes_gib = (29, 31, 2, 4)
-        try:
-            for size_gib in sizes_gib:
-                ptr = ctypes.c_void_p()
-                size = size_gib * 1024**3
-                check(cudart.cudaMallocHost(ctypes.byref(ptr), size), f"cudaMallocHost({size_gib}GiB)")
-                allocations.append((ptr, size))
-                print(f"allocated_cuda_host_gib={size_gib}", flush=True)
-
-            sample_size = 64 * 1024**2
-            backing = (ctypes.c_ubyte * sample_size).from_address(allocations[0][0].value)
-            host = torch.frombuffer(backing, dtype=torch.uint8, count=sample_size)
-            device = torch.full((sample_size,), 0x5A, dtype=torch.uint8, device="cuda:0")
-            host.copy_(device, non_blocking=True)
-            torch.cuda.synchronize()
-            assert int(host[0]) == 0x5A and int(host[-1]) == 0x5A
-            host.fill_(0xA5)
-            device.copy_(host, non_blocking=True)
-            torch.cuda.synchronize()
-            assert int(device[0]) == 0xA5 and int(device[-1]) == 0xA5
-            print(f"cuda_host_roundtrip_ok=1 total_gib={sum(sizes_gib)} pinned={host.is_pinned()}", flush=True)
-            del device, host, backing
-            gc.collect()
-        finally:
-            failures = []
-            for ptr, _ in reversed(allocations):
-                rc = cudart.cudaFreeHost(ptr)
-                if rc:
-                    failures.append(rc)
-            if failures:
-                print(f"cudaFreeHost_failures={failures}", file=sys.stderr, flush=True)
-                sys.exit(2)
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              device_ids: ["0"]
-              capabilities: [gpu]
-    logging: *logging-conf
-    labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:synthetic-hostalloc-probe","deployment:glm53-flash-hicache-gpu03","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
 
   # --- GLM-5.3-Flash engine replica 2 (SGLang TP4, GPUs 4-7) ---
   model-sg-glm53-fp8-tp4-r2:
@@ -491,7 +414,8 @@ services:
       - TRITON_CACHE_DIR=/root/.cache/triton
       - SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE=1
       - SGLANG_HICACHE_RAM_BUDGET=${GLM53_HICACHE_RAM_BUDGET:-256GiB}
-      - SGLANG_HICACHE_CUDA_MANAGED_MEMORY=1
+      - SGLANG_HICACHE_CUDA_HOST_MEMORY=1
+      - SGLANG_HICACHE_CUDA_MANAGED_MEMORY=0
       - PYTHONFAULTHANDLER=1
     depends_on:
       model-downloader:
@@ -504,7 +428,7 @@ services:
               device_ids: ["4","5","6","7"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:zai-org/GLM-5.3-Flash","served_model:z-ai/glm-5.3-flash","precision:fp8-weights-bf16-kv","deployment:glm53-flash-hicache-gpu03","config_variant:fc91d24-hicache-managed-host-prefetch-kernel-hcc-tp4-ep4-eagle-adaptive-5-1-6","request_logging:full-synthetic","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:2"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:zai-org/GLM-5.3-Flash","served_model:z-ai/glm-5.3-flash","precision:fp8-weights-bf16-kv","deployment:glm53-flash-hicache-gpu03","config_variant:fc91d24-hicache-cuda-host-kernel-hcc-tp4-ep4-eagle-adaptive-5-1-6","request_logging:full-synthetic","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:2"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -516,7 +440,7 @@ services:
       nearai.otel.model_path: "zai-org/GLM-5.3-Flash"
       nearai.otel.served_model: "z-ai/glm-5.3-flash"
       nearai.otel.deployment: "glm53-flash-hicache-gpu03"
-      nearai.otel.config_variant: "fc91d24-hicache-managed-host-prefetch-kernel-hcc-tp4-ep4-eagle-adaptive-5-1-6"
+      nearai.otel.config_variant: "fc91d24-hicache-cuda-host-kernel-hcc-tp4-ep4-eagle-adaptive-5-1-6"
       nearai.otel.thinking_budget_policy: "default8192-public-to-native"
       nearai.otel.request_logging: "full-synthetic"
       nearai.otel.instance: "2"
