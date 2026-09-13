@@ -53,6 +53,7 @@ x-vllm-proxy-common: &vllm-proxy-common
   volumes:
     - /var/run/dstack.sock:/var/run/dstack.sock
     - certs:/etc/letsencrypt:ro
+    - inference-proxy-usage-outbox:/var/lib/inference-proxy/usage-outbox
   restart: unless-stopped
   logging: *logging-conf
 
@@ -265,6 +266,7 @@ services:
       - NVIDIA_VISIBLE_DEVICES=all
       - CLOUD_API_URL=https://cloud-api.near.ai
       - CLOUD_API_USAGE_TOKEN=${CLOUD_API_USAGE_TOKEN}
+      - CLOUD_API_USAGE_OUTBOX_DIR=/var/lib/inference-proxy/usage-outbox/proxy-glm53
       - COMPOSE_MANAGER_URL=http://compose-manager:8080
       - LOG_FORMAT=json
       - MODEL_NAME=z-ai/glm-5.3-flash
@@ -573,6 +575,7 @@ networks:
     name: dstack_default
 
 volumes:
+  inference-proxy-usage-outbox:
   otelcol_app_storage:
   huggingface_cache:
   kernel_cache:
