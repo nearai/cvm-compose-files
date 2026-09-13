@@ -52,8 +52,35 @@ The nine serving checks cover cold/device reuse, not CPU restoration under
 production eviction pressure; CPU restoration is covered separately by the
 byte tests above. Exact-topology TEE memory and serving still need qualification.
 
-The signed workflow has not run for this source. Registry publication,
-signature/attestation verification, exact-topology TEE/PPCIe serving, a staging
-soak of at least 30 minutes and production canary measurements are outstanding.
-The preparation PR changes no production service configuration. The activation
-PR must pin the real published image and retain these qualification boundaries.
+Registry publication, signature/attestation verification, exact-topology
+TEE/PPCIe serving, a staging soak of at least 30 minutes and production canary
+measurements were outstanding when the candidate was prepared.
+
+## Production HCC/PPCIe result
+
+The `v0.0.412` candidate at `d1a72bf`, using
+`docker.io/nearaidev/sglang@sha256:67cf951972594cdbf7437faf315145556ae6f3a643355ff4d3078fb670a12b9f`,
+was activated only on gpu02 replica 2 on 2026-09-11.
+All four ranks reported a 9,812,352-token host-cache allocation (120.57 GB per
+rank), then TP1 failed before readiness in `cudaHostRegister`:
+
+```text
+cudaHostRegister failed (rc=801)
+TypeError: cudaGetErrorString(): incompatible function arguments
+Invoked with: 801
+```
+
+Error 801 is `cudaErrorNotSupported`. NVIDIA's [Hopper
+confidential-computing release
+notes](https://docs.nvidia.com/550trd3-nvidia-trusted-computing-solutions-release-notes.pdf)
+state that pinned-host-memory APIs are unsupported in HCC and that
+`cudaHostRegister`/`cudaHostUnregister` return this error. The Python
+`TypeError` is a secondary formatting defect caused by passing the raw integer
+return code to the enum-typed binding; correcting it would not make registration
+or direct HiCache transfers supported.
+
+Replica 2 was restored to the signed control image and HiCache-disabled command.
+Both replicas passed the semantic check, the machine registry advertised gpu02,
+and a fresh Cloud API request returned HTTP 200. Production activation remains
+blocked until the runtime uses an HCC-supported host-transfer mechanism and
+passes exact-topology qualification.

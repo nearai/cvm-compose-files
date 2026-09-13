@@ -1,38 +1,33 @@
 # GLM-5.3 Flash HiCache canary
 
 This build carries complete hybrid-cache restoration and opt-in pooled transfers
-on the exact `fc91d24` production SGLang runtime. It is intended for **one TP4
-replica inside one CVM**, with the other TP4 replica retaining its existing image
-and HiCache-disabled configuration. It adds no storage backend or cross-CVM
-cache exchange.
+on the exact `fc91d24` production SGLang runtime. It is retained for native-GPU
+testing only. Do not activate it in the production HCC/PPCIe CVM: its direct
+HiCache path requires pinned host memory, which NVIDIA does not support in HCC.
+The production validator and promotion writer intentionally reject activation.
 
 ## Release order
 
-The repository publishes signed production images only from an exact commit
-already merged into `main`. This preparation change therefore leaves the active
-production compose untouched. After review and merge:
+The repository publishes signed images only from an exact commit already merged
+into `main`. The original source-preparation change left the active production
+compose untouched. Its native-test release sequence was:
 
 1. Dispatch `.github/workflows/publish-glm53-hicache.yaml` on `main`, supplying
    the exact merged `source_revision` and a fresh publishing tag. It builds,
    runs CPU regressions, scans, attests and signs the immutable image. A resumed
    run verifies that the tag still matches the requested digest.
 2. Verify the resulting signature and attestation using the commands below.
-3. Preview the exact canary configuration, then create its activation PR:
+3. Preview the retired canary configuration for native-GPU investigation only:
 
    ```bash
    python3 scripts/prepare_glm53_hicache_canary.py --image "$IMAGE"
-   python3 scripts/prepare_glm53_hicache_canary.py --image "$IMAGE" --write
-   ruby scripts/validate_glm53_prod_config.rb
-   python3 scripts/test_glm53_hicache_canary.py
    ```
 
-   The writer edits only local files; it does not push, merge or deploy. It pins
-   `RELEASED_IMAGE`, overrides r2's image/command/environment, and updates its
-   log and metric `config_variant`. r1, GPU allocations, routing, conversation
-   affinity, model/template revisions, MTP, request limits and logging policy
-   retain their existing values. The generated compose remains self-contained.
-4. Qualify the signed image in staging on the intended TEE/PPCIe topology,
-   including a minimum 30-minute soak, before separately authorized activation.
+   `--write` is blocked. The preview describes the old r2-only candidate, but
+   `scripts/validate_glm53_prod_config.rb` rejects any pinned HiCache release.
+4. Before restoring a production promotion path, replace pinned host memory with
+   a CUDA mechanism supported in HCC and qualify it on the intended TEE/PPCIe
+   topology, including startup, forced CPU-cache restoration and a 30-minute soak.
 
 Do not substitute a local Docker image ID, a mutable tag, or the unchanged base
 digest for the published candidate digest. Image publication does not deploy.
@@ -49,6 +44,9 @@ docker buildx imagetools inspect --format '{{json .SBOM.SPDX}}' "$IMAGE"
 ```
 
 ## Candidate configuration
+
+This table documents the retired native-GPU candidate. It is not a supported
+production configuration.
 
 | Setting | r1 control | r2 candidate |
 | --- | --- | --- |
@@ -107,10 +105,12 @@ policy in this change.
 
 Pooling packs many small layer transfers into a persistent device buffer,
 copies complete pages with CUDA DMA, then scatters them on the GPU. Triton
-kernels access GPU memory only. The NVIDIA driver retains responsibility for
-the confidential-computing transfer path; this patch does not change CC mode,
-PPCIe, NCCL, peer-access or attestation settings. It neither establishes nor
-verifies the platform's CC configuration.
+kernels access GPU memory only. The host pool is backed by mmap and registered
+with `cudaHostRegister`. NVIDIA's [Hopper confidential-computing release
+notes](https://docs.nvidia.com/550trd3-nvidia-trusted-computing-solutions-release-notes.pdf)
+document that pinned-host-memory APIs and host memory registration are
+unsupported in HCC/PPCIe; production gpu02 returned
+`cudaErrorNotSupported` (801) at that registration boundary.
 
 Staging belongs to the existing rank-local transfer streams. The existing
 completion events still govern cache lifetime. Packed target/MTP consumers

@@ -123,6 +123,9 @@ errors = []
 if CANARY_IMAGE && (!CANARY_IMAGE.match?(%r{\Adocker\.io/nearaidev/sglang@sha256:[a-f0-9]{64}\z}) || CANARY_IMAGE == ENGINE_IMAGE)
   errors << "HiCache release must pin a distinct immutable image from the signed publishing workflow"
 end
+if CANARY_IMAGE
+  errors << "GLM-5.3 HiCache requires pinned host memory, which NVIDIA HCC/PPCIe does not support; keep both production replicas on the control runtime"
+end
 errors << "legacy canary compose file must be removed" if File.exist?(LEGACY_CANARY_FILE)
 
 compose = yaml_load(File.read(COMPOSE_FILE))
