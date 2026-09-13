@@ -913,6 +913,8 @@ configs:
           access_log /var/log/nginx/access.log json_combined;
           client_max_body_size 100m;
           client_body_buffer_size 1m;
+          location ^~ /metrics { return 404; }
+          location ^~ /v1/metrics { return 404; }
           location / {
               proxy_pass http://proxy-glm52:8000;
               proxy_http_version 1.1;

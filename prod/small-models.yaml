@@ -2505,6 +2505,8 @@ configs:
           # Non-streaming endpoint; keep fleet-wide HTTP/2 connection handling uniform.
           keepalive_timeout 1h;
           keepalive_requests 1000000;
+          location ^~ /metrics { return 404; }
+          location ^~ /v1/metrics { return 404; }
           location / { proxy_pass http://proxy-flux2-klein-4b:8000; }
       }
 
@@ -2520,6 +2522,8 @@ configs:
           # and make the signature lookup return 404.
           keepalive_timeout 1h;
           keepalive_requests 1000000;
+          location ^~ /metrics { return 404; }
+          location ^~ /v1/metrics { return 404; }
           location / { proxy_pass http://proxy-qwen3vl-30b-a3b:8000; }
       }
 
@@ -2531,6 +2535,8 @@ configs:
           # Non-streaming endpoint; keep fleet-wide HTTP/2 connection handling uniform.
           keepalive_timeout 1h;
           keepalive_requests 1000000;
+          location ^~ /metrics { return 404; }
+          location ^~ /v1/metrics { return 404; }
           location / { proxy_pass http://proxy-qwen3-embedding-0.6b:8000; }
       }
 
@@ -2542,6 +2548,8 @@ configs:
           # Non-streaming endpoint; keep fleet-wide HTTP/2 connection handling uniform.
           keepalive_timeout 1h;
           keepalive_requests 1000000;
+          location ^~ /metrics { return 404; }
+          location ^~ /v1/metrics { return 404; }
           location / { proxy_pass http://proxy-qwen3-reranker-0.6b:8000; }
       }
 
@@ -2553,6 +2561,8 @@ configs:
           # Non-streaming endpoint; keep fleet-wide HTTP/2 connection handling uniform.
           keepalive_timeout 1h;
           keepalive_requests 1000000;
+          location ^~ /metrics { return 404; }
+          location ^~ /v1/metrics { return 404; }
           location / { proxy_pass http://proxy-whisper-large-v3:8000; }
       }
 
@@ -2564,6 +2574,8 @@ configs:
           # Non-streaming endpoint; keep fleet-wide HTTP/2 connection handling uniform.
           keepalive_timeout 1h;
           keepalive_requests 1000000;
+          location ^~ /metrics { return 404; }
+          location ^~ /v1/metrics { return 404; }
           location / { proxy_pass http://proxy-privacy-filter:8000; }
       }
 
@@ -2579,6 +2591,8 @@ configs:
           # and make the signature lookup return 404.
           keepalive_timeout 1h;
           keepalive_requests 1000000;
+          location ^~ /metrics { return 404; }
+          location ^~ /v1/metrics { return 404; }
           location / { proxy_pass http://proxy-qwen36-35b-a3b:8000; }
       }
 
@@ -2589,6 +2603,8 @@ configs:
                       ~^dsv4-flash-i\d+\.completions(-stg)?\.near\.ai$$;
           keepalive_timeout 1h;
           keepalive_requests 1000000;
+          location ^~ /metrics { return 404; }
+          location ^~ /v1/metrics { return 404; }
           location / { proxy_pass http://proxy-dsv4-flash:8000; }
       }
 
@@ -2644,6 +2660,8 @@ configs:
                       ~^qwen3-8-27b-i\d+\.completions(-stg)?\.near\.ai$$;
           keepalive_timeout 1h;
           keepalive_requests 1000000;
+          location ^~ /metrics { return 404; }
+          location ^~ /v1/metrics { return 404; }
           location / { proxy_pass http://proxy-qwen38-27b:8000; }
       }
 

@@ -1225,6 +1225,8 @@ configs:
         # PINGs (http2_keep_alive_while_idle).
         keepalive_timeout 1h;
         keepalive_requests 1000000;
+        location ^~ /metrics { return 404; }
+        location ^~ /v1/metrics { return 404; }
         location / {
           set $$proxy_glm53 http://proxy-glm53:8000;
           proxy_pass $$proxy_glm53;
