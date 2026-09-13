@@ -143,6 +143,69 @@ x-sg-glm53-flash-common: &sg-glm53-flash-common
   stop_grace_period: 5m
   logging: *logging-conf
 
+# Exact current production control: signed image, flags, context length, and
+# request-logging posture from origin/main. This arm intentionally has no
+# HiCache so the mixed-load HOL comparison is against what production runs.
+x-sg-glm53-prod-control-common: &sg-glm53-prod-control-common
+  <<: *nvidia
+  init: true
+  image: docker.io/nearaidev/sglang@sha256:a7b7136abcf5e07522289d96e96fec9b42a1a30f9dfda57e957f142680d2d67b
+  command: >
+      sglang serve
+      --model-path /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/84c6a6aa9497188e15a635ba793b0f95a79b1033
+      --revision 84c6a6aa9497188e15a635ba793b0f95a79b1033
+      --served-model-name z-ai/glm-5.3-flash
+      --tp-size 4
+      --ep-size 4
+      --mem-fraction-static 0.80
+      --max-running-requests 32
+      --max-queued-requests 32
+      --chunked-prefill-size 4096
+      --cuda-graph-max-bs-decode 32
+      --dsa-prefill-backend tilelang
+      --dsa-decode-backend tilelang
+      --kv-cache-dtype bfloat16
+      --moe-runner-backend deep_gemm
+      --speculative-algorithm EAGLE
+      --speculative-num-steps 5
+      --speculative-eagle-topk 1
+      --speculative-num-draft-tokens 6
+      --speculative-adaptive
+      --reasoning-parser glm45
+      --enable-strict-thinking
+      --grammar-backend xgrammar
+      --tool-call-parser glm47
+      --chat-template /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/3f1971b7b5f7a528c9c4ef6212c8785298a8c24a/chat_template.jinja
+      --context-length 1048576
+      --dist-init-addr 127.0.0.1:29510
+      --watchdog-timeout 1800
+      --host 0.0.0.0
+      --port 8000
+      --enable-metrics
+      --enable-cache-report
+      --log-requests-level 0
+      --disable-fast-image-processor
+      --limit-mm-data-per-request '{"image": 64}'
+  volumes:
+    - kernel_cache:/root/.cache
+    - huggingface_cache:/root/.cache/huggingface
+  environment:
+    - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+    - HF_HUB_OFFLINE=1
+    - TRANSFORMERS_OFFLINE=1
+    - HF_HUB_DISABLE_TELEMETRY=1
+    - DO_NOT_TRACK=1
+    - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    - OPENBLAS_L2_SIZE=2097152
+    - NCCL_DEBUG=WARN
+    - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+    - TORCHINDUCTOR_CACHE_DIR=/root/.cache/torchinductor
+    - TRITON_CACHE_DIR=/root/.cache/triton
+    - SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE=1
+  restart: unless-stopped
+  stop_grace_period: 5m
+  logging: *logging-conf
+
 x-vllm-glm53-flash-common: &vllm-glm53-flash-common
   <<: *nvidia
   init: true
@@ -358,7 +421,7 @@ services:
       - TOKEN=${PROXY_TOKEN}
       - FUSION_ENABLED=${FUSION_ENABLED}
       - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
-      - VLLM_BACKEND_URLS=http://model-sg-glm53-fp8-tp4-r1:8000,http://model-vllm-glm53-fp8-tp4-r2:8000
+      - VLLM_BACKEND_URLS=http://model-sg-glm53-fp8-tp4-r1:8000,http://model-sg-glm53-prod-control-r2:8000
       # Keep append-only conversations on the replica that already holds their prefix cache
       # (inference-proxy #227); new conversations still balance by least-connections.
       - VLLM_BACKEND_CONVERSATION_AFFINITY=1
@@ -421,11 +484,10 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
-  # --- GLM-5.3-Flash vLLM KV-offload diagnostic (TP4, GPUs 4-7) ---
-  model-vllm-glm53-fp8-tp4-r2:
-    <<: *vllm-glm53-flash-common
-    container_name: model-vllm-glm53-fp8-tp4-r2
-    stop_grace_period: 30s
+  # --- Exact current production SGLang control (TP4, GPUs 4-7) ---
+  model-sg-glm53-prod-control-r2:
+    <<: *sg-glm53-prod-control-common
+    container_name: model-sg-glm53-prod-control-r2
     depends_on:
       model-downloader:
         condition: service_completed_successfully
@@ -437,19 +499,19 @@ services:
               device_ids: ["4","5","6","7"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:z-ai/glm-5.3-flash","model_path:zai-org/GLM-5.3-Flash","served_model:z-ai/glm-5.3-flash","precision:fp8-weights-bf16-kv","deployment:glm53-flash-hicache-gpu03","config_variant:vllm-385dce36-tp4-131k-nospec-pynccl-kv-offload-128g","request_logging:disabled","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:2"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:zai-org/GLM-5.3-Flash","served_model:z-ai/glm-5.3-flash","precision:fp8-weights-bf16-kv","deployment:glm53-flash-hicache-gpu03","config_variant:current-prod-a7b7136-tp4-ep4-eagle-adaptive-5-1-6","request_logging:disabled","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:2"]}]'
       nearai.otel.scrape: "true"
-      nearai.otel.job: "vllm"
-      nearai.otel.service: "vllm"
-      nearai.otel.source: "vllm"
-      nearai.otel.container_name: "model-vllm-glm53-fp8-tp4-r2"
+      nearai.otel.job: "sglang"
+      nearai.otel.service: "sglang"
+      nearai.otel.source: "sglang"
+      nearai.otel.container_name: "model-sg-glm53-prod-control-r2"
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "z-ai/glm-5.3-flash"
       nearai.otel.model_path: "zai-org/GLM-5.3-Flash"
       nearai.otel.served_model: "z-ai/glm-5.3-flash"
       nearai.otel.deployment: "glm53-flash-hicache-gpu03"
-      nearai.otel.config_variant: "vllm-385dce36-tp4-131k-nospec-pynccl-kv-offload-128g"
+      nearai.otel.config_variant: "current-prod-a7b7136-tp4-ep4-eagle-adaptive-5-1-6"
       nearai.otel.request_logging: "disabled"
       nearai.otel.instance: "2"
       nearai.otel.env: "${ENV}"
@@ -806,7 +868,7 @@ configs:
           listen 8009 ssl;
           server_name _;
           if ($$soak_authorized = 0) { return 401; }
-          set $$backend http://model-vllm-glm53-fp8-tp4-r2:8000;
+          set $$backend http://model-sg-glm53-prod-control-r2:8000;
           location ~ ^/(health|metrics|v1/models|v1/chat/completions|v1/completions|v1/responses)$$ {
             limit_except GET POST { deny all; }
             proxy_pass $$backend$$request_uri;
@@ -1001,15 +1063,15 @@ configs:
                       config_variant: "fc91d24-hicache-cuda-host-pooled-direct-hcc-tp4-ep4-eagle-adaptive-5-1-6"
                       thinking_budget_policy: "default8192-public-to-native"
                       request_logging: "full-synthetic"
-              - job_name: vllm-model-vllm-glm53-fp8-tp4-r2
+              - job_name: sglang-model-sg-glm53-prod-control-r2
                 scrape_interval: 15s
                 metrics_path: /metrics
                 static_configs:
-                  - targets: ['model-vllm-glm53-fp8-tp4-r2:8000']
+                  - targets: ['model-sg-glm53-prod-control-r2:8000']
                     labels:
-                      service: "vllm"
-                      source: "vllm"
-                      container_name: "model-vllm-glm53-fp8-tp4-r2"
+                      service: "sglang"
+                      source: "sglang"
+                      container_name: "model-sg-glm53-prod-control-r2"
                       model: "z-ai/glm-5.3-flash"
                       model_path: "zai-org/GLM-5.3-Flash"
                       served_model: "z-ai/glm-5.3-flash"
@@ -1022,7 +1084,7 @@ configs:
                       ip: "${HOST_IP}"
                       port: "8000"
                       instance: "2"
-                      config_variant: "vllm-487ecf187-tp4-131k-custom-ar-eager"
+                      config_variant: "current-prod-a7b7136-tp4-ep4-eagle-adaptive-5-1-6"
                       request_logging: "disabled"
               - job_name: dcgm-dcgm-glm53
                 scrape_interval: 15s
