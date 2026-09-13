@@ -149,7 +149,7 @@ x-vllm-glm53-flash-common: &vllm-glm53-flash-common
   image: docker.io/vllm/vllm-openai@sha256:0674a3ea3c971706cea310bca71daadff68ea1717c758d2f54affa5def001b86
   entrypoint: ["vllm", "serve"]
   # TP4, 131072 context, eager/unfused diagnostic, PyNCCL-only collectives,
-  # DeepGEMM FP8 MoE, auto dense FP8, no MTP.
+  # DeepGEMM FP8 MoE, FlashAttention sparse MLA, auto dense FP8, no MTP.
   command: >
       /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/84c6a6aa9497188e15a635ba793b0f95a79b1033
       --revision 84c6a6aa9497188e15a635ba793b0f95a79b1033
@@ -158,6 +158,7 @@ x-vllm-glm53-flash-common: &vllm-glm53-flash-common
       --disable-custom-all-reduce
       --enforce-eager
       --moe-backend deep_gemm
+      --attention-backend FLASH_ATTN_MLA_SPARSE
       --no-enable-flashinfer-autotune
       --compilation-config '{"pass_config":{"fuse_norm_quant":false,"fuse_act_quant":false,"fuse_allreduce_rms":false}}'
       --tool-call-parser glm47
