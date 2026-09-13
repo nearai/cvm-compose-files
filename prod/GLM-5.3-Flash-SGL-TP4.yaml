@@ -3,10 +3,10 @@
 # GLM-5.3-Flash build previously qualified with this exact model revision.
 # Speculative decoding is disabled because the earlier MTP rejection-sampler
 # warmup asserted in ScatterGatherKernel on gpu03 before the API could start.
-# The retained gpu31 vLLM build failed custom all-reduce graph capture on both
-# gpu03 four-GPU islands and produced invalid logits with NCCL. This revision
-# isolates the newer official vLLM runtime while keeping all other diagnostic
-# control settings fixed.
+# Both retained and newer vLLM builds fail custom all-reduce graph capture on
+# gpu03, and the newer FlashInfer collective cannot initialize in this CVM.
+# This revision forces PyNCCL while retaining the newer runtime's SM90 sparse
+# MLA path to isolate whether that path fixes the old build's invalid logits.
 # The registrar is profile-gated below and must remain disabled for this test.
 # Do not promote this file; it deliberately enables full synthetic request logs.
 #
@@ -148,13 +148,14 @@ x-vllm-glm53-flash-common: &vllm-glm53-flash-common
   init: true
   image: docker.io/vllm/vllm-openai@sha256:0674a3ea3c971706cea310bca71daadff68ea1717c758d2f54affa5def001b86
   entrypoint: ["vllm", "serve"]
-  # Change only the vLLM runtime from the retained gpu31 control: TP4, 131072
-  # context, default CUDA graphs/custom all-reduce, auto FP8 backends, no MTP.
+  # TP4, 131072 context, default CUDA graphs, PyNCCL-only collectives, auto FP8
+  # backends, no MTP.
   command: >
       /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/84c6a6aa9497188e15a635ba793b0f95a79b1033
       --revision 84c6a6aa9497188e15a635ba793b0f95a79b1033
       --served-model-name z-ai/glm-5.3-flash
       --tensor-parallel-size 4
+      --disable-custom-all-reduce
       --no-enable-flashinfer-autotune
       --tool-call-parser glm47
       --reasoning-parser glm45
@@ -179,6 +180,7 @@ x-vllm-glm53-flash-common: &vllm-glm53-flash-common
     - HF_HUB_DISABLE_TELEMETRY=1
     - DO_NOT_TRACK=1
     - VLLM_ENABLE_CUDA_COMPATIBILITY=0
+    - VLLM_ALLREDUCE_USE_FLASHINFER=0
     - VLLM_ENGINE_READY_TIMEOUT_S=3600
     - VLLM_CACHE_ROOT=/root/.cache/vllm/glm53-flash-official-385dce36
     - VLLM_LOGGING_LEVEL=INFO
@@ -428,7 +430,7 @@ services:
               device_ids: ["4","5","6","7"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:z-ai/glm-5.3-flash","model_path:zai-org/GLM-5.3-Flash","served_model:z-ai/glm-5.3-flash","precision:fp8-weights-bf16-kv","deployment:glm53-flash-hicache-gpu03","config_variant:vllm-385dce36-tp4-131k-nospec","request_logging:disabled","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:2"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:z-ai/glm-5.3-flash","model_path:zai-org/GLM-5.3-Flash","served_model:z-ai/glm-5.3-flash","precision:fp8-weights-bf16-kv","deployment:glm53-flash-hicache-gpu03","config_variant:vllm-385dce36-tp4-131k-nospec-pynccl","request_logging:disabled","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:2"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
@@ -440,7 +442,7 @@ services:
       nearai.otel.model_path: "zai-org/GLM-5.3-Flash"
       nearai.otel.served_model: "z-ai/glm-5.3-flash"
       nearai.otel.deployment: "glm53-flash-hicache-gpu03"
-      nearai.otel.config_variant: "vllm-385dce36-tp4-131k-nospec"
+      nearai.otel.config_variant: "vllm-385dce36-tp4-131k-nospec-pynccl"
       nearai.otel.request_logging: "disabled"
       nearai.otel.instance: "2"
       nearai.otel.env: "${ENV}"
