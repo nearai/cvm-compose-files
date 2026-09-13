@@ -1,0 +1,382 @@
+diff --git a/python/sglang/srt/mem_cache/pool_host/common.py b/python/sglang/srt/mem_cache/pool_host/common.py
+index df72402..2a15a2a 100644
+--- a/python/sglang/srt/mem_cache/pool_host/common.py
++++ b/python/sglang/srt/mem_cache/pool_host/common.py
+@@ -1,7 +1,9 @@
+ from __future__ import annotations
+ 
++import ctypes
+ import json
+ import logging
++import math
+ import os
+ from collections import defaultdict
+ 
+@@ -14,6 +16,337 @@ from sglang.srt.runtime_context import get_memory
+ logger = logging.getLogger(__name__)
+ 
+ _CUDA_HOST_REGISTERED_RANGES_ATTR = "_sglang_cuda_host_registered_ranges"
++_CUDA_HOST_ALLOCATION_ATTR = "_sglang_cuda_host_allocation"
++_CUDA_MANAGED_ALLOCATION_ATTR = "_sglang_cuda_managed_allocation"
++_CUDA_HOST_MEMORY_ENV = "SGLANG_HICACHE_CUDA_HOST_MEMORY"
++_CUDA_MANAGED_MEMORY_ENV = "SGLANG_HICACHE_CUDA_MANAGED_MEMORY"
++_CUDA_MEM_LOCATION_TYPE_DEVICE = 1
++_CUDA_MEM_LOCATION_TYPE_HOST = 2
++_CUDA_MEM_ADVISE_SET_PREFERRED_LOCATION = 3
++_CUDA_MEM_ADVISE_SET_ACCESSED_BY = 5
++
++
++class _CudaMemLocation(ctypes.Structure):
++    _fields_ = [("type", ctypes.c_int), ("id", ctypes.c_int)]
++
++
++def _cuda_error_string(cudart, rc) -> str:
++    value = cudart.cudaGetErrorString(int(rc))
++    if not value:
++        return f"CUDA error {int(rc)}"
++    return value.decode("utf-8", errors="replace")
++
++
++def _load_cudart():
++    """Load the CUDA Runtime C ABI used for CUDA-owned host allocations."""
++
++    cudart = ctypes.CDLL("libcudart.so")
++    cudart.cudaMallocHost.argtypes = [
++        ctypes.POINTER(ctypes.c_void_p),
++        ctypes.c_size_t,
++    ]
++    cudart.cudaMallocHost.restype = ctypes.c_int
++    cudart.cudaFreeHost.argtypes = [ctypes.c_void_p]
++    cudart.cudaFreeHost.restype = ctypes.c_int
++    cudart.cudaMallocManaged.argtypes = [
++        ctypes.POINTER(ctypes.c_void_p),
++        ctypes.c_size_t,
++        ctypes.c_uint,
++    ]
++    cudart.cudaMallocManaged.restype = ctypes.c_int
++    cudart.cudaGetDevice.argtypes = [ctypes.POINTER(ctypes.c_int)]
++    cudart.cudaGetDevice.restype = ctypes.c_int
++    cudart.cudaMemAdvise.argtypes = [
++        ctypes.c_void_p,
++        ctypes.c_size_t,
++        ctypes.c_int,
++        _CudaMemLocation,
++    ]
++    cudart.cudaMemAdvise.restype = ctypes.c_int
++    cudart.cudaMemPrefetchAsync.argtypes = [
++        ctypes.c_void_p,
++        ctypes.c_size_t,
++        _CudaMemLocation,
++        ctypes.c_uint,
++        ctypes.c_void_p,
++    ]
++    cudart.cudaMemPrefetchAsync.restype = ctypes.c_int
++    cudart.cudaFree.argtypes = [ctypes.c_void_p]
++    cudart.cudaFree.restype = ctypes.c_int
++    cudart.cudaGetErrorString.argtypes = [ctypes.c_int]
++    cudart.cudaGetErrorString.restype = ctypes.c_char_p
++    return cudart
++
++
++class _CudaHostAllocation:
++    """Own a cudaMallocHost allocation backing a CPU torch tensor."""
++
++    def __init__(self, cudart, ptr: int, size: int, backing) -> None:
++        self.cudart = cudart
++        self.ptr = ptr
++        self.size = size
++        self.backing = backing
++
++    def release(self) -> None:
++        if not self.ptr:
++            return
++        ptr, self.ptr = self.ptr, 0
++        rc = self.cudart.cudaFreeHost(ctypes.c_void_p(ptr))
++        if int(rc) != 0:
++            logger.warning(
++                "cudaFreeHost failed for CUDA-owned HiCache host allocation "
++                "(rc=%d, %s) ptr=%#x size=%d",
++                int(rc),
++                _cuda_error_string(self.cudart, rc),
++                ptr,
++                self.size,
++            )
++
++    def __del__(self) -> None:
++        try:
++            self.release()
++        except Exception:
++            logger.exception("Failed to release CUDA-owned HiCache host allocation")
++
++
++class _CudaManagedAllocation:
++    """Own a cudaMallocManaged allocation backing a CPU torch tensor."""
++
++    def __init__(self, cudart, ptr: int, size: int, backing) -> None:
++        self.cudart = cudart
++        self.ptr = ptr
++        self.size = size
++        self.backing = backing
++
++    def release(self) -> None:
++        if not self.ptr:
++            return
++        ptr, self.ptr = self.ptr, 0
++        rc = self.cudart.cudaFree(ctypes.c_void_p(ptr))
++        if int(rc) != 0:
++            logger.warning(
++                "cudaFree failed for managed HiCache allocation "
++                "(rc=%d, %s) ptr=%#x size=%d",
++                int(rc),
++                _cuda_error_string(self.cudart, rc),
++                ptr,
++                self.size,
++            )
++
++    def __del__(self) -> None:
++        try:
++            self.release()
++        except Exception:
++            logger.exception("Failed to release managed HiCache allocation")
++
++
++def _cuda_managed_memory_enabled() -> bool:
++    return os.environ.get(_CUDA_MANAGED_MEMORY_ENV, "").strip().lower() in {
++        "1",
++        "true",
++        "yes",
++    }
++
++
++def _cuda_host_memory_enabled() -> bool:
++    return os.environ.get(_CUDA_HOST_MEMORY_ENV, "").strip().lower() in {
++        "1",
++        "true",
++        "yes",
++    }
++
++
++def _cuda_managed_prefetch_pages_to_host(
++    buffer: torch.Tensor,
++    page_indices: torch.Tensor,
++    page_bytes: int,
++    stream,
++) -> int:
++    """Return managed HiCache page ranges to CPU after GPU transfer access."""
++
++    owner = getattr(buffer, _CUDA_MANAGED_ALLOCATION_ATTR, None)
++    if owner is None:
++        return 0
++    if page_bytes <= 0:
++        raise ValueError(f"Managed HiCache page_bytes must be positive; got {page_bytes}")
++    requested_pages = [int(page) for page in page_indices.tolist()]
++    if not requested_pages:
++        return 0
++    if any(page < 0 for page in requested_pages):
++        raise ValueError(
++            "Managed HiCache page indices must be non-negative: "
++            f"{requested_pages}"
++        )
++    # Transfer plans preserve request order, which need not be physical host
++    # order. Prefetch has no ordering semantics, so normalize before merging.
++    pages = sorted(set(requested_pages))
++
++    stream_handle = int(getattr(stream, "cuda_stream", stream))
++    base = int(buffer.data_ptr())
++    allocation_start = int(owner.ptr)
++    allocation_end = allocation_start + int(owner.size)
++    if not allocation_start or base < allocation_start or base >= allocation_end:
++        raise RuntimeError(
++            "Managed HiCache tensor does not point inside its CUDA allocation: "
++            f"base={base:#x} allocation=[{allocation_start:#x}, {allocation_end:#x})"
++        )
++
++    ranges = []
++    start = previous = pages[0]
++    for page in pages[1:]:
++        if page == previous + 1:
++            previous = page
++            continue
++        ranges.append((start, previous + 1))
++        start = previous = page
++    ranges.append((start, previous + 1))
++
++    for start_page, end_page in ranges:
++        ptr = base + start_page * page_bytes
++        size = (end_page - start_page) * page_bytes
++        if ptr + size > allocation_end:
++            raise ValueError(
++                "Managed HiCache prefetch range exceeds its allocation: "
++                f"pages=[{start_page}, {end_page}) page_bytes={page_bytes} "
++                f"range=[{ptr:#x}, {ptr + size:#x}) allocation_end={allocation_end:#x}"
++            )
++        rc = owner.cudart.cudaMemPrefetchAsync(
++            ctypes.c_void_p(ptr),
++            size,
++            _CudaMemLocation(_CUDA_MEM_LOCATION_TYPE_HOST, 0),
++            0,
++            ctypes.c_void_p(stream_handle),
++        )
++        if int(rc) != 0:
++            raise RuntimeError(
++                "cudaMemPrefetchAsync failed while returning managed HiCache "
++                f"pages to CPU (rc={int(rc)}, {_cuda_error_string(owner.cudart, rc)}) "
++                f"ptr={ptr:#x} size={size} stream={stream_handle:#x}"
++            )
++    return len(ranges)
++
++
++def _alloc_cuda_managed(dims: tuple, dtype: torch.dtype, device: str) -> torch.Tensor:
++    """Allocate host-visible Unified Memory for HCC where pinning is unsupported."""
++
++    if device != "cpu":
++        raise ValueError(
++            "Managed HiCache allocation only supports CPU host tensors; "
++            f"got device={device!r}"
++        )
++    numel = math.prod(dims)
++    element_size = torch.empty((), dtype=dtype, device="cpu").element_size()
++    size = numel * element_size
++    if size <= 0:
++        raise ValueError(f"Managed HiCache allocation size must be positive; got {size}")
++
++    cudart = _load_cudart()
++    raw_ptr = ctypes.c_void_p()
++    rc = cudart.cudaMallocManaged(ctypes.byref(raw_ptr), size, 1)
++    if int(rc) != 0:
++        raise RuntimeError(
++            "cudaMallocManaged failed for HiCache host allocation "
++            f"(rc={int(rc)}, {_cuda_error_string(cudart, rc)}) size={size}"
++        )
++    ptr = int(raw_ptr.value or 0)
++    try:
++        current_device = ctypes.c_int()
++        rc = cudart.cudaGetDevice(ctypes.byref(current_device))
++        if int(rc) != 0:
++            raise RuntimeError(
++                "cudaGetDevice failed while configuring managed HiCache memory "
++                f"(rc={int(rc)}, {_cuda_error_string(cudart, rc)})"
++            )
++        for advice, location, description in (
++            (
++                _CUDA_MEM_ADVISE_SET_PREFERRED_LOCATION,
++                _CudaMemLocation(_CUDA_MEM_LOCATION_TYPE_HOST, 0),
++                "CPU preferred location",
++            ),
++            (
++                _CUDA_MEM_ADVISE_SET_ACCESSED_BY,
++                _CudaMemLocation(
++                    _CUDA_MEM_LOCATION_TYPE_DEVICE, int(current_device.value)
++                ),
++                "current GPU access",
++            ),
++        ):
++            rc = cudart.cudaMemAdvise(ctypes.c_void_p(ptr), size, advice, location)
++            if int(rc) != 0:
++                raise RuntimeError(
++                    f"cudaMemAdvise failed for {description} on managed "
++                    "HiCache memory "
++                    f"(rc={int(rc)}, {_cuda_error_string(cudart, rc)}) "
++                    f"ptr={ptr:#x} size={size} location_type={location.type} "
++                    f"location_id={location.id}"
++                )
++        backing = (ctypes.c_ubyte * size).from_address(ptr)
++        byte_buffer = torch.frombuffer(backing, dtype=torch.uint8, count=size)
++        buffer = byte_buffer.view(dtype).view(dims)
++    except Exception:
++        cudart.cudaFree(ctypes.c_void_p(ptr))
++        raise
++
++    owner = _CudaManagedAllocation(cudart, ptr, size, backing)
++    setattr(buffer, _CUDA_MANAGED_ALLOCATION_ATTR, owner)
++    # The normal pool destroy path calls _cuda_host_unregister. An explicit
++    # empty list records that this allocation was never host-registered.
++    setattr(buffer, _CUDA_HOST_REGISTERED_RANGES_ATTR, [])
++    logger.info(
++        "Allocated %.2f GiB CUDA managed memory for HiCache because %s=1; "
++        "preferred_location=cpu accessed_by_device=%d; cudaHostRegister is not used",
++        size / 1024**3,
++        _CUDA_MANAGED_MEMORY_ENV,
++        int(current_device.value),
++    )
++    return buffer
++
++
++def _alloc_cuda_host(dims: tuple, dtype: torch.dtype, device: str) -> torch.Tensor:
++    """Allocate CUDA-owned pinned host memory without cudaHostRegister."""
++
++    if device != "cpu":
++        raise ValueError(
++            "CUDA-owned HiCache host allocation only supports CPU tensors; "
++            f"got device={device!r}"
++        )
++    numel = math.prod(dims)
++    element_size = torch.empty((), dtype=dtype, device="cpu").element_size()
++    size = numel * element_size
++    if size <= 0:
++        raise ValueError(
++            f"CUDA-owned HiCache host allocation size must be positive; got {size}"
++        )
++
++    cudart = _load_cudart()
++    raw_ptr = ctypes.c_void_p()
++    rc = cudart.cudaMallocHost(ctypes.byref(raw_ptr), size)
++    if int(rc) != 0:
++        raise RuntimeError(
++            "cudaMallocHost failed for HiCache host allocation "
++            f"(rc={int(rc)}, {_cuda_error_string(cudart, rc)}) size={size}"
++        )
++    ptr = int(raw_ptr.value or 0)
++    try:
++        backing = (ctypes.c_ubyte * size).from_address(ptr)
++        byte_buffer = torch.frombuffer(backing, dtype=torch.uint8, count=size)
++        buffer = byte_buffer.view(dtype).view(dims)
++    except Exception:
++        cudart.cudaFreeHost(ctypes.c_void_p(ptr))
++        raise
++
++    owner = _CudaHostAllocation(cudart, ptr, size, backing)
++    setattr(buffer, _CUDA_HOST_ALLOCATION_ATTR, owner)
++    # CUDA owns and pins these pages at allocation time. They were never
++    # registered, so the normal pool destroy path must not unregister them.
++    setattr(buffer, _CUDA_HOST_REGISTERED_RANGES_ATTR, [])
++    logger.info(
++        "Allocated %.2f GiB CUDA-owned pinned host memory for HiCache because "
++        "%s=1; cudaHostRegister and Unified Memory are not used",
++        size / 1024**3,
++        _CUDA_HOST_MEMORY_ENV,
++    )
++    return buffer
+ 
+ 
+ class HostTensorAllocator:
+@@ -229,6 +562,29 @@ def alloc_with_host_register(
+     Allocate tensor and register host memory with cudaHostRegister.
+     CudaHostRegister only applies when pin_memory=True.
+     """
++    host_memory = _cuda_host_memory_enabled()
++    managed_memory = _cuda_managed_memory_enabled()
++    if pin_memory and host_memory and managed_memory:
++        raise ValueError(
++            f"{_CUDA_HOST_MEMORY_ENV}=1 and {_CUDA_MANAGED_MEMORY_ENV}=1 are "
++            "mutually exclusive"
++        )
++    if pin_memory and host_memory:
++        if type(allocator) is not HostTensorAllocator:
++            raise ValueError(
++                f"{_CUDA_HOST_MEMORY_ENV}=1 is incompatible with HiCache "
++                f"storage allocator {type(allocator).__name__}; use the default "
++                "in-process host allocator"
++            )
++        return _alloc_cuda_host(dims, dtype, device)
++    if pin_memory and managed_memory:
++        if type(allocator) is not HostTensorAllocator:
++            raise ValueError(
++                f"{_CUDA_MANAGED_MEMORY_ENV}=1 is incompatible with HiCache "
++                f"storage allocator {type(allocator).__name__}; use the default "
++                "in-process host allocator"
++            )
++        return _alloc_cuda_managed(dims, dtype, device)
+     buffer = allocator.allocate(dims, dtype=dtype, device=device)
+     if pin_memory:
+         _cuda_host_register(buffer, registration_granularity_bytes)

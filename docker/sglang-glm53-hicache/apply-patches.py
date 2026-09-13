@@ -18,7 +18,12 @@ for name, entry in manifest.items():
     if digest(root / name) != entry['before']:
         raise RuntimeError(f'Unrecognized base source: {name}')
 
-for patch in ('runtime.patch', 'tests.patch'):
+for patch in (
+    'runtime.patch',
+    'hcc-managed-memory.patch',
+    'tests.patch',
+    'hcc-tests.patch',
+):
     subprocess.run(['git', 'apply', '--check', str(context / patch)], cwd=root, check=True)
     subprocess.run(['git', 'apply', str(context / patch)], cwd=root, check=True)
 

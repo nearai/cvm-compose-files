@@ -1,10 +1,11 @@
 # GLM-5.3 Flash HiCache canary
 
-This build carries complete hybrid-cache restoration and opt-in pooled transfers
-on the exact `fc91d24` production SGLang runtime. It is intended for **one TP4
-replica inside one CVM**, with the other TP4 replica retaining its existing image
-and HiCache-disabled configuration. It adds no storage backend or cross-CVM
-cache exchange.
+This build carries complete hybrid-cache restoration, opt-in pooled transfers,
+and an opt-in CUDA-owned host allocator on the exact `fc91d24` production
+SGLang runtime. The allocator uses `cudaMallocHost` instead of registering
+anonymous host mappings, so it does not call `cudaHostRegister`. It is intended
+for one TP4 candidate beside an unchanged TP4 control. It adds no storage
+backend or cross-CVM cache exchange.
 
 ## Release order
 
@@ -17,20 +18,11 @@ production compose untouched. After review and merge:
    runs CPU regressions, scans, attests and signs the immutable image. A resumed
    run verifies that the tag still matches the requested digest.
 2. Verify the resulting signature and attestation using the commands below.
-3. Preview the exact canary configuration, then create its activation PR:
-
-   ```bash
-   python3 scripts/prepare_glm53_hicache_canary.py --image "$IMAGE"
-   python3 scripts/prepare_glm53_hicache_canary.py --image "$IMAGE" --write
-   ruby scripts/validate_glm53_prod_config.rb
-   python3 scripts/test_glm53_hicache_canary.py
-   ```
-
-   The writer edits only local files; it does not push, merge or deploy. It pins
-   `RELEASED_IMAGE`, overrides r2's image/command/environment, and updates its
-   log and metric `config_variant`. r1, GPU allocations, routing, conversation
-   affinity, model/template revisions, MTP, request limits and logging policy
-   retain their existing values. The generated compose remains self-contained.
+3. Create a separate activation PR that pins the published digest and enables
+   `SGLANG_HICACHE_CUDA_HOST_MEMORY=1`,
+   `SGLANG_HICACHE_CUDA_MANAGED_MEMORY=0`, pooled transfers, and
+   `direct`/`page_first_direct`. Keep request-body logging disabled. The
+   activation PR must update its validator and regression fixture atomically.
 4. Qualify the signed image in staging on the intended TEE/PPCIe topology,
    including a minimum 30-minute soak, before separately authorized activation.
 
@@ -57,6 +49,7 @@ docker buildx imagetools inspect --format '{{json .SBOM.SPDX}}' "$IMAGE"
 | Host cache budget | None | `GLM53_HICACHE_RAM_BUDGET=80%` across all TP ranks |
 | Write policy | None | `write_through` |
 | I/O and host layout | None | `direct`, `page_first_direct` |
+| Host allocation | Existing runtime | `SGLANG_HICACHE_CUDA_HOST_MEMORY=1` |
 | Transfers | Existing runtime | `SGLANG_HICACHE_POOLED_TRANSFERS=1` |
 | Persistent staging | None | `SGLANG_HICACHE_STAGING_PAGES=64` per pool/direction/rank |
 
@@ -119,6 +112,20 @@ recurrent-state reads become GPU clones only for disjoint destinations with
 matching owners, indices and layer maps. Unsupported layouts or sharding use
 the existing transfer path. The optimization requires NVIDIA CUDA and the
 `direct` backend. No lab control endpoint or scheduler interception is carried.
+
+## Confidential-computing host allocation
+
+`SGLANG_HICACHE_CUDA_HOST_MEMORY=1` replaces the normal anonymous-mmap plus
+host-registration allocation with `cudaMallocHost`. The CUDA-owned allocation
+is wrapped as the CPU tensor expected by HiCache and released with
+`cudaFreeHost`. It remains host-resident and does not use Unified Memory.
+Allocation and teardown errors fail closed. The default path is unchanged when
+the variable is absent.
+
+`SGLANG_HICACHE_CUDA_MANAGED_MEMORY=1` retains a separately gated diagnostic
+fallback. The two allocator variables are mutually exclusive. Both accept only
+the default in-process host store and reject external allocators rather than
+silently changing ownership semantics.
 
 ## Source and correctness
 
