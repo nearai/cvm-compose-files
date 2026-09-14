@@ -43,7 +43,6 @@ REQUIRED_OPTIONS = {
   "--dist-init-addr" => "127.0.0.1:29500",
   "--watchdog-timeout" => "1800",
   "--log-requests-level" => "0",
-  "--api-key" => "$$ENGINE_API_TOKEN",
 }.freeze
 REQUIRED_SWITCHES = %w[
   --disable-shared-experts-fusion
@@ -95,7 +94,7 @@ if engine
   errors << "#{ENGINE_SERVICE} must not use a host-local build" if engine.key?("build")
   errors << "#{ENGINE_SERVICE} must not publish a host port" if engine.key?("ports")
   expected_entrypoint = ["/opt/nvidia/nvidia_entrypoint.sh", "/bin/bash", "-lc"]
-  errors << "#{ENGINE_SERVICE} must use the token-expanding entrypoint" unless engine["entrypoint"] == expected_entrypoint
+  errors << "#{ENGINE_SERVICE} must use the expected shell entrypoint" unless engine["entrypoint"] == expected_entrypoint
 
   command = Array(engine["command"]).join("\n")
   arguments = Shellwords.split(command)
@@ -115,10 +114,13 @@ if engine
   if arguments.any? { |argument| argument.include?("hicache") || argument == "--enable-hierarchical-cache" }
     errors << "#{ENGINE_SERVICE} must remain HiCache-disabled"
   end
+  if arguments.include?("--api-key")
+    errors << "#{ENGINE_SERVICE} must not set --api-key; the engine is reachable only through proxy-glm53"
+  end
 
   environment = environment_map(engine)
   errors << "SGLANG_ENABLE_JIT_DEEPGEMM must remain 0" unless environment["SGLANG_ENABLE_JIT_DEEPGEMM"] == "0"
-  errors << "ENGINE_API_TOKEN must be required for the engine" unless environment["ENGINE_API_TOKEN"] == "${ENGINE_API_TOKEN:?ENGINE_API_TOKEN is required}"
+  errors << "#{ENGINE_SERVICE} must not set ENGINE_API_TOKEN" if environment.key?("ENGINE_API_TOKEN")
   if environment.keys.any? { |key| key.start_with?("SGLANG_HICACHE_") }
     errors << "#{ENGINE_SERVICE} must not set experimental HiCache environment variables"
   end
@@ -134,7 +136,8 @@ if proxy
   proxy_env = environment_map(proxy)
   errors << "proxy must target only the TP8 engine" unless proxy_env["VLLM_BACKEND_URLS"] == "http://#{ENGINE_SERVICE}:8000"
   errors << "proxy must authenticate with PROXY_TOKEN" unless proxy_env["TOKEN"] == "${PROXY_TOKEN}"
-  errors << "proxy must require the dedicated engine credential" unless proxy_env["VLLM_BACKEND_API_KEY"] == "${ENGINE_API_TOKEN:?ENGINE_API_TOKEN is required}"
+  errors << "proxy must not set VLLM_BACKEND_API_KEY; the engine is unauthenticated behind the proxy" if proxy_env.key?("VLLM_BACKEND_API_KEY")
+  errors << "proxy image must be an immutable nearaidev/vllm-proxy-rs digest" unless proxy["image"].to_s.match?(%r{\Anearaidev/vllm-proxy-rs@sha256:[a-f0-9]{64}\z})
   errors << "proxy model identity must be z-ai/glm-5.3" unless proxy_env["MODEL_NAME"] == "z-ai/glm-5.3"
 end
 
