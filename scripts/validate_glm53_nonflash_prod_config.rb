@@ -43,7 +43,7 @@ REQUIRED_OPTIONS = {
   "--dist-init-addr" => "127.0.0.1:29500",
   "--watchdog-timeout" => "1800",
   "--log-requests-level" => "0",
-  "--api-key" => "$$PROXY_TOKEN",
+  "--api-key" => "$$ENGINE_API_TOKEN",
 }.freeze
 REQUIRED_SWITCHES = %w[
   --disable-shared-experts-fusion
@@ -118,7 +118,7 @@ if engine
 
   environment = environment_map(engine)
   errors << "SGLANG_ENABLE_JIT_DEEPGEMM must remain 0" unless environment["SGLANG_ENABLE_JIT_DEEPGEMM"] == "0"
-  errors << "PROXY_TOKEN must be provided to the engine" unless environment["PROXY_TOKEN"] == "${PROXY_TOKEN}"
+  errors << "ENGINE_API_TOKEN must be provided to the engine" unless environment["ENGINE_API_TOKEN"] == "${ENGINE_API_TOKEN}"
   if environment.keys.any? { |key| key.start_with?("SGLANG_HICACHE_") }
     errors << "#{ENGINE_SERVICE} must not set experimental HiCache environment variables"
   end
@@ -134,6 +134,7 @@ if proxy
   proxy_env = environment_map(proxy)
   errors << "proxy must target only the TP8 engine" unless proxy_env["VLLM_BACKEND_URLS"] == "http://#{ENGINE_SERVICE}:8000"
   errors << "proxy must authenticate with PROXY_TOKEN" unless proxy_env["TOKEN"] == "${PROXY_TOKEN}"
+  errors << "proxy must use the dedicated engine credential" unless proxy_env["VLLM_BACKEND_API_KEY"] == "${ENGINE_API_TOKEN}"
   errors << "proxy model identity must be z-ai/glm-5.3" unless proxy_env["MODEL_NAME"] == "z-ai/glm-5.3"
 end
 

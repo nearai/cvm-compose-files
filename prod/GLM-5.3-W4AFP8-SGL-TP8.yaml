@@ -37,7 +37,7 @@ x-nvidia: &nvidia
       hard: 65535
 
 x-vllm-proxy-common: &vllm-proxy-common
-  image: nearaidev/vllm-proxy-rs@sha256:98b57ad7aa4f9afd8ffff3ac9f4773303997f667e1d221be076c2f064e4a1284
+  image: nearaidev/vllm-proxy-rs@sha256:b1d76d820213df30e2ce40da5ac222acab2ab6b173d19c93fbfdd28febc2549a
   user: root
   privileged: true
   <<: *nvidia
@@ -84,7 +84,7 @@ x-sg-glm53-common: &sg-glm53-common
         --dist-init-addr 127.0.0.1:29500 \
         --watchdog-timeout 1800 \
         --log-level info \
-        --api-key "$$PROXY_TOKEN" \
+        --api-key "$$ENGINE_API_TOKEN" \
         --host 0.0.0.0 \
         --port 8000 \
         --enable-cache-report \
@@ -105,7 +105,7 @@ x-sg-glm53-common: &sg-glm53-common
     - TRANSFORMERS_OFFLINE=1
     - HF_HUB_DISABLE_TELEMETRY=1
     - DO_NOT_TRACK=1
-    - PROXY_TOKEN=${PROXY_TOKEN}
+    - ENGINE_API_TOKEN=${ENGINE_API_TOKEN}
     - NVIDIA_DRIVER_CAPABILITIES=compute,utility
     - OPENBLAS_L2_SIZE=2097152
     - NCCL_DEBUG=WARN
@@ -271,6 +271,7 @@ services:
       - MODEL_NAME=z-ai/glm-5.3
       - OHTTP_ENABLED=true
       - TOKEN=${PROXY_TOKEN}
+      - VLLM_BACKEND_API_KEY=${ENGINE_API_TOKEN}
       - FUSION_ENABLED=${FUSION_ENABLED}
       - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
       - VLLM_BACKEND_URLS=http://model-sg-glm53-w4afp8-tp8:8000
