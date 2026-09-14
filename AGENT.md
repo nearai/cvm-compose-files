@@ -192,6 +192,7 @@ The gpu-manager dashboard (`https://gpu-manager.infra.near.ai`) is the source of
 Key vars and what breaks if omitted:
 
 - `PROXY_TOKEN` — Bearer auth for inference-proxy. Missing → 401.
+- `ENGINE_API_TOKEN` — separate Bearer auth from inference-proxy to the model engine. Missing → GLM-5.3 production compose validation fails closed.
 - `CLOUD_API_USAGE_TOKEN` — usage reporting to `/v1/internal/usage`. Missing → reporting silently skipped (no fallback; legacy `/v1/usage` was removed).
 - `MODEL_PROXY_TOKEN` — registrar auth for model-proxy. Missing → backend disappears from `/backends/count`.
 - `WEB_CONTEXT_SEARCH_URL` / `WEB_CONTEXT_SEARCH_API_KEY` — Brave web search agent loop. Missing → 400s.
