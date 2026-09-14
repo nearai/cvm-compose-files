@@ -4,6 +4,9 @@ source_repository=https://github.com/sgl-project/sglang
 source_revision=0bcd822377da7b5718e674eaf9c870d349424dd1
 source_build=https://github.com/sgl-project/sglang/actions/runs/33912440803
 source_image_tag=lmsysorg/sglang:v0.5.19
-runtime_overlay=provenance-only
+runtime_overlay=security-hardening-only
+security_python_requirement=nltk==3.10.3 sha256:ff9598a8e20518ee0d557745890cc4435b9578489e2dcbc69c4f81fa060caf7c
+security_python_requirement=defusedxml==0.7.1 sha256:a352e7e428770286cc899e2542b6cdaedb2b4953ff269a210103ec58f6198a61
+removed_runtime_artifact=/opt/nvidia/nsight-compute/2025.3.1/host/target-linux-x64/plugins/efa_metrics/nic_sampler
 experimental_allocator=absent
 build_recipe=docker/sglang-glm53-v0519/Dockerfile

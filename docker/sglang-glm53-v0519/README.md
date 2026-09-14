@@ -1,9 +1,15 @@
 # GLM-5.3 SGLang v0.5.19 runtime
 
-This public build context wraps the exact upstream SGLang image qualified for
-`PhalaCloud/GLM-5.3-W4AFP8` on eight H200 GPUs. It does not replace SGLang
-source, install patches, or include the experimental managed-memory allocator.
-The only filesystem addition is the machine-readable `PROVENANCE` record.
+This public build context minimally hardens the exact upstream SGLang image
+qualified for `PhalaCloud/GLM-5.3-W4AFP8` on eight H200 GPUs. It does not
+replace SGLang source, change serving kernels, or include the experimental
+managed-memory allocator. The complete runtime delta is:
+
+- upgrade `nltk` to hash-pinned `3.10.3` and install its hash-pinned
+  `defusedxml 0.7.1` dependency;
+- remove the unused Nsight Compute EFA sampler executable carrying a fixable
+  Go standard-library CRITICAL finding;
+- add the machine-readable `PROVENANCE` record.
 
 The recipe pins:
 
@@ -11,6 +17,7 @@ The recipe pins:
 - resolved Linux/amd64 manifest `sha256:37bbbd3444732a464bbc68dee4fb0164e0ce9e18e2f027f3fc967f1152d3c262`;
 - upstream SGLang commit `0bcd822377da7b5718e674eaf9c870d349424dd1`;
 - upstream build run `sgl-project/sglang/actions/runs/33912440803`;
+- the hashes of both security-upgrade wheels and the exact removed artifact;
 - the NEAR AI build recipe and exact merged source commit.
 
 The publishing workflow independently verifies the upstream image labels and

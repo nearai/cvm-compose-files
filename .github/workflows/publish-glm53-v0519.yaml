@@ -7,7 +7,7 @@ on:
         description: Docker Hub tag; production must use the resulting digest
         required: true
         type: string
-        default: glm53-v0519-near-v1
+        default: glm53-v0519-near-v2
       source_revision:
         description: Exact merged commit on main containing the build context
         required: true
@@ -72,9 +72,11 @@ jobs:
           git merge-base --is-ancestor "$SOURCE_REVISION" origin/main
 
           test "$(sha256sum "$BUILD_CONTEXT/Dockerfile" | awk '{print $1}')" = \
-            e87358bdbc29ed248f22e729839acd9b46702d9ef03711ac8b1400bd64bc2e07
+            bef5cba417d359272b8b8237d0095b29549d87712769566af570e7b2a6c590ae
           test "$(sha256sum "$BUILD_CONTEXT/PROVENANCE" | awk '{print $1}')" = \
-            efd3e9432179fa9d71cfffbeed90d9ef8286cce1b96af11e0be31fcf38acac8f
+            05fa09d5b0786b7c55917fe7fc0cff9f1fc2c45eec8b518db93bed8a788dff74
+          test "$(sha256sum "$BUILD_CONTEXT/security-requirements.txt" | awk '{print $1}')" = \
+            d48e8d0470887b196a42b2bdd2800fc8412d18338bd800f6411fe8816f0af83d
           grep -Fxq \
             'base_image=lmsysorg/sglang@sha256:d6e7288627be8b02be88e4bba38e73f6d50e2826869f753c13a4c4385ab3eda9' \
             "$BUILD_CONTEXT/PROVENANCE"
@@ -91,7 +93,16 @@ jobs:
             'source_build=https://github.com/sgl-project/sglang/actions/runs/33912440803' \
             "$BUILD_CONTEXT/PROVENANCE"
           grep -Fxq \
-            'runtime_overlay=provenance-only' \
+            'runtime_overlay=security-hardening-only' \
+            "$BUILD_CONTEXT/PROVENANCE"
+          grep -Fxq \
+            'security_python_requirement=nltk==3.10.3 sha256:ff9598a8e20518ee0d557745890cc4435b9578489e2dcbc69c4f81fa060caf7c' \
+            "$BUILD_CONTEXT/PROVENANCE"
+          grep -Fxq \
+            'security_python_requirement=defusedxml==0.7.1 sha256:a352e7e428770286cc899e2542b6cdaedb2b4953ff269a210103ec58f6198a61' \
+            "$BUILD_CONTEXT/PROVENANCE"
+          grep -Fxq \
+            'removed_runtime_artifact=/opt/nvidia/nsight-compute/2025.3.1/host/target-linux-x64/plugins/efa_metrics/nic_sampler' \
             "$BUILD_CONTEXT/PROVENANCE"
           grep -Fxq \
             'experimental_allocator=absent' \
@@ -197,7 +208,9 @@ jobs:
              .config.Labels["nearai.build.recipe"] == "docker/sglang-glm53-v0519/Dockerfile" and
              .config.Labels["nearai.build.source_revision"] == $source_revision and
              .config.Labels["nearai.sglang.upstream.build"] == "https://github.com/sgl-project/sglang/actions/runs/33912440803" and
-             .config.Labels["nearai.runtime.overlay"] == "provenance-only" and
+             .config.Labels["nearai.runtime.overlay"] == "security-hardening-only" and
+             .config.Labels["nearai.security.nltk.version"] == "3.10.3" and
+             .config.Labels["nearai.security.removed_nsight_efa_sampler"] == "/opt/nvidia/nsight-compute/2025.3.1/host/target-linux-x64/plugins/efa_metrics/nic_sampler" and
              .config.Labels["nearai.hicache.experimental_allocator"] == "absent"' \
             image-config.json
 
