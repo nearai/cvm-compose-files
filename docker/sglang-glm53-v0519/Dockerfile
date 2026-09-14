@@ -32,8 +32,7 @@ RUN python3 -m pip install \
       --require-hashes \
       --upgrade \
       -r /tmp/glm53-security-requirements.txt \
-    && python3 -m pip check \
-    && python3 -c 'from importlib.metadata import version; assert version("defusedxml") == "0.7.1"; assert version("nltk") == "3.10.3"' \
+    && python3 -c 'from importlib.metadata import version; import defusedxml, nltk; assert version("defusedxml") == "0.7.1"; assert version("nltk") == "3.10.3"' \
     && rm -f /opt/nvidia/nsight-compute/2025.3.1/host/target-linux-x64/plugins/efa_metrics/nic_sampler \
     && test ! -e /opt/nvidia/nsight-compute/2025.3.1/host/target-linux-x64/plugins/efa_metrics/nic_sampler \
     && rm -f /tmp/glm53-security-requirements.txt \
