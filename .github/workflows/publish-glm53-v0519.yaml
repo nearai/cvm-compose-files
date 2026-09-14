@@ -211,7 +211,7 @@ jobs:
             "$IMAGE_IMMUTABLE_REF" > buildkit-provenance.json
           jq -e \
             --arg source_revision "$SOURCE_REVISION" \
-            --arg upstream_amd64_digest "$UPSTREAM_AMD64_DIGEST" \
+            --arg upstream_image_digest "sha256:d6e7288627be8b02be88e4bba38e73f6d50e2826869f753c13a4c4385ab3eda9" \
             '.buildType == "https://mobyproject.org/buildkit@v1" and
              .metadata.buildStartedOn != null and
              .metadata.buildFinishedOn != null and
@@ -219,8 +219,9 @@ jobs:
              .metadata["https://mobyproject.org/buildkit@v1#metadata"].vcs.revision == $source_revision and
              .metadata["https://mobyproject.org/buildkit@v1#metadata"].vcs["localdir:context"] == "docker/sglang-glm53-v0519" and
              any(.materials[];
-               .digest.sha256 == ($upstream_amd64_digest | sub("^sha256:"; "")) and
-               (.uri | contains("lmsysorg/sglang")))' \
+               .digest.sha256 == ($upstream_image_digest | sub("^sha256:"; "")) and
+               (.uri | contains("lmsysorg/sglang")) and
+               (.uri | contains("platform=linux%2Famd64")))' \
             buildkit-provenance.json
 
           docker buildx imagetools inspect \
