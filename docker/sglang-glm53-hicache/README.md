@@ -18,13 +18,23 @@ production compose untouched. After review and merge:
    runs CPU regressions, scans, attests and signs the immutable image. A resumed
    run verifies that the tag still matches the requested digest.
 2. Verify the resulting signature and attestation using the commands below.
-3. Create a separate activation PR that pins the published digest and enables
-   `SGLANG_HICACHE_CUDA_HOST_MEMORY=1`,
+3. Create a separate activation PR that regenerates
+   `prod/GLM-5.3-Flash-SGL-TP4-HiCache.yaml` with
+   `scripts/prepare_glm53_hicache_canary.py --image <published digest> --write`.
+   This writes only that file and `RELEASED_IMAGE`; it never touches the
+   canonical `prod/GLM-5.3-Flash-SGL-TP4.yaml`. The generated file pins the
+   published digest on r2 and enables `SGLANG_HICACHE_CUDA_HOST_MEMORY=1`,
    `SGLANG_HICACHE_CUDA_MANAGED_MEMORY=0`, pooled transfers, and
-   `direct`/`page_first_direct`. Keep request-body logging disabled. The
-   activation PR must update its validator and regression fixture atomically.
+   `direct`/`page_first_direct`; r1 stays the unchanged control. Keep
+   request-body logging disabled. The activation PR must update its validator
+   and regression fixture atomically, and must not hand-edit the generated
+   file — regenerate it with the script and commit the result.
 4. Qualify the signed image in staging on the intended TEE/PPCIe topology,
    including a minimum 30-minute soak, before separately authorized activation.
+   Deploy the generated `prod/GLM-5.3-Flash-SGL-TP4-HiCache.yaml` only on
+   hosts explicitly selected for the HiCache canary; every other host keeps
+   the canonical `prod/GLM-5.3-Flash-SGL-TP4.yaml` (no HiCache on either
+   replica there).
 
 Do not substitute a local Docker image ID, a mutable tag, or the unchanged base
 digest for the published candidate digest. Image publication does not deploy.
@@ -42,6 +52,14 @@ docker buildx imagetools inspect --format '{{json .SBOM.SPDX}}' "$IMAGE"
 
 ## Candidate configuration
 
+The candidate lives in its own file, `prod/GLM-5.3-Flash-SGL-TP4-HiCache.yaml`,
+generated from the canonical `prod/GLM-5.3-Flash-SGL-TP4.yaml` by
+`scripts/prepare_glm53_hicache_canary.py`. The canonical file itself never
+carries HiCache on either replica — it is deployed everywhere except the
+hosts explicitly selected for the HiCache canary, which run the generated
+file instead. Regenerate with `scripts/prepare_glm53_hicache_canary.py
+--image <digest> --write`; never hand-edit the generated file.
+
 | Setting | r1 control | r2 candidate |
 | --- | --- | --- |
 | Image | Existing signed production digest | New signed derivative digest |
@@ -50,6 +68,7 @@ docker buildx imagetools inspect --format '{{json .SBOM.SPDX}}' "$IMAGE"
 | Write policy | None | `write_through` |
 | I/O and host layout | None | `direct`, `page_first_direct` |
 | Host allocation | Existing runtime | `SGLANG_HICACHE_CUDA_HOST_MEMORY=1` |
+| Managed-memory fallback | Existing runtime | Disabled (`SGLANG_HICACHE_CUDA_MANAGED_MEMORY=0`) |
 | Transfers | Existing runtime | `SGLANG_HICACHE_POOLED_TRANSFERS=1` |
 | Persistent staging | None | `SGLANG_HICACHE_STAGING_PAGES=64` per pool/direction/rank |
 
