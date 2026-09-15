@@ -44,6 +44,14 @@ jobs:
             python:3.12-slim \
             python3 scripts/validate_streaming_keepalive.py
 
+      - name: Validate public metrics isolation
+        run: |
+          docker run --rm \
+            -v "$PWD:/repo:ro" \
+            -w /repo \
+            python:3.12-slim \
+            python3 scripts/validate_public_metrics.py
+
       - name: Validate DS4F migration contracts
         run: |
           docker run --rm \

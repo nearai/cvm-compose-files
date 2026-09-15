@@ -1471,6 +1471,8 @@ configs:
                       ~^dsv4-flash-i\d+\.completions\.near\.ai$$;
           keepalive_timeout 1h;
           keepalive_requests 1000000;
+          location ^~ /metrics { return 404; }
+          location ^~ /v1/metrics { return 404; }
           location / { proxy_pass http://proxy-dsv4-flash:8000; }
       }
 
@@ -1480,6 +1482,8 @@ configs:
                       ~^qwen3-6-27b-i\d+\.completions\.near\.ai$$;
           keepalive_timeout 1h;
           keepalive_requests 1000000;
+          location ^~ /metrics { return 404; }
+          location ^~ /v1/metrics { return 404; }
           location / { proxy_pass http://proxy-qwen36-27b:8000; }
       }
 
@@ -1489,6 +1493,8 @@ configs:
                       ~^gemma-4-31b-i\d+\.completions\.near\.ai$$;
           keepalive_timeout 1h;
           keepalive_requests 1000000;
+          location ^~ /metrics { return 404; }
+          location ^~ /v1/metrics { return 404; }
           location / { proxy_pass http://proxy-gemma4-31b:8000; }
       }
 
@@ -1499,5 +1505,7 @@ configs:
                       ~^qwen3-6-35b-i\d+\.completions(-stg)?\.near\.ai$$;
           keepalive_timeout 1h;
           keepalive_requests 1000000;
+          location ^~ /metrics { return 404; }
+          location ^~ /v1/metrics { return 404; }
           location / { proxy_pass http://proxy-qwen36-35b-a3b:8000; }
       }
