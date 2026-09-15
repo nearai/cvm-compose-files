@@ -82,7 +82,24 @@ end
 
 def validate_file(path)
   errors = []
-  compose = yaml_load(File.read(path))
+  begin
+    content = File.read(path)
+  rescue Errno::ENOENT
+    errors << "#{path} not found"
+    return errors
+  end
+
+  begin
+    compose = yaml_load(content)
+  rescue Psych::SyntaxError => error
+    errors << "#{path} is not valid YAML: #{error.message}"
+    return errors
+  end
+  unless compose.is_a?(Hash)
+    errors << "#{path} must be a YAML mapping"
+    return errors
+  end
+
   service = compose.dig("services", "dcgm-glm53")
 
   if service.nil?
@@ -124,22 +141,36 @@ def validate_file(path)
   end
 
   otel_content = compose.dig("configs", "otelcol_app_config", "content").to_s
-  otel = yaml_load(otel_content)
-  dcgm_scrape = Array(otel.dig("receivers", "prometheus/apps", "config", "scrape_configs")).find do |scrape|
-    scrape["job_name"] == "dcgm-dcgm-glm53"
+  otel = begin
+    yaml_load(otel_content)
+  rescue Psych::SyntaxError => error
+    errors << "#{path} otelcol_app_config is not valid YAML: #{error.message}"
+    nil
   end
-  if dcgm_scrape.nil?
-    errors << "missing dcgm-dcgm-glm53 scrape job"
-  else
-    errors << "dcgm scrape_interval must be 15s" unless dcgm_scrape["scrape_interval"] == "15s"
-    errors << "dcgm scrape_timeout must be 10s" unless dcgm_scrape["scrape_timeout"] == "10s"
+
+  if otel.is_a?(Hash)
+    dcgm_scrape = Array(otel.dig("receivers", "prometheus/apps", "config", "scrape_configs")).find do |scrape|
+      scrape.is_a?(Hash) && scrape["job_name"] == "dcgm-dcgm-glm53"
+    end
+    if dcgm_scrape.nil?
+      errors << "missing dcgm-dcgm-glm53 scrape job"
+    else
+      errors << "dcgm scrape_interval must be 15s" unless dcgm_scrape["scrape_interval"] == "15s"
+      errors << "dcgm scrape_timeout must be 10s" unless dcgm_scrape["scrape_timeout"] == "10s"
+    end
+  elsif !otel.nil?
+    errors << "#{path} otelcol_app_config must be a YAML mapping"
   end
 
   errors
 end
 
 files = [COMPOSE_FILE]
-files << HICACHE_FILE if File.exist?(HICACHE_FILE)
+if File.exist?(HICACHE_FILE)
+  files << HICACHE_FILE
+else
+  puts "GLM-5.3 DCGM telemetry contract skipped (prod/GLM-5.3-Flash-SGL-TP4-HiCache.yaml not present)"
+end
 
 failed = false
 files.each do |path|

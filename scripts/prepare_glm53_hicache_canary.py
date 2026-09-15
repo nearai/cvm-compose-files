@@ -83,17 +83,23 @@ def main():
     parser.add_argument('--write', action='store_true', help='Write CANDIDATE and RELEASE (never modifies COMPOSE)')
     parser.add_argument('--check', action='store_true',
                          help='Exit non-zero with a diff if the committed CANDIDATE is out of sync')
+    parser.add_argument('--force', action='store_true',
+                         help='With --write, replace a RELEASED_IMAGE that already records a different digest')
     args = parser.parse_args()
 
     if args.check:
-        if args.image or args.write:
-            parser.error('--check cannot be combined with --image or --write')
+        if args.image or args.write or args.force:
+            parser.error('--check cannot be combined with --image, --write or --force')
         canonical = (ROOT / COMPOSE).read_text()
         if not (ROOT / RELEASE).exists():
             print(f'{RELEASE} is missing')
             raise SystemExit(1)
         released_image = (ROOT / RELEASE).read_text().strip()
-        expected = candidate(canonical, released_image)
+        try:
+            expected = candidate(canonical, released_image)
+        except ValueError as err:
+            print(f'{RELEASE} is not a valid signed image digest: {err}')
+            raise SystemExit(1)
         actual = (ROOT / CANDIDATE).read_text() if (ROOT / CANDIDATE).exists() else ''
         if actual != expected:
             print(''.join(difflib.unified_diff(actual.splitlines(True), expected.splitlines(True),
@@ -103,6 +109,10 @@ def main():
 
     if not args.image:
         parser.error('--image is required unless --check is given')
+    if args.write and (ROOT / RELEASE).exists():
+        recorded = (ROOT / RELEASE).read_text().strip()
+        if recorded != args.image and not args.force:
+            parser.error(f'{RELEASE} already records {recorded}; pass --force to replace it')
     canonical = (ROOT / COMPOSE).read_text()
     updated = candidate(canonical, args.image)
     for name, before, after in (

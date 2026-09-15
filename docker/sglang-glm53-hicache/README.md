@@ -27,7 +27,9 @@ production compose untouched. After review and merge:
    pooled transfers, and `direct`/`page_first_direct`; r1 stays the unchanged
    control. Keep request-body logging disabled. The activation PR must update
    its validator and regression fixture atomically, and must not hand-edit the
-   generated file — regenerate it with the script and commit the result.
+   generated file — regenerate it with the script and commit the result. If
+   `RELEASED_IMAGE` already records a different digest, pass `--force` to
+   replace it; the same digest re-runs without it.
 4. Qualify the signed image in staging on the intended TEE/PPCIe topology,
    including a minimum 30-minute soak, before separately authorized activation.
    Deploy the generated `prod/GLM-5.3-Flash-SGL-TP4-HiCache.yaml` only on

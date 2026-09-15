@@ -84,6 +84,53 @@ rescue ArgumentError
   YAML.load(content)
 end
 
+# Reads and parses a top-level compose file. A missing file, invalid YAML, or
+# a document that isn't a mapping is reported as one error and returns nil
+# instead of raising, so the caller can skip the checks that depend on it.
+def load_compose_file(errors, label, path)
+  content = File.read(path)
+  document = yaml_load(content)
+  unless document.is_a?(Hash)
+    errors << "#{label} must be a YAML mapping"
+    return nil
+  end
+  document
+rescue Errno::ENOENT
+  errors << "#{label} not found at #{path}"
+  nil
+rescue Psych::SyntaxError => error
+  errors << "#{label} is not valid YAML: #{error.message}"
+  nil
+end
+
+# Same contract as load_compose_file, for a YAML document embedded as a
+# string field inside a compose file (e.g. a `content:` block).
+def load_embedded_yaml(errors, label, content)
+  return nil if content.nil?
+
+  document = yaml_load(content)
+  unless document.is_a?(Hash)
+    errors << "#{label} must be a YAML mapping"
+    return nil
+  end
+  document
+rescue Psych::SyntaxError => error
+  errors << "#{label} is not valid YAML: #{error.message}"
+  nil
+end
+
+# Finds one Prometheus scrape job by name inside a parsed otelcol collector
+# config. A nil collector, a non-mapping scrape entry, or a missing job is
+# reported as an error and returns nil instead of raising.
+def scrape_job(errors, label, collector, job_name)
+  return nil if collector.nil?
+
+  scrape_configs = collector.dig("receivers", "prometheus/apps", "config", "scrape_configs")
+  job = Array(scrape_configs).find { |entry| entry.is_a?(Hash) && entry["job_name"] == job_name }
+  errors << "missing #{job_name} scrape job in #{label} collector config" if job.nil?
+  job
+end
+
 def environment_map(service)
   environment = service["environment"]
   return {} if environment.nil?
@@ -147,7 +194,7 @@ def validate_common(errors, label, services)
 
     replica_services[name] = service
     errors << "#{label} #{name} must use the prebuilt signed image, not a host-local build" if service.key?("build")
-    validate_command(errors, "#{label} #{name}", service["command"].to_s)
+    validate_command(errors, "#{label} #{name}", command_text(service))
 
     device_ids = service.dig("deploy", "resources", "reservations", "devices", 0, "device_ids")
     normalized_ids = Array(device_ids).map(&:to_s)
@@ -174,9 +221,34 @@ def validate_common(errors, label, services)
   replica_services
 end
 
+# Asserts that `service_name`'s telemetry (the nearai.otel.config_variant
+# label, the config_variant: tag in its com.datadoghq.ad.logs metadata, and
+# its Prometheus scrape job's config_variant label) all carry
+# `expected_variant`. A missing labels hash, a missing scrape job, or a
+# missing variant anywhere is an explicit error, never a silent skip.
+def check_variant(errors, file_label, service, service_name, collector, expected_variant)
+  labels = service["labels"]
+  if labels.is_a?(Hash)
+    metric_variant = labels["nearai.otel.config_variant"]
+    errors << "#{file_label} #{service_name} nearai.otel.config_variant must be #{expected_variant}, got #{metric_variant.inspect}" unless metric_variant == expected_variant
+    log_tag = labels["com.datadoghq.ad.logs"]
+    errors << "#{file_label} #{service_name} log metadata must carry config_variant:#{expected_variant}" unless log_tag.to_s.include?("config_variant:#{expected_variant}")
+  else
+    errors << "#{file_label} #{service_name} is missing labels"
+  end
+
+  job_name = "sglang-#{service_name}"
+  scrape = scrape_job(errors, file_label, collector, job_name)
+  return unless scrape
+
+  scrape_variant = scrape.dig("static_configs", 0, "labels", "config_variant")
+  errors << "#{file_label} #{job_name} scrape label config_variant must be #{expected_variant}, got #{scrape_variant.inspect}" unless scrape_variant == expected_variant
+end
+
 # Canonical file: both replicas run the plain engine image with an identical
-# runtime contract, and no service anywhere carries a HiCache flag or env var.
-def validate_canonical(errors, services, replica_services)
+# runtime contract, no service anywhere carries a HiCache flag or env var,
+# and both replicas' telemetry is pinned to OFFICIAL_VARIANT.
+def validate_canonical(errors, compose, services, replica_services)
   REPLICAS.each_key do |name|
     service = replica_services[name]
     next unless service
@@ -199,12 +271,20 @@ def validate_canonical(errors, services, replica_services)
       errors << "canonical #{name} must not set #{hicache_env.join(', ')}; use prod/GLM-5.3-Flash-SGL-TP4-HiCache.yaml for the canary instead"
     end
   end
+
+  collector = load_embedded_yaml(errors, "canonical file otelcol_app_config", compose.dig("configs", "otelcol_app_config", "content"))
+  REPLICAS.each_key do |name|
+    service = replica_services[name]
+    next unless service
+
+    check_variant(errors, "canonical", service, name, collector, OFFICIAL_VARIANT)
+  end
 end
 
-# HiCache file: r1 stays the disabled control on the plain engine image; r2
-# pins RELEASED_IMAGE, enables HiCache with exactly the pinned options/env,
-# and is otherwise identical to r1; the pooled-canary variant is carried in
-# r2's metric label, log metadata and scrape label.
+# HiCache file: r1 stays the disabled control on the plain engine image and
+# is telemetry-pinned to OFFICIAL_VARIANT; r2 pins RELEASED_IMAGE, enables
+# HiCache with exactly the pinned options/env, is otherwise identical to r1,
+# and is telemetry-pinned to HICACHE_VARIANT.
 def validate_hicache(errors, compose, replica_services)
   released_image = File.exist?(RELEASED_IMAGE_FILE) ? File.read(RELEASED_IMAGE_FILE).strip : nil
   unless released_image && released_image.match?(%r{\Adocker\.io/nearaidev/sglang@sha256:[a-f0-9]{64}\z}) && released_image != ENGINE_IMAGE
@@ -225,9 +305,9 @@ def validate_hicache(errors, compose, replica_services)
 
   errors << "HiCache r2 image must be RELEASED_IMAGE (#{released_image})" unless r2["image"] == released_image
 
-  r1_arguments = Shellwords.split(r1["command"].to_s)
+  r1_arguments = Shellwords.split(command_text(r1))
   normalized = Marshal.load(Marshal.dump(r2))
-  arguments = Shellwords.split(normalized["command"].to_s)
+  arguments = Shellwords.split(command_text(normalized))
   errors << "HiCache r2 must enable HiCache exactly once" unless arguments.count("--enable-hierarchical-cache") == 1
   arguments.delete("--enable-hierarchical-cache")
   HICACHE_OPTIONS.each do |key, expected|
@@ -251,31 +331,56 @@ def validate_hicache(errors, compose, replica_services)
   normalized["environment"] = r1["environment"]
   errors << "HiCache r2 must preserve the control runtime outside HiCache" unless runtime_contract(normalized) == runtime_contract(r1)
 
-  labels = r2.fetch("labels", {})
-  errors << "HiCache r2 must identify the pooled canary in metric labels" unless labels["nearai.otel.config_variant"] == HICACHE_VARIANT
-  errors << "HiCache r2 must identify the pooled canary in log metadata" unless labels["com.datadoghq.ad.logs"].to_s.include?("config_variant:#{HICACHE_VARIANT}")
+  collector = load_embedded_yaml(errors, "HiCache file otelcol_app_config", compose.dig("configs", "otelcol_app_config", "content"))
+  check_variant(errors, "HiCache", r1, "model-sg-glm53-fp8-tp4-r1", collector, OFFICIAL_VARIANT)
+  check_variant(errors, "HiCache", r2, "model-sg-glm53-fp8-tp4-r2", collector, HICACHE_VARIANT)
+end
 
-  collector = yaml_load(compose.dig("configs", "otelcol_app_config", "content"))
-  scrape = Array(collector.dig("receivers", "prometheus/apps", "config", "scrape_configs")).find { |job| job["job_name"] == "sglang-model-sg-glm53-fp8-tp4-r2" }
-  errors << "HiCache r2 collector must carry the pooled canary variant" unless scrape.dig("static_configs", 0, "labels", "config_variant") == HICACHE_VARIANT
+# Walks two equal-shaped (or not) structures and returns a dotted path to the
+# first point where they differ, for a more actionable failure message.
+def first_difference(a, b, path = [])
+  return path.join(".") if a == b
+
+  if a.is_a?(Hash) && b.is_a?(Hash)
+    keys = (a.keys | b.keys).sort_by(&:to_s)
+    keys.each do |key|
+      next if a[key] == b[key]
+
+      return first_difference(a[key], b[key], path + [key])
+    end
+  elsif a.is_a?(Array) && b.is_a?(Array)
+    length = [a.length, b.length].max
+    (0...length).each do |index|
+      next if a[index] == b[index]
+
+      return first_difference(a[index], b[index], path + [index])
+    end
+  end
+
+  path.join(".")
 end
 
 # Cross-file: outside r2 (and its telemetry variant), the HiCache file must be
 # a byte-for-byte equal contract to the canonical file — every other service,
 # top-level extension block, volume/network declaration and config content.
-def cross_file_view(compose)
+def cross_file_view(errors, file_label, compose)
   view = Marshal.load(Marshal.dump(compose))
   view["services"]&.delete("model-sg-glm53-fp8-tp4-r2")
   otel = view.dig("configs", "otelcol_app_config")
   if otel && otel["content"]
-    parsed = yaml_load(otel["content"])
-    scrape_configs = Array(parsed.dig("receivers", "prometheus/apps", "config", "scrape_configs"))
-    scrape = scrape_configs.find { |job| job["job_name"] == "sglang-model-sg-glm53-fp8-tp4-r2" }
-    if scrape
-      labels = scrape.dig("static_configs", 0, "labels")
-      labels["config_variant"] = OFFICIAL_VARIANT if labels
+    collector = load_embedded_yaml(errors, "#{file_label} otelcol_app_config", otel["content"])
+    if collector
+      scrape = scrape_job(errors, file_label, collector, "sglang-model-sg-glm53-fp8-tp4-r2")
+      if scrape
+        labels = scrape.dig("static_configs", 0, "labels")
+        if labels.is_a?(Hash)
+          labels["config_variant"] = OFFICIAL_VARIANT
+        else
+          errors << "missing labels on sglang-model-sg-glm53-fp8-tp4-r2 scrape job in #{file_label} collector config"
+        end
+      end
+      otel["content"] = collector
     end
-    otel["content"] = parsed
   end
   view
 end
@@ -289,20 +394,31 @@ if hicache_present != released_present
 end
 errors << "legacy canary compose file must be removed" if File.exist?(LEGACY_CANARY_FILE)
 
-canonical_compose = yaml_load(File.read(COMPOSE_FILE))
-canonical_services = canonical_compose.fetch("services", {})
-canonical_replicas = validate_common(errors, "canonical", canonical_services)
-validate_canonical(errors, canonical_services, canonical_replicas)
+canonical_compose = load_compose_file(errors, "canonical file", COMPOSE_FILE)
+if canonical_compose
+  canonical_services = canonical_compose.fetch("services", {})
+  canonical_replicas = validate_common(errors, "canonical", canonical_services)
+  validate_canonical(errors, canonical_compose, canonical_services, canonical_replicas)
+end
 
+hicache_compose = nil
 if hicache_present
-  hicache_compose = yaml_load(File.read(HICACHE_FILE))
-  hicache_services = hicache_compose.fetch("services", {})
-  hicache_replicas = validate_common(errors, "HiCache", hicache_services)
-  validate_hicache(errors, hicache_compose, hicache_replicas)
+  hicache_compose = load_compose_file(errors, "HiCache file", HICACHE_FILE)
+  if hicache_compose
+    hicache_services = hicache_compose.fetch("services", {})
+    hicache_replicas = validate_common(errors, "HiCache", hicache_services)
+    validate_hicache(errors, hicache_compose, hicache_replicas)
+  end
 
-  canonical_view = cross_file_view(canonical_compose)
-  hicache_view = cross_file_view(hicache_compose)
-  errors << "prod/GLM-5.3-Flash-SGL-TP4-HiCache.yaml must match the canonical file outside r2 and its telemetry variant" unless canonical_view == hicache_view
+  if canonical_compose && hicache_compose
+    canonical_view = cross_file_view(errors, "canonical file", canonical_compose)
+    hicache_view = cross_file_view(errors, "prod/GLM-5.3-Flash-SGL-TP4-HiCache.yaml", hicache_compose)
+    unless canonical_view == hicache_view
+      diff_path = first_difference(canonical_view, hicache_view)
+      suffix = diff_path.to_s.empty? ? "" : " (first difference: #{diff_path})"
+      errors << "prod/GLM-5.3-Flash-SGL-TP4-HiCache.yaml must match the canonical file outside r2 and its telemetry variant#{suffix}"
+    end
+  end
 end
 
 if errors.any?
