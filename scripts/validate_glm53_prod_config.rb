@@ -12,6 +12,18 @@ LEGACY_CANARY_FILE = File.join(ROOT, "prod", "GLM-5.3-Flash-SGL-TP4-Canary.yaml"
 RELEASED_IMAGE_FILE = File.join(ROOT, "docker", "sglang-glm53-hicache", "RELEASED_IMAGE")
 ENGINE_IMAGE = "docker.io/nearaidev/sglang@sha256:a7b7136abcf5e07522289d96e96fec9b42a1a30f9dfda57e957f142680d2d67b"
 PROXY_IMAGE = "nearaidev/vllm-proxy-rs@sha256:b3a8c6260834231271b4356c56a7aa2718608c8a537b35973916e0a56dc88fba"
+# Engine-side priority scheduling is only safe behind an inference-proxy that
+# overwrites the `priority` of every forwarded request (build 2834196 onward,
+# nearai/inference-proxy#241). Any other proxy build lets client-chosen or
+# missing priorities reach the scheduler, where an untagged request gets the
+# lowest possible priority.
+PRIORITY_NORMALIZING_PROXY_IMAGES = [
+  "nearaidev/vllm-proxy-rs@sha256:b3a8c6260834231271b4356c56a7aa2718608c8a537b35973916e0a56dc88fba",
+].freeze
+PRIORITY_SWITCHES = %w[--enable-priority-scheduling --disable-priority-preemption].freeze
+# The proxy assigns every request's priority; an engine-side default would
+# silently re-admit untagged requests at a chosen level instead of failing loud.
+FORBIDDEN_OPTIONS = %w[--default-priority-value].freeze
 REPLICAS = {
   "model-sg-glm53-fp8-tp4-r1" => %w[0 1 2 3],
   "model-sg-glm53-fp8-tp4-r2" => %w[4 5 6 7],
@@ -168,6 +180,10 @@ def validate_command(errors, name, command)
     count = arguments.count(option)
     errors << "#{name} command must contain #{option} exactly once" unless count == 1
   end
+
+  FORBIDDEN_OPTIONS.each do |option|
+    errors << "#{name} must not set #{option}; the inference-proxy assigns every request's priority" if arguments.include?(option)
+  end
 rescue ArgumentError => error
   errors << "#{name} command cannot be parsed: #{error.message}"
 end
@@ -218,6 +234,14 @@ def validate_common(errors, label, services)
     expected_backends = REPLICAS.keys.map { |name| "http://#{name}:8000" }.join(",")
     errors << "#{label} proxy-glm53 must target both canonical replicas" unless proxy_env["VLLM_BACKEND_URLS"] == expected_backends
     errors << "#{label} proxy-glm53 must enable conversation affinity" unless proxy_env["VLLM_BACKEND_CONVERSATION_AFFINITY"] == "1"
+
+    priority_enabled = replica_services.values.any? do |service|
+      arguments = Shellwords.split(command_text(service)) rescue []
+      PRIORITY_SWITCHES.any? { |switch| arguments.include?(switch) }
+    end
+    if priority_enabled && !PRIORITY_NORMALIZING_PROXY_IMAGES.include?(proxy["image"])
+      errors << "#{label} enables SGLang priority scheduling but proxy-glm53 image #{proxy['image'].inspect} is not a priority-normalizing inference-proxy build (expected one of: #{PRIORITY_NORMALIZING_PROXY_IMAGES.join(', ')})"
+    end
   end
 
   replica_services
