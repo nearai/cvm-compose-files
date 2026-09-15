@@ -4,7 +4,7 @@
 #
 # Experiment only. No inference-proxy, nginx, model-proxy-registrar, otel or dcgm: nothing in this
 # file registers with production or ships telemetry. Engines expose token-protected direct
-# endpoints (--api-key = PROXY_TOKEN) on the ACL-covered host ports 8001-8009 and are deployed
+# endpoints (--api-key = PROXY_TOKEN) on the ACL-covered host ports 8001-8008 and are deployed
 # ONLY as explicit service subsets of the compose project "glm53flash-gpu23-bd" through
 # compose-manager (never against the serving "work" project). The lab router and load driver
 # (nearai/inference-optimizer) run on the gpu23 host against the forwarded ports.
@@ -83,17 +83,30 @@ services:
     container_name: glm53flash-diskcheck
     profiles: ["ops"]
     restart: "no"
-    ports:
-      - "8006:8000"
     volumes:
       - huggingface_cache:/root/.cache/huggingface
+      - engine_logs:/logs
     entrypoint: ["sh", "-c"]
     command:
       - |
-        mkdir -p /out
-        { echo "== df / (CVM root disk)"; df -h /; echo "== df hf volume"; df -h /root/.cache/huggingface; echo "== hub contents"; du -sh /root/.cache/huggingface/hub/* 2>/dev/null || echo none; } > /out/report.txt 2>&1
-        cat /out/report.txt
-        exec python3 -m http.server 8000 --directory /out
+        { date -u; echo "== df / (CVM root disk)"; df -h /; echo "== df hf volume"; df -h /root/.cache/huggingface; echo "== hub contents"; du -sh /root/.cache/huggingface/hub/* 2>/dev/null || echo none; } > /logs/diskcheck.txt 2>&1
+        cat /logs/diskcheck.txt
+    logging: *logging-conf
+
+  # Serves the shared /logs volume (engine stdout/stderr, probe and disk reports) on host port 8006:
+  # compose-manager's logs endpoint is not project-scoped on this host, so this is the only log path.
+  logserver:
+    image: ghcr.io/astral-sh/uv:python3.11-bookworm-slim@sha256:4f5d923c9dcea037f57bda425dd209f3ec643da2f0b74227f68d09dab0b3bb36
+    container_name: glm53flash-logserver
+    profiles: ["ops"]
+    restart: unless-stopped
+    ports:
+      - "8006:8000"
+    volumes:
+      - engine_logs:/logs:ro
+    entrypoint: ["sh", "-c"]
+    command:
+      - exec python3 -m http.server 8000 --directory /logs
     logging: *logging-conf
 
   # Topology and confidential-compute evidence (all 8 GPUs), served on host port 8007.
@@ -103,14 +116,13 @@ services:
     container_name: glm53flash-probe
     profiles: ["probe"]
     restart: "no"
-    ports:
-      - "8007:8000"
+    volumes:
+      - engine_logs:/logs
     environment:
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
     entrypoint: ["/bin/bash", "-lc"]
     command:
       - |
-        mkdir -p /out
         {
           echo "== nvidia-smi -L"; nvidia-smi -L
           echo "== nvidia-smi topo -m"; nvidia-smi topo -m
@@ -119,9 +131,8 @@ services:
           echo "== nvidia-smi -q (CC / protected PCIe lines)"; nvidia-smi -q 2>/dev/null | grep -i -B1 -A3 "confidential\|protected pcie\|cc mode\|multi.gpu" || true
           echo "== driver"; nvidia-smi --query-gpu=index,pci.bus_id,driver_version,memory.total --format=csv
           echo "== torch"; python3 -c "import torch; print(torch.__version__, torch.cuda.device_count())"
-        } > /out/report.txt 2>&1
-        cat /out/report.txt
-        exec python3 -m http.server 8000 --directory /out
+        } > /logs/probe.txt 2>&1
+        cat /logs/probe.txt
     deploy:
       resources:
         reservations:
@@ -140,6 +151,7 @@ services:
     volumes:
       - kernel_cache_a:/root/.cache
       - huggingface_cache:/root/.cache/huggingface
+      - engine_logs:/logs
     environment:
       <<: *engine-env
     depends_on:
@@ -154,7 +166,7 @@ services:
               capabilities: [gpu]
     command:
       - |
-        exec sglang serve \
+        exec sglang serve > >(tee -a /logs/$$HOSTNAME.log) 2>&1 \
           --model-path /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/84c6a6aa9497188e15a635ba793b0f95a79b1033 \
           --revision 84c6a6aa9497188e15a635ba793b0f95a79b1033 \
           --served-model-name z-ai/glm-5.3-flash \
@@ -199,6 +211,7 @@ services:
     volumes:
       - kernel_cache_b:/root/.cache
       - huggingface_cache:/root/.cache/huggingface
+      - engine_logs:/logs
     environment:
       <<: *engine-env
     depends_on:
@@ -213,7 +226,7 @@ services:
               capabilities: [gpu]
     command:
       - |
-        exec sglang serve \
+        exec sglang serve > >(tee -a /logs/$$HOSTNAME.log) 2>&1 \
           --model-path /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/84c6a6aa9497188e15a635ba793b0f95a79b1033 \
           --revision 84c6a6aa9497188e15a635ba793b0f95a79b1033 \
           --served-model-name z-ai/glm-5.3-flash \
@@ -260,6 +273,7 @@ services:
     volumes:
       - kernel_cache_a:/root/.cache
       - huggingface_cache:/root/.cache/huggingface
+      - engine_logs:/logs
     environment:
       <<: *engine-env
     depends_on:
@@ -274,7 +288,7 @@ services:
               capabilities: [gpu]
     command:
       - |
-        exec sglang serve \
+        exec sglang serve > >(tee -a /logs/$$HOSTNAME.log) 2>&1 \
           --model-path /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/84c6a6aa9497188e15a635ba793b0f95a79b1033 \
           --revision 84c6a6aa9497188e15a635ba793b0f95a79b1033 \
           --served-model-name z-ai/glm-5.3-flash \
@@ -318,6 +332,7 @@ services:
     volumes:
       - kernel_cache_b:/root/.cache
       - huggingface_cache:/root/.cache/huggingface
+      - engine_logs:/logs
     environment:
       <<: *engine-env
     depends_on:
@@ -332,7 +347,7 @@ services:
               capabilities: [gpu]
     command:
       - |
-        exec sglang serve \
+        exec sglang serve > >(tee -a /logs/$$HOSTNAME.log) 2>&1 \
           --model-path /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/84c6a6aa9497188e15a635ba793b0f95a79b1033 \
           --revision 84c6a6aa9497188e15a635ba793b0f95a79b1033 \
           --served-model-name z-ai/glm-5.3-flash \
@@ -421,10 +436,11 @@ services:
     container_name: glm53-a-v9
     profiles: ["v9"]
     ports:
-      - "8008:8000"
+      - "8007:8000"
     volumes:
       - kernel_cache_a:/root/.cache
       - huggingface_cache:/root/.cache/huggingface
+      - engine_logs:/logs
       - sglang_managers_v9:/sgl-workspace/sglang/python/sglang/srt/managers:ro
     environment:
       <<: *engine-env
@@ -445,7 +461,7 @@ services:
               capabilities: [gpu]
     command:
       - |
-        exec sglang serve \
+        exec sglang serve > >(tee -a /logs/$$HOSTNAME.log) 2>&1 \
           --model-path /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/84c6a6aa9497188e15a635ba793b0f95a79b1033 \
           --revision 84c6a6aa9497188e15a635ba793b0f95a79b1033 \
           --served-model-name z-ai/glm-5.3-flash \
@@ -488,10 +504,11 @@ services:
     container_name: glm53-b-v9
     profiles: ["v9"]
     ports:
-      - "8009:8000"
+      - "8008:8000"
     volumes:
       - kernel_cache_b:/root/.cache
       - huggingface_cache:/root/.cache/huggingface
+      - engine_logs:/logs
       - sglang_managers_v9:/sgl-workspace/sglang/python/sglang/srt/managers:ro
     environment:
       <<: *engine-env
@@ -512,7 +529,7 @@ services:
               capabilities: [gpu]
     command:
       - |
-        exec sglang serve \
+        exec sglang serve > >(tee -a /logs/$$HOSTNAME.log) 2>&1 \
           --model-path /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/84c6a6aa9497188e15a635ba793b0f95a79b1033 \
           --revision 84c6a6aa9497188e15a635ba793b0f95a79b1033 \
           --served-model-name z-ai/glm-5.3-flash \
@@ -598,6 +615,8 @@ volumes:
     name: glm53flash-gpu23-bd_kernel_cache_b
   sglang_managers_v9:
     name: glm53flash-gpu23-bd_sglang_managers_v9
+  engine_logs:
+    name: glm53flash-gpu23-bd_engine_logs
   otelcol_app_storage:
     name: glm53flash-gpu23-bd_otelcol_app_storage
 
