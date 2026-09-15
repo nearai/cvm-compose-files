@@ -331,6 +331,8 @@ services:
           --api-key "$$PROXY_TOKEN"
 
   # --- Prefill/decode disaggregation arm (profile pd) ---
+  # The decode worker runs at mem-fraction 0.75: at 0.80 the EAGLE draft CUDA-graph capture OOMs once the
+  # mooncake transfer buffers are allocated (139.2 of 139.4 GB in use). Prefill and the a/b replicas stay at 0.80.
   glm53-prefill:
     <<: *engine-base
     container_name: glm53-prefill
@@ -420,7 +422,7 @@ services:
           --served-model-name z-ai/glm-5.3-flash \
           --tp-size 4 \
           --ep-size 4 \
-          --mem-fraction-static 0.80 \
+          --mem-fraction-static 0.75 \
           --max-running-requests 32 \
           --max-queued-requests 32 \
           --chunked-prefill-size 4096 \
