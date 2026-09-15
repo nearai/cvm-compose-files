@@ -156,6 +156,11 @@ services:
         torch.cuda.synchronize()
         r = t(lambda: g2.replay(), 500, True); print("CUDA graph (50 tiny kernels) replay+sync: median %.1f us" % (statistics.median(r)*1e6))
         print("torch", torch.__version__, "device", torch.cuda.get_device_name(0))
+        import numpy as np, os
+        t0 = time.perf_counter(); sum(i * i for i in range(10**7)); print("python loop 1e7: %.2f s" % (time.perf_counter() - t0))
+        a = np.ones(512 * 1024 * 1024 // 8); t0 = time.perf_counter(); b = a.copy(); c = a + b; dt = time.perf_counter() - t0; print("numpy 512MiB copy+add: %.3f s (%.1f GB/s effective)" % (dt, 1.5 / dt))
+        print("cpu MHz:", sorted(set(l.split(":")[1].strip() for l in open("/proc/cpuinfo") if l.startswith("cpu MHz")))[:3], "nproc", os.cpu_count(), "loadavg", open("/proc/loadavg").read().strip())
+        print("THP:", open("/sys/kernel/mm/transparent_hugepage/enabled").read().strip() if os.path.exists("/sys/kernel/mm/transparent_hugepage/enabled") else "n/a")
         PYB
         cat /logs/microbench.txt
     deploy:
