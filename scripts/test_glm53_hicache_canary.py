@@ -343,6 +343,36 @@ class GeneratorTest(unittest.TestCase):
         self.assertIn('GLM-5.3 DCGM telemetry contract skipped', output)
         self.assertIn('GLM-5.3-Flash-SGL-TP4-HiCache.yaml not present', output)
 
+    def test_priority_switches_require_normalizing_proxy(self):
+        # The priority switches are only allowed behind a proxy build that
+        # overwrites every request's priority. Repoint the shared proxy image
+        # at a different digest and confirm the gate names the proxy.
+        self.activate()
+        needle = 'nearaidev/vllm-proxy-rs@sha256:b3a8c6260834231271b4356c56a7aa2718608c8a537b35973916e0a56dc88fba'
+        other = 'nearaidev/vllm-proxy-rs@sha256:' + 'a' * 64
+        for path in (self.canonical_path, self.candidate_path):
+            text = path.read_text()
+            self.assertEqual(text.count(needle), 1, path)
+            path.write_text(text.replace(needle, other))
+        result = self.run_validator()
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        output = result.stdout + result.stderr
+        assert_no_ruby_crash(self, output)
+        self.assertIn('not a priority-normalizing inference-proxy build', output)
+
+    def test_rejects_engine_default_priority(self):
+        # The proxy assigns priority; an engine-side default must be refused.
+        self.activate()
+        needle = '      --disable-priority-preemption\n'
+        text = self.canonical_path.read_text()
+        self.assertEqual(text.count(needle), 1)
+        self.canonical_path.write_text(text.replace(needle, needle + '      --default-priority-value 0\n'))
+        result = self.run_validator()
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        output = result.stdout + result.stderr
+        assert_no_ruby_crash(self, output)
+        self.assertIn('must not set --default-priority-value', output)
+
 
 if __name__ == '__main__':
     unittest.main()
