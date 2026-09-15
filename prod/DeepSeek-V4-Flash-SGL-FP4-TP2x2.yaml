@@ -36,6 +36,7 @@ x-vllm-proxy-common: &vllm-proxy-common
   volumes:
     - /var/run/dstack.sock:/var/run/dstack.sock
     - certs:/etc/letsencrypt:ro
+    - inference-proxy-usage-outbox:/var/lib/inference-proxy/usage-outbox
   restart: unless-stopped
   logging: *logging-conf
 
@@ -177,6 +178,7 @@ services:
       - VLLM_PROXY_STREAM_IDLE_TIMEOUT_SECS=20
       - CLOUD_API_URL=https://cloud-api.near.ai
       - CLOUD_API_USAGE_TOKEN=${CLOUD_API_USAGE_TOKEN}
+      - CLOUD_API_USAGE_OUTBOX_DIR=/var/lib/inference-proxy/usage-outbox/proxy-dsv4-flash
       - COMPOSE_MANAGER_URL=http://compose-manager:8080
       - LOG_FORMAT=json
       - MODEL_NAME=deepseek-ai/DeepSeek-V4-Flash
@@ -220,6 +222,7 @@ services:
       - VLLM_PROXY_STREAM_IDLE_TIMEOUT_SECS=20
       - CLOUD_API_URL=https://cloud-api.near.ai
       - CLOUD_API_USAGE_TOKEN=${CLOUD_API_USAGE_TOKEN}
+      - CLOUD_API_USAGE_OUTBOX_DIR=/var/lib/inference-proxy/usage-outbox/proxy-dsv4-flash-2
       - COMPOSE_MANAGER_URL=http://compose-manager:8080
       - LOG_FORMAT=json
       - MODEL_NAME=deepseek-ai/DeepSeek-V4-Flash
@@ -411,6 +414,7 @@ networks:
     name: dstack_default
 
 volumes:
+  inference-proxy-usage-outbox:
   otelcol_app_storage:
   huggingface_cache:
   kernel_cache:
