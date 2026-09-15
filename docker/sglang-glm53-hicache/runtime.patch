@@ -764,7 +764,7 @@
 +        self._log_once("GDN-H2D-then-GPU-clone")
 --- /dev/null
 +++ b/python/sglang/srt/mem_cache/pooled_pages.py
-@@ -0,0 +1,133 @@
+@@ -0,0 +1,149 @@
 +"""Rank-local, byte-preserving staging for page-first HiCache DMA.
 +
 +A separate persistent allocation per direction belongs to the L2 engine's
@@ -776,6 +776,9 @@
 +import triton
 +import triton.language as tl
 +from sgl_kernel.kvcacheio import transfer_kv_direct
++from sglang.srt.mem_cache.pool_host.common import (
++    _cuda_managed_prefetch_pages_to_host,
++)
 +
 +
 +@triton.jit
@@ -818,6 +821,9 @@
 +        self.device_page_count = min(b.nbytes // self.row_bytes for b in buffers)
 +        self.device = buffers[0].device
 +        self.buffers = buffers
++        # Keep the original tensor because torch views do not preserve the
++        # managed-allocation owner attribute used by the HCC allocator.
++        self.host_allocation = host
 +        self.ptrs = torch.tensor(
 +            [b.data_ptr() for b in buffers], dtype=torch.uint64, device=self.device
 +        )
@@ -892,6 +898,16 @@
 +                    dst_indices=selected_host,
 +                    page_size=1,
 +                )
++            # GPU access to cudaMallocManaged memory can migrate dirtied/read
++            # host pages into HBM even with a CPU preferred-location hint.
++            # Enqueue the return migration after this chunk's final consumer
++            # on the same stream, coalescing adjacent page ranges in common.py.
++            _cuda_managed_prefetch_pages_to_host(
++                self.host_allocation,
++                selected_host,
++                self.layers * self.row_bytes,
++                torch.cuda.current_stream(self.device),
++            )
 +        self.calls += 1
 +        self.pages += len(host_pages)
 +        self.bytes += len(host_pages) * self.layers * self.row_bytes

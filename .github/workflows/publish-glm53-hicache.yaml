@@ -7,7 +7,7 @@ on:
         description: Docker Hub tag; production must use the resulting digest
         required: true
         type: string
-        default: glm53-hicache-pooled-v1
+        default: glm53-hicache-cuda-host-v1
       source_revision:
         description: Exact merged commit on main containing the build context
         required: true
@@ -72,11 +72,11 @@ jobs:
           git merge-base --is-ancestor "$SOURCE_REVISION" origin/main
 
           test "$(sha256sum "$BUILD_CONTEXT/Dockerfile" | awk '{print $1}')" = \
-            1be3f049bb8ddc3ec51fa4d60d40078c0caad309af1830f852f00b5ed624f81b
+            0b0d9363980e4dae0587ab90787f1cff57a2c86634b6e149d4472c9eb1d5b71b
           test "$(sha256sum "$BUILD_CONTEXT/PROVENANCE" | awk '{print $1}')" = \
-            9eae8031f615f9e852a20112fdfceea823656c7fcc98341c82e892bfd5ea6446
+            121e3fc12491ceae8f1b8f451885a5d0080c86c6224bb135200bbeed870c4a98
           test "$(sha256sum "$BUILD_CONTEXT/SHA256SUMS" | awk '{print $1}')" = \
-            66c660736450b281b3098434c8d024979d55d2f7b6c00a637ea5d8ff00153bda
+            da4f3668374d32ecf880c369fad149e64cf37c921b5473c4d498261210894652
 
           echo "IMAGE_REF=${REGISTRY}/${IMAGE_REPOSITORY}:${IMAGE_TAG}" >> "$GITHUB_ENV"
 
@@ -145,7 +145,9 @@ jobs:
              .config.Labels["nearai.build.source_revision"] == $source_revision and
              .config.Labels["nearai.sglang.source_revision"] == "fc91d2403cc210a86bd5fc715c6609f58c932e5a" and
              .config.Labels["nearai.sglang.hicache_fix_revision"] == "230102db838cbbe6eca7952c729518ee6d93c3a9" and
-             .config.Labels["nearai.sglang.pooled_transfers"] == "v1-opt-in"' \
+             .config.Labels["nearai.sglang.pooled_transfers"] == "v1-opt-in" and
+             .config.Labels["nearai.sglang.hcc_host_memory"] == "v4-cuda-hostalloc-opt-in" and
+             .config.Labels["nearai.sglang.hcc_managed_memory"] == "v3-host-prefetch-opt-in"' \
             image-config.json
 
       - name: Run CPU restore regressions in the published image
@@ -330,7 +332,8 @@ jobs:
             echo "- immutable: \`$IMAGE_IMMUTABLE_REF\`"
             echo '- SGLang source: `PierreLeGuen/sglang-upstream@fc91d2403cc210a86bd5fc715c6609f58c932e5a`'
             echo '- HiCache restore fix: `sgl-project/sglang#38212@230102db838cbbe6eca7952c729518ee6d93c3a9`'
-            echo '- Promotion: run `scripts/prepare_glm53_hicache_canary.py --image <immutable>` and review the r2-only diff in a separate PR.'
+            echo '- HCC allocator: CUDA-owned host pages via opt-in `cudaMallocHost`; no `cudaHostRegister` or Unified Memory.'
+            echo '- Promotion: pin this digest and enable the reviewed HCC allocator/direct-I/O settings in a separate PR.'
             echo '- Publishing does not modify compose files or deploy a service.'
             echo '- embedded BuildKit provenance: verified'
             echo '- embedded SPDX SBOM: verified'

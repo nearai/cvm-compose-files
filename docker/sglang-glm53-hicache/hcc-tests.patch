@@ -1,0 +1,297 @@
+diff --git a/test/registered/unit/mem_cache/test_hicache_hcc_managed_allocator.py b/test/registered/unit/mem_cache/test_hicache_hcc_managed_allocator.py
+new file mode 100644
+index 0000000..bea00de
+--- /dev/null
++++ b/test/registered/unit/mem_cache/test_hicache_hcc_managed_allocator.py
+@@ -0,0 +1,291 @@
++import ctypes
++import os
++import unittest
++from unittest import mock
++
++import torch
++
++from sglang.srt.mem_cache.pool_host import common
++from sglang.test.ci.ci_register import register_cpu_ci
++
++register_cpu_ci(est_time=2, suite="base-a-test-cpu")
++
++
++class _FakeManagedCudart:
++    def __init__(self, size: int):
++        self.backing = (ctypes.c_ubyte * size)()
++        self.ptr = ctypes.addressof(self.backing)
++        self.freed = []
++        self.host_freed = []
++        self.device = 2
++        self.advice_calls = []
++        self.fail_advice = None
++        self.prefetch_calls = []
++        self.fail_prefetch = False
++
++    def cudaMallocHost(self, ptr_out, size: int):
++        assert size == len(self.backing)
++        ctypes.cast(ptr_out, ctypes.POINTER(ctypes.c_void_p))[0] = self.ptr
++        return 0
++
++    def cudaFreeHost(self, ptr):
++        self.host_freed.append(ptr.value)
++        return 0
++
++    def cudaMallocManaged(self, ptr_out, size: int, flags: int):
++        assert size == len(self.backing)
++        assert flags == 1
++        ctypes.cast(ptr_out, ctypes.POINTER(ctypes.c_void_p))[0] = self.ptr
++        return 0
++
++    def cudaGetDevice(self, device_out):
++        ctypes.cast(device_out, ctypes.POINTER(ctypes.c_int))[0] = self.device
++        return 0
++
++    def cudaMemAdvise(self, ptr, size: int, advice: int, location):
++        self.advice_calls.append(
++            (ptr.value, size, advice, location.type, location.id)
++        )
++        return 17 if advice == self.fail_advice else 0
++
++    def cudaMemPrefetchAsync(self, ptr, size: int, location, flags: int, stream):
++        self.prefetch_calls.append(
++            (ptr.value, size, location.type, location.id, flags, stream.value)
++        )
++        return 18 if self.fail_prefetch else 0
++
++    def cudaFree(self, ptr):
++        self.freed.append(ptr.value)
++        return 0
++
++    def cudaGetErrorString(self, rc):
++        return b"injected error"
++
++
++class TestHiCacheHccManagedAllocator(unittest.TestCase):
++    def test_host_memory_opt_in_uses_cuda_owned_allocation(self):
++        allocator = common.HostTensorAllocator()
++        host = torch.empty(1, dtype=torch.uint8)
++
++        with (
++            mock.patch.dict(
++                os.environ,
++                {
++                    "SGLANG_HICACHE_CUDA_HOST_MEMORY": "1",
++                    "SGLANG_HICACHE_CUDA_MANAGED_MEMORY": "0",
++                },
++                clear=False,
++            ),
++            mock.patch.object(
++                common, "_alloc_cuda_host", return_value=host
++            ) as allocate_host,
++            mock.patch.object(common, "_cuda_host_register") as register,
++            mock.patch.object(allocator, "allocate") as allocate_mmap,
++        ):
++            result = common.alloc_with_host_register(
++                (16,), torch.uint8, "cpu", True, allocator
++            )
++
++        self.assertIs(result, host)
++        allocate_host.assert_called_once_with((16,), torch.uint8, "cpu")
++        allocate_mmap.assert_not_called()
++        register.assert_not_called()
++
++    def test_opt_in_uses_managed_allocator_without_mmap_or_registration(self):
++        allocator = common.HostTensorAllocator()
++        managed = torch.empty(1, dtype=torch.uint8)
++
++        with (
++            mock.patch.dict(
++                os.environ,
++                {
++                    "SGLANG_HICACHE_CUDA_HOST_MEMORY": "0",
++                    "SGLANG_HICACHE_CUDA_MANAGED_MEMORY": "1",
++                },
++                clear=False,
++            ),
++            mock.patch.object(
++                common, "_alloc_cuda_managed", return_value=managed
++            ) as allocate_managed,
++            mock.patch.object(common, "_cuda_host_register") as register,
++            mock.patch.object(allocator, "allocate") as allocate_mmap,
++        ):
++            result = common.alloc_with_host_register(
++                (16,), torch.uint8, "cpu", True, allocator
++            )
++
++        self.assertIs(result, managed)
++        allocate_managed.assert_called_once_with((16,), torch.uint8, "cpu")
++        allocate_mmap.assert_not_called()
++        register.assert_not_called()
++
++    def test_default_path_keeps_mmap_and_cuda_host_register(self):
++        allocator = mock.Mock(spec=common.HostTensorAllocator)
++        buffer = torch.empty(16, dtype=torch.uint8)
++        allocator.allocate.return_value = buffer
++
++        with (
++            mock.patch.dict(
++                os.environ,
++                {
++                    "SGLANG_HICACHE_CUDA_HOST_MEMORY": "0",
++                    "SGLANG_HICACHE_CUDA_MANAGED_MEMORY": "0",
++                },
++                clear=False,
++            ),
++            mock.patch.object(common, "_cuda_host_register") as register,
++        ):
++            result = common.alloc_with_host_register(
++                (16,), torch.uint8, "cpu", True, allocator, 4096
++            )
++
++        self.assertIs(result, buffer)
++        allocator.allocate.assert_called_once_with(
++            (16,), dtype=torch.uint8, device="cpu"
++        )
++        register.assert_called_once_with(buffer, 4096)
++
++    def test_managed_allocator_rejects_external_storage_allocators(self):
++        allocator = common.ShmHostTensorAllocator()
++        with (
++            mock.patch.dict(
++                os.environ,
++                {
++                    "SGLANG_HICACHE_CUDA_HOST_MEMORY": "0",
++                    "SGLANG_HICACHE_CUDA_MANAGED_MEMORY": "1",
++                },
++                clear=False,
++            ),
++            self.assertRaisesRegex(ValueError, "incompatible.*ShmHostTensorAllocator"),
++        ):
++            common.alloc_with_host_register(
++                (16,), torch.uint8, "cpu", True, allocator
++            )
++
++    def test_host_allocator_rejects_external_storage_allocators(self):
++        allocator = common.ShmHostTensorAllocator()
++        with (
++            mock.patch.dict(
++                os.environ,
++                {
++                    "SGLANG_HICACHE_CUDA_HOST_MEMORY": "1",
++                    "SGLANG_HICACHE_CUDA_MANAGED_MEMORY": "0",
++                },
++                clear=False,
++            ),
++            self.assertRaisesRegex(ValueError, "incompatible.*ShmHostTensorAllocator"),
++        ):
++            common.alloc_with_host_register(
++                (16,), torch.uint8, "cpu", True, allocator
++            )
++
++    def test_host_and_managed_allocators_are_mutually_exclusive(self):
++        with (
++            mock.patch.dict(
++                os.environ,
++                {
++                    "SGLANG_HICACHE_CUDA_HOST_MEMORY": "1",
++                    "SGLANG_HICACHE_CUDA_MANAGED_MEMORY": "1",
++                },
++                clear=False,
++            ),
++            self.assertRaisesRegex(ValueError, "mutually exclusive"),
++        ):
++            common.alloc_with_host_register(
++                (16,), torch.uint8, "cpu", True, common.HostTensorAllocator()
++            )
++
++    def test_cuda_owned_host_tensor_wraps_and_releases_allocation(self):
++        size = 64
++        cudart = _FakeManagedCudart(size)
++        with mock.patch.object(common, "_load_cudart", return_value=cudart):
++            buffer = common._alloc_cuda_host((size,), torch.uint8, "cpu")
++
++        buffer.copy_(torch.arange(size, dtype=torch.uint8))
++        self.assertTrue(torch.equal(buffer, torch.arange(size, dtype=torch.uint8)))
++        owner = getattr(buffer, common._CUDA_HOST_ALLOCATION_ATTR)
++        self.assertEqual(
++            getattr(buffer, common._CUDA_HOST_REGISTERED_RANGES_ATTR), []
++        )
++        owner.release()
++        owner.release()
++        self.assertEqual(cudart.host_freed, [cudart.ptr])
++
++    def test_managed_tensor_wraps_and_releases_the_cuda_allocation(self):
++        size = 64
++        cudart = _FakeManagedCudart(size)
++        with mock.patch.object(common, "_load_cudart", return_value=cudart):
++            buffer = common._alloc_cuda_managed((size,), torch.uint8, "cpu")
++
++        buffer.copy_(torch.arange(size, dtype=torch.uint8))
++        self.assertTrue(torch.equal(buffer, torch.arange(size, dtype=torch.uint8)))
++        owner = getattr(buffer, common._CUDA_MANAGED_ALLOCATION_ATTR)
++        self.assertEqual(
++            getattr(buffer, common._CUDA_HOST_REGISTERED_RANGES_ATTR), []
++        )
++        self.assertEqual(
++            cudart.advice_calls,
++            [
++                (cudart.ptr, size, 3, 2, 0),
++                (cudart.ptr, size, 5, 1, cudart.device),
++            ],
++        )
++        owner.release()
++        owner.release()
++        self.assertEqual(cudart.freed, [cudart.ptr])
++
++    def test_managed_allocator_frees_allocation_when_memory_advice_fails(self):
++        size = 64
++        cudart = _FakeManagedCudart(size)
++        cudart.fail_advice = 5
++        with (
++            mock.patch.object(common, "_load_cudart", return_value=cudart),
++            self.assertRaisesRegex(RuntimeError, "current GPU access"),
++        ):
++            common._alloc_cuda_managed((size,), torch.uint8, "cpu")
++
++        self.assertEqual(cudart.freed, [cudart.ptr])
++
++    def test_managed_prefetch_coalesces_adjacent_host_pages_on_stream(self):
++        size = 128
++        cudart = _FakeManagedCudart(size)
++        with mock.patch.object(common, "_load_cudart", return_value=cudart):
++            buffer = common._alloc_cuda_managed((size,), torch.uint8, "cpu")
++
++        calls = common._cuda_managed_prefetch_pages_to_host(
++            buffer,
++            torch.tensor([5, 2, 1, 2], dtype=torch.int64),
++            page_bytes=16,
++            stream=0x1234,
++        )
++
++        self.assertEqual(calls, 2)
++        self.assertEqual(
++            cudart.prefetch_calls,
++            [
++                (cudart.ptr + 16, 32, 2, 0, 0, 0x1234),
++                (cudart.ptr + 80, 16, 2, 0, 0, 0x1234),
++            ],
++        )
++        getattr(buffer, common._CUDA_MANAGED_ALLOCATION_ATTR).release()
++
++    def test_managed_prefetch_fails_closed_on_cuda_error(self):
++        size = 128
++        cudart = _FakeManagedCudart(size)
++        with mock.patch.object(common, "_load_cudart", return_value=cudart):
++            buffer = common._alloc_cuda_managed((size,), torch.uint8, "cpu")
++        cudart.fail_prefetch = True
++
++        with self.assertRaisesRegex(RuntimeError, "cudaMemPrefetchAsync failed"):
++            common._cuda_managed_prefetch_pages_to_host(
++                buffer,
++                torch.tensor([0], dtype=torch.int64),
++                page_bytes=16,
++                stream=0x4321,
++            )
++
++        getattr(buffer, common._CUDA_MANAGED_ALLOCATION_ATTR).release()
++
++
++if __name__ == "__main__":
++    unittest.main()
