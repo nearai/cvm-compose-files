@@ -146,8 +146,13 @@ class GeneratorTest(unittest.TestCase):
             ('--hicache-io-backend direct', '--hicache-io-backend kernel'),
             ('SGLANG_HICACHE_POOLED_TRANSFERS=1', 'SGLANG_HICACHE_POOLED_TRANSFERS=0'),
             ('SGLANG_HICACHE_STAGING_PAGES=64', 'SGLANG_HICACHE_STAGING_PAGES=128'),
-            ('SGLANG_HICACHE_CUDA_HOST_MEMORY=1', 'SGLANG_HICACHE_CUDA_HOST_MEMORY=0'),
-            ('SGLANG_HICACHE_CUDA_MANAGED_MEMORY=0', 'SGLANG_HICACHE_CUDA_MANAGED_MEMORY=1'),
+            ('${GLM53_HICACHE_CUDA_HOST_MEMORY:-1}', '${GLM53_HICACHE_CUDA_HOST_MEMORY:-0}'),
+            # Hard-coding regression: a literal value instead of the overridable expression.
+            ('SGLANG_HICACHE_CUDA_HOST_MEMORY=${GLM53_HICACHE_CUDA_HOST_MEMORY:-1}', 'SGLANG_HICACHE_CUDA_HOST_MEMORY=1'),
+            # A reintroduced SGLANG_HICACHE_CUDA_MANAGED_MEMORY key must fail too.
+            ('      - SGLANG_HICACHE_CUDA_HOST_MEMORY=${GLM53_HICACHE_CUDA_HOST_MEMORY:-1}\n',
+             '      - SGLANG_HICACHE_CUDA_HOST_MEMORY=${GLM53_HICACHE_CUDA_HOST_MEMORY:-1}\n'
+             '      - SGLANG_HICACHE_CUDA_MANAGED_MEMORY=0\n'),
             ('        --chunked-prefill-size 4096', '        --chunked-prefill-size 8192'),
             ('      --kv-cache-dtype bfloat16', '      --enable-hierarchical-cache\n      --kv-cache-dtype bfloat16'),
             (promotion.VARIANT, 'incorrect-variant'),
