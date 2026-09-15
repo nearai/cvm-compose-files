@@ -517,7 +517,7 @@ services:
       <<: *engine-env
       SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE: "4096"
       SGLANG_ADMISSION_RESERVE_MAX_FRACTION: "0.75"
-      SGLANG_ADMISSION_RESERVE_MIN_WAIT_S: "1.0"
+      SGLANG_ADMISSION_RESERVE_MIN_ITERS: "4"
     depends_on:
       model-downloader:
         condition: service_completed_successfully
@@ -585,7 +585,7 @@ services:
       <<: *engine-env
       SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE: "4096"
       SGLANG_ADMISSION_RESERVE_MAX_FRACTION: "0.75"
-      SGLANG_ADMISSION_RESERVE_MIN_WAIT_S: "1.0"
+      SGLANG_ADMISSION_RESERVE_MIN_ITERS: "4"
     depends_on:
       model-downloader:
         condition: service_completed_successfully
@@ -988,7 +988,7 @@ configs:
           helper = '''
       def _admission_reserve_need(waiting_queue, page_size, chunked_prefill_size=None):
           """Sum of page-aligned sizes of waiting requests small enough to fit in the admission reserve (lab port)."""
-          import os as _os, time as _time
+          import os as _os
           cap = int(_os.environ.get("SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE", "0"))
           if cap <= 0 or not waiting_queue:
               return None
@@ -1002,15 +1002,19 @@ configs:
                   return None
           need = 0
           fit_mode = _os.environ.get("SGLANG_ADMISSION_RESERVE_FIT", "extend")  # "extend" = uncached tokens after prefix match; "seqlen" = total
-          # v8 age gate: a waiter only triggers the reserve once it has queued for >= MIN_WAIT_S (perf_counter clock, same as
-          # req.time_stats). Bounds a short request's head-of-line wait at ~MIN_WAIT_S while taxing the in-flight long prefill
-          # once per MIN_WAIT_S instead of every iteration. 0 = every waiter qualifies immediately (v5-v7 behaviour).
-          min_wait = float(_os.environ.get("SGLANG_ADMISSION_RESERVE_MIN_WAIT_S", "0"))
-          now = _time.perf_counter() if min_wait > 0 else None
+          # v10 age gate, RANK-DETERMINISTIC: a waiter only triggers the reserve after it has been seen by this scheduler in
+          # >= MIN_ITERS prefill-scheduling passes. Every TP rank runs the same scheduler loop over the same queue, so the
+          # counter is identical on all ranks. (v8/v9 used a wall-clock age via perf_counter: ranks disagreed on who
+          # qualified, built different batches, and the engine died on an NCCL collective mismatch / watchdog timeout.)
+          # 0 = every waiter qualifies immediately (v5-v7 behaviour). Never gate on time here.
+          min_iters = int(_os.environ.get("SGLANG_ADMISSION_RESERVE_MIN_ITERS", "0"))
+          if _os.environ.get("SGLANG_ADMISSION_RESERVE_MIN_WAIT_S"):
+              raise RuntimeError("SGLANG_ADMISSION_RESERVE_MIN_WAIT_S is not rank-deterministic and was removed; use SGLANG_ADMISSION_RESERVE_MIN_ITERS")
           for r in waiting_queue:
-              if min_wait > 0:
-                  entry = getattr(getattr(r, "time_stats", None), "wait_queue_entry_time", None)
-                  if entry is None or (now - entry) < min_wait:
+              if min_iters > 0:
+                  seen = getattr(r, "_admission_iters_seen", 0) + 1
+                  r._admission_iters_seen = seen
+                  if seen < min_iters:
                       continue
               n = getattr(r, "seqlen", None)
               if fit_mode == "extend" and n is not None:
