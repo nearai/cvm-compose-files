@@ -27,10 +27,13 @@ x-logging-conf: &logging-conf
 # the strict thinking-budget adapter, and two narrow DSA import-cycle fixes. The
 # official CUDA 13 SGLang image is the pinned build base. The serving envelope
 # is intentionally conservative: BF16 KV, 0.80 static memory,
-# 32 running requests, a bounded 32-request queue, 4096-token prefill chunks,
+# 32 running requests, a bounded 8-request queue, 4096-token prefill chunks,
 # decode graphs capped at batch 32, TileLang DSA, DeepGEMM, and adaptive EAGLE
 # 5/1/6. This retains the full 1,048,576-token model context while avoiding the
 # late K-pool workspace exhaustion observed with larger prefill chunks.
+# Priority scheduling must not be deployed until the priority-normalizing
+# inference-proxy from nearai/inference-proxy#240 has been rolled out and
+# verified under nearai/cvm-compose-files#270.
 #
 # A small fail-closed adapter patch maps the public thinking_token_budget field
 # to SGLang strict-thinking's custom_params.thinking_budget. Omitted values
@@ -76,7 +79,9 @@ x-sg-glm53-flash-common: &sg-glm53-flash-common
       --ep-size 4
       --mem-fraction-static 0.80
       --max-running-requests 32
-      --max-queued-requests 32
+      --max-queued-requests 8
+      --enable-priority-scheduling
+      --disable-priority-preemption
       --chunked-prefill-size 4096
       --cuda-graph-max-bs-decode 32
       --dsa-prefill-backend tilelang
@@ -356,7 +361,9 @@ services:
         --ep-size 4
         --mem-fraction-static 0.80
         --max-running-requests 32
-        --max-queued-requests 32
+        --max-queued-requests 8
+        --enable-priority-scheduling
+        --disable-priority-preemption
         --chunked-prefill-size 4096
         --cuda-graph-max-bs-decode 32
         --dsa-prefill-backend tilelang

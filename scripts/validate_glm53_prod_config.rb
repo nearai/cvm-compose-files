@@ -36,7 +36,7 @@ REQUIRED_OPTIONS = {
   "--ep-size" => "4",
   "--mem-fraction-static" => "0.80",
   "--max-running-requests" => "32",
-  "--max-queued-requests" => "32",
+  "--max-queued-requests" => "8",
   "--chunked-prefill-size" => "4096",
   "--cuda-graph-max-bs-decode" => "32",
   "--dsa-prefill-backend" => "tilelang",
@@ -56,6 +56,8 @@ REQUIRED_OPTIONS = {
   "--log-requests-level" => "0",
 }.freeze
 REQUIRED_SWITCHES = %w[
+  --enable-priority-scheduling
+  --disable-priority-preemption
   --speculative-adaptive
   --enable-strict-thinking
   --enable-metrics
