@@ -1,0 +1,978 @@
+# STATUS: EXPERIMENT. GLM-5.3 Flash pool-topology comparison on the gpu23 8xH200 PPCIe CVM:
+# identical replicas (prod routing) vs long-context-dedicated replicas (length-tiered routing)
+# vs prefill-only + decode-only replicas (SGLang P/D disaggregation, mooncake TCP transport).
+#
+# Experiment only. No inference-proxy, nginx, model-proxy-registrar, otel or dcgm: nothing in this
+# file registers with production or ships telemetry. Engines expose token-protected direct
+# endpoints (--api-key = PROXY_TOKEN) on the ACL-covered host ports 8001-8009 and are deployed
+# ONLY as explicit service subsets of the compose project "glm53flash-gpu23-bd" through
+# compose-manager (never against the serving "work" project). The lab router and load driver
+# (nearai/inference-optimizer) run on the gpu23 host against the forwarded ports.
+#
+# Engines a/b are the production r1 configuration verbatim (image, flags) plus --api-key and a
+# persisted tilelang JIT cache. Profiles: ops (disk check), probe (topology/CC evidence),
+# pd (prefill/decode workers + sgl-router), v9 (admission-reserve scheduler patch arm).
+
+name: glm53flash-gpu23-bd
+
+x-logging-conf: &logging-conf
+  driver: "json-file"
+  options:
+    max-size: "100m"
+    max-file: "10"
+    labels: "com.datadoghq.ad.logs,com.docker.compose.service"
+
+x-nvidia: &nvidia
+  runtime: nvidia
+  ipc: host
+  ulimits:
+    memlock: -1
+    nofile:
+      soft: 65535
+      hard: 65535
+
+x-engine-env: &engine-env
+  HF_TOKEN: ${HUGGING_FACE_HUB_TOKEN}
+  HF_HUB_OFFLINE: "1"
+  TRANSFORMERS_OFFLINE: "1"
+  HF_HUB_DISABLE_TELEMETRY: "1"
+  DO_NOT_TRACK: "1"
+  NVIDIA_DRIVER_CAPABILITIES: compute,utility
+  OPENBLAS_L2_SIZE: "2097152"
+  NCCL_DEBUG: WARN
+  PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+  TORCHINDUCTOR_CACHE_DIR: /root/.cache/torchinductor
+  TRITON_CACHE_DIR: /root/.cache/triton
+  # tilelang (DSA attention) JIT cache: ~22 kernels at 8-9 s each with the engine frozen; persist it.
+  TILELANG_CACHE_DIR: /root/.cache/tilelang
+  SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE: "1"
+  PROXY_TOKEN: ${PROXY_TOKEN}
+
+x-engine-base: &engine-base
+  <<: *nvidia
+  init: true
+  image: docker.io/nearaidev/sglang@sha256:a7b7136abcf5e07522289d96e96fec9b42a1a30f9dfda57e957f142680d2d67b
+  entrypoint: ["/bin/bash", "-lc"]
+  restart: unless-stopped
+  stop_grace_period: 5m
+  logging: *logging-conf
+
+services:
+  model-downloader:
+    image: ghcr.io/astral-sh/uv:python3.11-bookworm-slim@sha256:4f5d923c9dcea037f57bda425dd209f3ec643da2f0b74227f68d09dab0b3bb36
+    container_name: model-downloader
+    restart: "no"
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        set -e
+        echo "Downloading zai-org/GLM-5.3-Flash..."
+        uvx --from 'huggingface_hub[hf_xet]' hf download zai-org/GLM-5.3-Flash --revision 84c6a6aa9497188e15a635ba793b0f95a79b1033
+        echo "Downloading corrected GLM-5.3-Flash chat template..."
+        uvx --from 'huggingface_hub[hf_xet]' hf download zai-org/GLM-5.3-Flash chat_template.jinja --revision 3f1971b7b5f7a528c9c4ef6212c8785298a8c24a
+        echo "Download complete."
+    volumes:
+      - huggingface_cache:/root/.cache/huggingface
+    environment:
+      - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+    logging: *logging-conf
+
+  # One-shot disk report, served on host port 8006 until brought down (compose-manager has no exec).
+  diskcheck:
+    image: alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
+    container_name: glm53flash-diskcheck
+    profiles: ["ops"]
+    restart: "no"
+    ports:
+      - "8006:8000"
+    volumes:
+      - huggingface_cache:/root/.cache/huggingface
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        mkdir -p /out
+        { echo "== df / (CVM root disk)"; df -h /; echo "== df hf volume"; df -h /root/.cache/huggingface; echo "== hub contents"; du -sh /root/.cache/huggingface/hub/* 2>/dev/null || echo none; } > /out/report.txt 2>&1
+        cat /out/report.txt
+        exec busybox httpd -f -p 8000 -h /out
+    logging: *logging-conf
+
+  # Topology and confidential-compute evidence (all 8 GPUs), served on host port 8007.
+  probe:
+    <<: *nvidia
+    image: docker.io/nearaidev/sglang@sha256:a7b7136abcf5e07522289d96e96fec9b42a1a30f9dfda57e957f142680d2d67b
+    container_name: glm53flash-probe
+    profiles: ["probe"]
+    restart: "no"
+    ports:
+      - "8007:8000"
+    environment:
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    entrypoint: ["/bin/bash", "-lc"]
+    command:
+      - |
+        mkdir -p /out
+        {
+          echo "== nvidia-smi -L"; nvidia-smi -L
+          echo "== nvidia-smi topo -m"; nvidia-smi topo -m
+          echo "== nvidia-smi topo -p2p r"; nvidia-smi topo -p2p r
+          echo "== conf-compute"; nvidia-smi conf-compute -q 2>&1 || true
+          echo "== nvidia-smi -q (CC / protected PCIe lines)"; nvidia-smi -q 2>/dev/null | grep -i -B1 -A3 "confidential\|protected pcie\|cc mode\|multi.gpu" || true
+          echo "== driver"; nvidia-smi --query-gpu=index,pci.bus_id,driver_version,memory.total --format=csv
+          echo "== torch"; python3 -c "import torch; print(torch.__version__, torch.cuda.device_count())"
+        } > /out/report.txt 2>&1
+        cat /out/report.txt
+        exec python3 -m http.server 8000 --directory /out
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["0", "1", "2", "3", "4", "5", "6", "7"]
+              capabilities: [gpu]
+    logging: *logging-conf
+
+  # --- Identical replicas: production r1 configuration verbatim ---
+  glm53-a:
+    <<: *engine-base
+    container_name: glm53-a
+    ports:
+      - "8001:8000"
+    volumes:
+      - kernel_cache_a:/root/.cache
+      - huggingface_cache:/root/.cache/huggingface
+    environment:
+      <<: *engine-env
+    depends_on:
+      model-downloader:
+        condition: service_completed_successfully
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["0", "1", "2", "3"]
+              capabilities: [gpu]
+    command:
+      - |
+        exec sglang serve \
+          --model-path /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/84c6a6aa9497188e15a635ba793b0f95a79b1033 \
+          --revision 84c6a6aa9497188e15a635ba793b0f95a79b1033 \
+          --served-model-name z-ai/glm-5.3-flash \
+          --tp-size 4 \
+          --ep-size 4 \
+          --mem-fraction-static 0.80 \
+          --max-running-requests 32 \
+          --max-queued-requests 32 \
+          --chunked-prefill-size 4096 \
+          --cuda-graph-max-bs-decode 32 \
+          --dsa-prefill-backend tilelang \
+          --dsa-decode-backend tilelang \
+          --kv-cache-dtype bfloat16 \
+          --moe-runner-backend deep_gemm \
+          --speculative-algorithm EAGLE \
+          --speculative-num-steps 5 \
+          --speculative-eagle-topk 1 \
+          --speculative-num-draft-tokens 6 \
+          --speculative-adaptive \
+          --reasoning-parser glm45 \
+          --enable-strict-thinking \
+          --grammar-backend xgrammar \
+          --tool-call-parser glm47 \
+          --chat-template /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/3f1971b7b5f7a528c9c4ef6212c8785298a8c24a/chat_template.jinja \
+          --context-length 1048576 \
+          --dist-init-addr 127.0.0.1:29510 \
+          --watchdog-timeout 1800 \
+          --host 0.0.0.0 \
+          --port 8000 \
+          --enable-metrics \
+          --enable-cache-report \
+          --log-requests-level 0 \
+          --disable-fast-image-processor \
+          --limit-mm-data-per-request '{"image": 64}' \
+          --api-key "$$PROXY_TOKEN"
+
+  glm53-b:
+    <<: *engine-base
+    container_name: glm53-b
+    ports:
+      - "8002:8000"
+    volumes:
+      - kernel_cache_b:/root/.cache
+      - huggingface_cache:/root/.cache/huggingface
+    environment:
+      <<: *engine-env
+    depends_on:
+      model-downloader:
+        condition: service_completed_successfully
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["4", "5", "6", "7"]
+              capabilities: [gpu]
+    command:
+      - |
+        exec sglang serve \
+          --model-path /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/84c6a6aa9497188e15a635ba793b0f95a79b1033 \
+          --revision 84c6a6aa9497188e15a635ba793b0f95a79b1033 \
+          --served-model-name z-ai/glm-5.3-flash \
+          --tp-size 4 \
+          --ep-size 4 \
+          --mem-fraction-static 0.80 \
+          --max-running-requests 32 \
+          --max-queued-requests 32 \
+          --chunked-prefill-size 4096 \
+          --cuda-graph-max-bs-decode 32 \
+          --dsa-prefill-backend tilelang \
+          --dsa-decode-backend tilelang \
+          --kv-cache-dtype bfloat16 \
+          --moe-runner-backend deep_gemm \
+          --speculative-algorithm EAGLE \
+          --speculative-num-steps 5 \
+          --speculative-eagle-topk 1 \
+          --speculative-num-draft-tokens 6 \
+          --speculative-adaptive \
+          --reasoning-parser glm45 \
+          --enable-strict-thinking \
+          --grammar-backend xgrammar \
+          --tool-call-parser glm47 \
+          --chat-template /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/3f1971b7b5f7a528c9c4ef6212c8785298a8c24a/chat_template.jinja \
+          --context-length 1048576 \
+          --dist-init-addr 127.0.0.1:29510 \
+          --watchdog-timeout 1800 \
+          --host 0.0.0.0 \
+          --port 8000 \
+          --enable-metrics \
+          --enable-cache-report \
+          --log-requests-level 0 \
+          --disable-fast-image-processor \
+          --limit-mm-data-per-request '{"image": 64}' \
+          --api-key "$$PROXY_TOKEN"
+
+  # --- Prefill/decode disaggregation arm (profile pd) ---
+  glm53-prefill:
+    <<: *engine-base
+    container_name: glm53-prefill
+    profiles: ["pd"]
+    ports:
+      - "8003:8000"
+    volumes:
+      - kernel_cache_a:/root/.cache
+      - huggingface_cache:/root/.cache/huggingface
+    environment:
+      <<: *engine-env
+    depends_on:
+      model-downloader:
+        condition: service_completed_successfully
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["0", "1", "2", "3"]
+              capabilities: [gpu]
+    command:
+      - |
+        exec sglang serve \
+          --model-path /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/84c6a6aa9497188e15a635ba793b0f95a79b1033 \
+          --revision 84c6a6aa9497188e15a635ba793b0f95a79b1033 \
+          --served-model-name z-ai/glm-5.3-flash \
+          --tp-size 4 \
+          --ep-size 4 \
+          --mem-fraction-static 0.80 \
+          --max-running-requests 32 \
+          --max-queued-requests 32 \
+          --chunked-prefill-size 4096 \
+          --cuda-graph-max-bs-decode 32 \
+          --dsa-prefill-backend tilelang \
+          --dsa-decode-backend tilelang \
+          --kv-cache-dtype bfloat16 \
+          --moe-runner-backend deep_gemm \
+          --reasoning-parser glm45 \
+          --enable-strict-thinking \
+          --grammar-backend xgrammar \
+          --tool-call-parser glm47 \
+          --chat-template /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/3f1971b7b5f7a528c9c4ef6212c8785298a8c24a/chat_template.jinja \
+          --context-length 1048576 \
+          --dist-init-addr 127.0.0.1:29510 \
+          --watchdog-timeout 1800 \
+          --host 0.0.0.0 \
+          --port 8000 \
+          --enable-metrics \
+          --enable-cache-report \
+          --log-requests-level 0 \
+          --disable-fast-image-processor \
+          --limit-mm-data-per-request '{"image": 64}' \
+          --disaggregation-mode prefill \
+          --disaggregation-transfer-backend mooncake_tcp \
+          --disaggregation-bootstrap-port 8998 \
+          --api-key "$$PROXY_TOKEN"
+
+  glm53-decode:
+    <<: *engine-base
+    container_name: glm53-decode
+    profiles: ["pd"]
+    ports:
+      - "8004:8000"
+    volumes:
+      - kernel_cache_b:/root/.cache
+      - huggingface_cache:/root/.cache/huggingface
+    environment:
+      <<: *engine-env
+    depends_on:
+      model-downloader:
+        condition: service_completed_successfully
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["4", "5", "6", "7"]
+              capabilities: [gpu]
+    command:
+      - |
+        exec sglang serve \
+          --model-path /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/84c6a6aa9497188e15a635ba793b0f95a79b1033 \
+          --revision 84c6a6aa9497188e15a635ba793b0f95a79b1033 \
+          --served-model-name z-ai/glm-5.3-flash \
+          --tp-size 4 \
+          --ep-size 4 \
+          --mem-fraction-static 0.80 \
+          --max-running-requests 32 \
+          --max-queued-requests 32 \
+          --chunked-prefill-size 4096 \
+          --cuda-graph-max-bs-decode 32 \
+          --dsa-prefill-backend tilelang \
+          --dsa-decode-backend tilelang \
+          --kv-cache-dtype bfloat16 \
+          --moe-runner-backend deep_gemm \
+          --speculative-algorithm EAGLE \
+          --speculative-num-steps 5 \
+          --speculative-eagle-topk 1 \
+          --speculative-num-draft-tokens 6 \
+          --speculative-adaptive \
+          --reasoning-parser glm45 \
+          --enable-strict-thinking \
+          --grammar-backend xgrammar \
+          --tool-call-parser glm47 \
+          --chat-template /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/3f1971b7b5f7a528c9c4ef6212c8785298a8c24a/chat_template.jinja \
+          --context-length 1048576 \
+          --dist-init-addr 127.0.0.1:29510 \
+          --watchdog-timeout 1800 \
+          --host 0.0.0.0 \
+          --port 8000 \
+          --enable-metrics \
+          --enable-cache-report \
+          --log-requests-level 0 \
+          --disable-fast-image-processor \
+          --limit-mm-data-per-request '{"image": 64}' \
+          --disaggregation-mode decode \
+          --disaggregation-transfer-backend mooncake_tcp \
+          --api-key "$$PROXY_TOKEN"
+
+  pd-router:
+    image: docker.io/nearaidev/sglang@sha256:a7b7136abcf5e07522289d96e96fec9b42a1a30f9dfda57e957f142680d2d67b
+    container_name: glm53flash-pd-router
+    profiles: ["pd"]
+    restart: unless-stopped
+    ports:
+      - "8005:8000"
+    environment:
+      NVIDIA_VISIBLE_DEVICES: void
+    entrypoint: ["/bin/bash", "-lc"]
+    command:
+      - |
+        exec python3 -m sglang_router.launch_router --pd-disaggregation \
+          --prefill http://glm53-prefill:8000 8998 --decode http://glm53-decode:8000 \
+          --prefill-policy cache_aware --decode-policy power_of_two \
+          --host 0.0.0.0 --port 8000
+    depends_on:
+      - glm53-prefill
+      - glm53-decode
+    logging: *logging-conf
+
+  # --- v9 admission-reserve scheduler arm (profile v9): patched scheduler files in a volume ---
+  patch-init:
+    image: docker.io/nearaidev/sglang@sha256:a7b7136abcf5e07522289d96e96fec9b42a1a30f9dfda57e957f142680d2d67b
+    container_name: glm53flash-patch-init
+    profiles: ["v9"]
+    restart: "no"
+    environment:
+      NVIDIA_VISIBLE_DEVICES: void
+    entrypoint: ["/bin/bash", "-lc"]
+    command:
+      - |
+        set -e
+        rm -rf /overlay/* && cp -a /sgl-workspace/sglang/python/sglang/srt/managers/. /overlay/
+        python3 /patch/patch_admission_reserve.py /overlay
+        python3 -m py_compile /overlay/scheduler.py /overlay/schedule_policy.py
+        echo PATCH-OK
+    volumes:
+      - sglang_managers_v9:/overlay
+    configs:
+      - source: patch_admission_reserve
+        target: /patch/patch_admission_reserve.py
+        mode: 0444
+    logging: *logging-conf
+
+  glm53-a-v9:
+    <<: *engine-base
+    container_name: glm53-a-v9
+    profiles: ["v9"]
+    ports:
+      - "8008:8000"
+    volumes:
+      - kernel_cache_a:/root/.cache
+      - huggingface_cache:/root/.cache/huggingface
+      - sglang_managers_v9:/sgl-workspace/sglang/python/sglang/srt/managers:ro
+    environment:
+      <<: *engine-env
+      SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE: "4096"
+      SGLANG_ADMISSION_RESERVE_MAX_FRACTION: "0.75"
+      SGLANG_ADMISSION_RESERVE_MIN_WAIT_S: "1.0"
+    depends_on:
+      model-downloader:
+        condition: service_completed_successfully
+      patch-init:
+        condition: service_completed_successfully
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["0", "1", "2", "3"]
+              capabilities: [gpu]
+    command:
+      - |
+        exec sglang serve \
+          --model-path /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/84c6a6aa9497188e15a635ba793b0f95a79b1033 \
+          --revision 84c6a6aa9497188e15a635ba793b0f95a79b1033 \
+          --served-model-name z-ai/glm-5.3-flash \
+          --tp-size 4 \
+          --ep-size 4 \
+          --mem-fraction-static 0.80 \
+          --max-running-requests 32 \
+          --max-queued-requests 32 \
+          --chunked-prefill-size 4096 \
+          --cuda-graph-max-bs-decode 32 \
+          --dsa-prefill-backend tilelang \
+          --dsa-decode-backend tilelang \
+          --kv-cache-dtype bfloat16 \
+          --moe-runner-backend deep_gemm \
+          --speculative-algorithm EAGLE \
+          --speculative-num-steps 5 \
+          --speculative-eagle-topk 1 \
+          --speculative-num-draft-tokens 6 \
+          --speculative-adaptive \
+          --reasoning-parser glm45 \
+          --enable-strict-thinking \
+          --grammar-backend xgrammar \
+          --tool-call-parser glm47 \
+          --chat-template /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/3f1971b7b5f7a528c9c4ef6212c8785298a8c24a/chat_template.jinja \
+          --context-length 1048576 \
+          --dist-init-addr 127.0.0.1:29510 \
+          --watchdog-timeout 1800 \
+          --host 0.0.0.0 \
+          --port 8000 \
+          --enable-metrics \
+          --enable-cache-report \
+          --log-requests-level 0 \
+          --disable-fast-image-processor \
+          --limit-mm-data-per-request '{"image": 64}' \
+          --prefill-decode-interval 1 \
+          --api-key "$$PROXY_TOKEN"
+
+  glm53-b-v9:
+    <<: *engine-base
+    container_name: glm53-b-v9
+    profiles: ["v9"]
+    ports:
+      - "8009:8000"
+    volumes:
+      - kernel_cache_b:/root/.cache
+      - huggingface_cache:/root/.cache/huggingface
+      - sglang_managers_v9:/sgl-workspace/sglang/python/sglang/srt/managers:ro
+    environment:
+      <<: *engine-env
+      SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE: "4096"
+      SGLANG_ADMISSION_RESERVE_MAX_FRACTION: "0.75"
+      SGLANG_ADMISSION_RESERVE_MIN_WAIT_S: "1.0"
+    depends_on:
+      model-downloader:
+        condition: service_completed_successfully
+      patch-init:
+        condition: service_completed_successfully
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["4", "5", "6", "7"]
+              capabilities: [gpu]
+    command:
+      - |
+        exec sglang serve \
+          --model-path /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/84c6a6aa9497188e15a635ba793b0f95a79b1033 \
+          --revision 84c6a6aa9497188e15a635ba793b0f95a79b1033 \
+          --served-model-name z-ai/glm-5.3-flash \
+          --tp-size 4 \
+          --ep-size 4 \
+          --mem-fraction-static 0.80 \
+          --max-running-requests 32 \
+          --max-queued-requests 32 \
+          --chunked-prefill-size 4096 \
+          --cuda-graph-max-bs-decode 32 \
+          --dsa-prefill-backend tilelang \
+          --dsa-decode-backend tilelang \
+          --kv-cache-dtype bfloat16 \
+          --moe-runner-backend deep_gemm \
+          --speculative-algorithm EAGLE \
+          --speculative-num-steps 5 \
+          --speculative-eagle-topk 1 \
+          --speculative-num-draft-tokens 6 \
+          --speculative-adaptive \
+          --reasoning-parser glm45 \
+          --enable-strict-thinking \
+          --grammar-backend xgrammar \
+          --tool-call-parser glm47 \
+          --chat-template /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/3f1971b7b5f7a528c9c4ef6212c8785298a8c24a/chat_template.jinja \
+          --context-length 1048576 \
+          --dist-init-addr 127.0.0.1:29510 \
+          --watchdog-timeout 1800 \
+          --host 0.0.0.0 \
+          --port 8000 \
+          --enable-metrics \
+          --enable-cache-report \
+          --log-requests-level 0 \
+          --disable-fast-image-processor \
+          --limit-mm-data-per-request '{"image": 64}' \
+          --prefill-decode-interval 1 \
+          --api-key "$$PROXY_TOKEN"
+
+  # Fleet-standard app collector, present to satisfy the repo validator. It is NOT selected in any
+  # experiment deploy (services subsets only), so no telemetry from this stack reaches production.
+  otelcol-contrib:
+    image: otel/opentelemetry-collector-contrib@sha256:85ac41c2db88d0df9bd6145e608a3cb023f5d8443868adbfbbf66efb51087917
+    container_name: otelcol-contrib
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    user: "0:0"
+    mem_limit: "768m"
+    environment:
+      - MONITORING_INGEST_TOKEN=${MONITORING_INGEST_TOKEN:-}
+      - CVM_NAME=${CVM_NAME:-unknown}
+      - CVM_HOST=${CVM_HOST:-unknown}
+      - DD_HOSTNAME=${DD_HOSTNAME:-unknown}
+      - ENV=${ENV:-unknown}
+      - HOST_IP=${HOST_IP:-unknown}
+    expose:
+      - "4317"
+      - "4318"
+    volumes:
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - otelcol_app_storage:/var/lib/otelcol-contrib
+    configs:
+      - source: otelcol_app_config
+        target: /etc/otelcol-contrib/config.yaml
+        mode: 0444
+    restart: unless-stopped
+    logging:
+      driver: "local"
+      options:
+        max-size: "20m"
+        max-file: "3"
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"otelcol-contrib","service":"otelcol-contrib","tags":["deployment:glm53flash-gpu23-bd-experiment","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+
+networks:
+  default:
+    external: true
+    name: dstack_default
+
+volumes:
+  huggingface_cache:
+    name: glm53flash-gpu23-bd_huggingface_cache
+  kernel_cache_a:
+    name: glm53flash-gpu23-bd_kernel_cache_a
+  kernel_cache_b:
+    name: glm53flash-gpu23-bd_kernel_cache_b
+  sglang_managers_v9:
+    name: glm53flash-gpu23-bd_sglang_managers_v9
+  otelcol_app_storage:
+    name: glm53flash-gpu23-bd_otelcol_app_storage
+
+configs:
+  otelcol_app_config:
+    content: |
+      receivers:
+        otlp:
+          protocols:
+            grpc:
+              endpoint: 0.0.0.0:4317
+            http:
+              endpoint: 0.0.0.0:4318
+
+        filelog/docker_containers:
+          include: [/var/lib/docker/containers/*/*-json.log]
+          start_at: end
+          storage: file_storage
+          include_file_path: true
+          operators:
+            - type: json_parser
+              parse_from: body
+              parse_to: attributes
+              timestamp:
+                parse_from: attributes.time
+                layout_type: gotime
+                layout: '2006-01-02T15:04:05.999999999Z07:00'
+              on_error: send_quiet
+            - type: move
+              from: attributes.log
+              to: body
+              if: 'attributes.log != nil'
+            - type: move
+              from: attributes.stream
+              to: attributes["log.iostream"]
+              if: 'attributes.stream != nil'
+            - type: remove
+              field: attributes.time
+              if: 'attributes.time != nil'
+            - type: regex_parser
+              parse_from: attributes["log.file.path"]
+              regex: '/var/lib/docker/containers/(?P<container_id>[a-f0-9]{12})[a-f0-9]*/'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'model:(?P<model>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'served_model:(?P<served_model>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'model_path:(?P<model_path>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'precision:(?P<precision>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'deployment:(?P<deployment>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'ip:(?P<ip>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'port:(?P<port>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'env:(?P<env>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'host:(?P<host>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'instance:(?P<instance>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'replica:(?P<replica>[^",\]]+)'
+              on_error: send_quiet
+            - type: add
+              field: attributes["service.name"]
+              value: cvm-docker
+
+        prometheus/self:
+          config:
+            scrape_configs:
+              - job_name: otelcol-app
+                scrape_interval: 30s
+                static_configs:
+                  - targets: ['localhost:8888']
+
+      processors:
+        memory_limiter:
+          check_interval: 1s
+          limit_mib: 512
+          spike_limit_mib: 128
+
+        resource:
+          attributes:
+            - key: host.name
+              value: $${env:DD_HOSTNAME}
+              action: upsert
+            - key: cvm.name
+              value: $${env:CVM_NAME}
+              action: upsert
+            - key: host.machine
+              value: $${env:CVM_HOST}
+              action: insert
+            - key: deployment.environment
+              value: $${env:ENV}
+              action: upsert
+            - key: service.namespace
+              value: near-ai
+              action: insert
+
+        transform/docker_metadata:
+          error_mode: ignore
+          log_statements:
+            - context: log
+              statements:
+                - set(attributes["service.name"], attributes["attrs"]["com.docker.compose.service"]) where attributes["attrs"] != nil and attributes["attrs"]["com.docker.compose.service"] != nil
+                - set(attributes["service.name"], ParseJSON(attributes["attrs"]["com.datadoghq.ad.logs"])[0]["service"]) where attributes["attrs"] != nil and attributes["attrs"]["com.datadoghq.ad.logs"] != nil
+                - set(attributes["log.source"], ParseJSON(attributes["attrs"]["com.datadoghq.ad.logs"])[0]["source"]) where attributes["attrs"] != nil and attributes["attrs"]["com.datadoghq.ad.logs"] != nil
+                - set(attributes["service"], attributes["service.name"]) where attributes["attrs"] != nil and attributes["attrs"]["com.datadoghq.ad.logs"] != nil and attributes["service.name"] != nil
+                - set(attributes["source"], attributes["log.source"]) where attributes["attrs"] != nil and attributes["attrs"]["com.datadoghq.ad.logs"] != nil and attributes["log.source"] != nil
+                - set(attributes["container.name"], attributes["attrs"]["com.docker.compose.service"]) where attributes["attrs"] != nil and attributes["attrs"]["com.docker.compose.service"] != nil
+
+        filter/app_logs:
+          error_mode: ignore
+          logs:
+            log_record:
+              - 'attributes["model"] == nil and attributes["deployment"] == nil'
+              - 'attributes["service.name"] == "compose-manager"'
+              - 'attributes["service.name"] == "compose-manager-launcher"'
+              - 'attributes["service.name"] == "otelcol-management"'
+              - 'attributes["service.name"] == "otelcol-contrib"'
+              - 'attributes["service.name"] == "datadog-agent"'
+
+        groupbyattrs/docker_service:
+          keys:
+            - service.name
+            - service
+            - container.name
+            - log.source
+            - source
+            - log.iostream
+            - model
+            - served_model
+            - model_path
+            - precision
+            - deployment
+            - env
+            - host
+            - ip
+            - port
+            - instance
+            - replica
+
+        batch:
+          send_batch_size: 1024
+          send_batch_max_size: 2048
+          timeout: 5s
+
+      exporters:
+        otlphttp/gateway:
+          endpoint: https://telemetry.infra.near.ai
+          headers:
+            Authorization: "Bearer $${env:MONITORING_INGEST_TOKEN}"
+          sending_queue:
+            num_consumers: 1
+            queue_size: 128
+            storage: file_storage
+
+      extensions:
+        file_storage:
+          directory: /var/lib/otelcol-contrib/storage
+          create_directory: true
+
+      service:
+        extensions: [file_storage]
+        pipelines:
+          logs/app:
+            receivers: [filelog/docker_containers]
+            processors: [memory_limiter, resource, transform/docker_metadata, filter/app_logs, groupbyattrs/docker_service, batch]
+            exporters: [otlphttp/gateway]
+          metrics/app:
+            receivers: [otlp]
+            processors: [memory_limiter, resource, batch]
+            exporters: [otlphttp/gateway]
+          metrics/otlp:
+            receivers: [otlp]
+            processors: [memory_limiter, resource, batch]
+            exporters: [otlphttp/gateway]
+          metrics/self:
+            receivers: [prometheus/self]
+            processors: [memory_limiter, resource, batch]
+            exporters: [otlphttp/gateway]
+          traces:
+            receivers: [otlp]
+            processors: [memory_limiter, resource, batch]
+            exporters: [otlphttp/gateway]
+        telemetry:
+          metrics:
+            address: localhost:8888
+          logs:
+            level: info
+
+  # nearai/inference-optimizer launch/patch_admission_reserve.py (v9: reserve + refund + age gate), verbatim.
+  patch_admission_reserve:
+    content: |
+      #!/usr/bin/env python3
+      """Port of Pierre Le Guen's DS4F "chunked-prefill admission reserve" onto the GLM-5.3 pin (fc91d24 image files).
+
+      Mechanism: SGLang's PrefillAdder gives the in-flight chunked request the whole chunk budget every iteration, so a request
+      arriving behind a long prefill cannot enter any prefill batch until that prefill completes (head-of-line blocking of short
+      requests). This patch reserves SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE tokens of the chunk budget for complete waiting
+      requests whenever the first waiting request fits in the reserve (so no second chunked request is ever created).
+
+        python3 launch/patch_admission_reserve.py <overlay_dir>/managers   # patches scheduler.py + schedule_policy.py in place, idempotent
+      Mount the two patched files over /sgl-workspace/sglang/python/sglang/srt/managers/ in the engine container and set the env var.
+      """
+      import re, sys, os
+      d = sys.argv[1]
+      sp = os.path.join(d, "schedule_policy.py"); sc = os.path.join(d, "scheduler.py")
+      s = open(sp).read()
+      if "CHUNKED_PREFILL_ADMISSION_RESERVE" not in s:
+          s = s.replace("import os\n", "import os\n", 1)
+          const = '''
+      # Lab port of the DS4F admission-fairness change: the scheduler always spends the
+      # entire chunk budget on an in-flight long prefill, so requests that arrive after it
+      # cannot enter the same prefill batch. Reserve part of that budget for complete
+      # waiting requests. Zero preserves upstream behaviour.
+      CHUNKED_PREFILL_ADMISSION_RESERVE = int(os.environ.get("SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE", "0"))
+      if CHUNKED_PREFILL_ADMISSION_RESERVE < 0:
+          raise ValueError("SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE must be non-negative")
+
+      '''
+          # insert before the first top-level def/class after imports
+          m = re.search(r"\n(?=(def |class )\w)", s); s = s[:m.start()+1] + const + s[m.start()+1:]
+          s = s.replace("        waiting_queue_len: int = 0,\n", "        waiting_queue_len: int = 0,\n        first_waiting_req_tokens: Optional[int] = None,\n", 1)
+          # store attribute: find 'self.waiting_queue_len = waiting_queue_len' or add after page_size assignment
+          if "self.waiting_queue_len = waiting_queue_len" in s:
+              s = s.replace("self.waiting_queue_len = waiting_queue_len\n", "self.waiting_queue_len = waiting_queue_len\n        self.first_waiting_req_tokens = first_waiting_req_tokens\n", 1)
+          else:
+              s = s.replace("        self.page_size = page_size\n", "        self.page_size = page_size\n        self.first_waiting_req_tokens = first_waiting_req_tokens\n", 1)
+          old = "            _rem_tokens = min(self.rem_chunk_tokens, int(self.rem_total_tokens))\n"
+          new = old + '''            if getattr(self, "waiting_queue_len", 0) > 0 and CHUNKED_PREFILL_ADMISSION_RESERVE > 0:
+                      # Reserve only what the waiting requests that can fit actually need (page-aligned), capped by the env
+                      # value and by chunk budget minus one page, so the in-flight request always progresses and is never
+                      # starved by a stream of short arrivals (a fixed reserve of a full chunk collapses under load).
+                      # Fairness bound: the in-flight request always keeps at least (1 - MAX_FRACTION) of the chunk budget, so a
+                      # steady stream of qualifying waiters slows a long prefill by at most 1/(1-MAX_FRACTION) and never starves it.
+                      max_frac = float(os.environ.get("SGLANG_ADMISSION_RESERVE_MAX_FRACTION", "0.5"))
+                      cap = min(CHUNKED_PREFILL_ADMISSION_RESERVE, max(self.rem_chunk_tokens - self.page_size, 0), int(self.rem_chunk_tokens * max_frac))
+                      need = self.first_waiting_req_tokens or 0  # = sum of page-aligned sizes of waiting requests that fit under the cap
+                      reserve = min(cap, need) // self.page_size * self.page_size
+                      fits = reserve > 0
+                      if fits:
+                          _rem_tokens = min(_rem_tokens, self.rem_chunk_tokens - reserve)
+                      if os.environ.get("SGLANG_ADMISSION_RESERVE_DEBUG") == "1":
+                          import logging as _lg
+                          _lg.getLogger(__name__).info("admission-reserve: waiting=%s need=%s cap=%s reserve=%s chunk_alloc=%s rem_chunk=%s",
+                                                       self.waiting_queue_len, need, cap, reserve, _rem_tokens, self.rem_chunk_tokens)
+      '''
+
+          assert s.count(old) == 1, "add_chunked_req anchor not unique"
+          s = s.replace(old, new)
+          # Mark the adder while a chunked request is in flight, and never start a second chunked request in that state:
+          # upstream relied on rem_chunk_tokens being exhausted by the chunked request; the reserve leaves budget, so a waiting
+          # request longer than the reserve must be refused (AddReqResult.OTHER) instead of being truncated into new_chunked_req.
+          s = s.replace(new, new + "            self._has_inflight_chunked = True\n", 1)
+          lines = s.split("\n"); out = []; n_sites = 0
+          for ln in lines:
+              if ln.strip() == "self.new_chunked_req = req":
+                  ind = ln[: len(ln) - len(ln.lstrip())]
+                  # the preceding line is always `self.can_run_list.append(req)`; guard before it
+                  prev = out.pop(); assert prev.strip() == "self.can_run_list.append(req)", prev
+                  out += [ind + 'if getattr(self, "_has_inflight_chunked", False):', ind + "    return AddReqResult.OTHER", prev, ln]; n_sites += 1
+              else: out.append(ln)
+          assert n_sites >= 2, f"expected >=2 new_chunked_req sites, found {n_sites}"
+          s = "\n".join(out); print("guarded", n_sites, "truncation sites")
+          open(sp, "w").write(s); print("schedule_policy.py patched (reserve + no-second-chunk guard)")
+      else: print("schedule_policy.py already patched")
+      t = open(sc).read()
+      if "first_waiting_req_tokens=" not in t:
+          old = "            waiting_queue_len=len(self.waiting_queue),\n"
+          assert t.count(old) == 1, "adder construction anchor not unique"
+          # smallest waiting request decides whether the reserve applies (queue order is policy-dependent, e.g. LPM)
+          t = t.replace(old, old + "            first_waiting_req_tokens=_admission_reserve_need(self.waiting_queue, self.page_size, chunked_prefill_size),\n")
+          helper = '''
+      def _admission_reserve_need(waiting_queue, page_size, chunked_prefill_size=None):
+          """Sum of page-aligned sizes of waiting requests small enough to fit in the admission reserve (lab port)."""
+          import os as _os, time as _time
+          cap = int(_os.environ.get("SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE", "0"))
+          if cap <= 0 or not waiting_queue:
+              return None
+          # v9b: use the same cap the adder will apply (fairness fraction of the chunk, minus one page), so a waiter that
+          # "fits" here also fits at admission; otherwise the reserve is carved for a request that is then skipped.
+          if chunked_prefill_size:
+              max_frac = float(_os.environ.get("SGLANG_ADMISSION_RESERVE_MAX_FRACTION", "0.5"))
+              cap = min(cap, int(chunked_prefill_size * max_frac), max(int(chunked_prefill_size) - page_size, 0))
+              cap = cap // page_size * page_size
+              if cap <= 0:
+                  return None
+          need = 0
+          fit_mode = _os.environ.get("SGLANG_ADMISSION_RESERVE_FIT", "extend")  # "extend" = uncached tokens after prefix match; "seqlen" = total
+          # v8 age gate: a waiter only triggers the reserve once it has queued for >= MIN_WAIT_S (perf_counter clock, same as
+          # req.time_stats). Bounds a short request's head-of-line wait at ~MIN_WAIT_S while taxing the in-flight long prefill
+          # once per MIN_WAIT_S instead of every iteration. 0 = every waiter qualifies immediately (v5-v7 behaviour).
+          min_wait = float(_os.environ.get("SGLANG_ADMISSION_RESERVE_MIN_WAIT_S", "0"))
+          now = _time.perf_counter() if min_wait > 0 else None
+          for r in waiting_queue:
+              if min_wait > 0:
+                  entry = getattr(getattr(r, "time_stats", None), "wait_queue_entry_time", None)
+                  if entry is None or (now - entry) < min_wait:
+                      continue
+              n = getattr(r, "seqlen", None)
+              if fit_mode == "extend" and n is not None:
+                  try:
+                      matched = len(r.prefix_indices) if r.prefix_indices is not None else 0
+                  except Exception:
+                      matched = 0
+                  n = max(n - matched, 1)
+              if n is not None and n <= cap:
+                  need += -(-n // page_size) * page_size
+                  if need >= cap:
+                      break
+          return need or None
+
+      '''
+          m = re.search(r"\n(?=class Scheduler\b)", t); assert m, "class Scheduler anchor"
+          t = t[:m.start()+1] + helper + t[m.start()+1:]
+          # while a chunked prefill is in flight, skip waiting requests the reserve cannot fit instead of stopping the loop,
+          # so shorter requests further back in the queue still get admitted this iteration.
+          loop_old = "                if not added:\n                    # init_next_round_input() may stage deferred Mamba COW/clear\n"
+          assert t.count(loop_old) == 1, "loop anchor not unique"
+          tail_old = "                        req.kv.mamba_pool_idx = None\n                break\n"
+          assert t.count(tail_old) == 1, "break anchor not unique"
+          t = t.replace(tail_old, "                        req.kv.mamba_pool_idx = None\n                if res == AddReqResult.OTHER and getattr(adder, \"_has_inflight_chunked\", False):\n                    continue\n                break\n")
+          # v9 refund: the reserve is sized from the waiters' last prefix match; a long fresh prefill evicts cache between that
+          # estimate and admission (or NO_TOKEN trips), so the reserve can go unspent while the chunked request was already
+          # truncated. If nobody else was admitted, give the unused chunk budget back to the chunked request this iteration,
+          # keeping at least one page outstanding so its chunked lifecycle is unchanged.
+          ref_anchor = "        if self.chunked_req is not None:\n            self.chunked_req.inflight_middle_chunks += 1\n"
+          assert t.count(ref_anchor) == 1, "inflight_middle_chunks anchor not unique"
+          refund = ref_anchor + '''
+              if (
+                  getattr(adder, "_has_inflight_chunked", False)
+                  and self.chunked_req is not None
+                  and len(can_run_list) == 1
+                  and can_run_list[0] is self.chunked_req
+                  and adder.new_chunked_req is None
+                  and not getattr(adder, "is_hybrid_swa", False)
+              ):
+                  import os as _os
+                  _cr = self.chunked_req
+                  _spare = min(adder.rem_chunk_tokens, adder.rem_input_tokens, int(adder.rem_total_tokens))
+                  _spare = max(_spare, 0) // self.page_size * self.page_size
+                  _remaining = len(_cr.full_untruncated_fill_ids) - _cr.extend_range.end
+                  _extra = min(_spare, _remaining - self.page_size)
+                  if _extra > 0:
+                      _cr.set_extend_range(_cr.extend_range.start, _cr.extend_range.end + _extra)
+                      adder._update_prefill_budget(0, _extra, 0, _cr.retracted_stain)
+                      if _os.environ.get("SGLANG_ADMISSION_RESERVE_DEBUG") == "1":
+                          logger.info("admission-reserve: refund %s tokens to the chunked request (no waiter admitted)", _extra)
+      '''
+          t = t.replace(ref_anchor, refund)
+          open(sc, "w").write(t); print("scheduler.py patched (min waiting seqlen + skip-oversized while chunked)")
+      else: print("scheduler.py already patched")
+
