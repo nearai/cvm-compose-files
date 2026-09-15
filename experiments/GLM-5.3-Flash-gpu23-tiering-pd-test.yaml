@@ -79,7 +79,7 @@ services:
 
   # One-shot disk report, served on host port 8006 until brought down (compose-manager has no exec).
   diskcheck:
-    image: alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
+    image: ghcr.io/astral-sh/uv:python3.11-bookworm-slim@sha256:4f5d923c9dcea037f57bda425dd209f3ec643da2f0b74227f68d09dab0b3bb36
     container_name: glm53flash-diskcheck
     profiles: ["ops"]
     restart: "no"
@@ -93,7 +93,7 @@ services:
         mkdir -p /out
         { echo "== df / (CVM root disk)"; df -h /; echo "== df hf volume"; df -h /root/.cache/huggingface; echo "== hub contents"; du -sh /root/.cache/huggingface/hub/* 2>/dev/null || echo none; } > /out/report.txt 2>&1
         cat /out/report.txt
-        exec busybox httpd -f -p 8000 -h /out
+        exec python3 -m http.server 8000 --directory /out
     logging: *logging-conf
 
   # Topology and confidential-compute evidence (all 8 GPUs), served on host port 8007.
