@@ -130,6 +130,10 @@ services:
           echo "== conf-compute"; nvidia-smi conf-compute -q 2>&1 || true
           echo "== nvidia-smi -q (CC / protected PCIe lines)"; nvidia-smi -q 2>/dev/null | grep -i -B1 -A3 "confidential\|protected pcie\|cc mode\|multi.gpu" || true
           echo "== driver"; nvidia-smi --query-gpu=index,pci.bus_id,driver_version,memory.total --format=csv
+          echo "== clocks/power/throttle (now)"; nvidia-smi --query-gpu=index,pstate,clocks.sm,clocks.max.sm,clocks.mem,power.draw,power.limit,enforced.power.limit,temperature.gpu,utilization.gpu,clocks_throttle_reasons.active,ecc.mode.current --format=csv
+          echo "== nvidia-smi -q PERFORMANCE/CLOCK (GPU 0)"; nvidia-smi -i 0 -q -d PERFORMANCE,CLOCK,POWER 2>/dev/null | head -80
+          echo "== nvidia-smi -q -d COMPUTE / MIG / persistence"; nvidia-smi -q | grep -i -A1 "persistence\|compute mode\|mig mode" | head -12
+          echo "== cpu"; nproc; lscpu | grep -i "model name\|mhz\|numa" | head -6; cat /proc/loadavg
           echo "== torch"; python3 -c "import torch; print(torch.__version__, torch.cuda.device_count())"
         } > /logs/probe.txt 2>&1
         cat /logs/probe.txt
