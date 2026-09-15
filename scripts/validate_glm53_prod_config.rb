@@ -1,12 +1,15 @@
 #!/usr/bin/env ruby
-# Protect the canonical two-replica GLM-5.3 Flash production contract.
+# Protect the canonical two-replica GLM-5.3 Flash production contract and the
+# separate r2-only HiCache canary file.
 
 require "shellwords"
 require "yaml"
 
 ROOT = File.expand_path("..", __dir__)
 COMPOSE_FILE = File.join(ROOT, "prod", "GLM-5.3-Flash-SGL-TP4.yaml")
+HICACHE_FILE = File.join(ROOT, "prod", "GLM-5.3-Flash-SGL-TP4-HiCache.yaml")
 LEGACY_CANARY_FILE = File.join(ROOT, "prod", "GLM-5.3-Flash-SGL-TP4-Canary.yaml")
+RELEASED_IMAGE_FILE = File.join(ROOT, "docker", "sglang-glm53-hicache", "RELEASED_IMAGE")
 ENGINE_IMAGE = "docker.io/nearaidev/sglang@sha256:a7b7136abcf5e07522289d96e96fec9b42a1a30f9dfda57e957f142680d2d67b"
 PROXY_IMAGE = "nearaidev/vllm-proxy-rs@sha256:7d1ffea266d7b473f3521ada05f49a0d0a88d9a9f242b150468bba0ab0632b6d"
 REPLICAS = {
@@ -60,8 +63,6 @@ REQUIRED_SWITCHES = %w[
   --disable-fast-image-processor
 ].freeze
 REPLICA_IDENTITY_FIELDS = %w[container_name deploy labels].freeze
-CANARY_IMAGE_FILE = File.join(ROOT, "docker", "sglang-glm53-hicache", "RELEASED_IMAGE")
-CANARY_IMAGE = File.exist?(CANARY_IMAGE_FILE) ? File.read(CANARY_IMAGE_FILE).strip : nil
 HICACHE_OPTIONS = {
   "--hicache-write-policy" => "write_through",
   "--hicache-io-backend" => "direct",
@@ -69,16 +70,65 @@ HICACHE_OPTIONS = {
 }.freeze
 HICACHE_ENV = {
   "SGLANG_HICACHE_RAM_BUDGET" => "${GLM53_HICACHE_RAM_BUDGET:-80%}",
+  "SGLANG_HICACHE_CUDA_HOST_MEMORY" => "${GLM53_HICACHE_CUDA_HOST_MEMORY:-1}",
   "SGLANG_HICACHE_POOLED_TRANSFERS" => "1",
   "SGLANG_HICACHE_STAGING_PAGES" => "64",
 }.freeze
-CANARY_VARIANT = "fc91d24-hicache-pooled-v1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
+HICACHE_VARIANT = "fc91d24-hicache-cuda-host-pooled-v1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
+OFFICIAL_VARIANT = "official-upstream-fc91d24-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
 
 
 def yaml_load(content)
   YAML.load(content, aliases: true)
 rescue ArgumentError
   YAML.load(content)
+end
+
+# Reads and parses a top-level compose file. A missing file, invalid YAML, or
+# a document that isn't a mapping is reported as one error and returns nil
+# instead of raising, so the caller can skip the checks that depend on it.
+def load_compose_file(errors, label, path)
+  content = File.read(path)
+  document = yaml_load(content)
+  unless document.is_a?(Hash)
+    errors << "#{label} must be a YAML mapping"
+    return nil
+  end
+  document
+rescue Errno::ENOENT
+  errors << "#{label} not found at #{path}"
+  nil
+rescue Psych::SyntaxError => error
+  errors << "#{label} is not valid YAML: #{error.message}"
+  nil
+end
+
+# Same contract as load_compose_file, for a YAML document embedded as a
+# string field inside a compose file (e.g. a `content:` block).
+def load_embedded_yaml(errors, label, content)
+  return nil if content.nil?
+
+  document = yaml_load(content)
+  unless document.is_a?(Hash)
+    errors << "#{label} must be a YAML mapping"
+    return nil
+  end
+  document
+rescue Psych::SyntaxError => error
+  errors << "#{label} is not valid YAML: #{error.message}"
+  nil
+end
+
+# Finds one Prometheus scrape job by name inside a parsed otelcol collector
+# config. A nil collector, a non-mapping scrape entry, or a missing job is
+# reported as an error and returns nil instead of raising.
+def scrape_job(errors, label, collector, job_name)
+  return nil if collector.nil?
+
+  scrape_configs = collector.dig("receivers", "prometheus/apps", "config", "scrape_configs")
+  job = Array(scrape_configs).find { |entry| entry.is_a?(Hash) && entry["job_name"] == job_name }
+  errors << "missing #{job_name} scrape job in #{label} collector config" if job.nil?
+  job
 end
 
 def environment_map(service)
@@ -90,6 +140,11 @@ def environment_map(service)
     key, value = entry.to_s.split("=", 2)
     [key, value]
   end
+end
+
+def command_text(service)
+  command = service["command"]
+  command.is_a?(Array) ? command.join("\n") : command.to_s
 end
 
 def validate_command(errors, name, command)
@@ -119,97 +174,251 @@ def runtime_contract(service)
   service.reject { |key, _value| REPLICA_IDENTITY_FIELDS.include?(key) }
 end
 
+# Checks shared by the canonical file and the HiCache file: expected service
+# set, per-replica serving contract (excluding image, which differs by file),
+# GPU device assignment, the perception-check image and the proxy contract.
+# Returns the replica services found, keyed by name.
+def validate_common(errors, label, services)
+  missing_services = EXPECTED_SERVICES - services.keys
+  extra_services = services.keys - EXPECTED_SERVICES
+  errors << "#{label} is missing services: #{missing_services.join(', ')}" unless missing_services.empty?
+  errors << "#{label} has unexpected services: #{extra_services.join(', ')}" unless extra_services.empty?
+
+  replica_services = {}
+  REPLICAS.each do |name, expected_devices|
+    service = services[name]
+    if service.nil?
+      errors << "#{label} missing services.#{name}"
+      next
+    end
+
+    replica_services[name] = service
+    errors << "#{label} #{name} must use the prebuilt signed image, not a host-local build" if service.key?("build")
+    validate_command(errors, "#{label} #{name}", command_text(service))
+
+    device_ids = service.dig("deploy", "resources", "reservations", "devices", 0, "device_ids")
+    normalized_ids = Array(device_ids).map(&:to_s)
+    errors << "#{label} #{name} must use GPU device_ids #{expected_devices.join(',')}" unless normalized_ids == expected_devices
+  end
+
+  perception_check = services["glm53-perception-check"]
+  if perception_check
+    errors << "#{label} glm53-perception-check image must be #{ENGINE_IMAGE}" unless perception_check["image"] == ENGINE_IMAGE
+    errors << "#{label} glm53-perception-check must use the prebuilt signed image, not a host-local build" if perception_check.key?("build")
+  end
+
+  proxy = services["proxy-glm53"]
+  if proxy.nil?
+    errors << "#{label} missing services.proxy-glm53"
+  else
+    errors << "#{label} proxy-glm53 image must be #{PROXY_IMAGE}" unless proxy["image"] == PROXY_IMAGE
+    proxy_env = environment_map(proxy)
+    expected_backends = REPLICAS.keys.map { |name| "http://#{name}:8000" }.join(",")
+    errors << "#{label} proxy-glm53 must target both canonical replicas" unless proxy_env["VLLM_BACKEND_URLS"] == expected_backends
+    errors << "#{label} proxy-glm53 must enable conversation affinity" unless proxy_env["VLLM_BACKEND_CONVERSATION_AFFINITY"] == "1"
+  end
+
+  replica_services
+end
+
+# Asserts that `service_name`'s telemetry (the nearai.otel.config_variant
+# label, the config_variant: tag in its com.datadoghq.ad.logs metadata, and
+# its Prometheus scrape job's config_variant label) all carry
+# `expected_variant`. A missing labels hash, a missing scrape job, or a
+# missing variant anywhere is an explicit error, never a silent skip.
+def check_variant(errors, file_label, service, service_name, collector, expected_variant)
+  labels = service["labels"]
+  if labels.is_a?(Hash)
+    metric_variant = labels["nearai.otel.config_variant"]
+    errors << "#{file_label} #{service_name} nearai.otel.config_variant must be #{expected_variant}, got #{metric_variant.inspect}" unless metric_variant == expected_variant
+    log_tag = labels["com.datadoghq.ad.logs"]
+    errors << "#{file_label} #{service_name} log metadata must carry config_variant:#{expected_variant}" unless log_tag.to_s.include?("config_variant:#{expected_variant}")
+  else
+    errors << "#{file_label} #{service_name} is missing labels"
+  end
+
+  job_name = "sglang-#{service_name}"
+  scrape = scrape_job(errors, file_label, collector, job_name)
+  return unless scrape
+
+  scrape_variant = scrape.dig("static_configs", 0, "labels", "config_variant")
+  errors << "#{file_label} #{job_name} scrape label config_variant must be #{expected_variant}, got #{scrape_variant.inspect}" unless scrape_variant == expected_variant
+end
+
+# Canonical file: both replicas run the plain engine image with an identical
+# runtime contract, no service anywhere carries a HiCache flag or env var,
+# and both replicas' telemetry is pinned to OFFICIAL_VARIANT.
+def validate_canonical(errors, compose, services, replica_services)
+  REPLICAS.each_key do |name|
+    service = replica_services[name]
+    next unless service
+
+    errors << "canonical #{name} image must be #{ENGINE_IMAGE}" unless service["image"] == ENGINE_IMAGE
+  end
+
+  if replica_services.length == REPLICAS.length
+    runtime_contracts = replica_services.values.map { |service| runtime_contract(service) }
+    errors << "canonical GLM-5.3 replicas must use identical runtime configuration" unless runtime_contracts.uniq.length == 1
+  end
+
+  services.each do |name, service|
+    text = command_text(service)
+    if text.include?("--enable-hierarchical-cache") || text.include?("--hicache")
+      errors << "canonical #{name} must not enable HiCache; use prod/GLM-5.3-Flash-SGL-TP4-HiCache.yaml for the canary instead"
+    end
+    hicache_env = environment_map(service).keys.select { |key| key.start_with?("SGLANG_HICACHE_") }
+    unless hicache_env.empty?
+      errors << "canonical #{name} must not set #{hicache_env.join(', ')}; use prod/GLM-5.3-Flash-SGL-TP4-HiCache.yaml for the canary instead"
+    end
+  end
+
+  collector = load_embedded_yaml(errors, "canonical file otelcol_app_config", compose.dig("configs", "otelcol_app_config", "content"))
+  REPLICAS.each_key do |name|
+    service = replica_services[name]
+    next unless service
+
+    check_variant(errors, "canonical", service, name, collector, OFFICIAL_VARIANT)
+  end
+end
+
+# HiCache file: r1 stays the disabled control on the plain engine image and
+# is telemetry-pinned to OFFICIAL_VARIANT; r2 pins RELEASED_IMAGE, enables
+# HiCache with exactly the pinned options/env, is otherwise identical to r1,
+# and is telemetry-pinned to HICACHE_VARIANT.
+def validate_hicache(errors, compose, replica_services)
+  released_image = File.exist?(RELEASED_IMAGE_FILE) ? File.read(RELEASED_IMAGE_FILE).strip : nil
+  unless released_image && released_image.match?(%r{\Adocker\.io/nearaidev/sglang@sha256:[a-f0-9]{64}\z}) && released_image != ENGINE_IMAGE
+    errors << "RELEASED_IMAGE must be an immutable docker.io/nearaidev/sglang digest distinct from ENGINE_IMAGE"
+    return
+  end
+
+  r1 = replica_services["model-sg-glm53-fp8-tp4-r1"]
+  r2 = replica_services["model-sg-glm53-fp8-tp4-r2"]
+  return unless r1 && r2
+
+  errors << "HiCache r1 image must be #{ENGINE_IMAGE}" unless r1["image"] == ENGINE_IMAGE
+  r1_text = command_text(r1)
+  if r1_text.include?("--enable-hierarchical-cache") || r1_text.include?("--hicache") ||
+     environment_map(r1).keys.any? { |key| key.start_with?("SGLANG_HICACHE_") }
+    errors << "HiCache r1 must remain the HiCache-disabled control"
+  end
+
+  errors << "HiCache r2 image must be RELEASED_IMAGE (#{released_image})" unless r2["image"] == released_image
+
+  r1_arguments = Shellwords.split(command_text(r1))
+  normalized = Marshal.load(Marshal.dump(r2))
+  arguments = Shellwords.split(command_text(normalized))
+  errors << "HiCache r2 must enable HiCache exactly once" unless arguments.count("--enable-hierarchical-cache") == 1
+  arguments.delete("--enable-hierarchical-cache")
+  HICACHE_OPTIONS.each do |key, expected|
+    positions = arguments.each_index.select { |index| arguments[index] == key }
+    if positions.length != 1 || arguments[positions.first.to_i + 1] != expected
+      errors << "HiCache r2 must set #{key} #{expected} exactly once"
+    else
+      arguments.slice!(positions.first, 2)
+    end
+  end
+  errors << "HiCache r2 must preserve all control serving arguments outside HiCache" unless arguments == r1_arguments
+
+  env = environment_map(normalized)
+  HICACHE_ENV.each do |key, expected|
+    errors << "HiCache r2 must set #{key}=#{expected}" unless env.delete(key) == expected
+  end
+  errors << "HiCache r2 must preserve all control environment outside HiCache" unless env == environment_map(r1)
+
+  normalized["image"] = r1["image"]
+  normalized["command"] = r1["command"]
+  normalized["environment"] = r1["environment"]
+  errors << "HiCache r2 must preserve the control runtime outside HiCache" unless runtime_contract(normalized) == runtime_contract(r1)
+
+  collector = load_embedded_yaml(errors, "HiCache file otelcol_app_config", compose.dig("configs", "otelcol_app_config", "content"))
+  check_variant(errors, "HiCache", r1, "model-sg-glm53-fp8-tp4-r1", collector, OFFICIAL_VARIANT)
+  check_variant(errors, "HiCache", r2, "model-sg-glm53-fp8-tp4-r2", collector, HICACHE_VARIANT)
+end
+
+# Walks two equal-shaped (or not) structures and returns a dotted path to the
+# first point where they differ, for a more actionable failure message.
+def first_difference(a, b, path = [])
+  return path.join(".") if a == b
+
+  if a.is_a?(Hash) && b.is_a?(Hash)
+    keys = (a.keys | b.keys).sort_by(&:to_s)
+    keys.each do |key|
+      next if a[key] == b[key]
+
+      return first_difference(a[key], b[key], path + [key])
+    end
+  elsif a.is_a?(Array) && b.is_a?(Array)
+    length = [a.length, b.length].max
+    (0...length).each do |index|
+      next if a[index] == b[index]
+
+      return first_difference(a[index], b[index], path + [index])
+    end
+  end
+
+  path.join(".")
+end
+
+# Cross-file: outside r2 (and its telemetry variant), the HiCache file must be
+# a byte-for-byte equal contract to the canonical file — every other service,
+# top-level extension block, volume/network declaration and config content.
+def cross_file_view(errors, file_label, compose)
+  view = Marshal.load(Marshal.dump(compose))
+  view["services"]&.delete("model-sg-glm53-fp8-tp4-r2")
+  otel = view.dig("configs", "otelcol_app_config")
+  if otel && otel["content"]
+    collector = load_embedded_yaml(errors, "#{file_label} otelcol_app_config", otel["content"])
+    if collector
+      scrape = scrape_job(errors, file_label, collector, "sglang-model-sg-glm53-fp8-tp4-r2")
+      if scrape
+        labels = scrape.dig("static_configs", 0, "labels")
+        if labels.is_a?(Hash)
+          labels["config_variant"] = OFFICIAL_VARIANT
+        else
+          errors << "missing labels on sglang-model-sg-glm53-fp8-tp4-r2 scrape job in #{file_label} collector config"
+        end
+      end
+      otel["content"] = collector
+    end
+  end
+  view
+end
+
 errors = []
-if CANARY_IMAGE && (!CANARY_IMAGE.match?(%r{\Adocker\.io/nearaidev/sglang@sha256:[a-f0-9]{64}\z}) || CANARY_IMAGE == ENGINE_IMAGE)
-  errors << "HiCache release must pin a distinct immutable image from the signed publishing workflow"
+
+hicache_present = File.exist?(HICACHE_FILE)
+released_present = File.exist?(RELEASED_IMAGE_FILE)
+if hicache_present != released_present
+  errors << "docker/sglang-glm53-hicache/RELEASED_IMAGE and prod/GLM-5.3-Flash-SGL-TP4-HiCache.yaml must both be present or both be absent"
 end
 errors << "legacy canary compose file must be removed" if File.exist?(LEGACY_CANARY_FILE)
 
-compose = yaml_load(File.read(COMPOSE_FILE))
-services = compose.fetch("services", {})
-
-missing_services = EXPECTED_SERVICES - services.keys
-extra_services = services.keys - EXPECTED_SERVICES
-errors << "canonical config is missing services: #{missing_services.join(', ')}" unless missing_services.empty?
-errors << "canonical config has unexpected services: #{extra_services.join(', ')}" unless extra_services.empty?
-
-replica_services = []
-REPLICAS.each do |name, expected_devices|
-  service = services[name]
-  if service.nil?
-    errors << "missing services.#{name}"
-    next
-  end
-
-  replica_services << service
-  expected_image = name.end_with?("-r2") && CANARY_IMAGE ? CANARY_IMAGE : ENGINE_IMAGE
-  errors << "#{name} image must be #{expected_image}" unless service["image"] == expected_image
-  errors << "#{name} must use the prebuilt signed image, not a host-local build" if service.key?("build")
-
-  validate_command(errors, name, service["command"].to_s)
-
-  device_ids = service.dig("deploy", "resources", "reservations", "devices", 0, "device_ids")
-  normalized_ids = Array(device_ids).map(&:to_s)
-  errors << "#{name} must use GPU device_ids #{expected_devices.join(',')}" unless normalized_ids == expected_devices
+canonical_compose = load_compose_file(errors, "canonical file", COMPOSE_FILE)
+if canonical_compose
+  canonical_services = canonical_compose.fetch("services", {})
+  canonical_replicas = validate_common(errors, "canonical", canonical_services)
+  validate_canonical(errors, canonical_compose, canonical_services, canonical_replicas)
 end
 
-if replica_services.length == REPLICAS.length
-  control, canary = replica_services
-  control_arguments = Shellwords.split(control["command"].to_s)
-  if control_arguments.any? { |arg| arg.include?("hicache") || arg == "--enable-hierarchical-cache" } ||
-     environment_map(control).keys.any? { |key| key.start_with?("SGLANG_HICACHE_") }
-    errors << "r1 must remain the HiCache-disabled control"
+hicache_compose = nil
+if hicache_present
+  hicache_compose = load_compose_file(errors, "HiCache file", HICACHE_FILE)
+  if hicache_compose
+    hicache_services = hicache_compose.fetch("services", {})
+    hicache_replicas = validate_common(errors, "HiCache", hicache_services)
+    validate_hicache(errors, hicache_compose, hicache_replicas)
   end
-  if CANARY_IMAGE
-    normalized = Marshal.load(Marshal.dump(canary))
-    arguments = Shellwords.split(normalized["command"].to_s)
-    errors << "r2 must enable HiCache exactly once" unless arguments.count("--enable-hierarchical-cache") == 1
-    arguments.delete("--enable-hierarchical-cache")
-    HICACHE_OPTIONS.each do |key, expected|
-      positions = arguments.each_index.select { |index| arguments[index] == key }
-      if positions.length != 1 || arguments[positions.first.to_i + 1] != expected
-        errors << "r2 must set #{key} #{expected} exactly once"
-      else
-        arguments.slice!(positions.first, 2)
-      end
+
+  if canonical_compose && hicache_compose
+    canonical_view = cross_file_view(errors, "canonical file", canonical_compose)
+    hicache_view = cross_file_view(errors, "prod/GLM-5.3-Flash-SGL-TP4-HiCache.yaml", hicache_compose)
+    unless canonical_view == hicache_view
+      diff_path = first_difference(canonical_view, hicache_view)
+      suffix = diff_path.to_s.empty? ? "" : " (first difference: #{diff_path})"
+      errors << "prod/GLM-5.3-Flash-SGL-TP4-HiCache.yaml must match the canonical file outside r2 and its telemetry variant#{suffix}"
     end
-    errors << "r2 must preserve all control serving arguments outside HiCache" unless arguments == control_arguments
-    env = environment_map(normalized)
-    HICACHE_ENV.each do |key, expected|
-      errors << "r2 must set #{key}=#{expected}" unless env.delete(key) == expected
-    end
-    errors << "r2 must preserve all control environment outside pooled transfers" unless env == environment_map(control)
-    normalized["image"] = control["image"]
-    normalized["command"] = control["command"]
-    normalized["environment"] = control["environment"]
-    errors << "r2 must preserve the control runtime outside HiCache" unless runtime_contract(normalized) == runtime_contract(control)
-    labels = canary.fetch("labels", {})
-    errors << "r2 must identify the pooled canary in metric labels" unless labels["nearai.otel.config_variant"] == CANARY_VARIANT
-    errors << "r2 must identify the pooled canary in log metadata" unless labels["com.datadoghq.ad.logs"].to_s.include?("config_variant:#{CANARY_VARIANT}")
-    collector = yaml_load(compose.dig("configs", "otelcol_app_config", "content"))
-    scrape = collector.dig("receivers", "prometheus/apps", "config", "scrape_configs").find { |job| job["job_name"] == "sglang-model-sg-glm53-fp8-tp4-r2" }
-    errors << "r2 collector must carry the pooled canary variant" unless scrape.dig("static_configs", 0, "labels", "config_variant") == CANARY_VARIANT
-  else
-    runtime_contracts = replica_services.map { |service| runtime_contract(service) }
-    errors << "GLM-5.3 replicas must use identical runtime configuration until a signed HiCache image is pinned" unless runtime_contracts.uniq.length == 1
   end
-end
-
-perception_check = services["glm53-perception-check"]
-if perception_check
-  errors << "glm53-perception-check image must be #{ENGINE_IMAGE}" unless perception_check["image"] == ENGINE_IMAGE
-  errors << "glm53-perception-check must use the prebuilt signed image, not a host-local build" if perception_check.key?("build")
-end
-
-proxy = services["proxy-glm53"]
-if proxy.nil?
-  errors << "missing services.proxy-glm53"
-else
-  errors << "proxy-glm53 image must be #{PROXY_IMAGE}" unless proxy["image"] == PROXY_IMAGE
-  proxy_env = environment_map(proxy)
-  expected_backends = REPLICAS.keys.map { |name| "http://#{name}:8000" }.join(",")
-  errors << "proxy-glm53 must target both canonical replicas" unless proxy_env["VLLM_BACKEND_URLS"] == expected_backends
-  errors << "proxy-glm53 must enable conversation affinity" unless proxy_env["VLLM_BACKEND_CONVERSATION_AFFINITY"] == "1"
 end
 
 if errors.any?
@@ -218,4 +427,5 @@ if errors.any?
   exit 1
 end
 
-puts "GLM-5.3 production contract OK"
+puts "GLM-5.3 production contract OK (prod/GLM-5.3-Flash-SGL-TP4.yaml)"
+puts "GLM-5.3 production contract OK (prod/GLM-5.3-Flash-SGL-TP4-HiCache.yaml)" if hicache_present

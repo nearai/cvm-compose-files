@@ -18,13 +18,24 @@ production compose untouched. After review and merge:
    runs CPU regressions, scans, attests and signs the immutable image. A resumed
    run verifies that the tag still matches the requested digest.
 2. Verify the resulting signature and attestation using the commands below.
-3. Create a separate activation PR that pins the published digest and enables
-   `SGLANG_HICACHE_CUDA_HOST_MEMORY=1`,
-   `SGLANG_HICACHE_CUDA_MANAGED_MEMORY=0`, pooled transfers, and
-   `direct`/`page_first_direct`. Keep request-body logging disabled. The
-   activation PR must update its validator and regression fixture atomically.
+3. Create a separate activation PR that regenerates
+   `prod/GLM-5.3-Flash-SGL-TP4-HiCache.yaml` with
+   `scripts/prepare_glm53_hicache_canary.py --image <published digest> --write`.
+   This writes only that file and `RELEASED_IMAGE`; it never touches the
+   canonical `prod/GLM-5.3-Flash-SGL-TP4.yaml`. The generated file pins the
+   published digest on r2 and enables `SGLANG_HICACHE_CUDA_HOST_MEMORY=1`,
+   pooled transfers, and `direct`/`page_first_direct`; r1 stays the unchanged
+   control. Keep request-body logging disabled. The activation PR must update
+   its validator and regression fixture atomically, and must not hand-edit the
+   generated file — regenerate it with the script and commit the result. If
+   `RELEASED_IMAGE` already records a different digest, pass `--force` to
+   replace it; the same digest re-runs without it.
 4. Qualify the signed image in staging on the intended TEE/PPCIe topology,
    including a minimum 30-minute soak, before separately authorized activation.
+   Deploy the generated `prod/GLM-5.3-Flash-SGL-TP4-HiCache.yaml` only on
+   hosts explicitly selected for the HiCache canary; every other host keeps
+   the canonical `prod/GLM-5.3-Flash-SGL-TP4.yaml` (no HiCache on either
+   replica there).
 
 Do not substitute a local Docker image ID, a mutable tag, or the unchanged base
 digest for the published candidate digest. Image publication does not deploy.
@@ -42,6 +53,14 @@ docker buildx imagetools inspect --format '{{json .SBOM.SPDX}}' "$IMAGE"
 
 ## Candidate configuration
 
+The candidate lives in its own file, `prod/GLM-5.3-Flash-SGL-TP4-HiCache.yaml`,
+generated from the canonical `prod/GLM-5.3-Flash-SGL-TP4.yaml` by
+`scripts/prepare_glm53_hicache_canary.py`. The canonical file itself never
+carries HiCache on either replica — it is deployed everywhere except the
+hosts explicitly selected for the HiCache canary, which run the generated
+file instead. Regenerate with `scripts/prepare_glm53_hicache_canary.py
+--image <digest> --write`; never hand-edit the generated file.
+
 | Setting | r1 control | r2 candidate |
 | --- | --- | --- |
 | Image | Existing signed production digest | New signed derivative digest |
@@ -49,9 +68,13 @@ docker buildx imagetools inspect --format '{{json .SBOM.SPDX}}' "$IMAGE"
 | Host cache budget | None | `GLM53_HICACHE_RAM_BUDGET=80%` across all TP ranks |
 | Write policy | None | `write_through` |
 | I/O and host layout | None | `direct`, `page_first_direct` |
-| Host allocation | Existing runtime | `SGLANG_HICACHE_CUDA_HOST_MEMORY=1` |
+| Host allocation | Existing runtime | `SGLANG_HICACHE_CUDA_HOST_MEMORY=${GLM53_HICACHE_CUDA_HOST_MEMORY:-1}` |
 | Transfers | Existing runtime | `SGLANG_HICACHE_POOLED_TRANSFERS=1` |
 | Persistent staging | None | `SGLANG_HICACHE_STAGING_PAGES=64` per pool/direction/rank |
+
+`GLM53_HICACHE_CUDA_HOST_MEMORY=0` on an HCC/PPCIe host falls back to the
+normal anonymous-mmap-plus-`cudaHostRegister` allocation path, which fails
+with CUDA error 801.
 
 Set `GLM53_HICACHE_RAM_BUDGET` in the deployment `env_vars` map (or in the
 Docker Compose environment / `.env`). The generated r2 service forwards it as
@@ -120,7 +143,8 @@ host-registration allocation with `cudaMallocHost`. The CUDA-owned allocation
 is wrapped as the CPU tensor expected by HiCache and released with
 `cudaFreeHost`. It remains host-resident and does not use Unified Memory.
 Allocation and teardown errors fail closed. The default path is unchanged when
-the variable is absent.
+the variable is absent (unset, or any value other than `1`/`true`/`yes`), and
+on an HCC/PPCIe host that default path fails with CUDA error 801.
 
 `SGLANG_HICACHE_CUDA_MANAGED_MEMORY=1` retains a separately gated diagnostic
 fallback. The two allocator variables are mutually exclusive. Both accept only

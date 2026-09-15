@@ -57,3 +57,24 @@ signature/attestation verification, exact-topology TEE/PPCIe serving, a staging
 soak of at least 30 minutes and production canary measurements are outstanding.
 The preparation PR changes no production service configuration. The activation
 PR must pin the real published image and retain these qualification boundaries.
+
+## HCC/PPCIe allocator evidence
+
+An earlier experiment-branch image carrying this CUDA-owned host allocator
+(`SGLANG_HICACHE_CUDA_HOST_MEMORY=1`, `cudaMallocHost`, no
+`cudaHostRegister`, no Unified Memory) ran two TP4 replicas on an 8x H200
+HCC/PPCIe CVM. Every rank logged CUDA-owned pinned host allocation with no
+`cudaHostRegister` or Unified Memory calls. Over an approximately 21-hour
+load window with approximately 10M prompt tokens per replica, approximately
+30M tokens backed up to host cache, and 0.86M and 3.2M tokens loaded back on
+the two replicas respectively (mean restore latency 0.28 s and 0.64 s). Peak
+GPU framebuffer usage was 137.5 GiB. At every engine start, all ranks logged
+the CUDA-owned allocation, and no cudaHostRegister or CUDA 801 failure
+occurred; this was not a full error audit of the window.
+
+This evidence predates the signed `main` image built by this repository's
+publishing workflow. The signed image (`IMAGE` in the generated
+`prod/GLM-5.3-Flash-SGL-TP4-HiCache.yaml`) still needs its own exact-topology
+soak, on the intended production HCC/PPCIe hosts, after deployment — this
+prior run is supporting evidence for the allocator design, not a substitute
+for qualifying the signed build itself.
