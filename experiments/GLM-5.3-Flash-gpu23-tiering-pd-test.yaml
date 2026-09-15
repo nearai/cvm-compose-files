@@ -460,12 +460,14 @@ services:
     restart: unless-stopped
     ports:
       - "8005:8000"
+    volumes:
+      - engine_logs:/logs
     environment:
       NVIDIA_VISIBLE_DEVICES: void
     entrypoint: ["/bin/bash", "-lc"]
     command:
       - |
-        exec python3 -m sglang_router.launch_router --pd-disaggregation \
+        exec python3 -m sglang_router.launch_router > >(tee -a /logs/pd-router.log) 2>&1 --pd-disaggregation \
           --prefill http://glm53-prefill:8000 8998 --decode http://glm53-decode:8000 \
           --prefill-policy cache_aware --decode-policy power_of_two \
           --host 0.0.0.0 --port 8000
