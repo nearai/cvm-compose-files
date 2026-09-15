@@ -1,0 +1,739 @@
+x-logging-conf: &logging-conf
+  driver: "json-file"
+  options:
+    max-size: "100m"
+    max-file: "10"
+    labels: "com.datadoghq.ad.logs,com.docker.compose.service"
+
+x-nvidia: &nvidia
+  runtime: nvidia
+  ipc: host
+  ulimits:
+    memlock: -1
+    nofile:
+      soft: 65535
+      hard: 65535
+
+x-sglang-common: &sglang-common
+  <<: *nvidia
+  init: true
+  volumes:
+    - hugginface_cache:/root/.cache/huggingface
+    - kernel_cache:/root/.cache/deep_gemm
+  environment:
+    - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+    - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0}
+    - VLLM_LOGGING_LEVEL=INFO
+    - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    - OPENBLAS_L2_SIZE=2097152
+    - NCCL_DEBUG=WARN
+    - SGLANG_ENABLE_SPEC_V2=1
+    - SGLANG_DSV4_FP4_EXPERTS=1   # FP4 ckpt: experts ARE FP4 (marlin dequantizes); =0 forces the non-FP4 layout -> load failure (PR #98 review)
+    - SGLANG_ENABLE_UNIFIED_RADIX_TREE=1
+    - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+  restart: unless-stopped
+  stop_grace_period: 5m
+  logging: *logging-conf
+
+x-vllm-proxy-common: &vllm-proxy-common
+  image: nearaidev/vllm-proxy-rs@sha256:24536a0cee15835621fa3edea499b0cb148f6ee4f815e6296470984372cc3b64
+  user: root
+  privileged: true
+  <<: *nvidia
+  extra_hosts:
+    - "compose-manager:host-gateway"
+  volumes:
+    - /var/run/dstack.sock:/var/run/dstack.sock
+    - certs:/etc/letsencrypt:ro
+  restart: unless-stopped
+  logging: *logging-conf
+
+services:
+  nginx:
+    image: nginx@sha256:1d13701a5f9f3fb01aaa88cef2344d65b6b5bf6b7d9fa4cf0dca557a8d7702ba
+    container_name: nginx
+    depends_on:
+      - vllm-proxy-dsv4-flash-eagle
+    command: /bin/sh -c 'while :; do sleep 6h; nginx -s reload; done & nginx -g "daemon off;"'
+    ports:
+      - "8000:8000"
+      - "8444:443"
+    volumes:
+      - certs:/etc/letsencrypt:ro
+    configs:
+      - source: nginx_conf
+        target: /etc/nginx/conf.d/default.conf
+        mode: 0644
+    restart: unless-stopped
+    logging: *logging-conf
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"nginx","service":"nginx","tags":["model:deepseek-ai/DeepSeek-V4-Flash-EAGLE","deployment:deepseek-v4-flash-eagle-test","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000"]}]'
+
+  model-proxy-registrar:
+    image: curlimages/curl@sha256:d94d07ba9e7d6de898b6d96c1a072f6f8266c687af78a74f380087a0addf5d17
+    container_name: model-proxy-registrar
+    entrypoint: ["sh", "/register.sh"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "[ $$(( $$(date +%s) - $$(cat /tmp/registrar_alive 2>/dev/null || echo 0) )) -lt 180 ]"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 1200s
+    environment:
+      - HOST_IP=${HOST_IP}
+      - MODEL_PROXY_TOKEN=${MODEL_PROXY_TOKEN}
+    configs:
+      - source: registrar_script
+        target: /register.sh
+        mode: 0755
+    logging: *logging-conf
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"model-proxy-registrar","service":"model-proxy-registrar","tags":["model:deepseek-ai/DeepSeek-V4-Flash-EAGLE","deployment:deepseek-v4-flash-eagle-test","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+
+  vllm-proxy-dsv4-flash-eagle:
+    <<: *vllm-proxy-common
+    container_name: vllm-proxy-dsv4-flash-eagle
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - CLOUD_API_URL=https://cloud-api.near.ai
+      - CLOUD_API_USAGE_TOKEN=${CLOUD_API_USAGE_TOKEN}
+      - COMPOSE_MANAGER_URL=http://compose-manager:8080
+      - LOG_FORMAT=json
+      - MODEL_NAME=deepseek-ai/DeepSeek-V4-Flash-EAGLE
+      - OHTTP_ENABLED=true
+      - TOKEN=${PROXY_TOKEN}
+      - FUSION_ENABLED=${FUSION_ENABLED}
+      - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
+      - VLLM_BASE_URL=http://model-sg-dsv4-flash-eagle:8000
+      - VLLM_PROXY_MAX_REQUEST_SIZE=104857600
+      - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
+      - USE_NV_ATTESTATION_SDK=true
+      - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
+      - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:deepseek-ai/DeepSeek-V4-Flash-EAGLE","deployment:deepseek-v4-flash-eagle-test","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "inference-proxy"
+      nearai.otel.service: "vllm-proxy"
+      nearai.otel.source: "vllm-proxy"
+      nearai.otel.container_name: "vllm-proxy-dsv4-flash-eagle"
+      nearai.otel.port: "8000"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "deepseek-ai/DeepSeek-V4-Flash-EAGLE"
+      nearai.otel.deployment: "deepseek-v4-flash-eagle-test"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
+
+  model-sg-dsv4-flash-eagle:
+    <<: *sglang-common
+    container_name: model-sg-dsv4-flash-eagle
+    # Prod dsv4 config (prod/dsv4-qwen36-gemma4.yaml @ sglang v0.5.14, TP2 FP4-marlin)
+    # + two experimental deltas validated on the gpu02 dev CVM (2026-07-06/07,
+    # Notion "dsv4 work doc"):
+    #   1. EAGLE 3/1/4 MTP spec-decode, NO --speculative-adaptive (adaptive hit
+    #      2/2 CUDA illegal-memory-access under c1<->c8 burst soaks on 0.5.14).
+    #      Measured: +11-22% decode tok/s at prod 30k shape (alpha 2.27 code /
+    #      2.42 rag), +33-40% short-context; cost = c4 -26%/req during rare
+    #      bursts (prod avg ~1.08 running reqs).
+    #   2. torch symm-mem two-shot allreduce fallback (inline patch below).
+    # Image is built inline from the SAME v0.5.14 digest prod pins.
+    image: dsv4-flash-eagle-sglang:local
+    build:
+      dockerfile_inline: |
+        FROM lmsysorg/sglang@sha256:5027e95bf6ec536856b1b52a91d1f35ff5c564ab83e8a94758a169ff09bb8df3
+        # sgl-project/sglang#30364: TorchSymmMemCommunicator hard-disables itself
+        # whenever NVLS/multicast is unavailable (always the case under NVIDIA CC
+        # modes - the driver zeroes MULTICAST_SUPPORTED), even though its two-shot
+        # kernel only needs P2P peer mappings. Patch = require multicast only for
+        # the multimem kernel path and fall back to two-shot otherwise.
+        # Validated on the gpu02 dev CVM (PPCIe CC-on): engages with
+        # "enabled (kernel=two_shot)", correct outputs end-to-end, 6.3-14.6 us/op
+        # in-graph vs NCCL 23-27 us. Enabled at runtime via --enable-torch-symm-mem.
+        RUN python3 - <<'PYEOF'
+        import ast
+        f = "/sgl-workspace/sglang/python/sglang/srt/distributed/device_communicators/torch_symm_mem.py"
+        s = open(f).read()
+
+        old_fields = """        self.disabled = True
+                self.buffer = None
+                self.max_size = 0
+        """
+        new_fields = old_fields + "        self.use_multimem = False\n"
+        assert s.count(old_fields) == 1, "symm-mem patch: field-init anchor not found"
+        s = s.replace(old_fields, new_fields)
+
+        old_gate = """        handle = torch_symm_mem.rendezvous(self.buffer, self.group.group_name)
+                if handle.multicast_ptr == 0:
+                    logger.warning(
+                        "TorchSymmMemCommunicator: torch symmetric memory "
+                        "multicast operations are not supported."
+                    )
+                    self.buffer = None
+                    self.disabled = True
+                    return
+                self.disabled = False
+        """
+        new_gate = """        handle = torch_symm_mem.rendezvous(self.buffer, self.group.group_name)
+                # Multicast (NVLS) is only required by the multimem kernel; the
+                # two-shot kernel only needs P2P (works under NVIDIA CC / TEE).
+                self.use_multimem = self.world_size in self._WORLD_SIZES_MULTIMEM.get(
+                    self.device_capability, ()
+                )
+                if self.use_multimem and handle.multicast_ptr == 0:
+                    logger.warning(
+                        "TorchSymmMemCommunicator: torch symmetric memory "
+                        "multicast operations are not supported; falling back to "
+                        "the two-shot all-reduce kernel."
+                    )
+                    self.use_multimem = False
+                logger.info(
+                    "TorchSymmMemCommunicator: enabled (kernel=%s, max_size=%d)",
+                    "multimem" if self.use_multimem else "two_shot",
+                    self.max_size,
+                )
+                self.disabled = False
+        """
+        assert s.count(old_gate) == 1, "symm-mem patch: multicast-gate anchor not found"
+        s = s.replace(old_gate, new_gate)
+
+        old_sel = """        if self.world_size in self._WORLD_SIZES_MULTIMEM.get(
+                    self.device_capability, ()
+                ):
+                    torch.ops.symm_mem.multimem_all_reduce_(
+        """
+        new_sel = """        if self.use_multimem:
+                    torch.ops.symm_mem.multimem_all_reduce_(
+        """
+        assert s.count(old_sel) == 1, "symm-mem patch: kernel-selection anchor not found"
+        s = s.replace(old_sel, new_sel)
+
+        ast.parse(s)
+        open(f, "w").write(s)
+        print("[sglang#30364] symm-mem two-shot fallback applied")
+        PYEOF
+    command: >
+      sglang serve
+      --trust-remote-code
+      --model-path deepseek-ai/DeepSeek-V4-Flash
+      --revision 553034d7dd9e06c2eeaee68cf85a17d6d4754cf0
+      --tp 2
+      --moe-runner-backend marlin
+      --cuda-graph-max-bs 64
+      --mem-fraction-static 0.83
+      --max-running-requests 64
+      --max-queued-requests 16
+      --schedule-conservativeness 1.3
+      --enable-mixed-chunk
+      --chunked-prefill-size 16384
+      --disable-custom-all-reduce
+      --enable-torch-symm-mem
+      --speculative-algorithm EAGLE
+      --speculative-num-steps 3
+      --speculative-eagle-topk 1
+      --speculative-num-draft-tokens 4
+      --tool-call-parser deepseekv4
+      --reasoning-parser deepseek-v4
+      --port 8000
+      --host 0.0.0.0
+      --enable-cache-report
+      --enable-metrics
+      --log-requests-level 0
+      --served-model-name deepseek-ai/DeepSeek-V4-Flash-EAGLE
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["0","1"]
+              capabilities: [gpu]
+    labels:
+      com.datadoghq.ad.check_names: '["openmetrics"]'
+      com.datadoghq.ad.init_configs: "[{}]"
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:deepseek-ai/DeepSeek-V4-Flash-EAGLE","deployment:deepseek-v4-flash-eagle-test","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000"]}]'
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://model-sg-dsv4-flash-eagle:8000/metrics", "metrics":["sglang:*"], "histogram_buckets_as_distributions": true, "service": "sglang", "tags":["model:deepseek-ai/DeepSeek-V4-Flash-EAGLE","deployment:deepseek-v4-flash-eagle-test","ip:${HOST_IP}","port:8000"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "sglang"
+      nearai.otel.service: "sglang"
+      nearai.otel.source: "sglang"
+      nearai.otel.container_name: "model-sg-dsv4-flash-eagle"
+      nearai.otel.port: "8000"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "deepseek-ai/DeepSeek-V4-Flash-EAGLE"
+      nearai.otel.deployment: "deepseek-v4-flash-eagle-test"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
+
+  dcgm-dsv4-flash-eagle:
+    image: nvcr.io/nvidia/k8s/dcgm-exporter:4.5.2-4.8.1-distroless
+    container_name: dcgm-dsv4-flash-eagle
+    runtime: nvidia
+    cap_add:
+      - SYS_ADMIN
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+    logging: *logging-conf
+    labels:
+      com.datadoghq.ad.check_names: '["dcgm"]'
+      com.datadoghq.ad.init_configs: "[{}]"
+      com.datadoghq.ad.instances: '[{"openmetrics_endpoint":"http://%%host%%:9400/metrics","tags":["model:deepseek-ai/DeepSeek-V4-Flash-EAGLE","deployment:deepseek-v4-flash-eagle-test","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:deepseek-ai/DeepSeek-V4-Flash-EAGLE","deployment:deepseek-v4-flash-eagle-test","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "dcgm"
+      nearai.otel.service: "dcgm-exporter"
+      nearai.otel.source: "dcgm-exporter"
+      nearai.otel.container_name: "dcgm-dsv4-flash-eagle"
+      nearai.otel.port: "9400"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "deepseek-ai/DeepSeek-V4-Flash-EAGLE"
+      nearai.otel.deployment: "deepseek-v4-flash-eagle-test"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
+
+  otelcol-contrib:
+    image: otel/opentelemetry-collector-contrib@sha256:85ac41c2db88d0df9bd6145e608a3cb023f5d8443868adbfbbf66efb51087917
+    container_name: otelcol-contrib
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    user: "0:0"
+    mem_limit: "768m"
+    environment:
+      - MONITORING_INGEST_TOKEN=${MONITORING_INGEST_TOKEN:-}
+      - CVM_NAME=${CVM_NAME:-unknown}
+      - CVM_HOST=${CVM_HOST:-unknown}
+      - DD_HOSTNAME=${DD_HOSTNAME:-unknown}
+      - ENV=${ENV:-unknown}
+      - HOST_IP=${HOST_IP:-unknown}
+    expose:
+      - "4317"
+      - "4318"
+    volumes:
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - otelcol_app_storage:/var/lib/otelcol-contrib
+    configs:
+      - source: otelcol_app_config
+        target: /etc/otelcol-contrib/config.yaml
+        mode: 0444
+    restart: unless-stopped
+    logging:
+      driver: "local"
+      options:
+        max-size: "20m"
+        max-file: "3"
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"otelcol-contrib","service":"otelcol-contrib","tags":["deployment:deepseek-v4-flash-eagle-test","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+
+networks:
+  default:
+    external: true
+    name: dstack_default
+
+volumes:
+  otelcol_app_storage:
+  hugginface_cache:
+  kernel_cache:
+  certs:
+    external: true
+    name: certs
+
+configs:
+  otelcol_app_config:
+    content: |
+      receivers:
+        otlp:
+          protocols:
+            grpc:
+              endpoint: 0.0.0.0:4317
+            http:
+              endpoint: 0.0.0.0:4318
+
+        filelog/docker_containers:
+          include: [/var/lib/docker/containers/*/*-json.log]
+          start_at: end
+          storage: file_storage
+          include_file_path: true
+          operators:
+            - type: json_parser
+              parse_from: body
+              parse_to: attributes
+              timestamp:
+                parse_from: attributes.time
+                layout_type: gotime
+                layout: '2006-01-02T15:04:05.999999999Z07:00'
+              on_error: send_quiet
+            - type: move
+              from: attributes.log
+              to: body
+              if: 'attributes.log != nil'
+            - type: move
+              from: attributes.stream
+              to: attributes["log.iostream"]
+              if: 'attributes.stream != nil'
+            - type: remove
+              field: attributes.time
+              if: 'attributes.time != nil'
+            - type: regex_parser
+              parse_from: attributes["log.file.path"]
+              regex: '/var/lib/docker/containers/(?P<container_id>[a-f0-9]{12})[a-f0-9]*/'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'model:(?P<model>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'model_path:(?P<model_path>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'precision:(?P<precision>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'deployment:(?P<deployment>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'ip:(?P<ip>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'port:(?P<port>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'env:(?P<env>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'host:(?P<host>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'instance:(?P<instance>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'replica:(?P<replica>[^",\]]+)'
+              on_error: send_quiet
+            - type: add
+              field: attributes["service.name"]
+              value: cvm-docker
+
+        prometheus/apps:
+          config:
+            scrape_configs:
+              - job_name: sglang-model-sg-dsv4-flash-eagle
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['model-sg-dsv4-flash-eagle:8000']
+                    labels:
+                      service: "sglang"
+                      source: "sglang"
+                      container_name: "model-sg-dsv4-flash-eagle"
+                      model: "deepseek-ai/DeepSeek-V4-Flash-EAGLE"
+                      deployment: "deepseek-v4-flash-eagle-test"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      port: "8000"
+                      model_path: "deepseek-ai/DeepSeek-V4-Flash"
+                      precision: "fp4-marlin"
+              - job_name: dcgm-dcgm-dsv4-flash-eagle
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['dcgm-dsv4-flash-eagle:9400']
+                    labels:
+                      service: "dcgm-exporter"
+                      source: "dcgm-exporter"
+                      container_name: "dcgm-dsv4-flash-eagle"
+                      model: "deepseek-ai/DeepSeek-V4-Flash-EAGLE"
+                      deployment: "deepseek-v4-flash-eagle-test"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      port: "9400"
+                      precision: "fp4-marlin"
+              - job_name: inference-proxy-vllm-proxy-dsv4-flash-eagle
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['vllm-proxy-dsv4-flash-eagle:8000']
+                    labels:
+                      service: "vllm-proxy"
+                      source: "vllm-proxy"
+                      container_name: "vllm-proxy-dsv4-flash-eagle"
+                      model: "deepseek-ai/DeepSeek-V4-Flash-EAGLE"
+                      deployment: "deepseek-v4-flash-eagle-test"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      port: "8000"
+                      precision: "fp4-marlin"
+
+        prometheus/self:
+          config:
+            scrape_configs:
+              - job_name: otelcol-app
+                scrape_interval: 30s
+                static_configs:
+                  - targets: ['localhost:8888']
+
+      processors:
+        memory_limiter:
+          check_interval: 1s
+          limit_mib: 512
+          spike_limit_mib: 128
+
+        resource:
+          attributes:
+            - key: host.name
+              value: $${env:DD_HOSTNAME}
+              action: upsert
+            - key: cvm.name
+              value: $${env:CVM_NAME}
+              action: upsert
+            - key: host.machine
+              value: $${env:CVM_HOST}
+              action: insert
+            - key: deployment.environment
+              value: $${env:ENV}
+              action: upsert
+            - key: service.namespace
+              value: near-ai
+              action: insert
+
+        transform/docker_metadata:
+          error_mode: ignore
+          log_statements:
+            - context: log
+              statements:
+                - set(attributes["service.name"], attributes["attrs"]["com.docker.compose.service"]) where attributes["attrs"] != nil and attributes["attrs"]["com.docker.compose.service"] != nil
+                - set(attributes["service.name"], ParseJSON(attributes["attrs"]["com.datadoghq.ad.logs"])[0]["service"]) where attributes["attrs"] != nil and attributes["attrs"]["com.datadoghq.ad.logs"] != nil
+                - set(attributes["log.source"], ParseJSON(attributes["attrs"]["com.datadoghq.ad.logs"])[0]["source"]) where attributes["attrs"] != nil and attributes["attrs"]["com.datadoghq.ad.logs"] != nil
+                - set(attributes["service"], attributes["service.name"]) where attributes["attrs"] != nil and attributes["attrs"]["com.datadoghq.ad.logs"] != nil and attributes["service.name"] != nil
+                - set(attributes["source"], attributes["log.source"]) where attributes["attrs"] != nil and attributes["attrs"]["com.datadoghq.ad.logs"] != nil and attributes["log.source"] != nil
+                - set(attributes["container.name"], attributes["attrs"]["com.docker.compose.service"]) where attributes["attrs"] != nil and attributes["attrs"]["com.docker.compose.service"] != nil
+
+        filter/app_logs:
+          error_mode: ignore
+          logs:
+            log_record:
+              - 'attributes["model"] == nil and attributes["deployment"] == nil'
+              - 'attributes["service.name"] == "compose-manager"'
+              - 'attributes["service.name"] == "compose-manager-launcher"'
+              - 'attributes["service.name"] == "otelcol-management"'
+              - 'attributes["service.name"] == "otelcol-contrib"'
+              - 'attributes["service.name"] == "datadog-agent"'
+
+        groupbyattrs/docker_service:
+          keys:
+            - service.name
+            - service
+            - container.name
+            - log.source
+            - source
+            - log.iostream
+            - model
+            - model_path
+            - precision
+            - deployment
+            - env
+            - host
+            - ip
+            - port
+            - instance
+            - replica
+
+        batch:
+          send_batch_size: 1024
+          send_batch_max_size: 2048
+          timeout: 5s
+
+      exporters:
+        otlphttp/gateway:
+          endpoint: https://telemetry.infra.near.ai
+          headers:
+            Authorization: "Bearer $${env:MONITORING_INGEST_TOKEN}"
+          sending_queue:
+            queue_size: 128
+            storage: file_storage
+
+      extensions:
+        file_storage:
+          directory: /var/lib/otelcol-contrib/storage
+          create_directory: true
+
+      service:
+        extensions: [file_storage]
+        pipelines:
+          logs/app:
+            receivers: [filelog/docker_containers]
+            processors: [memory_limiter, resource, transform/docker_metadata, filter/app_logs, groupbyattrs/docker_service, batch]
+            exporters: [otlphttp/gateway]
+          metrics/app:
+            receivers: [prometheus/apps]
+            processors: [memory_limiter, resource, batch]
+            exporters: [otlphttp/gateway]
+          metrics/otlp:
+            receivers: [otlp]
+            processors: [memory_limiter, resource, batch]
+            exporters: [otlphttp/gateway]
+          metrics/self:
+            receivers: [prometheus/self]
+            processors: [memory_limiter, resource, batch]
+            exporters: [otlphttp/gateway]
+          traces:
+            receivers: [otlp]
+            processors: [memory_limiter, resource, batch]
+            exporters: [otlphttp/gateway]
+        telemetry:
+          metrics:
+            address: localhost:8888
+          logs:
+            level: info
+
+  registrar_script:
+    content: |
+      #!/bin/sh
+      PROXY_URL="https://completions.near.ai"
+      TOKEN="$${MODEL_PROXY_TOKEN}"
+      TLS_PORT=8444
+      ENDPOINT="$${HOST_IP}:8000"
+      REGISTERED=false
+
+      register_endpoint() {
+        curl -sS --max-time 10 -X POST "$$PROXY_URL/register/endpoint" \
+          -H "Authorization: Bearer $$TOKEN" \
+          -H "Content-Type: application/json" \
+          -d "{\"endpoint\":\"$$1\",\"routing_port\":$$TLS_PORT}" || true
+      }
+
+      unregister_endpoint() {
+        curl -sS --max-time 10 -X POST "$$PROXY_URL/unregister/endpoint" \
+          -H "Authorization: Bearer $$TOKEN" \
+          -H "Content-Type: application/json" \
+          -d "{\"endpoint\":\"$$1\"}" || true
+      }
+
+      register_model() {
+        curl -sS --max-time 10 -X POST "$$PROXY_URL/register/model" \
+          -H "Authorization: Bearer $$TOKEN" \
+          -H "Content-Type: application/json" \
+          -d "{\"model\":\"$$1\",\"domain\":\"$$2\"}" || true
+      }
+
+      cleanup() {
+        echo "SIGTERM received, unregistering $$ENDPOINT"
+        unregister_endpoint "$$ENDPOINT"
+        exit 0
+      }
+      trap cleanup TERM INT
+
+      check_inference() {
+        curl -sf --max-time 45 -X POST "http://model-sg-dsv4-flash-eagle:8000/v1/chat/completions" \
+          -H "Content-Type: application/json" \
+          -d '{"model":"deepseek-ai/DeepSeek-V4-Flash-EAGLE","messages":[{"role":"user","content":"hi"}],"max_tokens":1}' \
+          > /dev/null 2>&1
+      }
+
+      READY_URL="http://$${HOST_IP}:8000/v1/models"
+      echo "Waiting for model to be ready (probing $$READY_URL)..."
+      ready_attempts=0
+      until curl --connect-timeout 5 --max-time 10 -sf "$$READY_URL" > /dev/null 2>&1; do
+        ready_attempts=$$((ready_attempts + 1))
+        if [ "$$ready_attempts" -ge 30 ]; then
+          echo "WARN: model not reachable at $$READY_URL after $$ready_attempts attempts (~20m); entering registration loop anyway"
+          break
+        fi
+        echo "Model not ready yet (attempt $$ready_attempts/30), retrying in 30s..."
+        sleep 30
+      done
+
+      while true; do
+        date +%s > /tmp/registrar_alive
+        if check_inference; then
+          register_endpoint "$$ENDPOINT"
+          register_model "deepseek-ai/DeepSeek-V4-Flash-EAGLE" "dsv4-flash-eagle.completions.near.ai"
+          if [ "$$REGISTERED" = false ]; then
+            echo "Registered $$ENDPOINT"
+          fi
+          REGISTERED=true
+        else
+          echo "Health check failed for $$ENDPOINT"
+          REGISTERED=false
+        fi
+        date +%s > /tmp/registrar_alive
+        sleep 60
+      done
+
+  nginx_conf:
+    content: |
+      log_format json_combined escape=json
+        '{'  '"time":"$$time_iso8601"'
+        ',"request_id":"$$http_x_request_id"'
+        ',"org_id":"$$http_x_org_id"'
+        ',"workspace_id":"$$http_x_workspace_id"'
+        ',"http_host":"$$host"'
+        ',"method":"$$request_method"'
+        ',"uri":"$$uri"'
+        ',"status":$$status'
+        ',"request_length":$$request_length'
+        ',"bytes_sent":$$bytes_sent'
+        ',"request_time":$$request_time'
+        ',"upstream_addr":"$$upstream_addr"'
+        '}';
+
+      access_log /var/log/nginx/access.log json_combined;
+
+      proxy_http_version 1.1;
+      proxy_set_header Host $$host;
+      proxy_set_header X-Real-IP $$remote_addr;
+      proxy_set_header X-Forwarded-For $$proxy_add_x_forwarded_for;
+      proxy_set_header X-Forwarded-Proto $$scheme;
+      proxy_set_header Connection '';
+      proxy_buffering off;
+      proxy_cache off;
+      proxy_read_timeout 3600s;
+      client_max_body_size 100m;
+      client_body_buffer_size 1m;
+
+      server {
+          listen 8000;
+          location / { proxy_pass http://vllm-proxy-dsv4-flash-eagle:8000; }
+      }
+
+      ssl_certificate /etc/letsencrypt/live/completions.near.ai/fullchain.pem;
+      ssl_certificate_key /etc/letsencrypt/live/completions.near.ai/privkey.pem;
+      ssl_protocols TLSv1.2 TLSv1.3;
+
+      server {
+          listen 443 ssl http2;
+          server_name dsv4-flash-eagle.completions.near.ai
+                      ~^dsv4-flash-eagle-i\d+\.completions\.near\.ai$$;
+          keepalive_timeout 1h;
+          keepalive_requests 1000000;
+          location / { proxy_pass http://vllm-proxy-dsv4-flash-eagle:8000; }
+      }
