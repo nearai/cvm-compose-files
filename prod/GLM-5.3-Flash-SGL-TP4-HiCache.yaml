@@ -127,6 +127,15 @@ x-sg-glm53-flash-common: &sg-glm53-flash-common
     - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
     - TORCHINDUCTOR_CACHE_DIR=/root/.cache/torchinductor
     - TRITON_CACHE_DIR=/root/.cache/triton
+    # Persist tilelang's DSA kernel JIT cache: it defaults to /root/.tilelang, outside
+    # the kernel_cache volume, so every restart re-paid ~22-24 compiles at 8-9 s each
+    # with the whole engine frozen (2026-09-12..16 capacity campaign).
+    - TILELANG_CACHE_DIR=/root/.cache/tilelang
+    # /health must not run a generation: at this pin health_generate submits a real
+    # 1-token request that queues behind any in-flight long prefill, so the CVM
+    # proxy's 3 s probe times out, the replica flaps unhealthy, and the conversation
+    # affinity pin is skipped (full re-prefill on the other replica). nearai/infra#234.
+    - SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION=0
     - SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE=1
   restart: unless-stopped
   stop_grace_period: 5m
@@ -410,6 +419,15 @@ services:
       - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
       - TORCHINDUCTOR_CACHE_DIR=/root/.cache/torchinductor
       - TRITON_CACHE_DIR=/root/.cache/triton
+      # Persist tilelang's DSA kernel JIT cache: it defaults to /root/.tilelang, outside
+      # the kernel_cache volume, so every restart re-paid ~22-24 compiles at 8-9 s each
+      # with the whole engine frozen (2026-09-12..16 capacity campaign).
+      - TILELANG_CACHE_DIR=/root/.cache/tilelang
+      # /health must not run a generation: at this pin health_generate submits a real
+      # 1-token request that queues behind any in-flight long prefill, so the CVM
+      # proxy's 3 s probe times out, the replica flaps unhealthy, and the conversation
+      # affinity pin is skipped (full re-prefill on the other replica). nearai/infra#234.
+      - SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION=0
       - SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE=1
       - SGLANG_HICACHE_RAM_BUDGET=${GLM53_HICACHE_RAM_BUDGET:-80%}
       - SGLANG_HICACHE_CUDA_HOST_MEMORY=${GLM53_HICACHE_CUDA_HOST_MEMORY:-1}
