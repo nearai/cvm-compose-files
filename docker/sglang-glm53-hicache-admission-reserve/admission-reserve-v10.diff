@@ -1,0 +1,176 @@
+--- a/python/sglang/srt/managers/schedule_policy.py
++++ b/python/sglang/srt/managers/schedule_policy.py
+@@ -107,6 +107,15 @@
+     )
+     PREFILL_TILE_BUDGET_MODE = "compact"
+ 
++
++
++# Lab port of the DS4F admission-fairness change: the scheduler always spends the
++# entire chunk budget on an in-flight long prefill, so requests that arrive after it
++# cannot enter the same prefill batch. Reserve part of that budget for complete
++# waiting requests. Zero preserves upstream behaviour.
++CHUNKED_PREFILL_ADMISSION_RESERVE = int(os.environ.get("SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE", "0"))
++if CHUNKED_PREFILL_ADMISSION_RESERVE < 0:
++    raise ValueError("SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE must be non-negative")
+ 
+ def _ceil_div(value: int, divisor: int) -> int:
+     return -(-value // divisor)
+@@ -493,6 +502,7 @@
+         prefill_delayer_single_pass: Optional[PrefillDelayerSinglePassExecutor] = None,
+         dllm_config: Optional[DllmConfig] = None,
+         waiting_queue_len: int = 0,
++        first_waiting_req_tokens: Optional[int] = None,
+         prefill_tile_block_m: int = 64,
+     ):
+         self.page_size = page_size
+@@ -588,6 +598,7 @@
+         # Snapshot of scheduler waiting_queue length at the start of this
+         # prefill pass. Used by PrefillDelayer's queue-based trigger.
+         self.waiting_queue_len = waiting_queue_len
++        self.first_waiting_req_tokens = first_waiting_req_tokens
+ 
+     def _admitted_extend_lens(self) -> List[int]:
+         return [int(getattr(req, "extend_input_len", 0)) for req in self.can_run_list]
+@@ -995,6 +1006,24 @@
+             _rem_tokens = self._get_dllm_remain_tokens()
+         else:
+             _rem_tokens = min(self.rem_chunk_tokens, int(self.rem_total_tokens))
++            if getattr(self, "waiting_queue_len", 0) > 0 and CHUNKED_PREFILL_ADMISSION_RESERVE > 0:
++                # Reserve only what the waiting requests that can fit actually need (page-aligned), capped by the env
++                # value and by chunk budget minus one page, so the in-flight request always progresses and is never
++                # starved by a stream of short arrivals (a fixed reserve of a full chunk collapses under load).
++                # Fairness bound: the in-flight request always keeps at least (1 - MAX_FRACTION) of the chunk budget, so a
++                # steady stream of qualifying waiters slows a long prefill by at most 1/(1-MAX_FRACTION) and never starves it.
++                max_frac = float(os.environ.get("SGLANG_ADMISSION_RESERVE_MAX_FRACTION", "0.5"))
++                cap = min(CHUNKED_PREFILL_ADMISSION_RESERVE, max(self.rem_chunk_tokens - self.page_size, 0), int(self.rem_chunk_tokens * max_frac))
++                need = self.first_waiting_req_tokens or 0  # = sum of page-aligned sizes of waiting requests that fit under the cap
++                reserve = min(cap, need) // self.page_size * self.page_size
++                fits = reserve > 0
++                if fits:
++                    _rem_tokens = min(_rem_tokens, self.rem_chunk_tokens - reserve)
++                if os.environ.get("SGLANG_ADMISSION_RESERVE_DEBUG") == "1":
++                    import logging as _lg
++                    _lg.getLogger(__name__).info("admission-reserve: waiting=%s need=%s cap=%s reserve=%s chunk_alloc=%s rem_chunk=%s",
++                                                 self.waiting_queue_len, need, cap, reserve, _rem_tokens, self.rem_chunk_tokens)
++            self._has_inflight_chunked = True
+             if self.is_hybrid_swa:
+                 # alloc_extend needs extend_num_tokens + page_size per request,
+                 # so reserve one page here to avoid OOM
+@@ -1182,6 +1211,8 @@
+             req.set_extend_range(
+                 len(req.prefix_indices), len(req.prefix_indices) + trunc_len
+             )
++            if getattr(self, "_has_inflight_chunked", False):
++                return AddReqResult.OTHER
+             self.can_run_list.append(req)
+             self.new_chunked_req = req
+             self._update_prefill_budget(
+@@ -1410,6 +1441,8 @@
+                     len(req.prefix_indices), len(req.prefix_indices) + trunc_len
+                 )
+ 
++                if getattr(self, "_has_inflight_chunked", False):
++                    return AddReqResult.OTHER
+                 self.can_run_list.append(req)
+                 self.new_chunked_req = req
+ 
+--- a/python/sglang/srt/managers/scheduler.py
++++ b/python/sglang/srt/managers/scheduler.py
+@@ -420,8 +420,52 @@
+ 
+ _is_npu = is_npu()
+ _is_hip = is_hip()
++
+ 
+ 
++def _admission_reserve_need(waiting_queue, page_size, chunked_prefill_size=None):
++    """Sum of page-aligned sizes of waiting requests small enough to fit in the admission reserve (lab port)."""
++    import os as _os
++    cap = int(_os.environ.get("SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE", "0"))
++    if cap <= 0 or not waiting_queue:
++        return None
++    # v9b: use the same cap the adder will apply (fairness fraction of the chunk, minus one page), so a waiter that
++    # "fits" here also fits at admission; otherwise the reserve is carved for a request that is then skipped.
++    if chunked_prefill_size:
++        max_frac = float(_os.environ.get("SGLANG_ADMISSION_RESERVE_MAX_FRACTION", "0.5"))
++        cap = min(cap, int(chunked_prefill_size * max_frac), max(int(chunked_prefill_size) - page_size, 0))
++        cap = cap // page_size * page_size
++        if cap <= 0:
++            return None
++    need = 0
++    fit_mode = _os.environ.get("SGLANG_ADMISSION_RESERVE_FIT", "extend")  # "extend" = uncached tokens after prefix match; "seqlen" = total
++    # v10 age gate, RANK-DETERMINISTIC: a waiter only triggers the reserve after it has been seen by this scheduler in
++    # >= MIN_ITERS prefill-scheduling passes. Every TP rank runs the same scheduler loop over the same queue, so the
++    # counter is identical on all ranks. (v8/v9 used a wall-clock age via perf_counter: ranks disagreed on who
++    # qualified, built different batches, and the engine died on an NCCL collective mismatch / watchdog timeout.)
++    # 0 = every waiter qualifies immediately (v5-v7 behaviour). Never gate on time here.
++    min_iters = int(_os.environ.get("SGLANG_ADMISSION_RESERVE_MIN_ITERS", "0"))
++    if _os.environ.get("SGLANG_ADMISSION_RESERVE_MIN_WAIT_S"):
++        raise RuntimeError("SGLANG_ADMISSION_RESERVE_MIN_WAIT_S is not rank-deterministic and was removed; use SGLANG_ADMISSION_RESERVE_MIN_ITERS")
++    for r in waiting_queue:
++        if min_iters > 0:
++            seen = getattr(r, "_admission_iters_seen", 0) + 1
++            r._admission_iters_seen = seen
++            if seen < min_iters:
++                continue
++        n = getattr(r, "seqlen", None)
++        if fit_mode == "extend" and n is not None:
++            try:
++                matched = len(r.prefix_indices) if r.prefix_indices is not None else 0
++            except Exception:
++                matched = 0
++            n = max(n - matched, 1)
++        if n is not None and n <= cap:
++            need += -(-n // page_size) * page_size
++            if need >= cap:
++                break
++    return need or None
++
+ class Scheduler(
+     SchedulerDisaggregationDecodeMixin,
+     SchedulerDisaggregationPrefillMixin,
+@@ -3768,6 +3812,7 @@
+             prefill_delayer_single_pass=prefill_delayer_single_pass,
+             dllm_config=self.dllm_config,
+             waiting_queue_len=len(self.waiting_queue),
++            first_waiting_req_tokens=_admission_reserve_need(self.waiting_queue, self.page_size, chunked_prefill_size),
+             prefill_tile_block_m=prefill_tile_block_m,
+         )
+ 
+@@ -3898,6 +3943,8 @@
+                             req.kv.mamba_pool_idx.unsqueeze(-1)
+                         )
+                         req.kv.mamba_pool_idx = None
++                if res == AddReqResult.OTHER and getattr(adder, "_has_inflight_chunked", False):
++                    continue
+                 break
+ 
+         if mamba_allocator is not None:
+@@ -3922,6 +3969,26 @@
+         if self.chunked_req is not None:
+             self.chunked_req.inflight_middle_chunks += 1
+ 
++        if (
++            getattr(adder, "_has_inflight_chunked", False)
++            and self.chunked_req is not None
++            and len(can_run_list) == 1
++            and can_run_list[0] is self.chunked_req
++            and adder.new_chunked_req is None
++            and not getattr(adder, "is_hybrid_swa", False)
++        ):
++            import os as _os
++            _cr = self.chunked_req
++            _spare = min(adder.rem_chunk_tokens, adder.rem_input_tokens, int(adder.rem_total_tokens))
++            _spare = max(_spare, 0) // self.page_size * self.page_size
++            _remaining = len(_cr.full_untruncated_fill_ids) - _cr.extend_range.end
++            _extra = min(_spare, _remaining - self.page_size)
++            if _extra > 0:
++                _cr.set_extend_range(_cr.extend_range.start, _cr.extend_range.end + _extra)
++                adder._update_prefill_budget(0, _extra, 0, _cr.retracted_stain)
++                if _os.environ.get("SGLANG_ADMISSION_RESERVE_DEBUG") == "1":
++                    logger.info("admission-reserve: refund %s tokens to the chunked request (no waiter admitted)", _extra)
++
+         set_time_batch(can_run_list, "set_forward_entry_time")
+ 
+         # Create a new batch
