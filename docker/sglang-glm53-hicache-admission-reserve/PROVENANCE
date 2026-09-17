@@ -1,0 +1,14 @@
+base_image=docker.io/nearaidev/sglang@sha256:01f44c790d43b3eae136f5f3bc930599947bd37fcea081d2dbd3271ff4fc3f8a
+source_repository=https://github.com/PierreLeGuen/sglang-upstream
+source_revision=fc91d2403cc210a86bd5fc715c6609f58c932e5a
+patch_source=https://github.com/nearai/inference-optimizer
+patch_revision=fb944723035d6c8b8135fd3c6ffbdc21a4615409
+patch_file=patches/admission-reserve-v10.diff
+patch_sha256=dcc98b7f29ebab75f21406118c08acaed5fc5e145ab7288cba25eaab1d24de4f
+runtime_opt_in=SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE=4096
+fairness_bound=SGLANG_ADMISSION_RESERVE_MAX_FRACTION=0.75
+server_flag=--prefill-decode-interval 1
+forbidden=SGLANG_ADMISSION_RESERVE_MIN_WAIT_S (raises); SGLANG_ADMISSION_RESERVE_MIN_ITERS must stay unset (0)
+build_recipe=docker/sglang-glm53-hicache-admission-reserve/Dockerfile
+base_recipe=docker/sglang-glm53-hicache/Dockerfile
+base_released_image_file=docker/sglang-glm53-hicache/RELEASED_IMAGE
