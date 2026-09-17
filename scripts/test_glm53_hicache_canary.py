@@ -14,7 +14,7 @@ promotion = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(promotion)
 FIXTURE_IMAGE = 'docker.io/nearaidev/sglang@sha256:' + '1' * 64
 OTHER_FIXTURE_IMAGE = 'docker.io/nearaidev/sglang@sha256:' + '2' * 64
-OFFICIAL_VARIANT = 'official-upstream-fc91d24-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192'
+OFFICIAL_VARIANT = 'fc91d24-admission-reserve-v10-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192'
 # Substrings that would appear in a Ruby exception's default-formatted
 # message or a backtrace line; none of these should ever reach stderr.
 RUBY_CRASH_MARKERS = ('(NoMethodError)', '(TypeError)', '(Psych::SyntaxError)')
@@ -372,6 +372,33 @@ class GeneratorTest(unittest.TestCase):
         output = result.stdout + result.stderr
         assert_no_ruby_crash(self, output)
         self.assertIn('must not set --default-priority-value', output)
+
+    def test_rejects_missing_admission_reserve_env(self):
+        # Admission-reserve v10 must be enabled on every replica; dropping the
+        # opt-in env from the shared block must fail with the REQUIRED_ENV message.
+        needle = '    - SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE=4096\n'
+        text = self.canonical_path.read_text()
+        self.assertEqual(text.count(needle), 1)
+        self.canonical_path.write_text(text.replace(needle, ''))
+        result = self.run_validator()
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        output = result.stdout + result.stderr
+        assert_no_ruby_crash(self, output)
+        self.assertIn('must set SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE=4096', output)
+
+    def test_rejects_forbidden_admission_reserve_min_wait(self):
+        # SGLANG_ADMISSION_RESERVE_MIN_WAIT_S desyncs the TP ranks and crashes
+        # the engine; it must never be set anywhere in the file.
+        needle = '    - SGLANG_ADMISSION_RESERVE_MAX_FRACTION=0.75\n'
+        text = self.canonical_path.read_text()
+        self.assertEqual(text.count(needle), 1)
+        self.canonical_path.write_text(
+            text.replace(needle, needle + '    - SGLANG_ADMISSION_RESERVE_MIN_WAIT_S=1\n'))
+        result = self.run_validator()
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        output = result.stdout + result.stderr
+        assert_no_ruby_crash(self, output)
+        self.assertIn('must not set SGLANG_ADMISSION_RESERVE_MIN_WAIT_S', output)
 
 
 if __name__ == '__main__':

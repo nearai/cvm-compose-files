@@ -65,18 +65,22 @@ x-logging-conf: &logging-conf
 # replica stays within one four-GPU NVLink island; one inference-proxy uses its native
 # least-connections backend pool for health-aware balancing and failover.
 #
-# The engine is published by the repository's GitHub Actions workflow and pinned
-# here by its signed immutable registry digest. Its source is pinned to
-# PierreLeGuen/sglang-upstream commit fc91d24, derived from official SGLang main
-# plus the official GLM-5.3 branch. It contains
-# upstream disconnect cleanup (#35255), the final-prefill abort fix (#34153),
-# the strict thinking-budget adapter, and two narrow DSA import-cycle fixes. The
-# official CUDA 13 SGLang image is the pinned build base. The serving envelope
-# is intentionally conservative: BF16 KV, 0.80 static memory,
-# 32 running requests, a bounded 8-request queue, 4096-token prefill chunks,
-# decode graphs capped at batch 32, TileLang DSA, DeepGEMM, and adaptive EAGLE
-# 5/1/6. This retains the full 1,048,576-token model context while avoiding the
-# late K-pool workspace exhaustion observed with larger prefill chunks.
+# The engine is published by the repository's GitHub Actions workflow and pinned here by
+# its signed immutable registry digest. Its source is pinned to
+# PierreLeGuen/sglang-upstream commit fc91d24, derived from official SGLang main plus
+# the official GLM-5.3 branch. It contains upstream disconnect cleanup (#35255), the
+# final-prefill abort fix (#34153), the strict thinking-budget adapter, and two narrow
+# DSA import-cycle fixes. The production digest is the
+# docker/sglang-glm53-admission-reserve derivative of that build, which adds the opt-in
+# chunked-prefill admission-reserve v10 patch (nearai/inference-optimizer@fb94472),
+# enabled below with SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE=4096,
+# SGLANG_ADMISSION_RESERVE_MAX_FRACTION=0.75 and --prefill-decode-interval 1. The
+# official CUDA 13 SGLang image is the pinned build base. The serving envelope is
+# intentionally conservative: BF16 KV, 0.80 static memory, 32 running requests, a
+# bounded 8-request queue, 4096-token prefill chunks, decode graphs capped at batch 32,
+# TileLang DSA, DeepGEMM, and adaptive EAGLE 5/1/6. This retains the full
+# 1,048,576-token model context while avoiding the late K-pool workspace exhaustion
+# observed with larger prefill chunks.
 # Priority scheduling (--enable-priority-scheduling, --disable-priority-preemption)
 # relies on the pinned inference-proxy below (build 2834196, nearai/inference-proxy#241)
 # overwriting the `priority` field of every forwarded request, so no client-chosen
@@ -118,7 +122,7 @@ x-vllm-proxy-common: &vllm-proxy-common
 x-sg-glm53-flash-common: &sg-glm53-flash-common
   <<: *nvidia
   init: true
-  image: docker.io/nearaidev/sglang@sha256:a7b7136abcf5e07522289d96e96fec9b42a1a30f9dfda57e957f142680d2d67b
+  image: docker.io/nearaidev/sglang@sha256:e9d29a1cb1cd65284392c4d62d5f2a36669628057e15c60fe93ea40cfe4fc7e7
   command: >
       sglang serve
       --model-path /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/84c6a6aa9497188e15a635ba793b0f95a79b1033
@@ -132,6 +136,7 @@ x-sg-glm53-flash-common: &sg-glm53-flash-common
       --enable-priority-scheduling
       --disable-priority-preemption
       --chunked-prefill-size 4096
+      --prefill-decode-interval 1
       --cuda-graph-max-bs-decode 32
       --dsa-prefill-backend tilelang
       --dsa-decode-backend tilelang
@@ -182,6 +187,16 @@ x-sg-glm53-flash-common: &sg-glm53-flash-common
     # proxy's 3 s probe times out, the replica flaps unhealthy, and the conversation
     # affinity pin is skipped (full re-prefill on the other replica). nearai/infra#234.
     - SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION=0
+    # Admission-reserve v10 (docker/sglang-glm53-admission-reserve): reserve part of each
+    # 4096-token prefill chunk for waiting requests, sized on their uncached extend length,
+    # bounded so the in-flight long prefill keeps >=25% of the chunk, and refunded when no
+    # waiter used it. Pairs with --prefill-decode-interval 1 so admitted requests also decode.
+    # Measured (2026-09-12..16 campaign): <=2K prompts p95 TTFT 19.6 s -> 0.6 s; cost ITL p90
+    # 30 -> ~240 ms, median unchanged. The patch is inert with the reserve unset (rollback).
+    # NEVER set SGLANG_ADMISSION_RESERVE_MIN_WAIT_S (wall-clock gate desyncs the TP ranks; v10
+    # raises) or SGLANG_ADMISSION_RESERVE_MIN_ITERS (unmeasured in production).
+    - SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE=4096
+    - SGLANG_ADMISSION_RESERVE_MAX_FRACTION=0.75
     - SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE=1
   restart: unless-stopped
   stop_grace_period: 5m
@@ -391,7 +406,7 @@ services:
               device_ids: ["0","1","2","3"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:zai-org/GLM-5.3-Flash","served_model:z-ai/glm-5.3-flash","precision:fp8-weights-bf16-kv","deployment:glm53-flash-sgl-tp4","config_variant:official-upstream-fc91d24-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192","request_logging:disabled","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:1"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:zai-org/GLM-5.3-Flash","served_model:z-ai/glm-5.3-flash","precision:fp8-weights-bf16-kv","deployment:glm53-flash-sgl-tp4","config_variant:fc91d24-admission-reserve-v10-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192","request_logging:disabled","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:1"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -403,7 +418,7 @@ services:
       nearai.otel.model_path: "zai-org/GLM-5.3-Flash"
       nearai.otel.served_model: "z-ai/glm-5.3-flash"
       nearai.otel.deployment: "glm53-flash-sgl-tp4"
-      nearai.otel.config_variant: "official-upstream-fc91d24-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
+      nearai.otel.config_variant: "fc91d24-admission-reserve-v10-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
       nearai.otel.thinking_budget_policy: "default8192-public-to-native"
       nearai.otel.request_logging: "disabled"
       nearai.otel.instance: "1"
@@ -428,7 +443,7 @@ services:
               device_ids: ["4","5","6","7"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:zai-org/GLM-5.3-Flash","served_model:z-ai/glm-5.3-flash","precision:fp8-weights-bf16-kv","deployment:glm53-flash-sgl-tp4","config_variant:official-upstream-fc91d24-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192","request_logging:disabled","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:2"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:zai-org/GLM-5.3-Flash","served_model:z-ai/glm-5.3-flash","precision:fp8-weights-bf16-kv","deployment:glm53-flash-sgl-tp4","config_variant:fc91d24-admission-reserve-v10-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192","request_logging:disabled","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:2"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -440,7 +455,7 @@ services:
       nearai.otel.model_path: "zai-org/GLM-5.3-Flash"
       nearai.otel.served_model: "z-ai/glm-5.3-flash"
       nearai.otel.deployment: "glm53-flash-sgl-tp4"
-      nearai.otel.config_variant: "official-upstream-fc91d24-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
+      nearai.otel.config_variant: "fc91d24-admission-reserve-v10-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
       nearai.otel.thinking_budget_policy: "default8192-public-to-native"
       nearai.otel.request_logging: "disabled"
       nearai.otel.instance: "2"
@@ -454,7 +469,7 @@ services:
   # Runs the candidate's synthetic fixture gate against each replica at concurrency 1.
   # No GPU allocation, host mounts, Docker socket, credentials, or published ports.
   glm53-perception-check:
-    image: docker.io/nearaidev/sglang@sha256:a7b7136abcf5e07522289d96e96fec9b42a1a30f9dfda57e957f142680d2d67b
+    image: docker.io/nearaidev/sglang@sha256:e9d29a1cb1cd65284392c4d62d5f2a36669628057e15c60fe93ea40cfe4fc7e7
     container_name: glm53-perception-check
     profiles: ["verification"]
     runtime: runc
@@ -840,7 +855,7 @@ configs:
                       ip: "${HOST_IP}"
                       port: "8000"
                       instance: "1"
-                      config_variant: "official-upstream-fc91d24-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
+                      config_variant: "fc91d24-admission-reserve-v10-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
                       thinking_budget_policy: "default8192-public-to-native"
                       request_logging: "disabled"
               - job_name: sglang-model-sg-glm53-fp8-tp4-r2
@@ -864,7 +879,7 @@ configs:
                       ip: "${HOST_IP}"
                       port: "8000"
                       instance: "2"
-                      config_variant: "official-upstream-fc91d24-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
+                      config_variant: "fc91d24-admission-reserve-v10-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
                       thinking_budget_policy: "default8192-public-to-native"
                       request_logging: "disabled"
               - job_name: dcgm-dcgm-glm53

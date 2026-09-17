@@ -1,6 +1,8 @@
 #!/usr/bin/env ruby
 # Protect the canonical two-replica GLM-5.3 Flash production contract and the
-# separate r2-only HiCache canary file.
+# separate r2-only HiCache canary file. Both replicas run the
+# admission-reserve v10 derivative image (docker/sglang-glm53-admission-reserve);
+# the HiCache file pins the HiCache+reserve derivative on r2.
 
 require "shellwords"
 require "yaml"
@@ -10,7 +12,7 @@ COMPOSE_FILE = File.join(ROOT, "prod", "GLM-5.3-Flash-SGL-TP4.yaml")
 HICACHE_FILE = File.join(ROOT, "prod", "GLM-5.3-Flash-SGL-TP4-HiCache.yaml")
 LEGACY_CANARY_FILE = File.join(ROOT, "prod", "GLM-5.3-Flash-SGL-TP4-Canary.yaml")
 RELEASED_IMAGE_FILE = File.join(ROOT, "docker", "sglang-glm53-hicache", "RELEASED_IMAGE")
-ENGINE_IMAGE = "docker.io/nearaidev/sglang@sha256:a7b7136abcf5e07522289d96e96fec9b42a1a30f9dfda57e957f142680d2d67b"
+ENGINE_IMAGE = "docker.io/nearaidev/sglang@sha256:e9d29a1cb1cd65284392c4d62d5f2a36669628057e15c60fe93ea40cfe4fc7e7"
 PROXY_IMAGE = "nearaidev/vllm-proxy-rs@sha256:b3a8c6260834231271b4356c56a7aa2718608c8a537b35973916e0a56dc88fba"
 # Engine-side priority scheduling is only safe behind an inference-proxy that
 # overwrites the `priority` of every forwarded request (build 2834196 onward,
@@ -50,6 +52,7 @@ REQUIRED_OPTIONS = {
   "--max-running-requests" => "32",
   "--max-queued-requests" => "8",
   "--chunked-prefill-size" => "4096",
+  "--prefill-decode-interval" => "1",
   "--cuda-graph-max-bs-decode" => "32",
   "--dsa-prefill-backend" => "tilelang",
   "--dsa-decode-backend" => "tilelang",
@@ -77,6 +80,21 @@ REQUIRED_SWITCHES = %w[
   --disable-fast-image-processor
 ].freeze
 REPLICA_IDENTITY_FIELDS = %w[container_name deploy labels].freeze
+# Admission-reserve v10 (docker/sglang-glm53-admission-reserve) must be enabled on
+# every replica in every validated file.
+REQUIRED_ENV = {
+  "SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE" => "4096",
+  "SGLANG_ADMISSION_RESERVE_MAX_FRACTION" => "0.75",
+}.freeze
+# SGLANG_ADMISSION_RESERVE_MIN_WAIT_S: wall-clock gate desyncs the TP ranks and
+# crashes the engine. SGLANG_ADMISSION_RESERVE_MIN_ITERS/FIT/DEBUG: unmeasured
+# or debug-only in production.
+FORBIDDEN_ENV = %w[
+  SGLANG_ADMISSION_RESERVE_MIN_WAIT_S
+  SGLANG_ADMISSION_RESERVE_MIN_ITERS
+  SGLANG_ADMISSION_RESERVE_FIT
+  SGLANG_ADMISSION_RESERVE_DEBUG
+].freeze
 HICACHE_OPTIONS = {
   "--hicache-write-policy" => "write_through",
   "--hicache-io-backend" => "direct",
@@ -88,8 +106,8 @@ HICACHE_ENV = {
   "SGLANG_HICACHE_POOLED_TRANSFERS" => "1",
   "SGLANG_HICACHE_STAGING_PAGES" => "64",
 }.freeze
-HICACHE_VARIANT = "fc91d24-hicache-cuda-host-pooled-v1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
-OFFICIAL_VARIANT = "official-upstream-fc91d24-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
+HICACHE_VARIANT = "fc91d24-hicache-cuda-host-pooled-v1-admission-reserve-v10-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
+OFFICIAL_VARIANT = "fc91d24-admission-reserve-v10-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
 
 
 def yaml_load(content)
@@ -214,9 +232,28 @@ def validate_common(errors, label, services)
     errors << "#{label} #{name} must use the prebuilt signed image, not a host-local build" if service.key?("build")
     validate_command(errors, "#{label} #{name}", command_text(service))
 
+    replica_env = environment_map(service)
+    REQUIRED_ENV.each do |key, expected_value|
+      errors << "#{label} #{name} must set #{key}=#{expected_value}" unless replica_env[key] == expected_value
+    end
+
     device_ids = service.dig("deploy", "resources", "reservations", "devices", 0, "device_ids")
     normalized_ids = Array(device_ids).map(&:to_s)
     errors << "#{label} #{name} must use GPU device_ids #{expected_devices.join(',')}" unless normalized_ids == expected_devices
+  end
+
+  services.each do |name, service|
+    service_env = environment_map(service)
+    FORBIDDEN_ENV.each do |key|
+      next unless service_env.key?(key)
+
+      reason = if key == "SGLANG_ADMISSION_RESERVE_MIN_WAIT_S"
+                 "not rank-deterministic, crashes the engine"
+               else
+                 "unmeasured/debug-only in production"
+               end
+      errors << "#{label} #{name} must not set #{key} (#{reason})"
+    end
   end
 
   perception_check = services["glm53-perception-check"]

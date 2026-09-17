@@ -9,6 +9,12 @@ backend or cross-CVM cache exchange.
 
 ## Release order
 
+Since the admission-reserve activation, `RELEASED_IMAGE` records the layered
+image built from `docker/sglang-glm53-hicache-admission-reserve` (FROM this
+signed HiCache digest, with the opt-in chunked-prefill admission-reserve v10
+patch on top) rather than this HiCache image itself. This image remains the
+base that recipe builds from.
+
 The repository publishes signed production images only from an exact commit
 already merged into `main`. This preparation change therefore leaves the active
 production compose untouched. After review and merge:
