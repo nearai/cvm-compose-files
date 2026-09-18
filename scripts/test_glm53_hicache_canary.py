@@ -15,6 +15,9 @@ spec.loader.exec_module(promotion)
 FIXTURE_IMAGE = 'docker.io/nearaidev/sglang@sha256:' + '1' * 64
 OTHER_FIXTURE_IMAGE = 'docker.io/nearaidev/sglang@sha256:' + '2' * 64
 OFFICIAL_VARIANT = 'fc91d24-admission-reserve-v10-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192'
+LONG_CONTEXT = Path('prod/GLM-5.3-Flash-SGL-TP4-LongContext.yaml')
+LONG_CONTEXT_CONTROL_VARIANT = 'fc91d24-long-context-admission-reserve-disabled-hicache-disabled-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192'
+LONG_CONTEXT_HICACHE_VARIANT = 'fc91d24-long-context-admission-reserve-disabled-hicache-cuda-host-pooled-v1-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192'
 # Substrings that would appear in a Ruby exception's default-formatted
 # message or a backtrace line; none of these should ever reach stderr.
 RUBY_CRASH_MARKERS = ('(NoMethodError)', '(TypeError)', '(Psych::SyntaxError)')
@@ -82,6 +85,14 @@ class GeneratorTest(unittest.TestCase):
         self.canonical = self.canonical_path.read_text()
 
     def run_validator(self):
+        if self.candidate_path.exists() and self.release_path.exists():
+            long_context_path = self.root / LONG_CONTEXT
+            long_context_path.parent.mkdir(parents=True, exist_ok=True)
+            committed_image = (ROOT / promotion.RELEASE).read_text().strip()
+            fixture_image = self.release_path.read_text().strip()
+            long_context = (ROOT / LONG_CONTEXT).read_text().replace(
+                committed_image, fixture_image, 1)
+            long_context_path.write_text(long_context)
         return subprocess.run(['ruby', str(self.root / 'scripts/validate_glm53_prod_config.rb')],
                               capture_output=True, text=True)
 
@@ -399,6 +410,128 @@ class GeneratorTest(unittest.TestCase):
         output = result.stdout + result.stderr
         assert_no_ruby_crash(self, output)
         self.assertIn('must not set SGLANG_ADMISSION_RESERVE_MIN_WAIT_S', output)
+
+
+class LongContextTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        for name in (promotion.COMPOSE, promotion.CANDIDATE, promotion.RELEASE, LONG_CONTEXT,
+                     Path('scripts/validate_glm53_prod_config.rb')):
+            (self.root / name).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(ROOT / name, self.root / name)
+        self.long_context_path = self.root / LONG_CONTEXT
+
+    def run_validator(self):
+        return subprocess.run(['ruby', str(self.root / 'scripts/validate_glm53_prod_config.rb')],
+                              capture_output=True, text=True)
+
+    def validate(self, success=True):
+        result = self.run_validator()
+        self.assertEqual(result.returncode, 0 if success else 1, result.stdout + result.stderr)
+        return result
+
+    def test_accepts_committed_long_context_contract(self):
+        result = self.validate()
+        self.assertIn('GLM-5.3-Flash-SGL-TP4-LongContext.yaml', result.stdout)
+
+    def test_rejects_missing_long_context_file(self):
+        self.long_context_path.unlink()
+        result = self.validate(False)
+        self.assertIn('long-context file not found', result.stdout + result.stderr)
+
+    def test_rejects_hicache_on_long_context_r1(self):
+        valid = self.long_context_path.read_text()
+        marker = '    container_name: model-sg-glm53-fp8-tp4-r1\n'
+        self.assertEqual(valid.count(marker), 1)
+        mutated = valid.replace(
+            marker, marker + '    environment:\n      - SGLANG_HICACHE_POOLED_TRANSFERS=1\n', 1)
+        self.long_context_path.write_text(mutated)
+        result = self.validate(False)
+        self.assertIn('long-context r1 must remain the HiCache-disabled control',
+                      result.stdout + result.stderr)
+
+    def test_rejects_long_context_r2_contract_drift(self):
+        valid = self.long_context_path.read_text()
+        released_image = (ROOT / promotion.RELEASE).read_text().strip()
+        cases = (
+            (released_image, OTHER_FIXTURE_IMAGE, 'long-context r2 image must be RELEASED_IMAGE'),
+            ('--hicache-io-backend direct', '--hicache-io-backend kernel',
+             'long-context r2 must set --hicache-io-backend direct exactly once'),
+            ('${GLM53_HICACHE_RAM_BUDGET:-256GiB}', '${GLM53_HICACHE_RAM_BUDGET:-80%}',
+             'SGLANG_HICACHE_RAM_BUDGET=${GLM53_HICACHE_RAM_BUDGET:-256GiB}'),
+            ('SGLANG_HICACHE_STAGING_PAGES=64', 'SGLANG_HICACHE_STAGING_PAGES=128',
+             'SGLANG_HICACHE_STAGING_PAGES=64'),
+        )
+        for before, after, message in cases:
+            with self.subTest(mutation=after):
+                self.assertIn(before, valid)
+                self.long_context_path.write_text(valid.replace(before, after, 1))
+                result = self.validate(False)
+                self.assertIn(message, result.stdout + result.stderr)
+        self.long_context_path.write_text(valid)
+
+    def test_rejects_long_context_non_hicache_runtime_drift(self):
+        valid = self.long_context_path.read_text()
+        needle = '        --chunked-prefill-size 4096'
+        self.assertEqual(valid.count(needle), 1)
+        mutated = valid.replace(needle, '        --chunked-prefill-size 2048', 1)
+        self.long_context_path.write_text(mutated)
+        result = self.validate(False)
+        self.assertIn('long-context r2 must preserve all control serving arguments outside HiCache',
+                      result.stdout + result.stderr)
+
+    def test_rejects_admission_reserve_on_long_context_replicas(self):
+        valid = self.long_context_path.read_text()
+        marker = '    - SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE=1\n'
+        self.assertEqual(valid.count(marker), 2)
+        mutated = replace_nth(
+            valid,
+            marker,
+            0,
+            marker + '    - SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE=4096\n'
+                     '    - SGLANG_ADMISSION_RESERVE_MAX_FRACTION=0.75\n',
+        )
+        self.long_context_path.write_text(mutated)
+        result = self.validate(False)
+        self.assertIn('long-context replicas must not set admission-reserve environment',
+                      result.stdout + result.stderr)
+
+    def test_rejects_long_context_telemetry_variant_drift(self):
+        valid = self.long_context_path.read_text()
+        for expected in (LONG_CONTEXT_CONTROL_VARIANT, LONG_CONTEXT_HICACHE_VARIANT):
+            with self.subTest(variant=expected):
+                self.assertEqual(valid.count(expected), 3)
+                self.long_context_path.write_text(valid.replace(expected, 'incorrect-variant'))
+                result = self.validate(False)
+                self.assertIn('config_variant must be', result.stdout + result.stderr)
+        self.long_context_path.write_text(valid)
+
+    def test_rejects_missing_long_context_collector_content(self):
+        valid = self.long_context_path.read_text()
+        marker = '  otelcol_app_config:\n    content: |\n'
+        self.assertEqual(valid.count(marker), 1)
+        self.long_context_path.write_text(
+            valid.replace(marker, '  otelcol_app_config: {}\n  unused_app_config:\n    content: |\n', 1))
+        result = self.validate(False)
+        self.assertIn('long-context file otelcol_app_config is missing',
+                      result.stdout + result.stderr)
+
+    def test_rejects_renamed_or_conflicting_log_variant_tags(self):
+        valid = self.long_context_path.read_text()
+        exact = f'config_variant:{LONG_CONTEXT_CONTROL_VARIANT}'
+        cases = (
+            (exact, f'bogus_{exact}'),
+            (exact, exact + '","config_variant:conflicting-variant'),
+        )
+        for before, after in cases:
+            with self.subTest(mutation=after):
+                self.long_context_path.write_text(valid.replace(before, after, 1))
+                result = self.validate(False)
+                self.assertIn('log metadata must carry exactly config_variant:',
+                              result.stdout + result.stderr)
+        self.long_context_path.write_text(valid)
 
 
 if __name__ == '__main__':

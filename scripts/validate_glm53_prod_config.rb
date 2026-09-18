@@ -1,15 +1,17 @@
 #!/usr/bin/env ruby
-# Protect the canonical two-replica GLM-5.3 Flash production contract and the
-# separate r2-only HiCache canary file. Both replicas run the
-# admission-reserve v10 derivative image (docker/sglang-glm53-admission-reserve);
-# the HiCache file pins the HiCache+reserve derivative on r2.
+# Protect the canonical two-replica GLM-5.3 Flash production contract, the
+# separate r2-only HiCache canary, and the long-context r1-control/r2-HiCache
+# experiment. Admission reserve remains required in the first two files and is
+# forbidden in the long-context experiment pending a pool-clamp image.
 
+require "json"
 require "shellwords"
 require "yaml"
 
 ROOT = File.expand_path("..", __dir__)
 COMPOSE_FILE = File.join(ROOT, "prod", "GLM-5.3-Flash-SGL-TP4.yaml")
 HICACHE_FILE = File.join(ROOT, "prod", "GLM-5.3-Flash-SGL-TP4-HiCache.yaml")
+LONG_CONTEXT_FILE = File.join(ROOT, "prod", "GLM-5.3-Flash-SGL-TP4-LongContext.yaml")
 LEGACY_CANARY_FILE = File.join(ROOT, "prod", "GLM-5.3-Flash-SGL-TP4-Canary.yaml")
 RELEASED_IMAGE_FILE = File.join(ROOT, "docker", "sglang-glm53-hicache", "RELEASED_IMAGE")
 ENGINE_IMAGE = "docker.io/nearaidev/sglang@sha256:e9d29a1cb1cd65284392c4d62d5f2a36669628057e15c60fe93ea40cfe4fc7e7"
@@ -80,12 +82,13 @@ REQUIRED_SWITCHES = %w[
   --disable-fast-image-processor
 ].freeze
 REPLICA_IDENTITY_FIELDS = %w[container_name deploy labels].freeze
-# Admission-reserve v10 (docker/sglang-glm53-admission-reserve) must be enabled on
-# every replica in every validated file.
+# Admission-reserve v10 must remain enabled in the canonical and standalone
+# HiCache files. The long-context experiment has a separate reserve-free contract.
 REQUIRED_ENV = {
   "SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE" => "4096",
   "SGLANG_ADMISSION_RESERVE_MAX_FRACTION" => "0.75",
 }.freeze
+ADMISSION_RESERVE_ENV = REQUIRED_ENV.keys.freeze
 # SGLANG_ADMISSION_RESERVE_MIN_WAIT_S: wall-clock gate desyncs the TP ranks and
 # crashes the engine. SGLANG_ADMISSION_RESERVE_MIN_ITERS/FIT/DEBUG: unmeasured
 # or debug-only in production.
@@ -106,8 +109,13 @@ HICACHE_ENV = {
   "SGLANG_HICACHE_POOLED_TRANSFERS" => "1",
   "SGLANG_HICACHE_STAGING_PAGES" => "64",
 }.freeze
+LONG_CONTEXT_HICACHE_ENV = HICACHE_ENV.merge(
+  "SGLANG_HICACHE_RAM_BUDGET" => "${GLM53_HICACHE_RAM_BUDGET:-256GiB}",
+).freeze
 HICACHE_VARIANT = "fc91d24-hicache-cuda-host-pooled-v1-admission-reserve-v10-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
 OFFICIAL_VARIANT = "fc91d24-admission-reserve-v10-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
+LONG_CONTEXT_CONTROL_VARIANT = "fc91d24-long-context-admission-reserve-disabled-hicache-disabled-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
+LONG_CONTEXT_HICACHE_VARIANT = "fc91d24-long-context-admission-reserve-disabled-hicache-cuda-host-pooled-v1-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
 
 
 def yaml_load(content)
@@ -138,7 +146,10 @@ end
 # Same contract as load_compose_file, for a YAML document embedded as a
 # string field inside a compose file (e.g. a `content:` block).
 def load_embedded_yaml(errors, label, content)
-  return nil if content.nil?
+  if content.nil?
+    errors << "#{label} is missing"
+    return nil
+  end
 
   document = yaml_load(content)
   unless document.is_a?(Hash)
@@ -179,6 +190,16 @@ def command_text(service)
   command.is_a?(Array) ? command.join("\n") : command.to_s
 end
 
+def log_config_variant_tags(metadata)
+  Array(JSON.parse(metadata.to_s)).flat_map do |entry|
+    next [] unless entry.is_a?(Hash)
+
+    Array(entry["tags"]).select { |tag| tag.to_s.start_with?("config_variant:") }
+  end
+rescue JSON::ParserError
+  []
+end
+
 def validate_command(errors, name, command)
   arguments = Shellwords.split(command)
   errors << "#{name} command must start with sglang serve" unless arguments.first(2) == %w[sglang serve]
@@ -210,11 +231,11 @@ def runtime_contract(service)
   service.reject { |key, _value| REPLICA_IDENTITY_FIELDS.include?(key) }
 end
 
-# Checks shared by the canonical file and the HiCache file: expected service
+# Checks shared by the canonical, HiCache, and long-context files: expected service
 # set, per-replica serving contract (excluding image, which differs by file),
 # GPU device assignment, the perception-check image and the proxy contract.
 # Returns the replica services found, keyed by name.
-def validate_common(errors, label, services)
+def validate_common(errors, label, services, required_env = REQUIRED_ENV)
   missing_services = EXPECTED_SERVICES - services.keys
   extra_services = services.keys - EXPECTED_SERVICES
   errors << "#{label} is missing services: #{missing_services.join(', ')}" unless missing_services.empty?
@@ -233,7 +254,7 @@ def validate_common(errors, label, services)
     validate_command(errors, "#{label} #{name}", command_text(service))
 
     replica_env = environment_map(service)
-    REQUIRED_ENV.each do |key, expected_value|
+    required_env.each do |key, expected_value|
       errors << "#{label} #{name} must set #{key}=#{expected_value}" unless replica_env[key] == expected_value
     end
 
@@ -295,7 +316,11 @@ def check_variant(errors, file_label, service, service_name, collector, expected
     metric_variant = labels["nearai.otel.config_variant"]
     errors << "#{file_label} #{service_name} nearai.otel.config_variant must be #{expected_variant}, got #{metric_variant.inspect}" unless metric_variant == expected_variant
     log_tag = labels["com.datadoghq.ad.logs"]
-    errors << "#{file_label} #{service_name} log metadata must carry config_variant:#{expected_variant}" unless log_tag.to_s.include?("config_variant:#{expected_variant}")
+    expected_log_tag = "config_variant:#{expected_variant}"
+    actual_log_tags = log_config_variant_tags(log_tag)
+    unless actual_log_tags == [expected_log_tag]
+      errors << "#{file_label} #{service_name} log metadata must carry exactly #{expected_log_tag}, got #{actual_log_tags.inspect}"
+    end
   else
     errors << "#{file_label} #{service_name} is missing labels"
   end
@@ -348,7 +373,7 @@ end
 # is telemetry-pinned to OFFICIAL_VARIANT; r2 pins RELEASED_IMAGE, enables
 # HiCache with exactly the pinned options/env, is otherwise identical to r1,
 # and is telemetry-pinned to HICACHE_VARIANT.
-def validate_hicache(errors, compose, replica_services)
+def validate_hicache(errors, compose, replica_services, label = "HiCache", control_variant = OFFICIAL_VARIANT, hicache_variant = HICACHE_VARIANT, hicache_env = HICACHE_ENV)
   released_image = File.exist?(RELEASED_IMAGE_FILE) ? File.read(RELEASED_IMAGE_FILE).strip : nil
   unless released_image && released_image.match?(%r{\Adocker\.io/nearaidev/sglang@sha256:[a-f0-9]{64}\z}) && released_image != ENGINE_IMAGE
     errors << "RELEASED_IMAGE must be an immutable docker.io/nearaidev/sglang digest distinct from ENGINE_IMAGE"
@@ -359,44 +384,63 @@ def validate_hicache(errors, compose, replica_services)
   r2 = replica_services["model-sg-glm53-fp8-tp4-r2"]
   return unless r1 && r2
 
-  errors << "HiCache r1 image must be #{ENGINE_IMAGE}" unless r1["image"] == ENGINE_IMAGE
+  errors << "#{label} r1 image must be #{ENGINE_IMAGE}" unless r1["image"] == ENGINE_IMAGE
   r1_text = command_text(r1)
   if r1_text.include?("--enable-hierarchical-cache") || r1_text.include?("--hicache") ||
      environment_map(r1).keys.any? { |key| key.start_with?("SGLANG_HICACHE_") }
-    errors << "HiCache r1 must remain the HiCache-disabled control"
+    errors << "#{label} r1 must remain the HiCache-disabled control"
   end
 
-  errors << "HiCache r2 image must be RELEASED_IMAGE (#{released_image})" unless r2["image"] == released_image
+  errors << "#{label} r2 image must be RELEASED_IMAGE (#{released_image})" unless r2["image"] == released_image
 
   r1_arguments = Shellwords.split(command_text(r1))
   normalized = Marshal.load(Marshal.dump(r2))
   arguments = Shellwords.split(command_text(normalized))
-  errors << "HiCache r2 must enable HiCache exactly once" unless arguments.count("--enable-hierarchical-cache") == 1
+  errors << "#{label} r2 must enable HiCache exactly once" unless arguments.count("--enable-hierarchical-cache") == 1
   arguments.delete("--enable-hierarchical-cache")
   HICACHE_OPTIONS.each do |key, expected|
     positions = arguments.each_index.select { |index| arguments[index] == key }
     if positions.length != 1 || arguments[positions.first.to_i + 1] != expected
-      errors << "HiCache r2 must set #{key} #{expected} exactly once"
+      errors << "#{label} r2 must set #{key} #{expected} exactly once"
     else
       arguments.slice!(positions.first, 2)
     end
   end
-  errors << "HiCache r2 must preserve all control serving arguments outside HiCache" unless arguments == r1_arguments
+  errors << "#{label} r2 must preserve all control serving arguments outside HiCache" unless arguments == r1_arguments
 
   env = environment_map(normalized)
-  HICACHE_ENV.each do |key, expected|
-    errors << "HiCache r2 must set #{key}=#{expected}" unless env.delete(key) == expected
+  hicache_env.each do |key, expected|
+    errors << "#{label} r2 must set #{key}=#{expected}" unless env.delete(key) == expected
   end
-  errors << "HiCache r2 must preserve all control environment outside HiCache" unless env == environment_map(r1)
+  errors << "#{label} r2 must preserve all control environment outside HiCache" unless env == environment_map(r1)
 
   normalized["image"] = r1["image"]
   normalized["command"] = r1["command"]
   normalized["environment"] = r1["environment"]
-  errors << "HiCache r2 must preserve the control runtime outside HiCache" unless runtime_contract(normalized) == runtime_contract(r1)
+  errors << "#{label} r2 must preserve the control runtime outside HiCache" unless runtime_contract(normalized) == runtime_contract(r1)
 
-  collector = load_embedded_yaml(errors, "HiCache file otelcol_app_config", compose.dig("configs", "otelcol_app_config", "content"))
-  check_variant(errors, "HiCache", r1, "model-sg-glm53-fp8-tp4-r1", collector, OFFICIAL_VARIANT)
-  check_variant(errors, "HiCache", r2, "model-sg-glm53-fp8-tp4-r2", collector, HICACHE_VARIANT)
+  collector = load_embedded_yaml(errors, "#{label} file otelcol_app_config", compose.dig("configs", "otelcol_app_config", "content"))
+  check_variant(errors, label, r1, "model-sg-glm53-fp8-tp4-r1", collector, control_variant)
+  check_variant(errors, label, r2, "model-sg-glm53-fp8-tp4-r2", collector, hicache_variant)
+end
+
+def validate_long_context(errors, compose, replica_services)
+  reserve_env = replica_services.values.flat_map do |service|
+    environment_map(service).keys & ADMISSION_RESERVE_ENV
+  end.uniq
+  unless reserve_env.empty?
+    errors << "long-context replicas must not set admission-reserve environment: #{reserve_env.join(', ')}"
+  end
+
+  validate_hicache(
+    errors,
+    compose,
+    replica_services,
+    "long-context",
+    LONG_CONTEXT_CONTROL_VARIANT,
+    LONG_CONTEXT_HICACHE_VARIANT,
+    LONG_CONTEXT_HICACHE_ENV,
+  )
 end
 
 # Walks two equal-shaped (or not) structures and returns a dotted path to the
@@ -484,6 +528,19 @@ if hicache_present
   end
 end
 
+long_context_present = File.exist?(LONG_CONTEXT_FILE)
+if hicache_present && released_present && !long_context_present
+  errors << "long-context file not found at #{LONG_CONTEXT_FILE}"
+end
+if long_context_present
+  long_context_compose = load_compose_file(errors, "long-context file", LONG_CONTEXT_FILE)
+  if long_context_compose
+    long_context_services = long_context_compose.fetch("services", {})
+    long_context_replicas = validate_common(errors, "long-context", long_context_services, {})
+    validate_long_context(errors, long_context_compose, long_context_replicas)
+  end
+end
+
 if errors.any?
   warn "GLM-5.3 production contract failed:"
   errors.each { |error| warn "  - #{error}" }
@@ -492,3 +549,4 @@ end
 
 puts "GLM-5.3 production contract OK (prod/GLM-5.3-Flash-SGL-TP4.yaml)"
 puts "GLM-5.3 production contract OK (prod/GLM-5.3-Flash-SGL-TP4-HiCache.yaml)" if hicache_present
+puts "GLM-5.3 production contract OK (prod/GLM-5.3-Flash-SGL-TP4-LongContext.yaml)" if long_context_present
