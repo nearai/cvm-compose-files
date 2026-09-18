@@ -72,6 +72,10 @@ REQUIRED_OPTIONS = {
   "--limit-mm-data-per-request" => '{"image": 64}',
   "--log-requests-level" => "0",
 }.freeze
+BASE_REQUIRED_OPTIONS = REQUIRED_OPTIONS.merge(
+  "--max-running-requests" => "40",
+  "--cuda-graph-max-bs-decode" => "40",
+).freeze
 REQUIRED_SWITCHES = %w[
   --enable-priority-scheduling
   --disable-priority-preemption
@@ -197,11 +201,11 @@ rescue JSON::ParserError
   []
 end
 
-def validate_command(errors, name, command)
+def validate_command(errors, name, command, required_options = REQUIRED_OPTIONS)
   arguments = Shellwords.split(command)
   errors << "#{name} command must start with sglang serve" unless arguments.first(2) == %w[sglang serve]
 
-  REQUIRED_OPTIONS.each do |option, expected_value|
+  required_options.each do |option, expected_value|
     positions = arguments.each_index.select { |index| arguments[index] == option }
     if positions.length != 1
       errors << "#{name} command must contain #{option} exactly once"
@@ -232,7 +236,7 @@ end
 # set, per-replica serving contract (excluding image, which differs by file),
 # GPU device assignment, the perception-check image and the proxy contract.
 # Returns the replica services found, keyed by name.
-def validate_common(errors, label, services, required_env = REQUIRED_ENV)
+def validate_common(errors, label, services, required_env = REQUIRED_ENV, required_options = BASE_REQUIRED_OPTIONS)
   missing_services = EXPECTED_SERVICES - services.keys
   extra_services = services.keys - EXPECTED_SERVICES
   errors << "#{label} is missing services: #{missing_services.join(', ')}" unless missing_services.empty?
@@ -248,7 +252,7 @@ def validate_common(errors, label, services, required_env = REQUIRED_ENV)
 
     replica_services[name] = service
     errors << "#{label} #{name} must use the prebuilt signed image, not a host-local build" if service.key?("build")
-    validate_command(errors, "#{label} #{name}", command_text(service))
+    validate_command(errors, "#{label} #{name}", command_text(service), required_options)
 
     replica_env = environment_map(service)
     required_env.each do |key, expected_value|
@@ -533,7 +537,7 @@ if long_context_present
   long_context_compose = load_compose_file(errors, "long-context file", LONG_CONTEXT_FILE)
   if long_context_compose
     long_context_services = long_context_compose.fetch("services", {})
-    long_context_replicas = validate_common(errors, "long-context", long_context_services, {})
+    long_context_replicas = validate_common(errors, "long-context", long_context_services, {}, REQUIRED_OPTIONS)
     validate_long_context(errors, long_context_compose, long_context_replicas)
   end
 end
