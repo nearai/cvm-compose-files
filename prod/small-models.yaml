@@ -275,7 +275,7 @@ x-sg-glm53-flash-common: &sg-glm53-flash-common
   logging: *logging-conf
 
 x-dcgm-common: &dcgm-common
-  image: nvcr.io/nvidia/k8s/dcgm-exporter:4.5.2-4.8.1-distroless
+  image: nvcr.io/nvidia/k8s/dcgm-exporter@sha256:ed594cf53fe6942e84b07b0740cdcbb249fa4b39cb21feeebf93881ae51f0b5e
   runtime: nvidia
   cap_add:
     - SYS_ADMIN
@@ -1447,7 +1447,6 @@ services:
 
   dcgm-glm53:
     <<: *dcgm-common
-    image: nvcr.io/nvidia/k8s/dcgm-exporter@sha256:ed594cf53fe6942e84b07b0740cdcbb249fa4b39cb21feeebf93881ae51f0b5e
     container_name: dcgm-glm53
     deploy:
       resources:
