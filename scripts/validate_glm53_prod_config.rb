@@ -109,9 +109,6 @@ HICACHE_ENV = {
   "SGLANG_HICACHE_POOLED_TRANSFERS" => "1",
   "SGLANG_HICACHE_STAGING_PAGES" => "64",
 }.freeze
-LONG_CONTEXT_HICACHE_ENV = HICACHE_ENV.merge(
-  "SGLANG_HICACHE_RAM_BUDGET" => "${GLM53_HICACHE_RAM_BUDGET:-256GiB}",
-).freeze
 HICACHE_VARIANT = "fc91d24-hicache-cuda-host-pooled-v1-admission-reserve-v10-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
 OFFICIAL_VARIANT = "fc91d24-admission-reserve-v10-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
 LONG_CONTEXT_CONTROL_VARIANT = "fc91d24-long-context-admission-reserve-disabled-hicache-disabled-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
@@ -439,7 +436,7 @@ def validate_long_context(errors, compose, replica_services)
     "long-context",
     LONG_CONTEXT_CONTROL_VARIANT,
     LONG_CONTEXT_HICACHE_VARIANT,
-    LONG_CONTEXT_HICACHE_ENV,
+    HICACHE_ENV,
   )
 end
 

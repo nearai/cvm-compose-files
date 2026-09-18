@@ -459,8 +459,8 @@ class LongContextTest(unittest.TestCase):
             (released_image, OTHER_FIXTURE_IMAGE, 'long-context r2 image must be RELEASED_IMAGE'),
             ('--hicache-io-backend direct', '--hicache-io-backend kernel',
              'long-context r2 must set --hicache-io-backend direct exactly once'),
-            ('${GLM53_HICACHE_RAM_BUDGET:-256GiB}', '${GLM53_HICACHE_RAM_BUDGET:-80%}',
-             'SGLANG_HICACHE_RAM_BUDGET=${GLM53_HICACHE_RAM_BUDGET:-256GiB}'),
+            ('${GLM53_HICACHE_RAM_BUDGET:-80%}', '${GLM53_HICACHE_RAM_BUDGET:-256GiB}',
+             'SGLANG_HICACHE_RAM_BUDGET=${GLM53_HICACHE_RAM_BUDGET:-80%}'),
             ('SGLANG_HICACHE_STAGING_PAGES=64', 'SGLANG_HICACHE_STAGING_PAGES=128',
              'SGLANG_HICACHE_STAGING_PAGES=64'),
         )

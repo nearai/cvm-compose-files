@@ -72,9 +72,9 @@ x-logging-conf: &logging-conf
 # the official GLM-5.3 branch. It contains upstream disconnect cleanup (#35255), the
 # final-prefill abort fix (#34153), the strict thinking-budget adapter, and two narrow
 # DSA import-cycle fixes. r1 pins the published base engine as the ordinary GPU-prefix-
-# cache control; r2 pins the published HCC-safe HiCache derivative and uses a 256 GiB
-# total host-memory budget across all four TP ranks by default. The deployment may
-# override that total with GLM53_HICACHE_RAM_BUDGET.
+# cache control; r2 pins the published HCC-safe HiCache derivative and uses an 80%
+# startup host-memory budget across all four TP ranks by default. The deployment may
+# override that percentage with GLM53_HICACHE_RAM_BUDGET.
 #
 # Admission reserve is deliberately disabled on both replicas: reserve v10 admitted a
 # 292K-cached waiter beside an in-flight chunked prefill on gpu02 and exhausted the
@@ -500,8 +500,8 @@ services:
       # Admission reserve stays unset pending a published, qualified pool-clamp image.
       # --prefill-decode-interval 1 is retained independently of the inert reserve patch.
       - SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE=1
-      # Total host-memory budget across all four TP ranks, overridable at deployment.
-      - SGLANG_HICACHE_RAM_BUDGET=${GLM53_HICACHE_RAM_BUDGET:-256GiB}
+      # 80% startup host-memory budget across all four TP ranks, overridable at deployment.
+      - SGLANG_HICACHE_RAM_BUDGET=${GLM53_HICACHE_RAM_BUDGET:-80%}
       - SGLANG_HICACHE_CUDA_HOST_MEMORY=${GLM53_HICACHE_CUDA_HOST_MEMORY:-1}
       - SGLANG_HICACHE_POOLED_TRANSFERS=1
       - SGLANG_HICACHE_STAGING_PAGES=64
