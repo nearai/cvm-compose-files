@@ -4,14 +4,16 @@ on:
   workflow_dispatch:
     inputs:
       variant:
-        description: Which admission-reserve derivative to build
+        description: Which derivative to build
         required: true
         type: choice
         options:
           - base
           - hicache
+          - base-clamp
+          - hicache-clamp
       tag:
-        description: Docker Hub tag; empty derives glm53-admission-reserve-v10 (base) or glm53-hicache-admission-reserve-v10 (hicache)
+        description: Docker Hub tag; empty derives the per-variant default (glm53-admission-reserve-v10, glm53-hicache-admission-reserve-v10, glm53-pool-clamp-v1, glm53-hicache-pool-clamp-v1)
         required: false
         type: string
         default: ''
@@ -73,6 +75,26 @@ jobs:
               echo "TEST_SCRIPT=/usr/share/nearai/glm53-hicache-admission-reserve/test-cpu.sh" >> "$GITHUB_ENV"
               echo "EVIDENCE_PREFIX=glm53-admission-reserve-hicache" >> "$GITHUB_ENV"
               DEFAULT_TAG=glm53-hicache-admission-reserve-v10
+              ;;
+            base-clamp)
+              echo "BUILD_CONTEXT=docker/sglang-glm53-pool-clamp" >> "$GITHUB_ENV"
+              echo "BASE_DIGEST=sha256:e9d29a1cb1cd65284392c4d62d5f2a36669628057e15c60fe93ea40cfe4fc7e7" >> "$GITHUB_ENV"
+              echo "EXPECTED_DOCKERFILE_SHA256=2437f0f7e82c4c61de2cc58e05f6354938c2ec498c1cc4eed45eb395393ab3c3" >> "$GITHUB_ENV"
+              echo "EXPECTED_PROVENANCE_SHA256=39aacf7b43cbce15e3a949d37344602b9f2d94641780695f5a4a234826c15674" >> "$GITHUB_ENV"
+              echo "EXPECTED_SHA256SUMS_SHA256=eabe0e5779e473e2f73084079e39f1b2c5c025b497b40e4a5281038387546f2f" >> "$GITHUB_ENV"
+              echo "TEST_SCRIPT=/usr/share/nearai/glm53-pool-clamp/test-cpu.sh" >> "$GITHUB_ENV"
+              echo "EVIDENCE_PREFIX=glm53-pool-clamp-base" >> "$GITHUB_ENV"
+              DEFAULT_TAG=glm53-pool-clamp-v1
+              ;;
+            hicache-clamp)
+              echo "BUILD_CONTEXT=docker/sglang-glm53-hicache-pool-clamp" >> "$GITHUB_ENV"
+              echo "BASE_DIGEST=sha256:3eccc30709f5719c81084d1264f03ca5354b3059ec4cff62f0c5ff88c309680c" >> "$GITHUB_ENV"
+              echo "EXPECTED_DOCKERFILE_SHA256=a875e5177283fbb35d3742fc3d4b99d06299775bd68299cc42818f3701dda820" >> "$GITHUB_ENV"
+              echo "EXPECTED_PROVENANCE_SHA256=0c20ff1305272b5a74b6c56303cc040cde0323774831c58d77626d0e5d2ae6af" >> "$GITHUB_ENV"
+              echo "EXPECTED_SHA256SUMS_SHA256=3cdf625b04aed92cbbd88e4b285d2d6d2b7ac7d7cdd6f1eb57e2b73eccb9c6a9" >> "$GITHUB_ENV"
+              echo "TEST_SCRIPT=/usr/share/nearai/glm53-hicache-pool-clamp/test-cpu.sh" >> "$GITHUB_ENV"
+              echo "EVIDENCE_PREFIX=glm53-pool-clamp-hicache" >> "$GITHUB_ENV"
+              DEFAULT_TAG=glm53-hicache-pool-clamp-v1
               ;;
             *)
               echo "Unknown variant: $VARIANT" >&2
