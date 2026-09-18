@@ -44,18 +44,16 @@ EXPECTED_SERVICES = [
   "dcgm-glm53",
   "otelcol-contrib",
 ].freeze
-REQUIRED_OPTIONS = {
+COMMON_REQUIRED_OPTIONS = {
   "--model-path" => "/root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/84c6a6aa9497188e15a635ba793b0f95a79b1033",
   "--revision" => "84c6a6aa9497188e15a635ba793b0f95a79b1033",
   "--served-model-name" => "z-ai/glm-5.3-flash",
   "--tp-size" => "4",
   "--ep-size" => "4",
   "--mem-fraction-static" => "0.80",
-  "--max-running-requests" => "32",
   "--max-queued-requests" => "8",
   "--chunked-prefill-size" => "4096",
   "--prefill-decode-interval" => "1",
-  "--cuda-graph-max-bs-decode" => "32",
   "--dsa-prefill-backend" => "tilelang",
   "--dsa-decode-backend" => "tilelang",
   "--kv-cache-dtype" => "bfloat16",
@@ -72,9 +70,14 @@ REQUIRED_OPTIONS = {
   "--limit-mm-data-per-request" => '{"image": 64}',
   "--log-requests-level" => "0",
 }.freeze
-BASE_REQUIRED_OPTIONS = REQUIRED_OPTIONS.merge(
+BASE_REQUIRED_OPTIONS = COMMON_REQUIRED_OPTIONS.merge(
   "--max-running-requests" => "40",
   "--cuda-graph-max-bs-decode" => "40",
+).freeze
+# The long-context experiment intentionally retains its 32-request envelope.
+LONG_CONTEXT_REQUIRED_OPTIONS = BASE_REQUIRED_OPTIONS.merge(
+  "--max-running-requests" => "32",
+  "--cuda-graph-max-bs-decode" => "32",
 ).freeze
 REQUIRED_SWITCHES = %w[
   --enable-priority-scheduling
@@ -201,7 +204,7 @@ rescue JSON::ParserError
   []
 end
 
-def validate_command(errors, name, command, required_options = REQUIRED_OPTIONS)
+def validate_command(errors, name, command, required_options)
   arguments = Shellwords.split(command)
   errors << "#{name} command must start with sglang serve" unless arguments.first(2) == %w[sglang serve]
 
@@ -537,7 +540,7 @@ if long_context_present
   long_context_compose = load_compose_file(errors, "long-context file", LONG_CONTEXT_FILE)
   if long_context_compose
     long_context_services = long_context_compose.fetch("services", {})
-    long_context_replicas = validate_common(errors, "long-context", long_context_services, {}, REQUIRED_OPTIONS)
+    long_context_replicas = validate_common(errors, "long-context", long_context_services, {}, LONG_CONTEXT_REQUIRED_OPTIONS)
     validate_long_context(errors, long_context_compose, long_context_replicas)
   end
 end
