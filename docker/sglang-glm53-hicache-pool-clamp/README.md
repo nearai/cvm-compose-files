@@ -30,10 +30,17 @@ worth of tokens that do not exist, which raises `Prefill out of memory` and kill
 Hybrid-SWA models get a park-and-retry escape one line above. Hybrid-SSM models — GLM-5.3 Flash
 is one, which is why the crash log carries an `Available mamba:` line — get none.
 
-This is an upstream SGLang defect, not something the admission-reserve patch introduced: it
-reproduces with `SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE` unset. What the reserve changes is
-how often the precondition is reached, because admitting short requests behind a long prefill is
-its purpose and every admitted request enlarges the decode projection.
+Enabling the admission reserve on the long-context tier is what caused the outage. The tier ran
+clean for 14 days, crashed 36 minutes after the build landed, and has been clean since the
+rollback, so the reserve is the but-for cause and rolling it back was the right call.
+
+The defective line itself is pre-existing upstream code — the admission-reserve v10 diff does not
+modify it — but that is a statement about where the bug lives, not about what triggered it. The
+reserve makes the precondition reachable: admitting short requests behind a long prefill is its
+entire purpose, and every admitted request enlarges the decode projection that drives
+`rem_total_tokens` negative. In the lab A/B under identical load, only the reserve arm ever
+reached that state; the control arm logged zero. Both need fixing, and this recipe fixes the
+latent defect so the reserve can be re-enabled safely.
 
 ## What it looked like in production
 

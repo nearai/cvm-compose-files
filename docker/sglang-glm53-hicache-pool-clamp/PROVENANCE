@@ -7,7 +7,8 @@ patch_file=docker/sglang-glm53-hicache-pool-clamp/chunked-prefill-pool-clamp.dif
 patch_sha256=ba911be688556df0c0b2c9a26cde4c9f38b410a5ba51020d7754fa2e8cd010c3
 patch_scope=PrefillAdder.add_chunked_req only; no new env var, no runtime opt-in
 defect=rem_total_tokens <= 0 fallback restored the full --chunked-prefill-size with no pool clamp
-defect_origin=upstream SGLang, not the admission-reserve patch; reproduced with the reserve unset
+defect_site=upstream SGLang; the admission-reserve v10 diff does not modify these lines
+outage_cause=enabling the admission reserve on the long-context tier (#276) made the defect reachable
 affected=hybrid-SSM models (is_hybrid_ssm_cache); hybrid-SWA already had a park-and-retry escape
 evidence=gpu31:/data/inference-optimizer-20260913/results/oom6 (REPRO.md, FINDINGS.md)
 build_recipe=docker/sglang-glm53-hicache-pool-clamp/Dockerfile
