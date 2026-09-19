@@ -115,16 +115,31 @@ shared_gpu3.each do |name|
   assert.call(small_ids.call(name) == ['3'], "gpu13 shared service must use GPU 3: #{name}")
 end
 assert.call(!small_services.key?('dcgm-shared-gpu7'), 'Retired gpu13 shared GPU 7 exporter must be absent')
+small_services.each do |name, service|
+  device_ids = service.dig('deploy', 'resources', 'reservations', 'devices')&.flat_map { |device| device.fetch('device_ids') } || []
+  next unless device_ids.any? { |id| %w[4 5 6 7].include?(id) }
+
+  assert.call(%w[model-sg-glm53-fp8-tp4 dcgm-glm53].include?(name), "Unexpected gpu13 GPU 4-7 claim: #{name}")
+end
 small_engine = small_services.fetch('model-sg-glm53-fp8-tp4')
 assert.call(small_engine['image'] == 'docker.io/nearaidev/sglang@sha256:e9d29a1cb1cd65284392c4d62d5f2a36669628057e15c60fe93ea40cfe4fc7e7', 'Qualified gpu13 GLM image changed')
-%w[--tp-size\ 4 --ep-size\ 4 --max-running-requests\ 40 --max-queued-requests\ 8 --cuda-graph-max-bs-decode\ 40].each do |flag|
-  assert.call(small_engine.fetch('command').include?(flag), "gpu13 GLM runtime flag changed: #{flag}")
+{
+  '--tp-size' => '4',
+  '--ep-size' => '4',
+  '--max-running-requests' => '40',
+  '--max-queued-requests' => '8',
+  '--cuda-graph-max-bs-decode' => '40'
+}.each do |flag, value|
+  exact_flag = /#{Regexp.escape(flag)} #{Regexp.escape(value)}\b/
+  assert.call(small_engine.fetch('command').match?(exact_flag), "gpu13 GLM runtime flag changed: #{flag} #{value}")
 end
 small_proxy = small_services.fetch('proxy-glm53')
 assert.call(small_proxy['image'] == 'nearaidev/vllm-proxy-rs@sha256:b3a8c6260834231271b4356c56a7aa2718608c8a537b35973916e0a56dc88fba', 'Qualified gpu13 GLM proxy image changed')
 assert.call(small_proxy.fetch('environment').include?('VLLM_BACKEND_URLS=http://model-sg-glm53-fp8-tp4:8000'), 'gpu13 GLM proxy must have one backend')
 assert.call(small_proxy.fetch('environment').include?('VLLM_BACKEND_CONVERSATION_AFFINITY=1'), 'gpu13 GLM affinity contract changed')
-assert.call(small_services.fetch('dcgm-shared-gpu3')['image'] == 'nvcr.io/nvidia/k8s/dcgm-exporter@sha256:ed594cf53fe6942e84b07b0740cdcbb249fa4b39cb21feeebf93881ae51f0b5e', 'gpu13 shared DCGM image must be pinned')
+dcgm_image = 'nvcr.io/nvidia/k8s/dcgm-exporter@sha256:ed594cf53fe6942e84b07b0740cdcbb249fa4b39cb21feeebf93881ae51f0b5e'
+assert.call(small_services.fetch('dcgm-glm53')['image'] == dcgm_image, 'gpu13 GLM exporter image must be pinned')
+assert.call(small_services.fetch('dcgm-shared-gpu3')['image'] == dcgm_image, 'gpu13 shared DCGM image must be pinned')
 registrar = small.fetch('configs').fetch('registrar_script').fetch('content')
 nginx = small.fetch('configs').fetch('nginx_conf').fetch('content')
 assert.call(small_services.fetch('nginx').fetch('ports').map(&:to_s).include?('8009:8009'), 'gpu13 nginx must publish host port 8009')
