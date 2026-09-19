@@ -1,0 +1,66 @@
+--- a/python/sglang/srt/managers/schedule_policy.py
++++ b/python/sglang/srt/managers/schedule_policy.py
+@@ -646,28 +646,33 @@
+         )
+ 
+     @property
+-    def rem_total_tokens(self):
++    def _pool_available_and_evictable(self):
++        """Tokens alloc_extend can actually obtain right now (free pages plus what the tree
++        cache would evict to satisfy the request). No decode projection is subtracted."""
+         if self.is_all_swa:
+-            available_and_evictable = (
++            return (
+                 self.token_to_kv_pool_allocator.swa_available_size()
+                 + self.tree_cache.swa_evictable_size()
+             )
+         elif self.is_hybrid_swa:
+-            available_and_evictable = (
++            return (
+                 self.token_to_kv_pool_allocator.full_available_size()
+                 + self.tree_cache.full_evictable_size()
+             )
+         elif self.is_hybrid_ssm_cache:
+-            available_and_evictable = (
++            return (
+                 self.token_to_kv_pool_allocator.available_size()
+                 + self.tree_cache.full_evictable_size()
+             )
+         else:
+-            available_and_evictable = (
++            return (
+                 self.token_to_kv_pool_allocator.available_size()
+                 + self.tree_cache.evictable_size()
+             )
+-        return available_and_evictable - self.rem_total_token_offset
++
++    @property
++    def rem_total_tokens(self):
++        return self._pool_available_and_evictable - self.rem_total_token_offset
+ 
+     @property
+     def rem_swa_tokens(self):
+@@ -1035,7 +1040,22 @@
+             if _rem_tokens <= 0:
+                 if self.is_hybrid_swa:
+                     return req
+-                _rem_tokens = self.rem_chunk_tokens
++                # rem_total_tokens can go negative purely because rem_total_token_offset is a
++                # PROJECTION of decode for the whole running batch (~CLIP_MAX_NEW_TOKENS per
++                # running request, independent of prompt size), so it exceeds the free pool long
++                # before the pool is actually empty. Restoring the full chunk budget here ignores
++                # the pool entirely and asks alloc_extend for tokens that do not exist, which
++                # raises "Prefill out of memory" and kills the engine (seen on the GLM-5.3 Flash
++                # long-context tier: rem_total=-23, avail=2304, evictable=0 -> alloc 4096).
++                # Keep the chunked request progressing, but never ask for more than the allocator
++                # can serve, keeping one page of margin as the hybrid-SWA path above does. If not
++                # even one page is free, park this chunk and retry next pass -- the same early
++                # return the hybrid-SWA branch takes, which the caller already handles.
++                _servable = self._pool_available_and_evictable - self.page_size
++                _rem_tokens = max(min(self.rem_chunk_tokens, _servable), 0)
++                _rem_tokens = _rem_tokens // self.page_size * self.page_size
++                if _rem_tokens <= 0:
++                    return req
+ 
+         # A mid-chunk rank prefills this pass regardless of the delayer
+         # verdict, so report prefillable=True and ignore the result.

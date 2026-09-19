@@ -1,0 +1,14 @@
+base_image=docker.io/nearaidev/sglang@sha256:3eccc30709f5719c81084d1264f03ca5354b3059ec4cff62f0c5ff88c309680c
+base_recipe=docker/sglang-glm53-hicache-admission-reserve
+source_repository=https://github.com/PierreLeGuen/sglang-upstream
+source_revision=fc91d2403cc210a86bd5fc715c6609f58c932e5a
+patch_source=https://github.com/nearai/cvm-compose-files
+patch_file=docker/sglang-glm53-hicache-pool-clamp/chunked-prefill-pool-clamp.diff
+patch_sha256=ba911be688556df0c0b2c9a26cde4c9f38b410a5ba51020d7754fa2e8cd010c3
+patch_scope=PrefillAdder.add_chunked_req only; no new env var, no runtime opt-in
+defect=rem_total_tokens <= 0 fallback restored the full --chunked-prefill-size with no pool clamp
+defect_site=upstream SGLang; the admission-reserve v10 diff does not modify these lines
+outage_cause=enabling the admission reserve on the long-context tier (#276) made the defect reachable
+affected=hybrid-SSM models (is_hybrid_ssm_cache); hybrid-SWA already had a park-and-retry escape
+evidence=gpu31:/data/inference-optimizer-20260913/results/oom6 (REPRO.md, FINDINGS.md)
+build_recipe=docker/sglang-glm53-hicache-pool-clamp/Dockerfile
