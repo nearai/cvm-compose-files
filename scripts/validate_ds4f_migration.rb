@@ -147,6 +147,8 @@ assert.call(registrar.match?(/8009\) check_chat "\$\$\{HOST_IP\}:8009" "z-ai\/gl
 assert.call(registrar.match?(/register_model "z-ai\/glm-5\.3-flash" "glm-5-3-flash\.completions\.near\.ai"/), 'gpu13 registrar must map GLM to its public domain')
 assert.call(nginx.match?(/listen 8009;\s+location \/ \{ proxy_pass http:\/\/proxy-glm53:8000; \}/), 'gpu13 nginx port 8009 must route to the GLM proxy')
 assert.call(nginx.match?(/server_name glm-5-3-flash\.completions\.near\.ai.*?location \/ \{ proxy_pass http:\/\/proxy-glm53:8000; \}/m), 'gpu13 GLM SNI must route to the GLM proxy')
+glm_sni = nginx[/server_name glm-5-3-flash\.completions\.near\.ai.*?location \/ \{ proxy_pass http:\/\/proxy-glm53:8000; \}/m]
+assert.call(glm_sni.include?('"~^glm-5-3-flash-b[0-9a-f]{12}\.completions(-stg)?\.near\.ai$$";'), 'gpu13 GLM SNI must accept model-proxy backend handles')
 small_jobs = YAML.safe_load(small.fetch('configs').fetch('otelcol_app_config').fetch('content')).dig('receivers', 'prometheus/apps', 'config', 'scrape_configs')
 %w[sglang-model-sg-glm53-fp8-tp4 dcgm-dcgm-glm53 dcgm-dcgm-shared-gpu3 inference-proxy-proxy-glm53].each do |job|
   assert.call(small_jobs.any? { |entry| entry['job_name'] == job }, "gpu13 OTel scrape missing: #{job}")
