@@ -2526,7 +2526,8 @@ configs:
           listen 443 ssl http2;
           server_name glm-5-3-flash.completions.near.ai
                       glm-5-3-flash.completions-stg.near.ai
-                      ~^glm-5-3-flash-i\d+\.completions(-stg)?\.near\.ai$$;
+                      ~^glm-5-3-flash-i\d+\.completions(-stg)?\.near\.ai$$
+                      "~^glm-5-3-flash-b[0-9a-f]{12}\.completions(-stg)?\.near\.ai$$";
           keepalive_timeout 1h;
           keepalive_requests 1000000;
           location ^~ /metrics { return 404; }
