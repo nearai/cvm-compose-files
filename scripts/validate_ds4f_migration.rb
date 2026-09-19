@@ -7,6 +7,7 @@ load_compose = ->(file) { YAML.load_file(File.join(root, file), aliases: true) }
 bridge = load_compose.call('prod/GLM-5.1-DSV4-Migration.yaml')
 qwen = load_compose.call('prod/qwen36-qwen38.yaml')
 glm = load_compose.call('prod/GLM-5.1-SGL-AWQ-TP4.yaml')
+small = load_compose.call('prod/small-models.yaml')
 services = bridge.fetch('services')
 glm_name = 'model-sg-glm51-awq-tp4-r1'
 ds_names = %w[model-sg-dsv4-flash-fp4-tp2-r1 model-sg-dsv4-flash-fp4-tp2-r2]
@@ -87,4 +88,68 @@ assert.call(status.success?, 'Qwen registrar test failed')
   assert.call(calls.include?(model), "Qwen model registration missing: #{model}")
 end
 assert.call(!calls.include?('127.0.0.1:8001'), 'Qwen registrar must not probe removed endpoint')
-puts 'DS4F destination and Qwen-only allocation, telemetry and registrar contracts OK'
+
+small_services = small.fetch('services')
+small_ids = ->(name) do
+  small_services.fetch(name).dig('deploy', 'resources', 'reservations', 'devices').flat_map { |d| d.fetch('device_ids') }
+end
+scalar_strings = lambda do |value|
+  case value
+  when Hash then value.flat_map { |key, child| [key.to_s] + scalar_strings.call(child) }
+  when Array then value.flat_map { |child| scalar_strings.call(child) }
+  else [value.to_s]
+  end
+end
+assert.call(scalar_strings.call(small).none? { |value| value.match?(/dsv4|deepseek|ds4f/i) }, 'gpu13 rendered configuration must not contain retired DS4F identities')
+assert.call(small_ids.call('model-sg-glm53-fp8-tp4') == %w[4 5 6 7], 'gpu13 GLM must use GPUs 4-7')
+assert.call(small_ids.call('dcgm-glm53') == %w[4 5 6 7], 'gpu13 GLM exporter must use GPUs 4-7')
+shared_gpu3 = %w[
+  model-sg-flux2-klein-4b-tp1
+  model-vllm-qwen3vl-30b-a3b-fp8-tp1
+  model-vllm-qwen3-embedding-0.6b-tp1
+  model-vllm-qwen3-reranker-0.6b-tp1
+  model-vllm-whisper-large-v3-tp1
+  dcgm-shared-gpu3
+]
+shared_gpu3.each do |name|
+  assert.call(small_ids.call(name) == ['3'], "gpu13 shared service must use GPU 3: #{name}")
+end
+assert.call(!small_services.key?('dcgm-shared-gpu7'), 'Retired gpu13 shared GPU 7 exporter must be absent')
+small_services.each do |name, service|
+  device_ids = service.dig('deploy', 'resources', 'reservations', 'devices')&.flat_map { |device| device.fetch('device_ids') } || []
+  next unless device_ids.any? { |id| %w[4 5 6 7].include?(id) }
+
+  assert.call(%w[model-sg-glm53-fp8-tp4 dcgm-glm53].include?(name), "Unexpected gpu13 GPU 4-7 claim: #{name}")
+end
+small_engine = small_services.fetch('model-sg-glm53-fp8-tp4')
+assert.call(small_engine['image'] == 'docker.io/nearaidev/sglang@sha256:e9d29a1cb1cd65284392c4d62d5f2a36669628057e15c60fe93ea40cfe4fc7e7', 'Qualified gpu13 GLM image changed')
+{
+  '--tp-size' => '4',
+  '--ep-size' => '4',
+  '--max-running-requests' => '40',
+  '--max-queued-requests' => '8',
+  '--cuda-graph-max-bs-decode' => '40'
+}.each do |flag, value|
+  exact_flag = /#{Regexp.escape(flag)} #{Regexp.escape(value)}\b/
+  assert.call(small_engine.fetch('command').match?(exact_flag), "gpu13 GLM runtime flag changed: #{flag} #{value}")
+end
+small_proxy = small_services.fetch('proxy-glm53')
+assert.call(small_proxy['image'] == 'nearaidev/vllm-proxy-rs@sha256:b3a8c6260834231271b4356c56a7aa2718608c8a537b35973916e0a56dc88fba', 'Qualified gpu13 GLM proxy image changed')
+assert.call(small_proxy.fetch('environment').include?('VLLM_BACKEND_URLS=http://model-sg-glm53-fp8-tp4:8000'), 'gpu13 GLM proxy must have one backend')
+assert.call(small_proxy.fetch('environment').include?('VLLM_BACKEND_CONVERSATION_AFFINITY=1'), 'gpu13 GLM affinity contract changed')
+dcgm_image = 'nvcr.io/nvidia/k8s/dcgm-exporter@sha256:ed594cf53fe6942e84b07b0740cdcbb249fa4b39cb21feeebf93881ae51f0b5e'
+assert.call(small_services.fetch('dcgm-glm53')['image'] == dcgm_image, 'gpu13 GLM exporter image must be pinned')
+assert.call(small_services.fetch('dcgm-shared-gpu3')['image'] == dcgm_image, 'gpu13 shared DCGM image must be pinned')
+registrar = small.fetch('configs').fetch('registrar_script').fetch('content')
+nginx = small.fetch('configs').fetch('nginx_conf').fetch('content')
+assert.call(small_services.fetch('nginx').fetch('ports').map(&:to_s).include?('8009:8009'), 'gpu13 nginx must publish host port 8009')
+assert.call(registrar.match?(/8009\) check_chat "\$\$\{HOST_IP\}:8009" "z-ai\/glm-5\.3-flash"/), 'gpu13 registrar port 8009 health check must require GLM')
+assert.call(registrar.match?(/register_model "z-ai\/glm-5\.3-flash" "glm-5-3-flash\.completions\.near\.ai"/), 'gpu13 registrar must map GLM to its public domain')
+assert.call(nginx.match?(/listen 8009;\s+location \/ \{ proxy_pass http:\/\/proxy-glm53:8000; \}/), 'gpu13 nginx port 8009 must route to the GLM proxy')
+assert.call(nginx.match?(/server_name glm-5-3-flash\.completions\.near\.ai.*?location \/ \{ proxy_pass http:\/\/proxy-glm53:8000; \}/m), 'gpu13 GLM SNI must route to the GLM proxy')
+small_jobs = YAML.safe_load(small.fetch('configs').fetch('otelcol_app_config').fetch('content')).dig('receivers', 'prometheus/apps', 'config', 'scrape_configs')
+%w[sglang-model-sg-glm53-fp8-tp4 dcgm-dcgm-glm53 dcgm-dcgm-shared-gpu3 inference-proxy-proxy-glm53].each do |job|
+  assert.call(small_jobs.any? { |entry| entry['job_name'] == job }, "gpu13 OTel scrape missing: #{job}")
+end
+
+puts 'DS4F migration and gpu13 GLM replacement allocation, telemetry and registrar contracts OK'
