@@ -4,14 +4,16 @@ on:
   workflow_dispatch:
     inputs:
       variant:
-        description: Which admission-reserve derivative to build
+        description: Which derivative to build
         required: true
         type: choice
         options:
           - base
           - hicache
+          - base-clamp
+          - hicache-clamp
       tag:
-        description: Docker Hub tag; empty derives glm53-admission-reserve-v10 (base) or glm53-hicache-admission-reserve-v10 (hicache)
+        description: Docker Hub tag; empty derives the per-variant default (glm53-admission-reserve-v10, glm53-hicache-admission-reserve-v10, glm53-pool-clamp-v1, glm53-hicache-pool-clamp-v1)
         required: false
         type: string
         default: ''
@@ -73,6 +75,26 @@ jobs:
               echo "TEST_SCRIPT=/usr/share/nearai/glm53-hicache-admission-reserve/test-cpu.sh" >> "$GITHUB_ENV"
               echo "EVIDENCE_PREFIX=glm53-admission-reserve-hicache" >> "$GITHUB_ENV"
               DEFAULT_TAG=glm53-hicache-admission-reserve-v10
+              ;;
+            base-clamp)
+              echo "BUILD_CONTEXT=docker/sglang-glm53-pool-clamp" >> "$GITHUB_ENV"
+              echo "BASE_DIGEST=sha256:e9d29a1cb1cd65284392c4d62d5f2a36669628057e15c60fe93ea40cfe4fc7e7" >> "$GITHUB_ENV"
+              echo "EXPECTED_DOCKERFILE_SHA256=2437f0f7e82c4c61de2cc58e05f6354938c2ec498c1cc4eed45eb395393ab3c3" >> "$GITHUB_ENV"
+              echo "EXPECTED_PROVENANCE_SHA256=b989f6d60ac41e73b586dfee6833549bd4f970c7bd0110d53d54b0d1d4b6331a" >> "$GITHUB_ENV"
+              echo "EXPECTED_SHA256SUMS_SHA256=d477167eef5ecc19df03caae450a291492720f84e8f6c8c0ab2f7bfc74573b55" >> "$GITHUB_ENV"
+              echo "TEST_SCRIPT=/usr/share/nearai/glm53-pool-clamp/test-cpu.sh" >> "$GITHUB_ENV"
+              echo "EVIDENCE_PREFIX=glm53-pool-clamp-base" >> "$GITHUB_ENV"
+              DEFAULT_TAG=glm53-pool-clamp-v1
+              ;;
+            hicache-clamp)
+              echo "BUILD_CONTEXT=docker/sglang-glm53-hicache-pool-clamp" >> "$GITHUB_ENV"
+              echo "BASE_DIGEST=sha256:3eccc30709f5719c81084d1264f03ca5354b3059ec4cff62f0c5ff88c309680c" >> "$GITHUB_ENV"
+              echo "EXPECTED_DOCKERFILE_SHA256=a875e5177283fbb35d3742fc3d4b99d06299775bd68299cc42818f3701dda820" >> "$GITHUB_ENV"
+              echo "EXPECTED_PROVENANCE_SHA256=1ea054b27f0501962a35077318018a562e226430668a5d8c0255be1d86f7ad73" >> "$GITHUB_ENV"
+              echo "EXPECTED_SHA256SUMS_SHA256=8f3562ac2455e9735d15f7440690f47da4e5c7143c4d190beb0ec8f8b32aaedf" >> "$GITHUB_ENV"
+              echo "TEST_SCRIPT=/usr/share/nearai/glm53-hicache-pool-clamp/test-cpu.sh" >> "$GITHUB_ENV"
+              echo "EVIDENCE_PREFIX=glm53-pool-clamp-hicache" >> "$GITHUB_ENV"
+              DEFAULT_TAG=glm53-hicache-pool-clamp-v1
               ;;
             *)
               echo "Unknown variant: $VARIANT" >&2
@@ -187,12 +209,16 @@ jobs:
              .config.Labels["nearai.sglang.source_revision"] == "fc91d2403cc210a86bd5fc715c6609f58c932e5a" and
              .config.Labels["nearai.sglang.admission_reserve"] == "v10" and
              .config.Labels["nearai.sglang.admission_reserve_revision"] == "fb944723035d6c8b8135fd3c6ffbdc21a4615409"'
-          if [[ "$VARIANT" == "hicache" ]]; then
+          if [[ "$VARIANT" == "hicache" || "$VARIANT" == "hicache-clamp" ]]; then
             LABEL_CHECK="$LABEL_CHECK"' and
              .config.Labels["nearai.sglang.hicache_fix_revision"] == "230102db838cbbe6eca7952c729518ee6d93c3a9" and
              .config.Labels["nearai.sglang.pooled_transfers"] == "v1-opt-in" and
              .config.Labels["nearai.sglang.hcc_host_memory"] == "v4-cuda-hostalloc-opt-in" and
              .config.Labels["nearai.sglang.hcc_managed_memory"] == "v3-host-prefetch-opt-in"'
+          fi
+          if [[ "$VARIANT" == "base-clamp" || "$VARIANT" == "hicache-clamp" ]]; then
+            LABEL_CHECK="$LABEL_CHECK"' and
+             .config.Labels["nearai.sglang.chunked_prefill_pool_clamp"] == "v1"'
           fi
 
           jq -e --arg source_revision "$SOURCE_REVISION" \
@@ -378,6 +404,8 @@ jobs:
           retention-days: 30
 
       - name: Publish summary
+        env:
+          VARIANT: ${{ inputs.variant }}
         run: |
           {
             echo '## GLM-5.3 admission-reserve engine image'
@@ -388,6 +416,9 @@ jobs:
             echo '- SGLang source: `PierreLeGuen/sglang-upstream@fc91d2403cc210a86bd5fc715c6609f58c932e5a`'
             echo '- admission-reserve patch: `nearai/inference-optimizer@fb944723035d6c8b8135fd3c6ffbdc21a4615409` (patches/admission-reserve-v10.diff)'
             echo '- Activation requires SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE > 0 (plus SGLANG_ADMISSION_RESERVE_MAX_FRACTION and --prefill-decode-interval); the patch is inert without it.'
+            if [[ "$VARIANT" == "base-clamp" || "$VARIANT" == "hicache-clamp" ]]; then
+              echo '- chunked-prefill pool clamp: applied unconditionally; no opt-in switch.'
+            fi
             echo '- Promotion: pin this digest and enable the reviewed admission-reserve settings in a separate PR.'
             echo '- Publishing does not modify compose files or deploy a service.'
             echo '- embedded BuildKit provenance: verified'
