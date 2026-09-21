@@ -3,9 +3,11 @@ HEADER = (
     "# prod/GLM-5.3-Flash-SGL-TP4-LongContext.yaml. r2 remains the deployed FP8\n"
     "# HiCache arm. r1 uses the Graphistry W4AFP8 checkpoint,\n"
     "# a 16384-token prefill chunk, and the gpu31/gpu32-verified loader source change.\n"
-    "# BLOCKED: this file still inherits the base engine image, which lacks\n"
-    "# the mandatory chunked-prefill pool clamp. Do not start the candidate until a\n"
-    "# signed W4AFP8 image containing both patches is published and pinned here.\n"
+    "# r1 pins docker.io/nearaidev/sglang@sha256:8bce6a7cc872a80faded3bd1ef0a64873a1d7abae34c94e5358775ca21f133cc,\n"
+    "# published by workflow run 35659748426 from recipe merge commit\n"
+    "# 7c473970af2ac040afb233df8b274aa0cf8ebbcb. PR #278 and the combined-image\n"
+    "# recipe PR are merged; publication reported zero critical vulnerabilities and\n"
+    "# passed CPU, provenance, attestation, and cosign verification.\n"
     "# Admission reserve remains disabled on both long-context arms. Deploy only to\n"
     "# gpu02 with docs/gpu02-glm53-w4afp8-long-context.md. All operational services\n"
     "# require the w4afp8-long-context profile, so an unscoped default apply cannot\n"
@@ -71,9 +73,9 @@ HEADER_REPLACEMENTS = (
             "# override that percentage with GLM53_HICACHE_RAM_BUDGET.\n"
         ),
         (
-            "# DSA import-cycle fixes. r1 is the blocked W4AFP8 treatment and must pin the signed\n"
-            "# loader-plus-pool-clamp derivative before use; r2 keeps the published HCC-safe HiCache\n"
-            "# derivative and its deployment-overridable 80% startup host-memory budget.\n"
+            "# DSA import-cycle fixes. r1 pins the published signed loader-plus-pool-clamp combined\n"
+            "# image; r2 keeps the published HCC-safe HiCache derivative and its deployment-\n"
+            "# overridable 80% startup host-memory budget.\n"
         ),
     ),
     (

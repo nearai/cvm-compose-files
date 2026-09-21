@@ -2,7 +2,7 @@
 
 This runbook replaces only gpu02 replica 1 with `graphistry/GLM-5.3-Flash-W4AFP8`. Replica 2 stays on the deployed FP8 HiCache definition. The candidate keeps the stable served model name `z-ai/glm-5.3-flash`, TP4/EP4, BF16 KV, adaptive EAGLE 5/1/6, and the one-million-token context limit while changing r1 to `--chunked-prefill-size 16384` plus `--max-prefill-tokens 32768`.
 
-The committed candidate is intentionally not runnable. It inherits the base engine image, which lacks the mandatory chunked-prefill pool clamp, and its entrypoint exits 78 before patching or starting SGLang. The release path is a signed `docker/sglang-glm53-w4afp8` image containing both reviewed patches, pinned by immutable registry digest.
+The committed candidate is runnable only through the opt-in `w4afp8-long-context` profile and keeps `restart: "no"` on r1. Candidate r1 pins the signed combined image `docker.io/nearaidev/sglang@sha256:8bce6a7cc872a80faded3bd1ef0a64873a1d7abae34c94e5358775ca21f133cc`, which contains both reviewed patches; no runtime patch bootstrap remains.
 
 ## Why gpu02 r1
 
@@ -18,10 +18,19 @@ This is not a matched A/B benchmark. r2 has HiCache and r1 does not, so r2 can p
 - The 2026-09-19 local two-patch run completed 98.61% versus 97.32% for FP8, with 15 versus 29 silent aborts, TTFT 0.63 versus 0.70 seconds, E2E 2.67 versus 3.02 seconds, and no crash or OOM. Steady TPOT regressed about 3.4%, from 9.73 to 10.06 milliseconds.
 - Both lab hosts produced the patched loader source SHA-256 `039316192fb40a2aefe425102734d821c98e4c6c22a32ee51df21e47c315603d`.
 
+## Published image provenance
+
+- Pool-clamp PR #278 and the combined-image recipe PR are merged.
+- Recipe merge commit: `7c473970af2ac040afb233df8b274aa0cf8ebbcb`.
+- Published tag: `glm53-w4afp8-pool-clamp-v1`.
+- Publishing workflow run: `35659748426`.
+- Immutable image: `docker.io/nearaidev/sglang@sha256:8bce6a7cc872a80faded3bd1ef0a64873a1d7abae34c94e5358775ca21f133cc`.
+- Publication verification reported zero critical vulnerabilities and passed the CPU smoke, GitHub provenance, attestation, and cosign checks.
+
 ## Hard gates
 
-1. Merge the pool-clamp fix tracked by PR #278 before or with this change. A 16,384-token chunk without the clamp can restore a phantom full chunk after the available pool goes negative.
-2. Publish and pin a signed `docker/sglang-glm53-w4afp8` digest built from base digest `e9d29a1cb1cd65284392c4d62d5f2a36669628057e15c60fe93ea40cfe4fc7e7`, loader patch SHA-256 `29764baa3e464d2272ea85f2e254392c2a61a3fc61a51f8d33b5910ce0cd8d00`, and pool-clamp patch SHA-256 `ba911be688556df0c0b2c9a26cde4c9f38b410a5ba51020d7754fa2e8cd010c3`. Verify cosign and GitHub provenance identify `nearai/cvm-compose-files` at the merged recipe commit.
+1. Keep the merged pool-clamp fix from PR #278 in the candidate image. A 16,384-token chunk without the clamp can restore a phantom full chunk after the available pool goes negative.
+2. Keep r1 pinned to the published signed digest above, built from base digest `e9d29a1cb1cd65284392c4d62d5f2a36669628057e15c60fe93ea40cfe4fc7e7`, loader patch SHA-256 `29764baa3e464d2272ea85f2e254392c2a61a3fc61a51f8d33b5910ce0cd8d00`, and pool-clamp patch SHA-256 `ba911be688556df0c0b2c9a26cde4c9f38b410a5ba51020d7754fa2e8cd010c3`. Before any operation, reverify cosign and GitHub provenance identify `nearai/cvm-compose-files` at recipe merge commit `7c473970af2ac040afb233df8b274aa0cf8ebbcb`.
 3. Replay the matched production-envelope workload on gpu31 against that exact published digest. Require no crash or OOM and no regression in completion rate or silent aborts versus its same-host FP8 control.
 4. Qualify the 16K chunk against the real long-context envelope before customer routing. The deployed FP8 arm previously OOMed at an 8K chunk under concurrent 400K-plus-token contexts. Exercise fresh and cache-hit prompts across 100K, 250K, 400K, and near-one-million tokens, including concurrent long prefills, and require no DSA indexer, K-pool, `alloc_extend`, or CUDA OOM failure.
 5. Obtain product approval for the measured quality trade: about 8–12% lower E2E latency in the replicated workload versus about 2.02 percentage points lower top-1 agreement and a 1.0334 perplexity ratio.
@@ -29,7 +38,7 @@ This is not a matched A/B benchmark. r2 has HiCache and r1 does not, so r2 can p
 7. Confirm at least 250 GiB free on the CVM model-cache volume and record the deployed tag, file, image digests, running containers, registry entries, and a successful long-domain completion before the change.
 8. Prove the preserved r2 can carry the live long-context arrival rate during the r1-only qualification window. Do not unregister gpu02 as a drain mechanism: cloud-api treats long-domain failures as retryable and falls back to the base fleet. That overflow saturated gpu03/gpu04/gpu23 and contributed to the 2026-09-21 OpenRouter lane traffic loss. If r2 lacks measured headroom, add qualified long-tier capacity or stop; do not proceed by spilling traffic onto the base fleet.
 
-PR #278 was approved but still open on 2026-09-21. No signed combined W4AFP8 digest was available at that check.
+The source and publication gates are satisfied by the merged PRs and verified digest above. That does not satisfy the remaining runtime, product-quality, customer-path, or rollback gates.
 
 ## Candidate identity
 
@@ -40,7 +49,7 @@ PR #278 was approved but still open on 2026-09-21. No signed combined W4AFP8 dig
 | Candidate | `model-sg-glm53-w4afp8-tp4-r1`, GPUs 0–3 |
 | Checkpoint | `graphistry/GLM-5.3-Flash-W4AFP8` |
 | Revision | `99f1fa70408c52b007d4fd69e02e5a522422e755` |
-| Engine image | Blocked pending a signed, attested two-patch registry digest |
+| Engine image | `docker.io/nearaidev/sglang@sha256:8bce6a7cc872a80faded3bd1ef0a64873a1d7abae34c94e5358775ca21f133cc` |
 | Compose file | `prod/GLM-5.3-Flash-SGL-TP4-W4AFP8-Canary.yaml` |
 | Compose profile | `w4afp8-long-context` |
 | Direct verification ports | r1 `8008`, r2 `8009`, through the opt-in soak relay |

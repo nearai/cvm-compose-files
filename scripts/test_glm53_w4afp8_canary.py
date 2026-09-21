@@ -5,17 +5,19 @@
 # ///
 # How to run: uv run -m scripts.test_glm53_w4afp8_canary
 import hashlib
-import os
+import shlex
 import subprocess
-import tempfile
 import unittest
 from pathlib import Path
+from typing import Final
 
 from scripts import prepare_glm53_w4afp8_canary as canary
 
 ROOT = Path(__file__).resolve().parents[1]
 CANDIDATE = ROOT / "prod/GLM-5.3-Flash-SGL-TP4-W4AFP8-Canary.yaml"
 GENERATOR = ROOT / "scripts/prepare_glm53_w4afp8_canary.py"
+PROMOTED_IMAGE: Final = "docker.io/nearaidev/sglang@sha256:8bce6a7cc872a80faded3bd1ef0a64873a1d7abae34c94e5358775ca21f133cc"
+LONG_CONTEXT_SHA256: Final = "b020c87160fd3ea0512017519fc0e1207f2ab7f580e02defa68be6048a377001"
 
 
 class CommittedCanaryTest(unittest.TestCase):
@@ -26,13 +28,26 @@ class CommittedCanaryTest(unittest.TestCase):
         self.assertTrue(CANDIDATE.is_file(), CANDIDATE)
 
     def test_committed_canary_matches_generator(self) -> None:
-        # Given the canonical compose file and reviewed loader patch
+        # Given the canonical compose file
         canonical = (ROOT / canary.COMPOSE).read_text()
-        patch = (ROOT / canary.PATCH).read_text()
         # When the candidate is regenerated in memory
-        expected = canary.generate(canonical, patch)
+        expected = canary.generate(canonical)
         # Then the committed generated file must be byte-identical.
         self.assertEqual(CANDIDATE.read_text(), expected)
+
+    def test_candidate_has_exact_promoted_image(self) -> None:
+        # Given the generated gpu02 long-context compose file
+        text = CANDIDATE.read_text()
+        _, _, service = canary.section(
+            text,
+            f"  {canary.CANDIDATE_SERVICE}:\n",
+            "\n  model-sg-glm53-fp8-tp4-r2:\n",
+            "candidate service",
+        )
+        # When the candidate r1 image override is inspected
+        image_lines = [line.strip() for line in service.splitlines() if line.strip().startswith("image:")]
+        # Then it is exactly the immutable signed combined-image digest, never a mutable tag.
+        self.assertEqual(image_lines, [f"image: {PROMOTED_IMAGE}"])
 
     def test_candidate_has_exact_treatment_contract(self) -> None:
         # Given the generated gpu02 long-context compose file
@@ -56,21 +71,27 @@ class CommittedCanaryTest(unittest.TestCase):
             "--chunked-prefill-size 16384",
             "--max-prefill-tokens 32768",
             "--prefill-decode-interval 1",
-            canary.BASE_SOURCE_SHA256,
-            canary.PATCH_SHA256,
-            canary.PATCHED_SOURCE_SHA256,
+            "--tp-size 4",
+            "--ep-size 4",
+            "--kv-cache-dtype bfloat16",
+            "--speculative-algorithm EAGLE",
+            "--speculative-num-steps 5",
+            "--speculative-eagle-topk 1",
+            "--speculative-num-draft-tokens 6",
+            "--speculative-adaptive",
         )
-        # Then every replicated setting and fail-closed checksum must be present.
+        # Then every treatment setting remains exact.
         for item in required:
             with self.subTest(item=item):
                 self.assertIn(item, service)
+        self.assertEqual(service.count(canary.CHECKPOINT_REVISION), 1)
         self.assertNotIn("--revision", service)
         self.assertNotIn("--moe-runner-backend", service)
         self.assertNotIn("SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE", common)
         self.assertNotIn("SGLANG_ADMISSION_RESERVE_MAX_FRACTION", common)
 
-    def test_candidate_refuses_to_start_when_pool_clamp_image_is_not_pinned(self) -> None:
-        # Given the generated canary still inherits the base engine image
+    def test_candidate_command_renders_exact_argument_vector(self) -> None:
+        # Given the folded Compose command generated for candidate r1
         text = CANDIDATE.read_text()
         _, _, service = canary.section(
             text,
@@ -78,103 +99,34 @@ class CommittedCanaryTest(unittest.TestCase):
             "\n  model-sg-glm53-fp8-tp4-r2:\n",
             "candidate service",
         )
-        # When an operator explicitly targets the otherwise opt-in candidate service
-        blocker = "exit 78"
-        # Then startup must stop before SGLang can execute.
-        self.assertIn(
-            "BLOCKED: this file still inherits the base engine image",
-            text,
+        _, _, command = canary.section(service, "    command: >\n", "    depends_on:\n", "candidate command")
+        rendered = " ".join(line.strip() for line in command.splitlines()[1:])
+        # When the folded scalar is tokenized as the runtime command
+        arguments = shlex.split(rendered)
+        required_flags = ("--model-path", "--served-model-name", "--tp-size", "--ep-size", "--kv-cache-dtype")
+        # Then the executable and every treatment option are exact argv entries.
+        self.assertEqual(arguments[:2], ["sglang", "serve"])
+        for flag in required_flags:
+            with self.subTest(flag=flag):
+                self.assertIn(flag, arguments)
+        self.assertFalse(any(argument.startswith(" ") for argument in arguments), arguments)
+
+    def test_candidate_has_no_runtime_loader_patch_bootstrap(self) -> None:
+        # Given the generated candidate built from the promoted combined image
+        text = CANDIDATE.read_text()
+        forbidden = (
+            "BLOCKED",
+            "exit 78",
+            "git apply",
+            "glm53_w4afp8_patch",
+            "modules-to-not-convert.diff",
+            "diff --git a/python/sglang/srt/layers/quantization/w4afp8.py",
         )
-        self.assertIn(blocker, service)
-        self.assertLess(service.index(blocker), service.index("exec sglang serve"))
-
-    def test_loader_patch_bootstrap_is_restart_safe_and_fail_closed(self) -> None:
-        # Given the exact bootstrap template and a disposable source/patch pair
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            source = root / "source.txt"
-            patch = root / "change.diff"
-            git = root / "git"
-            sha256sum = root / "sha256sum"
-            _ = source.write_text("before\n")
-            _ = patch.write_text("""--- a/source.txt
-+++ b/source.txt
-@@ -1 +1 @@
--before
-+after
-""")
-            _ = git.write_text("""#!/bin/sh
-set -eu
-test "$1" = "apply"
-if [ "${2:-}" = "--check" ]; then
-  test "$(cat source.txt)" = "before"
-else
-  printf 'after\\n' > source.txt
-fi
-""")
-            _ = git.chmod(0o755)
-            _ = sha256sum.write_text("""#!/usr/bin/env python3
-import hashlib, pathlib, sys
-if '-c' in sys.argv or '--check' in sys.argv:
-    expected, path = sys.stdin.read().strip().split(None, 1)
-    actual = hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
-    print(f'{path}: {"OK" if actual == expected else "FAILED"}')
-    raise SystemExit(0 if actual == expected else 1)
-for path in sys.argv[1:]:
-    digest = hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
-    print(f'{digest}  {path}')
-""")
-            _ = sha256sum.chmod(0o755)
-
-            def digest(path: Path) -> str:
-                return hashlib.sha256(path.read_bytes()).hexdigest()
-
-            base_sha256 = digest(source)
-            patch_sha256 = digest(patch)
-            patched_sha256 = hashlib.sha256(b"after\n").hexdigest()
-            script = "\n".join(
-                line.strip()
-                for line in canary.patch_bootstrap(
-                    patch_target=patch.name,
-                    source_target=source.name,
-                    patch_sha256=patch_sha256,
-                    base_sha256=base_sha256,
-                    patched_sha256=patched_sha256,
-                )
-            ).replace("$$", "$")
-            environment = {**os.environ, "PATH": f"{root}{os.pathsep}{os.environ['PATH']}"}
-            # When the same writable layer starts from stock and then restarts
-            first = subprocess.run(
-                ["bash", "-c", script],
-                cwd=root,
-                env=environment,
-                capture_output=True,
-                check=False,
-                text=True,
-            )
-            second = subprocess.run(
-                ["bash", "-c", script],
-                cwd=root,
-                env=environment,
-                capture_output=True,
-                check=False,
-                text=True,
-            )
-            _ = source.write_text("unexpected\n")
-            drifted = subprocess.run(
-                ["bash", "-c", script],
-                cwd=root,
-                env=environment,
-                capture_output=True,
-                check=False,
-                text=True,
-            )
-        # Then stock applies, restart succeeds without reapplying, and drift fails closed.
-        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
-        self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
-        self.assertIn("already applied", second.stdout)
-        self.assertNotEqual(drifted.returncode, 0)
-        self.assertIn("Unexpected SHA256", drifted.stderr)
+        # When the generated artifact is scanned for the obsolete runtime patch path
+        # Then no blocker, patch application, patch mount, or embedded diff remains.
+        for marker in forbidden:
+            with self.subTest(marker=marker):
+                self.assertNotIn(marker, text)
 
     def test_candidate_wiring_is_isolated_to_long_context_r1(self) -> None:
         # Given the generated candidate and deployed long-context source
@@ -215,6 +167,14 @@ for path in sys.argv[1:]:
         # When the alternate file's default-apply guard is ignored
         # Then gpu02 r2 is byte-identical to the deployed HiCache arm.
         self.assertEqual(candidate_r2.replace(profile, "", 1), source_r2)
+
+    def test_canonical_long_context_source_is_unchanged(self) -> None:
+        # Given the deployed long-context source is the generator input
+        source = (ROOT / canary.COMPOSE).read_bytes()
+        # When its immutable baseline digest is calculated
+        digest = hashlib.sha256(source).hexdigest()
+        # Then promotion work has not changed the canonical production file.
+        self.assertEqual(digest, LONG_CONTEXT_SHA256)
 
     def test_customer_routing_requires_explicit_canary_services(self) -> None:
         # Given an operator accidentally applies the canary file without a service list
