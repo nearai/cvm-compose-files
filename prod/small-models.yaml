@@ -2323,7 +2323,14 @@ configs:
         register_model "openai/whisper-large-v3" "whisper-large-v3.completions.near.ai"
         register_model "openai/privacy-filter" "privacy-filter.completions.near.ai"
         register_model "Qwen/Qwen3.6-35B-A3B-FP8" "qwen3-6-35b.completions.near.ai"
-        register_model "z-ai/glm-5.3-flash" "glm-5-3-flash.completions.near.ai"
+        # gpu13 is the OpenRouter-only GLM-5.3 Flash backend: it maps the
+        # SYNTHETIC id advertised by the :8009 discovery override, never the
+        # canonical one. model-proxy's model->domain map is one domain per model
+        # id and last-writer-wins, so registering "z-ai/glm-5.3-flash" here
+        # would drag the whole GLM-5.3 base fleet (gpu04/gpu03/gpu23) onto this
+        # domain on the next cycle. The base domain keeps its mapping from those
+        # hosts' own registrars.
+        register_model "z-ai/glm-5.3-flash-or" "glm-5-3-flash-or.completions.near.ai"
         # Refresh liveness after the register_model calls, before the long sleep.
         date +%s > /tmp/registrar_alive
         sleep 60
@@ -2402,8 +2409,58 @@ configs:
           location / { proxy_pass http://proxy-qwen36-35b-a3b:8000; }
       }
 
+      # :8009 - GLM-5.3-Flash
+      # ── gpu13 GLM-5.3 Flash is an OPENROUTER-ONLY backend ──
+      # model-proxy decides domain membership from what this probe port reports
+      # at /v1/models, rebuilding domain->backend from scratch every ~10 s
+      # discovery cycle. Reporting the SYNTHETIC id z-ai/glm-5.3-flash-or puts
+      # this host in glm-5-3-flash-or.completions.near.ai ONLY and takes it out
+      # of the public glm-5-3-flash rotation that cloud-api load-balances over —
+      # no register/unregister call, and the other seven gpu13 domains that
+      # share this host's single :8444 backend are untouched.
+      # The synthetic id is discovery-only: MODEL_NAME, signing, billing and the
+      # customer catalog all keep the canonical z-ai/glm-5.3-flash, and TLS
+      # traffic on :8444 reaches the same proxy-glm53 -> engine path as before.
+      #
+      # The listing is gated on the REAL serving path via auth_request (a
+      # zero-body subrequest to proxy-glm53's /v1/models), so a dead engine
+      # drops this host out of discovery within a cycle instead of advertising a
+      # synthetic id for a backend that cannot serve.
+      #
+      # PHASE-ORDER TRAP: the synthetic JSON must NOT be served with a bare
+      # `return` — `return` runs in the rewrite phase, BEFORE auth_request's
+      # access phase, so the gate would be a no-op. try_files runs in the
+      # precontent phase, AFTER access, so the gate genuinely fires first; the
+      # always-missing file falls through to the named location.
+      #
+      # `location /` stays last and unchanged: the OR gateway's engine-load
+      # probe (:8009/v1/metrics) and the registrar's own check_chat POST to
+      # /v1/chat/completions both ride through it.
       server {
           listen 8009;
+          location = /v1/models {
+              auth_request /_glm53_engine_health;
+              try_files /__glm53_synthetic_models__ @glm53_synthetic_models;
+          }
+          location @glm53_synthetic_models {
+              default_type application/json;
+              return 200 '{"object":"list","data":[{"id":"z-ai/glm-5.3-flash-or","object":"model","owned_by":"nearai"}]}';
+          }
+          # Literal upstream, not the `set $$var` + `proxy_pass $$var` form used
+          # on the dedicated GLM-5.3 hosts: this shared nginx_conf declares no
+          # `resolver`, so a variable upstream would 502 on every probe. The
+          # literal form also pins the gate and `location /` to the same
+          # config-load-time IP, so a recreated proxy container fails the gate
+          # instead of advertising a backend `location /` can no longer reach
+          # (nginx is restarted after a proxy bump — see cvm-compose-files#57).
+          location = /_glm53_engine_health {
+              internal;
+              proxy_pass http://proxy-glm53:8000/v1/models;
+              proxy_pass_request_body off;
+              proxy_set_header Content-Length "";
+              proxy_connect_timeout 2s;
+              proxy_read_timeout 4s;
+          }
           location / { proxy_pass http://proxy-glm53:8000; }
       }
 
@@ -2524,10 +2581,21 @@ configs:
 
       server {
           listen 443 ssl http2;
+          # The base-domain names stay listed deliberately: model-proxy can
+          # still hold this backend in the base rotation for up to one ~10 s
+          # discovery cycle after a deploy, and an in-flight or keep-alive
+          # connection may arrive with base SNI after that. Serving it is
+          # correct — same engine, same signing identity — whereas dropping the
+          # name would fall the request through to the first TLS vhost
+          # (FLUX.2-klein) and answer an upstream 404.
           server_name glm-5-3-flash.completions.near.ai
                       glm-5-3-flash.completions-stg.near.ai
                       ~^glm-5-3-flash-i\d+\.completions(-stg)?\.near\.ai$$
-                      "~^glm-5-3-flash-b[0-9a-f]{12}\.completions(-stg)?\.near\.ai$$";
+                      "~^glm-5-3-flash-b[0-9a-f]{12}\.completions(-stg)?\.near\.ai$$"
+                      glm-5-3-flash-or.completions.near.ai
+                      glm-5-3-flash-or.completions-stg.near.ai
+                      ~^glm-5-3-flash-or-i\d+\.completions(-stg)?\.near\.ai$$
+                      "~^glm-5-3-flash-or-b[0-9a-f]{12}\.completions(-stg)?\.near\.ai$$";
           keepalive_timeout 1h;
           keepalive_requests 1000000;
           location ^~ /metrics { return 404; }

@@ -144,11 +144,18 @@ registrar = small.fetch('configs').fetch('registrar_script').fetch('content')
 nginx = small.fetch('configs').fetch('nginx_conf').fetch('content')
 assert.call(small_services.fetch('nginx').fetch('ports').map(&:to_s).include?('8009:8009'), 'gpu13 nginx must publish host port 8009')
 assert.call(registrar.match?(/8009\) check_chat "\$\$\{HOST_IP\}:8009" "z-ai\/glm-5\.3-flash"/), 'gpu13 registrar port 8009 health check must require GLM')
-assert.call(registrar.match?(/register_model "z-ai\/glm-5\.3-flash" "glm-5-3-flash\.completions\.near\.ai"/), 'gpu13 registrar must map GLM to its public domain')
-assert.call(nginx.match?(/listen 8009;\s+location \/ \{ proxy_pass http:\/\/proxy-glm53:8000; \}/), 'gpu13 nginx port 8009 must route to the GLM proxy')
+assert.call(registrar.match?(/register_model "z-ai\/glm-5\.3-flash-or" "glm-5-3-flash-or\.completions\.near\.ai"/), 'gpu13 registrar must map the synthetic GLM id to the OpenRouter-only domain')
+# model->domain is one domain per id and last-writer-wins: mapping the canonical
+# id here would drag the whole GLM-5.3 base fleet onto gpu13's OR domain.
+assert.call(!registrar.match?(/register_model "z-ai\/glm-5\.3-flash"/), 'gpu13 registrar must never map the canonical GLM id')
+glm_probe = nginx[/listen 8009;.*?\n\}/m]
+assert.call(glm_probe.include?('location / { proxy_pass http://proxy-glm53:8000; }'), 'gpu13 nginx port 8009 must route to the GLM proxy')
+assert.call(glm_probe.include?('"id":"z-ai/glm-5.3-flash-or"'), 'gpu13 nginx port 8009 must advertise the synthetic OpenRouter-only model id')
+assert.call(glm_probe.include?('auth_request /_glm53_engine_health;'), 'gpu13 nginx port 8009 must gate the synthetic listing on the live GLM proxy')
 assert.call(nginx.match?(/server_name glm-5-3-flash\.completions\.near\.ai.*?location \/ \{ proxy_pass http:\/\/proxy-glm53:8000; \}/m), 'gpu13 GLM SNI must route to the GLM proxy')
 glm_sni = nginx[/server_name glm-5-3-flash\.completions\.near\.ai.*?location \/ \{ proxy_pass http:\/\/proxy-glm53:8000; \}/m]
-assert.call(glm_sni.include?('"~^glm-5-3-flash-b[0-9a-f]{12}\.completions(-stg)?\.near\.ai$$";'), 'gpu13 GLM SNI must accept model-proxy backend handles')
+assert.call(glm_sni.include?('"~^glm-5-3-flash-b[0-9a-f]{12}\.completions(-stg)?\.near\.ai$$"'), 'gpu13 GLM SNI must accept model-proxy backend handles')
+assert.call(glm_sni.include?('"~^glm-5-3-flash-or-b[0-9a-f]{12}\.completions(-stg)?\.near\.ai$$";'), 'gpu13 GLM SNI must accept OpenRouter-domain backend handles')
 small_jobs = YAML.safe_load(small.fetch('configs').fetch('otelcol_app_config').fetch('content')).dig('receivers', 'prometheus/apps', 'config', 'scrape_configs')
 %w[sglang-model-sg-glm53-fp8-tp4 dcgm-dcgm-glm53 dcgm-dcgm-shared-gpu3 inference-proxy-proxy-glm53].each do |job|
   assert.call(small_jobs.any? { |entry| entry['job_name'] == job }, "gpu13 OTel scrape missing: #{job}")
