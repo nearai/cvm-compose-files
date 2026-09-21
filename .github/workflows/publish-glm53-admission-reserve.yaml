@@ -12,8 +12,9 @@ on:
           - hicache
           - base-clamp
           - hicache-clamp
+          - w4afp8
       tag:
-        description: Docker Hub tag; empty derives the per-variant default (glm53-admission-reserve-v10, glm53-hicache-admission-reserve-v10, glm53-pool-clamp-v1, glm53-hicache-pool-clamp-v1)
+        description: Docker Hub tag; empty derives the per-variant default (glm53-admission-reserve-v10, glm53-hicache-admission-reserve-v10, glm53-pool-clamp-v1, glm53-hicache-pool-clamp-v1, glm53-w4afp8-pool-clamp-v1)
         required: false
         type: string
         default: ''
@@ -55,6 +56,14 @@ jobs:
           IMAGE_TAG_INPUT: ${{ inputs.tag }}
         run: |
           set -euo pipefail
+          if [[ "$IMAGE_TAG_INPUT" == *$'\n'* || "$IMAGE_TAG_INPUT" == *$'\r'* ]]; then
+            echo "Docker tag must not contain newlines" >&2
+            exit 1
+          fi
+          if [[ -n "$IMAGE_TAG_INPUT" && ! "$IMAGE_TAG_INPUT" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$ ]]; then
+            echo "Invalid Docker tag: $IMAGE_TAG_INPUT" >&2
+            exit 1
+          fi
           case "$VARIANT" in
             base)
               echo "BUILD_CONTEXT=docker/sglang-glm53-admission-reserve" >> "$GITHUB_ENV"
@@ -95,6 +104,16 @@ jobs:
               echo "TEST_SCRIPT=/usr/share/nearai/glm53-hicache-pool-clamp/test-cpu.sh" >> "$GITHUB_ENV"
               echo "EVIDENCE_PREFIX=glm53-pool-clamp-hicache" >> "$GITHUB_ENV"
               DEFAULT_TAG=glm53-hicache-pool-clamp-v1
+              ;;
+            w4afp8)
+              echo "BUILD_CONTEXT=docker/sglang-glm53-w4afp8" >> "$GITHUB_ENV"
+              echo "BASE_DIGEST=sha256:e9d29a1cb1cd65284392c4d62d5f2a36669628057e15c60fe93ea40cfe4fc7e7" >> "$GITHUB_ENV"
+              echo "EXPECTED_DOCKERFILE_SHA256=00264d7171eb3600ef1186930a514b81c5a00f735e430190fffc6efa4fe742e5" >> "$GITHUB_ENV"
+              echo "EXPECTED_PROVENANCE_SHA256=6aafde8fb4d86505994c9732546f50b29de10454e7d806bc3ddb0e79d38433f3" >> "$GITHUB_ENV"
+              echo "EXPECTED_SHA256SUMS_SHA256=a1cb2cfb616cc732912ec445a37805e8aa47bdbe1542ec0d2c4b9688434a4343" >> "$GITHUB_ENV"
+              echo "TEST_SCRIPT=/usr/share/nearai/glm53-w4afp8/test-cpu.sh" >> "$GITHUB_ENV"
+              echo "EVIDENCE_PREFIX=glm53-w4afp8-pool-clamp" >> "$GITHUB_ENV"
+              DEFAULT_TAG=glm53-w4afp8-pool-clamp-v1
               ;;
             *)
               echo "Unknown variant: $VARIANT" >&2
@@ -216,9 +235,13 @@ jobs:
              .config.Labels["nearai.sglang.hcc_host_memory"] == "v4-cuda-hostalloc-opt-in" and
              .config.Labels["nearai.sglang.hcc_managed_memory"] == "v3-host-prefetch-opt-in"'
           fi
-          if [[ "$VARIANT" == "base-clamp" || "$VARIANT" == "hicache-clamp" ]]; then
+          if [[ "$VARIANT" == "base-clamp" || "$VARIANT" == "hicache-clamp" || "$VARIANT" == "w4afp8" ]]; then
             LABEL_CHECK="$LABEL_CHECK"' and
              .config.Labels["nearai.sglang.chunked_prefill_pool_clamp"] == "v1"'
+          fi
+          if [[ "$VARIANT" == "w4afp8" ]]; then
+            LABEL_CHECK="$LABEL_CHECK"' and
+             .config.Labels["nearai.sglang.w4afp8_loader_patch"] == "modules-to-not-convert-v1"'
           fi
 
           jq -e --arg source_revision "$SOURCE_REVISION" \
@@ -416,7 +439,10 @@ jobs:
             echo '- SGLang source: `PierreLeGuen/sglang-upstream@fc91d2403cc210a86bd5fc715c6609f58c932e5a`'
             echo '- admission-reserve patch: `nearai/inference-optimizer@fb944723035d6c8b8135fd3c6ffbdc21a4615409` (patches/admission-reserve-v10.diff)'
             echo '- Activation requires SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE > 0 (plus SGLANG_ADMISSION_RESERVE_MAX_FRACTION and --prefill-decode-interval); the patch is inert without it.'
-            if [[ "$VARIANT" == "base-clamp" || "$VARIANT" == "hicache-clamp" ]]; then
+            if [[ "$VARIANT" == "w4afp8" ]]; then
+              echo '- W4AFP8 loader patch: modules_to_not_convert propagation applied.'
+            fi
+            if [[ "$VARIANT" == "base-clamp" || "$VARIANT" == "hicache-clamp" || "$VARIANT" == "w4afp8" ]]; then
               echo '- chunked-prefill pool clamp: applied unconditionally; no opt-in switch.'
             fi
             echo '- Promotion: pin this digest and enable the reviewed admission-reserve settings in a separate PR.'
