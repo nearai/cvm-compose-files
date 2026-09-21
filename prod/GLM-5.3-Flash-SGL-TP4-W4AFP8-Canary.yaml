@@ -2,9 +2,11 @@
 # prod/GLM-5.3-Flash-SGL-TP4-LongContext.yaml. r2 remains the deployed FP8
 # HiCache arm. r1 uses the Graphistry W4AFP8 checkpoint,
 # a 16384-token prefill chunk, and the gpu31/gpu32-verified loader source change.
-# BLOCKED: this file still inherits the base engine image, which lacks
-# the mandatory chunked-prefill pool clamp. Do not start the candidate until a
-# signed W4AFP8 image containing both patches is published and pinned here.
+# r1 pins docker.io/nearaidev/sglang@sha256:8bce6a7cc872a80faded3bd1ef0a64873a1d7abae34c94e5358775ca21f133cc,
+# published by workflow run 35659748426 from recipe merge commit
+# 7c473970af2ac040afb233df8b274aa0cf8ebbcb. PR #278 and the combined-image
+# recipe PR are merged; publication reported zero critical vulnerabilities and
+# passed CPU, provenance, attestation, and cosign verification.
 # Admission reserve remains disabled on both long-context arms. Deploy only to
 # gpu02 with docs/gpu02-glm53-w4afp8-long-context.md. All operational services
 # require the w4afp8-long-context profile, so an unscoped default apply cannot
@@ -82,9 +84,9 @@ x-logging-conf: &logging-conf
 # PierreLeGuen/sglang-upstream commit fc91d24, derived from official SGLang main plus
 # the official GLM-5.3 branch. It contains upstream disconnect cleanup (#35255), the
 # final-prefill abort fix (#34153), the strict thinking-budget adapter, and two narrow
-# DSA import-cycle fixes. r1 is the blocked W4AFP8 treatment and must pin the signed
-# loader-plus-pool-clamp derivative before use; r2 keeps the published HCC-safe HiCache
-# derivative and its deployment-overridable 80% startup host-memory budget.
+# DSA import-cycle fixes. r1 pins the published signed loader-plus-pool-clamp combined
+# image; r2 keeps the published HCC-safe HiCache derivative and its deployment-
+# overridable 80% startup host-memory budget.
 #
 # Admission reserve is deliberately disabled on both replicas: reserve v10 admitted a
 # 292K-cached waiter beside an in-flight chunked prefill on gpu02 and exhausted the
@@ -412,71 +414,45 @@ services:
     restart: "no"
     <<: *sg-glm53-flash-common
     container_name: model-sg-glm53-w4afp8-tp4-r1
-    command:
-      - /bin/bash
-      - -lc
-      - |
-        set -euo pipefail
-        echo "BLOCKED: signed two-patch W4AFP8 image digest is not pinned" >&2
-        exit 78
-        cd /sgl-workspace/sglang
-        printf '%s\n' '29764baa3e464d2272ea85f2e254392c2a61a3fc61a51f8d33b5910ce0cd8d00  /usr/share/nearai/glm53-w4afp8/modules-to-not-convert.diff' | sha256sum --check --strict
-        source_sha256=$$(sha256sum python/sglang/srt/layers/quantization/w4afp8.py | cut -d' ' -f1)
-        case "$$source_sha256" in
-          21e9c527c9b83e350cdc35ce2bc62891cda1550934b2a5d302f0f807f752f125)
-            git apply --check /usr/share/nearai/glm53-w4afp8/modules-to-not-convert.diff
-            git apply /usr/share/nearai/glm53-w4afp8/modules-to-not-convert.diff
-            ;;
-          039316192fb40a2aefe425102734d821c98e4c6c22a32ee51df21e47c315603d)
-            echo "W4AFP8 loader patch already applied"
-            ;;
-          *)
-            echo "Unexpected SHA256 for python/sglang/srt/layers/quantization/w4afp8.py: $$source_sha256" >&2
-            exit 1
-            ;;
-        esac
-        printf '%s\n' '039316192fb40a2aefe425102734d821c98e4c6c22a32ee51df21e47c315603d  python/sglang/srt/layers/quantization/w4afp8.py' | sha256sum --check --strict
-        exec sglang serve \
-          --model-path /root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/snapshots/99f1fa70408c52b007d4fd69e02e5a522422e755 \
-          --served-model-name z-ai/glm-5.3-flash \
-          --tp-size 4 \
-          --ep-size 4 \
-          --mem-fraction-static 0.80 \
-          --max-running-requests 32 \
-          --max-queued-requests 8 \
-          --enable-priority-scheduling \
-          --disable-priority-preemption \
-          --chunked-prefill-size 16384 \
-          --max-prefill-tokens 32768 \
-          --prefill-decode-interval 1 \
-          --cuda-graph-max-bs-decode 32 \
-          --dsa-prefill-backend tilelang \
-          --dsa-decode-backend tilelang \
-          --kv-cache-dtype bfloat16 \
-          --speculative-algorithm EAGLE \
-          --speculative-num-steps 5 \
-          --speculative-eagle-topk 1 \
-          --speculative-num-draft-tokens 6 \
-          --speculative-adaptive \
-          --reasoning-parser glm45 \
-          --enable-strict-thinking \
-          --grammar-backend xgrammar \
-          --tool-call-parser glm47 \
-          --chat-template /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/3f1971b7b5f7a528c9c4ef6212c8785298a8c24a/chat_template.jinja \
-          --context-length 1048576 \
-          --dist-init-addr 127.0.0.1:29510 \
-          --watchdog-timeout 1800 \
-          --host 0.0.0.0 \
-          --port 8000 \
-          --enable-metrics \
-          --enable-cache-report \
-          --log-requests-level 0 \
-          --disable-fast-image-processor \
-          --limit-mm-data-per-request '{"image": 64}'
-    configs:
-      - source: glm53_w4afp8_patch
-        target: /usr/share/nearai/glm53-w4afp8/modules-to-not-convert.diff
-        mode: 0444
+    image: docker.io/nearaidev/sglang@sha256:8bce6a7cc872a80faded3bd1ef0a64873a1d7abae34c94e5358775ca21f133cc
+    command: >
+        sglang serve
+        --model-path /root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/snapshots/99f1fa70408c52b007d4fd69e02e5a522422e755
+        --served-model-name z-ai/glm-5.3-flash
+        --tp-size 4
+        --ep-size 4
+        --mem-fraction-static 0.80
+        --max-running-requests 32
+        --max-queued-requests 8
+        --enable-priority-scheduling
+        --disable-priority-preemption
+        --chunked-prefill-size 16384
+        --max-prefill-tokens 32768
+        --prefill-decode-interval 1
+        --cuda-graph-max-bs-decode 32
+        --dsa-prefill-backend tilelang
+        --dsa-decode-backend tilelang
+        --kv-cache-dtype bfloat16
+        --speculative-algorithm EAGLE
+        --speculative-num-steps 5
+        --speculative-eagle-topk 1
+        --speculative-num-draft-tokens 6
+        --speculative-adaptive
+        --reasoning-parser glm45
+        --enable-strict-thinking
+        --grammar-backend xgrammar
+        --tool-call-parser glm47
+        --chat-template /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/3f1971b7b5f7a528c9c4ef6212c8785298a8c24a/chat_template.jinja
+        --context-length 1048576
+        --dist-init-addr 127.0.0.1:29510
+        --watchdog-timeout 1800
+        --host 0.0.0.0
+        --port 8000
+        --enable-metrics
+        --enable-cache-report
+        --log-requests-level 0
+        --disable-fast-image-processor
+        --limit-mm-data-per-request '{"image": 64}'
     depends_on:
       model-downloader:
         condition: service_completed_successfully
@@ -775,36 +751,6 @@ volumes:
     name: certs
 
 configs:
-  glm53_w4afp8_patch:
-    content: |
-      --- a/python/sglang/srt/layers/quantization/w4afp8.py
-      +++ b/python/sglang/srt/layers/quantization/w4afp8.py
-      @@ -82,10 +82,25 @@
-               linear_activation_scheme = "dynamic"
-               moe_activation_scheme = "static"
-               weight_block_size = [128, 128]
-      +        # PATCH (inference-optimizer): stock from_config drops the checkpoint's exclusion list,
-      +        # so ignored_layers stays [] and is_layer_skipped() never skips anything. Every LinearBase
-      +        # then gets Fp8LinearMethod with block [128,128], and narrow layers explode:
-      +        #   Glm5NextLinearAttention.b_proj has output width 64 (16 per rank at TP4)
-      +        #   -> "Weight output_partition_size = 16 is not divisible by weight quantization
-      +        #       block_n = 128"  (fp8.py:528 validate_block_quant_shapes)
-      +        # graphistry/GLM-5.3-Flash-W4AFP8 DOES list that layer under modules_to_not_convert;
-      +        # the config just never reaches the constructor. Read it under all three spellings.
-      +        ignored_layers = (
-      +            config.get("modules_to_not_convert")
-      +            or config.get("ignored_layers")
-      +            or config.get("ignore")
-      +            or []
-      +        )
-               return cls(
-                   is_checkpoint_fp8_serialized=is_checkpoint_fp8_serialized,
-                   is_checkpoint_w4afp8_serialized=is_checkpoint_w4afp8_serialized,
-                   linear_activation_scheme=linear_activation_scheme,
-                   moe_activation_scheme=moe_activation_scheme,
-      +            ignored_layers=ignored_layers,
-                   weight_block_size=weight_block_size,
-               )
   glm53_soak_nginx_conf:
     content: |
       user nginx;

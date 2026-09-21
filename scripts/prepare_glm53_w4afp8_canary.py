@@ -7,9 +7,9 @@
 
 import argparse
 import difflib
-import hashlib
 import sys
 from pathlib import Path
+from typing import Final
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -18,15 +18,12 @@ from scripts.glm53_w4afp8_text import HEADER, HEADER_REPLACEMENTS
 
 COMPOSE = Path("prod/GLM-5.3-Flash-SGL-TP4-LongContext.yaml")
 CANDIDATE = Path("prod/GLM-5.3-Flash-SGL-TP4-W4AFP8-Canary.yaml")
-PATCH = Path("overlays/glm53-w4afp8/modules-to-not-convert.diff")
 CHECKPOINT = "graphistry/GLM-5.3-Flash-W4AFP8"
 CHECKPOINT_REVISION = "99f1fa70408c52b007d4fd69e02e5a522422e755"
+PROMOTED_IMAGE: Final = "docker.io/nearaidev/sglang@sha256:8bce6a7cc872a80faded3bd1ef0a64873a1d7abae34c94e5358775ca21f133cc"
 CONTROL_SERVICE = "model-sg-glm53-fp8-tp4-r1"
 CANDIDATE_SERVICE = "model-sg-glm53-w4afp8-tp4-r1"
 CANARY_PROFILE = "w4afp8-long-context"
-BASE_SOURCE_SHA256 = "21e9c527c9b83e350cdc35ce2bc62891cda1550934b2a5d302f0f807f752f125"
-PATCH_SHA256 = "29764baa3e464d2272ea85f2e254392c2a61a3fc61a51f8d33b5910ce0cd8d00"
-PATCHED_SOURCE_SHA256 = "039316192fb40a2aefe425102734d821c98e4c6c22a32ee51df21e47c315603d"
 CONTROL_VARIANT = "fc91d24-long-context-admission-reserve-disabled-hicache-disabled-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
 CANDIDATE_VARIANT = "fc91d24-long-context-w4afp8-c16384-admission-reserve-disabled-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
 
@@ -49,30 +46,6 @@ def section(text: str, start_marker: str, end_marker: str, label: str) -> tuple[
     except ValueError as error:
         raise GenerationError(f"{label}: canonical structure changed") from error
     return start, end, text[start:end]
-
-
-def patch_bootstrap(
-    patch_target: str = "/usr/share/nearai/glm53-w4afp8/modules-to-not-convert.diff",
-    source_target: str = "python/sglang/srt/layers/quantization/w4afp8.py",
-    patch_sha256: str = PATCH_SHA256,
-    base_sha256: str = BASE_SOURCE_SHA256,
-    patched_sha256: str = PATCHED_SOURCE_SHA256,
-) -> list[str]:
-    patch_check = f"{patch_sha256}  {patch_target}"
-    after_check = f"{patched_sha256}  {source_target}"
-    return [
-        f"        printf '%s\\n' '{patch_check}' | sha256sum --check --strict",
-        f"        source_sha256=$$(sha256sum {source_target} | cut -d' ' -f1)",
-        '        case "$$source_sha256" in', f"          {base_sha256})",
-        f"            git apply --check {patch_target}", f"            git apply {patch_target}", "            ;;",
-        f"          {patched_sha256})", '            echo "W4AFP8 loader patch already applied"', "            ;;",
-        "          *)",
-        f"            echo \"Unexpected SHA256 for {source_target}: $$source_sha256\" >&2",
-        "            exit 1",
-        "            ;;",
-        "        esac",
-        f"        printf '%s\\n' '{after_check}' | sha256sum --check --strict",
-    ]
 
 
 def candidate_command(common: str) -> str:
@@ -101,28 +74,12 @@ def candidate_command(common: str) -> str:
     chunk_index = transformed.index("--chunked-prefill-size 16384")
     transformed.insert(chunk_index + 1, "--max-prefill-tokens 32768")
 
-    lines = [
-        "    command:",
-        "      - /bin/bash",
-        "      - -lc",
-        "      - |",
-        "        set -euo pipefail",
-        '        echo "BLOCKED: signed two-patch W4AFP8 image digest is not pinned" >&2',
-        "        exit 78",
-        "        cd /sgl-workspace/sglang",
-        *patch_bootstrap(),
-    ]
-    for index, argument in enumerate(transformed):
-        prefix = "exec " if index == 0 else "  "
-        suffix = " \\" if index + 1 < len(transformed) else ""
-        lines.append(f"        {prefix}{argument}{suffix}")
+    lines = ["    command: >"]
+    lines.extend(f"        {argument}" for argument in transformed)
     return "\n".join(lines) + "\n"
 
 
-def generate(canonical: str, patch: str) -> str:
-    digest = hashlib.sha256(patch.encode()).hexdigest()
-    if digest != PATCH_SHA256:
-        raise GenerationError(f"loader patch checksum mismatch: {digest}")
+def generate(canonical: str) -> str:
     if CANDIDATE_SERVICE in canonical or CHECKPOINT in canonical:
         raise GenerationError("canonical compose already contains the W4AFP8 canary")
 
@@ -175,12 +132,6 @@ def generate(canonical: str, patch: str) -> str:
     )
     service_header = f"  {CANDIDATE_SERVICE}:\n"
     container = f"    container_name: {CANDIDATE_SERVICE}\n"
-    config_mount = (
-        "    configs:\n"
-        "      - source: glm53_w4afp8_patch\n"
-        "        target: /usr/share/nearai/glm53-w4afp8/modules-to-not-convert.diff\n"
-        "        mode: 0444\n"
-    )
     service = replace_exact(
         service,
         service_header,
@@ -188,7 +139,8 @@ def generate(canonical: str, patch: str) -> str:
         1,
         "candidate safety profile",
     )
-    service = replace_exact(service, container, container + command + config_mount, 1, "candidate override")
+    candidate_override = f"    image: {PROMOTED_IMAGE}\n" + command
+    service = replace_exact(service, container, container + candidate_override, 1, "candidate override")
     service = replace_exact(service, "zai-org/GLM-5.3-Flash", CHECKPOINT, 2, "candidate model path labels")
     service = replace_exact(
         service,
@@ -231,10 +183,6 @@ def generate(canonical: str, patch: str) -> str:
         replacement = f'  {service_name}:\n    profiles: ["{CANARY_PROFILE}"]\n{following_line}'
         updated = replace_exact(updated, marker, replacement, 1, f"{service_name} safety profile")
 
-    configs_marker = "\nconfigs:\n  glm53_soak_nginx_conf:\n"
-    indented_patch = "".join(f"      {line}" for line in patch.splitlines(keepends=True))
-    patch_config = "\nconfigs:\n  glm53_w4afp8_patch:\n    content: |\n" + indented_patch + "  glm53_soak_nginx_conf:\n"
-    updated = replace_exact(updated, configs_marker, patch_config, 1, "top-level patch config")
     return HEADER + updated
 
 
@@ -250,7 +198,7 @@ def main() -> int:
     if args.write and args.check:
         parser.error("--write and --check are mutually exclusive")
 
-    expected = generate((ROOT / COMPOSE).read_text(), (ROOT / PATCH).read_text())
+    expected = generate((ROOT / COMPOSE).read_text())
     actual = (ROOT / CANDIDATE).read_text() if (ROOT / CANDIDATE).exists() else ""
     if args.check:
         if actual == expected:
