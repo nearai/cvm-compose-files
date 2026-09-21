@@ -209,12 +209,16 @@ jobs:
              .config.Labels["nearai.sglang.source_revision"] == "fc91d2403cc210a86bd5fc715c6609f58c932e5a" and
              .config.Labels["nearai.sglang.admission_reserve"] == "v10" and
              .config.Labels["nearai.sglang.admission_reserve_revision"] == "fb944723035d6c8b8135fd3c6ffbdc21a4615409"'
-          if [[ "$VARIANT" == "hicache" ]]; then
+          if [[ "$VARIANT" == "hicache" || "$VARIANT" == "hicache-clamp" ]]; then
             LABEL_CHECK="$LABEL_CHECK"' and
              .config.Labels["nearai.sglang.hicache_fix_revision"] == "230102db838cbbe6eca7952c729518ee6d93c3a9" and
              .config.Labels["nearai.sglang.pooled_transfers"] == "v1-opt-in" and
              .config.Labels["nearai.sglang.hcc_host_memory"] == "v4-cuda-hostalloc-opt-in" and
              .config.Labels["nearai.sglang.hcc_managed_memory"] == "v3-host-prefetch-opt-in"'
+          fi
+          if [[ "$VARIANT" == "base-clamp" || "$VARIANT" == "hicache-clamp" ]]; then
+            LABEL_CHECK="$LABEL_CHECK"' and
+             .config.Labels["nearai.sglang.chunked_prefill_pool_clamp"] == "v1"'
           fi
 
           jq -e --arg source_revision "$SOURCE_REVISION" \
@@ -400,6 +404,8 @@ jobs:
           retention-days: 30
 
       - name: Publish summary
+        env:
+          VARIANT: ${{ inputs.variant }}
         run: |
           {
             echo '## GLM-5.3 admission-reserve engine image'
@@ -410,6 +416,9 @@ jobs:
             echo '- SGLang source: `PierreLeGuen/sglang-upstream@fc91d2403cc210a86bd5fc715c6609f58c932e5a`'
             echo '- admission-reserve patch: `nearai/inference-optimizer@fb944723035d6c8b8135fd3c6ffbdc21a4615409` (patches/admission-reserve-v10.diff)'
             echo '- Activation requires SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE > 0 (plus SGLANG_ADMISSION_RESERVE_MAX_FRACTION and --prefill-decode-interval); the patch is inert without it.'
+            if [[ "$VARIANT" == "base-clamp" || "$VARIANT" == "hicache-clamp" ]]; then
+              echo '- chunked-prefill pool clamp: applied unconditionally; no opt-in switch.'
+            fi
             echo '- Promotion: pin this digest and enable the reviewed admission-reserve settings in a separate PR.'
             echo '- Publishing does not modify compose files or deploy a service.'
             echo '- embedded BuildKit provenance: verified'

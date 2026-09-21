@@ -80,7 +80,7 @@ load.
 
 ## Build
 
-Published by `.github/workflows/publish-glm53-pool-clamp` variants of
-`publish-glm53-admission-reserve.yaml` (`variant=base-clamp`). `apply-patches.py` verifies both
+Published by `.github/workflows/publish-glm53-admission-reserve.yaml` (`variant=base-clamp`).
+`apply-patches.py` verifies both
 scheduler files against `source-manifest.json` before and after applying the diff and refuses a
 drifted base, so this recipe can only be built on top of the exact deployed engine.
