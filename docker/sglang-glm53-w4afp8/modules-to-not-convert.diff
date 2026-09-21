@@ -1,0 +1,28 @@
+--- a/python/sglang/srt/layers/quantization/w4afp8.py
++++ b/python/sglang/srt/layers/quantization/w4afp8.py
+@@ -82,10 +82,25 @@
+         linear_activation_scheme = "dynamic"
+         moe_activation_scheme = "static"
+         weight_block_size = [128, 128]
++        # PATCH (inference-optimizer): stock from_config drops the checkpoint's exclusion list,
++        # so ignored_layers stays [] and is_layer_skipped() never skips anything. Every LinearBase
++        # then gets Fp8LinearMethod with block [128,128], and narrow layers explode:
++        #   Glm5NextLinearAttention.b_proj has output width 64 (16 per rank at TP4)
++        #   -> "Weight output_partition_size = 16 is not divisible by weight quantization
++        #       block_n = 128"  (fp8.py:528 validate_block_quant_shapes)
++        # graphistry/GLM-5.3-Flash-W4AFP8 DOES list that layer under modules_to_not_convert;
++        # the config just never reaches the constructor. Read it under all three spellings.
++        ignored_layers = (
++            config.get("modules_to_not_convert")
++            or config.get("ignored_layers")
++            or config.get("ignore")
++            or []
++        )
+         return cls(
+             is_checkpoint_fp8_serialized=is_checkpoint_fp8_serialized,
+             is_checkpoint_w4afp8_serialized=is_checkpoint_w4afp8_serialized,
+             linear_activation_scheme=linear_activation_scheme,
+             moe_activation_scheme=moe_activation_scheme,
++            ignored_layers=ignored_layers,
+             weight_block_size=weight_block_size,
+         )

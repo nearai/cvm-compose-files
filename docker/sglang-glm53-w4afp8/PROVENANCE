@@ -1,0 +1,15 @@
+base_image=docker.io/nearaidev/sglang@sha256:e9d29a1cb1cd65284392c4d62d5f2a36669628057e15c60fe93ea40cfe4fc7e7
+base_recipe=docker/sglang-glm53-admission-reserve
+source_repository=https://github.com/PierreLeGuen/sglang-upstream
+source_revision=fc91d2403cc210a86bd5fc715c6609f58c932e5a
+admission_reserve_revision=fb944723035d6c8b8135fd3c6ffbdc21a4615409
+loader_patch_file=docker/sglang-glm53-w4afp8/modules-to-not-convert.diff
+loader_patch_sha256=29764baa3e464d2272ea85f2e254392c2a61a3fc61a51f8d33b5910ce0cd8d00
+loader_patch_scope=W4AFp8Config.from_config propagates checkpoint exclusion keys to ignored_layers
+pool_clamp_patch_file=docker/sglang-glm53-w4afp8/chunked-prefill-pool-clamp.diff
+pool_clamp_patch_sha256=ba911be688556df0c0b2c9a26cde4c9f38b410a5ba51020d7754fa2e8cd010c3
+pool_clamp_patch_scope=PrefillAdder.add_chunked_req unconditional allocator-pool clamp
+admission_reserve_scope=inherited v10 behavior remains opt-in and inert by default
+compose_scope=no Compose file is changed by this recipe
+promotion=pin the published digest in a separate promotion PR before use
+build_recipe=docker/sglang-glm53-w4afp8/Dockerfile
