@@ -35,12 +35,12 @@ class CommittedCanaryTest(unittest.TestCase):
         self.assertEqual(CANDIDATE.read_text(), expected)
 
     def test_candidate_has_exact_treatment_contract(self) -> None:
-        # Given the generated gpu04 A/B compose file
+        # Given the generated gpu02 long-context compose file
         text = CANDIDATE.read_text()
         _, _, service = canary.section(
             text,
             f"  {canary.CANDIDATE_SERVICE}:\n",
-            "\n  # Explicit operator-only semantic check;",
+            "\n  model-sg-glm53-fp8-tp4-r2:\n",
             "candidate service",
         )
         _, _, common = canary.section(
@@ -49,7 +49,7 @@ class CommittedCanaryTest(unittest.TestCase):
             "\nx-dcgm-common: &dcgm-common\n",
             "shared engine anchor",
         )
-        # When the r2 treatment is inspected
+        # When the r1 treatment is inspected
         required = (
             f"--model-path /root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/snapshots/{canary.CHECKPOINT_REVISION}",
             "--served-model-name z-ai/glm-5.3-flash",
@@ -66,23 +66,23 @@ class CommittedCanaryTest(unittest.TestCase):
                 self.assertIn(item, service)
         self.assertNotIn("--revision", service)
         self.assertNotIn("--moe-runner-backend", service)
-        self.assertIn("SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE=4096", common)
-        self.assertIn("SGLANG_ADMISSION_RESERVE_MAX_FRACTION=0.75", common)
+        self.assertNotIn("SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE", common)
+        self.assertNotIn("SGLANG_ADMISSION_RESERVE_MAX_FRACTION", common)
 
     def test_candidate_refuses_to_start_when_pool_clamp_image_is_not_pinned(self) -> None:
-        # Given the generated canary still inherits the admission-reserve-only image
+        # Given the generated canary still inherits the base engine image
         text = CANDIDATE.read_text()
         _, _, service = canary.section(
             text,
             f"  {canary.CANDIDATE_SERVICE}:\n",
-            "\n  # Explicit operator-only semantic check;",
+            "\n  model-sg-glm53-fp8-tp4-r2:\n",
             "candidate service",
         )
         # When an operator explicitly targets the otherwise opt-in candidate service
         blocker = "exit 78"
         # Then startup must stop before SGLang can execute.
         self.assertIn(
-            "BLOCKED: this file still inherits the admission-reserve-only image",
+            "BLOCKED: this file still inherits the base engine image",
             text,
         )
         self.assertIn(blocker, service)
@@ -176,24 +176,45 @@ for path in sys.argv[1:]:
         self.assertNotEqual(drifted.returncode, 0)
         self.assertIn("Unexpected SHA256", drifted.stderr)
 
-    def test_candidate_wiring_is_isolated_to_r2(self) -> None:
-        # Given the generated canary and canonical control
+    def test_candidate_wiring_is_isolated_to_long_context_r1(self) -> None:
+        # Given the generated candidate and deployed long-context source
         text = CANDIDATE.read_text()
-        canonical = (ROOT / canary.COMPOSE).read_text()
+        long_context = (ROOT / canary.COMPOSE).read_text()
         # When service, proxy, verification, and telemetry references are counted
-        # Then r1 stays byte-identifiable and every r2 route names the candidate.
-        self.assertIn("  model-sg-glm53-fp8-tp4-r1:\n", text)
+        # Then every r1 route names the candidate and r2 stays the FP8 HiCache arm.
+        self.assertIn("  model-sg-glm53-fp8-tp4-r2:\n", text)
         self.assertEqual(text.count(canary.CANDIDATE_SERVICE), 9)
         self.assertNotIn(canary.CONTROL_SERVICE, text)
-        self.assertIn(canary.CONTROL_SERVICE, canonical)
+        self.assertIn(canary.CONTROL_SERVICE, long_context)
         expected_perception_loop = (
-            'for replica, service in ((1, "model-sg-glm53-fp8-tp4-r1"), '
-            f'(2, "{canary.CANDIDATE_SERVICE}")):'
+            f'for replica, service in ((1, "{canary.CANDIDATE_SERVICE}"), '
+            '(2, "model-sg-glm53-fp8-tp4-r2")):'
         )
         self.assertIn(
             expected_perception_loop,
             text,
         )
+
+    def test_long_context_r2_definition_is_unchanged_except_safety_profile(self) -> None:
+        # Given the deployed long-context source and generated candidate
+        source = (ROOT / canary.COMPOSE).read_text()
+        candidate = CANDIDATE.read_text()
+        _, _, source_r2 = canary.section(
+            source,
+            "  model-sg-glm53-fp8-tp4-r2:\n",
+            "\n  # Explicit operator-only semantic check;",
+            "source r2 service",
+        )
+        _, _, candidate_r2 = canary.section(
+            candidate,
+            "  model-sg-glm53-fp8-tp4-r2:\n",
+            "\n  # Explicit operator-only semantic check;",
+            "candidate r2 service",
+        )
+        profile = f'    profiles: ["{canary.CANARY_PROFILE}"]\n'
+        # When the alternate file's default-apply guard is ignored
+        # Then gpu02 r2 is byte-identical to the deployed HiCache arm.
+        self.assertEqual(candidate_r2.replace(profile, "", 1), source_r2)
 
     def test_customer_routing_requires_explicit_canary_services(self) -> None:
         # Given an operator accidentally applies the canary file without a service list
@@ -203,7 +224,7 @@ for path in sys.argv[1:]:
             canary.CANDIDATE_SERVICE,
             "model-proxy-registrar",
             "proxy-glm53",
-            "model-sg-glm53-fp8-tp4-r1",
+            "model-sg-glm53-fp8-tp4-r2",
             "dcgm-glm53",
             "otelcol-contrib",
             "nginx",

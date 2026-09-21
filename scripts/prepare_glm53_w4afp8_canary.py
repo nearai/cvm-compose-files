@@ -8,35 +8,30 @@
 import argparse
 import difflib
 import hashlib
+import sys
+from importlib import import_module
 from pathlib import Path
+from typing import cast
 
 ROOT = Path(__file__).resolve().parents[1]
-COMPOSE = Path("prod/GLM-5.3-Flash-SGL-TP4.yaml")
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+text_constants = import_module("scripts.glm53_w4afp8_text")
+HEADER = cast(str, text_constants.HEADER)
+HEADER_REPLACEMENTS = cast(tuple[tuple[str, str], ...], text_constants.HEADER_REPLACEMENTS)
+COMPOSE = Path("prod/GLM-5.3-Flash-SGL-TP4-LongContext.yaml")
 CANDIDATE = Path("prod/GLM-5.3-Flash-SGL-TP4-W4AFP8-Canary.yaml")
 PATCH = Path("overlays/glm53-w4afp8/modules-to-not-convert.diff")
 CHECKPOINT = "graphistry/GLM-5.3-Flash-W4AFP8"
 CHECKPOINT_REVISION = "99f1fa70408c52b007d4fd69e02e5a522422e755"
-CONTROL_SERVICE = "model-sg-glm53-fp8-tp4-r2"
-CANDIDATE_SERVICE = "model-sg-glm53-w4afp8-tp4-r2"
-CANARY_PROFILE = "w4afp8-canary"
+CONTROL_SERVICE = "model-sg-glm53-fp8-tp4-r1"
+CANDIDATE_SERVICE = "model-sg-glm53-w4afp8-tp4-r1"
+CANARY_PROFILE = "w4afp8-long-context"
 BASE_SOURCE_SHA256 = "21e9c527c9b83e350cdc35ce2bc62891cda1550934b2a5d302f0f807f752f125"
 PATCH_SHA256 = "29764baa3e464d2272ea85f2e254392c2a61a3fc61a51f8d33b5910ce0cd8d00"
 PATCHED_SOURCE_SHA256 = "039316192fb40a2aefe425102734d821c98e4c6c22a32ee51df21e47c315603d"
-CONTROL_VARIANT = "fc91d24-admission-reserve-v10-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
-CANDIDATE_VARIANT = "fc91d24-w4afp8-c16384-admission-reserve-v10-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
-HEADER = (
-    "# gpu04 r2-only W4AFP8 canary generated from prod/GLM-5.3-Flash-SGL-TP4.yaml.\n"
-    "# r1 remains the production FP8 control. r2 uses the Graphistry W4AFP8 checkpoint,\n"
-    "# a 16384-token prefill chunk, and the gpu31/gpu32-verified loader source change.\n"
-    "# BLOCKED: this file still inherits the admission-reserve-only image, which lacks\n"
-    "# the mandatory chunked-prefill pool clamp. Do not start the candidate until a\n"
-    "# signed W4AFP8 image containing both patches is published and pinned here.\n"
-    "# The current admission-reserve scheduler stays enabled on both arms, making this the\n"
-    "# required interaction canary rather than a fleet-wide replacement. Deploy only to\n"
-    "# gpu04 with docs/gpu04-glm53-w4afp8-canary.md. All operational services require\n"
-    "# the w4afp8-canary profile, so an unscoped default apply cannot change the stack.\n"
-    "# Do not hand-edit this file.\n"
-)
+CONTROL_VARIANT = "fc91d24-long-context-admission-reserve-disabled-hicache-disabled-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
+CANDIDATE_VARIANT = "fc91d24-long-context-w4afp8-c16384-admission-reserve-disabled-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
 
 
 class GenerationError(ValueError):
@@ -147,14 +142,16 @@ def generate(canonical: str, patch: str) -> str:
         1,
         "model downloader",
     )
-    updated = replace_exact(updated, CONTROL_SERVICE, CANDIDATE_SERVICE, 8, "r2 service identity")
+    for old, new in HEADER_REPLACEMENTS:
+        updated = replace_exact(updated, old, new, 1, "long-context header")
+    updated = replace_exact(updated, CONTROL_SERVICE, CANDIDATE_SERVICE, 8, "r1 service identity")
     perception_loop = (
         "        for replica in (1, 2):\n"
         "            base = f\"http://model-sg-glm53-fp8-tp4-r{replica}:8000\"\n"
     )
     candidate_perception_loop = (
-        "        for replica, service in ((1, \"model-sg-glm53-fp8-tp4-r1\"), "
-        f"(2, \"{CANDIDATE_SERVICE}\")):\n"
+        f"        for replica, service in ((1, \"{CANDIDATE_SERVICE}\"), "
+        "(2, \"model-sg-glm53-fp8-tp4-r2\")):\n"
         "            base = f\"http://{service}:8000\"\n"
     )
     updated = replace_exact(
@@ -176,7 +173,7 @@ def generate(canonical: str, patch: str) -> str:
     service_start, service_end, service = section(
         updated,
         f"  {CANDIDATE_SERVICE}:\n",
-        "\n  # Explicit operator-only semantic check;",
+        "\n  model-sg-glm53-fp8-tp4-r2:\n",
         "candidate service",
     )
     service_header = f"  {CANDIDATE_SERVICE}:\n"
@@ -227,7 +224,7 @@ def generate(canonical: str, patch: str) -> str:
         "model-downloader": "    image: ghcr.io/astral-sh/uv:",
         "model-proxy-registrar": "    image: curlimages/curl@",
         "proxy-glm53": "    <<: *vllm-proxy-common",
-        "model-sg-glm53-fp8-tp4-r1": "    <<: *sg-glm53-flash-common",
+        "model-sg-glm53-fp8-tp4-r2": "    <<: *sg-glm53-flash-common",
         "dcgm-glm53": "    <<: *dcgm-common",
         "otelcol-contrib": "    image: otel/opentelemetry-collector-contrib@",
         "nginx": "    image: nginx@",
