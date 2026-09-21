@@ -9,16 +9,13 @@ import argparse
 import difflib
 import hashlib
 import sys
-from importlib import import_module
 from pathlib import Path
-from typing import cast
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-text_constants = import_module("scripts.glm53_w4afp8_text")
-HEADER = cast(str, text_constants.HEADER)
-HEADER_REPLACEMENTS = cast(tuple[tuple[str, str], ...], text_constants.HEADER_REPLACEMENTS)
+from scripts.glm53_w4afp8_text import HEADER, HEADER_REPLACEMENTS
+
 COMPOSE = Path("prod/GLM-5.3-Flash-SGL-TP4-LongContext.yaml")
 CANDIDATE = Path("prod/GLM-5.3-Flash-SGL-TP4-W4AFP8-Canary.yaml")
 PATCH = Path("overlays/glm53-w4afp8/modules-to-not-convert.diff")

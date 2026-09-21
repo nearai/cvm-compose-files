@@ -27,6 +27,7 @@ This is not a matched A/B benchmark. r2 has HiCache and r1 does not, so r2 can p
 5. Obtain product approval for the measured quality trade: about 8–12% lower E2E latency in the replicated workload versus about 2.02 percentage points lower top-1 agreement and a 1.0334 perplexity ratio.
 6. Use a merged, backdated repository tag accepted by compose-manager. Fetch gpu02's complete dashboard environment map and reuse it unchanged for every scoped operation. Never send an empty service list.
 7. Confirm at least 250 GiB free on the CVM model-cache volume and record the deployed tag, file, image digests, running containers, registry entries, and a successful long-domain completion before the change.
+8. Prove the preserved r2 can carry the live long-context arrival rate during the r1-only qualification window. Do not unregister gpu02 as a drain mechanism: cloud-api treats long-domain failures as retryable and falls back to the base fleet. That overflow saturated gpu03/gpu04/gpu23 and contributed to the 2026-09-21 OpenRouter lane traffic loss. If r2 lacks measured headroom, add qualified long-tier capacity or stop; do not proceed by spilling traffic onto the base fleet.
 
 PR #278 was approved but still open on 2026-09-21. No signed combined W4AFP8 digest was available at that check.
 
@@ -47,22 +48,22 @@ PR #278 was approved but still open on 2026-09-21. No signed combined W4AFP8 dig
 ## Staged qualification
 
 1. Render the candidate and prove the r1 image resolves to the reviewed signed digest, not the inherited base image or a mutable tag. Verify the signature, attestation, two-patch provenance, and gpu31 replay. Run `model-downloader` alone and confirm the pinned Graphistry snapshot completes without removing the existing FP8 snapshot or chat template.
-2. Stop `model-proxy-registrar` from the deployed long-context tag, explicitly unregister gpu02's long endpoint, and read back both production model-proxy registries. Do not rely on SIGTERM alone to unregister the host. Keep customer routing withdrawn throughout direct qualification.
-3. Stop only `model-sg-glm53-fp8-tp4-r1` from the deployed long-context file. Confirm r2 stays running, its container identity is unchanged, and GPUs 0–3 are released.
-4. Start only `model-sg-glm53-w4afp8-tp4-r1` from the candidate file. Do not recreate proxy, nginx, registrar, r2, DCGM, OTel, or the monitoring stack yet.
+2. Keep `model-proxy-registrar`, nginx, the deployed `proxy-glm53`, and r2 running. Read both production registries and the current long-domain queue, pending-prefill, TTFT, abort, and fallback signals. Proceed only in a low-traffic window where hard gate 8 proves r2 has headroom. An operator must watch these signals continuously and roll back immediately on r2 saturation or base-fleet fallback.
+3. Stop only `model-sg-glm53-fp8-tp4-r1` from the deployed long-context file. Confirm r2's container identity is unchanged, GPUs 0–3 are released, the long endpoint remains registered, the deployed proxy marks old r1 unhealthy, and a real long-domain completion still succeeds through r2.
+4. Start only `model-sg-glm53-w4afp8-tp4-r1` from the candidate file. Do not recreate proxy, nginx, registrar, r2, DCGM, OTel, or the monitoring stack yet; the deployed proxy must continue sending customer traffic only to r2 while the candidate is tested directly.
 5. Require the loader compatibility checks to pass and the model to resolve through `W4AFp8MoEMethod` and the CUTLASS W4A8 MoE path. Expect weight memory near 41.4 GiB/GPU and a KV pool near 3.56 million tokens. Stop on W4A16/Marlin fallback, shape validation, restart, NCCL, Xid, pool-allocation, or CUDA errors.
-6. Start `glm53-soak-relay` with the verification profile and test r1 through port 8008. A successful `/health` is insufficient: send a deterministic generation, verify non-empty output and the stable served model id, then run the perception check against both replicas.
-7. Run the long-context matrix from hard gate 4. Verify prefix-cache reuse on a second turn, speculative acceptance greater than 1.00, zero restarts, and no silent abort increase. Compare r1/r2 completion rate, TTFT, TPOT, E2E, queue depth, KV usage, and output lengths, while treating r2's HiCache as a known confound.
-8. After every hard gate and product approval passes, recreate `otelcol-contrib` so its static r1 target and labels follow the candidate. Recreate `proxy-glm53` so customer routing names the candidate r1 and preserved r2. Nginx resolves the proxy dynamically and need not be recreated for this service-name-only swap.
-9. Restart `model-proxy-registrar`, read back both registries, and send a real long-domain customer-path completion plus a cache-hit follow-up. Confirm metrics identify r1 as `graphistry/GLM-5.3-Flash-W4AFP8`, precision `int4-weights-fp8-activations-bf16-kv`, and the long-context W4AFP8 config variant.
+6. Start `glm53-soak-relay` with the verification profile and test candidate r1 through port 8008. A successful `/health` is insufficient: send a deterministic generation, verify non-empty output and the stable served model id, then run the perception check against both replicas.
+7. Run the long-context matrix from hard gate 4. Verify prefix-cache reuse on a second turn, speculative acceptance greater than 1.00, zero restarts, and no silent abort increase. Compare r1/r2 completion rate, TTFT, TPOT, E2E, queue depth, KV usage, and output lengths, while treating r2's HiCache as a known confound. Keep watching the live r2 and base fleets throughout the test.
+8. After every hard gate and product approval passes, recreate `otelcol-contrib` so its static r1 target and labels follow the candidate. Recreate `proxy-glm53` so customer routing names the already-ready candidate r1 and preserved r2. Nginx resolves the proxy dynamically and need not be recreated for this service-name-only swap; the registrar and long endpoint stay in place.
+9. Read back both registries and send a real long-domain customer-path completion plus a cache-hit follow-up. Confirm traffic reaches both healthy replicas and metrics identify r1 as `graphistry/GLM-5.3-Flash-W4AFP8`, precision `int4-weights-fp8-activations-bf16-kv`, and the long-context W4AFP8 config variant.
 
 ## Rollback
 
 Rollback on any failed gate, output anomaly, restart, GPU error, long-context allocation failure, sustained queue regression, silent-abort increase, or unexplained 4xx/5xx increase.
 
-1. Stop `model-proxy-registrar`, explicitly unregister gpu02's long endpoint, and confirm withdrawal in both registries.
+1. Keep the registrar and long endpoint in place so failure does not deliberately spill the long tier onto the base fleet. Confirm r2 is healthy and serving before changing r1.
 2. Stop `glm53-soak-relay` and `model-sg-glm53-w4afp8-tp4-r1` using the candidate file.
 3. Start `model-sg-glm53-fp8-tp4-r1` from the prior long-context tag and file. Require a real successful generation, not only `/health`; verify r2's container identity never changed.
-4. Recreate only `otelcol-contrib` and `proxy-glm53` from the prior long-context tag so their r1 target returns to `model-sg-glm53-fp8-tp4-r1`.
-5. Restart `model-proxy-registrar`, read back both registries, and verify a long-domain completion, cache-hit follow-up, and attestation.
+4. If `proxy-glm53` and `otelcol-contrib` were not yet switched in staged step 8, the deployed proxy will rediscover restored r1 without recreation. If they were switched, recreate only those two services from the prior long-context tag so their r1 target returns to `model-sg-glm53-fp8-tp4-r1`.
+5. Read back both registries and verify a long-domain completion, cache-hit follow-up, no base-fleet fallback, and attestation.
 6. Preserve candidate logs and the exact tag for analysis. Removing the downloaded checkpoint is a separate maintenance action.
