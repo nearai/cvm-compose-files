@@ -1,6 +1,9 @@
 # gpu04 r2-only W4AFP8 canary generated from prod/GLM-5.3-Flash-SGL-TP4.yaml.
 # r1 remains the production FP8 control. r2 uses the Graphistry W4AFP8 checkpoint,
 # a 16384-token prefill chunk, and the gpu31/gpu32-verified loader source change.
+# BLOCKED: this file still inherits the admission-reserve-only image, which lacks
+# the mandatory chunked-prefill pool clamp. Do not start the candidate until a
+# signed W4AFP8 image containing both patches is published and pinned here.
 # The current admission-reserve scheduler stays enabled on both arms, making this the
 # required interaction canary rather than a fleet-wide replacement. Deploy only to
 # gpu04 with docs/gpu04-glm53-w4afp8-canary.md. All operational services require
@@ -393,6 +396,8 @@ services:
       - -lc
       - |
         set -euo pipefail
+        echo "BLOCKED: signed two-patch W4AFP8 image digest is not pinned" >&2
+        exit 78
         cd /sgl-workspace/sglang
         printf '%s\n' '29764baa3e464d2272ea85f2e254392c2a61a3fc61a51f8d33b5910ce0cd8d00  /usr/share/nearai/glm53-w4afp8/modules-to-not-convert.diff' | sha256sum --check --strict
         source_sha256=$$(sha256sum python/sglang/srt/layers/quantization/w4afp8.py | cut -d' ' -f1)

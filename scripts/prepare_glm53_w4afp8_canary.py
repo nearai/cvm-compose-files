@@ -5,8 +5,6 @@
 # ///
 # How to run: uv run scripts/prepare_glm53_w4afp8_canary.py --write
 
-from __future__ import annotations
-
 import argparse
 import difflib
 import hashlib
@@ -26,12 +24,13 @@ PATCH_SHA256 = "29764baa3e464d2272ea85f2e254392c2a61a3fc61a51f8d33b5910ce0cd8d00
 PATCHED_SOURCE_SHA256 = "039316192fb40a2aefe425102734d821c98e4c6c22a32ee51df21e47c315603d"
 CONTROL_VARIANT = "fc91d24-admission-reserve-v10-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
 CANDIDATE_VARIANT = "fc91d24-w4afp8-c16384-admission-reserve-v10-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
-PATCH_TARGET = "/usr/share/nearai/glm53-w4afp8/modules-to-not-convert.diff"
-SOURCE_TARGET = "python/sglang/srt/layers/quantization/w4afp8.py"
 HEADER = (
     "# gpu04 r2-only W4AFP8 canary generated from prod/GLM-5.3-Flash-SGL-TP4.yaml.\n"
     "# r1 remains the production FP8 control. r2 uses the Graphistry W4AFP8 checkpoint,\n"
     "# a 16384-token prefill chunk, and the gpu31/gpu32-verified loader source change.\n"
+    "# BLOCKED: this file still inherits the admission-reserve-only image, which lacks\n"
+    "# the mandatory chunked-prefill pool clamp. Do not start the candidate until a\n"
+    "# signed W4AFP8 image containing both patches is published and pinned here.\n"
     "# The current admission-reserve scheduler stays enabled on both arms, making this the\n"
     "# required interaction canary rather than a fleet-wide replacement. Deploy only to\n"
     "# gpu04 with docs/gpu04-glm53-w4afp8-canary.md. All operational services require\n"
@@ -61,8 +60,8 @@ def section(text: str, start_marker: str, end_marker: str, label: str) -> tuple[
 
 
 def patch_bootstrap(
-    patch_target: str = PATCH_TARGET,
-    source_target: str = SOURCE_TARGET,
+    patch_target: str = "/usr/share/nearai/glm53-w4afp8/modules-to-not-convert.diff",
+    source_target: str = "python/sglang/srt/layers/quantization/w4afp8.py",
     patch_sha256: str = PATCH_SHA256,
     base_sha256: str = BASE_SOURCE_SHA256,
     patched_sha256: str = PATCHED_SOURCE_SHA256,
@@ -116,6 +115,8 @@ def candidate_command(common: str) -> str:
         "      - -lc",
         "      - |",
         "        set -euo pipefail",
+        '        echo "BLOCKED: signed two-patch W4AFP8 image digest is not pinned" >&2',
+        "        exit 78",
         "        cd /sgl-workspace/sglang",
         *patch_bootstrap(),
     ]
@@ -183,7 +184,7 @@ def generate(canonical: str, patch: str) -> str:
     config_mount = (
         "    configs:\n"
         "      - source: glm53_w4afp8_patch\n"
-        f"        target: {PATCH_TARGET}\n"
+        "        target: /usr/share/nearai/glm53-w4afp8/modules-to-not-convert.diff\n"
         "        mode: 0444\n"
     )
     service = replace_exact(

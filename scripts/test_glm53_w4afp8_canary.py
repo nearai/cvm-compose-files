@@ -22,7 +22,7 @@ class CommittedCanaryTest(unittest.TestCase):
     def test_generated_canary_exists(self) -> None:
         # Given the repository's production compose tree
         # When the W4AFP8 canary artifacts are inspected
-        # Then a self-contained deployable candidate must be present.
+        # Then a generated candidate artifact must be present.
         self.assertTrue(CANDIDATE.is_file(), CANDIDATE)
 
     def test_committed_canary_matches_generator(self) -> None:
@@ -31,7 +31,7 @@ class CommittedCanaryTest(unittest.TestCase):
         patch = (ROOT / canary.PATCH).read_text()
         # When the candidate is regenerated in memory
         expected = canary.generate(canonical, patch)
-        # Then the committed deployable file must be byte-identical.
+        # Then the committed generated file must be byte-identical.
         self.assertEqual(CANDIDATE.read_text(), expected)
 
     def test_candidate_has_exact_treatment_contract(self) -> None:
@@ -68,6 +68,25 @@ class CommittedCanaryTest(unittest.TestCase):
         self.assertNotIn("--moe-runner-backend", service)
         self.assertIn("SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE=4096", common)
         self.assertIn("SGLANG_ADMISSION_RESERVE_MAX_FRACTION=0.75", common)
+
+    def test_candidate_refuses_to_start_when_pool_clamp_image_is_not_pinned(self) -> None:
+        # Given the generated canary still inherits the admission-reserve-only image
+        text = CANDIDATE.read_text()
+        _, _, service = canary.section(
+            text,
+            f"  {canary.CANDIDATE_SERVICE}:\n",
+            "\n  # Explicit operator-only semantic check;",
+            "candidate service",
+        )
+        # When an operator explicitly targets the otherwise opt-in candidate service
+        blocker = "exit 78"
+        # Then startup must stop before SGLang can execute.
+        self.assertIn(
+            "BLOCKED: this file still inherits the admission-reserve-only image",
+            text,
+        )
+        self.assertIn(blocker, service)
+        self.assertLess(service.index(blocker), service.index("exec sglang serve"))
 
     def test_loader_patch_bootstrap_is_restart_safe_and_fail_closed(self) -> None:
         # Given the exact bootstrap template and a disposable source/patch pair
