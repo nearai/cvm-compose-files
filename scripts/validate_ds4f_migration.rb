@@ -143,8 +143,12 @@ assert.call(small_services.fetch('dcgm-shared-gpu3')['image'] == dcgm_image, 'gp
 registrar = small.fetch('configs').fetch('registrar_script').fetch('content')
 nginx = small.fetch('configs').fetch('nginx_conf').fetch('content')
 assert.call(small_services.fetch('nginx').fetch('ports').map(&:to_s).include?('8009:8009'), 'gpu13 nginx must publish host port 8009')
-assert.call(registrar.match?(/8009\) check_chat "\$\$\{HOST_IP\}:8009" "z-ai\/glm-5\.3-flash"/), 'gpu13 registrar port 8009 health check must require GLM')
-assert.call(registrar.match?(/register_model "z-ai\/glm-5\.3-flash" "glm-5-3-flash\.completions\.near\.ai"/), 'gpu13 registrar must map GLM to its public domain')
+# GLM (:8009) is the OpenRouter-only lane: the gateway reaches it directly on
+# the host port, so the registrar must never probe or register it. Comments are
+# stripped first so the explanatory ":8009" comment block is not a false match.
+registrar_code = registrar.lines.reject { |line| line.strip.start_with?('#') }.join
+assert.call(!registrar_code.include?('8009'), 'gpu13 registrar must not reference port 8009 (GLM is the OpenRouter-only lane)')
+assert.call(!registrar.match?(/register_model "z-ai\/glm-5\.3-flash/), 'gpu13 registrar must not register GLM with model-proxy')
 assert.call(nginx.match?(/listen 8009;\s+location \/ \{ proxy_pass http:\/\/proxy-glm53:8000; \}/), 'gpu13 nginx port 8009 must route to the GLM proxy')
 assert.call(nginx.match?(/server_name glm-5-3-flash\.completions\.near\.ai.*?location \/ \{ proxy_pass http:\/\/proxy-glm53:8000; \}/m), 'gpu13 GLM SNI must route to the GLM proxy')
 glm_sni = nginx[/server_name glm-5-3-flash\.completions\.near\.ai.*?location \/ \{ proxy_pass http:\/\/proxy-glm53:8000; \}/m]
