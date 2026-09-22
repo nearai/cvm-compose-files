@@ -132,7 +132,7 @@ def generate(canonical: str) -> str:
     service = replace_exact(
         service,
         service_header,
-        service_header + f'    profiles: ["{CANARY_PROFILE}"]\n    restart: "no"\n',
+        service_header + f'    profiles: ["{CANARY_PROFILE}"]\n    restart: unless-stopped\n',
         1,
         "candidate safety profile",
     )

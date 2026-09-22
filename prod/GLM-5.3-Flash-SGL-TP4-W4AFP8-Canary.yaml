@@ -411,7 +411,7 @@ services:
   # --- GLM-5.3-Flash engine replica 1 (SGLang TP4, GPUs 0-3) ---
   model-sg-glm53-w4afp8-tp4-r1:
     profiles: ["w4afp8-long-context"]
-    restart: "no"
+    restart: unless-stopped
     <<: *sg-glm53-flash-common
     container_name: model-sg-glm53-w4afp8-tp4-r1
     image: docker.io/nearaidev/sglang@sha256:8bce6a7cc872a80faded3bd1ef0a64873a1d7abae34c94e5358775ca21f133cc
