@@ -2530,10 +2530,20 @@ configs:
 
       server {
           listen 443 ssl http2;
+          # gpu13.hosts.near.ai is the direct TLS name the OpenRouter gateway uses
+          # to reach this host's GLM-5.3 Flash without going through model-proxy.
+          # The host certificate already carries it as a SAN (compose-manager.yaml.j2
+          # requests certbot -d "$$HOSTNAME.hosts.near.ai" on every CVM), so only
+          # this server_name entry is needed. gpu13 serves nine models, yet the
+          # host-level name is bound to GLM here on purpose: GLM is the lane's only
+          # target. Without the entry that SNI matches no vhost and falls through to
+          # the first TLS server block (FLUX.2-klein), which answers /v1/models with
+          # the wrong model.
           server_name glm-5-3-flash.completions.near.ai
                       glm-5-3-flash.completions-stg.near.ai
                       ~^glm-5-3-flash-i\d+\.completions(-stg)?\.near\.ai$$
-                      "~^glm-5-3-flash-b[0-9a-f]{12}\.completions(-stg)?\.near\.ai$$";
+                      "~^glm-5-3-flash-b[0-9a-f]{12}\.completions(-stg)?\.near\.ai$$"
+                      gpu13.hosts.near.ai;
           keepalive_timeout 1h;
           keepalive_requests 1000000;
           location ^~ /metrics { return 404; }
