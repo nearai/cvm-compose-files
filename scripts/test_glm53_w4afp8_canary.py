@@ -68,7 +68,7 @@ class CommittedCanaryTest(unittest.TestCase):
         required = (
             f"--model-path /root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/snapshots/{canary.CHECKPOINT_REVISION}",
             "--served-model-name z-ai/glm-5.3-flash",
-            "--chunked-prefill-size 16384",
+            "--chunked-prefill-size 4096",
             "--max-prefill-tokens 32768",
             "--prefill-decode-interval 1",
             "--tp-size 4",

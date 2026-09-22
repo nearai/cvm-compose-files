@@ -25,7 +25,7 @@ CONTROL_SERVICE = "model-sg-glm53-fp8-tp4-r1"
 CANDIDATE_SERVICE = "model-sg-glm53-w4afp8-tp4-r1"
 CANARY_PROFILE = "w4afp8-long-context"
 CONTROL_VARIANT = "fc91d24-long-context-admission-reserve-disabled-hicache-disabled-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
-CANDIDATE_VARIANT = "fc91d24-long-context-w4afp8-c16384-admission-reserve-disabled-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
+CANDIDATE_VARIANT = "fc91d24-long-context-w4afp8-c4096-admission-reserve-disabled-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
 
 
 class GenerationError(ValueError):
@@ -62,16 +62,13 @@ def candidate_command(common: str) -> str:
         "--model-path /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/"
         "snapshots/84c6a6aa9497188e15a635ba793b0f95a79b1033"
     )
-    replacements = {
-        model_option: f"--model-path {model_path}",
-        "--chunked-prefill-size 4096": "--chunked-prefill-size 16384",
-    }
+    replacements = {model_option: f"--model-path {model_path}"}
     forbidden = {
         "--revision 84c6a6aa9497188e15a635ba793b0f95a79b1033",
         "--moe-runner-backend deep_gemm",
     }
     transformed = [replacements.get(argument, argument) for argument in arguments if argument not in forbidden]
-    chunk_index = transformed.index("--chunked-prefill-size 16384")
+    chunk_index = transformed.index("--chunked-prefill-size 4096")
     transformed.insert(chunk_index + 1, "--max-prefill-tokens 32768")
 
     lines = ["    command: >"]
