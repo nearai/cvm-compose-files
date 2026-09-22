@@ -196,7 +196,7 @@ class CommittedCanaryTest(unittest.TestCase):
                 marker = f'  {service}:\n    profiles: ["{canary.CANARY_PROFILE}"]\n'
                 self.assertIn(marker, text)
         self.assertIn(
-            f'  {canary.CANDIDATE_SERVICE}:\n    profiles: ["{canary.CANARY_PROFILE}"]\n    restart: "no"\n',
+            f'  {canary.CANDIDATE_SERVICE}:\n    profiles: ["{canary.CANARY_PROFILE}"]\n    restart: unless-stopped\n',
             text,
         )
 
