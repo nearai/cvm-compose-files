@@ -2,7 +2,7 @@ HEADER = (
     "# gpu02 long-context r1 W4AFP8 candidate generated from\n"
     "# prod/GLM-5.3-Flash-SGL-TP4-LongContext.yaml. r2 remains the deployed FP8\n"
     "# HiCache arm. r1 uses the Graphistry W4AFP8 checkpoint,\n"
-    "# a 16384-token prefill chunk, and the gpu31/gpu32-verified loader source change.\n"
+    "# a 4096-token prefill chunk, and the gpu31/gpu32-verified loader source change.\n"
     "# r1 pins docker.io/nearaidev/sglang@sha256:8bce6a7cc872a80faded3bd1ef0a64873a1d7abae34c94e5358775ca21f133cc,\n"
     "# published by workflow run 35659748426 from recipe merge commit\n"
     "# 7c473970af2ac040afb233df8b274aa0cf8ebbcb. PR #278 and the combined-image\n"
@@ -46,9 +46,9 @@ HEADER_REPLACEMENTS = (
             "#   affinity stays on because the prefix cache is worth ~3x in request capacity.\n"
         ),
         (
-            "#   r1 intentionally raises its prefill chunk to 16384 for the W4A8 kernel. The deployed\n"
-            "#   FP8 arm previously OOMed at 8192 under concurrent 400K+ contexts, so the mandatory\n"
-            "#   pre-customer gate is a pool-clamped 100K-to-1M long-context replay. Conversation\n"
+            "#   r1 keeps the production 4096-token prefill chunk for long-context activation headroom.\n"
+            "#   The W4AFP8 arm OOMed at 16384 under real long-context traffic, matching the deployed\n"
+            "#   FP8 arm's prior OOM at 8192 under concurrent 400K+ contexts. Conversation\n"
             "#   affinity stays on because the prefix cache is worth ~3x in request capacity.\n"
         ),
     ),
@@ -84,7 +84,7 @@ HEADER_REPLACEMENTS = (
             "# TileLang DSA, DeepGEMM, and adaptive EAGLE 5/1/6. This retains the full\n"
         ),
         (
-            "# bounded 8-request queue, r1's 16384-token W4AFP8 chunk, r2's 4096-token FP8 chunk,\n"
+            "# bounded 8-request queue, 4096-token prefill chunks on both replicas,\n"
             "# decode graphs capped at batch 32, TileLang DSA, and adaptive EAGLE 5/1/6. This retains the full\n"
         ),
     ),

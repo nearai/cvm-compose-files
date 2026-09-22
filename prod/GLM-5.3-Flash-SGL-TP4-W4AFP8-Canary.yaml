@@ -1,7 +1,7 @@
 # gpu02 long-context r1 W4AFP8 candidate generated from
 # prod/GLM-5.3-Flash-SGL-TP4-LongContext.yaml. r2 remains the deployed FP8
 # HiCache arm. r1 uses the Graphistry W4AFP8 checkpoint,
-# a 16384-token prefill chunk, and the gpu31/gpu32-verified loader source change.
+# a 4096-token prefill chunk, and the gpu31/gpu32-verified loader source change.
 # r1 pins docker.io/nearaidev/sglang@sha256:8bce6a7cc872a80faded3bd1ef0a64873a1d7abae34c94e5358775ca21f133cc,
 # published by workflow run 35659748426 from recipe merge commit
 # 7c473970af2ac040afb233df8b274aa0cf8ebbcb. PR #278 and the combined-image
@@ -56,9 +56,9 @@
 #       turn is projected to double C_long; cloud-api routes per request today.
 #     - Request-level tiering trades the tail for the median: p50 TTFT -24%,
 #       p95 TTFT 10.0 s -> 27.4 s on identical replicas. Judge it on the SLO you mean.
-#   r1 intentionally raises its prefill chunk to 16384 for the W4A8 kernel. The deployed
-#   FP8 arm previously OOMed at 8192 under concurrent 400K+ contexts, so the mandatory
-#   pre-customer gate is a pool-clamped 100K-to-1M long-context replay. Conversation
+#   r1 keeps the production 4096-token prefill chunk for long-context activation headroom.
+#   The W4AFP8 arm OOMed at 16384 under real long-context traffic, matching the deployed
+#   FP8 arm's prior OOM at 8192 under concurrent 400K+ contexts. Conversation
 #   affinity stays on because the prefix cache is worth ~3x in request capacity.
 #
 #   Experiment rollback: stop the W4AFP8 r1 and restore r1 from the prior long-context
@@ -96,7 +96,7 @@ x-logging-conf: &logging-conf
 # identical serving contracts. The official CUDA 13 SGLang image is the pinned build
 # base. The serving envelope is
 # intentionally conservative: BF16 KV, 0.80 static memory, 32 running requests, a
-# bounded 8-request queue, r1's 16384-token W4AFP8 chunk, r2's 4096-token FP8 chunk,
+# bounded 8-request queue, 4096-token prefill chunks on both replicas,
 # decode graphs capped at batch 32, TileLang DSA, and adaptive EAGLE 5/1/6. This retains the full
 # 1,048,576-token model context while avoiding the late K-pool workspace exhaustion
 # observed with larger prefill chunks.
@@ -426,7 +426,7 @@ services:
         --max-queued-requests 8
         --enable-priority-scheduling
         --disable-priority-preemption
-        --chunked-prefill-size 16384
+        --chunked-prefill-size 4096
         --max-prefill-tokens 32768
         --prefill-decode-interval 1
         --cuda-graph-max-bs-decode 32
@@ -464,7 +464,7 @@ services:
               device_ids: ["0","1","2","3"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-bf16-kv","deployment:glm53-flash-sgl-tp4","config_variant:fc91d24-long-context-w4afp8-c16384-admission-reserve-disabled-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192","request_logging:disabled","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:1"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-bf16-kv","deployment:glm53-flash-sgl-tp4","config_variant:fc91d24-long-context-w4afp8-c4096-admission-reserve-disabled-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192","request_logging:disabled","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:1"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -476,7 +476,7 @@ services:
       nearai.otel.model_path: "graphistry/GLM-5.3-Flash-W4AFP8"
       nearai.otel.served_model: "z-ai/glm-5.3-flash"
       nearai.otel.deployment: "glm53-flash-sgl-tp4"
-      nearai.otel.config_variant: "fc91d24-long-context-w4afp8-c16384-admission-reserve-disabled-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
+      nearai.otel.config_variant: "fc91d24-long-context-w4afp8-c4096-admission-reserve-disabled-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
       nearai.otel.thinking_budget_policy: "default8192-public-to-native"
       nearai.otel.request_logging: "disabled"
       nearai.otel.instance: "1"
@@ -990,7 +990,7 @@ configs:
                       ip: "${HOST_IP}"
                       port: "8000"
                       instance: "1"
-                      config_variant: "fc91d24-long-context-w4afp8-c16384-admission-reserve-disabled-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
+                      config_variant: "fc91d24-long-context-w4afp8-c4096-admission-reserve-disabled-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
                       thinking_budget_policy: "default8192-public-to-native"
                       request_logging: "disabled"
               - job_name: sglang-model-sg-glm53-fp8-tp4-r2
