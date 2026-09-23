@@ -398,6 +398,156 @@ def validate_canonical(errors, compose, services, replica_services)
   end
 end
 
+# W4AFP8 base file (gpu03, gpu04, gpu23): both replicas run gpu31 campaign-2 arm B5,
+# exactly the argv gpu02's W4AFP8 r1 runs, on the w4afp8 image with the canonical engine
+# environment (admission reserve on, no HiCache). Outside the two engines and their
+# truthful telemetry it must equal the canonical file, and the two replicas must share
+# one runtime configuration.
+W4AFP8_BASE_FILE = File.join(ROOT, "prod", "GLM-5.3-Flash-SGL-TP4-W4AFP8.yaml")
+W4AFP8_BASE_IMAGE = "docker.io/nearaidev/sglang@sha256:8bce6a7cc872a80faded3bd1ef0a64873a1d7abae34c94e5358775ca21f133cc"
+W4AFP8_BASE_VARIANT = "fc91d24-w4afp8-c4096-admission-reserve-v10-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
+W4AFP8_BASE_CHECKPOINT = "graphistry/GLM-5.3-Flash-W4AFP8"
+W4AFP8_BASE_PRECISION = "int4-weights-fp8-activations-bf16-kv"
+W4AFP8_BASE_REPLICAS = {
+  "model-sg-glm53-w4afp8-tp4-r1" => { "devices" => %w[0 1 2 3], "instance" => "1" },
+  "model-sg-glm53-w4afp8-tp4-r2" => { "devices" => %w[4 5 6 7], "instance" => "2" },
+}.freeze
+W4AFP8_BASE_ARGV = Shellwords.split(<<~'ARGV').freeze
+  sglang serve
+  --model-path /root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/snapshots/99f1fa70408c52b007d4fd69e02e5a522422e755
+  --served-model-name z-ai/glm-5.3-flash
+  --tp-size 4 --ep-size 4
+  --mem-fraction-static 0.80
+  --max-running-requests 32 --max-queued-requests 8
+  --enable-priority-scheduling --disable-priority-preemption
+  --chunked-prefill-size 4096 --max-prefill-tokens 32768 --prefill-decode-interval 1
+  --cuda-graph-max-bs-decode 32
+  --dsa-prefill-backend tilelang --dsa-decode-backend tilelang
+  --kv-cache-dtype bfloat16
+  --speculative-algorithm EAGLE --speculative-num-steps 5 --speculative-eagle-topk 1
+  --speculative-num-draft-tokens 6 --speculative-adaptive
+  --reasoning-parser glm45 --enable-strict-thinking --grammar-backend xgrammar --tool-call-parser glm47
+  --chat-template /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/3f1971b7b5f7a528c9c4ef6212c8785298a8c24a/chat_template.jinja
+  --context-length 1048576
+  --dist-init-addr 127.0.0.1:29510
+  --watchdog-timeout 1800 --host 0.0.0.0 --port 8000
+  --enable-metrics --enable-cache-report --log-requests-level 0
+  --disable-fast-image-processor --limit-mm-data-per-request '{"image": 64}'
+ARGV
+
+# The canonical file and the W4AFP8 base file, reduced to what must be identical:
+# engines, the engine anchor and the replicas' scrape jobs removed, replica names and
+# the checkpoint behind the telemetry normalized.
+def w4afp8_base_view(errors, file_label, compose, replica_names)
+  view = Marshal.load(Marshal.dump(compose))
+  view.delete("x-sg-glm53-flash-common")
+  replica_names.each { |name| view.fetch("services", {}).delete(name) }
+  otel = view.dig("configs", "otelcol_app_config")
+  if otel && otel["content"]
+    collector = load_embedded_yaml(errors, "#{file_label} otelcol_app_config", otel["content"])
+    if collector
+      Array(collector.dig("receivers", "prometheus/apps", "config", "scrape_configs")).reject! do |job|
+        job.is_a?(Hash) && replica_names.any? { |name| job["job_name"] == "sglang-#{name}" }
+      end
+      otel["content"] = collector
+    end
+  end
+  normalized = JSON.generate(view)
+                   .gsub("model-sg-glm53-w4afp8-tp4-r", "REPLICA-r").gsub("model-sg-glm53-fp8-tp4-r", "REPLICA-r")
+                   .gsub(W4AFP8_BASE_CHECKPOINT, "CHECKPOINT").gsub("zai-org/GLM-5.3-Flash", "CHECKPOINT")
+  JSON.parse(normalized)
+end
+
+def validate_w4afp8_base(errors, compose, canonical)
+  label = "W4AFP8 base"
+  services = compose.fetch("services", {})
+  expected_services = EXPECTED_SERVICES - REPLICAS.keys + W4AFP8_BASE_REPLICAS.keys
+  missing = expected_services - services.keys
+  extra = services.keys - expected_services
+  errors << "#{label} is missing services: #{missing.join(', ')}" unless missing.empty?
+  errors << "#{label} has unexpected services: #{extra.join(', ')}" unless extra.empty?
+
+  expected_env = environment_map(canonical.dig("services", "model-sg-glm53-fp8-tp4-r1") || {})
+  collector = load_embedded_yaml(errors, "#{label} file otelcol_app_config", compose.dig("configs", "otelcol_app_config", "content"))
+  engine_image_label = W4AFP8_BASE_IMAGE.split(":").last[0, 12]
+  replicas = {}
+  W4AFP8_BASE_REPLICAS.each do |name, spec|
+    service = services[name]
+    next errors << "#{label} missing services.#{name}" if service.nil?
+
+    replicas[name] = service
+    errors << "#{label} #{name} image must be #{W4AFP8_BASE_IMAGE}" unless service["image"] == W4AFP8_BASE_IMAGE
+    errors << "#{label} #{name} must use the prebuilt signed image, not a host-local build" if service.key?("build")
+    actual_argv = begin
+      Shellwords.split(command_text(service))
+    rescue ArgumentError => error
+      errors << "#{label} #{name} command cannot be parsed: #{error.message}"
+      []
+    end
+    unless actual_argv == W4AFP8_BASE_ARGV
+      drift = ((actual_argv - W4AFP8_BASE_ARGV) + (W4AFP8_BASE_ARGV - actual_argv)).uniq
+      errors << "#{label} #{name} argv must be campaign-2 arm B5 exactly; differing tokens: #{drift.first(8).join(' ')}"
+    end
+    env = environment_map(service)
+    REQUIRED_ENV.each do |key, value|
+      errors << "#{label} #{name} must set #{key}=#{value}" unless env[key] == value
+    end
+    hicache = env.keys.select { |key| key.start_with?("SGLANG_HICACHE_") }
+    errors << "#{label} #{name} must not set #{hicache.join(', ')}" unless hicache.empty?
+    (env.keys & FORBIDDEN_ENV).each { |key| errors << "#{label} #{name} must not set #{key}" }
+    unless env == expected_env
+      diff = (env.to_a - expected_env.to_a) + (expected_env.to_a - env.to_a)
+      errors << "#{label} #{name} environment must equal the canonical engine environment; differing: #{diff.map { |key, value| "#{key}=#{value}" }.uniq.join(' ')}"
+    end
+    device_ids = Array(service.dig("deploy", "resources", "reservations", "devices", 0, "device_ids")).map(&:to_s)
+    errors << "#{label} #{name} must use GPU device_ids #{spec['devices'].join(',')}" unless device_ids == spec["devices"]
+
+    labels = service["labels"].is_a?(Hash) ? service["labels"] : {}
+    { "nearai.otel.model_path" => W4AFP8_BASE_CHECKPOINT, "nearai.otel.engine_image" => engine_image_label, "nearai.otel.instance" => spec["instance"] }.each do |key, value|
+      errors << "#{label} #{name} #{key} must be #{value.inspect}, got #{labels[key].inspect}" unless labels[key] == value
+    end
+    tags = begin
+      Array(JSON.parse(labels["com.datadoghq.ad.logs"].to_s).first&.fetch("tags", []))
+    rescue JSON::ParserError
+      []
+    end
+    ["model_path:#{W4AFP8_BASE_CHECKPOINT}", "precision:#{W4AFP8_BASE_PRECISION}", "engine_image:#{engine_image_label}", "instance:#{spec['instance']}"].each do |tag|
+      errors << "#{label} #{name} log metadata must carry #{tag}" unless tags.include?(tag)
+    end
+    check_variant(errors, label, service, name, collector, W4AFP8_BASE_VARIANT)
+    scrape = scrape_job(errors, label, collector, "sglang-#{name}")
+    scrape_labels = scrape&.dig("static_configs", 0, "labels") || {}
+    { "model_path" => W4AFP8_BASE_CHECKPOINT, "precision" => W4AFP8_BASE_PRECISION, "engine_image" => engine_image_label, "instance" => spec["instance"] }.each do |key, value|
+      errors << "#{label} sglang-#{name} scrape label #{key} must be #{value.inspect}, got #{scrape_labels[key].inspect}" if scrape && scrape_labels[key] != value
+    end
+  end
+
+  if replicas.length == 2
+    contracts = replicas.values.map { |service| runtime_contract(service) }
+    errors << "#{label} replicas must use identical runtime configuration" unless contracts.uniq.length == 1
+  end
+
+  dcgm_labels = services.dig("dcgm-glm53", "labels") || {}
+  errors << "#{label} dcgm-glm53 nearai.otel.model_path must be #{W4AFP8_BASE_CHECKPOINT}" unless dcgm_labels["nearai.otel.model_path"] == W4AFP8_BASE_CHECKPOINT
+  errors << "#{label} dcgm-glm53 log metadata must carry model_path:#{W4AFP8_BASE_CHECKPOINT}" unless dcgm_labels["com.datadoghq.ad.logs"].to_s.include?("model_path:#{W4AFP8_BASE_CHECKPOINT}")
+
+  proxy = services["proxy-glm53"] || {}
+  proxy_env = environment_map(proxy)
+  expected_backends = W4AFP8_BASE_REPLICAS.keys.map { |name| "http://#{name}:8000" }.join(",")
+  errors << "#{label} proxy-glm53 must pool both W4AFP8 replicas" unless proxy_env["VLLM_BACKEND_URLS"] == expected_backends
+  errors << "#{label} proxy-glm53 must enable conversation affinity" unless proxy_env["VLLM_BACKEND_CONVERSATION_AFFINITY"] == "1"
+  unless PRIORITY_NORMALIZING_PROXY_IMAGES.include?(proxy["image"])
+    errors << "#{label} enables SGLang priority scheduling but proxy-glm53 image #{proxy['image'].inspect} is not a priority-normalizing inference-proxy build"
+  end
+
+  canonical_view = w4afp8_base_view(errors, "canonical file", canonical, REPLICAS.keys)
+  target_view = w4afp8_base_view(errors, "#{label} file", compose, W4AFP8_BASE_REPLICAS.keys)
+  return if canonical_view == target_view
+
+  difference = first_difference(canonical_view, target_view)
+  errors << "#{label} file must match the canonical file outside the two engines and their telemetry (first difference: #{difference})"
+end
+
 # HiCache file: r1 stays the disabled control on the plain engine image and
 # is telemetry-pinned to OFFICIAL_VARIANT; r2 pins RELEASED_IMAGE, enables
 # HiCache with exactly the pinned options/env, is otherwise identical to r1,
@@ -538,6 +688,15 @@ if canonical_compose
   validate_model_cache(errors, "canonical", canonical_services)
 end
 
+w4afp8_base_present = File.exist?(W4AFP8_BASE_FILE)
+if w4afp8_base_present
+  w4afp8_base_compose = load_compose_file(errors, "W4AFP8 base file", W4AFP8_BASE_FILE)
+  if w4afp8_base_compose && canonical_compose
+    validate_w4afp8_base(errors, w4afp8_base_compose, canonical_compose)
+    validate_model_cache(errors, "W4AFP8 base", w4afp8_base_compose.fetch("services", {}))
+  end
+end
+
 hicache_compose = nil
 if hicache_present
   hicache_compose = load_compose_file(errors, "HiCache file", HICACHE_FILE)
@@ -580,5 +739,6 @@ if errors.any?
 end
 
 puts "GLM-5.3 production contract OK (prod/GLM-5.3-Flash-SGL-TP4.yaml)"
+puts "GLM-5.3 production contract OK (prod/GLM-5.3-Flash-SGL-TP4-W4AFP8.yaml)" if w4afp8_base_present
 puts "GLM-5.3 production contract OK (prod/GLM-5.3-Flash-SGL-TP4-HiCache.yaml)" if hicache_present
 puts "GLM-5.3 production contract OK (prod/GLM-5.3-Flash-SGL-TP4-LongContext.yaml)" if long_context_present
