@@ -220,10 +220,11 @@ services:
     container_name: model-downloader
     restart: "no"
     entrypoint: ["sh", "-c"]
-    # Every GLM-5.3 Flash file also fetches the W4AFP8 snapshot (~165 GiB; keep >=250 GiB
-    # free on the model-cache volume), so moving a host between the FP8 and W4AFP8 files
-    # costs only the engine cold start: compose-manager runs `up --remove-orphans`, so a
-    # new file's downloader cannot run while engines it does not define are still serving.
+    # Every dedicated GLM-5.3 Flash TP4 file (not prod/small-models.yaml) also fetches the
+    # W4AFP8 snapshot (~165 GiB; keep >=250 GiB free on the model-cache volume), so moving
+    # a host between the FP8 and W4AFP8 files costs only the engine cold start:
+    # compose-manager runs `up --remove-orphans`, so a new file's downloader cannot run
+    # while engines it does not define are still serving.
     command:
       - |
         set -e

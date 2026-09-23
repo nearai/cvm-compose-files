@@ -536,7 +536,7 @@ class LongContextTest(unittest.TestCase):
 
 
 class ModelCacheContractTest(unittest.TestCase):
-    """Every GLM-5.3 Flash file pre-stages the W4AFP8 snapshot and keeps hf-cleanup inert."""
+    """Each dedicated GLM-5.3 Flash TP4 file pre-stages the W4AFP8 snapshot and keeps hf-cleanup inert."""
 
     W4AFP8_DOWNLOAD = ("        uvx --from 'huggingface_hub[hf_xet]' hf download graphistry/GLM-5.3-Flash-W4AFP8 "
                        "--revision 99f1fa70408c52b007d4fd69e02e5a522422e755\n")

@@ -82,7 +82,7 @@ def generate(canonical: str) -> str:
         raise GenerationError("canonical compose already contains the W4AFP8 canary")
 
     # The long-context source's model-downloader already pre-stages the W4AFP8 snapshot
-    # (every GLM-5.3 Flash file does); the canary reuses that download unchanged.
+    # (as every dedicated GLM-5.3 Flash TP4 file does); the canary reuses that download.
     download = (
         f"        echo \"Downloading {CHECKPOINT}...\"\n"
         "        uvx --from 'huggingface_hub[hf_xet]' hf download "

@@ -115,10 +115,10 @@ OFFICIAL_VARIANT = "fc91d24-admission-reserve-v10-pdi1-h200-tp4-ep4-eagle-adapti
 LONG_CONTEXT_CONTROL_VARIANT = "fc91d24-long-context-admission-reserve-disabled-hicache-disabled-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
 LONG_CONTEXT_HICACHE_VARIANT = "fc91d24-long-context-admission-reserve-disabled-hicache-cuda-host-pooled-v1-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
 # model-downloader fetches the FP8 snapshot, the corrected chat template and the W4AFP8
-# snapshot in every GLM-5.3 Flash file, so a host switches between the FP8 and W4AFP8
-# files paying only the engine cold start: compose-manager's `up --remove-orphans` removes
-# engines a new file does not define, so a new file's downloader cannot pre-stage while
-# the old engines still serve.
+# snapshot in every dedicated GLM-5.3 Flash TP4 file (prod/small-models.yaml is out of
+# scope), so a host switches between the FP8 and W4AFP8 files paying only the engine
+# cold start: compose-manager's `up --remove-orphans` removes engines a new file does
+# not define, so a new file's downloader cannot pre-stage while the old engines serve.
 REQUIRED_DOWNLOADS = [
   "hf download zai-org/GLM-5.3-Flash --revision 84c6a6aa9497188e15a635ba793b0f95a79b1033",
   "hf download zai-org/GLM-5.3-Flash chat_template.jinja --revision 3f1971b7b5f7a528c9c4ef6212c8785298a8c24a",
