@@ -98,6 +98,11 @@ jobs:
           docker run --rm -v "$PWD:/repo:ro" -w /repo ruby:3.3-alpine \
             sh -c 'apk add --no-cache python3 >/dev/null && python3 scripts/test_glm53_hicache_canary.py'
 
+      - name: Validate GLM-5.3 W4AFP8 base file
+        run: |
+          docker run --rm -v "$PWD:/repo:ro" -w /repo ruby:3.3-alpine \
+            sh -c 'apk add --no-cache python3 >/dev/null && python3 scripts/prepare_glm53_w4afp8_base.py --check && python3 -m scripts.test_glm53_w4afp8_base'
+
       - name: Validate GLM-5.3 W4AFP8 long-context candidate
         run: |
           docker run --rm -v "$PWD:/repo:ro" -w /repo \

@@ -5,6 +5,7 @@ require "yaml"
 
 ROOT = File.expand_path("..", __dir__)
 COMPOSE_FILE = File.join(ROOT, "prod", "GLM-5.3-Flash-SGL-TP4.yaml")
+W4AFP8_BASE_FILE = File.join(ROOT, "prod", "GLM-5.3-Flash-SGL-TP4-W4AFP8.yaml")
 HICACHE_FILE = File.join(ROOT, "prod", "GLM-5.3-Flash-SGL-TP4-HiCache.yaml")
 W4AFP8_LONG_CONTEXT_FILE = File.join(ROOT, "prod", "GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext.yaml")
 EXPECTED_IMAGE = "nvcr.io/nvidia/k8s/dcgm-exporter@sha256:613ab03c11d442fd960ff515f547e9921537454a712d08160bc8f677f89f1c35"
@@ -167,6 +168,7 @@ def validate_file(path)
 end
 
 files = [COMPOSE_FILE]
+files << W4AFP8_BASE_FILE if File.exist?(W4AFP8_BASE_FILE)
 if File.exist?(HICACHE_FILE)
   files << HICACHE_FILE
 else
