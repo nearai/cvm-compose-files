@@ -534,5 +534,75 @@ class LongContextTest(unittest.TestCase):
         self.long_context_path.write_text(valid)
 
 
+
+class ModelCacheContractTest(unittest.TestCase):
+    """Each dedicated GLM-5.3 Flash TP4 file pre-stages the W4AFP8 snapshot and keeps hf-cleanup inert."""
+
+    W4AFP8_DOWNLOAD = ("        uvx --from 'huggingface_hub[hf_xet]' hf download graphistry/GLM-5.3-Flash-W4AFP8 "
+                       "--revision 99f1fa70408c52b007d4fd69e02e5a522422e755\n")
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        for name in (promotion.COMPOSE, promotion.CANDIDATE, promotion.RELEASE, LONG_CONTEXT,
+                     Path('scripts/validate_glm53_prod_config.rb')):
+            (self.root / name).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(ROOT / name, self.root / name)
+
+    def run_validator(self):
+        return subprocess.run(['ruby', str(self.root / 'scripts/validate_glm53_prod_config.rb')],
+                              capture_output=True, text=True)
+
+    def assert_mutation_fails(self, name, before, after, message, count=1):
+        path = self.root / name
+        valid = path.read_text()
+        self.assertEqual(valid.count(before), count, name)
+        path.write_text(valid.replace(before, after))
+        try:
+            result = self.run_validator()
+            output = result.stdout + result.stderr
+            self.assertEqual(result.returncode, 1, output)
+            self.assertIn(message, output)
+            assert_no_ruby_crash(self, output)
+        finally:
+            path.write_text(valid)
+
+    def test_committed_files_pass(self):
+        result = self.run_validator()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_every_file_must_prestage_the_w4afp8_snapshot(self):
+        for name in (promotion.COMPOSE, promotion.CANDIDATE, LONG_CONTEXT):
+            with self.subTest(file=str(name)):
+                self.assert_mutation_fails(
+                    name, self.W4AFP8_DOWNLOAD, '',
+                    'must run `hf download graphistry/GLM-5.3-Flash-W4AFP8 '
+                    '--revision 99f1fa70408c52b007d4fd69e02e5a522422e755` exactly once')
+
+    def test_rejects_drifted_duplicated_or_extra_downloads(self):
+        cases = (
+            (self.W4AFP8_DOWNLOAD, self.W4AFP8_DOWNLOAD.replace('99f1fa70', '00000000'),
+             'has unexpected downloads'),
+            (self.W4AFP8_DOWNLOAD, self.W4AFP8_DOWNLOAD * 2, 'exactly once'),
+            ("chat_template.jinja --revision 3f1971b7b5f7a528c9c4ef6212c8785298a8c24a",
+             "chat_template.jinja --revision 0000000000000000000000000000000000000000",
+             'hf download zai-org/GLM-5.3-Flash chat_template.jinja'),
+        )
+        for before, after, message in cases:
+            with self.subTest(mutation=after.strip()[:80]):
+                self.assert_mutation_fails(LONG_CONTEXT, before, after, message)
+
+    def test_hf_cleanup_stays_inert(self):
+        cases = (
+            ('    profiles: ["maintenance"]\n', '', 'hf-cleanup must stay behind the maintenance profile'),
+            ('      - MODEL_NAME=${MODEL_NAME:-}\n', '      - MODEL_NAME=${MODEL_NAME:-graphistry/GLM-5.3-Flash-W4AFP8}\n',
+             'hf-cleanup must not default MODEL_NAME'),
+        )
+        for before, after, message in cases:
+            with self.subTest(mutation=message):
+                self.assert_mutation_fails(promotion.COMPOSE, before, after, message)
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -2,7 +2,8 @@
 # Protect the canonical two-replica GLM-5.3 Flash production contract, the
 # separate r2-only HiCache canary, and the long-context r1-control/r2-HiCache
 # experiment. Admission reserve remains required in the first two files and is
-# forbidden in the long-context experiment pending a pool-clamp image.
+# forbidden in the long-context experiment pending a pool-clamp image. Every file's
+# model-downloader also pre-stages the W4AFP8 snapshot (see REQUIRED_DOWNLOADS).
 
 require "json"
 require "shellwords"
@@ -113,6 +114,16 @@ HICACHE_VARIANT = "fc91d24-hicache-cuda-host-pooled-v1-admission-reserve-v10-pdi
 OFFICIAL_VARIANT = "fc91d24-admission-reserve-v10-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
 LONG_CONTEXT_CONTROL_VARIANT = "fc91d24-long-context-admission-reserve-disabled-hicache-disabled-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
 LONG_CONTEXT_HICACHE_VARIANT = "fc91d24-long-context-admission-reserve-disabled-hicache-cuda-host-pooled-v1-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
+# model-downloader fetches the FP8 snapshot, the corrected chat template and the W4AFP8
+# snapshot in every dedicated GLM-5.3 Flash TP4 file (prod/small-models.yaml is out of
+# scope), so a host switches between the FP8 and W4AFP8 files paying only the engine
+# cold start: compose-manager's `up --remove-orphans` removes engines a new file does
+# not define, so a new file's downloader cannot pre-stage while the old engines serve.
+REQUIRED_DOWNLOADS = [
+  "hf download zai-org/GLM-5.3-Flash --revision 84c6a6aa9497188e15a635ba793b0f95a79b1033",
+  "hf download zai-org/GLM-5.3-Flash chat_template.jinja --revision 3f1971b7b5f7a528c9c4ef6212c8785298a8c24a",
+  "hf download graphistry/GLM-5.3-Flash-W4AFP8 --revision 99f1fa70408c52b007d4fd69e02e5a522422e755",
+].freeze
 
 
 def yaml_load(content)
@@ -222,6 +233,27 @@ def validate_command(errors, name, command)
   end
 rescue ArgumentError => error
   errors << "#{name} command cannot be parsed: #{error.message}"
+end
+
+# The shared model cache: every pinned snapshot is downloaded exactly once and nothing
+# else is, and the maintenance-only hf-cleanup service stays behind its profile with no
+# default MODEL_NAME, so no normal apply can evict a snapshot an engine depends on.
+def validate_model_cache(errors, label, services)
+  downloader = services["model-downloader"]
+  if downloader
+    downloads = command_text(downloader).scan(/hf download [^\n]*/).map(&:strip)
+    REQUIRED_DOWNLOADS.each do |download|
+      errors << "#{label} model-downloader must run `#{download}` exactly once" unless downloads.count(download) == 1
+    end
+    unexpected = downloads - REQUIRED_DOWNLOADS
+    errors << "#{label} model-downloader has unexpected downloads: #{unexpected.join('; ')}" unless unexpected.empty?
+  end
+
+  cleanup = services["hf-cleanup"]
+  return unless cleanup
+
+  errors << "#{label} hf-cleanup must stay behind the maintenance profile" unless Array(cleanup["profiles"]) == ["maintenance"]
+  errors << "#{label} hf-cleanup must not default MODEL_NAME" unless environment_map(cleanup)["MODEL_NAME"] == "${MODEL_NAME:-}"
 end
 
 def runtime_contract(service)
@@ -503,6 +535,7 @@ if canonical_compose
   canonical_services = canonical_compose.fetch("services", {})
   canonical_replicas = validate_common(errors, "canonical", canonical_services)
   validate_canonical(errors, canonical_compose, canonical_services, canonical_replicas)
+  validate_model_cache(errors, "canonical", canonical_services)
 end
 
 hicache_compose = nil
@@ -512,6 +545,7 @@ if hicache_present
     hicache_services = hicache_compose.fetch("services", {})
     hicache_replicas = validate_common(errors, "HiCache", hicache_services)
     validate_hicache(errors, hicache_compose, hicache_replicas)
+    validate_model_cache(errors, "HiCache", hicache_services)
   end
 
   if canonical_compose && hicache_compose
@@ -535,6 +569,7 @@ if long_context_present
     long_context_services = long_context_compose.fetch("services", {})
     long_context_replicas = validate_common(errors, "long-context", long_context_services, {})
     validate_long_context(errors, long_context_compose, long_context_replicas)
+    validate_model_cache(errors, "long-context", long_context_services)
   end
 end
 

@@ -77,22 +77,19 @@ def candidate_command(common: str) -> str:
 
 
 def generate(canonical: str) -> str:
-    if CANDIDATE_SERVICE in canonical or CHECKPOINT in canonical:
+    snapshot_dir = f"models--{CHECKPOINT.replace('/', '--')}/"
+    if CANDIDATE_SERVICE in canonical or snapshot_dir in canonical:
         raise GenerationError("canonical compose already contains the W4AFP8 canary")
 
-    download_marker = "        echo \"Download complete.\"\n"
+    # The long-context source's model-downloader already pre-stages the W4AFP8 snapshot
+    # (as every dedicated GLM-5.3 Flash TP4 file does); the canary reuses that download.
     download = (
         f"        echo \"Downloading {CHECKPOINT}...\"\n"
         "        uvx --from 'huggingface_hub[hf_xet]' hf download "
         f"{CHECKPOINT} --revision {CHECKPOINT_REVISION}\n"
+        "        echo \"Download complete.\"\n"
     )
-    updated = replace_exact(
-        canonical,
-        download_marker,
-        download + download_marker,
-        1,
-        "model downloader",
-    )
+    updated = replace_exact(canonical, download, download, 1, "model downloader W4AFP8 pre-stage")
     for old, new in HEADER_REPLACEMENTS:
         updated = replace_exact(updated, old, new, 1, "long-context header")
     updated = replace_exact(updated, CONTROL_SERVICE, CANDIDATE_SERVICE, 8, "r1 service identity")
