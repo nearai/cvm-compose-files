@@ -456,6 +456,10 @@ jobs:
             if [[ "$VARIANT" == "base-clamp" || "$VARIANT" == "hicache-clamp" || "$VARIANT" == "w4afp8" || "$VARIANT" == "hicache-w4afp8" ]]; then
               echo '- chunked-prefill pool clamp: applied unconditionally; no opt-in switch.'
             fi
+            if [[ "$VARIANT" == "hicache-w4afp8" ]]; then
+              echo '- HiCache: opt-in via --enable-hierarchical-cache plus SGLANG_HICACHE_*.'
+              echo '- QUALIFICATION CAVEAT: the HCC/PPCIe (TEE-host) HiCache allocator path is NOT soak-tested. It was qualified on gpu31, which reports CC status OFF, so cudaMallocHost vs cudaHostRegister was never exercised. On a TEE host SGLANG_HICACHE_CUDA_HOST_MEMORY must stay 1; 0 fails with CUDA error 801. See the image PROVENANCE before pinning this digest for a TEE deployment.'
+            fi
             echo '- Promotion: pin this digest and enable the reviewed admission-reserve settings in a separate PR.'
             echo '- Publishing does not modify compose files or deploy a service.'
             echo '- embedded BuildKit provenance: verified'
