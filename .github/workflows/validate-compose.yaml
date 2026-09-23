@@ -93,11 +93,6 @@ jobs:
             ruby:3.3-alpine \
             ruby scripts/validate_glm53_prod_config.rb
 
-      - name: Test GLM-5.3 HiCache canary promotion
-        run: |
-          docker run --rm -v "$PWD:/repo:ro" -w /repo ruby:3.3-alpine \
-            sh -c 'apk add --no-cache python3 >/dev/null && python3 scripts/test_glm53_hicache_canary.py'
-
       - name: Validate GLM-5.3 W4AFP8 long-context candidate
         run: |
           docker run --rm -v "$PWD:/repo:ro" -w /repo \

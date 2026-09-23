@@ -32,6 +32,11 @@ REPLICAS = {
   "model-sg-glm53-fp8-tp4-r1" => %w[0 1 2 3],
   "model-sg-glm53-fp8-tp4-r2" => %w[4 5 6 7],
 }.freeze
+# Split-tier files (proxy-glm53-long present, see #split_tier?) route r1 to
+# the base/short-context domain via proxy-glm53 and r2 to the long-context
+# domain via proxy-glm53-long. Fixed by convention across every split file.
+BASE_TIER_REPLICA = "model-sg-glm53-fp8-tp4-r1".freeze
+LONG_TIER_REPLICA = "model-sg-glm53-fp8-tp4-r2".freeze
 EXPECTED_SERVICES = [
   "model-downloader",
   "hf-cleanup",
@@ -109,7 +114,7 @@ HICACHE_ENV = {
   "SGLANG_HICACHE_POOLED_TRANSFERS" => "1",
   "SGLANG_HICACHE_STAGING_PAGES" => "64",
 }.freeze
-HICACHE_VARIANT = "fc91d24-hicache-cuda-host-pooled-v1-admission-reserve-v10-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
+HICACHE_VARIANT = "fc91d24-hicache-cuda-host-pooled-v1-admission-reserve-disabled-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
 OFFICIAL_VARIANT = "fc91d24-admission-reserve-v10-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
 LONG_CONTEXT_CONTROL_VARIANT = "fc91d24-long-context-admission-reserve-disabled-hicache-disabled-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
 LONG_CONTEXT_HICACHE_VARIANT = "fc91d24-long-context-admission-reserve-disabled-hicache-cuda-host-pooled-v1-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
@@ -228,13 +233,24 @@ def runtime_contract(service)
   service.reject { |key, _value| REPLICA_IDENTITY_FIELDS.include?(key) }
 end
 
+# True once a file has split its routing into a base proxy (proxy-glm53 ->
+# r1 only) and a long-context proxy (proxy-glm53-long -> r2 only). Every
+# split-tier-specific check below is gated on this so an unsplit file (the
+# canonical file, or prod/GLM-5.3-Flash-SGL-TP4-LongContext.yaml) keeps
+# passing unchanged.
+def split_tier?(services)
+  services.key?("proxy-glm53-long")
+end
+
 # Checks shared by the canonical, HiCache, and long-context files: expected service
 # set, per-replica serving contract (excluding image, which differs by file),
 # GPU device assignment, the perception-check image and the proxy contract.
 # Returns the replica services found, keyed by name.
 def validate_common(errors, label, services, required_env = REQUIRED_ENV)
-  missing_services = EXPECTED_SERVICES - services.keys
-  extra_services = services.keys - EXPECTED_SERVICES
+  split_tier = split_tier?(services)
+  expected_services = split_tier ? EXPECTED_SERVICES + ["proxy-glm53-long"] : EXPECTED_SERVICES
+  missing_services = expected_services - services.keys
+  extra_services = services.keys - expected_services
   errors << "#{label} is missing services: #{missing_services.join(', ')}" unless missing_services.empty?
   errors << "#{label} has unexpected services: #{extra_services.join(', ')}" unless extra_services.empty?
 
@@ -251,8 +267,16 @@ def validate_common(errors, label, services, required_env = REQUIRED_ENV)
     validate_command(errors, "#{label} #{name}", command_text(service))
 
     replica_env = environment_map(service)
-    required_env.each do |key, expected_value|
+    long_tier_replica = split_tier && name == LONG_TIER_REPLICA
+    (long_tier_replica ? {} : required_env).each do |key, expected_value|
       errors << "#{label} #{name} must set #{key}=#{expected_value}" unless replica_env[key] == expected_value
+    end
+    if long_tier_replica
+      ADMISSION_RESERVE_ENV.each do |key|
+        next unless replica_env.key?(key)
+
+        errors << "#{label} #{name} must not set #{key} (admission-reserve caused a Prefill OOM on the long-context tier, 2026-09-18; keep it base/r1-only once split)"
+      end
     end
 
     device_ids = service.dig("deploy", "resources", "reservations", "devices", 0, "device_ids")
@@ -280,22 +304,45 @@ def validate_common(errors, label, services, required_env = REQUIRED_ENV)
     errors << "#{label} glm53-perception-check must use the prebuilt signed image, not a host-local build" if perception_check.key?("build")
   end
 
+  priority_enabled = replica_services.values.any? do |service|
+    arguments = Shellwords.split(command_text(service)) rescue []
+    PRIORITY_SWITCHES.any? { |switch| arguments.include?(switch) }
+  end
+
   proxy = services["proxy-glm53"]
   if proxy.nil?
     errors << "#{label} missing services.proxy-glm53"
   else
     errors << "#{label} proxy-glm53 image must be #{PROXY_IMAGE}" unless proxy["image"] == PROXY_IMAGE
     proxy_env = environment_map(proxy)
-    expected_backends = REPLICAS.keys.map { |name| "http://#{name}:8000" }.join(",")
-    errors << "#{label} proxy-glm53 must target both canonical replicas" unless proxy_env["VLLM_BACKEND_URLS"] == expected_backends
+    if split_tier
+      expected_backends = "http://#{BASE_TIER_REPLICA}:8000"
+      errors << "#{label} proxy-glm53 must target only the base replica (#{BASE_TIER_REPLICA})" unless proxy_env["VLLM_BACKEND_URLS"] == expected_backends
+    else
+      expected_backends = REPLICAS.keys.map { |name| "http://#{name}:8000" }.join(",")
+      errors << "#{label} proxy-glm53 must target both canonical replicas" unless proxy_env["VLLM_BACKEND_URLS"] == expected_backends
+    end
     errors << "#{label} proxy-glm53 must enable conversation affinity" unless proxy_env["VLLM_BACKEND_CONVERSATION_AFFINITY"] == "1"
 
-    priority_enabled = replica_services.values.any? do |service|
-      arguments = Shellwords.split(command_text(service)) rescue []
-      PRIORITY_SWITCHES.any? { |switch| arguments.include?(switch) }
-    end
     if priority_enabled && !PRIORITY_NORMALIZING_PROXY_IMAGES.include?(proxy["image"])
       errors << "#{label} enables SGLang priority scheduling but proxy-glm53 image #{proxy['image'].inspect} is not a priority-normalizing inference-proxy build (expected one of: #{PRIORITY_NORMALIZING_PROXY_IMAGES.join(', ')})"
+    end
+  end
+
+  if split_tier
+    long_proxy = services["proxy-glm53-long"]
+    if long_proxy.nil?
+      errors << "#{label} missing services.proxy-glm53-long"
+    else
+      errors << "#{label} proxy-glm53-long image must be #{PROXY_IMAGE}" unless long_proxy["image"] == PROXY_IMAGE
+      long_env = environment_map(long_proxy)
+      expected_long_backend = "http://#{LONG_TIER_REPLICA}:8000"
+      errors << "#{label} proxy-glm53-long must target only the long replica (#{LONG_TIER_REPLICA})" unless long_env["VLLM_BACKEND_URLS"] == expected_long_backend
+      errors << "#{label} proxy-glm53-long must enable conversation affinity" unless long_env["VLLM_BACKEND_CONVERSATION_AFFINITY"] == "1"
+
+      if priority_enabled && !PRIORITY_NORMALIZING_PROXY_IMAGES.include?(long_proxy["image"])
+        errors << "#{label} enables SGLang priority scheduling but proxy-glm53-long image #{long_proxy['image'].inspect} is not a priority-normalizing inference-proxy build (expected one of: #{PRIORITY_NORMALIZING_PROXY_IMAGES.join(', ')})"
+      end
     end
   end
 
@@ -369,7 +416,9 @@ end
 # HiCache file: r1 stays the disabled control on the plain engine image and
 # is telemetry-pinned to OFFICIAL_VARIANT; r2 pins RELEASED_IMAGE, enables
 # HiCache with exactly the pinned options/env, is otherwise identical to r1,
-# and is telemetry-pinned to HICACHE_VARIANT.
+# and is telemetry-pinned to HICACHE_VARIANT. Once the file is split-tier
+# (see split_tier?), r2 is additionally allowed -- and by validate_common,
+# required -- to omit ADMISSION_RESERVE_ENV relative to r1.
 def validate_hicache(errors, compose, replica_services, label = "HiCache", control_variant = OFFICIAL_VARIANT, hicache_variant = HICACHE_VARIANT, hicache_env = HICACHE_ENV)
   released_image = File.exist?(RELEASED_IMAGE_FILE) ? File.read(RELEASED_IMAGE_FILE).strip : nil
   unless released_image && released_image.match?(%r{\Adocker\.io/nearaidev/sglang@sha256:[a-f0-9]{64}\z}) && released_image != ENGINE_IMAGE
@@ -409,7 +458,16 @@ def validate_hicache(errors, compose, replica_services, label = "HiCache", contr
   hicache_env.each do |key, expected|
     errors << "#{label} r2 must set #{key}=#{expected}" unless env.delete(key) == expected
   end
-  errors << "#{label} r2 must preserve all control environment outside HiCache" unless env == environment_map(r1)
+  # Once split (r2 = long-context tier), admission-reserve is an additional,
+  # intentional r1/r2 divergence on top of the HiCache delta: r1 (base) keeps
+  # it, r2 (long) must not set it (validate_common already asserts both
+  # halves of that contract). Excuse exactly those keys from the "everything
+  # else must match r1" comparison here so this check does not fight that one.
+  r1_env = environment_map(r1)
+  if split_tier?(compose.fetch("services", {}))
+    r1_env = r1_env.reject { |key, _value| ADMISSION_RESERVE_ENV.include?(key) }
+  end
+  errors << "#{label} r2 must preserve all control environment outside HiCache" unless env == r1_env
 
   normalized["image"] = r1["image"]
   normalized["command"] = r1["command"]
@@ -464,9 +522,17 @@ def first_difference(a, b, path = [])
   path.join(".")
 end
 
-# Cross-file: outside r2 (and its telemetry variant), the HiCache file must be
-# a byte-for-byte equal contract to the canonical file — every other service,
-# top-level extension block, volume/network declaration and config content.
+# Cross-file: outside r2 (and its telemetry variant), a non-split-tier HiCache
+# file must be a byte-for-byte equal contract to the canonical file — every
+# other service, top-level extension block, volume/network declaration and
+# config content. Once split-tier (see split_tier?), this no longer holds:
+# a second proxy, nginx_conf, registrar_script, the registrar's LONG_TIER_ONLY
+# default and proxy-glm53's tier:base tag all intentionally diverge from the
+# canonical file too. The driver below skips this check once split; the
+# split-tier plumbing's own contract is covered instead by
+# validate_proxy_dependencies.rb, validate_proxy_environment.rb,
+# validate_otel_labels.rb, validate_registrar_auth.rb, validate_public_metrics.py
+# and validate_streaming_keepalive.py.
 def cross_file_view(errors, file_label, compose)
   view = Marshal.load(Marshal.dump(compose))
   view["services"]&.delete("model-sg-glm53-fp8-tp4-r2")
@@ -514,7 +580,7 @@ if hicache_present
     validate_hicache(errors, hicache_compose, hicache_replicas)
   end
 
-  if canonical_compose && hicache_compose
+  if canonical_compose && hicache_compose && !split_tier?(hicache_services)
     canonical_view = cross_file_view(errors, "canonical file", canonical_compose)
     hicache_view = cross_file_view(errors, "prod/GLM-5.3-Flash-SGL-TP4-HiCache.yaml", hicache_compose)
     unless canonical_view == hicache_view
