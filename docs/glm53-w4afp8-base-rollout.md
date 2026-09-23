@@ -29,7 +29,7 @@ Everything else, including the model-downloader, stays byte-identical to the can
 
 ## Gates
 
-1. **gpu02 first, then gpu03.** The long-context W4AFP8 soak on gpu02 (`docs/glm53-w4afp8-long-context-rollout.md`) is accepted before the first base host moves. Then go one host at a time, gpu03 first, then gpu04 and gpu23, each only after the previous one has soaked cleanly.
+1. **gpu02 first, then gpu03.** The long-context W4AFP8 soak on gpu02 (#294, whose runbook `docs/glm53-w4afp8-long-context-rollout.md` lands with that PR) is accepted before the first base host moves. Then go one host at a time, gpu03 first, then gpu04 and gpu23, each only after the previous one has soaked cleanly.
    - gpu03 is first because it is the first CVM run of W4AFP8 **with** the admission reserve. gpu02's r1 serves W4AFP8 without it.
    - The gpu31 production-envelope ship check (2026-09-19) ran W4AFP8 with the reserve at the production scheduler configuration: 1,082 requests, 98.6% completed.
 2. **Snapshot pre-staged (#293).** The host's current canonical file must already have fetched the W4AFP8 snapshot:
@@ -63,8 +63,11 @@ Never let orphan removal perform the switch.
    - The dry-run plan must create the two engines, recreate the proxy, the collector and the exporter, and leave `model-downloader` and `nginx` untouched.
    - The proxy points at the new engine names. nginx resolves the proxy per request.
    - If one engine fails rank initialization (`DistStoreError`), restart that engine alone once the other is up.
-4. **Cold start.** Expect about 50 min, since the W4AFP8 kernel caches are cold on a first start. Then verify each replica directly through `glm53-soak-relay` (`verification` profile; `:8008` r1, `:8009` r2) and run `glm53-perception-check`.
+4. **Cold start.** Expect about 50 min, since the W4AFP8 kernel caches are cold on a first start.
    - The logs must show the W4AFP8 loader and the CUTLASS W4A8 MoE path. There must be no W4A16/Marlin fallback and no CUDA, NCCL or Xid errors.
+   - `compose/up` this file with `services: ["glm53-soak-relay"]`. The relay is behind the `verification` profile and starts only when named; it maps `:8008` → r1 and `:8009` → r2. On each, check `/health`, `/v1/models` and a deterministic generation, authenticated with `PROXY_TOKEN`.
+   - `compose/up` this file with `services: ["glm53-perception-check"]`. It runs once against both replicas; read `compose/logs` for that service and expect `qualification_finished` with `ok: true`.
+   - `compose/down` this file with `services: ["glm53-soak-relay", "glm53-perception-check"]` before step 5, which closes the verification ports.
 5. **Rejoin.** `compose/up` the W4AFP8 file with `services: ["model-proxy-registrar"]`. Its definition is the canonical one; it re-registers `:8000` once its 1-token probe passes.
 6. **Verify.**
    - A real base completion through cloud-api and on the base domain, then a cache-hit follow-up that reports cached prompt tokens.
