@@ -220,6 +220,10 @@ services:
     container_name: model-downloader
     restart: "no"
     entrypoint: ["sh", "-c"]
+    # Every GLM-5.3 Flash file also fetches the W4AFP8 snapshot (~165 GiB; keep >=250 GiB
+    # free on the model-cache volume), so moving a host between the FP8 and W4AFP8 files
+    # costs only the engine cold start: compose-manager runs `up --remove-orphans`, so a
+    # new file's downloader cannot run while engines it does not define are still serving.
     command:
       - |
         set -e
@@ -227,6 +231,8 @@ services:
         uvx --from 'huggingface_hub[hf_xet]' hf download zai-org/GLM-5.3-Flash --revision 84c6a6aa9497188e15a635ba793b0f95a79b1033
         echo "Downloading corrected GLM-5.3-Flash chat template..."
         uvx --from 'huggingface_hub[hf_xet]' hf download zai-org/GLM-5.3-Flash chat_template.jinja --revision 3f1971b7b5f7a528c9c4ef6212c8785298a8c24a
+        echo "Downloading graphistry/GLM-5.3-Flash-W4AFP8..."
+        uvx --from 'huggingface_hub[hf_xet]' hf download graphistry/GLM-5.3-Flash-W4AFP8 --revision 99f1fa70408c52b007d4fd69e02e5a522422e755
         echo "Download complete."
     volumes:
       - huggingface_cache:/root/.cache/huggingface
