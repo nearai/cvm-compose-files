@@ -31,7 +31,8 @@ Everything else, including the model-downloader, stays byte-identical to the can
 
 1. **gpu02 first, then gpu03.** The long-context W4AFP8 soak on gpu02 (#294, whose runbook `docs/glm53-w4afp8-long-context-rollout.md` lands with that PR) is accepted before the first base host moves. Then go one host at a time, gpu03 first, then gpu04 and gpu23, each only after the previous one has soaked cleanly.
    - gpu03 is first because it is the first CVM run of W4AFP8 **with** the admission reserve. gpu02's r1 serves W4AFP8 without it.
-   - The gpu31 production-envelope ship check (2026-09-19) ran W4AFP8 with the reserve at the production scheduler configuration: 1,082 requests, 98.6% completed.
+   - The exact configuration is qualified by campaign-2 arm B5 on gpu31: chunk 4096, `--max-prefill-tokens 32768`, reserve 4096/0.75. Over 877 steady requests, 98.5% completed, with 13 queue-full rejections vs FP8's 10, TTFT p50 flat and short-prompt p95 +11–15% (`campaign2/base/B-3/`, `base-table.md`).
+   - An earlier gpu31 ship check (2026-09-19) ran W4AFP8 with the same reserve at chunk 16384: 1,082 requests, 98.6% completed. It is a stability point for the reserve on W4AFP8, not for this chunk.
 2. **Snapshot pre-staged (#293).** The host's current canonical file must already have fetched the W4AFP8 snapshot:
    - confirm at least 250 GiB free on the model-cache volume;
    - `compose/up` with `file: prod/GLM-5.3-Flash-SGL-TP4.yaml` and `services: ["model-downloader"]`;
