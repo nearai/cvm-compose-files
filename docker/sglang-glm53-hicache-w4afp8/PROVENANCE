@@ -1,0 +1,20 @@
+base_image=docker.io/nearaidev/sglang@sha256:3eccc30709f5719c81084d1264f03ca5354b3059ec4cff62f0c5ff88c309680c
+base_recipe=docker/sglang-glm53-hicache-admission-reserve
+source_repository=https://github.com/PierreLeGuen/sglang-upstream
+source_revision=fc91d2403cc210a86bd5fc715c6609f58c932e5a
+patch_source=https://github.com/nearai/cvm-compose-files
+patch_file_1=docker/sglang-glm53-hicache-w4afp8/modules-to-not-convert.diff
+patch_1_sha256=29764baa3e464d2272ea85f2e254392c2a61a3fc61a51f8d33b5910ce0cd8d00
+patch_1_origin=docker/sglang-glm53-w4afp8 (byte-identical copy; that recipe is the single source of truth)
+patch_1_scope=W4AFp8Config.from_config only; reads the checkpoint exclusion list, no behaviour change for non-w4afp8 checkpoints
+patch_file_2=docker/sglang-glm53-hicache-w4afp8/chunked-prefill-pool-clamp.diff
+patch_2_sha256=ba911be688556df0c0b2c9a26cde4c9f38b410a5ba51020d7754fa2e8cd010c3
+patch_2_origin=docker/sglang-glm53-pool-clamp (byte-identical copy)
+patch_2_scope=PrefillAdder.add_chunked_req only; no new env var, no runtime opt-in
+composition=docker/sglang-glm53-w4afp8 rebased onto the HCC-safe HiCache image instead of the plain admission-reserve image, so a w4afp8 checkpoint and hierarchical caching can run in one engine
+composition_safety=all three patch targets are byte-identical in both bases, verified against the real base image rather than assumed: w4afp8.py=21e9c527c9b83e350cdc35ce2bc62891cda1550934b2a5d302f0f807f752f125, schedule_policy.py=02def839ec597d2b141f9d97aace6dc376c047cf670e115e851c86cb875362f0, scheduler.py=6ffd1584f6bcbbd3384f1ec45e3313a7b4b010fd3f900b8f19345d4b02f5d0ba
+composition_disjointness=the HiCache patches touch mem_cache/*, disaggregation/* and schedule_batch.py; neither added patch touches any of those files, so source-manifest.json is reused unchanged from docker/sglang-glm53-w4afp8
+hicache_tee_requirement=SGLANG_HICACHE_CUDA_HOST_MEMORY=1 (cudaMallocHost); 0 selects cudaHostRegister and fails with CUDA error 801 on HCC/PPCIe
+qualification=gpu31 2026-09-23: loads and serves, HiCache attaches (hicache_attached=True, host pool 2,460,992 tokens), 30-minute soak 420 requests 0 errors. gpu31 reports CC status OFF, so the HCC/PPCIe allocator path is NOT covered and still needs a TEE-host soak.
+evidence=gpu31:/data/inference-optimizer-20260913/evals/hicache
+build_recipe=docker/sglang-glm53-hicache-w4afp8/Dockerfile

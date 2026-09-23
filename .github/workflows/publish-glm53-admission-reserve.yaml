@@ -13,8 +13,9 @@ on:
           - base-clamp
           - hicache-clamp
           - w4afp8
+          - hicache-w4afp8
       tag:
-        description: Docker Hub tag; empty derives the per-variant default (glm53-admission-reserve-v10, glm53-hicache-admission-reserve-v10, glm53-pool-clamp-v1, glm53-hicache-pool-clamp-v1, glm53-w4afp8-pool-clamp-v1)
+        description: Docker Hub tag; empty derives the per-variant default (glm53-admission-reserve-v10, glm53-hicache-admission-reserve-v10, glm53-pool-clamp-v1, glm53-hicache-pool-clamp-v1, glm53-w4afp8-pool-clamp-v1, glm53-hicache-w4afp8-v1)
         required: false
         type: string
         default: ''
@@ -114,6 +115,16 @@ jobs:
               echo "TEST_SCRIPT=/usr/share/nearai/glm53-w4afp8/test-cpu.sh" >> "$GITHUB_ENV"
               echo "EVIDENCE_PREFIX=glm53-w4afp8-pool-clamp" >> "$GITHUB_ENV"
               DEFAULT_TAG=glm53-w4afp8-pool-clamp-v1
+              ;;
+            hicache-w4afp8)
+              echo "BUILD_CONTEXT=docker/sglang-glm53-hicache-w4afp8" >> "$GITHUB_ENV"
+              echo "BASE_DIGEST=sha256:3eccc30709f5719c81084d1264f03ca5354b3059ec4cff62f0c5ff88c309680c" >> "$GITHUB_ENV"
+              echo "EXPECTED_DOCKERFILE_SHA256=f421f26737e44c628b65e08d10c51e96813dd089d953de0b4e0ece28f8baed25" >> "$GITHUB_ENV"
+              echo "EXPECTED_PROVENANCE_SHA256=b5794a1c9ad269ca1290639b7921d9b6c9a6a973357ea28a3df7298c8c6618a9" >> "$GITHUB_ENV"
+              echo "EXPECTED_SHA256SUMS_SHA256=2c3921bc5dab6061b34817325814c45e1a02b983a3c5a5b34e794331e998106a" >> "$GITHUB_ENV"
+              echo "TEST_SCRIPT=/usr/share/nearai/glm53-hicache-w4afp8/test-cpu.sh" >> "$GITHUB_ENV"
+              echo "EVIDENCE_PREFIX=glm53-hicache-w4afp8" >> "$GITHUB_ENV"
+              DEFAULT_TAG=glm53-hicache-w4afp8-v1
               ;;
             *)
               echo "Unknown variant: $VARIANT" >&2
@@ -228,18 +239,18 @@ jobs:
              .config.Labels["nearai.sglang.source_revision"] == "fc91d2403cc210a86bd5fc715c6609f58c932e5a" and
              .config.Labels["nearai.sglang.admission_reserve"] == "v10" and
              .config.Labels["nearai.sglang.admission_reserve_revision"] == "fb944723035d6c8b8135fd3c6ffbdc21a4615409"'
-          if [[ "$VARIANT" == "hicache" || "$VARIANT" == "hicache-clamp" ]]; then
+          if [[ "$VARIANT" == "hicache" || "$VARIANT" == "hicache-clamp" || "$VARIANT" == "hicache-w4afp8" ]]; then
             LABEL_CHECK="$LABEL_CHECK"' and
              .config.Labels["nearai.sglang.hicache_fix_revision"] == "230102db838cbbe6eca7952c729518ee6d93c3a9" and
              .config.Labels["nearai.sglang.pooled_transfers"] == "v1-opt-in" and
              .config.Labels["nearai.sglang.hcc_host_memory"] == "v4-cuda-hostalloc-opt-in" and
              .config.Labels["nearai.sglang.hcc_managed_memory"] == "v3-host-prefetch-opt-in"'
           fi
-          if [[ "$VARIANT" == "base-clamp" || "$VARIANT" == "hicache-clamp" || "$VARIANT" == "w4afp8" ]]; then
+          if [[ "$VARIANT" == "base-clamp" || "$VARIANT" == "hicache-clamp" || "$VARIANT" == "w4afp8" || "$VARIANT" == "hicache-w4afp8" ]]; then
             LABEL_CHECK="$LABEL_CHECK"' and
              .config.Labels["nearai.sglang.chunked_prefill_pool_clamp"] == "v1"'
           fi
-          if [[ "$VARIANT" == "w4afp8" ]]; then
+          if [[ "$VARIANT" == "w4afp8" || "$VARIANT" == "hicache-w4afp8" ]]; then
             LABEL_CHECK="$LABEL_CHECK"' and
              .config.Labels["nearai.sglang.w4afp8_loader_patch"] == "modules-to-not-convert-v1"'
           fi
@@ -439,10 +450,10 @@ jobs:
             echo '- SGLang source: `PierreLeGuen/sglang-upstream@fc91d2403cc210a86bd5fc715c6609f58c932e5a`'
             echo '- admission-reserve patch: `nearai/inference-optimizer@fb944723035d6c8b8135fd3c6ffbdc21a4615409` (patches/admission-reserve-v10.diff)'
             echo '- Activation requires SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE > 0 (plus SGLANG_ADMISSION_RESERVE_MAX_FRACTION and --prefill-decode-interval); the patch is inert without it.'
-            if [[ "$VARIANT" == "w4afp8" ]]; then
+            if [[ "$VARIANT" == "w4afp8" || "$VARIANT" == "hicache-w4afp8" ]]; then
               echo '- W4AFP8 loader patch: modules_to_not_convert propagation applied.'
             fi
-            if [[ "$VARIANT" == "base-clamp" || "$VARIANT" == "hicache-clamp" || "$VARIANT" == "w4afp8" ]]; then
+            if [[ "$VARIANT" == "base-clamp" || "$VARIANT" == "hicache-clamp" || "$VARIANT" == "w4afp8" || "$VARIANT" == "hicache-w4afp8" ]]; then
               echo '- chunked-prefill pool clamp: applied unconditionally; no opt-in switch.'
             fi
             echo '- Promotion: pin this digest and enable the reviewed admission-reserve settings in a separate PR.'
