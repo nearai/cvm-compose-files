@@ -24,18 +24,15 @@ production compose untouched. After review and merge:
    runs CPU regressions, scans, attests and signs the immutable image. A resumed
    run verifies that the tag still matches the requested digest.
 2. Verify the resulting signature and attestation using the commands below.
-3. Create a separate activation PR that regenerates
-   `prod/GLM-5.3-Flash-SGL-TP4-HiCache.yaml` with
-   `scripts/prepare_glm53_hicache_canary.py --image <published digest> --write`.
-   This writes only that file and `RELEASED_IMAGE`; it never touches the
-   canonical `prod/GLM-5.3-Flash-SGL-TP4.yaml`. The generated file pins the
-   published digest on r2 and enables `SGLANG_HICACHE_CUDA_HOST_MEMORY=1`,
+3. Create a separate activation PR that hand-edits
+   `prod/GLM-5.3-Flash-SGL-TP4-HiCache.yaml` to pin the published digest on r2,
+   and updates `RELEASED_IMAGE` to match; it never touches the canonical
+   `prod/GLM-5.3-Flash-SGL-TP4.yaml`. r2 keeps `SGLANG_HICACHE_CUDA_HOST_MEMORY=1`,
    pooled transfers, and `direct`/`page_first_direct`; r1 stays the unchanged
-   control. Keep request-body logging disabled. The activation PR must update
-   its validator and regression fixture atomically, and must not hand-edit the
-   generated file — regenerate it with the script and commit the result. If
-   `RELEASED_IMAGE` already records a different digest, pass `--force` to
-   replace it; the same digest re-runs without it.
+   control. Keep request-body logging disabled. The activation PR must keep
+   `scripts/validate_glm53_prod_config.rb` passing for this file. If
+   `RELEASED_IMAGE` already records a different digest, update both files to
+   the new one; the same digest needs no change.
 4. Qualify the signed image in staging on the intended TEE/PPCIe topology,
    including a minimum 30-minute soak, before separately authorized activation.
    Deploy the generated `prod/GLM-5.3-Flash-SGL-TP4-HiCache.yaml` only on
@@ -60,12 +57,14 @@ docker buildx imagetools inspect --format '{{json .SBOM.SPDX}}' "$IMAGE"
 ## Candidate configuration
 
 The candidate lives in its own file, `prod/GLM-5.3-Flash-SGL-TP4-HiCache.yaml`,
-generated from the canonical `prod/GLM-5.3-Flash-SGL-TP4.yaml` by
-`scripts/prepare_glm53_hicache_canary.py`. The canonical file itself never
-carries HiCache on either replica — it is deployed everywhere except the
-hosts explicitly selected for the HiCache canary, which run the generated
-file instead. Regenerate with `scripts/prepare_glm53_hicache_canary.py
---image <digest> --write`; never hand-edit the generated file.
+hand-derived from the canonical `prod/GLM-5.3-Flash-SGL-TP4.yaml` (it now also
+carries the split-tier routing described in its own header — two proxies,
+per-domain vhosts, a dual-domain registrar — and is shared by gpu02 and gpu03).
+The canonical file itself never carries HiCache on either replica — it is
+deployed everywhere except the hosts explicitly selected for this variant,
+which run this file instead. The prod file is hand-maintained: `RELEASED_IMAGE`
+records the digest this file pins on r2; update both together by hand when
+publishing a new image.
 
 | Setting | r1 control | r2 candidate |
 | --- | --- | --- |
