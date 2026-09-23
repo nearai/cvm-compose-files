@@ -127,7 +127,7 @@ class ValidatorContractTest(unittest.TestCase):
     def test_rejects_engine_image_and_environment_drift(self) -> None:
         cases = (
             (f"\n  image: {generator.IMAGE}\n", "\n  image: docker.io/nearaidev/sglang@sha256:" + "0" * 64 + "\n", "image must be"),
-            ("${GLM53_HICACHE_RAM_BUDGET:-40%}", "${GLM53_HICACHE_RAM_BUDGET:-80%}", "SGLANG_HICACHE_RAM_BUDGET=${GLM53_HICACHE_RAM_BUDGET:-80%}"),
+            ("${GLM53_HICACHE_RAM_BUDGET:-406GiB}", "${GLM53_HICACHE_RAM_BUDGET:-80%}", "SGLANG_HICACHE_RAM_BUDGET=${GLM53_HICACHE_RAM_BUDGET:-80%}"),
             ("${GLM53_HICACHE_CUDA_HOST_MEMORY:-1}", "${GLM53_HICACHE_CUDA_HOST_MEMORY:-0}", "environment must be the long-context control environment"),
             (
                 "    - SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE=1\n",

@@ -2,8 +2,8 @@
 # prod/GLM-5.3-Flash-SGL-TP4-LongContext.yaml by scripts/prepare_glm53_w4afp8_long_context.py.
 # Both replicas run the gpu31 campaign-2 arm L2 (2026-09-23): the W4AFP8 checkpoint
 # graphistry/GLM-5.3-Flash-W4AFP8@99f1fa7, 8192-token prefill chunks with
-# --max-prefill-tokens 32768, HiCache with CUDA-owned host memory and a 40% startup
-# host-memory budget per replica, and no admission reserve. Both pin
+# --max-prefill-tokens 32768, HiCache with CUDA-owned host memory and a fixed 406 GiB
+# startup host-memory budget per replica, and no admission reserve. Both pin
 # docker.io/nearaidev/sglang@sha256:fde25985aea3ebabf1eb581ae21d53be8540e32933eef942ee8b962a1bfbea20
 # (docker/sglang-glm53-hicache-w4afp8), published by workflow run 35903077821 from recipe
 # merge commit f8106f096e9c838b283a0f79a452d6c43e470641. Its HCC/PPCIe host-memory path
@@ -89,8 +89,9 @@ x-logging-conf: &logging-conf
 # docker/sglang-glm53-hicache-w4afp8 derivative: the HCC-safe HiCache image (CUDA-owned
 # host memory) plus the W4AFP8 loader fix and the unconditional chunked-prefill pool
 # clamp. Two replicas share the CVM's RAM, so each replica's startup host-memory
-# budget defaults to 40% across its four TP ranks. GLM53_HICACHE_RAM_BUDGET overrides
-# it for BOTH replicas, so size an override per replica, never at the single-replica 80%.
+# budget defaults to a fixed 406 GiB across its four TP ranks (the qualified L2 value;
+# a percentage resolves against MemAvailable at each start and would split unevenly).
+# GLM53_HICACHE_RAM_BUDGET overrides it for BOTH replicas.
 #
 # Admission reserve is deliberately disabled on both replicas: reserve v10 admitted a
 # 292K-cached waiter beside an in-flight chunked prefill on gpu02 and exhausted the
@@ -215,9 +216,11 @@ x-sg-glm53-flash-common: &sg-glm53-flash-common
     # No admission reserve on the long tier (see the header); --prefill-decode-interval 1
     # is retained independently of the inert reserve patch.
     - SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE=1
-    # HiCache host tier. Two replicas share the CVM's RAM: each defaults to a 40%
-    # startup budget across its four TP ranks. The override applies to BOTH replicas.
-    - SGLANG_HICACHE_RAM_BUDGET=${GLM53_HICACHE_RAM_BUDGET:-40%}
+    # HiCache host tier: a fixed 406 GiB per replica across its four TP ranks (the
+    # qualified L2 value). A percentage would resolve against MemAvailable at each start,
+    # so the replica started second would get less. The override applies to BOTH
+    # replicas; startup fails if it exceeds available RAM minus the 10 GiB reserve.
+    - SGLANG_HICACHE_RAM_BUDGET=${GLM53_HICACHE_RAM_BUDGET:-406GiB}
     # CUDA-owned host memory (cudaMallocHost). Must stay 1 on TEE hosts: 0 selects
     # cudaHostRegister, which fails with CUDA error 801 under HCC/PPCIe.
     - SGLANG_HICACHE_CUDA_HOST_MEMORY=${GLM53_HICACHE_CUDA_HOST_MEMORY:-1}

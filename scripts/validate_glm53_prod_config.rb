@@ -474,7 +474,7 @@ end
 
 # W4AFP8 + HiCache long-context file (gpu02): both replicas run gpu31 campaign-2 arm L2
 # with exactly the argv below (only --dist-init-addr differs), the hicache-w4afp8 image,
-# the long-context control environment plus the per-replica 40% HiCache environment, and
+# the long-context control environment plus the per-replica 406 GiB HiCache environment, and
 # no admission reserve. Outside the two engines and their truthful telemetry it must
 # equal the long-context file, so the long-domain routing contract (nginx and the :8001
 # discovery stub, registrar, proxy pooling) cannot drift.
@@ -511,7 +511,7 @@ W4AFP8_LONG_CONTEXT_ARGV = Shellwords.split(<<~'ARGV').freeze
   --enable-hierarchical-cache --hicache-write-policy write_through
   --hicache-io-backend direct --hicache-mem-layout page_first_direct
 ARGV
-W4AFP8_LONG_CONTEXT_HICACHE_ENV = HICACHE_ENV.merge("SGLANG_HICACHE_RAM_BUDGET" => "${GLM53_HICACHE_RAM_BUDGET:-40%}").freeze
+W4AFP8_LONG_CONTEXT_HICACHE_ENV = HICACHE_ENV.merge("SGLANG_HICACHE_RAM_BUDGET" => "${GLM53_HICACHE_RAM_BUDGET:-406GiB}").freeze
 
 # The long-context file and the W4AFP8 long-context file, reduced to what must be
 # identical: engines, the engine anchor and the replicas' scrape jobs removed, replica
