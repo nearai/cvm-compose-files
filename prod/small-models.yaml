@@ -210,7 +210,7 @@ x-downloader-common: &downloader-common
 x-sg-glm53-flash-common: &sg-glm53-flash-common
   <<: *nvidia
   init: true
-  image: docker.io/nearaidev/sglang@sha256:e9d29a1cb1cd65284392c4d62d5f2a36669628057e15c60fe93ea40cfe4fc7e7
+  image: docker.io/nearaidev/sglang@sha256:3eccc30709f5719c81084d1264f03ca5354b3059ec4cff62f0c5ff88c309680c
   command: >
       sglang serve
       --model-path /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/84c6a6aa9497188e15a635ba793b0f95a79b1033
@@ -219,13 +219,13 @@ x-sg-glm53-flash-common: &sg-glm53-flash-common
       --tp-size 4
       --ep-size 4
       --mem-fraction-static 0.80
-      --max-running-requests 40
+      --max-running-requests 32
       --max-queued-requests 8
       --enable-priority-scheduling
       --disable-priority-preemption
       --chunked-prefill-size 4096
       --prefill-decode-interval 1
-      --cuda-graph-max-bs-decode 40
+      --cuda-graph-max-bs-decode 32
       --dsa-prefill-backend tilelang
       --dsa-decode-backend tilelang
       --kv-cache-dtype bfloat16
@@ -250,6 +250,10 @@ x-sg-glm53-flash-common: &sg-glm53-flash-common
       --log-requests-level 0
       --disable-fast-image-processor
       --limit-mm-data-per-request '{"image": 64}'
+      --enable-hierarchical-cache
+      --hicache-write-policy write_through
+      --hicache-io-backend direct
+      --hicache-mem-layout page_first_direct
   volumes:
     - kernel_cache:/root/.cache
     - hugginface_cache:/root/.cache/huggingface
@@ -267,9 +271,16 @@ x-sg-glm53-flash-common: &sg-glm53-flash-common
     - TRITON_CACHE_DIR=/root/.cache/triton
     - TILELANG_CACHE_DIR=/root/.cache/tilelang
     - SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION=0
-    - SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE=4096
-    - SGLANG_ADMISSION_RESERVE_MAX_FRACTION=0.75
+    # No admission reserve: it crashed gpu02's long r2 with a Prefill OOM on
+    # 2026-09-18 and both gpu02 long arms run without it. See the engine service.
     - SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE=1
+    # Startup host-memory budget across all four TP ranks, overridable at deployment.
+    # 20% here, not gpu02's 80%: this CVM is shared with eight other models — see the
+    # arithmetic above the engine service.
+    - SGLANG_HICACHE_RAM_BUDGET=${GLM53_HICACHE_RAM_BUDGET:-20%}
+    - SGLANG_HICACHE_CUDA_HOST_MEMORY=${GLM53_HICACHE_CUDA_HOST_MEMORY:-1}
+    - SGLANG_HICACHE_POOLED_TRANSFERS=1
+    - SGLANG_HICACHE_STAGING_PAGES=64
   restart: unless-stopped
   stop_grace_period: 5m
   logging: *logging-conf
@@ -915,7 +926,7 @@ services:
       - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
       - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:z-ai/glm-5.3-flash","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8009","gpu_pair:4-7","ppcie:true","config_variant:fc91d24-admission-reserve-v10-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:z-ai/glm-5.3-flash","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8009","gpu_pair:4-7","ppcie:true","config_variant:fc91d24-long-context-admission-reserve-disabled-hicache-cuda-host-pooled-v1-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "inference-proxy"
       nearai.otel.service: "vllm-proxy"
@@ -932,8 +943,40 @@ services:
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.gpu_pair: "4-7"
       nearai.otel.ppcie: "true"
-      nearai.otel.config_variant: "fc91d24-admission-reserve-v10-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
+      nearai.otel.config_variant: "fc91d24-long-context-admission-reserve-disabled-hicache-cuda-host-pooled-v1-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
 
+  # --- GLM-5.3-Flash engine (SGLang TP4, GPUs 4-7) ---
+  #
+  # This replica is the OpenRouter lane's long-context backend: the gateway reaches
+  # it directly on gpu13.hosts.near.ai:8444. It is NOT registered with model-proxy
+  # and NOT in the public glm-5-3-flash-long domain.
+  #
+  # It mirrors gpu02's long-context r2 (prod/GLM-5.3-Flash-SGL-TP4-LongContext.yaml,
+  # model-sg-glm53-fp8-tp4-r2): same FP8 snapshot, same HCC-safe HiCache image
+  # 3eccc307…, same four HiCache flags, 32 running / 8 queued. W4AFP8 was the other
+  # candidate for the long tier and was rejected: its image 8bce6a7c… is built FROM
+  # the plain base, not the HCC-safe HiCache one, so the two cannot be combined and
+  # HiCache is what buys the long-context headroom here.
+  #
+  # Two deliberate departures from gpu02 r2:
+  #
+  # 1. No admission reserve (SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE /
+  #    SGLANG_ADMISSION_RESERVE_MAX_FRACTION are dropped from the env above). It
+  #    crashed gpu02's long r2 with a Prefill OOM on 2026-09-18 — the reserve
+  #    admitted a 292K-cached waiter alongside an in-flight chunked prefill at pool
+  #    0.99. Both gpu02 long arms now run without it; it is unsafe on the long tier
+  #    until the patch grows a pool-budget guard.
+  #
+  # 2. SGLANG_HICACHE_RAM_BUDGET defaults to 20%, not gpu02's 80%. The budget is
+  #    pinned at startup, and gpu02 is a dedicated long-context host (80% of
+  #    ~2026 GiB ≈ 1620 GiB, nothing else wants it). This CVM has ~2029 GiB with
+  #    ~1216 GiB already held by the eight other models (Grafana
+  #    system_memory_usage_bytes, 2026-09-23 00:20Z), i.e. ~813 GiB free — 80% is
+  #    not pinnable here. 20% ≈ 406 GiB takes the host to ~1622 GiB used and leaves
+  #    ~400 GiB for the rest. At ~125 KB/token that is ~3.3M tokens of host cache,
+  #    ~2.5x the ~1.3M-token GPU pool: a quarter of gpu02's, but real. Override per
+  #    deployment with GLM53_HICACHE_RAM_BUDGET exactly as on gpu02 (engine recreate
+  #    to apply).
   model-sg-glm53-fp8-tp4:
     <<: *sg-glm53-flash-common
     container_name: model-sg-glm53-fp8-tp4
@@ -948,7 +991,7 @@ services:
               device_ids: ["4","5","6","7"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:zai-org/GLM-5.3-Flash","served_model:z-ai/glm-5.3-flash","precision:fp8-weights-bf16-kv","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8009","instance:1","gpu_pair:4-7","ppcie:true","config_variant:fc91d24-admission-reserve-v10-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192","request_logging:disabled","thinking_budget_policy:default8192-public-to-native","max_running_requests:40","max_queued_requests:8","engine_image:e9d29a1cb1cd"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:zai-org/GLM-5.3-Flash","served_model:z-ai/glm-5.3-flash","precision:fp8-weights-bf16-kv","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8009","instance:1","gpu_pair:4-7","ppcie:true","config_variant:fc91d24-long-context-admission-reserve-disabled-hicache-cuda-host-pooled-v1-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192","request_logging:disabled","thinking_budget_policy:default8192-public-to-native","max_running_requests:32","max_queued_requests:8","engine_image:3eccc30709f5"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -968,14 +1011,13 @@ services:
       nearai.otel.instance: "1"
       nearai.otel.gpu_pair: "4-7"
       nearai.otel.ppcie: "true"
-      nearai.otel.config_variant: "fc91d24-admission-reserve-v10-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
+      nearai.otel.config_variant: "fc91d24-long-context-admission-reserve-disabled-hicache-cuda-host-pooled-v1-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
       nearai.otel.thinking_budget_policy: "default8192-public-to-native"
       nearai.otel.request_logging: "disabled"
-      nearai.otel.chunked_prefill_admission_reserve: "4096"
       nearai.otel.watchdog_timeout: "1800"
-      nearai.otel.max_running_requests: "40"
+      nearai.otel.max_running_requests: "32"
       nearai.otel.max_queued_requests: "8"
-      nearai.otel.engine_image: "e9d29a1cb1cd"
+      nearai.otel.engine_image: "3eccc30709f5"
 
   # --- FLUX x1 (GPU 3, shared with small models) ---
 
@@ -1456,7 +1498,7 @@ services:
               device_ids: ["4","5","6","7"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:z-ai/glm-5.3-flash","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","gpu_pair:4-7","ppcie:true","config_variant:fc91d24-admission-reserve-v10-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"]}]'
+      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:z-ai/glm-5.3-flash","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","gpu_pair:4-7","ppcie:true","config_variant:fc91d24-long-context-admission-reserve-disabled-hicache-cuda-host-pooled-v1-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "dcgm"
       nearai.otel.service: "dcgm-exporter"
@@ -1473,7 +1515,7 @@ services:
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.gpu_pair: "4-7"
       nearai.otel.ppcie: "true"
-      nearai.otel.config_variant: "fc91d24-admission-reserve-v10-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
+      nearai.otel.config_variant: "fc91d24-long-context-admission-reserve-disabled-hicache-cuda-host-pooled-v1-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
 
   # GPU 3 is shared across FLUX, Qwen3-VL, embedding, reranker, whisper — DCGM
   # metrics here cannot be attributed to one model, so
@@ -1703,14 +1745,13 @@ configs:
                       instance: "1"
                       gpu_pair: "4-7"
                       ppcie: "true"
-                      config_variant: "fc91d24-admission-reserve-v10-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
+                      config_variant: "fc91d24-long-context-admission-reserve-disabled-hicache-cuda-host-pooled-v1-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
                       thinking_budget_policy: "default8192-public-to-native"
                       request_logging: "disabled"
-                      chunked_prefill_admission_reserve: "4096"
                       watchdog_timeout: "1800"
-                      max_running_requests: "40"
+                      max_running_requests: "32"
                       max_queued_requests: "8"
-                      engine_image: "e9d29a1cb1cd"
+                      engine_image: "3eccc30709f5"
               - job_name: sglang-model-sg-flux2-klein-4b-tp1
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -1850,7 +1891,7 @@ configs:
                       port: "9400"
                       gpu_pair: "4-7"
                       ppcie: "true"
-                      config_variant: "fc91d24-admission-reserve-v10-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
+                      config_variant: "fc91d24-long-context-admission-reserve-disabled-hicache-cuda-host-pooled-v1-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
               - job_name: dcgm-dcgm-shared-gpu3
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -1955,7 +1996,7 @@ configs:
                       port: "8009"
                       gpu_pair: "4-7"
                       ppcie: "true"
-                      config_variant: "fc91d24-admission-reserve-v10-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
+                      config_variant: "fc91d24-long-context-admission-reserve-disabled-hicache-cuda-host-pooled-v1-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
               - job_name: inference-proxy-proxy-flux2-klein-4b
                 scrape_interval: 15s
                 metrics_path: /metrics
