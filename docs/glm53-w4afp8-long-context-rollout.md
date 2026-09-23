@@ -34,7 +34,10 @@ Nothing else changes. The domains, the `:8001` discovery stub, `LONG_TIER_ONLY` 
 ## Gates before starting
 
 1. **Tag and env.** Use a merged tag that clears compose-manager's commit-age gate (`backdate-tag`). Pass the host's full gpu-manager env map on every call. Always set `force_recreate: false` and never send an empty `services` list. Run every `compose/up` with `dry_run: true` first, and apply only if the plan creates or recreates exactly the listed services and removes nothing.
-2. **HiCache budget.** `GLM53_HICACHE_RAM_BUDGET` now sets both replicas. gpu02's env must leave it unset or give a per-replica value; the single-replica 80% would book 160% of host RAM.
+2. **HiCache budget.** `GLM53_HICACHE_RAM_BUDGET` keeps its name, the same contract as gpu13 (#290) and the other GLM-5.3 files, but here it sets both replicas.
+   - Before step 1, read gpu02's gpu-manager env map and make sure `GLM53_HICACHE_RAM_BUDGET` is unset or `40%`. A leftover single-replica value such as 80% would book 160% of host RAM once both replicas run HiCache.
+   - The r2-first order cannot double-book, because the old r1 has no HiCache. r2's startup log (step 3) shows the resolved `rank_budget_bytes`; stop and fix the env if it is above ~40% of the CVM's RAM across four ranks.
+   - The r1 step's mandatory startup-log check (step 8) catches a wrong value again, before r1 serves.
    - gpu02's current r2 logs `rank_budget_bytes=262552089395` (244.5 GiB per rank) at 80%. At 40%, each replica gets about 489 GiB, close to the 406 GiB qualification point, and the two together equal today's single 80% budget.
    - Other CVMs have different RAM (gpu13 runs one replica at 20% under #290). Recompute before using this file on any other host.
 3. **Snapshot.** gpu02 already holds the W4AFP8 snapshot, and the downloader re-run is a no-op. Any other host must pre-stage it first from the file it currently runs (#293), with at least 250 GiB free.
@@ -68,7 +71,7 @@ Never let orphan removal perform the switch. On gpu02, the only orphan relative 
 ### r1: W4AFP8 without HiCache → W4AFP8 + HiCache (r2 keeps serving)
 
 7. `compose/down` with this file and `services: ["model-sg-glm53-w4afp8-tp4-r1"]`. Poll until it is gone.
-8. `compose/up` with this file and the same `services`. Run the same log checks and verify through `:8008`.
+8. `compose/up` with this file and the same `services`. Run the same startup-log checks (mandatory): `rank_budget_bytes` must again be about 40% of the CVM's RAM across four ranks. Then verify through `:8008`.
 9. Reconcile: `dry_run` a `compose/up` of this file for `["model-downloader", "nginx", "model-proxy-registrar", "proxy-glm53", "dcgm-glm53", "otelcol-contrib"]` and apply it only for services still on an older definition. Recreating `model-proxy-registrar` unregisters `:8001` on SIGTERM, so gpu02 leaves the long domain for a discovery cycle or two. If the plan includes the registrar, apply it in the low-traffic window.
 
 ## Verification (after each replica)
