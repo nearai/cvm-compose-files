@@ -472,6 +472,159 @@ def validate_long_context(errors, compose, replica_services)
   )
 end
 
+# W4AFP8 + HiCache long-context file (gpu02): both replicas run gpu31 campaign-2 arm L2
+# with exactly the argv below (only --dist-init-addr differs), the hicache-w4afp8 image,
+# the long-context control environment plus the per-replica 406 GiB HiCache environment, and
+# no admission reserve. Outside the two engines and their truthful telemetry it must
+# equal the long-context file, so the long-domain routing contract (nginx and the :8001
+# discovery stub, registrar, proxy pooling) cannot drift.
+W4AFP8_LONG_CONTEXT_FILE = File.join(ROOT, "prod", "GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext.yaml")
+W4AFP8_LONG_CONTEXT_IMAGE = "docker.io/nearaidev/sglang@sha256:fde25985aea3ebabf1eb581ae21d53be8540e32933eef942ee8b962a1bfbea20"
+W4AFP8_LONG_CONTEXT_VARIANT = "fc91d24-long-context-w4afp8-c8192-hicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
+W4AFP8_CHECKPOINT = "graphistry/GLM-5.3-Flash-W4AFP8"
+W4AFP8_PRECISION = "int4-weights-fp8-activations-bf16-kv"
+W4AFP8_LONG_CONTEXT_REPLICAS = {
+  "model-sg-glm53-w4afp8-tp4-r1" => { "devices" => %w[0 1 2 3], "dist_init" => "127.0.0.1:29510", "instance" => "1" },
+  "model-sg-glm53-w4afp8-tp4-r2" => { "devices" => %w[4 5 6 7], "dist_init" => "127.0.0.1:29511", "instance" => "2" },
+}.freeze
+W4AFP8_LONG_CONTEXT_ARGV = Shellwords.split(<<~'ARGV').freeze
+  sglang serve
+  --model-path /root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/snapshots/99f1fa70408c52b007d4fd69e02e5a522422e755
+  --served-model-name z-ai/glm-5.3-flash
+  --tp-size 4 --ep-size 4
+  --mem-fraction-static 0.80
+  --max-running-requests 32 --max-queued-requests 8
+  --enable-priority-scheduling --disable-priority-preemption
+  --chunked-prefill-size 8192 --max-prefill-tokens 32768 --prefill-decode-interval 1
+  --cuda-graph-max-bs-decode 32
+  --dsa-prefill-backend tilelang --dsa-decode-backend tilelang
+  --kv-cache-dtype bfloat16
+  --speculative-algorithm EAGLE --speculative-num-steps 5 --speculative-eagle-topk 1
+  --speculative-num-draft-tokens 6 --speculative-adaptive
+  --reasoning-parser glm45 --enable-strict-thinking --grammar-backend xgrammar --tool-call-parser glm47
+  --chat-template /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/3f1971b7b5f7a528c9c4ef6212c8785298a8c24a/chat_template.jinja
+  --context-length 1048576
+  --dist-init-addr DIST_INIT
+  --watchdog-timeout 1800 --host 0.0.0.0 --port 8000
+  --enable-metrics --enable-cache-report --log-requests-level 0
+  --disable-fast-image-processor --limit-mm-data-per-request '{"image": 64}'
+  --enable-hierarchical-cache --hicache-write-policy write_through
+  --hicache-io-backend direct --hicache-mem-layout page_first_direct
+ARGV
+W4AFP8_LONG_CONTEXT_HICACHE_ENV = HICACHE_ENV.merge("SGLANG_HICACHE_RAM_BUDGET" => "${GLM53_HICACHE_RAM_BUDGET:-406GiB}").freeze
+
+# The long-context file and the W4AFP8 long-context file, reduced to what must be
+# identical: engines, the engine anchor and the replicas' scrape jobs removed, replica
+# names and the checkpoint behind the telemetry normalized.
+def w4afp8_long_context_view(errors, file_label, compose, replica_names)
+  view = Marshal.load(Marshal.dump(compose))
+  view.delete("x-sg-glm53-flash-common")
+  replica_names.each { |name| view.fetch("services", {}).delete(name) }
+  otel = view.dig("configs", "otelcol_app_config")
+  if otel && otel["content"]
+    collector = load_embedded_yaml(errors, "#{file_label} otelcol_app_config", otel["content"])
+    if collector
+      Array(collector.dig("receivers", "prometheus/apps", "config", "scrape_configs")).reject! do |job|
+        job.is_a?(Hash) && replica_names.any? { |name| job["job_name"] == "sglang-#{name}" }
+      end
+      otel["content"] = collector
+    end
+  end
+  normalized = JSON.generate(view)
+                   .gsub("model-sg-glm53-w4afp8-tp4-r", "REPLICA-r").gsub("model-sg-glm53-fp8-tp4-r", "REPLICA-r")
+                   .gsub(W4AFP8_CHECKPOINT, "CHECKPOINT").gsub("zai-org/GLM-5.3-Flash", "CHECKPOINT")
+  JSON.parse(normalized)
+end
+
+def validate_w4afp8_long_context(errors, compose, reference)
+  label = "W4AFP8 long-context"
+  services = compose.fetch("services", {})
+  expected_services = EXPECTED_SERVICES - REPLICAS.keys + W4AFP8_LONG_CONTEXT_REPLICAS.keys
+  missing = expected_services - services.keys
+  extra = services.keys - expected_services
+  errors << "#{label} is missing services: #{missing.join(', ')}" unless missing.empty?
+  errors << "#{label} has unexpected services: #{extra.join(', ')}" unless extra.empty?
+
+  reference_env = environment_map(reference.dig("services", "model-sg-glm53-fp8-tp4-r1") || {})
+  expected_env = reference_env.merge(W4AFP8_LONG_CONTEXT_HICACHE_ENV)
+  collector = load_embedded_yaml(errors, "#{label} file otelcol_app_config", compose.dig("configs", "otelcol_app_config", "content"))
+  engine_image_label = W4AFP8_LONG_CONTEXT_IMAGE.split(":").last[0, 12]
+  replicas = {}
+  W4AFP8_LONG_CONTEXT_REPLICAS.each do |name, spec|
+    service = services[name]
+    next errors << "#{label} missing services.#{name}" if service.nil?
+
+    replicas[name] = service
+    errors << "#{label} #{name} image must be #{W4AFP8_LONG_CONTEXT_IMAGE}" unless service["image"] == W4AFP8_LONG_CONTEXT_IMAGE
+    errors << "#{label} #{name} must use the prebuilt signed image, not a host-local build" if service.key?("build")
+    expected_argv = W4AFP8_LONG_CONTEXT_ARGV.map { |token| token == "DIST_INIT" ? spec["dist_init"] : token }
+    actual_argv = begin
+      Shellwords.split(command_text(service))
+    rescue ArgumentError => error
+      errors << "#{label} #{name} command cannot be parsed: #{error.message}"
+      []
+    end
+    unless actual_argv == expected_argv
+      drift = ((actual_argv - expected_argv) + (expected_argv - actual_argv)).uniq
+      errors << "#{label} #{name} argv must be campaign-2 arm L2 exactly (with --dist-init-addr #{spec['dist_init']}); differing tokens: #{drift.first(8).join(' ')}"
+    end
+    env = environment_map(service)
+    reserve = env.keys & ADMISSION_RESERVE_ENV
+    errors << "#{label} #{name} must not set admission-reserve environment: #{reserve.join(', ')}" unless reserve.empty?
+    (env.keys & FORBIDDEN_ENV).each { |key| errors << "#{label} #{name} must not set #{key}" }
+    unless env == expected_env
+      diff = (env.to_a - expected_env.to_a) + (expected_env.to_a - env.to_a)
+      errors << "#{label} #{name} environment must be the long-context control environment plus #{W4AFP8_LONG_CONTEXT_HICACHE_ENV.map { |key, value| "#{key}=#{value}" }.join(' ')}; differing: #{diff.map { |key, value| "#{key}=#{value}" }.uniq.join(' ')}"
+    end
+    device_ids = Array(service.dig("deploy", "resources", "reservations", "devices", 0, "device_ids")).map(&:to_s)
+    errors << "#{label} #{name} must use GPU device_ids #{spec['devices'].join(',')}" unless device_ids == spec["devices"]
+
+    labels = service["labels"].is_a?(Hash) ? service["labels"] : {}
+    { "nearai.otel.model_path" => W4AFP8_CHECKPOINT, "nearai.otel.engine_image" => engine_image_label, "nearai.otel.instance" => spec["instance"] }.each do |key, value|
+      errors << "#{label} #{name} #{key} must be #{value.inspect}, got #{labels[key].inspect}" unless labels[key] == value
+    end
+    tags = begin
+      Array(JSON.parse(labels["com.datadoghq.ad.logs"].to_s).first&.fetch("tags", []))
+    rescue JSON::ParserError
+      []
+    end
+    ["model_path:#{W4AFP8_CHECKPOINT}", "precision:#{W4AFP8_PRECISION}", "engine_image:#{engine_image_label}", "instance:#{spec['instance']}"].each do |tag|
+      errors << "#{label} #{name} log metadata must carry #{tag}" unless tags.include?(tag)
+    end
+    check_variant(errors, label, service, name, collector, W4AFP8_LONG_CONTEXT_VARIANT)
+    scrape = scrape_job(errors, label, collector, "sglang-#{name}")
+    scrape_labels = scrape&.dig("static_configs", 0, "labels") || {}
+    { "model_path" => W4AFP8_CHECKPOINT, "precision" => W4AFP8_PRECISION, "engine_image" => engine_image_label, "instance" => spec["instance"] }.each do |key, value|
+      errors << "#{label} sglang-#{name} scrape label #{key} must be #{value.inspect}, got #{scrape_labels[key].inspect}" if scrape && scrape_labels[key] != value
+    end
+  end
+
+  if replicas.length == 2
+    contracts = replicas.values.map { |service| runtime_contract(service).reject { |key, _value| key == "command" } }
+    errors << "#{label} replicas must share one runtime configuration outside --dist-init-addr" unless contracts.uniq.length == 1
+  end
+
+  dcgm_labels = services.dig("dcgm-glm53", "labels") || {}
+  errors << "#{label} dcgm-glm53 nearai.otel.model_path must be #{W4AFP8_CHECKPOINT}" unless dcgm_labels["nearai.otel.model_path"] == W4AFP8_CHECKPOINT
+  errors << "#{label} dcgm-glm53 log metadata must carry model_path:#{W4AFP8_CHECKPOINT}" unless dcgm_labels["com.datadoghq.ad.logs"].to_s.include?("model_path:#{W4AFP8_CHECKPOINT}")
+
+  proxy = services["proxy-glm53"] || {}
+  proxy_env = environment_map(proxy)
+  expected_backends = W4AFP8_LONG_CONTEXT_REPLICAS.keys.map { |name| "http://#{name}:8000" }.join(",")
+  errors << "#{label} proxy-glm53 must pool both W4AFP8 replicas" unless proxy_env["VLLM_BACKEND_URLS"] == expected_backends
+  errors << "#{label} proxy-glm53 must enable conversation affinity" unless proxy_env["VLLM_BACKEND_CONVERSATION_AFFINITY"] == "1"
+  unless PRIORITY_NORMALIZING_PROXY_IMAGES.include?(proxy["image"])
+    errors << "#{label} enables SGLang priority scheduling but proxy-glm53 image #{proxy['image'].inspect} is not a priority-normalizing inference-proxy build"
+  end
+
+  reference_view = w4afp8_long_context_view(errors, "long-context file", reference, REPLICAS.keys)
+  target_view = w4afp8_long_context_view(errors, "#{label} file", compose, W4AFP8_LONG_CONTEXT_REPLICAS.keys)
+  return if reference_view == target_view
+
+  difference = first_difference(reference_view, target_view)
+  errors << "#{label} file must match the long-context file outside the two engines and their telemetry (first difference: #{difference})"
+end
+
 # Walks two equal-shaped (or not) structures and returns a dotted path to the
 # first point where they differ, for a more actionable failure message.
 def first_difference(a, b, path = [])
@@ -573,6 +726,17 @@ if long_context_present
   end
 end
 
+w4afp8_long_context_present = File.exist?(W4AFP8_LONG_CONTEXT_FILE)
+if w4afp8_long_context_present
+  w4afp8_long_context_compose = load_compose_file(errors, "W4AFP8 long-context file", W4AFP8_LONG_CONTEXT_FILE)
+  if w4afp8_long_context_compose && long_context_compose
+    validate_w4afp8_long_context(errors, w4afp8_long_context_compose, long_context_compose)
+    validate_model_cache(errors, "W4AFP8 long-context", w4afp8_long_context_compose.fetch("services", {}))
+  elsif w4afp8_long_context_compose
+    errors << "W4AFP8 long-context file requires the long-context file it is generated from"
+  end
+end
+
 if errors.any?
   warn "GLM-5.3 production contract failed:"
   errors.each { |error| warn "  - #{error}" }
@@ -582,3 +746,4 @@ end
 puts "GLM-5.3 production contract OK (prod/GLM-5.3-Flash-SGL-TP4.yaml)"
 puts "GLM-5.3 production contract OK (prod/GLM-5.3-Flash-SGL-TP4-HiCache.yaml)" if hicache_present
 puts "GLM-5.3 production contract OK (prod/GLM-5.3-Flash-SGL-TP4-LongContext.yaml)" if long_context_present
+puts "GLM-5.3 production contract OK (prod/GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext.yaml)" if w4afp8_long_context_present
