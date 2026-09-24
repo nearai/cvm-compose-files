@@ -121,17 +121,45 @@ small_services.each do |name, service|
 
   assert.call(%w[model-sg-glm53-fp8-tp4 dcgm-glm53].include?(name), "Unexpected gpu13 GPU 4-7 claim: #{name}")
 end
+# gpu13's GLM replica is the OpenRouter lane's long-context backend and mirrors
+# gpu02 long r2's qualified W4AFP8+HiCache arm (campaign-2 L2):
+# prod/GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext.yaml, model-sg-glm53-w4afp8-tp4-r2.
 small_engine = small_services.fetch('model-sg-glm53-fp8-tp4')
-assert.call(small_engine['image'] == 'docker.io/nearaidev/sglang@sha256:e9d29a1cb1cd65284392c4d62d5f2a36669628057e15c60fe93ea40cfe4fc7e7', 'Qualified gpu13 GLM image changed')
+assert.call(small_engine['image'] == 'docker.io/nearaidev/sglang@sha256:fde25985aea3ebabf1eb581ae21d53be8540e32933eef942ee8b962a1bfbea20', 'Qualified gpu13 GLM image changed')
+small_engine_command = small_engine.fetch('command')
+assert.call(small_engine_command.include?('--model-path /root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/snapshots/99f1fa70408c52b007d4fd69e02e5a522422e755'), 'gpu13 GLM must serve the qualified W4AFP8 snapshot')
 {
   '--tp-size' => '4',
   '--ep-size' => '4',
-  '--max-running-requests' => '40',
+  '--max-running-requests' => '32',
   '--max-queued-requests' => '8',
-  '--cuda-graph-max-bs-decode' => '40'
+  '--cuda-graph-max-bs-decode' => '32'
 }.each do |flag, value|
   exact_flag = /#{Regexp.escape(flag)} #{Regexp.escape(value)}\b/
-  assert.call(small_engine.fetch('command').match?(exact_flag), "gpu13 GLM runtime flag changed: #{flag} #{value}")
+  assert.call(small_engine_command.match?(exact_flag), "gpu13 GLM runtime flag changed: #{flag} #{value}")
+end
+# HiCache is what buys this replica its long-context headroom; only the qualified
+# W4AFP8+HiCache image above may run it in a TEE guest.
+[
+  '--enable-hierarchical-cache',
+  '--hicache-write-policy write_through',
+  '--hicache-io-backend direct',
+  '--hicache-mem-layout page_first_direct'
+].each do |flag|
+  assert.call(small_engine_command.include?(flag), "gpu13 GLM HiCache contract changed: #{flag}")
+end
+small_engine_env = small_engine.fetch('environment')
+[
+  'SGLANG_HICACHE_RAM_BUDGET=${GLM53_HICACHE_RAM_BUDGET:-406GiB}',
+  'SGLANG_HICACHE_CUDA_HOST_MEMORY=${GLM53_HICACHE_CUDA_HOST_MEMORY:-1}'
+].each do |entry|
+  assert.call(small_engine_env.include?(entry), "gpu13 GLM HiCache host-memory contract changed: #{entry}")
+end
+# The admission reserve crashed gpu02's long r2 with a Prefill OOM on 2026-09-18;
+# it is unsafe on the long tier until the pool-clamp guard is confirmed for gpu13,
+# and both gpu02 long arms run without it.
+%w[SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE SGLANG_ADMISSION_RESERVE_MAX_FRACTION].each do |var|
+  assert.call(small_engine_env.none? { |entry| entry.to_s.start_with?("#{var}=") }, "gpu13 GLM must not set #{var}: the admission reserve is unsafe on the long tier")
 end
 small_proxy = small_services.fetch('proxy-glm53')
 assert.call(small_proxy['image'] == 'nearaidev/vllm-proxy-rs@sha256:b3a8c6260834231271b4356c56a7aa2718608c8a537b35973916e0a56dc88fba', 'Qualified gpu13 GLM proxy image changed')
