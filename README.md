@@ -22,6 +22,7 @@ Deployed by `compose-manager` (running inside each inference CVM) which checks o
 **`prod/` is the only directory a production deploy reads from.** A file must pass the [prod-ready checklist](#prod-ready-checklist) before it moves out of `experiments/`.
 
 `cleanup-hf-model.yaml` is a standalone operational utility (deletes cached HF weights), not a model serving config. It lives at the repo root and is excluded from the OTel label validator.
+It takes `MODEL_NAME` (one or more `org/repo` values, comma-separated) and `HF_CACHE_VOLUME` (an existing volume name, default `work_huggingface_cache`), and should be run with `"project":"cleanup"` so it does not orphan the live stack.
 
 ## Prod-ready checklist
 
