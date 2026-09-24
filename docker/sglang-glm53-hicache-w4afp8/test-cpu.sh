@@ -138,4 +138,23 @@ assert default.ignored_layers == [], default.ignored_layers
 print("step 3 OK: W4AFP8 loader propagates all supported exclusion keys into ignored_layers")
 EOF
 
+# 4. The DSA indexer query split is opt-in: inert unless SGLANG_DSA_INDEXER_QSPLIT=1, and never used
+# below the minimum row count even when enabled.
+python3 - <<'EOF'
+import importlib
+import os
+
+import sglang.srt.layers.attention.dsa.dsa_indexer_kpool as kpool
+
+assert kpool._QSPLIT is False, kpool._QSPLIT
+assert kpool._qsplit_group(1_000_000) is None
+assert hasattr(kpool.IndexerKPool, "_get_topk_ragged_kpool_plan_qsplit")
+os.environ["SGLANG_DSA_INDEXER_QSPLIT"] = "1"
+os.environ["SGLANG_DSA_INDEXER_QSPLIT_MIN_ROWS"] = "2048"
+kpool = importlib.reload(kpool)
+assert kpool._QSPLIT is True and kpool._QSPLIT_MIN_ROWS == 2048
+assert kpool._qsplit_group(2047) is None
+print("step 4 OK: the DSA indexer query split is opt-in and respects its minimum row count")
+EOF
+
 echo "GLM-5.3 W4AFP8 combined-image CPU checks passed"

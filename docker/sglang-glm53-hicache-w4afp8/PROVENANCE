@@ -11,6 +11,11 @@ patch_file_2=docker/sglang-glm53-hicache-w4afp8/chunked-prefill-pool-clamp.diff
 patch_2_sha256=ba911be688556df0c0b2c9a26cde4c9f38b410a5ba51020d7754fa2e8cd010c3
 patch_2_origin=docker/sglang-glm53-pool-clamp (byte-identical copy)
 patch_2_scope=PrefillAdder.add_chunked_req only; no new env var, no runtime opt-in
+patch_file_3=docker/sglang-glm53-hicache-w4afp8/dsa-indexer-qsplit.diff
+patch_3_sha256=37ad31b95511a831038d2ab572656a59d4ba1c9c21348d9fcb0095cba665aad1
+patch_3_origin=new in this recipe; lab form validated on gpu31/gpu32 2026-09-24
+patch_3_scope=IndexerKPool._get_topk_ragged_kpool_plan only; inert unless SGLANG_DSA_INDEXER_QSPLIT=1 (min rows SGLANG_DSA_INDEXER_QSPLIT_MIN_ROWS, default 1024)
+patch_3_evidence=stored long-tier traffic paired TTFT 0.81-0.85x (both island orders), c16384 burst min free 9.5 GB vs 0.65 GB, GSM8K/MMLU/passkey/teacher-forced agreement at the noise floor; gpu31:/data/inference-optimizer-20260913/results/roofline-20260923/fix3
 composition=docker/sglang-glm53-w4afp8 rebased onto the HCC-safe HiCache image instead of the plain admission-reserve image, so a w4afp8 checkpoint and hierarchical caching can run in one engine
 composition_safety=all three patch targets are byte-identical in both bases, verified against the real base image rather than assumed: w4afp8.py=21e9c527c9b83e350cdc35ce2bc62891cda1550934b2a5d302f0f807f752f125, schedule_policy.py=02def839ec597d2b141f9d97aace6dc376c047cf670e115e851c86cb875362f0, scheduler.py=6ffd1584f6bcbbd3384f1ec45e3313a7b4b010fd3f900b8f19345d4b02f5d0ba
 composition_disjointness=the HiCache patches touch mem_cache/*, disaggregation/* and schedule_batch.py; neither added patch touches any of those files, so source-manifest.json is reused unchanged from docker/sglang-glm53-w4afp8
