@@ -37,10 +37,15 @@ SOURCE_VARIANTS: Final = (
     "fc91d24-long-context-admission-reserve-disabled-hicache-disabled-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192",
     "fc91d24-long-context-admission-reserve-disabled-hicache-cuda-host-pooled-v1-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192",
 )
-VARIANT: Final = (
-    "fc91d24-long-context-w4afp8-c8192-hicache-cuda-host-pooled-v1-admission-reserve-disabled"
-    "-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
-)
+# r1 is the unchanged #294 control; r2 is the --prefill-decode-interval 2 canary. The
+# variants differ only in pdi1/pdi2 so dashboards split the replicas by config_variant.
+VARIANTS: Final = {
+    1: "fc91d24-long-context-w4afp8-c8192-hicache-cuda-host-pooled-v1-admission-reserve-disabled"
+    "-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192",
+    2: "fc91d24-long-context-w4afp8-c8192-hicache-cuda-host-pooled-v1-admission-reserve-disabled"
+    "-pool-clamp-pdi2-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192",
+}
+PREFILL_DECODE_INTERVAL: Final = {1: 1, 2: 2}
 SOURCE_DIST_INIT: Final = "127.0.0.1:29510"
 DIST_INIT: Final = {1: "127.0.0.1:29510", 2: "127.0.0.1:29511"}
 HICACHE_FLAGS: Final = (
@@ -61,7 +66,10 @@ HEADER: Final = (
     "# Both replicas run the gpu31 campaign-2 arm L2 (2026-09-23): the W4AFP8 checkpoint\n"
     "# graphistry/GLM-5.3-Flash-W4AFP8@99f1fa7, 8192-token prefill chunks with\n"
     "# --max-prefill-tokens 32768, HiCache with CUDA-owned host memory and a fixed 406 GiB\n"
-    "# startup host-memory budget per replica, and no admission reserve. Both pin\n"
+    "# startup host-memory budget per replica, and no admission reserve. r2 is a canary at\n"
+    "# --prefill-decode-interval 2 (two decode steps between prefill chunks); r1 stays at 1 as\n"
+    "# the live control. On stored long-tier traffic (gpu31, 2026-09-24) pdi 2 cut TPOT p50 to\n"
+    "# 0.53-0.72x of pdi 1 at a paired TTFT cost of at most 2%, with 100% completion. Both pin\n"
     f"# {IMAGE}\n"
     "# (docker/sglang-glm53-hicache-w4afp8), published by workflow run 35903077821 from recipe\n"
     "# merge commit f8106f096e9c838b283a0f79a452d6c43e470641. Its HCC/PPCIe host-memory path\n"
@@ -76,7 +84,8 @@ HEADER_REPLACEMENTS: Final = (
         "# long-context contract below, while the engines intentionally form an r1 control / r2\n"
         "# HiCache experiment and therefore are not byte-identical to the canonical file.\n",
         "# Generated from the long-context file. Routing remains the dedicated long-context\n"
-        "# contract below; both replicas run the same W4AFP8 + HiCache engine.\n",
+        "# contract below; both replicas run the same W4AFP8 + HiCache engine, r2 at\n"
+        "# --prefill-decode-interval 2 as a canary.\n",
     ),
     (
         "#   tier; every other host keeps the canonical file. The inference-proxy and routing\n"
@@ -91,7 +100,8 @@ HEADER_REPLACEMENTS: Final = (
         "#   DSA indexer under concurrent 400K+ contexts (exactly this tier's load), chunk 2048\n"
         "#   halves prefill speed, and no other per-replica flag moved the tail. Conversation\n"
         "#   affinity stays on because the prefix cache is worth ~3x in request capacity.\n",
-        "#   Both replicas run identical engine flags; only --dist-init-addr differs. The\n"
+        "#   The replicas' engine flags differ only in --dist-init-addr and r2's canary\n"
+        "#   --prefill-decode-interval 2. The\n"
         "#   8192-token chunk is the W4AFP8 setting: FP8 at 8192 OOMed in the DSA indexer under\n"
         "#   concurrent 400K+ contexts, while W4AFP8's 2.4x larger device KV pool kept 3.7 GiB\n"
         "#   free through 8 concurrent 647K-756K-token cold prefills on gpu31 (16384 fell to\n"
@@ -133,8 +143,9 @@ HEADER_REPLACEMENTS: Final = (
         "# Admission reserve is deliberately disabled on both replicas: reserve v10 admitted a\n"
         "# 292K-cached waiter beside an in-flight chunked prefill on gpu02 and exhausted the\n"
         "# long-context token pool, and the qualified arm (L2) ran without it. The image's\n"
-        "# reserve patch is inert while those variables are unset; --prefill-decode-interval 1\n"
-        "# remains part of the serving contract. The official CUDA 13 SGLang image is the\n"
+        "# reserve patch is inert while those variables are unset; --prefill-decode-interval\n"
+        "# (1 on r1, 2 on the r2 canary) is part of the serving contract. The official CUDA 13\n"
+        "# SGLang image is the\n"
         "# pinned build base. The serving envelope is\n",
     ),
     (
@@ -158,8 +169,8 @@ ANCHOR_ENV_OLD: Final = (
     "  restart: unless-stopped\n"
 )
 ANCHOR_ENV_NEW: Final = (
-    "    # No admission reserve on the long tier (see the header); --prefill-decode-interval 1\n"
-    "    # is retained independently of the inert reserve patch.\n"
+    "    # No admission reserve on the long tier (see the header); --prefill-decode-interval\n"
+    "    # is set per replica, independently of the inert reserve patch.\n"
     "    - SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE=1\n"
     "    # HiCache host tier: a fixed 406 GiB per replica across its four TP ranks (the\n"
     "    # qualified L2 value). A percentage would resolve against MemAvailable at each start,\n"
@@ -204,6 +215,7 @@ def engine_arguments(source: list[str], replica: int) -> list[str]:
         f"--revision {FP8_REVISION}",
         "--moe-runner-backend deep_gemm",
         "--chunked-prefill-size 4096",
+        "--prefill-decode-interval 1",
         f"--dist-init-addr {SOURCE_DIST_INIT}",
     }
     missing = sorted(argument for argument in expected if source.count(argument) != 1)
@@ -219,6 +231,8 @@ def engine_arguments(source: list[str], replica: int) -> list[str]:
             arguments.append(MODEL_PATH)
         elif argument == "--chunked-prefill-size 4096":
             arguments.extend(("--chunked-prefill-size 8192", "--max-prefill-tokens 32768"))
+        elif argument == "--prefill-decode-interval 1":
+            arguments.append(f"--prefill-decode-interval {PREFILL_DECODE_INTERVAL[replica]}")
         elif argument == f"--dist-init-addr {SOURCE_DIST_INIT}":
             arguments.append(f"--dist-init-addr {DIST_INIT[replica]}")
         else:
@@ -270,8 +284,8 @@ def generate(source: str) -> str:
         ('model_path: "zai-org/GLM-5.3-Flash"', f'model_path: "{CHECKPOINT}"', 6, "metric model_path"),
         ("precision:fp8-weights-bf16-kv", f"precision:{PRECISION}", 2, "log precision"),
         ('precision: "fp8-weights-bf16-kv"', f'precision: "{PRECISION}"', 2, "scrape precision"),
-        (SOURCE_VARIANTS[0], VARIANT, 3, "replica 1 config_variant"),
-        (SOURCE_VARIANTS[1], VARIANT, 3, "replica 2 config_variant"),
+        (SOURCE_VARIANTS[0], VARIANTS[1], 3, "replica 1 config_variant"),
+        (SOURCE_VARIANTS[1], VARIANTS[2], 3, "replica 2 config_variant"),
         ('"request_logging:disabled",', f'"request_logging:disabled","engine_image:{ENGINE_IMAGE_LABEL}",', 2, "log engine_image"),
         (
             '      nearai.otel.request_logging: "disabled"\n',

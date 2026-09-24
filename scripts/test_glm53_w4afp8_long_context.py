@@ -119,6 +119,9 @@ class ValidatorContractTest(unittest.TestCase):
                 argv,
             ),
             ("\n      --max-queued-requests 8\n", "\n      --max-queued-requests 32\n", argv),
+            # r1 is the pdi 1 control and r2 the pdi 2 canary; neither may take the other's value.
+            ("\n      --prefill-decode-interval 1\n", "\n      --prefill-decode-interval 2\n", "--prefill-decode-interval 1"),
+            ("\n        --prefill-decode-interval 2\n", "\n        --prefill-decode-interval 1\n", "--prefill-decode-interval 2"),
         )
         for before, after, message in cases:
             with self.subTest(mutation=after.strip()[:60]):
@@ -163,9 +166,11 @@ class ValidatorContractTest(unittest.TestCase):
 
     def test_rejects_untruthful_telemetry(self) -> None:
         cases = (
-            (f'nearai.otel.config_variant: "{generator.VARIANT}"', 'nearai.otel.config_variant: "incorrect-variant"', 1,
+            (f'nearai.otel.config_variant: "{generator.VARIANTS[1]}"', 'nearai.otel.config_variant: "incorrect-variant"', 0,
              "nearai.otel.config_variant must be"),
-            (f"config_variant:{generator.VARIANT}", "config_variant:incorrect-variant", 0, "log metadata must carry exactly config_variant:"),
+            (f'nearai.otel.config_variant: "{generator.VARIANTS[2]}"', f'nearai.otel.config_variant: "{generator.VARIANTS[1]}"', 0,
+             "nearai.otel.config_variant must be"),
+            (f"config_variant:{generator.VARIANTS[1]}", "config_variant:incorrect-variant", 0, "log metadata must carry exactly config_variant:"),
             ('      nearai.otel.engine_image: "fde25985aea3"\n', '      nearai.otel.engine_image: "e9d29a1cb1cd"\n', 1, "nearai.otel.engine_image must be"),
             ('"precision:int4-weights-fp8-activations-bf16-kv"', '"precision:fp8-weights-bf16-kv"', 0, "log metadata must carry precision:"),
             ('                      engine_image: "fde25985aea3"\n', '                      engine_image: "e9d29a1cb1cd"\n', 1, "scrape label engine_image"),

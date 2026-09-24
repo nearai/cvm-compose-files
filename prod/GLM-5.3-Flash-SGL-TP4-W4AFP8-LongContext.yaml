@@ -3,7 +3,10 @@
 # Both replicas run the gpu31 campaign-2 arm L2 (2026-09-23): the W4AFP8 checkpoint
 # graphistry/GLM-5.3-Flash-W4AFP8@99f1fa7, 8192-token prefill chunks with
 # --max-prefill-tokens 32768, HiCache with CUDA-owned host memory and a fixed 406 GiB
-# startup host-memory budget per replica, and no admission reserve. Both pin
+# startup host-memory budget per replica, and no admission reserve. r2 is a canary at
+# --prefill-decode-interval 2 (two decode steps between prefill chunks); r1 stays at 1 as
+# the live control. On stored long-tier traffic (gpu31, 2026-09-24) pdi 2 cut TPOT p50 to
+# 0.53-0.72x of pdi 1 at a paired TTFT cost of at most 2%, with 100% completion. Both pin
 # docker.io/nearaidev/sglang@sha256:fde25985aea3ebabf1eb581ae21d53be8540e32933eef942ee8b962a1bfbea20
 # (docker/sglang-glm53-hicache-w4afp8), published by workflow run 35903077821 from recipe
 # merge commit f8106f096e9c838b283a0f79a452d6c43e470641. Its HCC/PPCIe host-memory path
@@ -12,7 +15,8 @@
 # Do not hand-edit this file.
 # This is the DEDICATED LONG-CONTEXT TIER variant of prod/GLM-5.3-Flash-SGL-TP4.yaml.
 # Generated from the long-context file. Routing remains the dedicated long-context
-# contract below; both replicas run the same W4AFP8 + HiCache engine.
+# contract below; both replicas run the same W4AFP8 + HiCache engine, r2 at
+# --prefill-decode-interval 2 as a canary.
 #
 # *** LONG-CONTEXT TIER (dedicated host, both TP4/EP4 replicas) ***
 #   Deploy this file on exactly the host(s) chosen as the GLM-5.3 Flash long-context
@@ -53,7 +57,8 @@
 #       turn is projected to double C_long; cloud-api routes per request today.
 #     - Request-level tiering trades the tail for the median: p50 TTFT -24%,
 #       p95 TTFT 10.0 s -> 27.4 s on identical replicas. Judge it on the SLO you mean.
-#   Both replicas run identical engine flags; only --dist-init-addr differs. The
+#   The replicas' engine flags differ only in --dist-init-addr and r2's canary
+#   --prefill-decode-interval 2. The
 #   8192-token chunk is the W4AFP8 setting: FP8 at 8192 OOMed in the DSA indexer under
 #   concurrent 400K+ contexts, while W4AFP8's 2.4x larger device KV pool kept 3.7 GiB
 #   free through 8 concurrent 647K-756K-token cold prefills on gpu31 (16384 fell to
@@ -96,8 +101,9 @@ x-logging-conf: &logging-conf
 # Admission reserve is deliberately disabled on both replicas: reserve v10 admitted a
 # 292K-cached waiter beside an in-flight chunked prefill on gpu02 and exhausted the
 # long-context token pool, and the qualified arm (L2) ran without it. The image's
-# reserve patch is inert while those variables are unset; --prefill-decode-interval 1
-# remains part of the serving contract. The official CUDA 13 SGLang image is the
+# reserve patch is inert while those variables are unset; --prefill-decode-interval
+# (1 on r1, 2 on the r2 canary) is part of the serving contract. The official CUDA 13
+# SGLang image is the
 # pinned build base. The serving envelope is
 # intentionally conservative: BF16 KV, 0.80 static memory, 32 running requests, a
 # bounded 8-request queue, 8192-token prefill chunks with --max-prefill-tokens 32768,
@@ -213,8 +219,8 @@ x-sg-glm53-flash-common: &sg-glm53-flash-common
     # proxy's 3 s probe times out, the replica flaps unhealthy, and the conversation
     # affinity pin is skipped (full re-prefill on the other replica). nearai/infra#234.
     - SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION=0
-    # No admission reserve on the long tier (see the header); --prefill-decode-interval 1
-    # is retained independently of the inert reserve patch.
+    # No admission reserve on the long tier (see the header); --prefill-decode-interval
+    # is set per replica, independently of the inert reserve patch.
     - SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE=1
     # HiCache host tier: a fixed 406 GiB per replica across its four TP ranks (the
     # qualified L2 value). A percentage would resolve against MemAvailable at each start,
@@ -481,7 +487,7 @@ services:
         --disable-priority-preemption
         --chunked-prefill-size 8192
         --max-prefill-tokens 32768
-        --prefill-decode-interval 1
+        --prefill-decode-interval 2
         --cuda-graph-max-bs-decode 32
         --dsa-prefill-backend tilelang
         --dsa-decode-backend tilelang
@@ -521,7 +527,7 @@ services:
               device_ids: ["4","5","6","7"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-bf16-kv","deployment:glm53-flash-sgl-tp4","config_variant:fc91d24-long-context-w4afp8-c8192-hicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192","request_logging:disabled","engine_image:fde25985aea3","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:2"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-bf16-kv","deployment:glm53-flash-sgl-tp4","config_variant:fc91d24-long-context-w4afp8-c8192-hicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdi2-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192","request_logging:disabled","engine_image:fde25985aea3","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:2"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -533,7 +539,7 @@ services:
       nearai.otel.model_path: "graphistry/GLM-5.3-Flash-W4AFP8"
       nearai.otel.served_model: "z-ai/glm-5.3-flash"
       nearai.otel.deployment: "glm53-flash-sgl-tp4"
-      nearai.otel.config_variant: "fc91d24-long-context-w4afp8-c8192-hicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
+      nearai.otel.config_variant: "fc91d24-long-context-w4afp8-c8192-hicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdi2-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
       nearai.otel.thinking_budget_policy: "default8192-public-to-native"
       nearai.otel.request_logging: "disabled"
       nearai.otel.engine_image: "fde25985aea3"
@@ -959,7 +965,7 @@ configs:
                       ip: "${HOST_IP}"
                       port: "8000"
                       instance: "2"
-                      config_variant: "fc91d24-long-context-w4afp8-c8192-hicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
+                      config_variant: "fc91d24-long-context-w4afp8-c8192-hicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdi2-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
                       thinking_budget_policy: "default8192-public-to-native"
                       request_logging: "disabled"
                       engine_image: "fde25985aea3"
