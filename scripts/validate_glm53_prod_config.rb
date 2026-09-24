@@ -45,18 +45,16 @@ EXPECTED_SERVICES = [
   "dcgm-glm53",
   "otelcol-contrib",
 ].freeze
-REQUIRED_OPTIONS = {
+COMMON_REQUIRED_OPTIONS = {
   "--model-path" => "/root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/84c6a6aa9497188e15a635ba793b0f95a79b1033",
   "--revision" => "84c6a6aa9497188e15a635ba793b0f95a79b1033",
   "--served-model-name" => "z-ai/glm-5.3-flash",
   "--tp-size" => "4",
   "--ep-size" => "4",
   "--mem-fraction-static" => "0.80",
-  "--max-running-requests" => "32",
   "--max-queued-requests" => "8",
   "--chunked-prefill-size" => "4096",
   "--prefill-decode-interval" => "1",
-  "--cuda-graph-max-bs-decode" => "32",
   "--dsa-prefill-backend" => "tilelang",
   "--dsa-decode-backend" => "tilelang",
   "--kv-cache-dtype" => "bfloat16",
@@ -73,6 +71,15 @@ REQUIRED_OPTIONS = {
   "--limit-mm-data-per-request" => '{"image": 64}',
   "--log-requests-level" => "0",
 }.freeze
+BASE_REQUIRED_OPTIONS = COMMON_REQUIRED_OPTIONS.merge(
+  "--max-running-requests" => "40",
+  "--cuda-graph-max-bs-decode" => "40",
+).freeze
+# The long-context experiment intentionally retains its 32-request envelope.
+LONG_CONTEXT_REQUIRED_OPTIONS = BASE_REQUIRED_OPTIONS.merge(
+  "--max-running-requests" => "32",
+  "--cuda-graph-max-bs-decode" => "32",
+).freeze
 REQUIRED_SWITCHES = %w[
   --enable-priority-scheduling
   --disable-priority-preemption
@@ -208,11 +215,11 @@ rescue JSON::ParserError
   []
 end
 
-def validate_command(errors, name, command)
+def validate_command(errors, name, command, required_options)
   arguments = Shellwords.split(command)
   errors << "#{name} command must start with sglang serve" unless arguments.first(2) == %w[sglang serve]
 
-  REQUIRED_OPTIONS.each do |option, expected_value|
+  required_options.each do |option, expected_value|
     positions = arguments.each_index.select { |index| arguments[index] == option }
     if positions.length != 1
       errors << "#{name} command must contain #{option} exactly once"
@@ -264,7 +271,7 @@ end
 # set, per-replica serving contract (excluding image, which differs by file),
 # GPU device assignment, the perception-check image and the proxy contract.
 # Returns the replica services found, keyed by name.
-def validate_common(errors, label, services, required_env = REQUIRED_ENV)
+def validate_common(errors, label, services, required_env = REQUIRED_ENV, required_options = BASE_REQUIRED_OPTIONS)
   missing_services = EXPECTED_SERVICES - services.keys
   extra_services = services.keys - EXPECTED_SERVICES
   errors << "#{label} is missing services: #{missing_services.join(', ')}" unless missing_services.empty?
@@ -280,7 +287,7 @@ def validate_common(errors, label, services, required_env = REQUIRED_ENV)
 
     replica_services[name] = service
     errors << "#{label} #{name} must use the prebuilt signed image, not a host-local build" if service.key?("build")
-    validate_command(errors, "#{label} #{name}", command_text(service))
+    validate_command(errors, "#{label} #{name}", command_text(service), required_options)
 
     replica_env = environment_map(service)
     required_env.each do |key, expected_value|
@@ -879,7 +886,7 @@ if long_context_present
   long_context_compose = load_compose_file(errors, "long-context file", LONG_CONTEXT_FILE)
   if long_context_compose
     long_context_services = long_context_compose.fetch("services", {})
-    long_context_replicas = validate_common(errors, "long-context", long_context_services, {})
+    long_context_replicas = validate_common(errors, "long-context", long_context_services, {}, LONG_CONTEXT_REQUIRED_OPTIONS)
     validate_long_context(errors, long_context_compose, long_context_replicas)
     validate_model_cache(errors, "long-context", long_context_services)
   end

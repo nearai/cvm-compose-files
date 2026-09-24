@@ -32,8 +32,8 @@ x-logging-conf: &logging-conf
 # enabled below with SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE=4096,
 # SGLANG_ADMISSION_RESERVE_MAX_FRACTION=0.75 and --prefill-decode-interval 1. The
 # official CUDA 13 SGLang image is the pinned build base. The serving envelope is
-# intentionally conservative: BF16 KV, 0.80 static memory, 32 running requests, a
-# bounded 8-request queue, 4096-token prefill chunks, decode graphs capped at batch 32,
+# intentionally conservative: BF16 KV, 0.80 static memory, 40 running requests, a
+# bounded 8-request queue, 4096-token prefill chunks, decode graphs capped at batch 40,
 # TileLang DSA, DeepGEMM, and adaptive EAGLE 5/1/6. This retains the full
 # 1,048,576-token model context while avoiding the late K-pool workspace exhaustion
 # observed with larger prefill chunks.
@@ -87,13 +87,13 @@ x-sg-glm53-flash-common: &sg-glm53-flash-common
       --tp-size 4
       --ep-size 4
       --mem-fraction-static 0.80
-      --max-running-requests 32
+      --max-running-requests 40
       --max-queued-requests 8
       --enable-priority-scheduling
       --disable-priority-preemption
       --chunked-prefill-size 4096
       --prefill-decode-interval 1
-      --cuda-graph-max-bs-decode 32
+      --cuda-graph-max-bs-decode 40
       --dsa-prefill-backend tilelang
       --dsa-decode-backend tilelang
       --kv-cache-dtype bfloat16
@@ -396,13 +396,13 @@ services:
         --tp-size 4
         --ep-size 4
         --mem-fraction-static 0.80
-        --max-running-requests 32
+        --max-running-requests 40
         --max-queued-requests 8
         --enable-priority-scheduling
         --disable-priority-preemption
         --chunked-prefill-size 4096
         --prefill-decode-interval 1
-        --cuda-graph-max-bs-decode 32
+        --cuda-graph-max-bs-decode 40
         --dsa-prefill-backend tilelang
         --dsa-decode-backend tilelang
         --kv-cache-dtype bfloat16
