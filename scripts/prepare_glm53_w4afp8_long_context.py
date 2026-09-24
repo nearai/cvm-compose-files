@@ -178,6 +178,35 @@ ANCHOR_ENV_NEW: Final = (
     "  restart: unless-stopped\n"
 )
 
+TRACE_CONTROL_SERVICE: Final = """  # Operator-only control job. Explicit compose/up via compose-manager is required.
+  # It runs inside the CVM network; no engine management endpoint is published.
+  glm53-trace-control:
+    image: curlimages/curl@sha256:d94d07ba9e7d6de898b6d96c1a072f6f8266c687af78a74f380087a0addf5d17
+    container_name: glm53-trace-control
+    profiles: ["verification"]
+    runtime: runc
+    user: "65534:65534"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    restart: "no"
+    mem_limit: 64m
+    cpus: 0.25
+    environment:
+      - GLM53_TRACE_REPLICA=${GLM53_TRACE_REPLICA:-}
+      - GLM53_TRACE_LEVEL=${GLM53_TRACE_LEVEL:-}
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        case "$$GLM53_TRACE_REPLICA" in 1|2) ;; *) echo 'replica must be 1 or 2'; exit 2 ;; esac
+        case "$$GLM53_TRACE_LEVEL" in 0|3) ;; *) echo 'trace level must be 0 or 3'; exit 2 ;; esac
+        url="http://model-sg-glm53-w4afp8-tp4-r$$GLM53_TRACE_REPLICA:8000/set_trace_level?level=$$GLM53_TRACE_LEVEL"
+        curl --fail --silent --show-error --max-time 10 "$$url"
+        echo "trace_control_applied replica=$$GLM53_TRACE_REPLICA level=$$GLM53_TRACE_LEVEL"
+    logging: *logging-conf
+
+"""
+
 
 class GenerationError(ValueError):
     pass
@@ -273,6 +302,14 @@ def generate(source: str) -> str:
         raise GenerationError("replica 2 no longer carries the source HiCache override")
     r2 = r2[:override_start] + render_command(engine_arguments(source_arguments, 2), 4) + r2[override_end:]
     updated = updated[:r2_start] + r2 + updated[r2_end:]
+
+    updated = replace_exact(
+        updated,
+        "  # Explicit operator-only semantic check; never starts with a normal stack apply.\n",
+        TRACE_CONTROL_SERVICE + "  # Explicit operator-only semantic check; never starts with a normal stack apply.\n",
+        1,
+        "operator trace control service",
+    )
 
     for old, new, count, label in (
         ("model_path:zai-org/GLM-5.3-Flash", f"model_path:{CHECKPOINT}", 3, "log model_path"),

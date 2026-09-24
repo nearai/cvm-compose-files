@@ -674,6 +674,7 @@ def w4afp8_long_context_view(errors, file_label, compose, replica_names)
   view = Marshal.load(Marshal.dump(compose))
   view.delete("x-sg-glm53-flash-common")
   replica_names.each { |name| view.fetch("services", {}).delete(name) }
+  view.fetch("services", {}).delete("glm53-trace-control")
   otel = view.dig("configs", "otelcol_app_config")
   if otel && otel["content"]
     collector = load_embedded_yaml(errors, "#{file_label} otelcol_app_config", otel["content"])
@@ -693,11 +694,36 @@ end
 def validate_w4afp8_long_context(errors, compose, reference)
   label = "W4AFP8 long-context"
   services = compose.fetch("services", {})
-  expected_services = EXPECTED_SERVICES - REPLICAS.keys + W4AFP8_LONG_CONTEXT_REPLICAS.keys
+  expected_services = EXPECTED_SERVICES - REPLICAS.keys + W4AFP8_LONG_CONTEXT_REPLICAS.keys + ["glm53-trace-control"]
   missing = expected_services - services.keys
   extra = services.keys - expected_services
   errors << "#{label} is missing services: #{missing.join(', ')}" unless missing.empty?
   errors << "#{label} has unexpected services: #{extra.join(', ')}" unless extra.empty?
+
+  expected_control = {
+    "image" => "curlimages/curl@sha256:d94d07ba9e7d6de898b6d96c1a072f6f8266c687af78a74f380087a0addf5d17",
+    "container_name" => "glm53-trace-control",
+    "profiles" => ["verification"],
+    "runtime" => "runc",
+    "user" => "65534:65534",
+    "read_only" => true,
+    "cap_drop" => ["ALL"],
+    "security_opt" => ["no-new-privileges:true"],
+    "restart" => "no",
+    "mem_limit" => "64m",
+    "cpus" => 0.25,
+    "environment" => ["GLM53_TRACE_REPLICA=${GLM53_TRACE_REPLICA:-}", "GLM53_TRACE_LEVEL=${GLM53_TRACE_LEVEL:-}"],
+    "entrypoint" => ["/bin/sh", "-ec"],
+    "command" => [<<~'SH'],
+      case "$$GLM53_TRACE_REPLICA" in 1|2) ;; *) echo 'replica must be 1 or 2'; exit 2 ;; esac
+      case "$$GLM53_TRACE_LEVEL" in 0|3) ;; *) echo 'trace level must be 0 or 3'; exit 2 ;; esac
+      url="http://model-sg-glm53-w4afp8-tp4-r$$GLM53_TRACE_REPLICA:8000/set_trace_level?level=$$GLM53_TRACE_LEVEL"
+      curl --fail --silent --show-error --max-time 10 "$$url"
+      echo "trace_control_applied replica=$$GLM53_TRACE_REPLICA level=$$GLM53_TRACE_LEVEL"
+    SH
+    "logging" => services.dig("glm53-perception-check", "logging"),
+  }
+  errors << "#{label} glm53-trace-control must be the scoped, unprivileged one-shot control job" unless services["glm53-trace-control"] == expected_control
 
   reference_env = environment_map(reference.dig("services", "model-sg-glm53-fp8-tp4-r1") || {})
   expected_env = reference_env.merge(W4AFP8_LONG_CONTEXT_HICACHE_ENV)

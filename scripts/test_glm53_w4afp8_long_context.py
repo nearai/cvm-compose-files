@@ -74,6 +74,21 @@ class GeneratedFileTest(unittest.TestCase):
         self.assertEqual(target.count("- SGLANG_TRACE_LEVEL=0\n"), 1)
         self.assertIn("trace-async-armed", generator.VARIANT)
 
+    def test_control_job_is_operator_only_and_has_no_published_port(self) -> None:
+        target = TARGET.read_text()
+        control = generator.section(
+            target,
+            "  glm53-trace-control:\n",
+            "  # Explicit operator-only semantic check;",
+            "trace control job",
+        )[2]
+        self.assertIn('profiles: ["verification"]', control)
+        self.assertIn('case "$$GLM53_TRACE_REPLICA" in 1|2)', control)
+        self.assertIn('case "$$GLM53_TRACE_LEVEL" in 0|3)', control)
+        self.assertIn("/set_trace_level?level=$$GLM53_TRACE_LEVEL", control)
+        self.assertNotIn("    ports:", control)
+        self.assertNotIn("    volumes:", control)
+
 
 class ValidatorContractTest(unittest.TestCase):
     """Each mutation of the committed file must fail the production validator with its reason."""
@@ -154,6 +169,18 @@ class ValidatorContractTest(unittest.TestCase):
         for before, after, message in cases:
             with self.subTest(mutation=after.strip()[:60]):
                 self.assert_fails(self.replace_once(before, after), message)
+
+    def test_rejects_trace_control_expansion(self) -> None:
+        control = generator.section(
+            self.valid,
+            "  glm53-trace-control:\n",
+            "  # Explicit operator-only semantic check;",
+            "trace control job",
+        )[2]
+        self.assert_fails(
+            self.valid.replace(control, control.replace('profiles: ["verification"]', 'profiles: ["default"]')),
+            "glm53-trace-control must be the scoped, unprivileged one-shot control job",
+        )
 
     def test_rejects_routing_drift_from_the_long_context_file(self) -> None:
         outside = "must match the long-context file outside the two engines"
