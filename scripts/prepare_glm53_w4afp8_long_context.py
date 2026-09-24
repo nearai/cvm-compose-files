@@ -39,7 +39,7 @@ SOURCE_VARIANTS: Final = (
 )
 VARIANT: Final = (
     "fc91d24-long-context-w4afp8-c8192-hicache-cuda-host-pooled-v1-admission-reserve-disabled"
-    "-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
+    "-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192-trace-async-armed"
 )
 SOURCE_DIST_INIT: Final = "127.0.0.1:29510"
 DIST_INIT: Final = {1: "127.0.0.1:29510", 2: "127.0.0.1:29511"}
@@ -67,6 +67,8 @@ HEADER: Final = (
     "# merge commit f8106f096e9c838b283a0f79a452d6c43e470641. Its HCC/PPCIe host-memory path\n"
     "# has not run in a CVM before this file, so gpu02 is its first soak. Roll out with\n"
     "# docs/glm53-w4afp8-long-context-rollout.md, one replica at a time.\n"
+    "# Async OTLP request tracing starts at level 0; raise one replica briefly to level 3\n"
+    "# through /set_trace_level to capture production prefill and decode spans.\n"
     "# Do not hand-edit this file.\n"
 )
 
@@ -171,6 +173,8 @@ ANCHOR_ENV_NEW: Final = (
     "    - SGLANG_HICACHE_CUDA_HOST_MEMORY=${GLM53_HICACHE_CUDA_HOST_MEMORY:-1}\n"
     "    - SGLANG_HICACHE_POOLED_TRANSFERS=1\n"
     "    - SGLANG_HICACHE_STAGING_PAGES=64\n"
+    "    - SGLANG_TRACE_ASYNC=1\n"
+    "    - SGLANG_TRACE_LEVEL=0\n"
     "  restart: unless-stopped\n"
 )
 
@@ -224,6 +228,11 @@ def engine_arguments(source: list[str], replica: int) -> list[str]:
         else:
             arguments.append(argument)
     arguments.extend(HICACHE_FLAGS)
+    cache_report_index = arguments.index("--enable-cache-report")
+    arguments[cache_report_index + 1 : cache_report_index + 1] = (
+        "--enable-trace",
+        "--otlp-traces-endpoint otelcol-contrib:4317",
+    )
     return arguments
 
 

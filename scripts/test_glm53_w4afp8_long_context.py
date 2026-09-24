@@ -66,6 +66,14 @@ class GeneratedFileTest(unittest.TestCase):
                 with self.assertRaises(generator.GenerationError):
                     generator.generate(source.replace(before, "\n" if before.startswith("\n") else ""))
 
+    def test_both_replicas_start_with_async_tracing_at_level_zero(self) -> None:
+        target = TARGET.read_text()
+        self.assertEqual(target.count("--enable-trace\n"), 2)
+        self.assertEqual(target.count("--otlp-traces-endpoint otelcol-contrib:4317\n"), 2)
+        self.assertEqual(target.count("- SGLANG_TRACE_ASYNC=1\n"), 1)
+        self.assertEqual(target.count("- SGLANG_TRACE_LEVEL=0\n"), 1)
+        self.assertIn("trace-async-armed", generator.VARIANT)
+
 
 class ValidatorContractTest(unittest.TestCase):
     """Each mutation of the committed file must fail the production validator with its reason."""
@@ -119,6 +127,7 @@ class ValidatorContractTest(unittest.TestCase):
                 argv,
             ),
             ("\n      --max-queued-requests 8\n", "\n      --max-queued-requests 32\n", argv),
+            ("\n      --enable-trace\n", "\n      --enable-metrics\n", argv),
         )
         for before, after, message in cases:
             with self.subTest(mutation=after.strip()[:60]):
@@ -129,6 +138,7 @@ class ValidatorContractTest(unittest.TestCase):
             (f"\n  image: {generator.IMAGE}\n", "\n  image: docker.io/nearaidev/sglang@sha256:" + "0" * 64 + "\n", "image must be"),
             ("${GLM53_HICACHE_RAM_BUDGET:-406GiB}", "${GLM53_HICACHE_RAM_BUDGET:-80%}", "SGLANG_HICACHE_RAM_BUDGET=${GLM53_HICACHE_RAM_BUDGET:-80%}"),
             ("${GLM53_HICACHE_CUDA_HOST_MEMORY:-1}", "${GLM53_HICACHE_CUDA_HOST_MEMORY:-0}", "environment must be the long-context control environment"),
+            ("    - SGLANG_TRACE_LEVEL=0\n", "    - SGLANG_TRACE_LEVEL=3\n", "environment must be the long-context control environment"),
             (
                 "    - SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE=1\n",
                 "    - SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE=1\n    - SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE=4096\n",

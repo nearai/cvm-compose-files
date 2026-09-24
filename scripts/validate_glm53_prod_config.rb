@@ -630,7 +630,7 @@ end
 # discovery stub, registrar, proxy pooling) cannot drift.
 W4AFP8_LONG_CONTEXT_FILE = File.join(ROOT, "prod", "GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext.yaml")
 W4AFP8_LONG_CONTEXT_IMAGE = "docker.io/nearaidev/sglang@sha256:fde25985aea3ebabf1eb581ae21d53be8540e32933eef942ee8b962a1bfbea20"
-W4AFP8_LONG_CONTEXT_VARIANT = "fc91d24-long-context-w4afp8-c8192-hicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
+W4AFP8_LONG_CONTEXT_VARIANT = "fc91d24-long-context-w4afp8-c8192-hicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192-trace-async-armed"
 W4AFP8_CHECKPOINT = "graphistry/GLM-5.3-Flash-W4AFP8"
 W4AFP8_PRECISION = "int4-weights-fp8-activations-bf16-kv"
 W4AFP8_LONG_CONTEXT_REPLICAS = {
@@ -656,12 +656,16 @@ W4AFP8_LONG_CONTEXT_ARGV = Shellwords.split(<<~'ARGV').freeze
   --context-length 1048576
   --dist-init-addr DIST_INIT
   --watchdog-timeout 1800 --host 0.0.0.0 --port 8000
-  --enable-metrics --enable-cache-report --log-requests-level 0
+  --enable-metrics --enable-cache-report --enable-trace --otlp-traces-endpoint otelcol-contrib:4317 --log-requests-level 0
   --disable-fast-image-processor --limit-mm-data-per-request '{"image": 64}'
   --enable-hierarchical-cache --hicache-write-policy write_through
   --hicache-io-backend direct --hicache-mem-layout page_first_direct
 ARGV
-W4AFP8_LONG_CONTEXT_HICACHE_ENV = HICACHE_ENV.merge("SGLANG_HICACHE_RAM_BUDGET" => "${GLM53_HICACHE_RAM_BUDGET:-406GiB}").freeze
+W4AFP8_LONG_CONTEXT_HICACHE_ENV = HICACHE_ENV.merge(
+  "SGLANG_HICACHE_RAM_BUDGET" => "${GLM53_HICACHE_RAM_BUDGET:-406GiB}",
+  "SGLANG_TRACE_ASYNC" => "1",
+  "SGLANG_TRACE_LEVEL" => "0",
+).freeze
 
 # The long-context file and the W4AFP8 long-context file, reduced to what must be
 # identical: engines, the engine anchor and the replicas' scrape jobs removed, replica
