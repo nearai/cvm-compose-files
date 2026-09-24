@@ -623,19 +623,20 @@ def validate_long_context(errors, compose, replica_services)
 end
 
 # W4AFP8 + HiCache long-context file (gpu02): both replicas run gpu31 campaign-2 arm L2
-# with exactly the argv below (only --dist-init-addr differs), the hicache-w4afp8 image,
+# with exactly the argv below (only --dist-init-addr and --prefill-decode-interval differ:
+# r1 is the pdi 1 control, r2 the pdi 2 canary), the hicache-w4afp8 image,
 # the long-context control environment plus the per-replica 406 GiB HiCache environment, and
 # no admission reserve. Outside the two engines and their truthful telemetry it must
 # equal the long-context file, so the long-domain routing contract (nginx and the :8001
 # discovery stub, registrar, proxy pooling) cannot drift.
 W4AFP8_LONG_CONTEXT_FILE = File.join(ROOT, "prod", "GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext.yaml")
 W4AFP8_LONG_CONTEXT_IMAGE = "docker.io/nearaidev/sglang@sha256:fde25985aea3ebabf1eb581ae21d53be8540e32933eef942ee8b962a1bfbea20"
-W4AFP8_LONG_CONTEXT_VARIANT = "fc91d24-long-context-w4afp8-c8192-hicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
+W4AFP8_LONG_CONTEXT_VARIANT = "fc91d24-long-context-w4afp8-c8192-hicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdiPDI-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
 W4AFP8_CHECKPOINT = "graphistry/GLM-5.3-Flash-W4AFP8"
 W4AFP8_PRECISION = "int4-weights-fp8-activations-bf16-kv"
 W4AFP8_LONG_CONTEXT_REPLICAS = {
-  "model-sg-glm53-w4afp8-tp4-r1" => { "devices" => %w[0 1 2 3], "dist_init" => "127.0.0.1:29510", "instance" => "1" },
-  "model-sg-glm53-w4afp8-tp4-r2" => { "devices" => %w[4 5 6 7], "dist_init" => "127.0.0.1:29511", "instance" => "2" },
+  "model-sg-glm53-w4afp8-tp4-r1" => { "devices" => %w[0 1 2 3], "dist_init" => "127.0.0.1:29510", "instance" => "1", "pdi" => "1" },
+  "model-sg-glm53-w4afp8-tp4-r2" => { "devices" => %w[4 5 6 7], "dist_init" => "127.0.0.1:29511", "instance" => "2", "pdi" => "2" },
 }.freeze
 W4AFP8_LONG_CONTEXT_ARGV = Shellwords.split(<<~'ARGV').freeze
   sglang serve
@@ -645,7 +646,7 @@ W4AFP8_LONG_CONTEXT_ARGV = Shellwords.split(<<~'ARGV').freeze
   --mem-fraction-static 0.80
   --max-running-requests 32 --max-queued-requests 8
   --enable-priority-scheduling --disable-priority-preemption
-  --chunked-prefill-size 8192 --max-prefill-tokens 32768 --prefill-decode-interval 1
+  --chunked-prefill-size 8192 --max-prefill-tokens 32768 --prefill-decode-interval PDI
   --cuda-graph-max-bs-decode 32
   --dsa-prefill-backend tilelang --dsa-decode-backend tilelang
   --kv-cache-dtype bfloat16
@@ -707,7 +708,7 @@ def validate_w4afp8_long_context(errors, compose, reference)
     replicas[name] = service
     errors << "#{label} #{name} image must be #{W4AFP8_LONG_CONTEXT_IMAGE}" unless service["image"] == W4AFP8_LONG_CONTEXT_IMAGE
     errors << "#{label} #{name} must use the prebuilt signed image, not a host-local build" if service.key?("build")
-    expected_argv = W4AFP8_LONG_CONTEXT_ARGV.map { |token| token == "DIST_INIT" ? spec["dist_init"] : token }
+    expected_argv = W4AFP8_LONG_CONTEXT_ARGV.map { |token| { "DIST_INIT" => spec["dist_init"], "PDI" => spec["pdi"] }.fetch(token, token) }
     actual_argv = begin
       Shellwords.split(command_text(service))
     rescue ArgumentError => error
@@ -716,7 +717,7 @@ def validate_w4afp8_long_context(errors, compose, reference)
     end
     unless actual_argv == expected_argv
       drift = ((actual_argv - expected_argv) + (expected_argv - actual_argv)).uniq
-      errors << "#{label} #{name} argv must be campaign-2 arm L2 exactly (with --dist-init-addr #{spec['dist_init']}); differing tokens: #{drift.first(8).join(' ')}"
+      errors << "#{label} #{name} argv must be campaign-2 arm L2 exactly (with --dist-init-addr #{spec['dist_init']} --prefill-decode-interval #{spec['pdi']}); differing tokens: #{drift.first(8).join(' ')}"
     end
     env = environment_map(service)
     reserve = env.keys & ADMISSION_RESERVE_ENV
@@ -741,7 +742,7 @@ def validate_w4afp8_long_context(errors, compose, reference)
     ["model_path:#{W4AFP8_CHECKPOINT}", "precision:#{W4AFP8_PRECISION}", "engine_image:#{engine_image_label}", "instance:#{spec['instance']}"].each do |tag|
       errors << "#{label} #{name} log metadata must carry #{tag}" unless tags.include?(tag)
     end
-    check_variant(errors, label, service, name, collector, W4AFP8_LONG_CONTEXT_VARIANT)
+    check_variant(errors, label, service, name, collector, W4AFP8_LONG_CONTEXT_VARIANT.sub("pdiPDI", "pdi#{spec['pdi']}"))
     scrape = scrape_job(errors, label, collector, "sglang-#{name}")
     scrape_labels = scrape&.dig("static_configs", 0, "labels") || {}
     { "model_path" => W4AFP8_CHECKPOINT, "precision" => W4AFP8_PRECISION, "engine_image" => engine_image_label, "instance" => spec["instance"] }.each do |key, value|

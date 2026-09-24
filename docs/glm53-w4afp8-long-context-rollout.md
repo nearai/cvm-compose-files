@@ -86,7 +86,30 @@ Never let orphan removal perform the switch. On gpu02, the only orphan relative 
 - **Completions.** A real completion through the customer path and on `glm-5-3-flash-long.completions.near.ai`, then a cache-hit follow-up whose second turn reports cached prompt tokens.
 - **Host restore.** The replica's HiCache host-hit counters (engine `/metrics`, also reachable through the soak relay) increase for a follow-up whose prefix had left the device pool, with no `write_through_unbacked_eviction` drops.
 - **Registries.** Both model-proxy peers list gpu02 healthy under `glm-5-3-flash-long.completions.near.ai`, and not under the base domain (`LONG_TIER_ONLY=true`).
-- **Telemetry.** Both engines report precision `int4-weights-fp8-activations-bf16-kv`, the L2 `config_variant` and `engine_image` `fde25985aea3`.
+- **Telemetry.** Both engines report precision `int4-weights-fp8-activations-bf16-kv`, their L2 `config_variant` (`…-pool-clamp-pdi1-…` on r1, `…-pool-clamp-pdi2-…` on r2) and `engine_image` `fde25985aea3`.
+
+## Canary: `--prefill-decode-interval 2` on r2 (both replicas already on this file)
+
+r2 runs `--prefill-decode-interval 2` (two decode steps between prefill chunks). r1 stays at 1 and is the live control. Nothing else differs, so an operator can split the two replicas' TTFT and TPOT dashboards by `config_variant`.
+
+Lab evidence, gpu31 on stored long-tier traffic (2026-09-24):
+- **Paired runs, both island orders:** TPOT p50 0.53–0.72× of pdi 1, paired TTFT at most 1.02×, 100% completion.
+- **Combined qualification,** alongside the DSA indexer split and chunk 16384 (not in this file yet): no restarts, no OOMs, quality at the noise floor.
+
+Only r2's engine definition changed.
+1. `compose/down` this file with `["model-sg-glm53-w4afp8-tp4-r2"]`. r1 carries the tier while r2 is down, so pick the low-traffic window (gate 4).
+2. `compose/up` this file with the same `services`.
+3. Run the r2 startup and direct checks (steps 3–4 above).
+4. Do not recreate r1, the proxy or the registrar. A `dry_run` of step 2 must plan exactly `model-sg-glm53-w4afp8-tp4-r2`.
+
+**Readout.** Compare r2 against r1 over at least 24 h of normal traffic:
+- decode inter-token latency (p50/p90) under concurrent long prefills;
+- TTFT (p50/p95);
+- queue-full rejections, aborts, restarts, and SGLang free-memory warnings.
+
+pdi 2 should cut r2's inter-token latency during prefills without moving TTFT.
+
+**Next.** If it holds, a follow-up PR moves r1 to pdi 2. If r2 regresses, roll back: redeploy the previous tag of this file for r2 only, with the same `compose/down` then `compose/up` pair.
 
 ## Rollback
 
