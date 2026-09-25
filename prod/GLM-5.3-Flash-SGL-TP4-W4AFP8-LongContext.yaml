@@ -2,7 +2,11 @@
 # prod/GLM-5.3-Flash-SGL-TP4-LongContext.yaml by scripts/prepare_glm53_w4afp8_long_context.py.
 # Both replicas run the W4AFP8 checkpoint graphistry/GLM-5.3-Flash-W4AFP8@99f1fa7 with
 # --max-prefill-tokens 32768, HiCache with CUDA-owned host memory and a fixed 406 GiB
-# startup host-memory budget per replica, and no admission reserve.
+# startup host-memory budget per replica, and no admission reserve. Both also run
+# --enable-dynamic-batch-tokenizer: prompts are encoded on a background thread instead
+# of the tokenizer manager's event loop, so /health, /metrics and in-flight streams keep
+# flowing while a multi-MB prompt is tokenized (2026-09-25: both gpu02 replicas flapped
+# unhealthy under a burst of >=1.4 MB requests).
 #
 # THE REPLICAS ARE NOT IDENTICAL. r1 is the live control, r2 the canary:
 #   r1: gpu31 campaign-2 arm L2 (2026-09-23), chunk 8192, --prefill-decode-interval 1
@@ -120,8 +124,8 @@ x-logging-conf: &logging-conf
 # bounded 8-request queue, prefill chunks of 8192 (r1) / 16384 (r2) with
 # --max-prefill-tokens 32768,
 # decode graphs capped at batch 32, TileLang DSA, the CUTLASS W4A8 MoE path (hence no
-# --moe-runner-backend and no FP8 --revision), and adaptive EAGLE 5/1/6. This retains
-# the full 1,048,576-token model context.
+# --moe-runner-backend and no FP8 --revision), adaptive EAGLE 5/1/6, and the async
+# dynamic batch tokenizer. This retains the full 1,048,576-token model context.
 # Priority scheduling (--enable-priority-scheduling, --disable-priority-preemption)
 # relies on the pinned inference-proxy below (build 2834196, nearai/inference-proxy#241)
 # overwriting the `priority` field of every forwarded request, so no client-chosen
@@ -206,6 +210,7 @@ x-sg-glm53-flash-common: &sg-glm53-flash-common
       --hicache-write-policy write_through
       --hicache-io-backend direct
       --hicache-mem-layout page_first_direct
+      --enable-dynamic-batch-tokenizer
   volumes:
     - kernel_cache:/root/.cache
     - huggingface_cache:/root/.cache/huggingface
@@ -459,7 +464,7 @@ services:
               device_ids: ["0","1","2","3"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-bf16-kv","deployment:glm53-flash-sgl-tp4","config_variant:fc91d24-long-context-w4afp8-c8192-hicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192","request_logging:disabled","engine_image:fde25985aea3","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:1"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-bf16-kv","deployment:glm53-flash-sgl-tp4","config_variant:fc91d24-long-context-w4afp8-c8192-hicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdi1-dyntok-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192","request_logging:disabled","engine_image:fde25985aea3","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:1"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -471,7 +476,7 @@ services:
       nearai.otel.model_path: "graphistry/GLM-5.3-Flash-W4AFP8"
       nearai.otel.served_model: "z-ai/glm-5.3-flash"
       nearai.otel.deployment: "glm53-flash-sgl-tp4"
-      nearai.otel.config_variant: "fc91d24-long-context-w4afp8-c8192-hicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
+      nearai.otel.config_variant: "fc91d24-long-context-w4afp8-c8192-hicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdi1-dyntok-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
       nearai.otel.thinking_budget_policy: "default8192-public-to-native"
       nearai.otel.request_logging: "disabled"
       nearai.otel.engine_image: "fde25985aea3"
@@ -529,6 +534,7 @@ services:
         --hicache-write-policy write_through
         --hicache-io-backend direct
         --hicache-mem-layout page_first_direct
+        --enable-dynamic-batch-tokenizer
     environment:
       - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
       # Local snapshot path; nothing is fetched at engine start.
@@ -576,7 +582,7 @@ services:
               device_ids: ["4","5","6","7"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-bf16-kv","deployment:glm53-flash-sgl-tp4","config_variant:fc91d24-long-context-w4afp8-c16384-qsplit-hicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdi2-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192","request_logging:disabled","engine_image:8ff1a487b98a","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:2"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-bf16-kv","deployment:glm53-flash-sgl-tp4","config_variant:fc91d24-long-context-w4afp8-c16384-qsplit-hicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdi2-dyntok-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192","request_logging:disabled","engine_image:8ff1a487b98a","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:2"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -588,7 +594,7 @@ services:
       nearai.otel.model_path: "graphistry/GLM-5.3-Flash-W4AFP8"
       nearai.otel.served_model: "z-ai/glm-5.3-flash"
       nearai.otel.deployment: "glm53-flash-sgl-tp4"
-      nearai.otel.config_variant: "fc91d24-long-context-w4afp8-c16384-qsplit-hicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdi2-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
+      nearai.otel.config_variant: "fc91d24-long-context-w4afp8-c16384-qsplit-hicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdi2-dyntok-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
       nearai.otel.thinking_budget_policy: "default8192-public-to-native"
       nearai.otel.request_logging: "disabled"
       nearai.otel.engine_image: "8ff1a487b98a"
@@ -989,7 +995,7 @@ configs:
                       ip: "${HOST_IP}"
                       port: "8000"
                       instance: "1"
-                      config_variant: "fc91d24-long-context-w4afp8-c8192-hicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
+                      config_variant: "fc91d24-long-context-w4afp8-c8192-hicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdi1-dyntok-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
                       thinking_budget_policy: "default8192-public-to-native"
                       request_logging: "disabled"
                       engine_image: "fde25985aea3"
@@ -1014,7 +1020,7 @@ configs:
                       ip: "${HOST_IP}"
                       port: "8000"
                       instance: "2"
-                      config_variant: "fc91d24-long-context-w4afp8-c16384-qsplit-hicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdi2-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
+                      config_variant: "fc91d24-long-context-w4afp8-c16384-qsplit-hicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdi2-dyntok-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
                       thinking_budget_policy: "default8192-public-to-native"
                       request_logging: "disabled"
                       engine_image: "8ff1a487b98a"

@@ -49,13 +49,14 @@ SOURCE_VARIANTS: Final = (
     "fc91d24-long-context-admission-reserve-disabled-hicache-disabled-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192",
     "fc91d24-long-context-admission-reserve-disabled-hicache-cuda-host-pooled-v1-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192",
 )
-# r1 is the unchanged #294 control; r2 is the --prefill-decode-interval 2 canary. The
-# variants differ only in pdi1/pdi2 so dashboards split the replicas by config_variant.
+# r1 is the #294 control; r2 is the --prefill-decode-interval 2 canary. The variants differ
+# only in chunk/qsplit/pdi so dashboards split the replicas by config_variant; "dyntok"
+# marks the async dynamic batch tokenizer both replicas run (INGESTION_FLAGS).
 VARIANTS: Final = {
     1: "fc91d24-long-context-w4afp8-c8192-hicache-cuda-host-pooled-v1-admission-reserve-disabled"
-    "-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192",
+    "-pool-clamp-pdi1-dyntok-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192",
     2: "fc91d24-long-context-w4afp8-c16384-qsplit-hicache-cuda-host-pooled-v1-admission-reserve-disabled"
-    "-pool-clamp-pdi2-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192",
+    "-pool-clamp-pdi2-dyntok-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192",
 }
 PREFILL_DECODE_INTERVAL: Final = {1: 1, 2: 2}
 SOURCE_DIST_INIT: Final = "127.0.0.1:29510"
@@ -66,6 +67,17 @@ HICACHE_FLAGS: Final = (
     "--hicache-io-backend direct",
     "--hicache-mem-layout page_first_direct",
 )
+# Tokenization off the tokenizer manager's event loop. By default the HF tokenizer call runs
+# synchronously on the asyncio loop that also serves /health, /metrics and every in-flight
+# stream, so encoding one multi-MB prompt (this tier's normal traffic) stalls the whole HTTP
+# front. On 2026-09-25 a burst of >=1.4 MB requests made both gpu02 replicas flap unhealthy
+# every 10-60 s (3 s probe timeouts) and the CVM proxy failed 600+ requests with "error
+# sending request" while the GPUs were busy. --enable-dynamic-batch-tokenizer encodes single-
+# string prompts on one background thread (the fast tokenizer's batch encode releases the
+# GIL), so probes and streams keep flowing while a prompt is tokenized. Multimodal requests
+# tokenize inside the processor and are unaffected. Both replicas carry it so the pdi/chunk
+# canary stays paired.
+INGESTION_FLAGS: Final = ("--enable-dynamic-batch-tokenizer",)
 FP8_MODEL_PATH: Final = f"--model-path /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/{FP8_REVISION}"
 MODEL_PATH: Final = (
     "--model-path /root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/"
@@ -77,7 +89,11 @@ HEADER: Final = (
     "# prod/GLM-5.3-Flash-SGL-TP4-LongContext.yaml by scripts/prepare_glm53_w4afp8_long_context.py.\n"
     "# Both replicas run the W4AFP8 checkpoint graphistry/GLM-5.3-Flash-W4AFP8@99f1fa7 with\n"
     "# --max-prefill-tokens 32768, HiCache with CUDA-owned host memory and a fixed 406 GiB\n"
-    "# startup host-memory budget per replica, and no admission reserve.\n"
+    "# startup host-memory budget per replica, and no admission reserve. Both also run\n"
+    "# --enable-dynamic-batch-tokenizer: prompts are encoded on a background thread instead\n"
+    "# of the tokenizer manager's event loop, so /health, /metrics and in-flight streams keep\n"
+    "# flowing while a multi-MB prompt is tokenized (2026-09-25: both gpu02 replicas flapped\n"
+    "# unhealthy under a burst of >=1.4 MB requests).\n"
     "#\n"
     "# THE REPLICAS ARE NOT IDENTICAL. r1 is the live control, r2 the canary:\n"
     "#   r1: gpu31 campaign-2 arm L2 (2026-09-23), chunk 8192, --prefill-decode-interval 1\n"
@@ -181,8 +197,8 @@ HEADER_REPLACEMENTS: Final = (
         "# bounded 8-request queue, prefill chunks of 8192 (r1) / 16384 (r2) with\n"
         "# --max-prefill-tokens 32768,\n"
         "# decode graphs capped at batch 32, TileLang DSA, the CUTLASS W4A8 MoE path (hence no\n"
-        "# --moe-runner-backend and no FP8 --revision), and adaptive EAGLE 5/1/6. This retains\n"
-        "# the full 1,048,576-token model context.\n",
+        "# --moe-runner-backend and no FP8 --revision), adaptive EAGLE 5/1/6, and the async\n"
+        "# dynamic batch tokenizer. This retains the full 1,048,576-token model context.\n",
     ),
 )
 
@@ -245,8 +261,11 @@ def engine_arguments(source: list[str], replica: int) -> list[str]:
     missing = sorted(argument for argument in expected if source.count(argument) != 1)
     if missing:
         raise GenerationError(f"source engine command changed: {missing}")
-    if any(argument.startswith(("--hicache", "--enable-hierarchical-cache", "--max-prefill-tokens")) for argument in source):
-        raise GenerationError("source engine command already carries L2 options")
+    if any(
+        argument.startswith(("--hicache", "--enable-hierarchical-cache", "--max-prefill-tokens", "--enable-dynamic-batch-tokenizer"))
+        for argument in source
+    ):
+        raise GenerationError("source engine command already carries L2 or ingestion options")
     arguments: list[str] = []
     for argument in source:
         if argument in (f"--revision {FP8_REVISION}", "--moe-runner-backend deep_gemm"):
@@ -264,6 +283,7 @@ def engine_arguments(source: list[str], replica: int) -> list[str]:
         else:
             arguments.append(argument)
     arguments.extend(HICACHE_FLAGS)
+    arguments.extend(INGESTION_FLAGS)
     return arguments
 
 

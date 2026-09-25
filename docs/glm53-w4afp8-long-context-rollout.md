@@ -135,6 +135,24 @@ Deployment is the same r2-only pair as the pdi 2 canary: `compose/down` then `co
 
 **Untested before this canary:** the all-gather's cost under CC/PPCIe inside a CVM. gpu31 is bare metal with CC off, so the r2 canary is the first measurement of it. If TTFT regresses against r1 rather than improving, suspect the all-gather and roll back.
 
+## Async tokenizer: `--enable-dynamic-batch-tokenizer` on both replicas
+
+Both replicas run `--enable-dynamic-batch-tokenizer`. Prompts are encoded on one background thread instead of the tokenizer manager's asyncio loop, which also serves `/health`, `/metrics` and every in-flight stream. The flag changes when tokenization runs, not its result. Multimodal requests tokenize inside the image processor and are unaffected.
+
+Why (gpu02, 2026-09-25 13:45–14:10Z): a burst of roughly 100 requests of 1.4 MB or more per 5 minutes made both replicas miss the CVM proxy's 3 s probe every 10–60 s (about 35 unhealthy/recovered transitions in 25 minutes), the proxy failed over 600 chat requests with "Internal server error (error sending request)", and the OpenRouter gateway refused the long tier as `tier_unavailable`, while the GPUs stayed 40–90% busy. Offline, the tokenizer is linear (0.3 MB in at most 0.7 s) and its batch encode releases the GIL, so on a background thread a 2 MB prompt costs a few seconds of tokenizer time without stalling the loop.
+
+What it does not do: it adds no tokenizer throughput. Large prompts still queue behind one thread, so their own TTFT is unchanged. What changes is that probes, metrics and the other streams keep flowing, and overload surfaces as the bounded queue's 429s instead of proxy timeouts.
+
+Deployment: both engine definitions changed, so recreate one replica at a time, r2 first, then r1, each with `compose/down` then `compose/up` scoped to `["<replica>"]`, a `dry_run` that must plan exactly that one service, and the low-traffic window (gate 4). Allow about 15 minutes per replica; the other replica carries the tier meanwhile. Then recreate `otelcol-contrib` alone (`compose/up` scoped to `["otelcol-contrib"]`): both `config_variant` labels gained `dyntok`, and a replica-scoped deploy leaves the collector reporting the old variant (PR #303). Do not recreate the proxy or the registrar.
+
+Verification per replica:
+- the startup `server_args` line shows `'enable_dynamic_batch_tokenizer': True`;
+- `count by (container_name, config_variant) (sglang_num_running_reqs{host_machine="gpu02"})` shows the `dyntok` variant for that replica (the stale series lingers about 5 minutes);
+- over the first hour, proxy-glm53 `backend probe timed out` lines for that replica are rare during large-prompt bursts (before: dozens per 10 minutes) and `Backend marked unhealthy` does not appear;
+- TTFT p50/p95 and TPOT match the previous 24 h.
+
+Rollback: redeploy the previous tag of this file for the affected replica with the same `compose/down` then `compose/up` pair, then recreate `otelcol-contrib` again.
+
 ## Rollback
 
 Redeploy the previous tag and file, scoped to the same services, one replica at a time and under the same orphan rule. Keep at least one replica serving throughout.

@@ -125,6 +125,9 @@ class ValidatorContractTest(unittest.TestCase):
             # r1 is the c8192 control and r2 the c16384 canary; neither may take the other's chunk.
             ("\n      --chunked-prefill-size 8192\n", "\n      --chunked-prefill-size 16384\n", "model-sg-glm53-w4afp8-tp4-r1 argv must be"),
             ("\n        --chunked-prefill-size 16384\n", "\n        --chunked-prefill-size 8192\n", "model-sg-glm53-w4afp8-tp4-r2 argv must be"),
+            # Both replicas encode prompts off the event loop; dropping the flag on either is drift.
+            ("\n      --enable-dynamic-batch-tokenizer\n", "\n", "model-sg-glm53-w4afp8-tp4-r1 argv must be"),
+            ("\n        --enable-dynamic-batch-tokenizer\n", "\n", "model-sg-glm53-w4afp8-tp4-r2 argv must be"),
         )
         for before, after, message in cases:
             with self.subTest(mutation=after.strip()[:60]):

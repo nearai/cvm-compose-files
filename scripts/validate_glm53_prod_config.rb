@@ -634,7 +634,8 @@ W4AFP8_LONG_CONTEXT_IMAGE = "docker.io/nearaidev/sglang@sha256:fde25985aea3ebabf
 # r2 runs the v2 image (#300) with the opt-in DSA indexer query split; r1 stays on the #294
 # image as the live control, so a targeted `compose up` recreates r2 alone.
 W4AFP8_LONG_CONTEXT_R2_IMAGE = "docker.io/nearaidev/sglang@sha256:8ff1a487b98a52fe08b781715bebd7c8c445d4fe068f312f03f527d5a3c77e84"
-W4AFP8_LONG_CONTEXT_VARIANT = "fc91d24-long-context-w4afp8-cCHUNK-QSPLIThicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdiPDI-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
+# "dyntok" = --enable-dynamic-batch-tokenizer on both replicas (tokenization off the HTTP event loop).
+W4AFP8_LONG_CONTEXT_VARIANT = "fc91d24-long-context-w4afp8-cCHUNK-QSPLIThicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdiPDI-dyntok-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
 W4AFP8_QSPLIT_ENV = "SGLANG_DSA_INDEXER_QSPLIT"
 # c16384 is only memory-safe WITH the split: without it a concurrent long burst left 0.04-0.65 GB
 # free, the condition that preceded the gpu02 crash. Enforced below for every replica.
@@ -670,6 +671,7 @@ W4AFP8_LONG_CONTEXT_ARGV = Shellwords.split(<<~'ARGV').freeze
   --disable-fast-image-processor --limit-mm-data-per-request '{"image": 64}'
   --enable-hierarchical-cache --hicache-write-policy write_through
   --hicache-io-backend direct --hicache-mem-layout page_first_direct
+  --enable-dynamic-batch-tokenizer
 ARGV
 W4AFP8_LONG_CONTEXT_HICACHE_ENV = HICACHE_ENV.merge("SGLANG_HICACHE_RAM_BUDGET" => "${GLM53_HICACHE_RAM_BUDGET:-406GiB}").freeze
 
