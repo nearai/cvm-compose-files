@@ -128,7 +128,7 @@ def expected_public_ports(compose)
 end
 
 def validate_log_label(file, service_name, service, errors)
-  raw = service.dig("labels", "com.datadoghq.ad.logs")
+  raw = service.dig("labels", "nearai.otel.logs")
   return nil unless raw
 
   config = docker_log_config(raw)
@@ -136,30 +136,39 @@ def validate_log_label(file, service_name, service, errors)
   service_label = config["service"]
   tags = tag_map(config["tags"])
 
-  add_error(errors, file, "services.#{service_name}.labels.com.datadoghq.ad.logs", "missing source") if source.to_s.empty?
-  add_error(errors, file, "services.#{service_name}.labels.com.datadoghq.ad.logs", "missing service") if service_label.to_s.empty?
+  add_error(errors, file, "services.#{service_name}.labels.nearai.otel.logs", "missing source") if source.to_s.empty?
+  add_error(errors, file, "services.#{service_name}.labels.nearai.otel.logs", "missing service") if service_label.to_s.empty?
 
   REQUIRED_LOG_TAGS.each do |key|
-    add_error(errors, file, "services.#{service_name}.labels.com.datadoghq.ad.logs", "missing #{key}: tag") unless tags.key?(key)
+    add_error(errors, file, "services.#{service_name}.labels.nearai.otel.logs", "missing #{key}: tag") unless tags.key?(key)
   end
 
   unless service_name == "otelcol-contrib"
-    add_error(errors, file, "services.#{service_name}.labels.com.datadoghq.ad.logs", "missing model: tag") unless tags.key?("model")
+    add_error(errors, file, "services.#{service_name}.labels.nearai.otel.logs", "missing model: tag") unless tags.key?("model")
   end
 
   otel_service = service.dig("labels", "nearai.otel.service")
   otel_source = service.dig("labels", "nearai.otel.source")
   if otel_source && source != otel_source
-    add_error(errors, file, "services.#{service_name}.labels.com.datadoghq.ad.logs", "source #{source.inspect} does not match nearai.otel.source #{otel_source.inspect}")
+    add_error(errors, file, "services.#{service_name}.labels.nearai.otel.logs", "source #{source.inspect} does not match nearai.otel.source #{otel_source.inspect}")
   end
   if otel_service && service_label != otel_service
-    add_error(errors, file, "services.#{service_name}.labels.com.datadoghq.ad.logs", "service #{service_label.inspect} does not match nearai.otel.service #{otel_service.inspect}")
+    add_error(errors, file, "services.#{service_name}.labels.nearai.otel.logs", "service #{service_label.inspect} does not match nearai.otel.service #{otel_service.inspect}")
   end
 
   tags
 rescue StandardError => e
-  add_error(errors, file, "services.#{service_name}.labels.com.datadoghq.ad.logs", "invalid JSON: #{e.message}")
+  add_error(errors, file, "services.#{service_name}.labels.nearai.otel.logs", "invalid JSON: #{e.message}")
   nil
+end
+
+def validate_no_legacy_collector_log_key(file, compose, errors)
+  config = compose.dig("configs", "otelcol_app_config", "content").to_s
+  legacy_key = %w[com datadoghq ad logs].join(".")
+  legacy_reference = %(attributes["attrs"]["#{legacy_key}"])
+  return unless config.include?(legacy_reference)
+
+  add_error(errors, file, "configs.otelcol_app_config", "Datadog-namespaced log attribute is removed (decommission); use attributes[\"attrs\"][\"nearai.otel.logs\"] instead")
 end
 
 def validate_no_datadog_agent_checks(file, service_name, service, errors)
@@ -321,6 +330,7 @@ compose_files.sort.each do |path|
   file = path.sub("#{ROOT}/", "")
   compose = load_compose(path, errors)
   next unless compose
+  validate_no_legacy_collector_log_key(file, compose, errors)
   next if EXCLUDED_FILES.include?(File.basename(path))
 
   validate_collector_service(file, compose, errors)
@@ -336,7 +346,7 @@ compose_files.sort.each do |path|
     log_port = log_tags_by_service.dig(service_name, "port")
     next unless log_port && log_port != port
 
-    add_error(errors, file, "services.#{service_name}.labels.com.datadoghq.ad.logs", "port tag #{log_port.inspect} should match nginx public port #{port.inspect}")
+    add_error(errors, file, "services.#{service_name}.labels.nearai.otel.logs", "port tag #{log_port.inspect} should match nginx public port #{port.inspect}")
   end
 
   validate_scrape_contract(file, compose, log_tags_by_service, errors)

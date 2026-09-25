@@ -335,7 +335,7 @@ def validate_common(errors, label, services, required_env = REQUIRED_ENV)
 end
 
 # Asserts that `service_name`'s telemetry (the nearai.otel.config_variant
-# label, the config_variant: tag in its com.datadoghq.ad.logs metadata, and
+# label, the config_variant: tag in its nearai.otel.logs metadata, and
 # its Prometheus scrape job's config_variant label) all carry
 # `expected_variant`. A missing labels hash, a missing scrape job, or a
 # missing variant anywhere is an explicit error, never a silent skip.
@@ -344,7 +344,7 @@ def check_variant(errors, file_label, service, service_name, collector, expected
   if labels.is_a?(Hash)
     metric_variant = labels["nearai.otel.config_variant"]
     errors << "#{file_label} #{service_name} nearai.otel.config_variant must be #{expected_variant}, got #{metric_variant.inspect}" unless metric_variant == expected_variant
-    log_tag = labels["com.datadoghq.ad.logs"]
+    log_tag = labels["nearai.otel.logs"]
     expected_log_tag = "config_variant:#{expected_variant}"
     actual_log_tags = log_config_variant_tags(log_tag)
     unless actual_log_tags == [expected_log_tag]
@@ -507,7 +507,7 @@ def validate_w4afp8_base(errors, compose, canonical)
       errors << "#{label} #{name} #{key} must be #{value.inspect}, got #{labels[key].inspect}" unless labels[key] == value
     end
     tags = begin
-      Array(JSON.parse(labels["com.datadoghq.ad.logs"].to_s).first&.fetch("tags", []))
+      Array(JSON.parse(labels["nearai.otel.logs"].to_s).first&.fetch("tags", []))
     rescue JSON::ParserError
       []
     end
@@ -529,7 +529,7 @@ def validate_w4afp8_base(errors, compose, canonical)
 
   dcgm_labels = services.dig("dcgm-glm53", "labels") || {}
   errors << "#{label} dcgm-glm53 nearai.otel.model_path must be #{W4AFP8_BASE_CHECKPOINT}" unless dcgm_labels["nearai.otel.model_path"] == W4AFP8_BASE_CHECKPOINT
-  errors << "#{label} dcgm-glm53 log metadata must carry model_path:#{W4AFP8_BASE_CHECKPOINT}" unless dcgm_labels["com.datadoghq.ad.logs"].to_s.include?("model_path:#{W4AFP8_BASE_CHECKPOINT}")
+  errors << "#{label} dcgm-glm53 log metadata must carry model_path:#{W4AFP8_BASE_CHECKPOINT}" unless dcgm_labels["nearai.otel.logs"].to_s.include?("model_path:#{W4AFP8_BASE_CHECKPOINT}")
 
   proxy = services["proxy-glm53"] || {}
   proxy_env = environment_map(proxy)
@@ -755,7 +755,7 @@ def validate_w4afp8_long_context(errors, compose, reference)
       errors << "#{label} #{name} #{key} must be #{value.inspect}, got #{labels[key].inspect}" unless labels[key] == value
     end
     tags = begin
-      Array(JSON.parse(labels["com.datadoghq.ad.logs"].to_s).first&.fetch("tags", []))
+      Array(JSON.parse(labels["nearai.otel.logs"].to_s).first&.fetch("tags", []))
     rescue JSON::ParserError
       []
     end
@@ -787,7 +787,7 @@ def validate_w4afp8_long_context(errors, compose, reference)
 
   dcgm_labels = services.dig("dcgm-glm53", "labels") || {}
   errors << "#{label} dcgm-glm53 nearai.otel.model_path must be #{W4AFP8_CHECKPOINT}" unless dcgm_labels["nearai.otel.model_path"] == W4AFP8_CHECKPOINT
-  errors << "#{label} dcgm-glm53 log metadata must carry model_path:#{W4AFP8_CHECKPOINT}" unless dcgm_labels["com.datadoghq.ad.logs"].to_s.include?("model_path:#{W4AFP8_CHECKPOINT}")
+  errors << "#{label} dcgm-glm53 log metadata must carry model_path:#{W4AFP8_CHECKPOINT}" unless dcgm_labels["nearai.otel.logs"].to_s.include?("model_path:#{W4AFP8_CHECKPOINT}")
 
   proxy = services["proxy-glm53"] || {}
   proxy_env = environment_map(proxy)
