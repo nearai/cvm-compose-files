@@ -325,6 +325,13 @@ services:
       # (inference-proxy #227); new conversations still balance by least-connections.
       - VLLM_BACKEND_CONVERSATION_AFFINITY=1
       - VLLM_PROXY_MAX_REQUEST_SIZE=104857600
+      # Drop pooled upstream connections after 3 s idle. The engines' uvicorn closes an idle
+      # keep-alive connection after 5 s (SGLANG_TIMEOUT_KEEP_ALIVE default) while this proxy
+      # keeps one for 60 s by default, so a health probe could reuse a connection the engine
+      # had already closed: it fails at once and counts toward the 3 misses that mark a
+      # replica unhealthy. It applies to every pooled connection of this proxy (engines,
+      # cloud-api, compose-manager); each reconnects after 3 s idle.
+      - VLLM_PROXY_POOL_IDLE_TIMEOUT_SECS=3
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
       - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
