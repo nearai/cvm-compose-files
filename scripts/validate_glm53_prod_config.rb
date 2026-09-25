@@ -623,19 +623,32 @@ def validate_long_context(errors, compose, replica_services)
 end
 
 # W4AFP8 + HiCache long-context file (gpu02): both replicas run gpu31 campaign-2 arm L2
-# with exactly the argv below (only --dist-init-addr differs), the hicache-w4afp8 image,
+# with exactly the argv below (only --dist-init-addr and --prefill-decode-interval differ:
+# r1 is the pdi 1 control, r2 the pdi 2 canary), the hicache-w4afp8 image,
 # the long-context control environment plus the per-replica 406 GiB HiCache environment, and
 # no admission reserve. Outside the two engines and their truthful telemetry it must
 # equal the long-context file, so the long-domain routing contract (nginx and the :8001
 # discovery stub, registrar, proxy pooling) cannot drift.
 W4AFP8_LONG_CONTEXT_FILE = File.join(ROOT, "prod", "GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext.yaml")
-W4AFP8_LONG_CONTEXT_IMAGE = "docker.io/nearaidev/sglang@sha256:fde25985aea3ebabf1eb581ae21d53be8540e32933eef942ee8b962a1bfbea20"
-W4AFP8_LONG_CONTEXT_VARIANT = "fc91d24-long-context-w4afp8-c8192-hicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192-trace-async-armed"
+# Both replicas run the v2 split image; the v1 digest is retained only so the rollback
+# target in docs/glm53-w4afp8-long-context-rollout.md stays greppable from this file.
+W4AFP8_LONG_CONTEXT_V1_IMAGE = "docker.io/nearaidev/sglang@sha256:fde25985aea3ebabf1eb581ae21d53be8540e32933eef942ee8b962a1bfbea20"
+W4AFP8_LONG_CONTEXT_IMAGE = "docker.io/nearaidev/sglang@sha256:8ff1a487b98a52fe08b781715bebd7c8c445d4fe068f312f03f527d5a3c77e84"
+# r2 runs the v2 image (#300) with the opt-in DSA indexer query split; r1 stays on the #294
+# image as the live control, so a targeted `compose up` recreates r2 alone.
+W4AFP8_LONG_CONTEXT_R2_IMAGE = "docker.io/nearaidev/sglang@sha256:8ff1a487b98a52fe08b781715bebd7c8c445d4fe068f312f03f527d5a3c77e84"
+W4AFP8_LONG_CONTEXT_VARIANT = "fc91d24-long-context-w4afp8-cCHUNK-QSPLIThicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdiPDI-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192-trace-async-armed"
+W4AFP8_QSPLIT_ENV = "SGLANG_DSA_INDEXER_QSPLIT"
+# c16384 is only memory-safe WITH the split: without it a concurrent long burst left 0.04-0.65 GB
+# free, the condition that preceded the gpu02 crash. Enforced below for every replica.
+W4AFP8_SPLIT_REQUIRED_CHUNK = "16384"
 W4AFP8_CHECKPOINT = "graphistry/GLM-5.3-Flash-W4AFP8"
 W4AFP8_PRECISION = "int4-weights-fp8-activations-bf16-kv"
 W4AFP8_LONG_CONTEXT_REPLICAS = {
-  "model-sg-glm53-w4afp8-tp4-r1" => { "devices" => %w[0 1 2 3], "dist_init" => "127.0.0.1:29510", "instance" => "1" },
-  "model-sg-glm53-w4afp8-tp4-r2" => { "devices" => %w[4 5 6 7], "dist_init" => "127.0.0.1:29511", "instance" => "2" },
+  "model-sg-glm53-w4afp8-tp4-r1" => { "devices" => %w[0 1 2 3], "dist_init" => "127.0.0.1:29510", "instance" => "1", "pdi" => "1",
+                                     "image" => W4AFP8_LONG_CONTEXT_R2_IMAGE, "chunk" => "8192", "qsplit" => "1" },
+  "model-sg-glm53-w4afp8-tp4-r2" => { "devices" => %w[4 5 6 7], "dist_init" => "127.0.0.1:29511", "instance" => "2", "pdi" => "2",
+                                     "image" => W4AFP8_LONG_CONTEXT_R2_IMAGE, "chunk" => "8192", "qsplit" => "1" },
 }.freeze
 W4AFP8_LONG_CONTEXT_ARGV = Shellwords.split(<<~'ARGV').freeze
   sglang serve
@@ -645,7 +658,7 @@ W4AFP8_LONG_CONTEXT_ARGV = Shellwords.split(<<~'ARGV').freeze
   --mem-fraction-static 0.80
   --max-running-requests 32 --max-queued-requests 8
   --enable-priority-scheduling --disable-priority-preemption
-  --chunked-prefill-size 8192 --max-prefill-tokens 32768 --prefill-decode-interval 1
+  --chunked-prefill-size CHUNK --max-prefill-tokens 32768 --prefill-decode-interval PDI
   --cuda-graph-max-bs-decode 32
   --dsa-prefill-backend tilelang --dsa-decode-backend tilelang
   --kv-cache-dtype bfloat16
@@ -725,19 +738,20 @@ def validate_w4afp8_long_context(errors, compose, reference)
   }
   errors << "#{label} glm53-trace-control must be the scoped, unprivileged one-shot control job" unless services["glm53-trace-control"] == expected_control
 
+
   reference_env = environment_map(reference.dig("services", "model-sg-glm53-fp8-tp4-r1") || {})
   expected_env = reference_env.merge(W4AFP8_LONG_CONTEXT_HICACHE_ENV)
   collector = load_embedded_yaml(errors, "#{label} file otelcol_app_config", compose.dig("configs", "otelcol_app_config", "content"))
-  engine_image_label = W4AFP8_LONG_CONTEXT_IMAGE.split(":").last[0, 12]
   replicas = {}
   W4AFP8_LONG_CONTEXT_REPLICAS.each do |name, spec|
     service = services[name]
     next errors << "#{label} missing services.#{name}" if service.nil?
 
     replicas[name] = service
-    errors << "#{label} #{name} image must be #{W4AFP8_LONG_CONTEXT_IMAGE}" unless service["image"] == W4AFP8_LONG_CONTEXT_IMAGE
+    engine_image_label = spec["image"].split(":").last[0, 12]
+    errors << "#{label} #{name} image must be #{spec['image']}" unless service["image"] == spec["image"]
     errors << "#{label} #{name} must use the prebuilt signed image, not a host-local build" if service.key?("build")
-    expected_argv = W4AFP8_LONG_CONTEXT_ARGV.map { |token| token == "DIST_INIT" ? spec["dist_init"] : token }
+    expected_argv = W4AFP8_LONG_CONTEXT_ARGV.map { |token| { "DIST_INIT" => spec["dist_init"], "PDI" => spec["pdi"], "CHUNK" => spec["chunk"] }.fetch(token, token) }
     actual_argv = begin
       Shellwords.split(command_text(service))
     rescue ArgumentError => error
@@ -746,15 +760,26 @@ def validate_w4afp8_long_context(errors, compose, reference)
     end
     unless actual_argv == expected_argv
       drift = ((actual_argv - expected_argv) + (expected_argv - actual_argv)).uniq
-      errors << "#{label} #{name} argv must be campaign-2 arm L2 exactly (with --dist-init-addr #{spec['dist_init']}); differing tokens: #{drift.first(8).join(' ')}"
+      errors << "#{label} #{name} argv must be campaign-2 arm L2 exactly (with --dist-init-addr #{spec['dist_init']} --prefill-decode-interval #{spec['pdi']}); differing tokens: #{drift.first(8).join(' ')}"
     end
     env = environment_map(service)
+    replica_expected_env = spec["qsplit"] ? expected_env.merge(W4AFP8_QSPLIT_ENV => spec["qsplit"]) : expected_env
     reserve = env.keys & ADMISSION_RESERVE_ENV
     errors << "#{label} #{name} must not set admission-reserve environment: #{reserve.join(', ')}" unless reserve.empty?
     (env.keys & FORBIDDEN_ENV).each { |key| errors << "#{label} #{name} must not set #{key}" }
-    unless env == expected_env
-      diff = (env.to_a - expected_env.to_a) + (expected_env.to_a - env.to_a)
+    unless env == replica_expected_env
+      diff = (env.to_a - replica_expected_env.to_a) + (replica_expected_env.to_a - env.to_a)
       errors << "#{label} #{name} environment must be the long-context control environment plus #{W4AFP8_LONG_CONTEXT_HICACHE_ENV.map { |key, value| "#{key}=#{value}" }.join(' ')}; differing: #{diff.map { |key, value| "#{key}=#{value}" }.uniq.join(' ')}"
+    end
+    # Hard pairing: a 16384 chunk without the indexer split is the pre-crash memory profile.
+    # Assert it against what the file actually says, not against the expected spec, so the gate
+    # still fires if someone edits the compose by hand or changes the spec above.
+    actual_chunk = actual_argv.each_cons(2).find { |flag, _| flag == "--chunked-prefill-size" }&.last
+    if actual_chunk == W4AFP8_SPLIT_REQUIRED_CHUNK && env[W4AFP8_QSPLIT_ENV] != "1"
+      errors << "#{label} #{name} sets --chunked-prefill-size #{W4AFP8_SPLIT_REQUIRED_CHUNK} without #{W4AFP8_QSPLIT_ENV}=1; that pairing is required (without the split a concurrent long burst left 0.04-0.65 GB free, the condition that preceded the gpu02 crash)"
+    end
+    if env[W4AFP8_QSPLIT_ENV] == "1" && service["image"] != W4AFP8_LONG_CONTEXT_R2_IMAGE
+      errors << "#{label} #{name} sets #{W4AFP8_QSPLIT_ENV}=1 but does not run #{W4AFP8_LONG_CONTEXT_R2_IMAGE}; only that image carries the split patch"
     end
     device_ids = Array(service.dig("deploy", "resources", "reservations", "devices", 0, "device_ids")).map(&:to_s)
     errors << "#{label} #{name} must use GPU device_ids #{spec['devices'].join(',')}" unless device_ids == spec["devices"]
@@ -771,7 +796,11 @@ def validate_w4afp8_long_context(errors, compose, reference)
     ["model_path:#{W4AFP8_CHECKPOINT}", "precision:#{W4AFP8_PRECISION}", "engine_image:#{engine_image_label}", "instance:#{spec['instance']}"].each do |tag|
       errors << "#{label} #{name} log metadata must carry #{tag}" unless tags.include?(tag)
     end
-    check_variant(errors, label, service, name, collector, W4AFP8_LONG_CONTEXT_VARIANT)
+    expected_variant = W4AFP8_LONG_CONTEXT_VARIANT
+                       .sub("cCHUNK", "c#{spec['chunk']}")
+                       .sub("QSPLIT", spec["qsplit"] ? "qsplit-" : "")
+                       .sub("pdiPDI", "pdi#{spec['pdi']}")
+    check_variant(errors, label, service, name, collector, expected_variant)
     scrape = scrape_job(errors, label, collector, "sglang-#{name}")
     scrape_labels = scrape&.dig("static_configs", 0, "labels") || {}
     { "model_path" => W4AFP8_CHECKPOINT, "precision" => W4AFP8_PRECISION, "engine_image" => engine_image_label, "instance" => spec["instance"] }.each do |key, value|
@@ -780,8 +809,14 @@ def validate_w4afp8_long_context(errors, compose, reference)
   end
 
   if replicas.length == 2
-    contracts = replicas.values.map { |service| runtime_contract(service).reject { |key, _value| key == "command" } }
-    errors << "#{label} replicas must share one runtime configuration outside --dist-init-addr" unless contracts.uniq.length == 1
+    # The canary intentionally diverges on image and environment (r2 runs the v2 split image with
+    # SGLANG_DSA_INDEXER_QSPLIT=1; r1 is the untouched #294 control), and on command via --dist-init-addr,
+    # --prefill-decode-interval and --chunked-prefill-size. Those four are each asserted per replica
+    # above against an explicit expectation, so they are excluded here rather than left unchecked.
+    # Everything else must still be identical between the replicas.
+    canary_divergent = %w[command image environment]
+    contracts = replicas.values.map { |service| runtime_contract(service).reject { |key, _value| canary_divergent.include?(key) } }
+    errors << "#{label} replicas must share one runtime configuration outside image, environment and command (each asserted per replica)" unless contracts.uniq.length == 1
   end
 
   dcgm_labels = services.dig("dcgm-glm53", "labels") || {}

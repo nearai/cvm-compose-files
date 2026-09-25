@@ -10,18 +10,40 @@ CUDA error 801.
 ## What it layers
 
 Base `sha256:3eccc307…` (HiCache + admission reserve v10) plus two correctness patches, both
-byte-identical copies of the reviewed originals:
+byte-identical copies of the reviewed originals, and one opt-in performance patch:
 
 | patch | origin | scope |
 | --- | --- | --- |
 | `chunked-prefill-pool-clamp.diff` | `docker/sglang-glm53-pool-clamp` | `PrefillAdder.add_chunked_req` only |
 | `modules-to-not-convert.diff` | `docker/sglang-glm53-w4afp8` | `W4AFp8Config.from_config` only |
+| `dsa-indexer-qsplit.diff` | new here (opt-in, `SGLANG_DSA_INDEXER_QSPLIT=1`) | `IndexerKPool._get_topk_ragged_kpool_plan` only |
+
+## DSA indexer query split (opt-in)
+
+GLM-5.3 Flash's DSA indexer is `ReplicatedLinear`, so every attention-TP rank computes
+`fp8_mqa_logits` and the K-pool top-k for **all** prefill query rows. At long context that is the
+only prefill cost that grows with context (about 78 ms of a 4096-token chunk at 500K on H200 TP4).
+With `SGLANG_DSA_INDEXER_QSPLIT=1` each rank scores a quarter of the rows against the same gathered
+keys and the int32 top-k rows are all-gathered (about 32 MB per layer per 8K chunk). The logits
+scratch per rank shrinks by the TP size too, which is what lets 16384-token chunks fit. It is only
+used for prefill batches of at least `SGLANG_DSA_INDEXER_QSPLIT_MIN_ROWS` rows (default 1024).
+
+Evidence (gpu31/gpu32, 2026-09-24, lab form of this patch; every A/B in both island orders):
+
+- Stored long-tier traffic, paired TTFT split ÷ base: 0.83 / 0.84 (burst of 8 × ~700K),
+  0.83 / 0.85 (long-a2), 0.81 (burst at chunk 16384). 100% completion on every arm.
+- Burst at chunk 16384 (the gpu02 memory cliff): minimum free device memory 9.5 GB with the split,
+  0.65 GB without.
+- Correctness: logits bit-identical; top-k sets differ only on exact ties that the unsplit kernel also
+  flips run to run. GSM8K 97.57% vs 97.57%; passkey retrieval 12/12 vs 12/12 (58K–449K tokens);
+  teacher-forced top-1 agreement on 116K / 359K real text 97.75% / 96.73% vs a base-vs-base noise
+  floor of 97.41% / 96.97%.
 
 ## Why the composition is safe
 
-The HiCache patches touch `mem_cache/*`, `disaggregation/*` and `schedule_batch.py`. Neither added
-patch touches any of those files, so the two patch sets are disjoint and `source-manifest.json` is
-reused unchanged from `docker/sglang-glm53-w4afp8`.
+The HiCache patches touch `mem_cache/*`, `disaggregation/*` and `schedule_batch.py`. None of the
+added patches touches any of those files, so the patch sets are disjoint. `source-manifest.json`
+is the one from `docker/sglang-glm53-w4afp8` plus the `dsa_indexer_kpool.py` entry.
 
 That disjointness was verified against the real base image, not assumed — all three patch targets
 hash identically in `3eccc307…` and in `e9d29a1c…`:

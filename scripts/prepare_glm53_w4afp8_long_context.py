@@ -28,8 +28,33 @@ CHECKPOINT_REVISION: Final = "99f1fa70408c52b007d4fd69e02e5a522422e755"
 FP8_REVISION: Final = "84c6a6aa9497188e15a635ba793b0f95a79b1033"
 SOURCE_IMAGE: Final = "docker.io/nearaidev/sglang@sha256:e9d29a1cb1cd65284392c4d62d5f2a36669628057e15c60fe93ea40cfe4fc7e7"
 SOURCE_HICACHE_IMAGE: Final = "docker.io/nearaidev/sglang@sha256:3eccc30709f5719c81084d1264f03ca5354b3059ec4cff62f0c5ff88c309680c"
-IMAGE: Final = "docker.io/nearaidev/sglang@sha256:fde25985aea3ebabf1eb581ae21d53be8540e32933eef942ee8b962a1bfbea20"
-ENGINE_IMAGE_LABEL: Final = "fde25985aea3"
+# Both replicas run glm53-hicache-w4afp8-v2, which carries the opt-in DSA indexer split (#300,
+# recipe commit 556482c). r1 previously ran v1 (fde25985aea3) and crashed without the split on
+# 2026-09-25; the split is inert unless SGLANG_DSA_INDEXER_QSPLIT=1, which the anchor now sets.
+IMAGE: Final = "docker.io/nearaidev/sglang@sha256:8ff1a487b98a52fe08b781715bebd7c8c445d4fe068f312f03f527d5a3c77e84"
+ENGINE_IMAGE_LABEL: Final = "8ff1a487b98a"
+R2_IMAGE: Final = "docker.io/nearaidev/sglang@sha256:8ff1a487b98a52fe08b781715bebd7c8c445d4fe068f312f03f527d5a3c77e84"
+R2_ENGINE_IMAGE_LABEL: Final = "8ff1a487b98a"
+REPLICA_IMAGE: Final = {1: IMAGE, 2: R2_IMAGE}
+REPLICA_IMAGE_LABEL: Final = {1: ENGINE_IMAGE_LABEL, 2: R2_ENGINE_IMAGE_LABEL}
+# BOTH replicas run 8192. The 2026-09-25 canary ran the split at 16384 and inverted the lab
+# result at the tail: over a 4 h steady-state window TTFT p95 was 76.9 s against r1's 47.3 s
+# (1.62x), while the decode win did reproduce (ITL p90 0.87x, p50 0.97x). It was not explained by
+# traffic volume (681 vs 688 req/h), cache warmth (79.7% vs 81.6% hit) or queueing (r2's average
+# queue depth was LOWER, 1.23 vs 1.56). r2 did draw ~23% more uncached prefill tokens per request,
+# which it absorbed for +3% median TTFT but +62% at p95 -- worse only at the tail, i.e. only on the
+# largest prefills.
+#
+# Two candidates bite exactly there, and the canary changed both at once:
+#   a) the 16384 chunk, which doubles how long one prefill chunk occupies the scheduler;
+#   b) the indexer split's all-gather, which trades per-rank compute for a collective. gpu31 is
+#      bare metal with CC off, so its all-gather is cheap; under CC/PPCIe memory encryption a
+#      collective costs more and the trade can invert. This was flagged untested in #300.
+#
+# 8192 is the chunk with a stable history on this tier, so both replicas hold there while the
+# split provides the crash headroom. The validator gate is one-directional -- c16384 REQUIRES the
+# split, the split does not require c16384 -- so split-at-8192 is permitted by design.
+CHUNKED_PREFILL_SIZE: Final = {1: 8192, 2: 8192}
 SOURCE_SERVICE_PREFIX: Final = "model-sg-glm53-fp8-tp4-r"
 SERVICE_PREFIX: Final = "model-sg-glm53-w4afp8-tp4-r"
 PRECISION: Final = "int4-weights-fp8-activations-bf16-kv"
@@ -37,10 +62,15 @@ SOURCE_VARIANTS: Final = (
     "fc91d24-long-context-admission-reserve-disabled-hicache-disabled-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192",
     "fc91d24-long-context-admission-reserve-disabled-hicache-cuda-host-pooled-v1-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192",
 )
-VARIANT: Final = (
-    "fc91d24-long-context-w4afp8-c8192-hicache-cuda-host-pooled-v1-admission-reserve-disabled"
-    "-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192-trace-async-armed"
-)
+# Both replicas now carry the split at chunk 8192; the variants differ only in pdi1/pdi2, which
+# is the one remaining per-replica difference and how dashboards separate them.
+VARIANTS: Final = {
+    1: "fc91d24-long-context-w4afp8-c8192-qsplit-hicache-cuda-host-pooled-v1-admission-reserve-disabled"
+    "-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192-trace-async-armed",
+    2: "fc91d24-long-context-w4afp8-c8192-qsplit-hicache-cuda-host-pooled-v1-admission-reserve-disabled"
+    "-pool-clamp-pdi2-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192-trace-async-armed",
+}
+PREFILL_DECODE_INTERVAL: Final = {1: 1, 2: 2}
 SOURCE_DIST_INIT: Final = "127.0.0.1:29510"
 DIST_INIT: Final = {1: "127.0.0.1:29510", 2: "127.0.0.1:29511"}
 HICACHE_FLAGS: Final = (
@@ -58,15 +88,38 @@ MODEL_PATH: Final = (
 HEADER: Final = (
     "# GLM-5.3 Flash dedicated long-context tier (gpu02) on W4AFP8 + HiCache, generated from\n"
     "# prod/GLM-5.3-Flash-SGL-TP4-LongContext.yaml by scripts/prepare_glm53_w4afp8_long_context.py.\n"
-    "# Both replicas run the gpu31 campaign-2 arm L2 (2026-09-23): the W4AFP8 checkpoint\n"
-    "# graphistry/GLM-5.3-Flash-W4AFP8@99f1fa7, 8192-token prefill chunks with\n"
+    "# Both replicas run the W4AFP8 checkpoint graphistry/GLM-5.3-Flash-W4AFP8@99f1fa7 with\n"
     "# --max-prefill-tokens 32768, HiCache with CUDA-owned host memory and a fixed 406 GiB\n"
-    "# startup host-memory budget per replica, and no admission reserve. Both pin\n"
-    f"# {IMAGE}\n"
-    "# (docker/sglang-glm53-hicache-w4afp8), published by workflow run 35903077821 from recipe\n"
-    "# merge commit f8106f096e9c838b283a0f79a452d6c43e470641. Its HCC/PPCIe host-memory path\n"
-    "# has not run in a CVM before this file, so gpu02 is its first soak. Roll out with\n"
-    "# docs/glm53-w4afp8-long-context-rollout.md, one replica at a time.\n"
+    "# startup host-memory budget per replica, and no admission reserve.\n"
+    "#\n"
+    "# BOTH replicas run chunk 8192 with SGLANG_DSA_INDEXER_QSPLIT=1 on\n"
+    f"#   {IMAGE}\n"
+    "# (workflow run 36073196105, recipe merge commit 556482c78cd3, cvm-compose-files#300).\n"
+    "# They differ only in --prefill-decode-interval: 1 on r1, 2 on r2.\n"
+    "#\n"
+    "# WHY THE SPLIT IS ON: r1 crashed on 2026-09-25 without it. deep_gemm.fp8_mqa_logits\n"
+    "# (dsa_indexer_kpool.py:919) asked for a single fp32 buffer of new_tokens x total_context\n"
+    "# -- 11.96 GiB at ~392K context with an 8192 chunk -- against 11.88 GiB free. An ordinary\n"
+    "# request for this tier. The split has each TP rank score 1/TP of the rows, taking that\n"
+    "# allocation to roughly 3 GiB.\n"
+    "#\n"
+    "# THE SPLIT IS A MITIGATION, NOT THE FIX. It divides the buffer by TP; it does not bound\n"
+    "# it. The same crash returns at ~4x the context, or at TP1. The fix is to call\n"
+    "# _should_chunk_mqa_logits -- defined but never called, at dsa_indexer_kpool.py:862 --\n"
+    "# and chunk the logits against free memory, as dsa_indexer.py already does for the\n"
+    "# non-kpool path at :1165. That bounds the buffer at any context, chunk size and TP.\n"
+    "#\n"
+    "# WHY 8192 AND NOT 16384: the 2026-09-25 canary ran the split at chunk 16384 and regressed\n"
+    "# the tail -- TTFT p95 76.9 s against r1's 47.3 s (1.62x) over a 4 h steady-state window --\n"
+    "# though the decode win did reproduce (ITL p90 0.87x). Traffic volume, cache warmth and\n"
+    "# queue depth did not explain it. gpu02 was rolled back. 8192 is the chunk that has run\n"
+    "# stably on this tier; 16384 must never be set without the split in any case, because\n"
+    "# without it a concurrent long burst left 0.04-0.65 GB free per GPU.\n"
+    "# validate_glm53_prod_config.rb enforces that pairing.\n"
+    "#\n"
+    "# Note this leaves no unsplit control on the tier. The split's cost under CC/PPCIe is\n"
+    "# therefore measured against the pre-change history, not against a live sibling. Roll out\n"
+    "# with docs/glm53-w4afp8-long-context-rollout.md, one replica at a time, and watch p95.\n"
     "# Async OTLP request tracing starts at level 0; raise one replica briefly to level 3\n"
     "# through /set_trace_level to capture production prefill and decode spans.\n"
     "# Do not hand-edit this file.\n"
@@ -78,7 +131,8 @@ HEADER_REPLACEMENTS: Final = (
         "# long-context contract below, while the engines intentionally form an r1 control / r2\n"
         "# HiCache experiment and therefore are not byte-identical to the canonical file.\n",
         "# Generated from the long-context file. Routing remains the dedicated long-context\n"
-        "# contract below; both replicas run the same W4AFP8 + HiCache engine.\n",
+        "# contract below; both replicas run a W4AFP8 + HiCache engine, r2 as an isolation arm\n"
+        "# at --prefill-decode-interval 2 with the DSA indexer split and chunk 8192.\n",
     ),
     (
         "#   tier; every other host keeps the canonical file. The inference-proxy and routing\n"
@@ -93,12 +147,15 @@ HEADER_REPLACEMENTS: Final = (
         "#   DSA indexer under concurrent 400K+ contexts (exactly this tier's load), chunk 2048\n"
         "#   halves prefill speed, and no other per-replica flag moved the tail. Conversation\n"
         "#   affinity stays on because the prefix cache is worth ~3x in request capacity.\n",
-        "#   Both replicas run identical engine flags; only --dist-init-addr differs. The\n"
-        "#   8192-token chunk is the W4AFP8 setting: FP8 at 8192 OOMed in the DSA indexer under\n"
-        "#   concurrent 400K+ contexts, while W4AFP8's 2.4x larger device KV pool kept 3.7 GiB\n"
-        "#   free through 8 concurrent 647K-756K-token cold prefills on gpu31 (16384 fell to\n"
-        "#   0.04 GiB and is rejected). Conversation affinity stays on because the prefix cache\n"
-        "#   is worth ~3x in request capacity.\n",
+        "#   The replicas' engine flags differ in --dist-init-addr, --prefill-decode-interval\n"
+        "#   (1 on r1, 2 on r2); both now run --chunked-prefill-size 8192. r2 additionally sets\n"
+        "#   SGLANG_DSA_INDEXER_QSPLIT=1 and runs a different image. The 8192 chunk is the\n"
+        "#   W4AFP8 setting: FP8 at 8192 OOMed in the DSA indexer under concurrent 400K+\n"
+        "#   contexts, while W4AFP8's 2.4x larger device KV pool kept 3.7 GiB free through 8\n"
+        "#   concurrent 647K-756K-token cold prefills on gpu31. 16384 was rejected then because\n"
+        "#   it fell to 0.04 GiB free; the indexer split shrinks that scratch by TP and restores\n"
+        "#   9.3-9.5 GB, which is what makes r2's 16384 admissible. Conversation affinity stays\n"
+        "#   on because the prefix cache is worth ~3x in request capacity.\n",
     ),
     (
         "#   Experiment rollback: redeploy the prior long-context tag, or remove r2's HiCache\n"
@@ -116,8 +173,9 @@ HEADER_REPLACEMENTS: Final = (
         "# cache control; r2 pins the published HCC-safe HiCache derivative and uses an 80%\n"
         "# startup host-memory budget across all four TP ranks by default. The deployment may\n"
         "# override that percentage with GLM53_HICACHE_RAM_BUDGET.\n",
-        "# DSA import-cycle fixes. Both replicas pin the published\n"
-        "# docker/sglang-glm53-hicache-w4afp8 derivative: the HCC-safe HiCache image (CUDA-owned\n"
+        "# DSA import-cycle fixes. Both replicas pin a published\n"
+        "# docker/sglang-glm53-hicache-w4afp8 derivative (r1 v1, r2 v2 with the opt-in DSA\n"
+        "# indexer split): the HCC-safe HiCache image (CUDA-owned\n"
         "# host memory) plus the W4AFP8 loader fix and the unconditional chunked-prefill pool\n"
         "# clamp. Two replicas share the CVM's RAM, so each replica's startup host-memory\n"
         "# budget defaults to a fixed 406 GiB across its four TP ranks (the qualified L2 value;\n"
@@ -135,8 +193,9 @@ HEADER_REPLACEMENTS: Final = (
         "# Admission reserve is deliberately disabled on both replicas: reserve v10 admitted a\n"
         "# 292K-cached waiter beside an in-flight chunked prefill on gpu02 and exhausted the\n"
         "# long-context token pool, and the qualified arm (L2) ran without it. The image's\n"
-        "# reserve patch is inert while those variables are unset; --prefill-decode-interval 1\n"
-        "# remains part of the serving contract. The official CUDA 13 SGLang image is the\n"
+        "# reserve patch is inert while those variables are unset; --prefill-decode-interval\n"
+        "# (1 on r1, 2 on the r2 canary) is part of the serving contract. The official CUDA 13\n"
+        "# SGLang image is the\n"
         "# pinned build base. The serving envelope is\n",
     ),
     (
@@ -160,8 +219,8 @@ ANCHOR_ENV_OLD: Final = (
     "  restart: unless-stopped\n"
 )
 ANCHOR_ENV_NEW: Final = (
-    "    # No admission reserve on the long tier (see the header); --prefill-decode-interval 1\n"
-    "    # is retained independently of the inert reserve patch.\n"
+    "    # No admission reserve on the long tier (see the header); --prefill-decode-interval\n"
+    "    # is set per replica, independently of the inert reserve patch.\n"
     "    - SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE=1\n"
     "    # HiCache host tier: a fixed 406 GiB per replica across its four TP ranks (the\n"
     "    # qualified L2 value). A percentage would resolve against MemAvailable at each start,\n"
@@ -173,10 +232,21 @@ ANCHOR_ENV_NEW: Final = (
     "    - SGLANG_HICACHE_CUDA_HOST_MEMORY=${GLM53_HICACHE_CUDA_HOST_MEMORY:-1}\n"
     "    - SGLANG_HICACHE_POOLED_TRANSFERS=1\n"
     "    - SGLANG_HICACHE_STAGING_PAGES=64\n"
+    "    # DSA indexer query split, on BOTH replicas. Each TP rank scores 1/TP of a prefill\n"
+    "    # chunk's rows instead of all of them, so the fp32 logits buffer -- sized\n"
+    "    # new_tokens x total_context -- shrinks by TP. r1 crashed on 2026-09-25 without it:\n"
+    "    # deep_gemm.fp8_mqa_logits asked for 11.96 GiB with 11.88 GiB free at ~392K context\n"
+    "    # (dsa_indexer_kpool.py:919). At TP4 that allocation becomes ~3 GiB.\n"
+    "    # This is a MITIGATION, not the fix. It divides the buffer by TP; it does not bound\n"
+    "    # it. The same crash returns at ~4x the context, or at TP1. The real fix is calling\n"
+    "    # _should_chunk_mqa_logits (defined, unused, at dsa_indexer_kpool.py:862) and chunking\n"
+    "    # the logits against free memory, which holds at any context, chunk size and TP.\n"
+    "    - SGLANG_DSA_INDEXER_QSPLIT=1\n"
     "    - SGLANG_TRACE_ASYNC=1\n"
     "    - SGLANG_TRACE_LEVEL=0\n"
     "  restart: unless-stopped\n"
 )
+
 
 TRACE_CONTROL_SERVICE: Final = """  # Operator-only control job. Explicit compose/up via compose-manager is required.
   # It runs inside the CVM network; no engine management endpoint is published.
@@ -237,6 +307,7 @@ def engine_arguments(source: list[str], replica: int) -> list[str]:
         f"--revision {FP8_REVISION}",
         "--moe-runner-backend deep_gemm",
         "--chunked-prefill-size 4096",
+        "--prefill-decode-interval 1",
         f"--dist-init-addr {SOURCE_DIST_INIT}",
     }
     missing = sorted(argument for argument in expected if source.count(argument) != 1)
@@ -251,7 +322,11 @@ def engine_arguments(source: list[str], replica: int) -> list[str]:
         if argument == FP8_MODEL_PATH:
             arguments.append(MODEL_PATH)
         elif argument == "--chunked-prefill-size 4096":
-            arguments.extend(("--chunked-prefill-size 8192", "--max-prefill-tokens 32768"))
+            arguments.extend(
+                (f"--chunked-prefill-size {CHUNKED_PREFILL_SIZE[replica]}", "--max-prefill-tokens 32768")
+            )
+        elif argument == "--prefill-decode-interval 1":
+            arguments.append(f"--prefill-decode-interval {PREFILL_DECODE_INTERVAL[replica]}")
         elif argument == f"--dist-init-addr {SOURCE_DIST_INIT}":
             arguments.append(f"--dist-init-addr {DIST_INIT[replica]}")
         else:
@@ -267,6 +342,48 @@ def engine_arguments(source: list[str], replica: int) -> list[str]:
 
 def render_command(arguments: list[str], indent: int) -> str:
     return " " * indent + "command: >\n" + "".join(f"{' ' * (indent + 4)}{argument}\n" for argument in arguments)
+
+
+def resolve_engine_image_labels(text: str) -> str:
+    """Bind each ENGINE_IMAGE_PLACEHOLDER to the image its own replica runs.
+
+    The replacements above are replica-agnostic, so both replicas get a placeholder. Each site
+    is disambiguated by a marker that is already replica-specific: the Datadog/OTel label blocks
+    carry instance:N, and the scrape job carries the replica's service name.
+    """
+    for replica, label in REPLICA_IMAGE_LABEL.items():
+        for marker, expected in (
+            (f'"instance:{replica}"', 1),
+            (f'nearai.otel.instance: "{replica}"', 1),
+            (f"sglang-{SERVICE_PREFIX}{replica}", 1),
+        ):
+            # Enforce the count rather than letting find() silently take the first hit. If a
+            # marker ever stops being replica-unique, binding the nearest placeholder could
+            # quietly attach the wrong replica's image label; fail loudly instead, matching the
+            # exact-count discipline replace_exact uses everywhere else in this script.
+            actual = text.count(marker)
+            if actual != expected:
+                raise GenerationError(
+                    f"engine_image: marker {marker!r} for replica {replica} must appear "
+                    f"{expected} time(s), found {actual}"
+                )
+            index = text.find(marker)
+            head, tail = text[:index], text[index:]
+            placeholder_in_head = head.rfind("ENGINE_IMAGE_PLACEHOLDER")
+            placeholder_in_tail = tail.find("ENGINE_IMAGE_PLACEHOLDER")
+            if placeholder_in_head == -1 and placeholder_in_tail == -1:
+                raise GenerationError(f"engine_image: no placeholder near {marker}")
+            # The label precedes its instance marker in the Datadog tag list and follows it in
+            # the OTel blocks; take whichever is closer to the marker.
+            if placeholder_in_tail != -1 and (
+                placeholder_in_head == -1 or placeholder_in_tail < len(head) - placeholder_in_head
+            ):
+                text = head + tail.replace("ENGINE_IMAGE_PLACEHOLDER", label, 1)
+            else:
+                text = head[:placeholder_in_head] + label + head[placeholder_in_head + len("ENGINE_IMAGE_PLACEHOLDER"):] + tail
+    if "ENGINE_IMAGE_PLACEHOLDER" in text:
+        raise GenerationError("engine_image: unresolved placeholder remains")
+    return text
 
 
 def generate(source: str) -> str:
@@ -300,7 +417,21 @@ def generate(source: str) -> str:
     override = r2[override_start:override_end]
     if not override.startswith(f"    image: {SOURCE_HICACHE_IMAGE}\n    command: >\n") or "\n    environment:\n" not in override:
         raise GenerationError("replica 2 no longer carries the source HiCache override")
-    r2 = r2[:override_start] + render_command(engine_arguments(source_arguments, 2), 4) + r2[override_end:]
+    # r2 must override image AND environment, not just command: a YAML merge key replaces a
+    # list wholesale rather than deep-merging it, so r2 cannot inherit the anchor's environment
+    # and add one variable. The block is derived from the anchor here rather than duplicated as
+    # a literal, so the two can never drift apart.
+    _, _, anchor_environment = section(anchor, "  environment:\n", "  restart: unless-stopped\n", "anchor environment block")
+    r2_environment = "".join(
+        f"  {line}\n" if line.strip() else "\n" for line in anchor_environment.splitlines()
+    )
+    r2 = (
+        r2[:override_start]
+        + f"    image: {REPLICA_IMAGE[2]}\n"
+        + render_command(engine_arguments(source_arguments, 2), 4)
+        + r2_environment
+        + r2[override_end:]
+    )
     updated = updated[:r2_start] + r2 + updated[r2_end:]
 
     updated = replace_exact(
@@ -316,23 +447,24 @@ def generate(source: str) -> str:
         ('model_path: "zai-org/GLM-5.3-Flash"', f'model_path: "{CHECKPOINT}"', 6, "metric model_path"),
         ("precision:fp8-weights-bf16-kv", f"precision:{PRECISION}", 2, "log precision"),
         ('precision: "fp8-weights-bf16-kv"', f'precision: "{PRECISION}"', 2, "scrape precision"),
-        (SOURCE_VARIANTS[0], VARIANT, 3, "replica 1 config_variant"),
-        (SOURCE_VARIANTS[1], VARIANT, 3, "replica 2 config_variant"),
-        ('"request_logging:disabled",', f'"request_logging:disabled","engine_image:{ENGINE_IMAGE_LABEL}",', 2, "log engine_image"),
+        (SOURCE_VARIANTS[0], VARIANTS[1], 3, "replica 1 config_variant"),
+        (SOURCE_VARIANTS[1], VARIANTS[2], 3, "replica 2 config_variant"),
+        ('"request_logging:disabled",', '"request_logging:disabled","engine_image:ENGINE_IMAGE_PLACEHOLDER",', 2, "log engine_image"),
         (
             '      nearai.otel.request_logging: "disabled"\n',
-            f'      nearai.otel.request_logging: "disabled"\n      nearai.otel.engine_image: "{ENGINE_IMAGE_LABEL}"\n',
+            '      nearai.otel.request_logging: "disabled"\n      nearai.otel.engine_image: "ENGINE_IMAGE_PLACEHOLDER"\n',
             2,
             "engine_image label",
         ),
         (
             '                      request_logging: "disabled"\n',
-            f'                      request_logging: "disabled"\n                      engine_image: "{ENGINE_IMAGE_LABEL}"\n',
+            '                      request_logging: "disabled"\n                      engine_image: "ENGINE_IMAGE_PLACEHOLDER"\n',
             2,
             "scrape engine_image",
         ),
     ):
         updated = replace_exact(updated, old, new, count, label)
+    updated = resolve_engine_image_labels(updated)
     return HEADER + updated
 
 
