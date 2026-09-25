@@ -135,6 +135,61 @@ Deployment is the same r2-only pair as the pdi 2 canary: `compose/down` then `co
 
 **Untested before this canary:** the all-gather's cost under CC/PPCIe inside a CVM. gpu31 is bare metal with CC off, so the r2 canary is the first measurement of it. If TTFT regresses against r1 rather than improving, suspect the all-gather and roll back.
 
+## Request tracing (armed at level 0)
+
+Both replicas run `--enable-trace --otlp-traces-endpoint otelcol-contrib:4317` with `SGLANG_TRACE_ASYNC=1` and `SGLANG_TRACE_LEVEL=0`. At level 0 SGLang creates no spans. At this SGLang pin an **unset** `SGLANG_TRACE_LEVEL` means 3, and an unset `SGLANG_TRACE_ASYNC` means synchronous export on the request path. Both variables must therefore be in every traced replica's effective environment. r2 has its own `environment:` list (a YAML merge key replaces a list; it does not extend it). The validator and `scripts/test_glm53_w4afp8_long_context.py` assert both variables per replica on the merge-resolved file.
+
+Deploying this change recreates both engines (argv and environment) and `otelcol-contrib` (collector config). Recreate the engines one replica at a time, as in the procedure above. `otelcol-contrib` must be on this file before any replica is raised above level 0.
+
+**What leaves the CVM.** The in-CVM collector's `traces` pipeline runs `transform/sglang_trace_allowlist` before export. It deletes every span attribute and span-event attribute that is not on an explicit list.
+
+Kept: the keys SGLang fc91d24 sets on this deployment's spans.
+- The request id (`rid`, `gen_ai.request.id`).
+- The prompt, cached and completion token counts.
+- The sampling parameters `max_tokens`, `temperature`, `top_p`, `top_k` and `n`.
+- `gen_ai.response.model` and the finish type (`gen_ai.response.finish_reasons`).
+- The per-stage latencies (`gen_ai.latency.*`).
+- The thread and rank labels, `decode_ct`, and the speculative accepted-draft counts.
+- The per-schedule events' `bid`, `batch_size` and `forward_mode`.
+
+Dropped:
+- Abort and error text (`message`, `reason`, `err_type`, `status_code`).
+- Matched stop strings or tokens (`matched`).
+- The machine id (`host_id`).
+- Keys that only PD disaggregation or pipeline parallelism set.
+- Any key a future SGLang adds.
+
+Span status descriptions are cleared; status codes are kept. The processor uses `error_mode: propagate`, so a statement error drops the batch instead of exporting it unfiltered.
+
+Span names are not rewritten. They are fixed stage names, `Req <first 8 chars of rid>`, or `<thread> [TP n] (host:<8 chars of machine id> | pid:n)`. Resource attributes are the same as on the other pipelines.
+
+`scripts/prepare_glm53_w4afp8_long_context.py` lists each key with the SGLang source that sets it. The validator pins the list exactly, so any change to it is a reviewed change.
+
+**Isolation from logs and metrics.** Traces export through their own `otlphttp/gateway_traces`, with the same endpoint and auth as `otlphttp/gateway`. That exporter has a 32-batch in-memory queue, no file storage, and retries capped at 60 s. A level-3 burst can fill and drop only the trace queue; logs and metrics keep their persistent 128-batch queue.
+
+Before trusting a capture, check the collector's own metrics, which `metrics/self` scrapes: `otelcol_exporter_enqueue_failed_spans`, `otelcol_exporter_send_failed_spans` and `otelcol_receiver_refused_spans`. A capture with drops is incomplete.
+
+**Capturing.** `/set_trace_level` has no authentication in SGLang. It is reachable only inside the CVM network:
+- The engines publish no ports.
+- The inference-proxy forwards only its explicit route list.
+- The soak relay (`:8008`/`:8009`) exists only while the `verification` profile is up.
+
+To capture:
+1. Announce the capture before it starts: the replica, the level, and the start and planned end times.
+2. Raise one replica to level 3. `compose/up` this file with `services: ["glm53-trace-control"]`, `GLM53_TRACE_REPLICA=1|2` and `GLM53_TRACE_LEVEL=3`. The job accepts only levels 0 and 3.
+3. Keep the other replica at level 0, and keep the capture to minutes, not hours.
+4. Set the replica back to level 0 with the same job, and confirm that no new spans arrive.
+5. Record the capture: the job's `trace_control_applied replica=N level=L` log lines and the time window.
+
+**Levels.** The level is captured per request on arrival, so requests already in flight keep their old level.
+- Level 1 emits the request, tokenize, queue-wait, prefill and decode spans. It is the sane always-on option if tracing is ever left on (this file does not do that).
+- Level 2 already emits `spec_draft` and `spec_verify` spans on every decode step, because EAGLE is on.
+- Level 3 adds a `decode_loop` span per decode step, a `chunked_prefill` span per chunk and a `schedule` event per batch. Its span rate scales with output tokens × running requests, so keep level-3 captures short.
+
+**Data handling.** Trace metadata is operational data about customer requests: request id, token counts, sampling parameters and timings. It contains no prompt or completion text. It still needs to be covered by the data-handling docs, with a retention entry for traces at telemetry.infra.near.ai. Correlate SGLang `rid` with inference-proxy request ids only when an investigation needs it.
+
+**Known gap.** With `--tokenizer-worker-num` greater than 1, SGLang loses the scheduler-side OTel spans (sgl-project/sglang#38210). This file runs one tokenizer worker. Revisit tracing if that flag is ever enabled.
+
 ## Rollback
 
 Redeploy the previous tag and file, scoped to the same services, one replica at a time and under the same orphan rule. Keep at least one replica serving throughout.
