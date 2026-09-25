@@ -1,0 +1,69 @@
+Move the dispatch-time /dev/shm copy of multimodal features off the tokenizer manager's event loop.
+
+Applies to SGLang fc91d24 on top of upstream PR #30771 (sglang-pr30771.diff, which adds
+TokenizerManager.init_request_preprocessor/run_in_request_preprocessor). Why: on the GLM-5.3 Flash
+long tier, TokenizerManager._send_one_request -> mm_utils.wrap_shm_features -> ShmPointerMMData.__init__
+(posix_fallocate + copy_ of ~141 MiB per large image, 8.8-8.9 GiB per 64-image request) ran on the uvicorn
+event loop and blocked /health for 3-5 s per image-heavy request (gpu32 lab phase 3a). The copy now runs in
+its own single-thread executor ("sglang-mm-shm"), not the PR's preprocessor thread, so a multi-GiB copy
+neither blocks the loop nor queues other requests' template rendering/tokenization behind it. If the
+request is cancelled during the copy, its segments are unlinked once the copy finishes.
+_send_batch_request has no wrap_shm_features call at fc91d24, so nothing changes there.
+
+diff --git a/python/sglang/srt/managers/tokenizer_manager.py b/python/sglang/srt/managers/tokenizer_manager.py
+index 374f35d..a42c7ff 100644
+--- a/python/sglang/srt/managers/tokenizer_manager.py
++++ b/python/sglang/srt/managers/tokenizer_manager.py
+@@ -95,7 +95,7 @@ from sglang.srt.managers.io_struct import (
+     unwrap_from_pickle,
+ )
+ from sglang.srt.managers.load_snapshot import create_load_snapshot_reader
+-from sglang.srt.managers.mm_utils import wrap_shm_features
++from sglang.srt.managers.mm_utils import discard_shm_features, wrap_shm_features
+ from sglang.srt.managers.multimodal_processor import get_mm_processor, import_processors
+ from sglang.srt.managers.schedule_batch import (
+     MultimodalDataItem,
+@@ -560,6 +560,11 @@ class TokenizerManager(TokenizerControlMixin, TokenizerManagerScoreMixin):
+ 
+     def init_request_preprocessor(self):
+         self._request_preprocessor_executor = ThreadPoolExecutor(max_workers=1)
++        # Own thread for the dispatch-time /dev/shm copy of multimodal features, so a
++        # multi-GiB copy does not queue behind (or delay) other requests' preprocessing.
++        self._shm_wrap_executor = ThreadPoolExecutor(
++            max_workers=1, thread_name_prefix="sglang-mm-shm"
++        )
+ 
+     async def run_in_request_preprocessor(self, func, *args, **kwargs):
+         func_call = partial(copy_context().run, func, *args, **kwargs)
+@@ -567,6 +572,21 @@ class TokenizerManager(TokenizerControlMixin, TokenizerManagerScoreMixin):
+             self._request_preprocessor_executor, func_call
+         )
+ 
++    async def _wrap_shm_features_off_loop(self, tokenized_obj):
++        # wrap_shm_features creates one /dev/shm segment per feature tensor
++        # (posix_fallocate + copy_, both release the GIL). On the event loop this took
++        # 3-5 s for 64-image requests (~141 MiB per image) and stalled /health.
++        fut = asyncio.get_running_loop().run_in_executor(
++            self._shm_wrap_executor, wrap_shm_features, tokenized_obj
++        )
++        try:
++            return await asyncio.shield(fut)
++        except asyncio.CancelledError:
++            # The copy cannot be interrupted and the request will not be dispatched:
++            # unlink its segments once it finishes (same FIFO thread), then re-raise.
++            self._shm_wrap_executor.submit(discard_shm_features, tokenized_obj)
++            raise
++
+     def init_ipc_channels(self, port_args: PortArgs):
+         context = zmq.asyncio.Context(2)
+         self.recv_from_detokenizer = get_zmq_socket(
+@@ -1593,7 +1613,8 @@ class TokenizerManager(TokenizerControlMixin, TokenizerManagerScoreMixin):
+                 )
+             )
+             tokenized_obj.time_stats.set_api_server_dispatch_time()
+-            tokenized_obj = wrap_shm_features(tokenized_obj)
++            if tokenized_obj.mm_inputs:  # without mm inputs the wrap is a no-op
++                tokenized_obj = await self._wrap_shm_features_off_loop(tokenized_obj)
+             time_stats = tokenized_obj.time_stats
+             tokenized_obj.wrap_pickle_fields()
+             self._dispatch_to_scheduler(tokenized_obj)

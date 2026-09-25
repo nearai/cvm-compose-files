@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
+# Resolved before the cd: step 7 runs a test file shipped next to this script.
+RECIPE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd /sgl-workspace/sglang
 # This pinned upstream test utility indexes the first visible-device digit.
 # Use an unavailable ordinal, with the CPU container's runtime set to runc.
@@ -156,5 +158,164 @@ assert kpool._QSPLIT is True and kpool._QSPLIT_MIN_ROWS == 2048
 assert kpool._qsplit_group(2047) is None
 print("step 4 OK: the DSA indexer query split is opt-in and respects its minimum row count")
 EOF
+
+# 5. Request preprocessing runs off the event loop (upstream sglang PR #30771): chat template
+# rendering and tokenization in _convert_to_internal_request, and the regular-tokenizer path of
+# _tokenize_texts, run in the tokenizer manager's single request-preprocessor thread, so the uvicorn
+# loop keeps answering /health during multi-MB requests. The pytest files are the PR's own tests,
+# applied under test/registered/unit; on the stock files three of them fail and two are skipped.
+python3 - <<'EOF'
+import inspect
+
+from sglang.test.test_utils import maybe_stub_sgl_kernel
+
+maybe_stub_sgl_kernel()
+
+from sglang.srt.entrypoints.openai.serving_base import OpenAIServingBase  # noqa: E402
+from sglang.srt.managers.tokenizer_manager import TokenizerManager  # noqa: E402
+
+assert "run_in_request_preprocessor" in inspect.getsource(OpenAIServingBase.handle_request)
+assert "run_in_request_preprocessor" in inspect.getsource(TokenizerManager._tokenize_texts)
+assert "self.init_request_preprocessor()" in inspect.getsource(TokenizerManager.__init__)
+EOF
+python3 -m pytest -q -p no:cacheprovider \
+  test/registered/unit/entrypoints/openai/test_serving_base_event_loop.py \
+  test/registered/unit/entrypoints/test_http_server_liveness.py \
+  test/registered/unit/managers/test_tokenizer_manager_event_loop.py
+echo "step 5 OK: chat template rendering and tokenization run off the event loop (PR #30771 tests)"
+
+# 6. The dispatch-time /dev/shm copy of multimodal features (wrap_shm_features: posix_fallocate +
+# copy_, ~141 MiB per large image) runs on its own sglang-mm-shm thread while the event loop keeps
+# running, and a request cancelled during the copy still has its segments discarded afterwards.
+python3 - <<'EOF'
+import asyncio
+import inspect
+import threading
+import time
+from types import SimpleNamespace
+
+from sglang.test.test_utils import maybe_stub_sgl_kernel
+
+maybe_stub_sgl_kernel()
+
+import sglang.srt.managers.tokenizer_manager as tm  # noqa: E402
+
+send = inspect.getsource(tm.TokenizerManager._send_one_request)
+assert "await self._wrap_shm_features_off_loop(tokenized_obj)" in send, send
+assert "= wrap_shm_features(" not in send, send
+
+manager = tm.TokenizerManager.__new__(tm.TokenizerManager)
+manager.init_request_preprocessor()
+calls, release = [], threading.Event()
+
+
+def blocking_wrap(obj):
+    calls.append(("wrap", threading.current_thread().name))
+    if not release.wait(10):
+        raise TimeoutError("test did not release the copy")
+    return obj
+
+
+def recording_discard(obj):
+    calls.append(("discard", threading.current_thread().name))
+
+
+# _wrap_shm_features_off_loop resolves both names in the module at call time.
+tm.wrap_shm_features, tm.discard_shm_features = blocking_wrap, recording_discard
+
+
+async def wait_for(condition):
+    for _ in range(500):
+        if condition():
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError(f"timed out waiting; calls={calls}")
+
+
+async def copy_while_loop_ticks():
+    obj = SimpleNamespace(mm_inputs=object())
+    task = asyncio.create_task(manager._wrap_shm_features_off_loop(obj))
+    await wait_for(lambda: calls)
+    ticks, end = 0, time.monotonic() + 0.5
+    while time.monotonic() < end:
+        await asyncio.sleep(0.01)
+        ticks += 1
+    release.set()
+    assert await task is obj
+    return ticks
+
+
+ticks = asyncio.run(copy_while_loop_ticks())
+assert ticks >= 20, f"the event loop ran only {ticks} times in 0.5 s while the copy was blocked"
+assert [c[0] for c in calls] == ["wrap"] and calls[0][1].startswith("sglang-mm-shm"), calls
+
+calls.clear()
+release.clear()
+
+
+async def cancel_during_copy():
+    task = asyncio.create_task(manager._wrap_shm_features_off_loop(SimpleNamespace(mm_inputs=object())))
+    await wait_for(lambda: calls)
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    else:
+        raise AssertionError("cancellation did not reach the caller")
+    release.set()
+    await wait_for(lambda: len(calls) == 2)
+
+
+asyncio.run(cancel_during_copy())
+manager._shm_wrap_executor.shutdown(wait=True)
+manager._request_preprocessor_executor.shutdown(wait=True)
+assert [c[0] for c in calls] == ["wrap", "discard"], calls
+assert all(name.startswith("sglang-mm-shm") for _, name in calls), calls
+print("step 6 OK: the multimodal shm copy runs off the event loop and a cancelled copy is discarded")
+EOF
+
+# 7. The event-loop stall dump is armed from the HTTP server lifespan, before the warmup thread and
+# before the lifespan yields, and importing it arms nothing. test_stall_dump.py then runs each
+# scenario in its own child process: a loop blocked in time.sleep (uvloop and asyncio), a CPU spin,
+# a C call that keeps the GIL (faulthandler's dump), fork() and a fork-context process pool,
+# uvicorn + FastAPI with /health polled during a blocked request, the detector disabled with 0, and
+# an invalid value. In the image it is on by default at 30 s; SGLANG_EVENT_LOOP_STALL_DUMP_SECS=0
+# disables it.
+python3 - <<'EOF'
+import inspect
+
+import sglang.srt.entrypoints.http_server as hs
+import sglang.srt.utils.event_loop_stall_dump as stall
+
+assert list(inspect.signature(stall.install).parameters) == [
+    "loop",
+    "stall_seconds",
+    "repeat_seconds",
+    "log_prefix",
+]
+assert hs.install_stall_dump is stall.install
+lifespan = inspect.getsource(hs.lifespan)
+hook, warmup, handoff = (
+    lifespan.index(marker)
+    for marker in (
+        "install_stall_dump(asyncio.get_running_loop())",
+        "warmup_thread = threading.Thread(",
+        "yield",
+    )
+)
+assert hook < warmup < handoff, (hook, warmup, handoff)
+assert stall._detector is None, "importing the module must not arm the detector"
+EOF
+stall_report="$(mktemp)"
+if ! python3 -W ignore::DeprecationWarning "$RECIPE_DIR/test_stall_dump.py" \
+    --module "$PWD/python/sglang/srt/utils/event_loop_stall_dump.py" \
+    --out "$stall_report" > /dev/null; then
+  cat "$stall_report"
+  echo "step 7 FAILED: event-loop stall dump functional test" >&2
+  exit 1
+fi
+sed -n '/^SUMMARY/,$p' "$stall_report"
+echo "step 7 OK: the event-loop stall dump reports blocked-loop stacks and recoveries, and stays off at 0"
 
 echo "GLM-5.3 W4AFP8 combined-image CPU checks passed"

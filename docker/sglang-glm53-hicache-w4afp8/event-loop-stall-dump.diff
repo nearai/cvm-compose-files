@@ -1,0 +1,156 @@
+diff --git a/python/sglang/srt/entrypoints/http_server.py b/python/sglang/srt/entrypoints/http_server.py
+index 18c865a..113bd17 100644
+--- a/python/sglang/srt/entrypoints/http_server.py
++++ b/python/sglang/srt/entrypoints/http_server.py
+@@ -176,6 +176,7 @@ from sglang.srt.utils import (
+     set_uvicorn_logging_configs,
+ )
+ from sglang.srt.utils.auth import AuthLevel, app_has_admin_force_endpoints, auth_level
++from sglang.srt.utils.event_loop_stall_dump import install as install_stall_dump
+ from sglang.srt.utils.json_response import (
+     SGLangORJSONResponse,
+     dumps_json,
+@@ -389,6 +390,11 @@ async def lifespan(fast_api_app: FastAPI):
+         )
+         logger.info("Warmup ended")
+ 
++    # Diagnostic for the production hang where this process stopped answering /health for
++    # 14-155 min with no log line and no stack: if this event loop stops ticking, dump every
++    # thread's stack to stderr (SGLANG_EVENT_LOOP_STALL_DUMP_SECS, default 30, 0 disables).
++    install_stall_dump(asyncio.get_running_loop())
++
+     # Start the native gRPC server and warmup inside the try so a failure in
+     # either still runs the finally cleanup below. Native gRPC is enabled via
+     # --grpc-port / SGLANG_GRPC_PORT; only the single-tokenizer process is
+diff --git a/python/sglang/srt/utils/event_loop_stall_dump.py b/python/sglang/srt/utils/event_loop_stall_dump.py
+new file mode 100644
+index 0000000..6f7bcd0
+--- /dev/null
++++ b/python/sglang/srt/utils/event_loop_stall_dump.py
+@@ -0,0 +1,126 @@
++"""Dump every thread's stack when this process's asyncio event loop stops ticking.
++
++Why: in production the `sglang serve` main process (tokenizer manager; its uvicorn loop serves
++/health, /metrics and /v1/chat/completions) stopped answering for 14-155 min and then recovered,
++with zero log lines and no way to attach py-spy. This makes the process say where it is stuck.
++A daemon thread watches a heartbeat that a task on the loop refreshes every second. After
++SGLANG_EVENT_LOOP_STALL_DUMP_SECS (default 30, 0 disables) without a tick it writes a header and
++every thread's stack to stderr, again every SGLANG_EVENT_LOOP_STALL_DUMP_REPEAT_SECS (default
++60), and one line on recovery. A single long C call that keeps the GIL (regex, JSON or pydantic
++on a multi-MB body) would starve that thread, so every tick also re-arms faulthandler's C
++watchdog, which dumps all stacks without the GIL ("Timeout (0:00:33)!") if the thread misses one.
++"""
++
++import asyncio
++import faulthandler
++import logging
++import os
++import sys
++import threading
++import time
++import traceback
++
++logger = logging.getLogger(__name__)
++_MARGIN = 3.0  # the GIL-free C dump only fires when the Python watcher is this late
++_detector = None
++
++
++def install(loop, stall_seconds=None, repeat_seconds=None, log_prefix="[event-loop-stall]"):
++    """Arm the detector for `loop`; call once, from the loop's own thread. Never raises."""
++    global _detector
++    try:
++        if stall_seconds is None:
++            stall_seconds = float(os.environ.get("SGLANG_EVENT_LOOP_STALL_DUMP_SECS", 30))
++        if repeat_seconds is None:
++            repeat_seconds = float(os.environ.get("SGLANG_EVENT_LOOP_STALL_DUMP_REPEAT_SECS", 60))
++        if stall_seconds > 0 and _detector is None:
++            _detector = _Detector(loop, stall_seconds, max(repeat_seconds, 1.0), log_prefix)
++            logger.info(
++                f"event-loop stall dump armed: stall={stall_seconds:g}s"
++                f" repeat={_detector.repeat:g}s (pid {os.getpid()},"
++                f" loop thread 0x{_detector.ident:016x})"
++            )
++    except Exception:
++        logger.warning("event-loop stall dump not armed", exc_info=True)
++    return _detector
++
++
++class _Detector:
++    def __init__(self, loop, stall, repeat, prefix):
++        self.loop, self.stall, self.repeat, self.prefix = loop, stall, repeat, prefix
++        self.ident = threading.get_ident()
++        self.cpu_clock = time.pthread_getcpuclockid(self.ident)  # the loop thread's CPU time
++        self.beat, self.beat_cpu = time.monotonic(), time.clock_gettime(self.cpu_clock)
++        self.stopped = threading.Event()
++        self.task = loop.create_task(self._heartbeat())
++        threading.Thread(target=self._watch, name="event-loop-stall-watch", daemon=True).start()
++        # A fork()-ed child that exits through normal interpreter shutdown hangs forever if it
++        # inherits an armed faulthandler timer, so disarm it around every fork() of this process.
++        os.register_at_fork(
++            before=faulthandler.cancel_dump_traceback_later,
++            after_in_parent=lambda: self.stopped.is_set() or self._arm_backstop(self.stall),
++        )
++
++    def _arm_backstop(self, seconds):
++        try:
++            faulthandler.dump_traceback_later(seconds + _MARGIN, file=2)
++        except Exception:
++            pass
++
++    async def _heartbeat(self):
++        try:
++            while True:
++                self.beat, self.beat_cpu = time.monotonic(), time.clock_gettime(self.cpu_clock)
++                self._arm_backstop(self.stall)
++                await asyncio.sleep(1.0)
++        finally:
++            self.stopped.set()
++            faulthandler.cancel_dump_traceback_later()
++
++    def _watch(self):
++        stalled_at, last_dump, dumps = None, 0.0, 0  # stalled_at: last beat before the stall
++        while not self.stopped.wait(1.0) and not self.loop.is_closed():
++            try:
++                beat, now, pid = self.beat, time.monotonic(), os.getpid()
++                if stalled_at is not None and beat != stalled_at:
++                    self._write([f"pid={pid} event loop recovered after {beat - stalled_at:.1f}s"])
++                    stalled_at = None
++                due = stalled_at is None or now - last_dump >= self.repeat
++                if now - beat > self.stall and due:
++                    if stalled_at is None:  # a new stall episode
++                        stalled_at, dumps = beat, 0
++                    dumps, last_dump = dumps + 1, now
++                    self._arm_backstop(self.repeat)  # C dump only if we miss the next one
++                    self._dump(pid, now - beat, dumps)
++            except Exception:
++                pass
++
++    def _dump(self, pid, age, n):
++        frames = sys._current_frames()
++        try:
++            cpu = time.clock_gettime(self.cpu_clock) - self.beat_cpu
++            names = {t.ident: t.name for t in threading.enumerate()}
++            lines = [f"pid={pid} event loop stalled for {age:.1f}s (threshold {self.stall:g}s),"
++                     f" dump {n}, {len(frames)} threads, loop thread used {cpu:.1f}s CPU since its"
++                     f" last tick, {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}"]
++            for ident in sorted(frames, key=lambda i: i != self.ident):  # loop thread first
++                role = " (event loop)" if ident == self.ident else ""
++                lines.append(f"--- thread 0x{ident:016x} {names.get(ident, '?')}{role},"
++                             " most recent call last:")
++                for entry in traceback.format_stack(frames[ident], limit=200):
++                    lines.extend(entry.rstrip("\n").split("\n"))
++            self._write(lines + [f"pid={pid} end of dump {n}"])
++        except Exception:
++            self._write([f"pid={pid} stack formatting failed, raw faulthandler dump follows"])
++            faulthandler.dump_traceback(file=2, all_threads=True)
++
++    def _write(self, lines):
++        # One write per line: pipe writes up to 4 KiB are atomic, so lines of the other processes
++        # sharing this stderr never land inside ours, and every line carries the grep-able prefix.
++        for line in lines:
++            data = f"{self.prefix} {line}".encode("utf-8", "replace")[:4000] + b"\n"
++            try:
++                while data:
++                    data = data[os.write(2, data):]
++            except OSError:
++                return
