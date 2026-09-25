@@ -37,10 +37,26 @@ R2_IMAGE: Final = "docker.io/nearaidev/sglang@sha256:8ff1a487b98a52fe08b781715be
 R2_ENGINE_IMAGE_LABEL: Final = "8ff1a487b98a"
 REPLICA_IMAGE: Final = {1: IMAGE, 2: R2_IMAGE}
 REPLICA_IMAGE_LABEL: Final = {1: ENGINE_IMAGE_LABEL, 2: R2_ENGINE_IMAGE_LABEL}
-# c16384 is only safe WITH the split: without it the indexer scratch left 0.04-0.65 GB free on a
-# concurrent long burst, the condition that preceded the gpu02 crash. With it, 9.3-9.5 GB.
-# The validator enforces the pairing; never set one without the other.
-CHUNKED_PREFILL_SIZE: Final = {1: 8192, 2: 16384}
+# r2 is back to 8192 while keeping the split. This is an ISOLATION ARM, not the shipping config.
+#
+# The 2026-09-25 gpu02 canary ran split + c16384 + pdi 2 and produced the opposite of the lab
+# result at the tail: over a 4 h steady-state window TTFT p95 was 76.9 s against r1's 47.3 s
+# (1.62x), while the decode win did reproduce (ITL p90 0.87x, p50 0.97x). It was not explained by
+# traffic volume (681 vs 688 req/h), cache warmth (79.7% vs 81.6% hit) or queueing (r2's average
+# queue depth was LOWER, 1.23 vs 1.56). r2 did draw ~23% more uncached prefill tokens per request,
+# which it absorbed for +3% median TTFT but +62% at p95 -- worse only at the tail, i.e. only on the
+# largest prefills.
+#
+# Two candidates bite exactly there, and the canary changed both at once:
+#   a) the 16384 chunk, which doubles how long one prefill chunk occupies the scheduler;
+#   b) the indexer split's all-gather, which trades per-rank compute for a collective. gpu31 is
+#      bare metal with CC off, so its all-gather is cheap; under CC/PPCIe memory encryption a
+#      collective costs more and the trade can invert. This was flagged untested in #300.
+#
+# Holding the split at 8192 separates them: if p95 recovers, the chunk was at fault; if it stays
+# bad, the all-gather under CC is. Note the validator gate is one-directional -- c16384 REQUIRES
+# the split, but the split does not require c16384 -- so this combination is permitted by design.
+CHUNKED_PREFILL_SIZE: Final = {1: 8192, 2: 8192}
 R2_EXTRA_ENV: Final = ("      - SGLANG_DSA_INDEXER_QSPLIT=1\n",)
 SOURCE_SERVICE_PREFIX: Final = "model-sg-glm53-fp8-tp4-r"
 SERVICE_PREFIX: Final = "model-sg-glm53-w4afp8-tp4-r"
@@ -54,7 +70,7 @@ SOURCE_VARIANTS: Final = (
 VARIANTS: Final = {
     1: "fc91d24-long-context-w4afp8-c8192-hicache-cuda-host-pooled-v1-admission-reserve-disabled"
     "-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192",
-    2: "fc91d24-long-context-w4afp8-c16384-qsplit-hicache-cuda-host-pooled-v1-admission-reserve-disabled"
+    2: "fc91d24-long-context-w4afp8-c8192-qsplit-hicache-cuda-host-pooled-v1-admission-reserve-disabled"
     "-pool-clamp-pdi2-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192",
 }
 PREFILL_DECODE_INTERVAL: Final = {1: 1, 2: 2}
@@ -83,17 +99,25 @@ HEADER: Final = (
     "#   r1: gpu31 campaign-2 arm L2 (2026-09-23), chunk 8192, --prefill-decode-interval 1\n"
     f"#       {IMAGE}\n"
     "#       published by workflow run 35903077821 from recipe merge commit f8106f096e9c83.\n"
-    "#   r2: chunk 16384, --prefill-decode-interval 2, SGLANG_DSA_INDEXER_QSPLIT=1\n"
+    "#   r2: chunk 8192, --prefill-decode-interval 2, SGLANG_DSA_INDEXER_QSPLIT=1\n"
     f"#       {R2_IMAGE}\n"
     "#       published by workflow run 36073196105 from recipe merge commit 556482c78cd3,\n"
     "#       which adds the opt-in DSA indexer query split (cvm-compose-files#300).\n"
-    "# On r2 the 16384 chunk and the split are ONE change: without the split a concurrent\n"
-    "# long burst left 0.04-0.65 GB free per GPU, the condition that preceded the gpu02\n"
-    "# crash; with it, 9.3-9.5 GB. validate_glm53_prod_config.rb rejects either one alone.\n"
-    "# On stored long-tier traffic (gpu31, 2026-09-24) the r2 arm ran TTFT 0.61-0.78x and\n"
-    "# TPOT 0.53-0.85x of the r1 arm, with quality at the noise floor.\n"
-    "# Neither the HCC/PPCIe host-memory path nor the indexer split's all-gather has run in\n"
-    "# a CVM before this file, so gpu02 is their first soak. Roll out with\n"
+    "#\n"
+    "# r2 IS AN ISOLATION ARM, NOT A SHIPPING CONFIG. The 2026-09-25 canary ran the split WITH\n"
+    "# chunk 16384 and regressed the tail: TTFT p95 76.9 s against r1's 47.3 s (1.62x) over a\n"
+    "# 4 h steady-state window, though the decode win did reproduce (ITL p90 0.87x). Traffic\n"
+    "# volume, cache warmth and queue depth did not explain it. The chunk and the split both\n"
+    "# bite hardest on the largest prefills, and the canary changed both at once, so this arm\n"
+    "# holds the split at 8192 to tell them apart: if p95 recovers the chunk was at fault, if\n"
+    "# it stays bad the all-gather under CC/PPCIe is. Do not read this file as an endorsement\n"
+    "# of either setting until that run reports.\n"
+    "#\n"
+    "# chunk 16384 must never be set without the split: it left 0.04-0.65 GB free per GPU on a\n"
+    "# concurrent long burst, the condition that preceded the gpu02 crash. The reverse is\n"
+    "# allowed, which is what makes this arm possible. validate_glm53_prod_config.rb enforces it.\n"
+    "# The HCC/PPCIe host-memory path is confirmed working in a CVM as of 2026-09-25; the\n"
+    "# split's all-gather under CC is what this arm measures. Roll out with\n"
     "# docs/glm53-w4afp8-long-context-rollout.md, one replica at a time.\n"
     "# Do not hand-edit this file.\n"
 )
@@ -104,8 +128,8 @@ HEADER_REPLACEMENTS: Final = (
         "# long-context contract below, while the engines intentionally form an r1 control / r2\n"
         "# HiCache experiment and therefore are not byte-identical to the canonical file.\n",
         "# Generated from the long-context file. Routing remains the dedicated long-context\n"
-        "# contract below; both replicas run a W4AFP8 + HiCache engine, r2 as a canary at\n"
-        "# --prefill-decode-interval 2 with chunk 16384 and the DSA indexer split.\n",
+        "# contract below; both replicas run a W4AFP8 + HiCache engine, r2 as an isolation arm\n"
+        "# at --prefill-decode-interval 2 with the DSA indexer split and chunk 8192.\n",
     ),
     (
         "#   tier; every other host keeps the canonical file. The inference-proxy and routing\n"
@@ -121,8 +145,8 @@ HEADER_REPLACEMENTS: Final = (
         "#   halves prefill speed, and no other per-replica flag moved the tail. Conversation\n"
         "#   affinity stays on because the prefix cache is worth ~3x in request capacity.\n",
         "#   The replicas' engine flags differ in --dist-init-addr, --prefill-decode-interval\n"
-        "#   (1 on r1, 2 on r2) and --chunked-prefill-size (8192 on r1, 16384 on r2); r2 also\n"
-        "#   sets SGLANG_DSA_INDEXER_QSPLIT=1 and runs a different image. r1's 8192 is the\n"
+        "#   (1 on r1, 2 on r2); both now run --chunked-prefill-size 8192. r2 additionally sets\n"
+        "#   SGLANG_DSA_INDEXER_QSPLIT=1 and runs a different image. The 8192 chunk is the\n"
         "#   W4AFP8 setting: FP8 at 8192 OOMed in the DSA indexer under concurrent 400K+\n"
         "#   contexts, while W4AFP8's 2.4x larger device KV pool kept 3.7 GiB free through 8\n"
         "#   concurrent 647K-756K-token cold prefills on gpu31. 16384 was rejected then because\n"
@@ -178,8 +202,7 @@ HEADER_REPLACEMENTS: Final = (
         "# 1,048,576-token model context while avoiding the late K-pool workspace exhaustion\n"
         "# observed with larger prefill chunks.\n",
         "# intentionally conservative: BF16 KV, 0.80 static memory, 32 running requests, a\n"
-        "# bounded 8-request queue, prefill chunks of 8192 (r1) / 16384 (r2) with\n"
-        "# --max-prefill-tokens 32768,\n"
+        "# bounded 8-request queue, 8192-token prefill chunks with --max-prefill-tokens 32768,\n"
         "# decode graphs capped at batch 32, TileLang DSA, the CUTLASS W4A8 MoE path (hence no\n"
         "# --moe-runner-backend and no FP8 --revision), and adaptive EAGLE 5/1/6. This retains\n"
         "# the full 1,048,576-token model context.\n",
