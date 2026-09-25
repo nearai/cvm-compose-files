@@ -1,0 +1,211 @@
+diff --git a/python/sglang/srt/mem_cache/startup_ram_budget.py b/python/sglang/srt/mem_cache/startup_ram_budget.py
+index 50d586af64..331d87b31f 100644
+--- a/python/sglang/srt/mem_cache/startup_ram_budget.py
++++ b/python/sglang/srt/mem_cache/startup_ram_budget.py
+@@ -16,6 +16,7 @@ from decimal import Decimal
+ from pathlib import Path, PurePosixPath
+ 
+ ENV = "SGLANG_HICACHE_RAM_BUDGET"
++STORE_ENV = "SGLANG_HICACHE_SHARED_STORE_BUDGET"
+ RESERVE_BYTES = 10 * 1024**3
+ logger = logging.getLogger(__name__)
+ _active: ContextVar[RankBudget | None] = ContextVar("hicache_ram_budget", default=None)
+@@ -35,6 +36,43 @@ def _unescape_mount(value: str) -> str:
+     return re.sub(r"\\([0-7]{3})", lambda m: chr(int(m[1], 8)), value)
+ 
+ 
++def shared_store_growth_reserve(backend: str) -> tuple[int, int, int]:
++    """(store_budget, bytes_in_store, reserve) for an in-CVM shared `file` store.
++
++    Replicas in one CVM share the store directory; each replica's LRU evictor must be capped
++    (SGLANG_HICACHE_FILE_BACKEND_MAX_SIZE) so that together they stay within the store budget.
++    """
++    if backend != "file":
++        raise ValueError("RAM budget supports only the in-CVM `file` storage backend")
++    raw = os.environ.get(STORE_ENV)
++    store_dir = os.environ.get("SGLANG_HICACHE_FILE_BACKEND_STORAGE_DIR")
++    cap_raw = os.environ.get("SGLANG_HICACHE_FILE_BACKEND_MAX_SIZE")
++    if not raw or not store_dir or not cap_raw:
++        raise ValueError(
++            f"{ENV} with a storage backend needs {STORE_ENV}, "
++            "SGLANG_HICACHE_FILE_BACKEND_STORAGE_DIR and SGLANG_HICACHE_FILE_BACKEND_MAX_SIZE"
++        )
++    unit, amount = parse_budget(raw)
++    if unit == "%":
++        raise ValueError(f"{STORE_ENV} must be GB or GiB, not a percentage")
++    budget = int(amount * (1024**3 if unit == "GiB" else 10**9))
++    from sglang.srt.mem_cache.storage.file.lru_file_evictor import _parse_size_to_bytes
++
++    cap = _parse_size_to_bytes(cap_raw)
++    if cap <= 0 or cap > budget:
++        raise ValueError(
++            "SGLANG_HICACHE_FILE_BACKEND_MAX_SIZE must be a size the file backend accepts "
++            f"(e.g. 200Gi or 200G) and at most {STORE_ENV}"
++        )
++    used = 0
++    if os.path.isdir(store_dir):
++        with os.scandir(store_dir) as entries:
++            for entry in entries:
++                if entry.is_file(follow_symlinks=False):
++                    used += entry.stat(follow_symlinks=False).st_size
++    return budget, used, max(0, budget - used)
++
++
+ def cgroup_headrooms(proc: Path = Path("/proc")) -> list[int]:
+     """Read hard memory headroom at every visible ancestor, v2 or v1.
+ 
+@@ -202,9 +240,17 @@ def startup_ram_budget(*, supported: bool):
+             raise ValueError("RAM budget does not support PP, DP or DCP")
+         if get_memory().hicache_size > 0:
+             raise ValueError(f"Use {ENV} OR --hicache-size, not both")
+-        if get_memory().hicache_storage_backend is not None:
+-            raise ValueError("RAM budget currently supports in-CVM host RAM only")
+-        record["available_bytes"] = available_ram_bytes()
++        backend = get_memory().hicache_storage_backend
++        store_reserve = 0
++        if backend is not None:
++            store_budget, store_used, store_reserve = shared_store_growth_reserve(backend)
++            logger.info(
++                "HiCache shared store reserve: budget_bytes=%d used_bytes=%d reserved_bytes=%d",
++                store_budget,
++                store_used,
++                store_reserve,
++            )
++        record["available_bytes"] = max(0, available_ram_bytes() - store_reserve)
+     except Exception as exc:
+         record["error"] = str(exc)
+     records = [None] * world.world_size
+diff --git a/python/sglang/srt/mem_cache/unified_cache/unified_tree_core.py b/python/sglang/srt/mem_cache/unified_cache/unified_tree_core.py
+index 2b279540ca..d35f5e26af 100644
+--- a/python/sglang/srt/mem_cache/unified_cache/unified_tree_core.py
++++ b/python/sglang/srt/mem_cache/unified_cache/unified_tree_core.py
+@@ -413,6 +413,9 @@ class UnifiedTreeCore(UnifiedTreeCoreInterface):
+         components: dict[ComponentType, TreeComponent],
+     ):
+         self.page_size = params.page_size
++        # Storage hash-chain granularity. Equals the tree page except for
++        # compressed DSA, where the owning cache sets it to the transfer page.
++        self.hash_page_size = params.page_size
+         self.is_eagle = params.is_eagle and ComponentType.MAMBA not in components
+         self.enable_hicache = False
+         self.is_host_memory_buffer_only = False
+@@ -615,7 +618,7 @@ class UnifiedTreeCore(UnifiedTreeCoreInterface):
+             node = stack.pop()
+             # The root anchors every chain and is seeded with an empty hash list.
+             if node is not self.root_node and node.hash_value is None:
+-                node.hash_value = compute_node_hash_values(node, self.page_size)
++                node.hash_value = compute_node_hash_values(node, self.hash_page_size)
+                 filled += 1
+             stack.extend(node.children.values())
+         return filled
+@@ -1364,7 +1367,7 @@ class UnifiedTreeCore(UnifiedTreeCoreInterface):
+         child.parent = new_node
+         child.key = child.key[split_len:]
+         new_node.hash_value, child.hash_value = split_node_hash_value(
+-            child.hash_value, split_len, self.page_size
++            child.hash_value, split_len, self.hash_page_size
+         )
+         new_node.event_hash_value, child.event_hash_value = split_node_hash_value(
+             child.event_hash_value, split_len, self.page_size
+@@ -1422,7 +1425,7 @@ class UnifiedTreeCore(UnifiedTreeCoreInterface):
+         parent.children[key.child_key(self.page_size)] = new_node
+         self.component_evictable_size_[BASE_COMPONENT_TYPE] += len(value)
+         if self.enable_storage or self.enable_external_cache_linker:
+-            new_node.hash_value = compute_node_hash_values(new_node, self.page_size)
++            new_node.hash_value = compute_node_hash_values(new_node, self.hash_page_size)
+ 
+         self._update_evictable_leaf_sets(new_node)
+         self._update_evictable_leaf_sets(parent)
+@@ -2128,7 +2131,7 @@ class UnifiedTreeCore(UnifiedTreeCoreInterface):
+ 
+             key = key[prefix_len:]
+             host_value = host_value[prefix_len:]
+-            hash_value = hash_value[prefix_len // self.page_size :]
++            hash_value = hash_value[prefix_len // self.hash_page_size :]
+             matched_length += prefix_len
+ 
+             if prefix_len < len(node.key):
+diff --git a/python/sglang/srt/mem_cache/unified_radix_cache.py b/python/sglang/srt/mem_cache/unified_radix_cache.py
+index 31bc5dd61d..21bd04a20a 100644
+--- a/python/sglang/srt/mem_cache/unified_radix_cache.py
++++ b/python/sglang/srt/mem_cache/unified_radix_cache.py
+@@ -234,6 +234,7 @@ class UnifiedRadixCache(BasePrefixCache):
+             params=params,
+             components=self.components,
+         )
++        self.tree_core.hash_page_size = self._transfer_page_size
+         # Components execute boundary actions through the tree core.
+         for component in self.components.values():
+             component.tree_core = self.tree_core
+@@ -462,10 +463,13 @@ class UnifiedRadixCache(BasePrefixCache):
+ 
+         # Parse storage config once, share with assembler and tree
+         storage_backend = get_memory().hicache_storage_backend
+-        if storage_backend is not None and self.page_size != params.page_size:
++        if (
++            storage_backend is not None
++            and self.page_size != params.page_size
++            and self.host_memory_mode != "cache"
++        ):
+             raise ValueError(
+-                "Compressed DSA currently supports L2 HiCache only; "
+-                "storage hashes and transfers require matching page sizes."
++                "Compressed DSA storage supports --hicache-host-memory-mode cache only."
+             )
+         storage_extra_config = None
+         storage_prefetch_threshold = 256
+@@ -2233,7 +2237,7 @@ class UnifiedRadixCache(BasePrefixCache):
+             last_host_node_id,
+             fetched_key,
+             host_indices[:completed_tokens],
+-            hash_value[: completed_tokens // self.page_size],
++            hash_value[: completed_tokens // self._transfer_page_size],
+         )
+ 
+         # Apply the host-insert walk's actions before the transfer commit.
+@@ -2336,7 +2340,7 @@ class UnifiedRadixCache(BasePrefixCache):
+         # Hybrid cache state is all-or-nothing: every extra pool (SWA / Mamba / ...)
+         # must cover the same fetched prefix. If any pool falls short the whole
+         # prefetch result is unusable, so discard it and release everything.
+-        expected_tokens = len(hash_value) * self.page_size
++        expected_tokens = len(hash_value) * self._transfer_page_size
+         all_succeeded = completed_tokens == expected_tokens and all(
+             transfer.keys is not None and count == len(transfer.keys)
+             for transfer, count in zip(pool_transfers, pool_hit_pages)
+@@ -2351,7 +2355,7 @@ class UnifiedRadixCache(BasePrefixCache):
+                 else hash_value
+             )
+             trimmed_pages = len(invalidation_hashes) - len(hash_value)
+-            keep_pages = trimmed_pages + completed_tokens // self.page_size
++            keep_pages = trimmed_pages + completed_tokens // self._transfer_page_size
+             for transfer, count in zip(pool_transfers, pool_hit_pages):
+                 if transfer.keys is None:
+                     keep_pages = 0
+@@ -2792,6 +2796,16 @@ class UnifiedRadixCache(BasePrefixCache):
+                     request, info, operation, full_match_len, hit_tokens
+                 )
+             else:
++                tree_aligned = hit_tokens - hit_tokens % self.page_size
++                if tree_aligned != hit_tokens:
++                    self._resolve_storage_prefetch_tokens(
++                        request, hit_tokens - tree_aligned, reason="tree_page_align"
++                    )
++                    hit_tokens = tree_aligned
++                    operation.storage_hit_count = hit_tokens
++                    operation.hash_value = operation.hash_value[
++                        : hit_tokens // self._transfer_page_size
++                    ]
+                 aux_hit_tokens = hit_tokens
+             alloc_len = hit_tokens
+             host_indices = cc.mem_pool_host.alloc(alloc_len)
+@@ -2853,7 +2867,9 @@ class UnifiedRadixCache(BasePrefixCache):
+                 request, hit_tokens - alloc_len, reason="host_capacity"
+             )
+             operation.storage_hit_count = alloc_len
+-            operation.hash_value = operation.hash_value[: alloc_len // self.page_size]
++            operation.hash_value = operation.hash_value[
++                : alloc_len // self._transfer_page_size
++            ]
+             operation.host_indices = host_indices
+             self.ongoing_prefetch[request] = info._replace(host_indices=host_indices)
+             if buffer_mode:

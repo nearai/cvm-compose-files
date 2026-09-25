@@ -1,0 +1,17 @@
+base_image=docker.io/lmsysorg/sglang@sha256:06e4f2ed21afde4ff513cda65070124e727ba23ccaeff7712b8c40e1097d611f
+base_tag=lmsysorg/sglang:v0.5.20-cu130
+upstream_repository=https://github.com/sgl-project/sglang
+upstream_revision=94602c9c2b7cbdb8efd5c52802dac6a1c180089e (tag v0.5.20)
+patch_source=https://github.com/nearai/cvm-compose-files
+patch_file_1=docker/sglang-glm53-v0520-shared-kv/v0520-port.diff
+patch_1_origin=git diff v0.5.20..4fb82813b260e0da805db2d75be672307f54f0ca -- python/ on branch nearai-v0520 (gpu32:/data/inference-optimizer-gpu32/v0520/sglang; not yet pushed to a shared remote)
+patch_1_scope=NEAR AI GLM-5.3 long-tier stack ported to v0.5.20 (HCC-safe HiCache: CUDA-owned host memory, pooled transfers, startup RAM budget; W4AFP8 loader fix; chunked-prefill pool clamp; opt-in DSA indexer query split) plus four fork fixes (final-prefill abort race, thinking-budget compatibility, GLM5 multimodal fallback, V4 host-pool charges); 26 files, 6 commits
+patch_1_status=in validation by a separate session (SGLang v0.5.20 stability A/B, gpu31, 2026-09-24/25); when that port gets its own recipe this recipe should rebase onto it and keep only patch 2
+patch_file_2=docker/sglang-glm53-v0520-shared-kv/shared-kv.diff
+patch_2_origin=new in this recipe (scripted: make_l3_compressed_dsa_patch.py, gpu32:/data/inference-optimizer-gpu32/results/shared-kv-20260924)
+patch_2_scope=unified_radix_cache.py, unified_cache/unified_tree_core.py, startup_ram_budget.py: HiCache L3 storage for compressed-DSA models (storage hash chain at the 64-token transfer page, storage hits trimmed to the 256-token tree page, cache host-memory mode only) and a startup RAM budget that reserves an in-CVM shared file store's remaining growth
+patch_2_inert_unless=--hicache-storage-backend file (plus SGLANG_HICACHE_FILE_BACKEND_STORAGE_DIR); without a storage backend the only change is where the tree stores storage hashes, which nothing reads
+equivalence=applying both patches to the base image yields byte-identical files (27/27, sha256) to the image tested on gpu32 (glm53-v0520-nearai:lab @ 7e53cdbaf8d1 + overlay-l3)
+qualification=gpu32 bare metal (CC off), 2026-09-25: cross-replica restore 3.3x faster at 131K and 4.0x at 262K than recompute; teacher-forced logprobs on restored KV at the replica-to-replica noise floor (mean |dlogprob| 0.13-0.19 vs 0.20, top-1 97-98%); writer keeps pace (store == host tier, 35,476 pages). The HCC/PPCIe path is NOT covered and needs a TEE-host soak.
+evidence=gpu32:/data/inference-optimizer-gpu32/results/shared-kv-20260924 ; write-up https://app.notion.com/p/3e629a6526bf81878e3ac044c650de63
+build_recipe=docker/sglang-glm53-v0520-shared-kv/Dockerfile
