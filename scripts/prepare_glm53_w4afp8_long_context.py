@@ -30,6 +30,18 @@ SOURCE_IMAGE: Final = "docker.io/nearaidev/sglang@sha256:e9d29a1cb1cd65284392c4d
 SOURCE_HICACHE_IMAGE: Final = "docker.io/nearaidev/sglang@sha256:3eccc30709f5719c81084d1264f03ca5354b3059ec4cff62f0c5ff88c309680c"
 IMAGE: Final = "docker.io/nearaidev/sglang@sha256:fde25985aea3ebabf1eb581ae21d53be8540e32933eef942ee8b962a1bfbea20"
 ENGINE_IMAGE_LABEL: Final = "fde25985aea3"
+# r2 only: glm53-hicache-w4afp8-v2, which adds the opt-in DSA indexer query split (#300,
+# recipe commit 556482c). r1 stays on IMAGE so the control arm is byte-identical to #294 and a
+# targeted `compose up` recreates r2 alone. The split is inert unless SGLANG_DSA_INDEXER_QSPLIT=1.
+R2_IMAGE: Final = "docker.io/nearaidev/sglang@sha256:8ff1a487b98a52fe08b781715bebd7c8c445d4fe068f312f03f527d5a3c77e84"
+R2_ENGINE_IMAGE_LABEL: Final = "8ff1a487b98a"
+REPLICA_IMAGE: Final = {1: IMAGE, 2: R2_IMAGE}
+REPLICA_IMAGE_LABEL: Final = {1: ENGINE_IMAGE_LABEL, 2: R2_ENGINE_IMAGE_LABEL}
+# c16384 is only safe WITH the split: without it the indexer scratch left 0.04-0.65 GB free on a
+# concurrent long burst, the condition that preceded the gpu02 crash. With it, 9.3-9.5 GB.
+# The validator enforces the pairing; never set one without the other.
+CHUNKED_PREFILL_SIZE: Final = {1: 8192, 2: 16384}
+R2_EXTRA_ENV: Final = ("      - SGLANG_DSA_INDEXER_QSPLIT=1\n",)
 SOURCE_SERVICE_PREFIX: Final = "model-sg-glm53-fp8-tp4-r"
 SERVICE_PREFIX: Final = "model-sg-glm53-w4afp8-tp4-r"
 PRECISION: Final = "int4-weights-fp8-activations-bf16-kv"
@@ -42,7 +54,7 @@ SOURCE_VARIANTS: Final = (
 VARIANTS: Final = {
     1: "fc91d24-long-context-w4afp8-c8192-hicache-cuda-host-pooled-v1-admission-reserve-disabled"
     "-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192",
-    2: "fc91d24-long-context-w4afp8-c8192-hicache-cuda-host-pooled-v1-admission-reserve-disabled"
+    2: "fc91d24-long-context-w4afp8-c16384-qsplit-hicache-cuda-host-pooled-v1-admission-reserve-disabled"
     "-pool-clamp-pdi2-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192",
 }
 PREFILL_DECODE_INTERVAL: Final = {1: 1, 2: 2}
@@ -63,17 +75,25 @@ MODEL_PATH: Final = (
 HEADER: Final = (
     "# GLM-5.3 Flash dedicated long-context tier (gpu02) on W4AFP8 + HiCache, generated from\n"
     "# prod/GLM-5.3-Flash-SGL-TP4-LongContext.yaml by scripts/prepare_glm53_w4afp8_long_context.py.\n"
-    "# Both replicas run the gpu31 campaign-2 arm L2 (2026-09-23): the W4AFP8 checkpoint\n"
-    "# graphistry/GLM-5.3-Flash-W4AFP8@99f1fa7, 8192-token prefill chunks with\n"
+    "# Both replicas run the W4AFP8 checkpoint graphistry/GLM-5.3-Flash-W4AFP8@99f1fa7 with\n"
     "# --max-prefill-tokens 32768, HiCache with CUDA-owned host memory and a fixed 406 GiB\n"
-    "# startup host-memory budget per replica, and no admission reserve. r2 is a canary at\n"
-    "# --prefill-decode-interval 2 (two decode steps between prefill chunks); r1 stays at 1 as\n"
-    "# the live control. On stored long-tier traffic (gpu31, 2026-09-24) pdi 2 cut TPOT p50 to\n"
-    "# 0.53-0.72x of pdi 1 at a paired TTFT cost of at most 2%, with 100% completion. Both pin\n"
-    f"# {IMAGE}\n"
-    "# (docker/sglang-glm53-hicache-w4afp8), published by workflow run 35903077821 from recipe\n"
-    "# merge commit f8106f096e9c838b283a0f79a452d6c43e470641. Its HCC/PPCIe host-memory path\n"
-    "# has not run in a CVM before this file, so gpu02 is its first soak. Roll out with\n"
+    "# startup host-memory budget per replica, and no admission reserve.\n"
+    "#\n"
+    "# THE REPLICAS ARE NOT IDENTICAL. r1 is the live control, r2 the canary:\n"
+    "#   r1: gpu31 campaign-2 arm L2 (2026-09-23), chunk 8192, --prefill-decode-interval 1\n"
+    f"#       {IMAGE}\n"
+    "#       published by workflow run 35903077821 from recipe merge commit f8106f096e9c83.\n"
+    "#   r2: chunk 16384, --prefill-decode-interval 2, SGLANG_DSA_INDEXER_QSPLIT=1\n"
+    f"#       {R2_IMAGE}\n"
+    "#       published by workflow run 36073196105 from recipe merge commit 556482c78cd3,\n"
+    "#       which adds the opt-in DSA indexer query split (cvm-compose-files#300).\n"
+    "# On r2 the 16384 chunk and the split are ONE change: without the split a concurrent\n"
+    "# long burst left 0.04-0.65 GB free per GPU, the condition that preceded the gpu02\n"
+    "# crash; with it, 9.3-9.5 GB. validate_glm53_prod_config.rb rejects either one alone.\n"
+    "# On stored long-tier traffic (gpu31, 2026-09-24) the r2 arm ran TTFT 0.61-0.78x and\n"
+    "# TPOT 0.53-0.85x of the r1 arm, with quality at the noise floor.\n"
+    "# Neither the HCC/PPCIe host-memory path nor the indexer split's all-gather has run in\n"
+    "# a CVM before this file, so gpu02 is their first soak. Roll out with\n"
     "# docs/glm53-w4afp8-long-context-rollout.md, one replica at a time.\n"
     "# Do not hand-edit this file.\n"
 )
@@ -84,8 +104,8 @@ HEADER_REPLACEMENTS: Final = (
         "# long-context contract below, while the engines intentionally form an r1 control / r2\n"
         "# HiCache experiment and therefore are not byte-identical to the canonical file.\n",
         "# Generated from the long-context file. Routing remains the dedicated long-context\n"
-        "# contract below; both replicas run the same W4AFP8 + HiCache engine, r2 at\n"
-        "# --prefill-decode-interval 2 as a canary.\n",
+        "# contract below; both replicas run a W4AFP8 + HiCache engine, r2 as a canary at\n"
+        "# --prefill-decode-interval 2 with chunk 16384 and the DSA indexer split.\n",
     ),
     (
         "#   tier; every other host keeps the canonical file. The inference-proxy and routing\n"
@@ -100,13 +120,15 @@ HEADER_REPLACEMENTS: Final = (
         "#   DSA indexer under concurrent 400K+ contexts (exactly this tier's load), chunk 2048\n"
         "#   halves prefill speed, and no other per-replica flag moved the tail. Conversation\n"
         "#   affinity stays on because the prefix cache is worth ~3x in request capacity.\n",
-        "#   The replicas' engine flags differ only in --dist-init-addr and r2's canary\n"
-        "#   --prefill-decode-interval 2. The\n"
-        "#   8192-token chunk is the W4AFP8 setting: FP8 at 8192 OOMed in the DSA indexer under\n"
-        "#   concurrent 400K+ contexts, while W4AFP8's 2.4x larger device KV pool kept 3.7 GiB\n"
-        "#   free through 8 concurrent 647K-756K-token cold prefills on gpu31 (16384 fell to\n"
-        "#   0.04 GiB and is rejected). Conversation affinity stays on because the prefix cache\n"
-        "#   is worth ~3x in request capacity.\n",
+        "#   The replicas' engine flags differ in --dist-init-addr, --prefill-decode-interval\n"
+        "#   (1 on r1, 2 on r2) and --chunked-prefill-size (8192 on r1, 16384 on r2); r2 also\n"
+        "#   sets SGLANG_DSA_INDEXER_QSPLIT=1 and runs a different image. r1's 8192 is the\n"
+        "#   W4AFP8 setting: FP8 at 8192 OOMed in the DSA indexer under concurrent 400K+\n"
+        "#   contexts, while W4AFP8's 2.4x larger device KV pool kept 3.7 GiB free through 8\n"
+        "#   concurrent 647K-756K-token cold prefills on gpu31. 16384 was rejected then because\n"
+        "#   it fell to 0.04 GiB free; the indexer split shrinks that scratch by TP and restores\n"
+        "#   9.3-9.5 GB, which is what makes r2's 16384 admissible. Conversation affinity stays\n"
+        "#   on because the prefix cache is worth ~3x in request capacity.\n",
     ),
     (
         "#   Experiment rollback: redeploy the prior long-context tag, or remove r2's HiCache\n"
@@ -124,8 +146,9 @@ HEADER_REPLACEMENTS: Final = (
         "# cache control; r2 pins the published HCC-safe HiCache derivative and uses an 80%\n"
         "# startup host-memory budget across all four TP ranks by default. The deployment may\n"
         "# override that percentage with GLM53_HICACHE_RAM_BUDGET.\n",
-        "# DSA import-cycle fixes. Both replicas pin the published\n"
-        "# docker/sglang-glm53-hicache-w4afp8 derivative: the HCC-safe HiCache image (CUDA-owned\n"
+        "# DSA import-cycle fixes. Both replicas pin a published\n"
+        "# docker/sglang-glm53-hicache-w4afp8 derivative (r1 v1, r2 v2 with the opt-in DSA\n"
+        "# indexer split): the HCC-safe HiCache image (CUDA-owned\n"
         "# host memory) plus the W4AFP8 loader fix and the unconditional chunked-prefill pool\n"
         "# clamp. Two replicas share the CVM's RAM, so each replica's startup host-memory\n"
         "# budget defaults to a fixed 406 GiB across its four TP ranks (the qualified L2 value;\n"
@@ -155,7 +178,8 @@ HEADER_REPLACEMENTS: Final = (
         "# 1,048,576-token model context while avoiding the late K-pool workspace exhaustion\n"
         "# observed with larger prefill chunks.\n",
         "# intentionally conservative: BF16 KV, 0.80 static memory, 32 running requests, a\n"
-        "# bounded 8-request queue, 8192-token prefill chunks with --max-prefill-tokens 32768,\n"
+        "# bounded 8-request queue, prefill chunks of 8192 (r1) / 16384 (r2) with\n"
+        "# --max-prefill-tokens 32768,\n"
         "# decode graphs capped at batch 32, TileLang DSA, the CUTLASS W4A8 MoE path (hence no\n"
         "# --moe-runner-backend and no FP8 --revision), and adaptive EAGLE 5/1/6. This retains\n"
         "# the full 1,048,576-token model context.\n",
@@ -230,7 +254,9 @@ def engine_arguments(source: list[str], replica: int) -> list[str]:
         if argument == FP8_MODEL_PATH:
             arguments.append(MODEL_PATH)
         elif argument == "--chunked-prefill-size 4096":
-            arguments.extend(("--chunked-prefill-size 8192", "--max-prefill-tokens 32768"))
+            arguments.extend(
+                (f"--chunked-prefill-size {CHUNKED_PREFILL_SIZE[replica]}", "--max-prefill-tokens 32768")
+            )
         elif argument == "--prefill-decode-interval 1":
             arguments.append(f"--prefill-decode-interval {PREFILL_DECODE_INTERVAL[replica]}")
         elif argument == f"--dist-init-addr {SOURCE_DIST_INIT}":
@@ -243,6 +269,48 @@ def engine_arguments(source: list[str], replica: int) -> list[str]:
 
 def render_command(arguments: list[str], indent: int) -> str:
     return " " * indent + "command: >\n" + "".join(f"{' ' * (indent + 4)}{argument}\n" for argument in arguments)
+
+
+def resolve_engine_image_labels(text: str) -> str:
+    """Bind each ENGINE_IMAGE_PLACEHOLDER to the image its own replica runs.
+
+    The replacements above are replica-agnostic, so both replicas get a placeholder. Each site
+    is disambiguated by a marker that is already replica-specific: the Datadog/OTel label blocks
+    carry instance:N, and the scrape job carries the replica's service name.
+    """
+    for replica, label in REPLICA_IMAGE_LABEL.items():
+        for marker, expected in (
+            (f'"instance:{replica}"', 1),
+            (f'nearai.otel.instance: "{replica}"', 1),
+            (f"sglang-{SERVICE_PREFIX}{replica}", 1),
+        ):
+            # Enforce the count rather than letting find() silently take the first hit. If a
+            # marker ever stops being replica-unique, binding the nearest placeholder could
+            # quietly attach the wrong replica's image label; fail loudly instead, matching the
+            # exact-count discipline replace_exact uses everywhere else in this script.
+            actual = text.count(marker)
+            if actual != expected:
+                raise GenerationError(
+                    f"engine_image: marker {marker!r} for replica {replica} must appear "
+                    f"{expected} time(s), found {actual}"
+                )
+            index = text.find(marker)
+            head, tail = text[:index], text[index:]
+            placeholder_in_head = head.rfind("ENGINE_IMAGE_PLACEHOLDER")
+            placeholder_in_tail = tail.find("ENGINE_IMAGE_PLACEHOLDER")
+            if placeholder_in_head == -1 and placeholder_in_tail == -1:
+                raise GenerationError(f"engine_image: no placeholder near {marker}")
+            # The label precedes its instance marker in the Datadog tag list and follows it in
+            # the OTel blocks; take whichever is closer to the marker.
+            if placeholder_in_tail != -1 and (
+                placeholder_in_head == -1 or placeholder_in_tail < len(head) - placeholder_in_head
+            ):
+                text = head + tail.replace("ENGINE_IMAGE_PLACEHOLDER", label, 1)
+            else:
+                text = head[:placeholder_in_head] + label + head[placeholder_in_head + len("ENGINE_IMAGE_PLACEHOLDER"):] + tail
+    if "ENGINE_IMAGE_PLACEHOLDER" in text:
+        raise GenerationError("engine_image: unresolved placeholder remains")
+    return text
 
 
 def generate(source: str) -> str:
@@ -276,7 +344,21 @@ def generate(source: str) -> str:
     override = r2[override_start:override_end]
     if not override.startswith(f"    image: {SOURCE_HICACHE_IMAGE}\n    command: >\n") or "\n    environment:\n" not in override:
         raise GenerationError("replica 2 no longer carries the source HiCache override")
-    r2 = r2[:override_start] + render_command(engine_arguments(source_arguments, 2), 4) + r2[override_end:]
+    # r2 must override image AND environment, not just command: a YAML merge key replaces a
+    # list wholesale rather than deep-merging it, so r2 cannot inherit the anchor's environment
+    # and add one variable. The block is derived from the anchor here rather than duplicated as
+    # a literal, so the two can never drift apart.
+    _, _, anchor_environment = section(anchor, "  environment:\n", "  restart: unless-stopped\n", "anchor environment block")
+    r2_environment = "".join(
+        f"  {line}\n" if line.strip() else "\n" for line in anchor_environment.splitlines()
+    ) + "".join(R2_EXTRA_ENV)
+    r2 = (
+        r2[:override_start]
+        + f"    image: {REPLICA_IMAGE[2]}\n"
+        + render_command(engine_arguments(source_arguments, 2), 4)
+        + r2_environment
+        + r2[override_end:]
+    )
     updated = updated[:r2_start] + r2 + updated[r2_end:]
 
     for old, new, count, label in (
@@ -286,21 +368,22 @@ def generate(source: str) -> str:
         ('precision: "fp8-weights-bf16-kv"', f'precision: "{PRECISION}"', 2, "scrape precision"),
         (SOURCE_VARIANTS[0], VARIANTS[1], 3, "replica 1 config_variant"),
         (SOURCE_VARIANTS[1], VARIANTS[2], 3, "replica 2 config_variant"),
-        ('"request_logging:disabled",', f'"request_logging:disabled","engine_image:{ENGINE_IMAGE_LABEL}",', 2, "log engine_image"),
+        ('"request_logging:disabled",', '"request_logging:disabled","engine_image:ENGINE_IMAGE_PLACEHOLDER",', 2, "log engine_image"),
         (
             '      nearai.otel.request_logging: "disabled"\n',
-            f'      nearai.otel.request_logging: "disabled"\n      nearai.otel.engine_image: "{ENGINE_IMAGE_LABEL}"\n',
+            '      nearai.otel.request_logging: "disabled"\n      nearai.otel.engine_image: "ENGINE_IMAGE_PLACEHOLDER"\n',
             2,
             "engine_image label",
         ),
         (
             '                      request_logging: "disabled"\n',
-            f'                      request_logging: "disabled"\n                      engine_image: "{ENGINE_IMAGE_LABEL}"\n',
+            '                      request_logging: "disabled"\n                      engine_image: "ENGINE_IMAGE_PLACEHOLDER"\n',
             2,
             "scrape engine_image",
         ),
     ):
         updated = replace_exact(updated, old, new, count, label)
+    updated = resolve_engine_image_labels(updated)
     return HEADER + updated
 
 
