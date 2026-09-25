@@ -630,7 +630,10 @@ end
 # equal the long-context file, so the long-domain routing contract (nginx and the :8001
 # discovery stub, registrar, proxy pooling) cannot drift.
 W4AFP8_LONG_CONTEXT_FILE = File.join(ROOT, "prod", "GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext.yaml")
-W4AFP8_LONG_CONTEXT_IMAGE = "docker.io/nearaidev/sglang@sha256:fde25985aea3ebabf1eb581ae21d53be8540e32933eef942ee8b962a1bfbea20"
+# Both replicas run the v2 split image; the v1 digest is retained only so the rollback
+# target in docs/glm53-w4afp8-long-context-rollout.md stays greppable from this file.
+W4AFP8_LONG_CONTEXT_V1_IMAGE = "docker.io/nearaidev/sglang@sha256:fde25985aea3ebabf1eb581ae21d53be8540e32933eef942ee8b962a1bfbea20"
+W4AFP8_LONG_CONTEXT_IMAGE = "docker.io/nearaidev/sglang@sha256:8ff1a487b98a52fe08b781715bebd7c8c445d4fe068f312f03f527d5a3c77e84"
 # r2 runs the v2 image (#300) with the opt-in DSA indexer query split; r1 stays on the #294
 # image as the live control, so a targeted `compose up` recreates r2 alone.
 W4AFP8_LONG_CONTEXT_R2_IMAGE = "docker.io/nearaidev/sglang@sha256:8ff1a487b98a52fe08b781715bebd7c8c445d4fe068f312f03f527d5a3c77e84"
@@ -643,9 +646,9 @@ W4AFP8_CHECKPOINT = "graphistry/GLM-5.3-Flash-W4AFP8"
 W4AFP8_PRECISION = "int4-weights-fp8-activations-bf16-kv"
 W4AFP8_LONG_CONTEXT_REPLICAS = {
   "model-sg-glm53-w4afp8-tp4-r1" => { "devices" => %w[0 1 2 3], "dist_init" => "127.0.0.1:29510", "instance" => "1", "pdi" => "1",
-                                     "image" => W4AFP8_LONG_CONTEXT_IMAGE, "chunk" => "8192", "qsplit" => nil },
+                                     "image" => W4AFP8_LONG_CONTEXT_R2_IMAGE, "chunk" => "8192", "qsplit" => "1" },
   "model-sg-glm53-w4afp8-tp4-r2" => { "devices" => %w[4 5 6 7], "dist_init" => "127.0.0.1:29511", "instance" => "2", "pdi" => "2",
-                                     "image" => W4AFP8_LONG_CONTEXT_R2_IMAGE, "chunk" => "16384", "qsplit" => "1" },
+                                     "image" => W4AFP8_LONG_CONTEXT_R2_IMAGE, "chunk" => "8192", "qsplit" => "1" },
 }.freeze
 W4AFP8_LONG_CONTEXT_ARGV = Shellwords.split(<<~'ARGV').freeze
   sglang serve
