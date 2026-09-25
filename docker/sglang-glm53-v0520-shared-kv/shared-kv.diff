@@ -75,6 +75,55 @@ index 50d586af64..331d87b31f 100644
      except Exception as exc:
          record["error"] = str(exc)
      records = [None] * world.world_size
+diff --git a/python/sglang/srt/mem_cache/storage/file/lru_file_evictor.py b/python/sglang/srt/mem_cache/storage/file/lru_file_evictor.py
+index 6b7997ec16..1a6c511656 100644
+--- a/python/sglang/srt/mem_cache/storage/file/lru_file_evictor.py
++++ b/python/sglang/srt/mem_cache/storage/file/lru_file_evictor.py
+@@ -91,11 +91,18 @@ class LRUFileEvictor:
+         self._load_config(extra_config or {})
+ 
+         self._eviction_configured = self.max_size_bytes > 0 or self.min_free_bytes > 0
+-        self._eviction_enabled = self._eviction_configured and self._is_storage_owner
++        # Every rank bounds what it writes. Non-owner MLA ranks write only rank-sharded sidecars
++        # (e.g. mamba state); they track and evict only their own files, never scan shared ones.
++        self._eviction_enabled = self._eviction_configured
+         if self._eviction_configured and not self._is_storage_owner:
++            fraction = float(os.environ.get("SGLANG_HICACHE_FILE_BACKEND_SIDECAR_MAX_FRACTION", "0.25"))
++            if not 0.0 < fraction <= 1.0:
++                raise ValueError("SGLANG_HICACHE_FILE_BACKEND_SIDECAR_MAX_FRACTION must be in (0, 1]")
++            if self.max_size_bytes > 0:
++                self.max_size_bytes = int(self.max_size_bytes * fraction)
+             logger.info(
+-                f"HiCacheFile rank {self._tp_rank} (MLA): eviction handled by rank 0; "
+-                f"this rank skips LRU bookkeeping and will not create new files."
++                f"HiCacheFile rank {self._tp_rank} (MLA): shared files are evicted by rank 0; "
++                f"this rank bounds only its own sidecar files, cap={self.max_size_bytes} B."
+             )
+ 
+         if not self._eviction_enabled:
+@@ -112,7 +119,8 @@ class LRUFileEvictor:
+                 )
+                 self.max_size_bytes = safe_max
+ 
+-        self._scan_existing_files()
++        if self._is_storage_owner:
++            self._scan_existing_files()
+         with self._lock:
+             if self.max_size_bytes > 0 and self._total_bytes > self.max_size_bytes:
+                 self._evict_locked(0)
+@@ -175,12 +183,6 @@ class LRUFileEvictor:
+         """
+         if not self._eviction_configured:
+             return True  # unbounded storage: nothing to enforce
+-        if not self._is_storage_owner:
+-            logger.warning(
+-                f"HiCacheFile rank {self._tp_rank} is not the MLA storage owner; "
+-                f"not caching new key {key} because file eviction is enabled."
+-            )
+-            return False
+         if self.max_size_bytes > 0 and value_bytes > self.max_size_bytes:
+             logger.warning(
+                 f"HiCacheFile: value {value_bytes} B exceeds cap "
 diff --git a/python/sglang/srt/mem_cache/unified_cache/unified_tree_core.py b/python/sglang/srt/mem_cache/unified_cache/unified_tree_core.py
 index 2b279540ca..d35f5e26af 100644
 --- a/python/sglang/srt/mem_cache/unified_cache/unified_tree_core.py

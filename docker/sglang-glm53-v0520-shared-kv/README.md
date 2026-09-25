@@ -8,9 +8,9 @@ containers mount: it is guest RAM, nothing leaves the CVM, and no network hop is
 | file | what |
 |---|---|
 | `v0520-port.diff` | v0.5.20 → branch `nearai-v0520` @ `4fb82813` (26 files): HCC-safe HiCache (CUDA-owned host memory, pooled transfers, startup RAM budget), W4AFP8 loader fix, chunked-prefill pool clamp, opt-in DSA indexer query split, four fork fixes |
-| `shared-kv.diff` | new here (3 files): HiCache L3 storage for compressed-DSA models + a RAM budget that coexists with a shared store |
+| `shared-kv.diff` | new here (4 files): HiCache L3 storage for compressed-DSA models, a RAM budget that coexists with a shared store, and per-rank bounding of mamba sidecars under a store cap |
 
-`apply-patches.py` checks every patch digest and the exact before/after digest of all 27 touched
+`apply-patches.py` checks every patch digest and the exact before/after digest of all 28 touched
 files (`source-manifest.json`). The result is byte-identical to the image qualified on gpu32.
 
 ## Why a patch was needed
@@ -42,16 +42,23 @@ Everything is opt-in; without a storage backend the engine behaves as the port d
 SGLANG_HICACHE_FILE_BACKEND_STORAGE_DIR=/shared-kv        # the same tmpfs volume in every replica
 SGLANG_HICACHE_RAM_BUDGET=406GiB                          # per replica, as today
 SGLANG_HICACHE_SHARED_STORE_BUDGET=400GiB                 # the whole store, reserved at startup
-SGLANG_HICACHE_FILE_BACKEND_MAX_SIZE=200Gi                # per replica, file-backend size syntax (Gi/G)
+SGLANG_HICACHE_FILE_BACKEND_MAX_SIZE=110Gi                # rank 0 of each replica, file-backend size syntax (Gi/G)
 SGLANG_HICACHE_CUDA_HOST_MEMORY=1                         # required on HCC/PPCIe hosts
 ```
 
-Each replica's rank-0 LRU evictor only counts its own writes and the files present when it started,
-so the per-replica cap must be at most the store budget divided by the number of replicas. If one
-replica evicts a page the other expected, that lookup fails and the request recomputes; nothing breaks.
+Each replica's rank 0 owns the shared KV/indexer files: it scans the store at start-up and evicts LRU
+pages under `SGLANG_HICACHE_FILE_BACKEND_MAX_SIZE`. The other TP ranks write only their own mamba
+shards and bound those at `SGLANG_HICACHE_FILE_BACKEND_SIDECAR_MAX_FRACTION` (default 0.25) of the cap,
+evicting only files they wrote. A replica therefore uses at most `cap × (1 + (TP−1) × 0.25)`; size the
+cap so all replicas fit the store budget (2 × TP4: `3.5 × cap ≤ budget`). Evictors do not see each
+other's writes; if one evicts a page another expected, that lookup fails and the request recomputes.
+Stock HiCacheFile refused every write on non-owner MLA ranks once a cap was set, which silently
+dropped their mamba shards and made every cross-replica restore fail its all-or-nothing check.
 
 **Sizing on gpu02.** The CVM had ~1.43 TB available at start-up (r2 saw 995 GB after r1 took its
 406 GiB). Two 406 GiB private host tiers plus a 400 GiB store fits with ~100 GiB to spare.
+Do not NUMA-pin engine memory (`--cpuset-mems`): a replica's 406 GiB host tier plus the store pages it
+writes exceed one socket's memory (a lab run pinned to one gpu32 NUMA node was OOM-killed).
 
 **The private host tier must stay at least as large as the GPU KV pool.** KV reaches the store only
 by being written through to host memory first; a host tier smaller than the GPU pool (a lab config

@@ -12,9 +12,10 @@ for mod in (
     "sglang.srt.mem_cache.unified_cache.unified_tree_core",
     "sglang.srt.mem_cache.startup_ram_budget",
     "sglang.srt.mem_cache.hicache_storage",
+    "sglang.srt.mem_cache.storage.file.lru_file_evictor",
 ):
     importlib.import_module(mod)
-print("1/4 patched modules import")
+print("1/5 patched modules import")
 EOF
 
 # 2. The RAM budget reserves the shared store's remaining growth, and refuses unsafe configs.
@@ -65,7 +66,7 @@ assert refused(SGLANG_HICACHE_SHARED_STORE_BUDGET=None), "missing store budget a
 assert refused(SGLANG_HICACHE_FILE_BACKEND_MAX_SIZE=None), "missing per-replica cap accepted"
 assert refused(SGLANG_HICACHE_FILE_BACKEND_MAX_SIZE="8Gi"), "per-replica cap above the store budget accepted"
 assert refused(SGLANG_HICACHE_SHARED_STORE_BUDGET="50%"), "percentage store budget accepted"
-print("2/4 shared-store RAM reserve")
+print("2/5 shared-store RAM reserve")
 EOF
 
 # 3. Two TP4 replicas of the same model produce identical storage keys, so they share entries,
@@ -93,7 +94,7 @@ page = torch.randint(0, 255, (4096,), dtype=torch.uint8)
 assert r1.set("page0", page)
 out = r2.get("page0", torch.empty_like(page))
 assert out is not None and torch.equal(out, page)
-print("3/4 cross-replica file store round trip")
+print("3/5 cross-replica file store round trip")
 EOF
 
 # 4. The storage hash chain runs at the 64-token transfer page even when the radix tree page is 256.
@@ -112,6 +113,35 @@ assert 'reason="tree_page_align"' in cache_src
 # The startup guard is lifted (cache host-memory mode); attaching a store at runtime stays refused.
 assert "storage hashes and transfers require matching page sizes" not in cache_src
 assert "Compressed DSA storage supports --hicache-host-memory-mode cache only." in cache_src
-print("4/4 storage hash chain at the transfer page")
+print("4/5 storage hash chain at the transfer page")
+EOF
+
+# 5. With a size cap, a non-owner MLA rank still writes (and bounds) its own rank-sharded sidecar
+#    files, e.g. mamba state; it never adopts or evicts the shared files that rank 0 owns.
+python3 - <<'EOF'
+import os, tempfile
+from sglang.srt.mem_cache.storage.file.lru_file_evictor import LRUFileEvictor
+
+d = tempfile.mkdtemp()
+shared = os.path.join(d, "kvpage_m.bin")
+with open(shared, "wb") as f:
+    f.write(b"\0" * 4096)
+os.environ["SGLANG_HICACHE_FILE_BACKEND_SIDECAR_MAX_FRACTION"] = "0.25"
+cfg = {"max_size": "64Ki"}
+owner = LRUFileEvictor(d, "_m", tp_rank=0, is_mla_model=True, extra_config=cfg)
+rank1 = LRUFileEvictor(d, "_m", tp_rank=1, is_mla_model=True, extra_config=cfg)
+assert owner.enabled and rank1.enabled
+assert owner.max_size_bytes == 64 * 1024 and rank1.max_size_bytes == 16 * 1024
+assert len(owner._lru) == 1, "owner adopts the existing shared file"
+assert len(rank1._lru) == 0, "non-owner must not adopt shared files"
+for i in range(8):  # 8 x 4 KiB of this rank's own sidecars against a 16 KiB cap
+    key = f"s{i}.mamba_m"
+    assert rank1.reserve(key, 4096, key=key), "non-owner refused its own sidecar write"
+    with open(os.path.join(d, f"{key}.bin"), "wb") as f:
+        f.write(b"\1" * 4096)
+    rank1.commit(key)
+assert rank1._total_bytes <= 16 * 1024, rank1._total_bytes
+assert os.path.exists(shared), "non-owner evicted a shared file it does not own"
+print("5/5 non-owner ranks bound their own sidecars")
 EOF
 echo "test-cpu OK"

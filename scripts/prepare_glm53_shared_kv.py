@@ -16,7 +16,7 @@ the shared KV cache image and share one CPU-RAM KV store:
   * the store is one tmpfs volume (`shared_kv`) mounted at /shared-kv in both engines: guest RAM,
     nothing leaves the CVM;
   * the startup RAM budget keeps 406 GiB per replica and reserves the store's growth
-    (SGLANG_HICACHE_SHARED_STORE_BUDGET); each replica's evictor is capped at half of it;
+    (SGLANG_HICACHE_SHARED_STORE_BUDGET); each replica's evictors are capped so both fit it;
   * config_variant and engine_image telemetry say so.
 
 Everything else stays byte-identical to the source. `--write` regenerates the target; `--check`
@@ -46,8 +46,10 @@ SOURCE_HICACHE_TAG: Final = "hicache-cuda-host-pooled-v1-"
 HICACHE_TAG: Final = "hicache-cuda-host-pooled-v1-l3-shared-file-"
 STORE_MOUNT: Final = "/shared-kv"
 STORE_BUDGET: Final = "${GLM53_SHARED_KV_STORE_BUDGET:-400GiB}"
-# HiCacheFile's size syntax (Gi/G, not GiB); at most store budget / replicas.
-REPLICA_CAP: Final = "${GLM53_SHARED_KV_REPLICA_CAP:-200Gi}"
+# HiCacheFile's size syntax (Gi/G, not GiB). Rank 0 is capped at this; each other TP rank bounds its own
+# mamba sidecars at 25% of it, so a replica uses at most cap x (1 + 3 x 0.25) = 1.75 cap. Two replicas:
+# 3.5 cap <= store budget, i.e. <= 114 GiB for 400 GiB.
+REPLICA_CAP: Final = "${GLM53_SHARED_KV_REPLICA_CAP:-110Gi}"
 # Above the store budget so the budget and the evictors bind first, never tmpfs ENOSPC.
 TMPFS_SIZE: Final = "${GLM53_SHARED_KV_TMPFS_SIZE:-440g}"
 
@@ -59,7 +61,7 @@ HEADER: Final = (
     "# instead of re-prefilling (gpu32: 3.3x faster at 131K, 4.0x at 262K, logprobs at the noise\n"
     "# floor). Each replica keeps its 406 GiB private host tier; the startup budget reserves the\n"
     "# store's growth (GLM53_SHARED_KV_STORE_BUDGET, default 400GiB) and each replica's evictor is\n"
-    "# capped at half of it (GLM53_SHARED_KV_REPLICA_CAP). Engine flags are otherwise unchanged from\n"
+    "# capped so both replicas fit it (GLM53_SHARED_KV_REPLICA_CAP). Engine flags are otherwise unchanged from\n"
     "# the source, so this isolates the sharing change. Not yet soaked on an HCC/PPCIe host: see\n"
     "# docs/glm53-shared-kv-rollout.md before deploying.\n"
     "#\n"

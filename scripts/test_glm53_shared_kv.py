@@ -49,10 +49,11 @@ class RenderTest(unittest.TestCase):
         self.assertNotIn("volumes:", engine_block(self.out, 2))
         self.assertIn("  shared_kv:\n    driver: local\n    driver_opts:\n      type: tmpfs\n", self.out)
 
-    def test_replica_cap_is_half_the_store_budget_by_default(self) -> None:
+    def test_two_replicas_fit_the_store_budget_by_default(self) -> None:
         budget = int(re.search(r":-(\d+)GiB", generator.STORE_BUDGET).group(1))
         cap = int(re.search(r":-(\d+)Gi}", generator.REPLICA_CAP).group(1))
-        self.assertLessEqual(cap * 2, budget)
+        # rank 0 at the cap + 3 non-owner ranks at 25% of it, per replica, two replicas.
+        self.assertLessEqual(cap * (1 + 3 * 0.25) * 2, budget)
         tmpfs_g = int(re.search(r":-(\d+)g}", generator.TMPFS_SIZE).group(1))
         self.assertGreater(tmpfs_g * 10**9, budget * 1024**3, "tmpfs must be larger than the store budget")
 

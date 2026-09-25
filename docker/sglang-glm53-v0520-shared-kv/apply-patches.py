@@ -12,7 +12,7 @@ ROOT: Final = Path("/sgl-workspace/sglang")
 # Order matters: the shared-cache patch is written against the ported source.
 PATCHES: Final = {
     "v0520-port.diff": "a29b204bdf38f415ef7845bbb7da247e4b5d14a1ba0f56bd8aa4545f714e5ab2",
-    "shared-kv.diff": "e19f4cedfc7b93932017dc7df8a39af951bf4811f219526d6c4460a528d0d5c8",
+    "shared-kv.diff": "ed1bb7df493b9c8d6b1d0dc438effc331fc790f4c0d11e2a947d45b4395de7bd",
 }
 MANIFEST: Final = json.loads((CONTEXT / "source-manifest.json").read_text())
 

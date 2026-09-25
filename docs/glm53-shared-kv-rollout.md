@@ -65,7 +65,7 @@ disappears with the volume; nothing persistent is left behind.
 |---|---|---|
 | private host tier (`SGLANG_HICACHE_RAM_BUDGET`) | 406 GiB | 812 GiB |
 | shared store budget (`GLM53_SHARED_KV_STORE_BUDGET`) | — | 400 GiB |
-| per-replica evictor cap (`GLM53_SHARED_KV_REPLICA_CAP`) | 200 GiB | ≤ budget |
+| rank-0 evictor cap (`GLM53_SHARED_KV_REPLICA_CAP`) | 110 GiB (+3 × 27.5 GiB mamba sidecars) | 385 GiB ≤ budget |
 | tmpfs size (`GLM53_SHARED_KV_TMPFS_SIZE`) | — | 440 GB |
 
 gpu02's CVM had ~1.43 TB available at start-up. The first replica's budget reserves the whole store
@@ -73,7 +73,8 @@ budget; the second reserves only the store's remaining growth (tmpfs pages alrea
 MemAvailable).
 
 **Rules:**
-- The per-replica cap must stay ≤ store budget / 2, because each evictor only counts its own writes.
+- Size the cap so `replicas × cap × (1 + (TP−1) × 0.25) ≤ store budget`; each evictor only counts its own writes.
+- Never NUMA-pin engine memory: a 406 GiB host tier plus store pages exceed one socket.
 - The private host tier must stay ≥ the GPU KV pool; a smaller one starves the store.
 
 ## Known gaps
