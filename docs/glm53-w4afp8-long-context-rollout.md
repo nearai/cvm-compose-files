@@ -99,8 +99,16 @@ Lab evidence, gpu31 on stored long-tier traffic (2026-09-24):
 Only r2's engine definition changed.
 1. `compose/down` this file with `["model-sg-glm53-w4afp8-tp4-r2"]`. r1 carries the tier while r2 is down, so pick the low-traffic window (gate 4).
 2. `compose/up` this file with the same `services`.
-3. Run the r2 startup and direct checks (steps 3–4 above).
-4. Do not recreate r1, the proxy or the registrar. A `dry_run` of step 2 must plan exactly `model-sg-glm53-w4afp8-tp4-r2`.
+3. **If this canary changed either replica's `config_variant` or `engine_image`, also `compose/up` `["otelcol-contrib"]` with `force_recreate`.** Those labels live in the `otelcol_app_config` block, which only the collector reads, so a replica-scoped deploy leaves the collector serving the *previous* tag's labels. The engine runs the new config while reporting itself as the old one — both arms then carry identical `config_variant`, and the A/B silently compares a replica against itself. This is telemetry-only; it recreates no engine. Observed on the 2026-09-25 gpu02 canary, where r2 ran `c16384`/`pdi2` for ~15 minutes while reporting `c8192`/`pdi1`/`fde25985aea3`.
+4. Run the r2 startup and direct checks (steps 3–4 above).
+5. Do not recreate r1, the proxy or the registrar. A `dry_run` of step 2 must plan exactly `model-sg-glm53-w4afp8-tp4-r2`.
+6. **Verify the split before trusting any readout:** the two replicas must report *different* `config_variant` and `engine_image` in Prometheus. Check it rather than assuming — the failure above is silent and produces a plausible-looking dashboard.
+
+   ```promql
+   count by (container_name, config_variant, engine_image) (sglang_num_running_reqs{host_machine="gpu02"})
+   ```
+
+   A replica's stale pre-reload series lingers for roughly one staleness window (~5 min) after the collector restarts; wait for it to age out before reading percentiles.
 
 **Readout.** Compare r2 against r1 over at least 24 h of normal traffic:
 - decode inter-token latency (p50/p90) under concurrent long prefills;
@@ -129,7 +137,9 @@ Quality was at the noise floor (GSM8K 97.41 vs 97.37, MMLU 87.66 vs 87.66, passk
 
 **The chunk and the split are one change, not two.** At 16384 *without* the split, a concurrent long burst left 0.04–0.65 GB free per GPU — the condition that preceded the gpu02 crash. With the split it is 9.3–9.5 GB, clearing the ≥3 GB gate. `scripts/validate_glm53_prod_config.rb` rejects any replica that sets `--chunked-prefill-size 16384` without `SGLANG_DSA_INDEXER_QSPLIT=1`, and rejects the variable on any image that does not carry the patch. Never ship one without the other.
 
-Deployment is the same r2-only pair as the pdi 2 canary: `compose/down` then `compose/up` with `["model-sg-glm53-w4afp8-tp4-r2"]`, a `dry_run` that must plan exactly that one service, and no recreate of r1, the proxy or the registrar.
+Deployment is the same r2-only pair as the pdi 2 canary: `compose/down` then `compose/up` with `["model-sg-glm53-w4afp8-tp4-r2"]`, a `dry_run` that must plan exactly that one service, and no recreate of r1, the proxy or the registrar. This canary *does* change r2's `config_variant` and `engine_image`, so it also needs the `otelcol-contrib` recreate from step 3 above, or both arms report identical labels and the comparison is meaningless.
+
+Deployed to gpu02 on 2026-09-25 as tag `v0.0.448`. Startup was clean: weights 167–171 s on all four ranks at `quant=w4afp8`, KV pool 3,525,632 tokens, DeepGEMM warmup 32,768 shapes in 3 s from the retained kernel-cache volume, and `Allocated 57.07 GiB CUDA-owned pinned host memory ... SGLANG_HICACHE_CUDA_HOST_MEMORY=1` — the first confirmation that the HCC-safe allocator works inside a CVM rather than only on a CC-off lab host. The old r2 drained its two in-flight requests before exiting; nothing was dropped.
 
 **Additional readout beyond the pdi 2 list:** minimum free device memory per GPU during concurrent long bursts (expect ≈9 GB, not <1 GB), and `SGLANG_DSA_INDEXER_QSPLIT` mismatch or illegal-memory lines in r2's logs (expect none).
 
