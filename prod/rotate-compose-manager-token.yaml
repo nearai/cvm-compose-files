@@ -1,0 +1,228 @@
+# One-shot maintenance: rotates the compose-manager `BEARER_TOKEN` inside a
+# running compose-manager CVM WITHOUT restarting the CVM and WITHOUT touching
+# any model container. See docs/rotate-compose-manager-token.md for the full
+# canary / apply / verify / rollback runbook — read it before running this.
+#
+# NEVER deploy this under the serving `work` or `dstack` project (compose-manager
+# rejects both as reserved, see resolve_compose_project in nearai/compose-manager
+# src/main.rs). Always pass "project": "cm-token-rotate" explicitly on every
+# /compose/up, /compose/down and /compose/logs call against this file — the
+# `name:` below is only a Compose fallback, not a guard against an explicit
+# override (same caveat as prod/migration-gpu-preflight.yaml).
+#
+# Mechanism (verified against nearai/compose-manager @ 8e07c35, prod tag
+# prod-20260702-8e07c35 — the pinned digest running on every compose-manager
+# CVM as of 2026-09-25 — and nearai/cvm-ansible-playbooks
+# cvm_configurations/compose-manager.yaml.j2):
+#   - The compose-manager-launcher sidecar (container_name: compose-manager-launcher,
+#     always present next to compose-manager) already mounts:
+#       * the CVM's sealed decrypted secrets, read-only, at $LAUNCHER_BASE_ENV_FILE
+#         (default /dstack-env — this is where the ORIGINAL BEARER_TOKEN lives;
+#         it cannot be edited in place, only via a full CVM redeploy)
+#       * the writable `dstack_work` volume at /app/work, which holds
+#         $LAUNCHER_ENV_FILE (default /app/work/.env.launcher) — an override
+#         file the launcher itself writes to today (e.g. COMPOSE_MANAGER_IMAGE
+#         on every auto-update) and passes as the LATER --env-file, so it wins
+#         interpolation over the sealed /dstack-env for anything it sets.
+#   - The launcher recreates compose-manager with exactly:
+#       docker compose -p "$LAUNCHER_COMPOSE_PROJECT" -f "$LAUNCHER_COMPOSE_FILE" \
+#         --env-file "$LAUNCHER_BASE_ENV_FILE" --env-file "$LAUNCHER_ENV_FILE" \
+#         up -d --no-deps compose-manager
+#     (launcher.sh compose_up(), unchanged at 8e07c35). `--no-deps`, and the
+#     fact this command never adds --remove-orphans, mean it only ever
+#     recreates the single `compose-manager` container in project `dstack` —
+#     certbot/datadog/telemetry in that same project, and every model
+#     project, are untouched. `docker exec` into an already-running container
+#     inherits that container's own environment, so the LAUNCHER_* variables
+#     below are read live from compose-manager-launcher itself, not hardcoded
+#     here — this file self-adapts if cvm-ansible-playbooks ever changes them.
+#   - We write a BEARER_TOKEN= line into $LAUNCHER_ENV_FILE (backed up first,
+#     replaced atomically via tmp+mv, every other line preserved), then run
+#     the launcher's own recreate command above so the NEW compose-manager
+#     container picks up the new token — the sealed /dstack-env is never
+#     written to, so nothing here requires a CVM redeploy.
+#   - This file's own `rotate-token` service never mounts the CVM decrypted
+#     env, dstack.sock, or any model/HF-cache volume, and never gets network
+#     access. Its only host access is the Docker socket, used solely to
+#     `docker exec` into the already-privileged compose-manager-launcher
+#     container to do the file edit and the recreate — no new privileged
+#     surface is introduced beyond what that sidecar already has today.
+#   - NEW_BEARER_TOKEN arrives only via this compose file's `env` map on the
+#     /compose/up call (compose-manager writes it to a short-lived per-call
+#     temp --env-file, deleted when the request's NDJSON stream ends — the
+#     same channel every other secret, e.g. PROXY_TOKEN, already goes through).
+#     It is never written to git, and compose-manager's action log / attestation
+#     report_data records only {timestamp, action, tag, commit, file,
+#     file_sha256, services} — never env values (verified: DeploymentAction in
+#     src/main.rs has no env field, and the `info!` call that logs env_files
+#     logs only their paths). Brave's public verifier DOES see the compose_up
+#     action itself (file + file_sha256) — give Brave a heads-up before running.
+#
+# Exit codes from the `rotate-token` container (compose/up's own response only
+# confirms the container STARTED — check the container's own exit code via
+# POST /docker/ps or POST /compose/logs, project cm-token-rotate, to know
+# whether the rotation itself actually succeeded):
+#   0 = rotated; compose-manager came back healthy on the NEW token
+#   2 = rotation failed; automatically rolled back; compose-manager is healthy
+#       again on the OLD token
+#   3 = CRITICAL: the rollback recreate also failed to come up healthy —
+#       manual intervention required on this host; do not assume either token
+#       works until checked by hand
+#
+# Usage (compose-manager `POST /compose/up`) — canary with dry_run first using
+# a PLACEHOLDER token value (dry_run still writes the per-call temp env file
+# to disk before short-circuiting, so never pass the real new token on a
+# dry_run call):
+#   curl -sS 'http://<host_ip>:8080/compose/up' \
+#     -H 'Authorization: Bearer <CM_TOKEN>' \
+#     -H 'Content-Type: application/json' \
+#     -d '{"tag":"<reviewed tag>","file":"prod/rotate-compose-manager-token.yaml",
+#          "project":"cm-token-rotate","services":["rotate-token"],
+#          "env":{"NEW_BEARER_TOKEN":"placeholder-for-dry-run-only"},
+#          "dry_run":true}'
+# Expected plan: create only `rotate-token` under project cm-token-rotate —
+# nothing else. Then repeat with the REAL token and "dry_run":false.
+name: cm-token-rotate
+
+x-logging-conf: &logging-conf
+  driver: "json-file"
+  options:
+    max-size: "1m"
+    max-file: "2"
+    labels: "com.datadoghq.ad.logs"
+
+services:
+  rotate-token:
+    # Official Docker Inc CLI image (Alpine 3.21 base): just the `docker`
+    # binary + busybox userland (sh, awk, cp, mv, date, stat, chmod, grep) —
+    # no compose plugin needed here, since the actual `docker compose`
+    # invocation runs inside compose-manager-launcher via `docker exec`,
+    # reusing its own already-installed docker-cli-compose. Digest-pinned.
+    image: docker:27-cli@sha256:851f91d241214e7c6db86513b270d58776379aacc5eb9c4a87e5b47115e3065c
+    container_name: rotate-token
+    # Defense in depth: a service tagged with `profiles:` is skipped by a
+    # blanket `up` with no services named, and only starts when explicitly
+    # requested (as this runbook always does via "services":["rotate-token"]).
+    profiles: [cm-token-rotate]
+    restart: "no"
+    user: "0:0"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    network_mode: none
+    # The Docker socket is the ONLY host access this container has — used
+    # exclusively to `docker exec` into compose-manager-launcher (see the
+    # header comment for why that is sufficient and does not need docker.sock
+    # to run `docker compose` itself, the model volumes, or dstack.sock).
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - NEW_BEARER_TOKEN=${NEW_BEARER_TOKEN}
+    entrypoint: ["sh", "-c"]
+    # IMPORTANT: docker compose interpolates `$VAR` / `${VAR}` / `${VAR:-x}`
+    # ANYWHERE in this file, including inside this multi-line command string —
+    # not just in top-level fields. Every `$` below that must reach the SHELL
+    # (not compose) is doubled as `$$`, the documented compose escape for a
+    # literal `$` (same convention already used by ../cleanup-hf-model.yaml).
+    # To keep that escaping burden small and auditable, the substantial logic
+    # (rewrite + recreate + health-check + rollback, all run inside
+    # compose-manager-launcher) is carried as a base64 blob instead of being
+    # written inline with `$$` on every line — base64's alphabet has no `$`,
+    # so compose cannot alter it. It decodes to the plain, unescaped script at
+    # docs/rotate-compose-manager-token.md#inner-script (keep the two in sync;
+    # CI's `scripts/validate_rotate_compose_manager_token.rb` checks the
+    # decoded blob's sha256 against a pinned value so drift fails loudly).
+    command:
+      - |
+        set -eu
+
+        # --- 1. Validate the new token without ever printing it. ---
+        # Reads the value via awk's ENVIRON, never as a -v/argv literal, so
+        # it cannot appear in this container's own process list either.
+        if ! awk 'BEGIN {
+              v = ENVIRON["NEW_BEARER_TOKEN"]
+              if (v == "") { print "NEW_BEARER_TOKEN is required and must be non-empty" > "/dev/stderr"; exit 1 }
+              n = length(v)
+              if (n < 16 || n > 256) { print "NEW_BEARER_TOKEN length " n " is out of bounds [16,256]" > "/dev/stderr"; exit 1 }
+              if (v ~ /[ \t\r\n,"'"'"']/) { print "NEW_BEARER_TOKEN contains a disallowed character (whitespace, comma or quote)" > "/dev/stderr"; exit 1 }
+              exit 0
+            }'; then
+          exit 1
+        fi
+        echo "$$(date -u +%Y-%m-%dT%H:%M:%SZ) [rotate-token] validated NEW_BEARER_TOKEN format (value not shown)"
+
+        # --- 2. Confirm the launcher sidecar is reachable before doing anything. ---
+        if ! docker exec compose-manager-launcher sh -c 'true' >/dev/null 2>&1; then
+          echo "[rotate-token] cannot exec into compose-manager-launcher -- aborting, nothing changed" >&2
+          exit 1
+        fi
+
+        # --- 3. Decode the inner script (see docs/rotate-compose-manager-token.md#inner-script
+        #        for the plaintext) and run it inside compose-manager-launcher,
+        #        which already holds the work volume, /dstack-env, curl and
+        #        docker-cli-compose, and whose own LAUNCHER_* env vars a
+        #        `docker exec` automatically inherits (confirmed live: `docker
+        #        exec <ctr> sh -c 'echo $$VAR'` sees that container's own
+        #        `environment:` -- no separate lookup call needed).
+        #        -e NEW_BEARER_TOKEN (bare, no "=value") forwards our own env
+        #        var's CURRENT value without ever putting it in this docker
+        #        exec command line; the decoded script arrives over the pipe
+        #        (stdin), never as an argument either.
+        INNER_B64='c2V0IC1ldQpFTlZfRklMRT0iJHtMQVVOQ0hFUl9FTlZfRklMRTotL2FwcC93b3JrLy5lbnYubGF1
+        bmNoZXJ9IgpCQVNFX0VOVl9GSUxFPSIke0xBVU5DSEVSX0JBU0VfRU5WX0ZJTEU6LS9kc3RhY2st
+        ZW52fSIKQ09NUE9TRV9GSUxFPSIke0xBVU5DSEVSX0NPTVBPU0VfRklMRTotL2FwcC93b3JrL2Nv
+        bXBvc2UtbWFuYWdlci55bWx9IgpQUk9KRUNUPSIke0xBVU5DSEVSX0NPTVBPU0VfUFJPSkVDVDot
+        ZHN0YWNrfSIKSEVBTFRIX1VSTD0iJHtMQVVOQ0hFUl9IRUFMVEhfVVJMOi1odHRwOi8vMTI3LjAu
+        MC4xOjgwODAvdmVyc2lvbn0iClRJTUVPVVQ9IiR7TEFVTkNIRVJfSEVBTFRIX1RJTUVPVVQ6LTE4
+        MH0iClRTPSIkKGRhdGUgLXUgKyVZJW0lZFQlSCVNJVNaKSIKQkFDS1VQPSIiCgppZiBbICEgLWYg
+        IiRDT01QT1NFX0ZJTEUiIF07IHRoZW4KICBlY2hvICJbcm90YXRlLXRva2VuXSAkQ09NUE9TRV9G
+        SUxFIGlzIG1pc3NpbmcgaW5zaWRlIGNvbXBvc2UtbWFuYWdlci1sYXVuY2hlciAtLSBhYm9ydGlu
+        Zywgbm90aGluZyBjaGFuZ2VkIiA+JjIKICBleGl0IDEKZmkKCmlmIFsgLWYgIiRFTlZfRklMRSIg
+        XTsgdGhlbgogIEJBQ0tVUD0iJHtFTlZfRklMRX0uYmFrLiR7VFN9IgogIGNwIC1wICIkRU5WX0ZJ
+        TEUiICIkQkFDS1VQIgplbHNlCiAgOiA+ICIkRU5WX0ZJTEUiCmZpCgpyZXdyaXRlX3Rva2VuKCkg
+        ewogIHRtcD0iJHtFTlZfRklMRX0udG1wLiQkIgogIG1vZGU9IjA2NDQiCiAgWyAtZiAiJEVOVl9G
+        SUxFIiBdICYmIG1vZGU9IiQoc3RhdCAtYyAlYSAiJEVOVl9GSUxFIiAyPi9kZXYvbnVsbCB8fCBl
+        Y2hvIDA2NDQpIgogIGF3ayAtdiBrPSJCRUFSRVJfVE9LRU4iICdCRUdJTnt2PUVOVklST05bIk5F
+        V19CRUFSRVJfVE9LRU4iXTsgZm91bmQ9MH0KICAgIGluZGV4KCQwLGsiPSIpPT0xe3ByaW50IGsi
+        PSJ2OyBmb3VuZD0xOyBuZXh0fQogICAge3ByaW50fQogICAgRU5Ee2lmKCFmb3VuZCkgcHJpbnQg
+        ayI9InZ9JyAiJEVOVl9GSUxFIiA+ICIkdG1wIgogIGNobW9kICIkbW9kZSIgIiR0bXAiCiAgbXYg
+        IiR0bXAiICIkRU5WX0ZJTEUiCn0KCnJlY3JlYXRlKCkgewogIGRvY2tlciBjb21wb3NlIC1wICIk
+        UFJPSkVDVCIgLWYgIiRDT01QT1NFX0ZJTEUiIFwKICAgIC0tZW52LWZpbGUgIiRCQVNFX0VOVl9G
+        SUxFIiAtLWVudi1maWxlICIkRU5WX0ZJTEUiIFwKICAgIHVwIC1kIC0tbm8tZGVwcyBjb21wb3Nl
+        LW1hbmFnZXIKfQoKd2FpdF9oZWFsdGh5KCkgewogIGk9MAogIHN0ZXBzPSQoKCBUSU1FT1VUIC8g
+        MyApKQogIHdoaWxlIFsgIiRpIiAtbHQgIiRzdGVwcyIgXTsgZG8KICAgIGlmIGN1cmwgLWZzU0wg
+        LS1tYXgtdGltZSA1ICIkSEVBTFRIX1VSTCIgPi9kZXYvbnVsbCAyPiYxOyB0aGVuCiAgICAgIHJl
+        dHVybiAwCiAgICBmaQogICAgaT0kKChpICsgMSkpCiAgICBzbGVlcCAzCiAgZG9uZQogIHJldHVy
+        biAxCn0KCmVjaG8gIltyb3RhdGUtdG9rZW5dIHJld3JpdGluZyBCRUFSRVJfVE9LRU4gaW4gJEVO
+        Vl9GSUxFIChiYWNrdXA6ICR7QkFDS1VQOi1ub25lIGNyZWF0ZWQsIGZpbGUgd2FzIG1pc3Npbmd9
+        KSIKcmV3cml0ZV90b2tlbgoKZWNobyAiW3JvdGF0ZS10b2tlbl0gcmVjcmVhdGluZyBjb21wb3Nl
+        LW1hbmFnZXIgKHByb2plY3QgJFBST0pFQ1QsIC0tbm8tZGVwcywgbm8gb3RoZXIgc2VydmljZSB0
+        b3VjaGVkKSIKcmVjcmVhdGUKCmVjaG8gIltyb3RhdGUtdG9rZW5dIHdhaXRpbmcgdXAgdG8gJHtU
+        SU1FT1VUfXMgZm9yICRIRUFMVEhfVVJMIgppZiB3YWl0X2hlYWx0aHk7IHRoZW4KICBlY2hvICJb
+        cm90YXRlLXRva2VuXSBjb21wb3NlLW1hbmFnZXIgaGVhbHRoeSBvbiB0aGUgTkVXIHRva2VuIgog
+        IGV4aXQgMApmaQoKZWNobyAiW3JvdGF0ZS10b2tlbl0gY29tcG9zZS1tYW5hZ2VyIGRpZCBOT1Qg
+        YmVjb21lIGhlYWx0aHkgd2l0aGluICR7VElNRU9VVH1zIC0tIHJvbGxpbmcgYmFjayIgPiYyCmlm
+        IFsgLW4gIiRCQUNLVVAiIF0gJiYgWyAtZiAiJEJBQ0tVUCIgXTsgdGhlbgogIGNwIC1wICIkQkFD
+        S1VQIiAiJEVOVl9GSUxFIgplbHNlCiAgZWNobyAiW3JvdGF0ZS10b2tlbl0gbm8gYmFja3VwIGV4
+        aXN0ZWQgKGZpbGUgd2FzIG5ld2x5IGNyZWF0ZWQgdGhpcyBydW4pIC0tIGxlYXZpbmcgYXMtaXMi
+        ID4mMgpmaQpyZWNyZWF0ZQppZiB3YWl0X2hlYWx0aHk7IHRoZW4KICBlY2hvICJbcm90YXRlLXRv
+        a2VuXSByb2xsYmFjayByZWNyZWF0ZSBzdWNjZWVkZWQgLS0gY29tcG9zZS1tYW5hZ2VyIGlzIGhl
+        YWx0aHkgYWdhaW4gb24gdGhlIE9MRCB0b2tlbiIgPiYyCiAgZXhpdCAyCmZpCmVjaG8gIltyb3Rh
+        dGUtdG9rZW5dIENSSVRJQ0FMOiByb2xsYmFjayByZWNyZWF0ZSBBTFNPIGZhaWxlZCB0byBiZWNv
+        bWUgaGVhbHRoeSAtLSBtYW51YWwgaW50ZXJ2ZW50aW9uIHJlcXVpcmVkIG9uIHRoaXMgaG9zdCIg
+        PiYyCmV4aXQgMwo='
+
+        if printf '%s' "$$INNER_B64" | base64 -d | docker exec -i -e NEW_BEARER_TOKEN compose-manager-launcher sh -s; then
+          status=0
+        else
+          status=$$?
+        fi
+
+        echo "$$(date -u +%Y-%m-%dT%H:%M:%SZ) [rotate-token] exiting with status $${status}"
+        exit "$$status"
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"cm-token-rotate","service":"cm-token-rotate","tags":["deployment:cm-token-rotate"]}]'
+    logging: *logging-conf
