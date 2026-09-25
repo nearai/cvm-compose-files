@@ -15,7 +15,7 @@ services:
       options:
         max-size: 100m
         max-file: "10"
-        labels: com.datadoghq.ad.logs,com.docker.compose.service
+        labels: nearai.otel.logs,com.docker.compose.service
     container_name: model-downloader
     command:
       - |
@@ -28,7 +28,7 @@ services:
     environment:
       - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
     labels:
-      com.datadoghq.ad.logs: '[{"source":"model-downloader","service":"model-downloader","tags":["model:QuantTrio/GLM-5.1-AWQ","deployment:GLM-5.1-SGL-AWQ-TP4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+      nearai.otel.logs: '[{"source":"model-downloader","service":"model-downloader","tags":["model:QuantTrio/GLM-5.1-AWQ","deployment:GLM-5.1-SGL-AWQ-TP4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
   migration-disk-preflight:
     image: ghcr.io/astral-sh/uv:python3.11-bookworm-slim@sha256:4f5d923c9dcea037f57bda425dd209f3ec643da2f0b74227f68d09dab0b3bb36
     container_name: migration-disk-preflight
@@ -70,7 +70,7 @@ services:
     restart: unless-stopped
     logging: *1
     labels:
-      com.datadoghq.ad.logs: '[{"source":"nginx","service":"nginx","tags":["model:QuantTrio/GLM-5.1-AWQ","deployment:GLM-5.1-SGL-AWQ-TP4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000"]}]'
+      nearai.otel.logs: '[{"source":"nginx","service":"nginx","tags":["model:QuantTrio/GLM-5.1-AWQ","deployment:GLM-5.1-SGL-AWQ-TP4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000"]}]'
   model-proxy-registrar:
     image: curlimages/curl@sha256:d94d07ba9e7d6de898b6d96c1a072f6f8266c687af78a74f380087a0addf5d17
     container_name: model-proxy-registrar
@@ -99,7 +99,7 @@ services:
         mode: 493
     logging: *1
     labels:
-      com.datadoghq.ad.logs: '[{"source":"model-proxy-registrar","service":"model-proxy-registrar","tags":["model:QuantTrio/GLM-5.1-AWQ","deployment:GLM-5.1-SGL-AWQ-TP4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+      nearai.otel.logs: '[{"source":"model-proxy-registrar","service":"model-proxy-registrar","tags":["model:QuantTrio/GLM-5.1-AWQ","deployment:GLM-5.1-SGL-AWQ-TP4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
   proxy-glm51:
     image: nearaidev/vllm-proxy-rs@sha256:98b57ad7aa4f9afd8ffff3ac9f4773303997f667e1d221be076c2f064e4a1284
     user: root
@@ -136,7 +136,7 @@ services:
       - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
       - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:zai-org/GLM-5.1-FP8","deployment:GLM-5.1-SGL-AWQ-TP4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000"]}]'
+      nearai.otel.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:zai-org/GLM-5.1-FP8","deployment:GLM-5.1-SGL-AWQ-TP4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: inference-proxy
       nearai.otel.service: vllm-proxy
@@ -225,7 +225,7 @@ services:
     stop_grace_period: 5m
     logging: *1
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:QuantTrio/GLM-5.1-AWQ","deployment:GLM-5.1-SGL-AWQ-TP4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:1"]}]'
+      nearai.otel.logs: '[{"source":"sglang","service":"sglang","tags":["model:QuantTrio/GLM-5.1-AWQ","deployment:GLM-5.1-SGL-AWQ-TP4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:1"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: sglang
       nearai.otel.service: sglang
@@ -265,7 +265,7 @@ services:
     restart: unless-stopped
     logging: *1
     labels:
-      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:QuantTrio/GLM-5.1-AWQ","deployment:GLM-5.1-SGL-AWQ-TP4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+      nearai.otel.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:QuantTrio/GLM-5.1-AWQ","deployment:GLM-5.1-SGL-AWQ-TP4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: dcgm
       nearai.otel.service: dcgm-exporter
@@ -311,7 +311,7 @@ services:
         max-size: 20m
         max-file: "3"
     labels:
-      com.datadoghq.ad.logs: '[{"source":"otelcol-contrib","service":"otelcol-contrib","tags":["deployment:GLM-5.1-SGL-AWQ-TP4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+      nearai.otel.logs: '[{"source":"otelcol-contrib","service":"otelcol-contrib","tags":["deployment:GLM-5.1-SGL-AWQ-TP4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
   proxy-dsv4-flash:
     image: nearaidev/vllm-proxy-rs@sha256:98b57ad7aa4f9afd8ffff3ac9f4773303997f667e1d221be076c2f064e4a1284
     user: root
@@ -334,7 +334,7 @@ services:
       options:
         max-size: 100m
         max-file: "10"
-        labels: com.datadoghq.ad.logs,com.docker.compose.service
+        labels: nearai.otel.logs,com.docker.compose.service
     container_name: proxy-dsv4-flash
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
@@ -355,7 +355,7 @@ services:
       - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
       - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:deepseek-ai/DeepSeek-V4-Flash","deployment:dsv4-flash-migration","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8001","ppcie:true","config_variant:ds4f-migration-v1","stream_idle_timeout:20"]}]'
+      nearai.otel.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:deepseek-ai/DeepSeek-V4-Flash","deployment:dsv4-flash-migration","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8001","ppcie:true","config_variant:ds4f-migration-v1","stream_idle_timeout:20"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: inference-proxy
       nearai.otel.service: vllm-proxy
@@ -418,7 +418,7 @@ services:
       options:
         max-size: 100m
         max-file: "10"
-        labels: com.datadoghq.ad.logs,com.docker.compose.service
+        labels: nearai.otel.logs,com.docker.compose.service
     container_name: model-sg-dsv4-flash-fp4-tp2-r1
     depends_on:
       model-downloader-dsv4:
@@ -434,7 +434,7 @@ services:
               capabilities:
                 - gpu
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:deepseek-ai/DeepSeek-V4-Flash-0731","model_path:deepseek-ai/DeepSeek-V4-Flash-0731","model_revision:7872f01b1d1fe23eabc4c98b48bffcef5a386062","deployment:dsv4-flash-migration","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8001","instance:1","gpu_pair:4-5","ppcie:true","config_variant:dsv4-0731-prod-target-only","decode_mode:target_only","chunk_size:4096","max_prefill_tokens:16384","continuous_decode_steps:1","chunked_prefill_admission_reserve:4096","watchdog_timeout:1800","cuda_graph:1","max_running_requests:64","max_queued_requests:16","schedule_conservativeness:1.3","sglang_revision:0.5.16-near-dsv4-0731","engine_image:ec518148762e"]}]'
+      nearai.otel.logs: '[{"source":"sglang","service":"sglang","tags":["model:deepseek-ai/DeepSeek-V4-Flash-0731","model_path:deepseek-ai/DeepSeek-V4-Flash-0731","model_revision:7872f01b1d1fe23eabc4c98b48bffcef5a386062","deployment:dsv4-flash-migration","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8001","instance:1","gpu_pair:4-5","ppcie:true","config_variant:dsv4-0731-prod-target-only","decode_mode:target_only","chunk_size:4096","max_prefill_tokens:16384","continuous_decode_steps:1","chunked_prefill_admission_reserve:4096","watchdog_timeout:1800","cuda_graph:1","max_running_requests:64","max_queued_requests:16","schedule_conservativeness:1.3","sglang_revision:0.5.16-near-dsv4-0731","engine_image:ec518148762e"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: sglang
       nearai.otel.service: sglang
@@ -512,7 +512,7 @@ services:
       options:
         max-size: 100m
         max-file: "10"
-        labels: com.datadoghq.ad.logs,com.docker.compose.service
+        labels: nearai.otel.logs,com.docker.compose.service
     container_name: model-sg-dsv4-flash-fp4-tp2-r2
     depends_on:
       model-downloader-dsv4:
@@ -528,7 +528,7 @@ services:
               capabilities:
                 - gpu
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:deepseek-ai/DeepSeek-V4-Flash-0731","model_path:deepseek-ai/DeepSeek-V4-Flash-0731","model_revision:7872f01b1d1fe23eabc4c98b48bffcef5a386062","deployment:dsv4-flash-migration","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8001","instance:2","gpu_pair:6-7","ppcie:true","config_variant:dsv4-0731-prod-target-only","decode_mode:target_only","chunk_size:4096","max_prefill_tokens:16384","continuous_decode_steps:1","chunked_prefill_admission_reserve:4096","watchdog_timeout:1800","cuda_graph:1","max_running_requests:64","max_queued_requests:16","schedule_conservativeness:1.3","sglang_revision:0.5.16-near-dsv4-0731","engine_image:ec518148762e"]}]'
+      nearai.otel.logs: '[{"source":"sglang","service":"sglang","tags":["model:deepseek-ai/DeepSeek-V4-Flash-0731","model_path:deepseek-ai/DeepSeek-V4-Flash-0731","model_revision:7872f01b1d1fe23eabc4c98b48bffcef5a386062","deployment:dsv4-flash-migration","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8001","instance:2","gpu_pair:6-7","ppcie:true","config_variant:dsv4-0731-prod-target-only","decode_mode:target_only","chunk_size:4096","max_prefill_tokens:16384","continuous_decode_steps:1","chunked_prefill_admission_reserve:4096","watchdog_timeout:1800","cuda_graph:1","max_running_requests:64","max_queued_requests:16","schedule_conservativeness:1.3","sglang_revision:0.5.16-near-dsv4-0731","engine_image:ec518148762e"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: sglang
       nearai.otel.service: sglang
@@ -572,7 +572,7 @@ services:
       options:
         max-size: 100m
         max-file: "10"
-        labels: com.datadoghq.ad.logs,com.docker.compose.service
+        labels: nearai.otel.logs,com.docker.compose.service
     container_name: dcgm-dsv4-flash
     deploy:
       resources:
@@ -587,7 +587,7 @@ services:
               capabilities:
                 - gpu
     labels:
-      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:deepseek-ai/DeepSeek-V4-Flash","deployment:dsv4-flash-migration","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","gpu_pair:4-7","ppcie:true","config_variant:ds4f-migration-v1"]}]'
+      nearai.otel.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:deepseek-ai/DeepSeek-V4-Flash","deployment:dsv4-flash-migration","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","gpu_pair:4-7","ppcie:true","config_variant:ds4f-migration-v1"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: dcgm
       nearai.otel.service: dcgm-exporter
@@ -616,7 +616,7 @@ services:
       options:
         max-size: 100m
         max-file: "10"
-        labels: com.datadoghq.ad.logs,com.docker.compose.service
+        labels: nearai.otel.logs,com.docker.compose.service
     container_name: model-downloader-dsv4
     command:
       - |
@@ -627,7 +627,7 @@ services:
     environment:
       - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
     labels:
-      com.datadoghq.ad.logs: '[{"source":"model-downloader","service":"model-downloader","tags":["model:deepseek-ai/DeepSeek-V4-Flash-0731","deployment:dsv4-flash-migration","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+      nearai.otel.logs: '[{"source":"model-downloader","service":"model-downloader","tags":["model:deepseek-ai/DeepSeek-V4-Flash-0731","deployment:dsv4-flash-migration","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
   ds4f-migration-registrar:
     image: curlimages/curl@sha256:d94d07ba9e7d6de898b6d96c1a072f6f8266c687af78a74f380087a0addf5d17
     container_name: ds4f-migration-registrar
@@ -659,9 +659,9 @@ services:
       options:
         max-size: 100m
         max-file: "10"
-        labels: com.datadoghq.ad.logs,com.docker.compose.service
+        labels: nearai.otel.logs,com.docker.compose.service
     labels:
-      com.datadoghq.ad.logs: '[{"source":"model-proxy-registrar","service":"model-proxy-registrar","tags":["model:deepseek-ai/DeepSeek-V4-Flash","deployment:dsv4-flash-migration","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+      nearai.otel.logs: '[{"source":"model-proxy-registrar","service":"model-proxy-registrar","tags":["model:deepseek-ai/DeepSeek-V4-Flash","deployment:dsv4-flash-migration","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
     profiles:
       - register-ds4f
 networks:
@@ -719,43 +719,43 @@ configs:
             regex: "/var/lib/docker/containers/(?P<container_id>[a-f0-9]{12})[a-f0-9]*/"
             on_error: send_quiet
           - type: regex_parser
-            parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+            parse_from: attributes["attrs"]["nearai.otel.logs"]
             regex: model:(?P<model>[^",\]]+)
             on_error: send_quiet
           - type: regex_parser
-            parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+            parse_from: attributes["attrs"]["nearai.otel.logs"]
             regex: model_path:(?P<model_path>[^",\]]+)
             on_error: send_quiet
           - type: regex_parser
-            parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+            parse_from: attributes["attrs"]["nearai.otel.logs"]
             regex: precision:(?P<precision>[^",\]]+)
             on_error: send_quiet
           - type: regex_parser
-            parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+            parse_from: attributes["attrs"]["nearai.otel.logs"]
             regex: deployment:(?P<deployment>[^",\]]+)
             on_error: send_quiet
           - type: regex_parser
-            parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+            parse_from: attributes["attrs"]["nearai.otel.logs"]
             regex: ip:(?P<ip>[^",\]]+)
             on_error: send_quiet
           - type: regex_parser
-            parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+            parse_from: attributes["attrs"]["nearai.otel.logs"]
             regex: port:(?P<port>[^",\]]+)
             on_error: send_quiet
           - type: regex_parser
-            parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+            parse_from: attributes["attrs"]["nearai.otel.logs"]
             regex: env:(?P<env>[^",\]]+)
             on_error: send_quiet
           - type: regex_parser
-            parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+            parse_from: attributes["attrs"]["nearai.otel.logs"]
             regex: host:(?P<host>[^",\]]+)
             on_error: send_quiet
           - type: regex_parser
-            parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+            parse_from: attributes["attrs"]["nearai.otel.logs"]
             regex: instance:(?P<instance>[^",\]]+)
             on_error: send_quiet
           - type: regex_parser
-            parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+            parse_from: attributes["attrs"]["nearai.otel.logs"]
             regex: replica:(?P<replica>[^",\]]+)
             on_error: send_quiet
           - type: add
@@ -971,17 +971,17 @@ configs:
             - set(attributes["service.name"], attributes["attrs"]["com.docker.compose.service"])
               where attributes["attrs"] != nil and attributes["attrs"]["com.docker.compose.service"]
               != nil
-            - set(attributes["service.name"], ParseJSON(attributes["attrs"]["com.datadoghq.ad.logs"])[0]["service"])
-              where attributes["attrs"] != nil and attributes["attrs"]["com.datadoghq.ad.logs"]
+            - set(attributes["service.name"], ParseJSON(attributes["attrs"]["nearai.otel.logs"])[0]["service"])
+              where attributes["attrs"] != nil and attributes["attrs"]["nearai.otel.logs"]
               != nil
-            - set(attributes["log.source"], ParseJSON(attributes["attrs"]["com.datadoghq.ad.logs"])[0]["source"])
-              where attributes["attrs"] != nil and attributes["attrs"]["com.datadoghq.ad.logs"]
+            - set(attributes["log.source"], ParseJSON(attributes["attrs"]["nearai.otel.logs"])[0]["source"])
+              where attributes["attrs"] != nil and attributes["attrs"]["nearai.otel.logs"]
               != nil
             - set(attributes["service"], attributes["service.name"]) where attributes["attrs"]
-              != nil and attributes["attrs"]["com.datadoghq.ad.logs"] != nil and attributes["service.name"]
+              != nil and attributes["attrs"]["nearai.otel.logs"] != nil and attributes["service.name"]
               != nil
             - set(attributes["source"], attributes["log.source"]) where attributes["attrs"]
-              != nil and attributes["attrs"]["com.datadoghq.ad.logs"] != nil and attributes["log.source"]
+              != nil and attributes["attrs"]["nearai.otel.logs"] != nil and attributes["log.source"]
               != nil
             - set(attributes["container.name"], attributes["attrs"]["com.docker.compose.service"])
               where attributes["attrs"] != nil and attributes["attrs"]["com.docker.compose.service"]
