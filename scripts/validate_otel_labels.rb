@@ -162,6 +162,17 @@ rescue StandardError => e
   nil
 end
 
+def validate_log_label_allowlist(file, service_name, service, errors)
+  return unless service.dig("labels", "nearai.otel.logs")
+  # otelcol-contrib ships its own logs via the local driver, with no label allowlist.
+  return if service_name == "otelcol-contrib"
+
+  allowlisted_labels = service.dig("logging", "options", "labels").to_s.split(",").map(&:strip)
+  return if allowlisted_labels.include?("nearai.otel.logs")
+
+  add_error(errors, file, "services.#{service_name}.logging.options.labels", "Docker will not expose nearai.otel.logs to the collector unless it is included in the logging label allowlist")
+end
+
 def validate_no_legacy_collector_log_key(file, compose, errors)
   config = compose.dig("configs", "otelcol_app_config", "content").to_s
   legacy_key = %w[com datadoghq ad logs].join(".")
@@ -339,6 +350,7 @@ compose_files.sort.each do |path|
   (compose["services"] || {}).each do |service_name, service|
     log_tags = validate_log_label(file, service_name, service, errors)
     log_tags_by_service[service_name] = log_tags if log_tags
+    validate_log_label_allowlist(file, service_name, service, errors)
     validate_no_datadog_agent_checks(file, service_name, service, errors)
   end
 
