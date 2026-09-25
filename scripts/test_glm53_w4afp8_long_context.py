@@ -122,24 +122,30 @@ class ValidatorContractTest(unittest.TestCase):
             # r1 is the pdi 1 control and r2 the pdi 2 canary; neither may take the other's value.
             ("\n      --prefill-decode-interval 1\n", "\n      --prefill-decode-interval 2\n", "--prefill-decode-interval 1"),
             ("\n        --prefill-decode-interval 2\n", "\n        --prefill-decode-interval 1\n", "--prefill-decode-interval 2"),
-            # r1 is the c8192 control and r2 the c16384 canary; neither may take the other's chunk.
-            ("\n      --chunked-prefill-size 8192\n", "\n      --chunked-prefill-size 16384\n", "model-sg-glm53-w4afp8-tp4-r1 argv must be"),
-            ("\n        --chunked-prefill-size 16384\n", "\n        --chunked-prefill-size 8192\n", "model-sg-glm53-w4afp8-tp4-r2 argv must be"),
+            # Both replicas run 8192 in this arm, so neither may drift off it.
+            ("\n      --chunked-prefill-size 8192\n", "\n      --chunked-prefill-size 4096\n", "model-sg-glm53-w4afp8-tp4-r1 argv must be"),
+            ("\n        --chunked-prefill-size 8192\n", "\n        --chunked-prefill-size 4096\n", "model-sg-glm53-w4afp8-tp4-r2 argv must be"),
         )
         for before, after, message in cases:
             with self.subTest(mutation=after.strip()[:60]):
                 self.assert_fails(self.replace_once(before, after), message)
 
     def test_rejects_c16384_without_the_indexer_split(self) -> None:
-        """The 16384 chunk is only memory-safe with SGLANG_DSA_INDEXER_QSPLIT=1.
+        """Raising r2 to the 16384 chunk without the split must be rejected by the pairing gate.
 
-        Without the split a concurrent long burst left 0.04-0.65 GB free, the condition that
-        preceded the gpu02 crash; with it, 9.3-9.5 GB. Removing the variable while leaving the
-        chunk at 16384 must be rejected, and the message must name the pairing rather than
-        surfacing only as generic environment drift.
+        This arm runs 8192, so the forbidden pairing has to be constructed: raise the chunk AND
+        drop the split. Without the split that chunk left 0.04-0.65 GB free per GPU on a
+        concurrent long burst, the condition that preceded the gpu02 crash. The assertion names
+        the pairing error specifically, so the test cannot pass merely because some unrelated
+        equality check fired first.
         """
-        mutated = self.replace_once("      - SGLANG_DSA_INDEXER_QSPLIT=1\n", "")
-        self.assert_fails(mutated, "SGLANG_DSA_INDEXER_QSPLIT")
+        mutated = self.replace_once("\n        --chunked-prefill-size 8192\n", "\n        --chunked-prefill-size 16384\n")
+        mutated = mutated.replace("      - SGLANG_DSA_INDEXER_QSPLIT=1\n", "", 1)
+        self.assert_fails(mutated, "without SGLANG_DSA_INDEXER_QSPLIT=1")
+
+    def test_rejects_dropping_the_split_from_r2(self) -> None:
+        """r2 carries the split in this arm; removing it is the whole variable under test."""
+        self.assert_fails(self.replace_once("      - SGLANG_DSA_INDEXER_QSPLIT=1\n", ""), "SGLANG_DSA_INDEXER_QSPLIT")
 
     def test_rejects_the_split_on_an_image_without_the_patch(self) -> None:
         """Only the v2 image carries the split patch; the flag is inert and misleading elsewhere."""

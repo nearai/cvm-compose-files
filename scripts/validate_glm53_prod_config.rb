@@ -645,7 +645,7 @@ W4AFP8_LONG_CONTEXT_REPLICAS = {
   "model-sg-glm53-w4afp8-tp4-r1" => { "devices" => %w[0 1 2 3], "dist_init" => "127.0.0.1:29510", "instance" => "1", "pdi" => "1",
                                      "image" => W4AFP8_LONG_CONTEXT_IMAGE, "chunk" => "8192", "qsplit" => nil },
   "model-sg-glm53-w4afp8-tp4-r2" => { "devices" => %w[4 5 6 7], "dist_init" => "127.0.0.1:29511", "instance" => "2", "pdi" => "2",
-                                     "image" => W4AFP8_LONG_CONTEXT_R2_IMAGE, "chunk" => "16384", "qsplit" => "1" },
+                                     "image" => W4AFP8_LONG_CONTEXT_R2_IMAGE, "chunk" => "8192", "qsplit" => "1" },
 }.freeze
 W4AFP8_LONG_CONTEXT_ARGV = Shellwords.split(<<~'ARGV').freeze
   sglang serve
