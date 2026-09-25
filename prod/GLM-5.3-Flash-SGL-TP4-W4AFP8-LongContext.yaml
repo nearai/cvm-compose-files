@@ -474,6 +474,7 @@ services:
   model-sg-glm53-w4afp8-tp4-r2:
     <<: *sg-glm53-flash-common
     container_name: model-sg-glm53-w4afp8-tp4-r2
+    image: docker.io/nearaidev/sglang@sha256:8ff1a487b98a52fe08b781715bebd7c8c445d4fe068f312f03f527d5a3c77e84
     command: >
         sglang serve
         --model-path /root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/snapshots/99f1fa70408c52b007d4fd69e02e5a522422e755
@@ -485,7 +486,7 @@ services:
         --max-queued-requests 8
         --enable-priority-scheduling
         --disable-priority-preemption
-        --chunked-prefill-size 8192
+        --chunked-prefill-size 16384
         --max-prefill-tokens 32768
         --prefill-decode-interval 2
         --cuda-graph-max-bs-decode 32
@@ -516,6 +517,42 @@ services:
         --hicache-write-policy write_through
         --hicache-io-backend direct
         --hicache-mem-layout page_first_direct
+    environment:
+      - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+      # Local snapshot path; nothing is fetched at engine start.
+      - HF_HUB_OFFLINE=1
+      - TRANSFORMERS_OFFLINE=1
+      - HF_HUB_DISABLE_TELEMETRY=1
+      - DO_NOT_TRACK=1
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - OPENBLAS_L2_SIZE=2097152
+      - NCCL_DEBUG=WARN
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+      - TORCHINDUCTOR_CACHE_DIR=/root/.cache/torchinductor
+      - TRITON_CACHE_DIR=/root/.cache/triton
+      # Persist tilelang's DSA kernel JIT cache: it defaults to /root/.tilelang, outside
+      # the kernel_cache volume, so every restart re-paid ~22-24 compiles at 8-9 s each
+      # with the whole engine frozen (2026-09-12..16 capacity campaign).
+      - TILELANG_CACHE_DIR=/root/.cache/tilelang
+      # /health must not run a generation: at this pin health_generate submits a real
+      # 1-token request that queues behind any in-flight long prefill, so the CVM
+      # proxy's 3 s probe times out, the replica flaps unhealthy, and the conversation
+      # affinity pin is skipped (full re-prefill on the other replica). nearai/infra#234.
+      - SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION=0
+      # No admission reserve on the long tier (see the header); --prefill-decode-interval
+      # is set per replica, independently of the inert reserve patch.
+      - SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE=1
+      # HiCache host tier: a fixed 406 GiB per replica across its four TP ranks (the
+      # qualified L2 value). A percentage would resolve against MemAvailable at each start,
+      # so the replica started second would get less. The override applies to BOTH
+      # replicas; startup fails if it exceeds available RAM minus the 10 GiB reserve.
+      - SGLANG_HICACHE_RAM_BUDGET=${GLM53_HICACHE_RAM_BUDGET:-406GiB}
+      # CUDA-owned host memory (cudaMallocHost). Must stay 1 on TEE hosts: 0 selects
+      # cudaHostRegister, which fails with CUDA error 801 under HCC/PPCIe.
+      - SGLANG_HICACHE_CUDA_HOST_MEMORY=${GLM53_HICACHE_CUDA_HOST_MEMORY:-1}
+      - SGLANG_HICACHE_POOLED_TRANSFERS=1
+      - SGLANG_HICACHE_STAGING_PAGES=64
+      - SGLANG_DSA_INDEXER_QSPLIT=1
     depends_on:
       model-downloader:
         condition: service_completed_successfully
@@ -527,7 +564,7 @@ services:
               device_ids: ["4","5","6","7"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-bf16-kv","deployment:glm53-flash-sgl-tp4","config_variant:fc91d24-long-context-w4afp8-c8192-hicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdi2-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192","request_logging:disabled","engine_image:fde25985aea3","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:2"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-bf16-kv","deployment:glm53-flash-sgl-tp4","config_variant:fc91d24-long-context-w4afp8-c16384-qsplit-hicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdi2-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192","request_logging:disabled","engine_image:8ff1a487b98a","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:2"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -539,10 +576,10 @@ services:
       nearai.otel.model_path: "graphistry/GLM-5.3-Flash-W4AFP8"
       nearai.otel.served_model: "z-ai/glm-5.3-flash"
       nearai.otel.deployment: "glm53-flash-sgl-tp4"
-      nearai.otel.config_variant: "fc91d24-long-context-w4afp8-c8192-hicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdi2-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
+      nearai.otel.config_variant: "fc91d24-long-context-w4afp8-c16384-qsplit-hicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdi2-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
       nearai.otel.thinking_budget_policy: "default8192-public-to-native"
       nearai.otel.request_logging: "disabled"
-      nearai.otel.engine_image: "fde25985aea3"
+      nearai.otel.engine_image: "8ff1a487b98a"
       nearai.otel.instance: "2"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
@@ -965,10 +1002,10 @@ configs:
                       ip: "${HOST_IP}"
                       port: "8000"
                       instance: "2"
-                      config_variant: "fc91d24-long-context-w4afp8-c8192-hicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdi2-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
+                      config_variant: "fc91d24-long-context-w4afp8-c16384-qsplit-hicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdi2-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
                       thinking_budget_policy: "default8192-public-to-native"
                       request_logging: "disabled"
-                      engine_image: "fde25985aea3"
+                      engine_image: "8ff1a487b98a"
               - job_name: dcgm-dcgm-glm53
                 scrape_interval: 15s
                 scrape_timeout: 10s

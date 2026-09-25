@@ -111,10 +111,35 @@ pdi 2 should cut r2's inter-token latency during prefills without moving TTFT.
 
 **Next.** If it holds, a follow-up PR moves r1 to pdi 2. If r2 regresses, roll back: redeploy the previous tag of this file for r2 only, with the same `compose/down` then `compose/up` pair.
 
+## Canary step 2: the DSA indexer split and chunk 16384 on r2
+
+r2 additionally runs the v2 engine image (`8ff1a487b98a`, PR #300) with `SGLANG_DSA_INDEXER_QSPLIT=1` and `--chunked-prefill-size 16384`. r1 stays on the #294 image (`fde25985aea3`) at chunk 8192 with the split unset, so it remains an untouched control and a targeted `compose up` still recreates r2 alone.
+
+Without the split, every TP rank computes the indexer logits and top-k for **all** rows of a prefill chunk. With it, each rank scores 1/TP of the rows and the int32 top-k indices are all-gathered. The split is off unless the variable is set, so the v2 image is byte-for-byte v1 behaviour on r1 — that is why r1 does not need recreating.
+
+Lab evidence (gpu31, 2026-09-23/24), candidate = split + chunk 16384 + pdi 2 against #294:
+
+| Workload | TTFT ratio | TPOT ratio |
+| --- | --- | --- |
+| Burst, 8 × ~720K | 0.76 | 0.72–0.76 |
+| Burst + short-request hammer | 0.77–0.78 | 0.78–0.85 |
+| long-a2 | 0.61–0.69 | 0.53–0.56 |
+
+Quality was at the noise floor (GSM8K 97.41 vs 97.37, MMLU 87.66 vs 87.66, passkey to ~450K 12/12 on both, teacher-forced agreement matching control-vs-control). No restarts, OOMs or fatal log lines on either arm.
+
+**The chunk and the split are one change, not two.** At 16384 *without* the split, a concurrent long burst left 0.04–0.65 GB free per GPU — the condition that preceded the gpu02 crash. With the split it is 9.3–9.5 GB, clearing the ≥3 GB gate. `scripts/validate_glm53_prod_config.rb` rejects any replica that sets `--chunked-prefill-size 16384` without `SGLANG_DSA_INDEXER_QSPLIT=1`, and rejects the variable on any image that does not carry the patch. Never ship one without the other.
+
+Deployment is the same r2-only pair as the pdi 2 canary: `compose/down` then `compose/up` with `["model-sg-glm53-w4afp8-tp4-r2"]`, a `dry_run` that must plan exactly that one service, and no recreate of r1, the proxy or the registrar.
+
+**Additional readout beyond the pdi 2 list:** minimum free device memory per GPU during concurrent long bursts (expect ≈9 GB, not <1 GB), and `SGLANG_DSA_INDEXER_QSPLIT` mismatch or illegal-memory lines in r2's logs (expect none).
+
+**Untested before this canary:** the all-gather's cost under CC/PPCIe inside a CVM. gpu31 is bare metal with CC off, so the r2 canary is the first measurement of it. If TTFT regresses against r1 rather than improving, suspect the all-gather and roll back.
+
 ## Rollback
 
 Redeploy the previous tag and file, scoped to the same services, one replica at a time and under the same orphan rule. Keep at least one replica serving throughout.
 
 - **r2:** `compose/down` this file `["model-sg-glm53-w4afp8-tp4-r2"]`, then `compose/up` the previous file and tag `["model-sg-glm53-fp8-tp4-r2"]`. Once it is ready, `compose/up` the previous file for `["proxy-glm53", "otelcol-contrib", "dcgm-glm53"]`.
 - **r1:** `compose/down` this file `["model-sg-glm53-w4afp8-tp4-r1"]`, then `compose/up` the previous file and tag `["model-sg-glm53-w4afp8-tp4-r1"]`.
+- **Canary-only revert (r2 back to the #294 arm, r1 untouched):** redeploy the tag that preceded this change for `["model-sg-glm53-w4afp8-tp4-r2"]` alone. That restores r2's image to `fde25985aea3`, chunk 8192 and pdi 1 in one step; nothing else on the host is touched, and r1 keeps serving throughout.
 - Routing levers are unchanged: `LONG_TIER_ONLY=false` plus a registrar restart, or removing the cloud-api `long_context` block.

@@ -122,31 +122,58 @@ class ValidatorContractTest(unittest.TestCase):
             # r1 is the pdi 1 control and r2 the pdi 2 canary; neither may take the other's value.
             ("\n      --prefill-decode-interval 1\n", "\n      --prefill-decode-interval 2\n", "--prefill-decode-interval 1"),
             ("\n        --prefill-decode-interval 2\n", "\n        --prefill-decode-interval 1\n", "--prefill-decode-interval 2"),
+            # r1 is the c8192 control and r2 the c16384 canary; neither may take the other's chunk.
+            ("\n      --chunked-prefill-size 8192\n", "\n      --chunked-prefill-size 16384\n", "model-sg-glm53-w4afp8-tp4-r1 argv must be"),
+            ("\n        --chunked-prefill-size 16384\n", "\n        --chunked-prefill-size 8192\n", "model-sg-glm53-w4afp8-tp4-r2 argv must be"),
         )
         for before, after, message in cases:
             with self.subTest(mutation=after.strip()[:60]):
                 self.assert_fails(self.replace_once(before, after), message)
 
+    def test_rejects_c16384_without_the_indexer_split(self) -> None:
+        """The 16384 chunk is only memory-safe with SGLANG_DSA_INDEXER_QSPLIT=1.
+
+        Without the split a concurrent long burst left 0.04-0.65 GB free, the condition that
+        preceded the gpu02 crash; with it, 9.3-9.5 GB. Removing the variable while leaving the
+        chunk at 16384 must be rejected, and the message must name the pairing rather than
+        surfacing only as generic environment drift.
+        """
+        mutated = self.replace_once("      - SGLANG_DSA_INDEXER_QSPLIT=1\n", "")
+        self.assert_fails(mutated, "SGLANG_DSA_INDEXER_QSPLIT")
+
+    def test_rejects_the_split_on_an_image_without_the_patch(self) -> None:
+        """Only the v2 image carries the split patch; the flag is inert and misleading elsewhere."""
+        mutated = self.replace_once(f"    image: {generator.R2_IMAGE}\n", f"    image: {generator.IMAGE}\n")
+        self.assert_fails(mutated, "image must be")
+
     def test_rejects_engine_image_and_environment_drift(self) -> None:
+        # r2 now carries its own environment block (it needs SGLANG_DSA_INDEXER_QSPLIT=1 and a
+        # YAML merge key replaces a list rather than extending it), so several of these needles
+        # legitimately appear twice: once in the shared anchor and once in r2. Each case states
+        # which occurrence it mutates instead of relying on the needle being unique.
         cases = (
-            (f"\n  image: {generator.IMAGE}\n", "\n  image: docker.io/nearaidev/sglang@sha256:" + "0" * 64 + "\n", "image must be"),
-            ("${GLM53_HICACHE_RAM_BUDGET:-406GiB}", "${GLM53_HICACHE_RAM_BUDGET:-80%}", "SGLANG_HICACHE_RAM_BUDGET=${GLM53_HICACHE_RAM_BUDGET:-80%}"),
-            ("${GLM53_HICACHE_CUDA_HOST_MEMORY:-1}", "${GLM53_HICACHE_CUDA_HOST_MEMORY:-0}", "environment must be the long-context control environment"),
+            (f"\n  image: {generator.IMAGE}\n", "\n  image: docker.io/nearaidev/sglang@sha256:" + "0" * 64 + "\n", "image must be", 0),
+            ("${GLM53_HICACHE_RAM_BUDGET:-406GiB}", "${GLM53_HICACHE_RAM_BUDGET:-80%}", "SGLANG_HICACHE_RAM_BUDGET=${GLM53_HICACHE_RAM_BUDGET:-80%}", 0),
+            ("${GLM53_HICACHE_RAM_BUDGET:-406GiB}", "${GLM53_HICACHE_RAM_BUDGET:-80%}", "SGLANG_HICACHE_RAM_BUDGET=${GLM53_HICACHE_RAM_BUDGET:-80%}", 1),
+            ("${GLM53_HICACHE_CUDA_HOST_MEMORY:-1}", "${GLM53_HICACHE_CUDA_HOST_MEMORY:-0}", "environment must be the long-context control environment", 0),
+            ("${GLM53_HICACHE_CUDA_HOST_MEMORY:-1}", "${GLM53_HICACHE_CUDA_HOST_MEMORY:-0}", "environment must be the long-context control environment", 1),
             (
                 "    - SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE=1\n",
                 "    - SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE=1\n    - SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE=4096\n",
                 "must not set admission-reserve environment",
+                0,
             ),
-            ('device_ids: ["4","5","6","7"]', 'device_ids: ["0","1","2","3"]', "must use GPU device_ids 4,5,6,7"),
+            ('device_ids: ["4","5","6","7"]', 'device_ids: ["0","1","2","3"]', "must use GPU device_ids 4,5,6,7", 0),
             (
                 "    container_name: model-sg-glm53-w4afp8-tp4-r2\n",
                 '    container_name: model-sg-glm53-w4afp8-tp4-r2\n    restart: "no"\n',
                 "replicas must share one runtime configuration",
+                0,
             ),
         )
-        for before, after, message in cases:
-            with self.subTest(mutation=after.strip()[:60]):
-                self.assert_fails(self.replace_once(before, after), message)
+        for before, after, message, index in cases:
+            with self.subTest(mutation=after.strip()[:50], occurrence=index):
+                self.assert_fails(replace_nth(self.valid, before, index, after), message)
 
     def test_rejects_routing_drift_from_the_long_context_file(self) -> None:
         outside = "must match the long-context file outside the two engines"
@@ -171,9 +198,11 @@ class ValidatorContractTest(unittest.TestCase):
             (f'nearai.otel.config_variant: "{generator.VARIANTS[2]}"', f'nearai.otel.config_variant: "{generator.VARIANTS[1]}"', 0,
              "nearai.otel.config_variant must be"),
             (f"config_variant:{generator.VARIANTS[1]}", "config_variant:incorrect-variant", 0, "log metadata must carry exactly config_variant:"),
-            ('      nearai.otel.engine_image: "fde25985aea3"\n', '      nearai.otel.engine_image: "e9d29a1cb1cd"\n', 1, "nearai.otel.engine_image must be"),
+            (f'      nearai.otel.engine_image: "{generator.ENGINE_IMAGE_LABEL}"\n', '      nearai.otel.engine_image: "e9d29a1cb1cd"\n', 0, "nearai.otel.engine_image must be"),
+            (f'      nearai.otel.engine_image: "{generator.R2_ENGINE_IMAGE_LABEL}"\n', '      nearai.otel.engine_image: "e9d29a1cb1cd"\n', 0, "nearai.otel.engine_image must be"),
             ('"precision:int4-weights-fp8-activations-bf16-kv"', '"precision:fp8-weights-bf16-kv"', 0, "log metadata must carry precision:"),
-            ('                      engine_image: "fde25985aea3"\n', '                      engine_image: "e9d29a1cb1cd"\n', 1, "scrape label engine_image"),
+            (f'                      engine_image: "{generator.ENGINE_IMAGE_LABEL}"\n', '                      engine_image: "e9d29a1cb1cd"\n', 0, "scrape label engine_image"),
+            (f'                      engine_image: "{generator.R2_ENGINE_IMAGE_LABEL}"\n', '                      engine_image: "e9d29a1cb1cd"\n', 0, "scrape label engine_image"),
             ('      nearai.otel.model_path: "graphistry/GLM-5.3-Flash-W4AFP8"\n', '      nearai.otel.model_path: "zai-org/GLM-5.3-Flash"\n', 2, "dcgm-glm53 nearai.otel.model_path"),
         )
         for needle, replacement, index, message in cases:

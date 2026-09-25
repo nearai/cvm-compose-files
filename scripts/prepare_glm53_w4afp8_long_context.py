@@ -30,6 +30,18 @@ SOURCE_IMAGE: Final = "docker.io/nearaidev/sglang@sha256:e9d29a1cb1cd65284392c4d
 SOURCE_HICACHE_IMAGE: Final = "docker.io/nearaidev/sglang@sha256:3eccc30709f5719c81084d1264f03ca5354b3059ec4cff62f0c5ff88c309680c"
 IMAGE: Final = "docker.io/nearaidev/sglang@sha256:fde25985aea3ebabf1eb581ae21d53be8540e32933eef942ee8b962a1bfbea20"
 ENGINE_IMAGE_LABEL: Final = "fde25985aea3"
+# r2 only: glm53-hicache-w4afp8-v2, which adds the opt-in DSA indexer query split (#300,
+# recipe commit 556482c). r1 stays on IMAGE so the control arm is byte-identical to #294 and a
+# targeted `compose up` recreates r2 alone. The split is inert unless SGLANG_DSA_INDEXER_QSPLIT=1.
+R2_IMAGE: Final = "docker.io/nearaidev/sglang@sha256:8ff1a487b98a52fe08b781715bebd7c8c445d4fe068f312f03f527d5a3c77e84"
+R2_ENGINE_IMAGE_LABEL: Final = "8ff1a487b98a"
+REPLICA_IMAGE: Final = {1: IMAGE, 2: R2_IMAGE}
+REPLICA_IMAGE_LABEL: Final = {1: ENGINE_IMAGE_LABEL, 2: R2_ENGINE_IMAGE_LABEL}
+# c16384 is only safe WITH the split: without it the indexer scratch left 0.04-0.65 GB free on a
+# concurrent long burst, the condition that preceded the gpu02 crash. With it, 9.3-9.5 GB.
+# The validator enforces the pairing; never set one without the other.
+CHUNKED_PREFILL_SIZE: Final = {1: 8192, 2: 16384}
+R2_EXTRA_ENV: Final = ("      - SGLANG_DSA_INDEXER_QSPLIT=1\n",)
 SOURCE_SERVICE_PREFIX: Final = "model-sg-glm53-fp8-tp4-r"
 SERVICE_PREFIX: Final = "model-sg-glm53-w4afp8-tp4-r"
 PRECISION: Final = "int4-weights-fp8-activations-bf16-kv"
@@ -42,7 +54,7 @@ SOURCE_VARIANTS: Final = (
 VARIANTS: Final = {
     1: "fc91d24-long-context-w4afp8-c8192-hicache-cuda-host-pooled-v1-admission-reserve-disabled"
     "-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192",
-    2: "fc91d24-long-context-w4afp8-c8192-hicache-cuda-host-pooled-v1-admission-reserve-disabled"
+    2: "fc91d24-long-context-w4afp8-c16384-qsplit-hicache-cuda-host-pooled-v1-admission-reserve-disabled"
     "-pool-clamp-pdi2-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192",
 }
 PREFILL_DECODE_INTERVAL: Final = {1: 1, 2: 2}
@@ -230,7 +242,9 @@ def engine_arguments(source: list[str], replica: int) -> list[str]:
         if argument == FP8_MODEL_PATH:
             arguments.append(MODEL_PATH)
         elif argument == "--chunked-prefill-size 4096":
-            arguments.extend(("--chunked-prefill-size 8192", "--max-prefill-tokens 32768"))
+            arguments.extend(
+                (f"--chunked-prefill-size {CHUNKED_PREFILL_SIZE[replica]}", "--max-prefill-tokens 32768")
+            )
         elif argument == "--prefill-decode-interval 1":
             arguments.append(f"--prefill-decode-interval {PREFILL_DECODE_INTERVAL[replica]}")
         elif argument == f"--dist-init-addr {SOURCE_DIST_INIT}":
@@ -243,6 +257,40 @@ def engine_arguments(source: list[str], replica: int) -> list[str]:
 
 def render_command(arguments: list[str], indent: int) -> str:
     return " " * indent + "command: >\n" + "".join(f"{' ' * (indent + 4)}{argument}\n" for argument in arguments)
+
+
+def resolve_engine_image_labels(text: str) -> str:
+    """Bind each ENGINE_IMAGE_PLACEHOLDER to the image its own replica runs.
+
+    The replacements above are replica-agnostic, so both replicas get a placeholder. Each site
+    is disambiguated by a marker that is already replica-specific: the Datadog/OTel label blocks
+    carry instance:N, and the scrape job carries the replica's service name.
+    """
+    for replica, label in REPLICA_IMAGE_LABEL.items():
+        for marker, count in (
+            (f'"instance:{replica}"', 1),
+            (f'nearai.otel.instance: "{replica}"', 1),
+            (f'sglang-{SERVICE_PREFIX}{replica}', 1),
+        ):
+            index = text.find(marker)
+            if index == -1:
+                raise GenerationError(f"engine_image: no {marker} site for replica {replica}")
+            head, tail = text[:index], text[index:]
+            placeholder_in_head = head.rfind("ENGINE_IMAGE_PLACEHOLDER")
+            placeholder_in_tail = tail.find("ENGINE_IMAGE_PLACEHOLDER")
+            if placeholder_in_head == -1 and placeholder_in_tail == -1:
+                raise GenerationError(f"engine_image: no placeholder near {marker}")
+            # The label precedes its instance marker in the Datadog tag list and follows it in
+            # the OTel blocks; take whichever is closer to the marker.
+            if placeholder_in_tail != -1 and (
+                placeholder_in_head == -1 or placeholder_in_tail < len(head) - placeholder_in_head
+            ):
+                text = head + tail.replace("ENGINE_IMAGE_PLACEHOLDER", label, 1)
+            else:
+                text = head[:placeholder_in_head] + label + head[placeholder_in_head + len("ENGINE_IMAGE_PLACEHOLDER"):] + tail
+    if "ENGINE_IMAGE_PLACEHOLDER" in text:
+        raise GenerationError("engine_image: unresolved placeholder remains")
+    return text
 
 
 def generate(source: str) -> str:
@@ -276,7 +324,21 @@ def generate(source: str) -> str:
     override = r2[override_start:override_end]
     if not override.startswith(f"    image: {SOURCE_HICACHE_IMAGE}\n    command: >\n") or "\n    environment:\n" not in override:
         raise GenerationError("replica 2 no longer carries the source HiCache override")
-    r2 = r2[:override_start] + render_command(engine_arguments(source_arguments, 2), 4) + r2[override_end:]
+    # r2 must override image AND environment, not just command: a YAML merge key replaces a
+    # list wholesale rather than deep-merging it, so r2 cannot inherit the anchor's environment
+    # and add one variable. The block is derived from the anchor here rather than duplicated as
+    # a literal, so the two can never drift apart.
+    _, _, anchor_environment = section(anchor, "  environment:\n", "  restart: unless-stopped\n", "anchor environment block")
+    r2_environment = "".join(
+        f"  {line}\n" if line.strip() else "\n" for line in anchor_environment.splitlines()
+    ) + "".join(R2_EXTRA_ENV)
+    r2 = (
+        r2[:override_start]
+        + f"    image: {REPLICA_IMAGE[2]}\n"
+        + render_command(engine_arguments(source_arguments, 2), 4)
+        + r2_environment
+        + r2[override_end:]
+    )
     updated = updated[:r2_start] + r2 + updated[r2_end:]
 
     for old, new, count, label in (
@@ -286,21 +348,22 @@ def generate(source: str) -> str:
         ('precision: "fp8-weights-bf16-kv"', f'precision: "{PRECISION}"', 2, "scrape precision"),
         (SOURCE_VARIANTS[0], VARIANTS[1], 3, "replica 1 config_variant"),
         (SOURCE_VARIANTS[1], VARIANTS[2], 3, "replica 2 config_variant"),
-        ('"request_logging:disabled",', f'"request_logging:disabled","engine_image:{ENGINE_IMAGE_LABEL}",', 2, "log engine_image"),
+        ('"request_logging:disabled",', '"request_logging:disabled","engine_image:ENGINE_IMAGE_PLACEHOLDER",', 2, "log engine_image"),
         (
             '      nearai.otel.request_logging: "disabled"\n',
-            f'      nearai.otel.request_logging: "disabled"\n      nearai.otel.engine_image: "{ENGINE_IMAGE_LABEL}"\n',
+            '      nearai.otel.request_logging: "disabled"\n      nearai.otel.engine_image: "ENGINE_IMAGE_PLACEHOLDER"\n',
             2,
             "engine_image label",
         ),
         (
             '                      request_logging: "disabled"\n',
-            f'                      request_logging: "disabled"\n                      engine_image: "{ENGINE_IMAGE_LABEL}"\n',
+            '                      request_logging: "disabled"\n                      engine_image: "ENGINE_IMAGE_PLACEHOLDER"\n',
             2,
             "scrape engine_image",
         ),
     ):
         updated = replace_exact(updated, old, new, count, label)
+    updated = resolve_engine_image_labels(updated)
     return HEADER + updated
 
 
