@@ -6,6 +6,8 @@
 # How to run: python3 -m unittest scripts.test_glm53_w4afp8_long_context (needs ruby for the validator cases)
 """The generated W4AFP8 + HiCache long-context file, its generator and its validator contract."""
 
+import json
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -21,6 +23,28 @@ DCGM_VALIDATOR = Path("scripts/validate_glm53_dcgm_metrics.rb")
 CANONICAL = Path("prod/GLM-5.3-Flash-SGL-TP4.yaml")
 HICACHE = Path("prod/GLM-5.3-Flash-SGL-TP4-HiCache.yaml")
 RELEASED_IMAGE = Path("docker/sglang-glm53-hicache/RELEASED_IMAGE")
+
+
+def effective_compose(text: str) -> dict:
+    """The compose file as the engine sees it: YAML parsed with merge keys (<<) resolved.
+
+    Parsed by Ruby's Psych, the same loader the production validator uses, because CI's
+    container has ruby but no PyYAML. A merge key REPLACES a list rather than extending it, so
+    a replica that overrides `environment:` does not inherit the anchor's variables; per-replica
+    assertions must look at this resolved view, never at string counts in the file.
+    """
+    result = subprocess.run(
+        ["ruby", "-ryaml", "-rjson", "-e", "puts JSON.generate(YAML.load($stdin.read, aliases: true))"],
+        input=text, capture_output=True, text=True, check=True,
+    )
+    return json.loads(result.stdout)
+
+
+def environment_of(service: dict) -> dict[str, str]:
+    environment = service.get("environment") or []
+    if isinstance(environment, dict):
+        return {key: str(value) for key, value in environment.items()}
+    return dict(entry.split("=", 1) for entry in environment)
 
 
 def replace_nth(text: str, needle: str, index: int, replacement: str) -> str:
@@ -66,30 +90,69 @@ class GeneratedFileTest(unittest.TestCase):
                 with self.assertRaises(generator.GenerationError):
                     generator.generate(source.replace(before, "\n" if before.startswith("\n") else ""))
 
-    def test_both_replicas_start_with_async_tracing_at_level_zero(self) -> None:
-        target = TARGET.read_text()
-        self.assertEqual(target.count("--enable-trace\n"), 2)
-        self.assertEqual(target.count("--otlp-traces-endpoint otelcol-contrib:4317\n"), 2)
-        # r2 carries its own environment list (anchor copy), so each variable appears twice.
-        self.assertEqual(target.count("- SGLANG_TRACE_ASYNC=1\n"), 2)
-        self.assertEqual(target.count("- SGLANG_TRACE_LEVEL=0\n"), 2)
+    def test_every_traced_replica_starts_async_at_level_zero(self) -> None:
+        # SGLang defaults an unset SGLANG_TRACE_LEVEL to 3 and SGLANG_TRACE_ASYNC to synchronous
+        # export, so every replica that runs --enable-trace must carry both in its EFFECTIVE
+        # environment. r2 overrides environment (a merge key cannot extend a list), so this is
+        # asserted per replica on the merge-resolved services, not by counting lines.
+        services = effective_compose(TARGET.read_text())["services"]
+        traced = {}
+        for name, service in services.items():
+            command = service.get("command")
+            argv = shlex.split(command) if isinstance(command, str) else []
+            if "--enable-trace" in argv:
+                traced[name] = (argv, environment_of(service))
+        self.assertEqual(sorted(traced), [f"{generator.SERVICE_PREFIX}{replica}" for replica in (1, 2)])
+        for name, (argv, environment) in traced.items():
+            with self.subTest(replica=name):
+                self.assertEqual(argv[argv.index("--otlp-traces-endpoint") + 1], "otelcol-contrib:4317")
+                self.assertEqual(environment.get("SGLANG_TRACE_ASYNC"), "1")
+                self.assertEqual(environment.get("SGLANG_TRACE_LEVEL"), "0")
         for replica in (1, 2):
             self.assertIn("trace-async-armed", generator.VARIANTS[replica])
 
     def test_control_job_is_operator_only_and_has_no_published_port(self) -> None:
-        target = TARGET.read_text()
-        control = generator.section(
-            target,
-            "  glm53-trace-control:\n",
-            "  # Explicit operator-only semantic check;",
-            "trace control job",
-        )[2]
-        self.assertIn('profiles: ["verification"]', control)
-        self.assertIn('case "$$GLM53_TRACE_REPLICA" in 1|2)', control)
-        self.assertIn('case "$$GLM53_TRACE_LEVEL" in 0|3)', control)
-        self.assertIn("/set_trace_level?level=$$GLM53_TRACE_LEVEL", control)
-        self.assertNotIn("    ports:", control)
-        self.assertNotIn("    volumes:", control)
+        control = effective_compose(TARGET.read_text())["services"]["glm53-trace-control"]
+        self.assertEqual(control["profiles"], ["verification"])
+        self.assertEqual(control["restart"], "no")
+        self.assertNotIn("ports", control)
+        self.assertNotIn("volumes", control)
+        script = control["command"][0]
+        self.assertIn('case "$$GLM53_TRACE_REPLICA" in 1|2)', script)
+        self.assertIn('case "$$GLM53_TRACE_LEVEL" in 0|3)', script)
+        self.assertIn("/set_trace_level?level=$$GLM53_TRACE_LEVEL", script)
+
+    def test_collector_exports_only_allowlisted_trace_attributes_on_their_own_queue(self) -> None:
+        compose = effective_compose(TARGET.read_text())
+        collector = effective_compose(compose["configs"]["otelcol_app_config"]["content"])
+        pipelines = collector["service"]["pipelines"]
+        self.assertEqual([name for name in pipelines if name.split("/")[0] == "traces"], ["traces"])
+        self.assertEqual(
+            pipelines["traces"],
+            {
+                "receivers": ["otlp"],
+                "processors": ["memory_limiter", "transform/sglang_trace_allowlist", "resource", "batch"],
+                "exporters": ["otlphttp/gateway_traces"],
+            },
+        )
+        for name, pipeline in pipelines.items():
+            if name != "traces":
+                self.assertNotIn("otlphttp/gateway_traces", pipeline["exporters"], name)
+        statements = {
+            group["context"]: group["statements"]
+            for group in collector["processors"]["transform/sglang_trace_allowlist"]["trace_statements"]
+        }
+        self.assertEqual(set(statements), {"span", "spanevent"})
+        self.assertIn(f"keep_keys(attributes, {generator._ottl_list(generator.TRACE_SPAN_ATTRIBUTE_ALLOWLIST)})", statements["span"])
+        self.assertEqual(statements["spanevent"], [f"keep_keys(attributes, {generator._ottl_list(generator.TRACE_EVENT_ATTRIBUTE_ALLOWLIST)})"])
+        for dropped in ("host_id", "message", "matched", "reason", "err_type", "bootstrap_room"):
+            self.assertNotIn(dropped, generator.TRACE_SPAN_ATTRIBUTE_ALLOWLIST)
+        traces_exporter = collector["exporters"]["otlphttp/gateway_traces"]
+        gateway = collector["exporters"]["otlphttp/gateway"]
+        self.assertEqual((traces_exporter["endpoint"], traces_exporter["headers"]), (gateway["endpoint"], gateway["headers"]))
+        self.assertNotIn("storage", traces_exporter["sending_queue"])
+        self.assertEqual(traces_exporter["sending_queue"]["queue_size"], 32)
+        self.assertEqual(traces_exporter["retry_on_failure"]["max_elapsed_time"], "60s")
 
 
 class ValidatorContractTest(unittest.TestCase):
@@ -150,7 +213,9 @@ class ValidatorContractTest(unittest.TestCase):
             # Both replicas run 8192 in this arm, so neither may drift off it.
             ("\n      --chunked-prefill-size 8192\n", "\n      --chunked-prefill-size 4096\n", "model-sg-glm53-w4afp8-tp4-r1 argv must be"),
             ("\n        --chunked-prefill-size 8192\n", "\n        --chunked-prefill-size 4096\n", "model-sg-glm53-w4afp8-tp4-r2 argv must be"),
-            ("\n      --enable-trace\n", "\n      --enable-metrics\n", argv),
+            # Tracing is armed on both replicas; neither may silently drop it.
+            ("\n      --enable-trace\n", "\n", "model-sg-glm53-w4afp8-tp4-r1 argv must be"),
+            ("\n        --enable-trace\n", "\n", "model-sg-glm53-w4afp8-tp4-r2 argv must be"),
         )
         for before, after, message in cases:
             with self.subTest(mutation=after.strip()[:60]):
@@ -193,7 +258,6 @@ class ValidatorContractTest(unittest.TestCase):
             ("${GLM53_HICACHE_RAM_BUDGET:-406GiB}", "${GLM53_HICACHE_RAM_BUDGET:-80%}", "SGLANG_HICACHE_RAM_BUDGET=${GLM53_HICACHE_RAM_BUDGET:-80%}", 1),
             ("${GLM53_HICACHE_CUDA_HOST_MEMORY:-1}", "${GLM53_HICACHE_CUDA_HOST_MEMORY:-0}", "environment must be the long-context control environment", 0),
             ("${GLM53_HICACHE_CUDA_HOST_MEMORY:-1}", "${GLM53_HICACHE_CUDA_HOST_MEMORY:-0}", "environment must be the long-context control environment", 1),
-            ("    - SGLANG_TRACE_LEVEL=0\n", "    - SGLANG_TRACE_LEVEL=3\n", "environment must be the long-context control environment", 0),
             (
                 "    - SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE=1\n",
                 "    - SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE=1\n    - SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE=4096\n",
@@ -212,17 +276,66 @@ class ValidatorContractTest(unittest.TestCase):
             with self.subTest(mutation=after.strip()[:50], occurrence=index):
                 self.assert_fails(replace_nth(self.valid, before, index, after), message)
 
-    def test_rejects_trace_control_expansion(self) -> None:
-        control = generator.section(
-            self.valid,
-            "  glm53-trace-control:\n",
-            "  # Explicit operator-only semantic check;",
-            "trace control job",
-        )[2]
-        self.assert_fails(
-            self.valid.replace(control, control.replace('profiles: ["verification"]', 'profiles: ["default"]')),
-            "glm53-trace-control must be the scoped, unprivileged one-shot control job",
+    def test_rejects_a_traced_replica_without_the_trace_environment(self) -> None:
+        """Each replica's effective environment must pin both variables, r2's own list included.
+
+        The anchor list (4-space indent) is r1's environment; r2's override (6-space indent) is
+        r2's. Removing a variable from either one leaves that replica with --enable-trace and an
+        unset variable, i.e. level 3 or synchronous export at startup.
+        """
+        cases = (
+            ("\n    - SGLANG_TRACE_LEVEL=0\n", "model-sg-glm53-w4afp8-tp4-r1 runs --enable-trace but its effective environment has SGLANG_TRACE_LEVEL=nil"),
+            ("\n      - SGLANG_TRACE_LEVEL=0\n", "model-sg-glm53-w4afp8-tp4-r2 runs --enable-trace but its effective environment has SGLANG_TRACE_LEVEL=nil"),
+            ("\n    - SGLANG_TRACE_ASYNC=1\n", "model-sg-glm53-w4afp8-tp4-r1 runs --enable-trace but its effective environment has SGLANG_TRACE_ASYNC=nil"),
+            ("\n      - SGLANG_TRACE_ASYNC=1\n", "model-sg-glm53-w4afp8-tp4-r2 runs --enable-trace but its effective environment has SGLANG_TRACE_ASYNC=nil"),
         )
+        for removed, message in cases:
+            with self.subTest(removed=removed):
+                self.assert_fails(self.replace_once(removed, "\n"), message)
+        self.assert_fails(
+            self.replace_once("\n      - SGLANG_TRACE_LEVEL=0\n", "\n      - SGLANG_TRACE_LEVEL=3\n"),
+            'model-sg-glm53-w4afp8-tp4-r2 runs --enable-trace but its effective environment has SGLANG_TRACE_LEVEL="3"',
+        )
+
+    def test_rejects_trace_control_expansion(self) -> None:
+        cases = (
+            ('    container_name: glm53-trace-control\n    profiles: ["verification"]\n', '    container_name: glm53-trace-control\n    profiles: ["default"]\n'),
+            ("in 0|3) ;;", "in 0|1|2|3|4) ;;"),
+            ("    container_name: glm53-trace-control\n", '    container_name: glm53-trace-control\n    ports: ["8080:8080"]\n'),
+        )
+        for before, after in cases:
+            with self.subTest(mutation=after.strip()[:40]):
+                self.assert_fails(self.replace_once(before, after), "glm53-trace-control must be the scoped, unprivileged one-shot control job")
+
+    def test_rejects_collector_trace_path_drift(self) -> None:
+        allowlist = "must keep exactly the pinned SGLang span and span-event attribute allowlist"
+        exporter = "must be the pinned trace-only exporter"
+        pipeline = "must have exactly one traces pipeline"
+        cases = (
+            # Removing an allowed key, adding an unreviewed one, or dropping the event allowlist.
+            ('"gen_ai.request.id", ', "", allowlist),
+            ('"rid", "module", ', '"rid", "module", "host_id", ', allowlist),
+            ('keep_keys(attributes, ["bid", "batch_size", "forward_mode"])', 'keep_keys(attributes, ["bid", "batch_size", "forward_mode", "reason"])', allowlist),
+            ("            - context: spanevent\n", "            - context: resource\n", allowlist),
+            ("                - 'set(status.message, \"\") where status.message != \"\"'\n", "", allowlist),
+            ("          error_mode: propagate\n", "          error_mode: ignore\n", allowlist),
+            # The pipeline must run through the allowlist to the trace-only exporter.
+            ("[memory_limiter, transform/sglang_trace_allowlist, resource, batch]", "[memory_limiter, resource, batch]", pipeline),
+            ("            exporters: [otlphttp/gateway_traces]\n", "            exporters: [otlphttp/gateway]\n", pipeline),
+            (
+                "            exporters: [otlphttp/gateway_traces]\n",
+                "            exporters: [otlphttp/gateway_traces]\n          traces/raw:\n            receivers: [otlp]\n"
+                "            processors: [memory_limiter, batch]\n            exporters: [otlphttp/gateway_traces]\n",
+                pipeline,
+            ),
+            # The trace exporter stays small and non-persistent.
+            ("            queue_size: 32\n", "            queue_size: 32\n            storage: file_storage\n", exporter),
+            ("            queue_size: 32\n", "            queue_size: 1024\n", exporter),
+            ("            max_elapsed_time: 60s\n", "            max_elapsed_time: 0s\n", exporter),
+        )
+        for before, after, message in cases:
+            with self.subTest(mutation=after.strip()[:60] or before.strip()[:60]):
+                self.assert_fails(self.replace_once(before, after), message)
 
     def test_rejects_routing_drift_from_the_long_context_file(self) -> None:
         outside = "must match the long-context file outside the two engines"

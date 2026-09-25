@@ -32,8 +32,14 @@
 # Note this leaves no unsplit control on the tier. The split's cost under CC/PPCIe is
 # therefore measured against the pre-change history, not against a live sibling. Roll out
 # with docs/glm53-w4afp8-long-context-rollout.md, one replica at a time, and watch p95.
-# Async OTLP request tracing starts at level 0; raise one replica briefly to level 3
-# through /set_trace_level to capture production prefill and decode spans.
+#
+# TRACING: both replicas run --enable-trace with async OTLP export at SGLANG_TRACE_LEVEL=0
+# (armed, emitting nothing). An operator raises ONE replica briefly to level 3 with the
+# verification-profile glm53-trace-control job; /set_trace_level has no auth in SGLang and
+# is reachable only inside the CVM network. The in-CVM collector strips every span and
+# span-event attribute not on an explicit allowlist and exports traces through their own
+# small, non-persistent queue so a burst cannot back up logs or metrics. Capture rules:
+# docs/glm53-w4afp8-long-context-rollout.md (Request tracing).
 # Do not hand-edit this file.
 # This is the DEDICATED LONG-CONTEXT TIER variant of prod/GLM-5.3-Flash-SGL-TP4.yaml.
 # Generated from the long-context file. Routing remains the dedicated long-context
@@ -269,6 +275,11 @@ x-sg-glm53-flash-common: &sg-glm53-flash-common
     # _should_chunk_mqa_logits (defined, unused, at dsa_indexer_kpool.py:862) and chunking
     # the logits against free memory, which holds at any context, chunk size and TP.
     - SGLANG_DSA_INDEXER_QSPLIT=1
+    # Request tracing is armed but silent. SGLang defaults an unset SGLANG_TRACE_LEVEL to 3
+    # and SGLANG_TRACE_ASYNC to synchronous export, so both must be in every replica's
+    # EFFECTIVE environment (r2 repeats the anchor list, as a merge key cannot extend it).
+    # Raise one replica to level 3 only through the glm53-trace-control job, briefly,
+    # and set it back to 0.
     - SGLANG_TRACE_ASYNC=1
     - SGLANG_TRACE_LEVEL=0
   restart: unless-stopped
@@ -603,6 +614,11 @@ services:
       # _should_chunk_mqa_logits (defined, unused, at dsa_indexer_kpool.py:862) and chunking
       # the logits against free memory, which holds at any context, chunk size and TP.
       - SGLANG_DSA_INDEXER_QSPLIT=1
+      # Request tracing is armed but silent. SGLang defaults an unset SGLANG_TRACE_LEVEL to 3
+      # and SGLANG_TRACE_ASYNC to synchronous export, so both must be in every replica's
+      # EFFECTIVE environment (r2 repeats the anchor list, as a merge key cannot extend it).
+      # Raise one replica to level 3 only through the glm53-trace-control job, briefly,
+      # and set it back to 0.
       - SGLANG_TRACE_ASYNC=1
       - SGLANG_TRACE_LEVEL=0
     depends_on:
@@ -641,6 +657,7 @@ services:
 
   # Operator-only control job. Explicit compose/up via compose-manager is required.
   # It runs inside the CVM network; no engine management endpoint is published.
+  # /set_trace_level has no auth in SGLang: announce, time-box and record every capture.
   glm53-trace-control:
     image: curlimages/curl@sha256:d94d07ba9e7d6de898b6d96c1a072f6f8266c687af78a74f380087a0addf5d17
     container_name: glm53-trace-control
@@ -1197,6 +1214,22 @@ configs:
             - instance
             - replica
 
+        # SGLang request traces leave the CVM carrying only allowlisted attributes (see
+        # scripts/prepare_glm53_w4afp8_long_context.py for where each key comes from). Every
+        # other span and span-event attribute is deleted, and span status descriptions are
+        # cleared (status codes survive). error_mode propagate fails closed: a statement
+        # error drops the batch instead of exporting it unfiltered.
+        transform/sglang_trace_allowlist:
+          error_mode: propagate
+          trace_statements:
+            - context: span
+              statements:
+                - 'keep_keys(attributes, ["rid", "module", "tp_rank", "pp_rank", "dp_rank", "pid", "thread_label", "decode_ct", "num_correct_drafts", "accepted_tokens", "gen_ai.request.id", "gen_ai.request.max_tokens", "gen_ai.request.temperature", "gen_ai.request.top_p", "gen_ai.request.top_k", "gen_ai.request.n", "gen_ai.response.model", "gen_ai.response.finish_reasons", "gen_ai.usage.prompt_tokens", "gen_ai.usage.cached_tokens", "gen_ai.usage.completion_tokens", "gen_ai.latency.time_to_first_token", "gen_ai.latency.time_in_model_prefill", "gen_ai.latency.time_in_model_decode", "gen_ai.latency.time_in_model_inference", "gen_ai.latency.e2e"])'
+                - 'set(status.message, "") where status.message != ""'
+            - context: spanevent
+              statements:
+                - 'keep_keys(attributes, ["bid", "batch_size", "forward_mode"])'
+
         batch:
           send_batch_size: 1024
           send_batch_max_size: 2048
@@ -1211,6 +1244,22 @@ configs:
             num_consumers: 1
             queue_size: 128
             storage: file_storage
+        # Traces get their own exporter so a level-3 burst can only drop traces: same
+        # endpoint and auth as otlphttp/gateway, a small in-memory queue (no file storage,
+        # nothing persists across restarts) and a bounded retry.
+        otlphttp/gateway_traces:
+          endpoint: https://telemetry.infra.near.ai
+          headers:
+            Authorization: "Bearer $${env:MONITORING_INGEST_TOKEN}"
+          sending_queue:
+            enabled: true
+            num_consumers: 1
+            queue_size: 32
+          retry_on_failure:
+            enabled: true
+            initial_interval: 5s
+            max_interval: 30s
+            max_elapsed_time: 60s
 
       extensions:
         file_storage:
@@ -1238,8 +1287,8 @@ configs:
             exporters: [otlphttp/gateway]
           traces:
             receivers: [otlp]
-            processors: [memory_limiter, resource, batch]
-            exporters: [otlphttp/gateway]
+            processors: [memory_limiter, transform/sglang_trace_allowlist, resource, batch]
+            exporters: [otlphttp/gateway_traces]
         telemetry:
           metrics:
             address: localhost:8888

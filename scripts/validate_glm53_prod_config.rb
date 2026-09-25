@@ -674,11 +674,66 @@ W4AFP8_LONG_CONTEXT_ARGV = Shellwords.split(<<~'ARGV').freeze
   --enable-hierarchical-cache --hicache-write-policy write_through
   --hicache-io-backend direct --hicache-mem-layout page_first_direct
 ARGV
-W4AFP8_LONG_CONTEXT_HICACHE_ENV = HICACHE_ENV.merge(
-  "SGLANG_HICACHE_RAM_BUDGET" => "${GLM53_HICACHE_RAM_BUDGET:-406GiB}",
-  "SGLANG_TRACE_ASYNC" => "1",
-  "SGLANG_TRACE_LEVEL" => "0",
-).freeze
+# SGLang fc91d24 treats an unset SGLANG_TRACE_LEVEL as 3 and an unset SGLANG_TRACE_ASYNC as
+# synchronous export, so a replica with --enable-trace but without both would start fully traced
+# on the request path. Asserted per replica on the effective (merge-resolved) environment.
+W4AFP8_TRACE_ENV = { "SGLANG_TRACE_ASYNC" => "1", "SGLANG_TRACE_LEVEL" => "0" }.freeze
+W4AFP8_LONG_CONTEXT_HICACHE_ENV = HICACHE_ENV
+                                  .merge("SGLANG_HICACHE_RAM_BUDGET" => "${GLM53_HICACHE_RAM_BUDGET:-406GiB}")
+                                  .merge(W4AFP8_TRACE_ENV).freeze
+W4AFP8_TRACE_CONTROL_SERVICE = "glm53-trace-control"
+W4AFP8_TRACE_CONTROL_COMMAND = <<~'SH'
+  case "$$GLM53_TRACE_REPLICA" in 1|2) ;; *) echo 'replica must be 1 or 2'; exit 2 ;; esac
+  case "$$GLM53_TRACE_LEVEL" in 0|3) ;; *) echo 'trace level must be 0 or 3'; exit 2 ;; esac
+  url="http://model-sg-glm53-w4afp8-tp4-r$$GLM53_TRACE_REPLICA:8000/set_trace_level?level=$$GLM53_TRACE_LEVEL"
+  curl --fail --silent --show-error --max-time 10 "$$url"
+  echo "trace_control_applied replica=$$GLM53_TRACE_REPLICA level=$$GLM53_TRACE_LEVEL"
+SH
+# The in-CVM collector's trace contract. Spans leave the CVM carrying only the attribute keys
+# SGLang fc91d24 sets on this deployment's request, thread and stage spans and on its "schedule"
+# span events; span status descriptions are cleared. Traces use their own small, non-persistent
+# exporter queue so a level-3 burst cannot back up or drop logs and metrics. Pinned exactly:
+# adding or removing a key, or routing traces around the allowlist, is a reviewed change.
+W4AFP8_TRACE_ALLOWLIST_PROCESSOR = "transform/sglang_trace_allowlist"
+W4AFP8_TRACES_EXPORTER = "otlphttp/gateway_traces"
+W4AFP8_TRACE_SPAN_ATTRIBUTES = %w[
+  rid module tp_rank pp_rank dp_rank pid thread_label decode_ct num_correct_drafts accepted_tokens
+  gen_ai.request.id gen_ai.request.max_tokens gen_ai.request.temperature gen_ai.request.top_p
+  gen_ai.request.top_k gen_ai.request.n gen_ai.response.model gen_ai.response.finish_reasons
+  gen_ai.usage.prompt_tokens gen_ai.usage.cached_tokens gen_ai.usage.completion_tokens
+  gen_ai.latency.time_to_first_token gen_ai.latency.time_in_model_prefill
+  gen_ai.latency.time_in_model_decode gen_ai.latency.time_in_model_inference gen_ai.latency.e2e
+].freeze
+W4AFP8_TRACE_EVENT_ATTRIBUTES = %w[bid batch_size forward_mode].freeze
+W4AFP8_TRACE_COLLECTOR = {
+  "processor" => {
+    "error_mode" => "propagate",
+    "trace_statements" => [
+      {
+        "context" => "span",
+        "statements" => [
+          "keep_keys(attributes, [#{W4AFP8_TRACE_SPAN_ATTRIBUTES.map { |key| %("#{key}") }.join(', ')}])",
+          'set(status.message, "") where status.message != ""',
+        ],
+      },
+      {
+        "context" => "spanevent",
+        "statements" => ["keep_keys(attributes, [#{W4AFP8_TRACE_EVENT_ATTRIBUTES.map { |key| %("#{key}") }.join(', ')}])"],
+      },
+    ],
+  },
+  "exporter" => {
+    "endpoint" => "https://telemetry.infra.near.ai",
+    "headers" => { "Authorization" => "Bearer $${env:MONITORING_INGEST_TOKEN}" },
+    "sending_queue" => { "enabled" => true, "num_consumers" => 1, "queue_size" => 32 },
+    "retry_on_failure" => { "enabled" => true, "initial_interval" => "5s", "max_interval" => "30s", "max_elapsed_time" => "60s" },
+  },
+  "pipeline" => {
+    "receivers" => ["otlp"],
+    "processors" => ["memory_limiter", W4AFP8_TRACE_ALLOWLIST_PROCESSOR, "resource", "batch"],
+    "exporters" => [W4AFP8_TRACES_EXPORTER],
+  },
+}.freeze
 
 # The long-context file and the W4AFP8 long-context file, reduced to what must be
 # identical: engines, the engine anchor and the replicas' scrape jobs removed, replica
@@ -687,7 +742,9 @@ def w4afp8_long_context_view(errors, file_label, compose, replica_names)
   view = Marshal.load(Marshal.dump(compose))
   view.delete("x-sg-glm53-flash-common")
   replica_names.each { |name| view.fetch("services", {}).delete(name) }
-  view.fetch("services", {}).delete("glm53-trace-control")
+  # The trace control job and the collector's trace path are pinned exactly by
+  # validate_w4afp8_trace_contract; everything else in the collector must stay identical.
+  view.fetch("services", {}).delete(W4AFP8_TRACE_CONTROL_SERVICE)
   otel = view.dig("configs", "otelcol_app_config")
   if otel && otel["content"]
     collector = load_embedded_yaml(errors, "#{file_label} otelcol_app_config", otel["content"])
@@ -695,6 +752,9 @@ def w4afp8_long_context_view(errors, file_label, compose, replica_names)
       Array(collector.dig("receivers", "prometheus/apps", "config", "scrape_configs")).reject! do |job|
         job.is_a?(Hash) && replica_names.any? { |name| job["job_name"] == "sglang-#{name}" }
       end
+      collector["processors"]&.delete(W4AFP8_TRACE_ALLOWLIST_PROCESSOR)
+      collector["exporters"]&.delete(W4AFP8_TRACES_EXPORTER)
+      collector.dig("service", "pipelines")&.delete("traces")
       otel["content"] = collector
     end
   end
@@ -707,7 +767,7 @@ end
 def validate_w4afp8_long_context(errors, compose, reference)
   label = "W4AFP8 long-context"
   services = compose.fetch("services", {})
-  expected_services = EXPECTED_SERVICES - REPLICAS.keys + W4AFP8_LONG_CONTEXT_REPLICAS.keys + ["glm53-trace-control"]
+  expected_services = EXPECTED_SERVICES - REPLICAS.keys + W4AFP8_LONG_CONTEXT_REPLICAS.keys + [W4AFP8_TRACE_CONTROL_SERVICE]
   missing = expected_services - services.keys
   extra = services.keys - expected_services
   errors << "#{label} is missing services: #{missing.join(', ')}" unless missing.empty?
@@ -715,7 +775,7 @@ def validate_w4afp8_long_context(errors, compose, reference)
 
   expected_control = {
     "image" => "curlimages/curl@sha256:d94d07ba9e7d6de898b6d96c1a072f6f8266c687af78a74f380087a0addf5d17",
-    "container_name" => "glm53-trace-control",
+    "container_name" => W4AFP8_TRACE_CONTROL_SERVICE,
     "profiles" => ["verification"],
     "runtime" => "runc",
     "user" => "65534:65534",
@@ -727,17 +787,12 @@ def validate_w4afp8_long_context(errors, compose, reference)
     "cpus" => 0.25,
     "environment" => ["GLM53_TRACE_REPLICA=${GLM53_TRACE_REPLICA:-}", "GLM53_TRACE_LEVEL=${GLM53_TRACE_LEVEL:-}"],
     "entrypoint" => ["/bin/sh", "-ec"],
-    "command" => [<<~'SH'],
-      case "$$GLM53_TRACE_REPLICA" in 1|2) ;; *) echo 'replica must be 1 or 2'; exit 2 ;; esac
-      case "$$GLM53_TRACE_LEVEL" in 0|3) ;; *) echo 'trace level must be 0 or 3'; exit 2 ;; esac
-      url="http://model-sg-glm53-w4afp8-tp4-r$$GLM53_TRACE_REPLICA:8000/set_trace_level?level=$$GLM53_TRACE_LEVEL"
-      curl --fail --silent --show-error --max-time 10 "$$url"
-      echo "trace_control_applied replica=$$GLM53_TRACE_REPLICA level=$$GLM53_TRACE_LEVEL"
-    SH
+    "command" => [W4AFP8_TRACE_CONTROL_COMMAND],
     "logging" => services.dig("glm53-perception-check", "logging"),
   }
-  errors << "#{label} glm53-trace-control must be the scoped, unprivileged one-shot control job" unless services["glm53-trace-control"] == expected_control
-
+  unless services[W4AFP8_TRACE_CONTROL_SERVICE] == expected_control
+    errors << "#{label} #{W4AFP8_TRACE_CONTROL_SERVICE} must be the scoped, unprivileged one-shot control job"
+  end
 
   reference_env = environment_map(reference.dig("services", "model-sg-glm53-fp8-tp4-r1") || {})
   expected_env = reference_env.merge(W4AFP8_LONG_CONTEXT_HICACHE_ENV)
@@ -763,6 +818,15 @@ def validate_w4afp8_long_context(errors, compose, reference)
       errors << "#{label} #{name} argv must be campaign-2 arm L2 exactly (with --dist-init-addr #{spec['dist_init']} --prefill-decode-interval #{spec['pdi']}); differing tokens: #{drift.first(8).join(' ')}"
     end
     env = environment_map(service)
+    # Checked on its own, ahead of the whole-environment equality below, so the failure names
+    # the hazard: --enable-trace without both variables starts the replica fully traced.
+    if actual_argv.include?("--enable-trace")
+      W4AFP8_TRACE_ENV.each do |key, value|
+        next if env[key] == value
+
+        errors << "#{label} #{name} runs --enable-trace but its effective environment has #{key}=#{env[key].inspect}; it must be #{value} on every traced replica (unset means level 3 / synchronous export)"
+      end
+    end
     replica_expected_env = spec["qsplit"] ? expected_env.merge(W4AFP8_QSPLIT_ENV => spec["qsplit"]) : expected_env
     reserve = env.keys & ADMISSION_RESERVE_ENV
     errors << "#{label} #{name} must not set admission-reserve environment: #{reserve.join(', ')}" unless reserve.empty?
@@ -819,6 +883,8 @@ def validate_w4afp8_long_context(errors, compose, reference)
     errors << "#{label} replicas must share one runtime configuration outside image, environment and command (each asserted per replica)" unless contracts.uniq.length == 1
   end
 
+  validate_w4afp8_trace_contract(errors, label, collector)
+
   dcgm_labels = services.dig("dcgm-glm53", "labels") || {}
   errors << "#{label} dcgm-glm53 nearai.otel.model_path must be #{W4AFP8_CHECKPOINT}" unless dcgm_labels["nearai.otel.model_path"] == W4AFP8_CHECKPOINT
   errors << "#{label} dcgm-glm53 log metadata must carry model_path:#{W4AFP8_CHECKPOINT}" unless dcgm_labels["com.datadoghq.ad.logs"].to_s.include?("model_path:#{W4AFP8_CHECKPOINT}")
@@ -838,6 +904,31 @@ def validate_w4afp8_long_context(errors, compose, reference)
 
   difference = first_difference(reference_view, target_view)
   errors << "#{label} file must match the long-context file outside the two engines and their telemetry (first difference: #{difference})"
+end
+
+def validate_w4afp8_trace_contract(errors, label, collector)
+  return if collector.nil?
+
+  processor = collector.dig("processors", W4AFP8_TRACE_ALLOWLIST_PROCESSOR)
+  unless processor == W4AFP8_TRACE_COLLECTOR["processor"]
+    errors << "#{label} collector #{W4AFP8_TRACE_ALLOWLIST_PROCESSOR} must keep exactly the pinned SGLang span and span-event attribute allowlist and clear status messages"
+  end
+  exporter = collector.dig("exporters", W4AFP8_TRACES_EXPORTER)
+  unless exporter == W4AFP8_TRACE_COLLECTOR["exporter"]
+    errors << "#{label} collector #{W4AFP8_TRACES_EXPORTER} must be the pinned trace-only exporter (in-memory queue_size 32, no storage, bounded retry)"
+  end
+  gateway = collector.dig("exporters", "otlphttp/gateway") || {}
+  if exporter.is_a?(Hash) && (exporter["endpoint"] != gateway["endpoint"] || exporter["headers"] != gateway["headers"])
+    errors << "#{label} collector #{W4AFP8_TRACES_EXPORTER} must use the same endpoint and auth as otlphttp/gateway"
+  end
+  pipelines = collector.dig("service", "pipelines")
+  pipelines = {} unless pipelines.is_a?(Hash)
+  trace_pipelines = pipelines.keys.select { |name| name.to_s.match?(%r{\Atraces(/|\z)}) }
+  unless trace_pipelines == ["traces"] && pipelines["traces"] == W4AFP8_TRACE_COLLECTOR["pipeline"]
+    errors << "#{label} collector must have exactly one traces pipeline, receivers [otlp] through #{W4AFP8_TRACE_ALLOWLIST_PROCESSOR} to #{W4AFP8_TRACES_EXPORTER} only; found #{trace_pipelines.inspect}"
+  end
+  shared = pipelines.reject { |name, _| name == "traces" }.select { |_, pipeline| Array(pipeline.is_a?(Hash) ? pipeline["exporters"] : nil).include?(W4AFP8_TRACES_EXPORTER) }.keys
+  errors << "#{label} collector #{W4AFP8_TRACES_EXPORTER} must carry traces only; also used by #{shared.join(', ')}" unless shared.empty?
 end
 
 # Walks two equal-shaped (or not) structures and returns a dotted path to the

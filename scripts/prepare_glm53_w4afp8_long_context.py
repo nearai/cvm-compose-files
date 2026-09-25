@@ -120,8 +120,14 @@ HEADER: Final = (
     "# Note this leaves no unsplit control on the tier. The split's cost under CC/PPCIe is\n"
     "# therefore measured against the pre-change history, not against a live sibling. Roll out\n"
     "# with docs/glm53-w4afp8-long-context-rollout.md, one replica at a time, and watch p95.\n"
-    "# Async OTLP request tracing starts at level 0; raise one replica briefly to level 3\n"
-    "# through /set_trace_level to capture production prefill and decode spans.\n"
+    "#\n"
+    "# TRACING: both replicas run --enable-trace with async OTLP export at SGLANG_TRACE_LEVEL=0\n"
+    "# (armed, emitting nothing). An operator raises ONE replica briefly to level 3 with the\n"
+    "# verification-profile glm53-trace-control job; /set_trace_level has no auth in SGLang and\n"
+    "# is reachable only inside the CVM network. The in-CVM collector strips every span and\n"
+    "# span-event attribute not on an explicit allowlist and exports traces through their own\n"
+    "# small, non-persistent queue so a burst cannot back up logs or metrics. Capture rules:\n"
+    "# docs/glm53-w4afp8-long-context-rollout.md (Request tracing).\n"
     "# Do not hand-edit this file.\n"
 )
 
@@ -242,14 +248,22 @@ ANCHOR_ENV_NEW: Final = (
     "    # _should_chunk_mqa_logits (defined, unused, at dsa_indexer_kpool.py:862) and chunking\n"
     "    # the logits against free memory, which holds at any context, chunk size and TP.\n"
     "    - SGLANG_DSA_INDEXER_QSPLIT=1\n"
+    "    # Request tracing is armed but silent. SGLang defaults an unset SGLANG_TRACE_LEVEL to 3\n"
+    "    # and SGLANG_TRACE_ASYNC to synchronous export, so both must be in every replica's\n"
+    "    # EFFECTIVE environment (r2 repeats the anchor list, as a merge key cannot extend it).\n"
+    "    # Raise one replica to level 3 only through the glm53-trace-control job, briefly,\n"
+    "    # and set it back to 0.\n"
     "    - SGLANG_TRACE_ASYNC=1\n"
     "    - SGLANG_TRACE_LEVEL=0\n"
     "  restart: unless-stopped\n"
 )
 
 
+TRACE_FLAGS: Final = ("--enable-trace", "--otlp-traces-endpoint otelcol-contrib:4317")
+
 TRACE_CONTROL_SERVICE: Final = """  # Operator-only control job. Explicit compose/up via compose-manager is required.
   # It runs inside the CVM network; no engine management endpoint is published.
+  # /set_trace_level has no auth in SGLang: announce, time-box and record every capture.
   glm53-trace-control:
     image: curlimages/curl@sha256:d94d07ba9e7d6de898b6d96c1a072f6f8266c687af78a74f380087a0addf5d17
     container_name: glm53-trace-control
@@ -276,6 +290,114 @@ TRACE_CONTROL_SERVICE: Final = """  # Operator-only control job. Explicit compos
     logging: *logging-conf
 
 """
+
+# Exactly the attribute keys SGLang fc91d24 sets on the spans this deployment can produce
+# (single node, TP only, no PD disaggregation, no pipeline parallelism):
+#   root span        observability/trace.py trace_req_start: rid, module;
+#                    managers/tokenizer_manager.py convert_to_span_attrs: gen_ai.usage.*,
+#                    gen_ai.request.*, gen_ai.response.*, and via
+#                    observability/req_time_stats.py convert_to_gen_ai_span_attrs: gen_ai.latency.*
+#   thread span      observability/trace.py __create_thread_context: tp_rank, pp_rank, dp_rank,
+#                    pid, thread_label (host_id, the machine-id, is deliberately dropped)
+#   stage spans      req_time_stats.py: decode_ct (decode_loop), num_correct_drafts and its alias
+#                    accepted_tokens (spec_verify)
+#   span events      req_time_stats.py set_schedule_time_batch: bid, batch_size, forward_mode
+# Deliberately NOT kept: abort_info (free-text error messages, matched stop strings),
+# bootstrap_room (PD only), pp_mb_id (PP only), host_id, and any key a later SGLang adds.
+TRACE_SPAN_ATTRIBUTE_ALLOWLIST: Final = (
+    "rid",
+    "module",
+    "tp_rank",
+    "pp_rank",
+    "dp_rank",
+    "pid",
+    "thread_label",
+    "decode_ct",
+    "num_correct_drafts",
+    "accepted_tokens",
+    "gen_ai.request.id",
+    "gen_ai.request.max_tokens",
+    "gen_ai.request.temperature",
+    "gen_ai.request.top_p",
+    "gen_ai.request.top_k",
+    "gen_ai.request.n",
+    "gen_ai.response.model",
+    "gen_ai.response.finish_reasons",
+    "gen_ai.usage.prompt_tokens",
+    "gen_ai.usage.cached_tokens",
+    "gen_ai.usage.completion_tokens",
+    "gen_ai.latency.time_to_first_token",
+    "gen_ai.latency.time_in_model_prefill",
+    "gen_ai.latency.time_in_model_decode",
+    "gen_ai.latency.time_in_model_inference",
+    "gen_ai.latency.e2e",
+)
+TRACE_EVENT_ATTRIBUTE_ALLOWLIST: Final = ("bid", "batch_size", "forward_mode")
+
+
+def _ottl_list(keys: tuple[str, ...]) -> str:
+    return "[" + ", ".join(f'"{key}"' for key in keys) + "]"
+
+
+COLLECTOR_BATCH_PROCESSOR: Final = "        batch:\n          send_batch_size: 1024\n"
+COLLECTOR_TRACE_ALLOWLIST: Final = (
+    "        # SGLang request traces leave the CVM carrying only allowlisted attributes (see\n"
+    "        # scripts/prepare_glm53_w4afp8_long_context.py for where each key comes from). Every\n"
+    "        # other span and span-event attribute is deleted, and span status descriptions are\n"
+    "        # cleared (status codes survive). error_mode propagate fails closed: a statement\n"
+    "        # error drops the batch instead of exporting it unfiltered.\n"
+    "        transform/sglang_trace_allowlist:\n"
+    "          error_mode: propagate\n"
+    "          trace_statements:\n"
+    "            - context: span\n"
+    "              statements:\n"
+    f"                - 'keep_keys(attributes, {_ottl_list(TRACE_SPAN_ATTRIBUTE_ALLOWLIST)})'\n"
+    "                - 'set(status.message, \"\") where status.message != \"\"'\n"
+    "            - context: spanevent\n"
+    "              statements:\n"
+    f"                - 'keep_keys(attributes, {_ottl_list(TRACE_EVENT_ATTRIBUTE_ALLOWLIST)})'\n"
+    "\n"
+)
+COLLECTOR_GATEWAY_EXPORTER: Final = (
+    "        otlphttp/gateway:\n"
+    "          endpoint: https://telemetry.infra.near.ai\n"
+    "          headers:\n"
+    '            Authorization: "Bearer $${env:MONITORING_INGEST_TOKEN}"\n'
+    "          sending_queue:\n"
+    "            num_consumers: 1\n"
+    "            queue_size: 128\n"
+    "            storage: file_storage\n"
+)
+COLLECTOR_TRACES_EXPORTER: Final = (
+    "        # Traces get their own exporter so a level-3 burst can only drop traces: same\n"
+    "        # endpoint and auth as otlphttp/gateway, a small in-memory queue (no file storage,\n"
+    "        # nothing persists across restarts) and a bounded retry.\n"
+    "        otlphttp/gateway_traces:\n"
+    "          endpoint: https://telemetry.infra.near.ai\n"
+    "          headers:\n"
+    '            Authorization: "Bearer $${env:MONITORING_INGEST_TOKEN}"\n'
+    "          sending_queue:\n"
+    "            enabled: true\n"
+    "            num_consumers: 1\n"
+    "            queue_size: 32\n"
+    "          retry_on_failure:\n"
+    "            enabled: true\n"
+    "            initial_interval: 5s\n"
+    "            max_interval: 30s\n"
+    "            max_elapsed_time: 60s\n"
+)
+COLLECTOR_TRACES_PIPELINE_OLD: Final = (
+    "          traces:\n"
+    "            receivers: [otlp]\n"
+    "            processors: [memory_limiter, resource, batch]\n"
+    "            exporters: [otlphttp/gateway]\n"
+)
+COLLECTOR_TRACES_PIPELINE_NEW: Final = (
+    "          traces:\n"
+    "            receivers: [otlp]\n"
+    "            processors: [memory_limiter, transform/sglang_trace_allowlist, resource, batch]\n"
+    "            exporters: [otlphttp/gateway_traces]\n"
+)
 
 
 class GenerationError(ValueError):
@@ -332,11 +454,10 @@ def engine_arguments(source: list[str], replica: int) -> list[str]:
         else:
             arguments.append(argument)
     arguments.extend(HICACHE_FLAGS)
+    if arguments.count("--enable-cache-report") != 1 or any(flag in arguments for flag in TRACE_FLAGS):
+        raise GenerationError("source engine command changed around --enable-cache-report or already traces")
     cache_report_index = arguments.index("--enable-cache-report")
-    arguments[cache_report_index + 1 : cache_report_index + 1] = (
-        "--enable-trace",
-        "--otlp-traces-endpoint otelcol-contrib:4317",
-    )
+    arguments[cache_report_index + 1 : cache_report_index + 1] = TRACE_FLAGS
     return arguments
 
 
@@ -440,6 +561,15 @@ def generate(source: str) -> str:
         TRACE_CONTROL_SERVICE + "  # Explicit operator-only semantic check; never starts with a normal stack apply.\n",
         1,
         "operator trace control service",
+    )
+    updated = replace_exact(
+        updated, COLLECTOR_BATCH_PROCESSOR, COLLECTOR_TRACE_ALLOWLIST + COLLECTOR_BATCH_PROCESSOR, 1, "collector trace allowlist"
+    )
+    updated = replace_exact(
+        updated, COLLECTOR_GATEWAY_EXPORTER, COLLECTOR_GATEWAY_EXPORTER + COLLECTOR_TRACES_EXPORTER, 1, "collector traces exporter"
+    )
+    updated = replace_exact(
+        updated, COLLECTOR_TRACES_PIPELINE_OLD, COLLECTOR_TRACES_PIPELINE_NEW, 1, "collector traces pipeline"
     )
 
     for old, new, count, label in (
