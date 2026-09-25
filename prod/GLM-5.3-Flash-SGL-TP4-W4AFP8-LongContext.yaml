@@ -4,30 +4,34 @@
 # --max-prefill-tokens 32768, HiCache with CUDA-owned host memory and a fixed 406 GiB
 # startup host-memory budget per replica, and no admission reserve.
 #
-# THE REPLICAS ARE NOT IDENTICAL. r1 is the live control, r2 the canary:
-#   r1: gpu31 campaign-2 arm L2 (2026-09-23), chunk 8192, --prefill-decode-interval 1
-#       docker.io/nearaidev/sglang@sha256:fde25985aea3ebabf1eb581ae21d53be8540e32933eef942ee8b962a1bfbea20
-#       published by workflow run 35903077821 from recipe merge commit f8106f096e9c83.
-#   r2: chunk 8192, --prefill-decode-interval 2, SGLANG_DSA_INDEXER_QSPLIT=1
-#       docker.io/nearaidev/sglang@sha256:8ff1a487b98a52fe08b781715bebd7c8c445d4fe068f312f03f527d5a3c77e84
-#       published by workflow run 36073196105 from recipe merge commit 556482c78cd3,
-#       which adds the opt-in DSA indexer query split (cvm-compose-files#300).
+# BOTH replicas run chunk 8192 with SGLANG_DSA_INDEXER_QSPLIT=1 on
+#   docker.io/nearaidev/sglang@sha256:8ff1a487b98a52fe08b781715bebd7c8c445d4fe068f312f03f527d5a3c77e84
+# (workflow run 36073196105, recipe merge commit 556482c78cd3, cvm-compose-files#300).
+# They differ only in --prefill-decode-interval: 1 on r1, 2 on r2.
 #
-# r2 IS AN ISOLATION ARM, NOT A SHIPPING CONFIG. The 2026-09-25 canary ran the split WITH
-# chunk 16384 and regressed the tail: TTFT p95 76.9 s against r1's 47.3 s (1.62x) over a
-# 4 h steady-state window, though the decode win did reproduce (ITL p90 0.87x). Traffic
-# volume, cache warmth and queue depth did not explain it. The chunk and the split both
-# bite hardest on the largest prefills, and the canary changed both at once, so this arm
-# holds the split at 8192 to tell them apart: if p95 recovers the chunk was at fault, if
-# it stays bad the all-gather under CC/PPCIe is. Do not read this file as an endorsement
-# of either setting until that run reports.
+# WHY THE SPLIT IS ON: r1 crashed on 2026-09-25 without it. deep_gemm.fp8_mqa_logits
+# (dsa_indexer_kpool.py:919) asked for a single fp32 buffer of new_tokens x total_context
+# -- 11.96 GiB at ~392K context with an 8192 chunk -- against 11.88 GiB free. An ordinary
+# request for this tier. The split has each TP rank score 1/TP of the rows, taking that
+# allocation to roughly 3 GiB.
 #
-# chunk 16384 must never be set without the split: it left 0.04-0.65 GB free per GPU on a
-# concurrent long burst, the condition that preceded the gpu02 crash. The reverse is
-# allowed, which is what makes this arm possible. validate_glm53_prod_config.rb enforces it.
-# The HCC/PPCIe host-memory path is confirmed working in a CVM as of 2026-09-25; the
-# split's all-gather under CC is what this arm measures. Roll out with
-# docs/glm53-w4afp8-long-context-rollout.md, one replica at a time.
+# THE SPLIT IS A MITIGATION, NOT THE FIX. It divides the buffer by TP; it does not bound
+# it. The same crash returns at ~4x the context, or at TP1. The fix is to call
+# _should_chunk_mqa_logits -- defined but never called, at dsa_indexer_kpool.py:862 --
+# and chunk the logits against free memory, as dsa_indexer.py already does for the
+# non-kpool path at :1165. That bounds the buffer at any context, chunk size and TP.
+#
+# WHY 8192 AND NOT 16384: the 2026-09-25 canary ran the split at chunk 16384 and regressed
+# the tail -- TTFT p95 76.9 s against r1's 47.3 s (1.62x) over a 4 h steady-state window --
+# though the decode win did reproduce (ITL p90 0.87x). Traffic volume, cache warmth and
+# queue depth did not explain it. gpu02 was rolled back. 8192 is the chunk that has run
+# stably on this tier; 16384 must never be set without the split in any case, because
+# without it a concurrent long burst left 0.04-0.65 GB free per GPU.
+# validate_glm53_prod_config.rb enforces that pairing.
+#
+# Note this leaves no unsplit control on the tier. The split's cost under CC/PPCIe is
+# therefore measured against the pre-change history, not against a live sibling. Roll out
+# with docs/glm53-w4afp8-long-context-rollout.md, one replica at a time, and watch p95.
 # Do not hand-edit this file.
 # This is the DEDICATED LONG-CONTEXT TIER variant of prod/GLM-5.3-Flash-SGL-TP4.yaml.
 # Generated from the long-context file. Routing remains the dedicated long-context
@@ -170,7 +174,7 @@ x-vllm-proxy-common: &vllm-proxy-common
 x-sg-glm53-flash-common: &sg-glm53-flash-common
   <<: *nvidia
   init: true
-  image: docker.io/nearaidev/sglang@sha256:fde25985aea3ebabf1eb581ae21d53be8540e32933eef942ee8b962a1bfbea20
+  image: docker.io/nearaidev/sglang@sha256:8ff1a487b98a52fe08b781715bebd7c8c445d4fe068f312f03f527d5a3c77e84
   command: >
       sglang serve
       --model-path /root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/snapshots/99f1fa70408c52b007d4fd69e02e5a522422e755
@@ -251,6 +255,16 @@ x-sg-glm53-flash-common: &sg-glm53-flash-common
     - SGLANG_HICACHE_CUDA_HOST_MEMORY=${GLM53_HICACHE_CUDA_HOST_MEMORY:-1}
     - SGLANG_HICACHE_POOLED_TRANSFERS=1
     - SGLANG_HICACHE_STAGING_PAGES=64
+    # DSA indexer query split, on BOTH replicas. Each TP rank scores 1/TP of a prefill
+    # chunk's rows instead of all of them, so the fp32 logits buffer -- sized
+    # new_tokens x total_context -- shrinks by TP. r1 crashed on 2026-09-25 without it:
+    # deep_gemm.fp8_mqa_logits asked for 11.96 GiB with 11.88 GiB free at ~392K context
+    # (dsa_indexer_kpool.py:919). At TP4 that allocation becomes ~3 GiB.
+    # This is a MITIGATION, not the fix. It divides the buffer by TP; it does not bound
+    # it. The same crash returns at ~4x the context, or at TP1. The real fix is calling
+    # _should_chunk_mqa_logits (defined, unused, at dsa_indexer_kpool.py:862) and chunking
+    # the logits against free memory, which holds at any context, chunk size and TP.
+    - SGLANG_DSA_INDEXER_QSPLIT=1
   restart: unless-stopped
   stop_grace_period: 5m
   logging: *logging-conf
@@ -466,7 +480,7 @@ services:
               device_ids: ["0","1","2","3"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-bf16-kv","deployment:glm53-flash-sgl-tp4","config_variant:fc91d24-long-context-w4afp8-c8192-hicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192","request_logging:disabled","engine_image:fde25985aea3","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:1"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-bf16-kv","deployment:glm53-flash-sgl-tp4","config_variant:fc91d24-long-context-w4afp8-c8192-qsplit-hicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192","request_logging:disabled","engine_image:8ff1a487b98a","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:1"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -478,10 +492,10 @@ services:
       nearai.otel.model_path: "graphistry/GLM-5.3-Flash-W4AFP8"
       nearai.otel.served_model: "z-ai/glm-5.3-flash"
       nearai.otel.deployment: "glm53-flash-sgl-tp4"
-      nearai.otel.config_variant: "fc91d24-long-context-w4afp8-c8192-hicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
+      nearai.otel.config_variant: "fc91d24-long-context-w4afp8-c8192-qsplit-hicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
       nearai.otel.thinking_budget_policy: "default8192-public-to-native"
       nearai.otel.request_logging: "disabled"
-      nearai.otel.engine_image: "fde25985aea3"
+      nearai.otel.engine_image: "8ff1a487b98a"
       nearai.otel.instance: "1"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
@@ -571,6 +585,15 @@ services:
       - SGLANG_HICACHE_CUDA_HOST_MEMORY=${GLM53_HICACHE_CUDA_HOST_MEMORY:-1}
       - SGLANG_HICACHE_POOLED_TRANSFERS=1
       - SGLANG_HICACHE_STAGING_PAGES=64
+      # DSA indexer query split, on BOTH replicas. Each TP rank scores 1/TP of a prefill
+      # chunk's rows instead of all of them, so the fp32 logits buffer -- sized
+      # new_tokens x total_context -- shrinks by TP. r1 crashed on 2026-09-25 without it:
+      # deep_gemm.fp8_mqa_logits asked for 11.96 GiB with 11.88 GiB free at ~392K context
+      # (dsa_indexer_kpool.py:919). At TP4 that allocation becomes ~3 GiB.
+      # This is a MITIGATION, not the fix. It divides the buffer by TP; it does not bound
+      # it. The same crash returns at ~4x the context, or at TP1. The real fix is calling
+      # _should_chunk_mqa_logits (defined, unused, at dsa_indexer_kpool.py:862) and chunking
+      # the logits against free memory, which holds at any context, chunk size and TP.
       - SGLANG_DSA_INDEXER_QSPLIT=1
     depends_on:
       model-downloader:
@@ -996,10 +1019,10 @@ configs:
                       ip: "${HOST_IP}"
                       port: "8000"
                       instance: "1"
-                      config_variant: "fc91d24-long-context-w4afp8-c8192-hicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
+                      config_variant: "fc91d24-long-context-w4afp8-c8192-qsplit-hicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
                       thinking_budget_policy: "default8192-public-to-native"
                       request_logging: "disabled"
-                      engine_image: "fde25985aea3"
+                      engine_image: "8ff1a487b98a"
               - job_name: sglang-model-sg-glm53-w4afp8-tp4-r2
                 scrape_interval: 15s
                 metrics_path: /metrics

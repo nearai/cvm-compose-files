@@ -148,9 +148,13 @@ class ValidatorContractTest(unittest.TestCase):
         self.assert_fails(self.replace_once("      - SGLANG_DSA_INDEXER_QSPLIT=1\n", ""), "SGLANG_DSA_INDEXER_QSPLIT")
 
     def test_rejects_the_split_on_an_image_without_the_patch(self) -> None:
-        """Only the v2 image carries the split patch; the flag is inert and misleading elsewhere."""
-        mutated = self.replace_once(f"    image: {generator.R2_IMAGE}\n", f"    image: {generator.IMAGE}\n")
-        self.assert_fails(mutated, "image must be")
+        """The split flag is inert and misleading on v1, which does not carry the patch.
+
+        Both replicas now run v2, so this mutation has to name the v1 digest explicitly -- using
+        generator.IMAGE would be a no-op and the test would pass without exercising anything.
+        """
+        v1 = "docker.io/nearaidev/sglang@sha256:fde25985aea3ebabf1eb581ae21d53be8540e32933eef942ee8b962a1bfbea20"
+        self.assert_fails(replace_nth(self.valid, f"  image: {generator.IMAGE}\n", 0, f"  image: {v1}\n"), "image must be")
 
     def test_rejects_engine_image_and_environment_drift(self) -> None:
         # r2 now carries its own environment block (it needs SGLANG_DSA_INDEXER_QSPLIT=1 and a
