@@ -3,7 +3,7 @@ FROM docker.io/nearaidev/sglang@sha256:3eccc30709f5719c81084d1264f03ca5354b3059e
 
 ARG BUILD_SOURCE_REVISION
 LABEL org.opencontainers.image.title="GLM-5.3 Flash HiCache W4AFP8 engine"
-LABEL org.opencontainers.image.description="HCC-safe HiCache engine with admission reserve v10, the W4AFP8 loader fix, the unconditional chunked-prefill pool clamp and the opt-in DSA indexer query split"
+LABEL org.opencontainers.image.description="HCC-safe HiCache engine with admission reserve v10, the W4AFP8 loader fix, the unconditional chunked-prefill pool clamp, the opt-in DSA indexer query split, request preprocessing and the multimodal shared-memory copy moved off the HTTP event loop, and an event-loop stall dump"
 LABEL org.opencontainers.image.source="https://github.com/nearai/cvm-compose-files"
 LABEL org.opencontainers.image.revision="${BUILD_SOURCE_REVISION}"
 LABEL org.opencontainers.image.base.name="docker.io/nearaidev/sglang"
@@ -21,6 +21,9 @@ LABEL nearai.sglang.hcc_managed_memory="v3-host-prefetch-opt-in"
 LABEL nearai.sglang.w4afp8_loader_patch="modules-to-not-convert-v1"
 LABEL nearai.sglang.chunked_prefill_pool_clamp="v1"
 LABEL nearai.sglang.dsa_indexer_qsplit="v1-opt-in"
+LABEL nearai.sglang.request_preprocessing_off_loop="pr30771-60a56aa"
+LABEL nearai.sglang.mm_shm_wrap_off_loop="v1"
+LABEL nearai.sglang.event_loop_stall_dump="v1-on-30s"
 
 COPY Dockerfile \
      PROVENANCE \
@@ -29,9 +32,13 @@ COPY Dockerfile \
      apply-patches.py \
      chunked-prefill-pool-clamp.diff \
      dsa-indexer-qsplit.diff \
+     event-loop-stall-dump.diff \
      modules-to-not-convert.diff \
+     sglang-pr30771.diff \
+     shm-off-loop.diff \
      source-manifest.json \
      test-cpu.sh \
+     test_stall_dump.py \
      /usr/share/nearai/glm53-hicache-w4afp8/
 RUN test -n "$BUILD_SOURCE_REVISION" \
     && cd /usr/share/nearai/glm53-hicache-w4afp8 \
@@ -39,8 +46,14 @@ RUN test -n "$BUILD_SOURCE_REVISION" \
     && python3 apply-patches.py
 
 # The loader and pool-clamp patches are required for the W4AFP8 image and are unconditional. The DSA
-# indexer query split is inert unless SGLANG_DSA_INDEXER_QSPLIT=1. Everything inherited from
-# the base stays opt-in: admission reserve v10 via SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE, and
-# HiCache via --enable-hierarchical-cache plus SGLANG_HICACHE_*. On an HCC/PPCIe (TEE) host
-# SGLANG_HICACHE_CUDA_HOST_MEMORY must stay 1; 0 selects the anonymous-mmap plus cudaHostRegister
-# path, which fails with CUDA error 801.
+# indexer query split is inert unless SGLANG_DSA_INDEXER_QSPLIT=1. The two event-loop patches are
+# unconditional: upstream sglang PR #30771 runs chat template rendering and tokenization in a
+# request-preprocessor thread, and shm-off-loop moves the dispatch-time /dev/shm copy of multimodal
+# features to its own thread, so /health keeps answering during multi-MB and image-heavy requests.
+# The event-loop stall dump is on by default: after 30 s without a loop tick it writes every
+# thread's stack to stderr with the prefix [event-loop-stall]. SGLANG_EVENT_LOOP_STALL_DUMP_SECS=0
+# disables it; SGLANG_EVENT_LOOP_STALL_DUMP_REPEAT_SECS (default 60) spaces the repeats.
+# Everything inherited from the base stays opt-in: admission reserve v10 via
+# SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE, and HiCache via --enable-hierarchical-cache plus
+# SGLANG_HICACHE_*. On an HCC/PPCIe (TEE) host SGLANG_HICACHE_CUDA_HOST_MEMORY must stay 1; 0 selects
+# the anonymous-mmap plus cudaHostRegister path, which fails with CUDA error 801.
