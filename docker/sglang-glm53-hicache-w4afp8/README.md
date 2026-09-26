@@ -11,7 +11,7 @@ CUDA error 801.
 
 Base `sha256:3eccc307…` (HiCache + admission reserve v10) plus two correctness patches, both
 byte-identical copies of the reviewed originals, one opt-in performance patch, two patches that move
-blocking work off the HTTP event loop, and one diagnostic:
+blocking work off the HTTP event loop, one diagnostic, and one opt-in measurement:
 
 | patch | origin | scope |
 | --- | --- | --- |
@@ -21,6 +21,7 @@ blocking work off the HTTP event loop, and one diagnostic:
 | `sglang-pr30771.diff` | upstream sglang PR #30771 (open), byte-identical to its diff at head `60a56aa` | `OpenAIServingBase.handle_request`, `TokenizerManager._tokenize_texts`, plus the PR's three CPU tests |
 | `shm-off-loop.diff` | new here, applied after `sglang-pr30771.diff` | `TokenizerManager._send_one_request`, requests with multimodal inputs only |
 | `event-loop-stall-dump.diff` | new here (diagnostic, on by default at 30 s) | new `utils/event_loop_stall_dump.py` plus a hook in the HTTP server lifespan |
+| `ghost-prefix-cache.diff` | new here (opt-in, `SGLANG_GHOST_CACHE=1`) | new `observability/ghost_cache.py` plus one call at the top of `mem_cache/common.py` `release_kv_cache` |
 
 ## DSA indexer query split (opt-in)
 
@@ -140,6 +141,63 @@ heartbeat every second and a daemon thread (`event-loop-stall-watch`) checks it.
 To read it, filter the engine log on `[event-loop-stall]`. Loop-thread CPU near 0 means the loop is
 waiting (a lock, I/O, the GIL); CPU close to the stall age means it is computing.
 
+## Ghost prefix cache (opt-in)
+
+The engine reports the prefix hits it got, but not the hits it missed because the KV had been
+evicted. So "would a bigger KV cache, write_back, or a disk tier help?" could only be answered by
+deploying each change and waiting. `ghost-prefix-cache.diff` measures it directly, without storing KV
+or text.
+
+With `SGLANG_GHOST_CACHE=1`, TP rank 0 takes each finished request (not aborted) as its KV is
+released and hands its token ids to a background thread (`sglang-ghost-cache`), which:
+
+1. cuts prompt + output into 64-token pages and hashes them as a chain, so each page hash covers
+   every token before it. The hash is BLAKE2b keyed with 32 random bytes drawn at process start.
+2. keeps an LRU of page hashes only, and for each prompt page records whether it was never seen
+   (a compulsory miss no cache can save) or seen before at LRU stack distance d: the number of
+   distinct tokens touched since that page was last used. A page hits in an LRU cache of C tokens
+   exactly when d < C, so one measurement gives the hit rate at every cache size. The chain keeps
+   the radix-tree prefix property: an ancestor page is touched whenever a descendant is.
+3. tracks only pages whose hash falls in a 1/`SGLANG_GHOST_CACHE_SAMPLE` slice (default 16) and
+   scales their counts, which bounds memory and CPU (SHARDS sampling). Hashing still covers every
+   page, because the chain needs it.
+
+**Confidentiality.** The key never leaves process memory and is never logged. Only 16-byte digests
+are kept, in RAM, and they are gone on restart. Nothing per request is logged or exported. What leaves
+the process is aggregate Prometheus counters, the same kind of numbers as `sglang:cached_tokens_total`.
+
+| metric | meaning |
+| --- | --- |
+| `sglang:ghost_prompt_tokens_total` | prompt tokens of the accounted requests |
+| `sglang:ghost_actual_cached_tokens_total` | tokens the engine really served from cache, same requests |
+| `sglang:ghost_lookup_tokens_total` | full-page prompt tokens looked up (sampled, scaled) |
+| `sglang:ghost_reused_tokens_total{within="5M"}` | of those, seen before at LRU distance under 5M tokens (cumulative buckets 0.25M-1024M, and `inf` = seen at any distance) |
+| `sglang:ghost_reused_age_tokens_total{within_s="600"}` | seen before, last used under 600 s earlier (cumulative, 10 s-24 h, `inf`) |
+| `sglang:ghost_requests_total`, `sglang:ghost_dropped_requests_total` | accounted, and skipped because the queue was full |
+| `sglang:ghost_tracked_pages` | sampled hashes held (bounded by `SGLANG_GHOST_CACHE_MAX_PAGES`, default 1,000,000) |
+
+How to read it, per replica over a window (each counter's `increase`):
+
+- **predicted hit rate with a C-token LRU cache** = `reused{within=C}` / `lookup`
+- **compulsory misses** = (`lookup` - `reused{within="inf"}`) / `lookup`: the share no cache can save
+- **avoidable misses** = `reused{within="inf"}` / `lookup` - `actual_cached` / `prompt`
+- the long tier's device pool is about 3.5M tokens; a 406 GiB write_through host tier holds about 5M
+  in total (it is an inclusive copy), 650 GiB about 8M; write_back adds host to device.
+
+Cost when enabled: 0.06 / 0.56 / 2.8 / 14 ms of background-thread CPU per 1.5K / 20K / 100K / 500K-
+token request (hashing dominates), a list copy of the token ids on the scheduler thread, and about
+150 bytes per tracked page (about 150 MB at the default cap, which covers about 1B tokens of history
+at 1/16). The engine's scheduling and caching are unchanged.
+
+Validated CPU-only by `test_ghost_cache.py` (step 8 of `test-cpu.sh`): with sampling off the predicted
+hit tokens equal a brute-force LRU page cache at six sizes; at 1/16 they stay within 0.5 points;
+compulsory misses equal never-seen pages; only keyed digests are retained; the tracked set is
+bounded; the hook is a no-op when disabled.
+
+Model limits: it predicts an LRU cache at page granularity. The engine rounds hits to its 256-token
+tree page, and a restored host hit only pays when loading it is faster than recomputing (true for
+the host tier). Different replicas use different keys, so cross-replica reuse is not visible.
+
 ## Why the composition is safe
 
 The HiCache patches touch `mem_cache/*`, `disaggregation/*` and `schedule_batch.py`. None of the
@@ -178,7 +236,8 @@ producing a silently different image.
 
 Added here: the DSA indexer query split is opt-in (`SGLANG_DSA_INDEXER_QSPLIT=1`), the two
 event-loop patches have no switch, and the stall dump is on at 30 s
-(`SGLANG_EVENT_LOOP_STALL_DUMP_SECS=0` turns it off). Inherited opt-ins:
+(`SGLANG_EVENT_LOOP_STALL_DUMP_SECS=0` turns it off), and the ghost prefix cache is opt-in
+(`SGLANG_GHOST_CACHE=1`). Inherited opt-ins:
 
 - admission reserve — `SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE`
   (never set `SGLANG_ADMISSION_RESERVE_MIN_WAIT_S`: the wall-clock gate desynchronises TP ranks and
@@ -212,3 +271,8 @@ CPU-only container: `apply-patches.py`, then `test-cpu.sh` steps 1-7. On GPU the
 the same source bytes over the v1 image, all three patches together with the stall dump at its 30 s
 default. No v3 build has run on GPU, so the published image first does so as the long-context r2
 canary.
+
+**v4** adds the ghost prefix cache. The recipe was built and `test-cpu.sh` steps 1-8 run in a
+CPU-only container on gpu31 (2026-09-26). The GPU check compares its predictions with the hit rates
+measured at 406 GiB, 650 GiB and with HiCache off on the same replay (gpu31 HiCache write-policy A/B).
+
