@@ -62,14 +62,21 @@ SOURCE_VARIANTS: Final = (
     "fc91d24-long-context-admission-reserve-disabled-hicache-disabled-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192",
     "fc91d24-long-context-admission-reserve-disabled-hicache-cuda-host-pooled-v1-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192",
 )
-# Both replicas now carry the split at chunk 8192; the variants differ only in pdi1/pdi2, which
-# is the one remaining per-replica difference and how dashboards separate them.
+# Both replicas carry the split at chunk 8192. They differ in pdi1/pdi2 and in r2's larger HiCache
+# host tier (host650g), which is how dashboards separate them.
 VARIANTS: Final = {
     1: "fc91d24-long-context-w4afp8-c8192-qsplit-hicache-cuda-host-pooled-v1-admission-reserve-disabled"
     "-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192",
-    2: "fc91d24-long-context-w4afp8-c8192-qsplit-hicache-cuda-host-pooled-v1-admission-reserve-disabled"
+    2: "fc91d24-long-context-w4afp8-c8192-qsplit-hicache-cuda-host-pooled-v1-host650g-admission-reserve-disabled"
     "-pool-clamp-pdi2-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192",
 }
+# HiCache host-tier canary: r2's startup budget. With write_through the host tier is an inclusive
+# copy of the GPU pool, so only (host - device) tokens are extra. W4AFP8 grew the device pool to
+# ~3.52M tokens while 406 GiB holds ~4.99M, leaving ~1.5M extra; on 2026-09-25 host hits were ~1%
+# of cached tokens on both replicas. 650 GiB holds ~8M (~4.5M extra). The gpu02 CVM had ~690 GiB
+# free with both replicas at 406 GiB, so r2 at 650 still leaves ~450 GiB.
+ANCHOR_BUDGET_LINE: Final = "    - SGLANG_HICACHE_RAM_BUDGET=${GLM53_HICACHE_RAM_BUDGET:-406GiB}\n"
+R2_BUDGET_LINE: Final = "    - SGLANG_HICACHE_RAM_BUDGET=${GLM53_R2_HICACHE_RAM_BUDGET:-650GiB}\n"
 PREFILL_DECODE_INTERVAL: Final = {1: 1, 2: 2}
 SOURCE_DIST_INIT: Final = "127.0.0.1:29510"
 DIST_INIT: Final = {1: "127.0.0.1:29510", 2: "127.0.0.1:29511"}
@@ -178,7 +185,8 @@ HEADER_REPLACEMENTS: Final = (
         "# clamp. Two replicas share the CVM's RAM, so each replica's startup host-memory\n"
         "# budget defaults to a fixed 406 GiB across its four TP ranks (the qualified L2 value;\n"
         "# a percentage resolves against MemAvailable at each start and would split unevenly).\n"
-        "# GLM53_HICACHE_RAM_BUDGET overrides it for BOTH replicas.\n",
+        "# GLM53_HICACHE_RAM_BUDGET overrides it for r1. r2 is the host-tier canary: 650 GiB,\n"
+        "# overridable with GLM53_R2_HICACHE_RAM_BUDGET.\n",
     ),
     (
         "# Admission reserve is deliberately disabled on both replicas: reserve v10 admitted a\n"
@@ -222,8 +230,8 @@ ANCHOR_ENV_NEW: Final = (
     "    - SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE=1\n"
     "    # HiCache host tier: a fixed 406 GiB per replica across its four TP ranks (the\n"
     "    # qualified L2 value). A percentage would resolve against MemAvailable at each start,\n"
-    "    # so the replica started second would get less. The override applies to BOTH\n"
-    "    # replicas; startup fails if it exceeds available RAM minus the 10 GiB reserve.\n"
+    "    # so the replica started second would get less. r2 overrides this with its own\n"
+    "    # 650 GiB canary budget; startup fails if it exceeds available RAM minus 10 GiB.\n"
     "    - SGLANG_HICACHE_RAM_BUDGET=${GLM53_HICACHE_RAM_BUDGET:-406GiB}\n"
     "    # CUDA-owned host memory (cudaMallocHost). Must stay 1 on TEE hosts: 0 selects\n"
     "    # cudaHostRegister, which fails with CUDA error 801 under HCC/PPCIe.\n"
@@ -386,6 +394,7 @@ def generate(source: str) -> str:
     r2_environment = "".join(
         f"  {line}\n" if line.strip() else "\n" for line in anchor_environment.splitlines()
     )
+    r2_environment = replace_exact(r2_environment, f"  {ANCHOR_BUDGET_LINE}", f"  {R2_BUDGET_LINE}", 1, "r2 host budget")
     r2 = (
         r2[:override_start]
         + f"    image: {REPLICA_IMAGE[2]}\n"

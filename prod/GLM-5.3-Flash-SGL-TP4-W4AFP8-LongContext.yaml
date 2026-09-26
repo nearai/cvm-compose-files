@@ -119,7 +119,8 @@ x-logging-conf: &logging-conf
 # clamp. Two replicas share the CVM's RAM, so each replica's startup host-memory
 # budget defaults to a fixed 406 GiB across its four TP ranks (the qualified L2 value;
 # a percentage resolves against MemAvailable at each start and would split unevenly).
-# GLM53_HICACHE_RAM_BUDGET overrides it for BOTH replicas.
+# GLM53_HICACHE_RAM_BUDGET overrides it for r1. r2 is the host-tier canary: 650 GiB,
+# overridable with GLM53_R2_HICACHE_RAM_BUDGET.
 #
 # Admission reserve is deliberately disabled on both replicas: reserve v10 admitted a
 # 292K-cached waiter beside an in-flight chunked prefill on gpu02 and exhausted the
@@ -247,8 +248,8 @@ x-sg-glm53-flash-common: &sg-glm53-flash-common
     - SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE=1
     # HiCache host tier: a fixed 406 GiB per replica across its four TP ranks (the
     # qualified L2 value). A percentage would resolve against MemAvailable at each start,
-    # so the replica started second would get less. The override applies to BOTH
-    # replicas; startup fails if it exceeds available RAM minus the 10 GiB reserve.
+    # so the replica started second would get less. r2 overrides this with its own
+    # 650 GiB canary budget; startup fails if it exceeds available RAM minus 10 GiB.
     - SGLANG_HICACHE_RAM_BUDGET=${GLM53_HICACHE_RAM_BUDGET:-406GiB}
     # CUDA-owned host memory (cudaMallocHost). Must stay 1 on TEE hosts: 0 selects
     # cudaHostRegister, which fails with CUDA error 801 under HCC/PPCIe.
@@ -577,9 +578,9 @@ services:
       - SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE=1
       # HiCache host tier: a fixed 406 GiB per replica across its four TP ranks (the
       # qualified L2 value). A percentage would resolve against MemAvailable at each start,
-      # so the replica started second would get less. The override applies to BOTH
-      # replicas; startup fails if it exceeds available RAM minus the 10 GiB reserve.
-      - SGLANG_HICACHE_RAM_BUDGET=${GLM53_HICACHE_RAM_BUDGET:-406GiB}
+      # so the replica started second would get less. r2 overrides this with its own
+      # 650 GiB canary budget; startup fails if it exceeds available RAM minus 10 GiB.
+      - SGLANG_HICACHE_RAM_BUDGET=${GLM53_R2_HICACHE_RAM_BUDGET:-650GiB}
       # CUDA-owned host memory (cudaMallocHost). Must stay 1 on TEE hosts: 0 selects
       # cudaHostRegister, which fails with CUDA error 801 under HCC/PPCIe.
       - SGLANG_HICACHE_CUDA_HOST_MEMORY=${GLM53_HICACHE_CUDA_HOST_MEMORY:-1}
@@ -606,7 +607,7 @@ services:
               device_ids: ["4","5","6","7"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-bf16-kv","deployment:glm53-flash-sgl-tp4","config_variant:fc91d24-long-context-w4afp8-c8192-qsplit-hicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdi2-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192","request_logging:disabled","engine_image:8ff1a487b98a","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:2"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-bf16-kv","deployment:glm53-flash-sgl-tp4","config_variant:fc91d24-long-context-w4afp8-c8192-qsplit-hicache-cuda-host-pooled-v1-host650g-admission-reserve-disabled-pool-clamp-pdi2-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192","request_logging:disabled","engine_image:8ff1a487b98a","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:2"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -618,7 +619,7 @@ services:
       nearai.otel.model_path: "graphistry/GLM-5.3-Flash-W4AFP8"
       nearai.otel.served_model: "z-ai/glm-5.3-flash"
       nearai.otel.deployment: "glm53-flash-sgl-tp4"
-      nearai.otel.config_variant: "fc91d24-long-context-w4afp8-c8192-qsplit-hicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdi2-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
+      nearai.otel.config_variant: "fc91d24-long-context-w4afp8-c8192-qsplit-hicache-cuda-host-pooled-v1-host650g-admission-reserve-disabled-pool-clamp-pdi2-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
       nearai.otel.thinking_budget_policy: "default8192-public-to-native"
       nearai.otel.request_logging: "disabled"
       nearai.otel.engine_image: "8ff1a487b98a"
@@ -1044,7 +1045,7 @@ configs:
                       ip: "${HOST_IP}"
                       port: "8000"
                       instance: "2"
-                      config_variant: "fc91d24-long-context-w4afp8-c8192-qsplit-hicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdi2-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
+                      config_variant: "fc91d24-long-context-w4afp8-c8192-qsplit-hicache-cuda-host-pooled-v1-host650g-admission-reserve-disabled-pool-clamp-pdi2-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
                       thinking_budget_policy: "default8192-public-to-native"
                       request_logging: "disabled"
                       engine_image: "8ff1a487b98a"

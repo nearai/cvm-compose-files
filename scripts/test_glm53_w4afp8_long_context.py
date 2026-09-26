@@ -164,7 +164,10 @@ class ValidatorContractTest(unittest.TestCase):
         cases = (
             (f"\n  image: {generator.IMAGE}\n", "\n  image: docker.io/nearaidev/sglang@sha256:" + "0" * 64 + "\n", "image must be", 0),
             ("${GLM53_HICACHE_RAM_BUDGET:-406GiB}", "${GLM53_HICACHE_RAM_BUDGET:-80%}", "SGLANG_HICACHE_RAM_BUDGET=${GLM53_HICACHE_RAM_BUDGET:-80%}", 0),
-            ("${GLM53_HICACHE_RAM_BUDGET:-406GiB}", "${GLM53_HICACHE_RAM_BUDGET:-80%}", "SGLANG_HICACHE_RAM_BUDGET=${GLM53_HICACHE_RAM_BUDGET:-80%}", 1),
+            # r2 is the host-tier canary with its own budget variable; reverting it to the r1
+            # budget, or dropping the canary default, must both fail.
+            ("${GLM53_R2_HICACHE_RAM_BUDGET:-650GiB}", "${GLM53_HICACHE_RAM_BUDGET:-406GiB}", "SGLANG_HICACHE_RAM_BUDGET=${GLM53_HICACHE_RAM_BUDGET:-406GiB}", 0),
+            ("${GLM53_R2_HICACHE_RAM_BUDGET:-650GiB}", "${GLM53_R2_HICACHE_RAM_BUDGET:-80%}", "SGLANG_HICACHE_RAM_BUDGET=${GLM53_R2_HICACHE_RAM_BUDGET:-80%}", 0),
             ("${GLM53_HICACHE_CUDA_HOST_MEMORY:-1}", "${GLM53_HICACHE_CUDA_HOST_MEMORY:-0}", "environment must be the long-context control environment", 0),
             ("${GLM53_HICACHE_CUDA_HOST_MEMORY:-1}", "${GLM53_HICACHE_CUDA_HOST_MEMORY:-0}", "environment must be the long-context control environment", 1),
             (
