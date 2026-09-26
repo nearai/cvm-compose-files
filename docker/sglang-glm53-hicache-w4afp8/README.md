@@ -196,7 +196,62 @@ bounded; the hook is a no-op when disabled.
 
 Model limits: it predicts an LRU cache at page granularity. The engine rounds hits to its 256-token
 tree page, and a restored host hit only pays when loading it is faster than recomputing (true for
-the host tier). Different replicas use different keys, so cross-replica reuse is not visible.
+the host tier). Without shared mode each replica has its own key, so cross-replica reuse is not
+visible.
+
+### Shared mode: one pooled ghost cache per CVM
+
+Two replicas in one CVM keep separate KV caches, and conversation affinity pins each conversation to
+one of them. Shared mode measures what that costs, for #304 (shared KV) and routing decisions:
+
+- `SGLANG_GHOST_CACHE_KEY_FILE` on every replica points at the same file on an in-memory volume that
+  only this CVM's replicas mount. The first replica to start creates it (32 random bytes, mode 0600,
+  atomic hard-link, so racing replicas agree); the others read it. The same prefix then has the same
+  digest on every replica.
+- `SGLANG_GHOST_CACHE_SOCKET` makes each engine also send its sampled digests (1/16 of pages, never
+  tokens) as unix datagrams to the aggregator; `SGLANG_GHOST_CACHE_REPLICA` names it in the metrics.
+  Sends never block: if the aggregator is down or behind, the message is dropped and counted in
+  `sglang:ghost_forward_dropped_total`.
+- The aggregator is a sidecar running the same image,
+  `python3 -m sglang.srt.observability.ghost_aggregator --socket /ghost/aggregator.sock --port 9464 --model-name z-ai/glm-5.3-flash`.
+  It keeps one LRU across replicas (digests in RAM only) and exports, per replica:
+
+| metric | meaning |
+| --- | --- |
+| `sglang:ghost_pool_lookup_tokens_total{replica}` | prompt tokens looked up (sampled, scaled) |
+| `sglang:ghost_pool_reused_tokens_total{replica,within}` | seen before on any replica, pooled LRU distance under `within` (cumulative, `inf` = any) |
+| `sglang:ghost_pool_other_replica_only_tokens_total{replica}` | seen before, but only on other replicas: what sharing KV or routing there could have served |
+| `sglang:ghost_pool_messages_total`, `sglang:ghost_pool_bad_messages_total`, `sglang:ghost_pool_tracked_pages` | health |
+
+Read `other_replica_only / lookup` as the upper bound on what cross-replica sharing recovers, and
+`ghost_pool_reused{within=2C}` against the engines' own `ghost_reused{within=C}` as the value of
+one cache of combined size C+C over two caches of size C.
+
+Compose sketch (not in any prod file yet; needs the published v4 digest):
+
+```yaml
+volumes:
+  ghost: {driver: local, driver_opts: {type: tmpfs, device: tmpfs, o: "size=1m,mode=0700"}}
+services:
+  model-sg-glm53-w4afp8-tp4-r1:
+    environment:
+      - SGLANG_GHOST_CACHE=1
+      - SGLANG_GHOST_CACHE_KEY_FILE=/ghost/key
+      - SGLANG_GHOST_CACHE_SOCKET=/ghost/aggregator.sock
+      - SGLANG_GHOST_CACHE_REPLICA=r1
+    volumes: [ghost:/ghost]
+  # r2: the same with SGLANG_GHOST_CACHE_REPLICA=r2
+  ghost-aggregator:
+    image: <v4 digest>
+    command: python3 -m sglang.srt.observability.ghost_aggregator --socket /ghost/aggregator.sock --port 9464 --model-name z-ai/glm-5.3-flash
+    volumes: [ghost:/ghost]
+```
+
+Validated CPU-only (step 8): 9 racing loaders get one key; the wire format round-trips and splits
+large requests into datagrams under 64 KB; the pooled counts equal a brute-force two-replica
+simulation with a failover halfway through (cross-replica tokens before it from shared system
+prompts, and after it from the failed-over conversations); and two recorders feeding a running
+aggregator over a real socket produce /metrics equal to the direct computation.
 
 ## Why the composition is safe
 

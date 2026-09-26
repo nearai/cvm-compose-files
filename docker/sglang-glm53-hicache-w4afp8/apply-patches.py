@@ -18,7 +18,7 @@ PATCHES: Final = {
     # Stacked on sglang-pr30771.diff: it edits lines that diff adds, so the order here matters.
     "shm-off-loop.diff": "4bd4cc65d68deacd1b56b95e32a2242853d20bd3cfa4188e8c1a20777cc79a94",
     "event-loop-stall-dump.diff": "367dbcdec432586ae4c8ab984c08caafb2f148d62cebf257d12e89c4c32f72ab",
-    "ghost-prefix-cache.diff": "6847716e54b44689c65fcd3881e9c93dfd49470a87f1dd7c778e8cc9e9e330a7",
+    "ghost-prefix-cache.diff": "1423d2dbec36830d7b8cee22d838fc49425e0f787a0ffc911584d8276c7ee209",
 }
 MANIFEST: Final = json.loads((CONTEXT / "source-manifest.json").read_text())
 

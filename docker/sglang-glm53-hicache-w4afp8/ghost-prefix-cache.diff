@@ -20,17 +20,187 @@ index 0d45290..caff9fb 100644
      assert (not req.kv.holds_kv) == req.kv.is_kv_released
      # MambaRadixCache may alloc mamba state before alloc KV cache
      if not req.kv.holds_kv:
+diff --git a/python/sglang/srt/observability/ghost_aggregator.py b/python/sglang/srt/observability/ghost_aggregator.py
+new file mode 100644
+index 0000000..54809d0
+--- /dev/null
++++ b/python/sglang/srt/observability/ghost_aggregator.py
+@@ -0,0 +1,163 @@
++"""Ghost prefix cache aggregator: one pooled ghost cache across the replicas of a CVM.
++
++Each engine running with SGLANG_GHOST_CACHE=1, a shared SGLANG_GHOST_CACHE_KEY_FILE and
++SGLANG_GHOST_CACHE_SOCKET sends the digests of its sampled pages (never tokens) to this process over
++a local unix datagram socket. Because the replicas share the key, the same prefix has the same digest
++on every replica. This process keeps one LRU of those digests across all replicas and remembers
++which replicas have seen each page, and exports, per replica:
++
++  sglang:ghost_pool_lookup_tokens_total                 prompt tokens looked up (sampled, scaled)
++  sglang:ghost_pool_reused_tokens_total{within=...}     of those, seen before on ANY replica at pooled
++                                                        LRU distance below `within` tokens (cumulative;
++                                                        within="inf": seen before at any distance)
++  sglang:ghost_pool_other_replica_only_tokens_total     seen before, but only on other replicas: the
++                                                        misses that sharing KV between replicas (or
++                                                        routing the request there) could have served
++
++Compare the pooled curve with the engines' own per-replica sglang:ghost_reused_tokens_total to see
++what one shared cache of the combined size would buy over separate caches.
++
++Digests stay in this process's memory and are gone on restart; only aggregate counters leave it.
++
++  python3 -m sglang.srt.observability.ghost_aggregator --socket /ghost/aggregator.sock --port 9464
++"""
++
++from __future__ import annotations
++
++import argparse
++import logging
++import os
++import socket
++import time
++from typing import Dict, List, Optional, Sequence, Tuple
++
++from sglang.srt.observability.ghost_cache import (
++    DISTANCE_BUCKETS,
++    PAGE_TOKENS,
++    StackDistanceLRU,
++    decode_records,
++)
++
++logger = logging.getLogger(__name__)
++MAX_REPLICAS = 62
++
++
++class _Totals:
++    def __init__(self, n_buckets: int):
++        self.lookup = 0
++        self.within = [0] * (n_buckets + 1)  # last slot: seen before at any distance
++        self.other_only = 0
++
++
++class PoolAccounting:
++    """Pooled stack distances plus per-page replica membership. Not thread-safe."""
++
++    def __init__(self, sample: int, max_pages: int, distance_buckets: Tuple[int, ...] = DISTANCE_BUCKETS):
++        self.sample = sample
++        self.scale = PAGE_TOKENS * sample
++        self.buckets = distance_buckets
++        self.lru = StackDistanceLRU(max_pages)
++        self.seen_by: Dict[bytes, int] = {}
++        self.replica_bit: Dict[str, int] = {}
++        self.totals: Dict[str, _Totals] = {}
++
++    def _bit(self, replica: str) -> int:
++        bit = self.replica_bit.get(replica)
++        if bit is None:
++            if len(self.replica_bit) >= MAX_REPLICAS:
++                raise ValueError(f"more than {MAX_REPLICAS} replicas")
++            bit = self.replica_bit[replica] = 1 << len(self.replica_bit)
++            self.totals[replica] = _Totals(len(self.buckets))
++        return bit
++
++    def process(self, replica: str, records: Sequence[Tuple[bool, bytes]], wall: Optional[float] = None) -> None:
++        wall = time.monotonic() if wall is None else wall
++        bit, t, scale = self._bit(replica), self.totals[replica], self.scale
++        for is_lookup, digest in records:
++            distance, _ = self.lru.access(digest, wall)
++            mask = self.seen_by.get(digest, 0) if distance is not None else 0
++            if is_lookup:
++                t.lookup += scale
++                if distance is not None:
++                    distance_tokens = distance * scale
++                    for b, limit in enumerate(self.buckets):
++                        if distance_tokens < limit:
++                            for j in range(b, len(self.buckets)):
++                                t.within[j] += scale
++                            break
++                    t.within[-1] += scale
++                    if not mask & bit:
++                        t.other_only += scale
++            self.seen_by[digest] = mask | bit
++        if len(self.seen_by) > 2 * len(self.lru) + 4096:
++            live = self.lru.last
++            self.seen_by = {d: m for d, m in self.seen_by.items() if d in live}
++
++
++def _label(value: int) -> str:
++    return f"{value / 1e6:g}M"
++
++
++def serve(socket_path: str, port: int, sample: int, max_pages: int, model_name: str) -> None:
++    from prometheus_client import Counter, Gauge, start_http_server
++
++    names = ["model_name", "replica"]
++    c_lookup = Counter("sglang:ghost_pool_lookup_tokens_total", "Prompt tokens looked up in the pooled ghost cache (sampled, scaled).", names)
++    c_within = Counter(
++        "sglang:ghost_pool_reused_tokens_total",
++        "Prompt tokens seen before on any replica with pooled LRU distance below `within` tokens (cumulative; within=inf: any distance).",
++        names + ["within"],
++    )
++    c_other = Counter("sglang:ghost_pool_other_replica_only_tokens_total", "Prompt tokens seen before only on other replicas.", names)
++    c_msgs = Counter("sglang:ghost_pool_messages_total", "Messages received from engines.", ["model_name"])
++    c_bad = Counter("sglang:ghost_pool_bad_messages_total", "Messages rejected (malformed, or a different sample rate).", ["model_name"])
++    g_tracked = Gauge("sglang:ghost_pool_tracked_pages", "Sampled page digests tracked in the pooled ghost cache.", ["model_name"])
++
++    pool = PoolAccounting(sample=sample, max_pages=max_pages)
++    reported: Dict[str, Tuple[int, List[int], int]] = {}
++    if os.path.exists(socket_path):
++        os.unlink(socket_path)
++    sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
++    sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 16 * 1024 * 1024)
++    sock.bind(socket_path)
++    os.chmod(socket_path, 0o660)
++    start_http_server(port)
++    logger.info("ghost aggregator: socket=%s port=%d sample=1/%d max_pages=%d", socket_path, port, sample, max_pages)
++    while True:
++        data = sock.recv(1 << 20)
++        c_msgs.labels(model_name=model_name).inc()
++        try:
++            replica, msg_sample, records = decode_records(data)
++            if msg_sample != sample:
++                raise ValueError(f"sample 1/{msg_sample} != aggregator 1/{sample}")
++            pool.process(replica, records)
++        except ValueError:
++            c_bad.labels(model_name=model_name).inc()
++            continue
++        t = pool.totals[replica]
++        prev_lookup, prev_within, prev_other = reported.get(replica, (0, [0] * len(t.within), 0))
++        lb = {"model_name": model_name, "replica": replica}
++        c_lookup.labels(**lb).inc(t.lookup - prev_lookup)
++        for i, total in enumerate(t.within):
++            if total != prev_within[i]:
++                within = "inf" if i == len(pool.buckets) else _label(pool.buckets[i])
++                c_within.labels(**lb, within=within).inc(total - prev_within[i])
++        c_other.labels(**lb).inc(t.other_only - prev_other)
++        reported[replica] = (t.lookup, list(t.within), t.other_only)
++        g_tracked.labels(model_name=model_name).set(len(pool.lru))
++
++
++def main(argv: Optional[Sequence[str]] = None) -> None:
++    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
++    ap.add_argument("--socket", required=True, help="unix datagram socket path the engines send to")
++    ap.add_argument("--port", type=int, default=9464, help="Prometheus /metrics port")
++    ap.add_argument("--sample", type=int, default=int(os.environ.get("SGLANG_GHOST_CACHE_SAMPLE", "16")), help="must equal the engines' SGLANG_GHOST_CACHE_SAMPLE")
++    ap.add_argument("--max-pages", type=int, default=4_000_000, help="cap on tracked (sampled) page digests")
++    ap.add_argument("--model-name", default="unknown")
++    a = ap.parse_args(argv)
++    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
++    serve(a.socket, a.port, a.sample, a.max_pages, a.model_name)
++
++
++if __name__ == "__main__":
++    main()
 diff --git a/python/sglang/srt/observability/ghost_cache.py b/python/sglang/srt/observability/ghost_cache.py
 new file mode 100644
-index 0000000..fe3d6ff
+index 0000000..0f37fc1
 --- /dev/null
 +++ b/python/sglang/srt/observability/ghost_cache.py
-@@ -0,0 +1,330 @@
+@@ -0,0 +1,457 @@
 +"""Ghost prefix cache: measure how much KV reuse a bigger cache would capture, without storing KV or text.
 +
 +Every finished request's tokens are cut into 64-token pages and hashed as a chain (each page hash
-+covers every token before it), with a keyed BLAKE2b whose key is drawn from os.urandom at process
-+start and never leaves this process. The hashes go into an LRU of page hashes only -- no KV, no token
++covers every token before it), with a keyed BLAKE2b. By default the key is drawn from os.urandom at
++process start and never leaves this process; with SGLANG_GHOST_CACHE_KEY_FILE the replicas of one
++CVM share a key kept on an in-memory volume, so their hashes are comparable. The hashes go into an LRU of page hashes only -- no KV, no token
 +ids -- and each prompt page is classified as never seen before (a compulsory miss that no cache can
 +save) or seen before at an LRU stack distance d: the number of distinct tokens touched since that
 +page was last used. A page is a hit in an LRU cache of C tokens exactly when d < C, so the
@@ -44,11 +214,21 @@ index 0000000..fe3d6ff
 +
 +Only aggregate Prometheus counters leave the process. Nothing per request is logged or exported.
 +
++Shared mode (several replicas in one CVM): with SGLANG_GHOST_CACHE_SOCKET each engine also sends its
++sampled page digests -- never tokens -- over a local unix datagram socket to ghost_aggregator.py, a
++sidecar in the same CVM that keeps one pooled LRU across replicas and counts, per replica, the
++tokens a pooled cache would have served and the tokens seen before only on another replica (the
++misses that sharing KV between replicas could fix). Sends never block; a full socket drops and counts.
++
 +Enable with SGLANG_GHOST_CACHE=1 (default off, and then this module does nothing).
 +  SGLANG_GHOST_CACHE_SAMPLE     track 1 in N pages (default 16; 1 = exact)
 +  SGLANG_GHOST_CACHE_MAX_PAGES  cap on tracked (sampled) pages, oldest dropped first (default 1,000,000)
 +  SGLANG_GHOST_CACHE_QUEUE      max finished requests waiting to be hashed; beyond it they are
 +                                dropped and counted (default 256)
++  SGLANG_GHOST_CACHE_KEY_FILE   shared key file (created once with a random key if absent, mode 0600);
++                                put it on an in-memory volume shared only by this CVM's replicas
++  SGLANG_GHOST_CACHE_SOCKET     aggregator's unix datagram socket; enables forwarding
++  SGLANG_GHOST_CACHE_REPLICA    this replica's label in the aggregator's metrics (default: hostname)
 +"""
 +
 +from __future__ import annotations
@@ -57,6 +237,8 @@ index 0000000..fe3d6ff
 +import logging
 +import os
 +import queue
++import socket
++import struct
 +import threading
 +import time
 +from array import array
@@ -83,6 +265,76 @@ index 0000000..fe3d6ff
 +    if value < minimum:
 +        raise ValueError(f"{name}={raw} must be >= {minimum}")
 +    return value
++
++
++KEY_BYTES = 32
++WIRE_MAGIC = b"GHC1"
++_WIRE_HEADER = struct.Struct("<4sHBI")  # magic, sample, replica label length, record count
++_WIRE_RECORD = 17  # 1 flag byte (1 = prompt lookup, 0 = generated insert) + 16-byte digest
++
++
++def load_shared_key(path: str, timeout_s: float = 30.0) -> bytes:
++    """Return the key in `path`, creating it atomically with os.urandom if it does not exist yet.
++
++    The first replica to start writes a private temp file and hard-links it into place, which fails
++    if another replica won the race; either way every replica then reads the same 32 bytes."""
++    if not os.path.exists(path):
++        tmp = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp"
++        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
++        try:
++            os.write(fd, os.urandom(KEY_BYTES))
++            os.fsync(fd)
++        finally:
++            os.close(fd)
++        try:
++            os.link(tmp, path)
++        except FileExistsError:
++            pass
++        finally:
++            os.unlink(tmp)
++    deadline = time.monotonic() + timeout_s
++    while True:
++        with open(path, "rb") as f:
++            key = f.read()
++        if len(key) == KEY_BYTES:
++            return key
++        if time.monotonic() > deadline:
++            raise ValueError(f"ghost cache key file {path} holds {len(key)} bytes, expected {KEY_BYTES}")
++        time.sleep(0.05)
++
++
++def encode_records(replica: str, sample: int, records: Sequence[Tuple[bool, bytes]]) -> bytes:
++    label = replica.encode()[:255]
++    out = bytearray(_WIRE_HEADER.pack(WIRE_MAGIC, sample, len(label), len(records)))
++    out += label
++    for is_lookup, digest in records:
++        out.append(1 if is_lookup else 0)
++        out += digest
++    return bytes(out)
++
++
++MAX_RECORDS_PER_MESSAGE = 3500  # ~60 KB datagrams, under the default unix socket limits
++
++
++def encode_messages(replica: str, sample: int, records: Sequence[Tuple[bool, bytes]]) -> List[bytes]:
++    """Split one request's records into datagrams; a sender's datagrams arrive in order."""
++    return [
++        encode_records(replica, sample, records[i : i + MAX_RECORDS_PER_MESSAGE])
++        for i in range(0, len(records), MAX_RECORDS_PER_MESSAGE)
++    ]
++
++
++def decode_records(data: bytes) -> Tuple[str, int, List[Tuple[bool, bytes]]]:
++    magic, sample, label_len, n = _WIRE_HEADER.unpack_from(data)
++    if magic != WIRE_MAGIC or sample < 1:
++        raise ValueError("not a ghost cache message")
++    off = _WIRE_HEADER.size
++    replica = data[off : off + label_len].decode()
++    off += label_len
++    if len(data) != off + n * _WIRE_RECORD:
++        raise ValueError("truncated ghost cache message")
++    records = [(data[i] == 1, data[i + 1 : i + _WIRE_RECORD]) for i in range(off, len(data), _WIRE_RECORD)]
++    return replica, sample, records
 +
 +
 +class _Fenwick:
@@ -190,15 +442,21 @@ index 0000000..fe3d6ff
 +    def _tracked(self, digest: bytes) -> bool:
 +        return self.sample == 1 or int.from_bytes(digest[:4], "little") % self.sample == 0
 +
-+    def observe(self, prompt: Sequence[int], output: Sequence[int], wall: Optional[float] = None) -> None:
-+        """Account one finished request: prompt pages are lookups, then output pages are inserts."""
++    def observe(
++        self, prompt: Sequence[int], output: Sequence[int], wall: Optional[float] = None
++    ) -> List[Tuple[bool, bytes]]:
++        """Account one finished request: prompt pages are lookups, then output pages are inserts.
++
++        Returns the tracked (sampled) pages as (is_prompt_lookup, digest), for forwarding."""
 +        wall = time.monotonic() if wall is None else wall
 +        digests = self._chain(list(prompt) + list(output))
 +        n_prompt = len(prompt) // PAGE_TOKENS
 +        scale = self.tokens_per_tracked_page
++        tracked: List[Tuple[bool, bytes]] = []
 +        for i, digest in enumerate(digests):
 +            if not self._tracked(digest):
 +                continue
++            tracked.append((i < n_prompt, digest))
 +            distance, age = self.lru.access(digest, wall)
 +            if i >= n_prompt:
 +                continue  # an insert (generated tokens), not a lookup
@@ -218,6 +476,7 @@ index 0000000..fe3d6ff
 +                        self.reused_age_within[j] += scale
 +                    break
 +            self.reused_age_within[-1] += scale
++        return tracked
 +
 +    def hit_tokens_at(self, capacity_tokens: int) -> int:
 +        """Predicted LRU hit tokens for a cache of this size (bucket boundaries only)."""
@@ -231,30 +490,54 @@ index 0000000..fe3d6ff
 +class _Recorder:
 +    """Background thread + Prometheus counters around one GhostCache."""
 +
-+    def __init__(self, sample: int, max_pages: int, queue_size: int):
-+        from prometheus_client import Counter, Gauge
++    def __init__(
++        self,
++        sample: int,
++        max_pages: int,
++        queue_size: int,
++        key: Optional[bytes] = None,
++        socket_path: Optional[str] = None,
++        replica: str = "",
++        registry=None,
++    ):
++        from prometheus_client import REGISTRY, Counter, Gauge
 +
-+        self.ghost = GhostCache(sample=sample, max_pages=max_pages)
++        reg = REGISTRY if registry is None else registry
++
++        self.ghost = GhostCache(sample=sample, max_pages=max_pages, key=key)
++        self.socket_path, self.replica = socket_path, replica or socket.gethostname()
++        self.sock: Optional[socket.socket] = None
++        if socket_path:
++            self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
++            self.sock.setblocking(False)
 +        self.queue: "queue.Queue[Tuple[List[int], List[int], int, int]]" = queue.Queue(maxsize=queue_size)
 +        labels = {"model_name": _served_model_name()}
 +        self.labels = labels
 +        names = list(labels)
-+        self.c_requests = Counter("sglang:ghost_requests_total", "Finished requests accounted by the ghost cache.", names)
-+        self.c_dropped = Counter("sglang:ghost_dropped_requests_total", "Finished requests skipped because the ghost-cache queue was full.", names)
-+        self.c_prompt = Counter("sglang:ghost_prompt_tokens_total", "Prompt tokens of the accounted requests.", names)
-+        self.c_actual = Counter("sglang:ghost_actual_cached_tokens_total", "Tokens the engine actually served from cache for the same requests.", names)
-+        self.c_lookup = Counter("sglang:ghost_lookup_tokens_total", "Full-page prompt tokens looked up in the ghost cache (sampled, scaled).", names)
++        self.c_requests = Counter("sglang:ghost_requests_total", "Finished requests accounted by the ghost cache.", names, registry=reg)
++        self.c_dropped = Counter("sglang:ghost_dropped_requests_total", "Finished requests skipped because the ghost-cache queue was full.", names, registry=reg)
++        self.c_prompt = Counter("sglang:ghost_prompt_tokens_total", "Prompt tokens of the accounted requests.", names, registry=reg)
++        self.c_actual = Counter("sglang:ghost_actual_cached_tokens_total", "Tokens the engine actually served from cache for the same requests.", names, registry=reg)
++        self.c_lookup = Counter("sglang:ghost_lookup_tokens_total", "Full-page prompt tokens looked up in the ghost cache (sampled, scaled).", names, registry=reg)
 +        self.c_within = Counter(
 +            "sglang:ghost_reused_tokens_total",
 +            "Prompt tokens seen before with LRU reuse distance below `within` tokens (cumulative; within=inf: seen at any distance). lookup - inf = compulsory misses.",
 +            names + ["within"],
++            registry=reg,
 +        )
 +        self.c_age = Counter(
 +            "sglang:ghost_reused_age_tokens_total",
 +            "Prompt tokens seen before, last used less than `within_s` seconds earlier (cumulative).",
 +            names + ["within_s"],
++            registry=reg,
 +        )
-+        self.g_tracked = Gauge("sglang:ghost_tracked_pages", "Sampled page hashes currently tracked.", names, multiprocess_mode="max")
++        self.c_forward_dropped = Counter(
++            "sglang:ghost_forward_dropped_total",
++            "Sampled-digest messages not delivered to the ghost aggregator (socket full or absent).",
++            names,
++            registry=reg,
++        )
++        self.g_tracked = Gauge("sglang:ghost_tracked_pages", "Sampled page hashes currently tracked.", names, multiprocess_mode="max", registry=reg)
 +        self._reported_lookup = 0
 +        self._reported_within = [0] * len(self.ghost.reused_within)
 +        self._reported_age = [0] * len(self.ghost.reused_age_within)
@@ -272,10 +555,16 @@ index 0000000..fe3d6ff
 +        while True:
 +            prompt, output, prompt_len, cached = self.queue.get()
 +            try:
-+                g.observe(prompt, output)
++                tracked = g.observe(prompt, output)
 +            except Exception:  # never let accounting take the scheduler down
 +                logger.exception("ghost cache: failed to account a request")
 +                continue
++            if self.sock is not None and tracked:
++                for message in encode_messages(self.replica, g.sample, tracked):
++                    try:
++                        self.sock.sendto(message, self.socket_path)
++                    except OSError:  # aggregator down, restarting or behind: drop, never block
++                        self.c_forward_dropped.labels(**self.labels).inc()
 +            lb = self.labels
 +            self.c_requests.labels(**lb).inc()
 +            self.c_prompt.labels(**lb).inc(prompt_len)
@@ -328,15 +617,22 @@ index 0000000..fe3d6ff
 +    with _recorder_lock:
 +        if not _rank_checked:
 +            if _is_reporting_rank():
++                key_file = os.environ.get("SGLANG_GHOST_CACHE_KEY_FILE", "").strip()
 +                _recorder = _Recorder(
 +                    sample=_env_int("SGLANG_GHOST_CACHE_SAMPLE", 16, 1),
 +                    max_pages=_env_int("SGLANG_GHOST_CACHE_MAX_PAGES", 1_000_000, 1024),
 +                    queue_size=_env_int("SGLANG_GHOST_CACHE_QUEUE", 256, 1),
++                    key=load_shared_key(key_file) if key_file else None,
++                    socket_path=os.environ.get("SGLANG_GHOST_CACHE_SOCKET", "").strip() or None,
++                    replica=os.environ.get("SGLANG_GHOST_CACHE_REPLICA", "").strip(),
 +                )
 +                logger.info(
-+                    "Ghost prefix cache enabled: sample=1/%d max_tracked_pages=%d (aggregate counters only)",
++                    "Ghost prefix cache enabled: sample=1/%d max_tracked_pages=%d key=%s forward=%s "
++                    "(aggregate counters only)",
 +                    _recorder.ghost.sample,
 +                    _recorder.ghost.lru.max_keys,
++                    "shared" if key_file else "per-process",
++                    f"{_recorder.replica} -> {_recorder.socket_path}" if _recorder.sock else "off",
 +                )
 +            _rank_checked = True
 +    return _recorder

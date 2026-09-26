@@ -319,10 +319,12 @@ sed -n '/^SUMMARY/,$p' "$stall_report"
 echo "step 7 OK: the event-loop stall dump reports blocked-loop stacks and recoveries, and stays off at 0"
 
 # 8. The ghost prefix cache is hooked into release_kv_cache and inert by default. test_ghost_cache.py
-# then checks the installed module: its predicted hit tokens equal a brute-force LRU simulation at
-# every cache size with sampling off, 1/16 sampling stays within 5 points, compulsory misses equal
-# never-seen pages, only 16-byte keyed digests are retained, the tracked set is bounded, and the
-# hook does nothing without SGLANG_GHOST_CACHE=1.
+# then checks the installed modules: predicted hit tokens equal a brute-force LRU simulation at every
+# cache size with sampling off, 1/16 sampling stays within 5 points, compulsory misses equal
+# never-seen pages, only 16-byte keyed digests are retained, the tracked set is bounded, the hook
+# does nothing without SGLANG_GHOST_CACHE=1; racing replicas share one key file; the aggregator's
+# pooled counts equal a brute-force two-replica simulation with a failover; and two recorders feed a
+# running aggregator over a real unix socket whose /metrics match the direct computation.
 python3 - <<'EOF'
 import inspect
 
@@ -334,7 +336,9 @@ assert release.index("observe_finished_req(req)") < release.index("assert (not r
 assert common.observe_finished_req is ghost.observe_finished_req
 assert ghost._ENABLED is False and ghost._recorder is None
 EOF
-python3 "$RECIPE_DIR/test_ghost_cache.py" --module "$PWD/python/sglang/srt/observability/ghost_cache.py"
-echo "step 8 OK: the ghost prefix cache matches exact LRU, stores only keyed digests, and is off by default"
+python3 "$RECIPE_DIR/test_ghost_cache.py" \
+  --module "$PWD/python/sglang/srt/observability/ghost_cache.py" \
+  --aggregator "$PWD/python/sglang/srt/observability/ghost_aggregator.py"
+echo "step 8 OK: the ghost prefix cache and its pooled aggregator match exact LRU, store only keyed digests, and are off by default"
 
 echo "GLM-5.3 W4AFP8 combined-image CPU checks passed"

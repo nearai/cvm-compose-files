@@ -59,6 +59,9 @@ RUN test -n "$BUILD_SOURCE_REVISION" \
 # The ghost prefix cache is inert unless SGLANG_GHOST_CACHE=1: then TP rank 0 hashes each finished
 # request's 64-token pages with a per-process random key on a background thread and exports only
 # aggregate counters (sglang:ghost_*): prompt tokens seen before, by LRU reuse distance and by age.
+# With a shared SGLANG_GHOST_CACHE_KEY_FILE and SGLANG_GHOST_CACHE_SOCKET the replicas of one CVM also
+# send sampled digests to a sidecar (python3 -m sglang.srt.observability.ghost_aggregator) that keeps
+# a pooled ghost cache and counts tokens seen before only on another replica.
 # Everything inherited from the base stays opt-in: admission reserve v10 via
 # SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE, and HiCache via --enable-hierarchical-cache plus
 # SGLANG_HICACHE_*. On an HCC/PPCIe (TEE) host SGLANG_HICACHE_CUDA_HOST_MEMORY must stay 1; 0 selects

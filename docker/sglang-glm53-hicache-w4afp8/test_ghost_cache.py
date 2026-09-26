@@ -12,6 +12,16 @@ or locally against a copy of the module. Exits non-zero on any failure.
    graph; the same tokens hash differently under a different key.
 5. Bounded memory: the tracked set never exceeds max_pages.
 6. Inert by default: without SGLANG_GHOST_CACHE=1 the hook does nothing and starts no thread.
+7. Shared key: replicas racing to create SGLANG_GHOST_CACHE_KEY_FILE all end up with one 32-byte key
+   (mode 0600), so the same prefix has the same digest on every replica.
+8. Wire format: digests round-trip through the aggregator messages, large requests split into
+   datagrams under 64 KB, malformed messages are rejected.
+9. Pooled accounting (ghost_aggregator.py): two replicas with conversation affinity and a failover
+   halfway through. With sampling off, the pooled hit tokens at every size equal a brute-force LRU
+   over the interleaved stream, and "seen before only on the other replica" equals a brute-force
+   count; it is zero before the failover and positive after.
+10. End to end (needs prometheus_client, i.e. inside the image): two engine recorders send over a
+   real unix datagram socket to a running aggregator, whose /metrics match the direct computation.
 """
 
 import argparse
@@ -25,6 +35,7 @@ import threading
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--module", required=True)
+ap.add_argument("--aggregator", required=True)
 args = ap.parse_args()
 
 
@@ -189,6 +200,186 @@ if off._recorder is not None or "sglang-ghost-cache" in {t.name for t in threadi
     fail("step6 hook did work while disabled")
 else:
     print("  ok inert by default: no recorder, no thread")
+
+# 7. shared key
+import multiprocessing
+import stat
+import tempfile
+
+tmpdir = tempfile.mkdtemp()
+key_path = os.path.join(tmpdir, "ghost.key")
+
+
+def _load(q):
+    q.put(gc_mod.load_shared_key(key_path))
+
+
+ctx = multiprocessing.get_context("fork")
+q = ctx.Queue()
+procs = [ctx.Process(target=_load, args=(q,)) for _ in range(8)]
+for pr in procs:
+    pr.start()
+keys = [q.get(timeout=30) for _ in procs]
+for pr in procs:
+    pr.join()
+keys.append(gc_mod.load_shared_key(key_path))
+mode = stat.S_IMODE(os.stat(key_path).st_mode)
+leftovers = [f for f in os.listdir(tmpdir) if f != "ghost.key"]
+if len(set(keys)) != 1 or len(keys[0]) != 32 or mode != 0o600 or leftovers:
+    fail(f"step7 shared key: {len(set(keys))} distinct keys, mode {oct(mode)}, leftovers {leftovers}")
+else:
+    a = gc_mod.GhostCache(sample=1, key=keys[0])._chain(requests[0][0])
+    b = gc_mod.GhostCache(sample=1, key=gc_mod.load_shared_key(key_path))._chain(requests[0][0])
+    if a != b:
+        fail("step7 same key file gave different digests")
+    else:
+        print("  ok shared key: 9 racing loaders got one 32-byte key (mode 0600); digests match across replicas")
+
+# 8. wire format
+recs = [(i % 3 != 0, hashlib.blake2b(str(i).encode(), digest_size=16).digest()) for i in range(8000)]
+msgs = gc_mod.encode_messages("r1", 16, recs)
+back = []
+for m in msgs:
+    rep, smp, rr = gc_mod.decode_records(m)
+    assert rep == "r1" and smp == 16
+    back += rr
+rejected = 0
+for bad in (b"junk" * 10, msgs[0][:-5]):
+    try:
+        gc_mod.decode_records(bad)
+    except Exception:
+        rejected += 1
+if back != recs or max(len(m) for m in msgs) >= 65536 or rejected != 2:
+    fail(f"step8 wire: roundtrip {back == recs}, max {max(len(m) for m in msgs)} bytes, rejected {rejected}/2")
+else:
+    print(f"  ok wire format: {len(recs)} records in {len(msgs)} datagrams (max {max(len(m) for m in msgs)} bytes); malformed rejected")
+
+# 9. pooled accounting vs brute force, two replicas, affinity, failover at the halfway point
+sys.modules.setdefault("sglang", type(sys)("sglang"))
+sys.modules.setdefault("sglang.srt", type(sys)("sglang.srt"))
+sys.modules.setdefault("sglang.srt.observability", type(sys)("sglang.srt.observability"))
+sys.modules["sglang.srt.observability.ghost_cache"] = gc_mod
+spec = importlib.util.spec_from_file_location("ghost_aggregator_under_test", args.aggregator)
+agg_mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(agg_mod)
+
+routed = []
+half = len(requests) // 2
+for idx, (p, o) in enumerate(requests):
+    # conversation affinity: the first tokens after the shared 1024-token system prompt identify the
+    # conversation, so conversations sharing a system prompt land on both replicas
+    replica = "r1" if int.from_bytes(hashlib.sha256(repr(p[1024:1088]).encode()).digest()[:4], "little") & 1 else "r2"
+    if idx >= half and replica == "r1":
+        replica = "r2"  # r1 is down: everything goes to r2
+    routed.append((replica, p, o))
+chain = gc_mod.GhostCache(sample=1, key=key)._chain
+pool = agg_mod.PoolAccounting(sample=1, max_pages=10 ** 7, distance_buckets=buckets)
+bf = {c: collections.OrderedDict() for c in caps_pages}
+bf_hits = {r: {c: 0 for c in caps_pages} for r in ("r1", "r2")}
+seen_by = {}
+bf_other = {"r1": 0, "r2": 0}
+other_before = 0
+for idx, (replica, p, o) in enumerate(routed):
+    ds = chain(p + o)
+    n_prompt = len(p) // PAGE
+    pool.process(replica, [(i < n_prompt, d) for i, d in enumerate(ds)], wall=0.0)
+    for c, lru in bf.items():
+        for i, d in enumerate(ds):
+            if d in lru:
+                lru.move_to_end(d)
+                if i < n_prompt:
+                    bf_hits[replica][c] += 1
+            else:
+                lru[d] = True
+                if len(lru) > c:
+                    lru.popitem(last=False)
+    for i, d in enumerate(ds):
+        who = seen_by.setdefault(d, set())
+        if i < n_prompt and who and replica not in who:
+            bf_other[replica] += 1
+            if idx < half:
+                other_before += 1
+        who.add(replica)
+ok9 = True
+for r in ("r1", "r2"):
+    t = pool.totals[r]
+    for j, c in enumerate(caps_pages):
+        if t.within[j] != bf_hits[r][c] * PAGE:
+            fail(f"step9 {r} pooled hits at {c} pages: {t.within[j]} != {bf_hits[r][c] * PAGE}")
+            ok9 = False
+    if t.other_only != bf_other[r] * PAGE:
+        fail(f"step9 {r} other-replica-only: {t.other_only} != {bf_other[r] * PAGE}")
+        ok9 = False
+if bf_other["r2"] <= other_before or other_before == 0:
+    fail(f"step9 expected cross-replica tokens both before ({other_before}) and after the failover ({bf_other['r2']})")
+    ok9 = False
+if ok9:
+    print(
+        f"  ok pooled accounting == brute force at {len(caps_pages)} sizes; other-replica-only tokens: "
+        f"r1 {pool.totals['r1'].other_only}, r2 {pool.totals['r2'].other_only} "
+        f"({other_before * PAGE} before the failover: shared system prompts; the rest after r1 failed over)"
+    )
+
+# 10. end to end over a real socket (image only)
+try:
+    import prometheus_client  # noqa: F401
+    have_prom = True
+except ImportError:
+    have_prom = False
+if not have_prom:
+    print("  skip end-to-end: prometheus_client not installed here (runs inside the image)")
+else:
+    import socket as _socket
+    import time as _time
+    import urllib.request
+
+    sock_path = os.path.join(tmpdir, "agg.sock")
+    s_ = _socket.socket(); s_.bind(("127.0.0.1", 0)); port = s_.getsockname()[1]; s_.close()
+    th = threading.Thread(target=agg_mod.serve, args=(sock_path, port, 4, 10 ** 6, "test-model"), daemon=True)
+    th.start()
+    for _ in range(100):
+        if os.path.exists(sock_path):
+            break
+        _time.sleep(0.05)
+    shared = gc_mod.load_shared_key(key_path)
+    # one recorder per engine process in production; two here, so each gets its own metrics registry
+    rec = {
+        r: gc_mod._Recorder(sample=4, max_pages=10 ** 6, queue_size=10000, key=shared, socket_path=sock_path, replica=r, registry=prometheus_client.CollectorRegistry())
+        for r in ("r1", "r2")
+    }
+    direct = agg_mod.PoolAccounting(sample=4, max_pages=10 ** 6)
+    dchain = gc_mod.GhostCache(sample=4, key=shared)
+    sub = routed[:1500]
+    for replica, p, o in sub:
+        rec[replica].submit(list(p), list(o), len(p), 0)
+        # keep global order identical to the direct computation: wait for this request to be sent
+        while not rec[replica].queue.empty():
+            _time.sleep(0.001)
+        _time.sleep(0.002)
+        tracked = [(i < len(p) // PAGE, d) for i, d in enumerate(dchain._chain(p + o)) if dchain._tracked(d)]
+        direct.process(replica, tracked)
+    _time.sleep(1.0)
+    body = urllib.request.urlopen(f"http://127.0.0.1:{port}/metrics", timeout=10).read().decode()
+
+    def metric(name, **lab):
+        for line in body.splitlines():
+            if line.startswith(name + "{") and all(f'{k}="{v}"' in line for k, v in lab.items()):
+                return float(line.rsplit(" ", 1)[1])
+        return 0.0
+
+    ok10 = True
+    for r in ("r1", "r2"):
+        t = direct.totals[r]
+        got = (metric("sglang:ghost_pool_lookup_tokens_total", replica=r), metric("sglang:ghost_pool_reused_tokens_total", replica=r, within="inf"), metric("sglang:ghost_pool_other_replica_only_tokens_total", replica=r))
+        want = (t.lookup, t.within[-1], t.other_only)
+        if tuple(int(x) for x in got) != want:
+            fail(f"step10 {r} /metrics {got} != direct {want}")
+            ok10 = False
+    bad = metric("sglang:ghost_pool_bad_messages_total")
+    if ok10 and bad == 0:
+        print(f"  ok end to end: two recorders -> unix socket -> aggregator /metrics match the direct computation ({int(metric('sglang:ghost_pool_messages_total'))} messages, 0 bad)")
+    elif bad:
+        fail(f"step10 {bad} bad messages")
 
 if failures:
     print(f"ghost cache checks FAILED ({failures})", file=sys.stderr)
