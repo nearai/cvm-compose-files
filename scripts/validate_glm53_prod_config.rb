@@ -624,7 +624,7 @@ end
 
 # W4AFP8 + HiCache long-context file (gpu02): both replicas run gpu31 campaign-2 arm L2
 # with exactly the argv below (only --dist-init-addr and --prefill-decode-interval differ:
-# r1 is the v2 pdi1 control, r2 the original #308 offloop-v3 pdi2 no-flag canary),
+# both pin the original #308 offloop-v3 image, with pdi1 on r1 and pdi2 on r2),
 # the long-context control environment plus the per-replica 406 GiB HiCache environment, and
 # no admission reserve. Outside the two engines and their truthful telemetry it must
 # equal the long-context file, so the long-domain routing contract (nginx and the :8001
@@ -644,7 +644,7 @@ W4AFP8_CHECKPOINT = "graphistry/GLM-5.3-Flash-W4AFP8"
 W4AFP8_PRECISION = "int4-weights-fp8-activations-bf16-kv"
 W4AFP8_LONG_CONTEXT_REPLICAS = {
   "model-sg-glm53-w4afp8-tp4-r1" => { "devices" => %w[0 1 2 3], "dist_init" => "127.0.0.1:29510", "instance" => "1", "pdi" => "1",
-                                     "image" => W4AFP8_LONG_CONTEXT_V2_IMAGE, "chunk" => "8192", "qsplit" => "1", "offloop" => nil },
+                                     "image" => W4AFP8_LONG_CONTEXT_V3_IMAGE, "chunk" => "8192", "qsplit" => "1", "offloop" => "offloop-v3" },
   "model-sg-glm53-w4afp8-tp4-r2" => { "devices" => %w[4 5 6 7], "dist_init" => "127.0.0.1:29511", "instance" => "2", "pdi" => "2",
                                      "image" => W4AFP8_LONG_CONTEXT_V3_IMAGE, "chunk" => "8192", "qsplit" => "1", "offloop" => "offloop-v3" },
 }.freeze
@@ -777,9 +777,8 @@ def validate_w4afp8_long_context(errors, compose, reference)
   end
 
   if replicas.length == 2
-    # The canary intentionally diverges on image, while command and environment are asserted in
-    # full per replica above. Runtime equality below covers every remaining service property.
-    # Everything else must still be identical between the replicas.
+    # Image, command and environment are asserted in full per replica above. Runtime equality
+    # below covers every remaining service property.
     canary_divergent = %w[command image environment]
     contracts = replicas.values.map { |service| runtime_contract(service).reject { |key, _value| canary_divergent.include?(key) } }
     errors << "#{label} replicas must share one runtime configuration outside image, environment and command (each asserted per replica)" unless contracts.uniq.length == 1
