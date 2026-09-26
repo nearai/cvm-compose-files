@@ -1,0 +1,269 @@
+# One-shot maintenance: rotates the compose-manager `BEARER_TOKEN` inside a
+# running compose-manager CVM WITHOUT restarting the CVM and WITHOUT touching
+# any model container. See docs/rotate-compose-manager-token.md for the full
+# canary / apply / verify / rollback runbook — read it before running this.
+#
+# NEVER deploy this under the serving `work` or `dstack` project (compose-manager
+# rejects both as reserved, see resolve_compose_project in nearai/compose-manager
+# src/main.rs). Always pass "project": "cm-token-rotate" explicitly on every
+# /compose/up, /compose/down and /compose/logs call against this file — the
+# `name:` below is only a Compose fallback, not a guard against an explicit
+# override (same caveat as prod/migration-gpu-preflight.yaml).
+#
+# Mechanism (verified against nearai/compose-manager @ 8e07c35, prod tag
+# prod-20260702-8e07c35 — the pinned digest running on every compose-manager
+# CVM as of 2026-09-25 — and nearai/cvm-ansible-playbooks
+# cvm_configurations/compose-manager.yaml.j2):
+#   - The compose-manager-launcher sidecar (container_name: compose-manager-launcher,
+#     always present next to compose-manager) already mounts:
+#       * the CVM's sealed decrypted secrets, read-only, at $LAUNCHER_BASE_ENV_FILE
+#         (default /dstack-env — this is where the ORIGINAL BEARER_TOKEN lives;
+#         it cannot be edited in place, only via a full CVM redeploy)
+#       * the writable `dstack_work` volume at /app/work, which holds
+#         $LAUNCHER_ENV_FILE (default /app/work/.env.launcher) — an override
+#         file the launcher itself writes to today (e.g. COMPOSE_MANAGER_IMAGE
+#         on every auto-update) and passes as the LATER --env-file, so it wins
+#         interpolation over the sealed /dstack-env for anything it sets.
+#   - The launcher recreates compose-manager with exactly:
+#       docker compose -p "$LAUNCHER_COMPOSE_PROJECT" -f "$LAUNCHER_COMPOSE_FILE" \
+#         --env-file "$LAUNCHER_BASE_ENV_FILE" --env-file "$LAUNCHER_ENV_FILE" \
+#         up -d --no-deps compose-manager
+#     (launcher.sh compose_up(), unchanged at 8e07c35). `--no-deps`, and the
+#     fact this command never adds --remove-orphans, mean it only ever
+#     recreates the single `compose-manager` container in project `dstack` —
+#     certbot/datadog/telemetry in that same project, and every model
+#     project, are untouched. `docker exec` into an already-running container
+#     inherits that container's own environment, so the LAUNCHER_* variables
+#     below are read live from compose-manager-launcher itself, not hardcoded
+#     here — this file self-adapts if cvm-ansible-playbooks ever changes them.
+#   - We write a BEARER_TOKEN= line into $LAUNCHER_ENV_FILE (backed up first,
+#     replaced atomically via tmp+mv, every other line preserved), then run
+#     the launcher's own recreate command above so the NEW compose-manager
+#     container picks up the new token — the sealed /dstack-env is never
+#     written to, so nothing here requires a CVM redeploy. GET /version is
+#     UNAUTHENTICATED (verified live: no BEARER_TOKEN required), so it only
+#     proves the container process answers, not that the token override
+#     actually took effect — after /version comes back healthy we separately
+#     poll the AUTHENTICATED GET /docker/ps (verify_bearer_token-gated in
+#     compose-manager's own src/main.rs) with the NEW token before declaring
+#     success, and roll back if it's ever rejected despite a healthy /version.
+#   - This file's own `rotate-token` service never mounts the CVM decrypted
+#     env, dstack.sock, or any model/HF-cache volume, and never gets network
+#     access. Its only host access is the Docker socket, used solely to
+#     `docker exec` into the already-privileged compose-manager-launcher
+#     container to do the file edit and the recreate — no new privileged
+#     surface is introduced beyond what that sidecar already has today.
+#   - NEW_BEARER_TOKEN arrives only via this compose file's `env` map on the
+#     /compose/up call (compose-manager writes it to a short-lived per-call
+#     temp --env-file, deleted when the request's NDJSON stream ends — the
+#     same channel every other secret, e.g. PROXY_TOKEN, already goes through).
+#     It is never written to git, and compose-manager's action log / attestation
+#     report_data records only {timestamp, action, tag, commit, file,
+#     file_sha256, services} — never env values (verified: DeploymentAction in
+#     src/main.rs has no env field, and the `info!` call that logs env_files
+#     logs only their paths). Brave's public verifier DOES see the compose_up
+#     action itself (file + file_sha256) — give Brave a heads-up before running.
+#
+# Exit codes from the `rotate-token` container (compose/up's own response only
+# confirms the container STARTED — check the container's own exit code via
+# POST /docker/ps or POST /compose/logs, project cm-token-rotate, to know
+# whether the rotation itself actually succeeded):
+#   0 = rotated; compose-manager came back healthy AND the NEW token was
+#       confirmed accepted on the authenticated GET /docker/ps
+#   2 = rotation failed (either /version never came healthy, or it did but
+#       GET /docker/ps rejected the new token — see the container's own log
+#       line for which); automatically rolled back; compose-manager is
+#       healthy again on the OLD token
+#   3 = CRITICAL: the rollback recreate also failed to come up healthy —
+#       manual intervention required on this host; do not assume either token
+#       works until checked by hand
+#
+# Usage (compose-manager `POST /compose/up`) — canary with dry_run first using
+# a PLACEHOLDER token value (dry_run still writes the per-call temp env file
+# to disk before short-circuiting, so never pass the real new token on a
+# dry_run call):
+#   curl -sS 'http://<host_ip>:8080/compose/up' \
+#     -H 'Authorization: Bearer <CM_TOKEN>' \
+#     -H 'Content-Type: application/json' \
+#     -d '{"tag":"<reviewed tag>","file":"prod/rotate-compose-manager-token.yaml",
+#          "project":"cm-token-rotate","services":["rotate-token"],
+#          "env":{"NEW_BEARER_TOKEN":"placeholder-for-dry-run-only"},
+#          "dry_run":true}'
+# Expected plan: create only `rotate-token` under project cm-token-rotate —
+# nothing else. Then repeat with the REAL token and "dry_run":false.
+name: cm-token-rotate
+
+x-logging-conf: &logging-conf
+  driver: "json-file"
+  options:
+    max-size: "1m"
+    max-file: "2"
+    labels: "com.datadoghq.ad.logs"
+
+services:
+  rotate-token:
+    # Official Docker Inc CLI image (Alpine 3.21 base): just the `docker`
+    # binary + busybox userland (sh, awk, cp, mv, date, stat, chmod, grep) —
+    # no compose plugin needed here, since the actual `docker compose`
+    # invocation runs inside compose-manager-launcher via `docker exec`,
+    # reusing its own already-installed docker-cli-compose. Digest-pinned.
+    image: docker:27-cli@sha256:851f91d241214e7c6db86513b270d58776379aacc5eb9c4a87e5b47115e3065c
+    container_name: rotate-token
+    # Defense in depth: a service tagged with `profiles:` is skipped by a
+    # blanket `up` with no services named, and only starts when explicitly
+    # requested (as this runbook always does via "services":["rotate-token"]).
+    profiles: [cm-token-rotate]
+    restart: "no"
+    user: "0:0"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    network_mode: none
+    # The Docker socket is the ONLY host access this container has — used
+    # exclusively to `docker exec` into compose-manager-launcher (see the
+    # header comment for why that is sufficient and does not need docker.sock
+    # to run `docker compose` itself, the model volumes, or dstack.sock).
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - NEW_BEARER_TOKEN=${NEW_BEARER_TOKEN}
+    entrypoint: ["sh", "-c"]
+    # IMPORTANT: docker compose interpolates `$VAR` / `${VAR}` / `${VAR:-x}`
+    # ANYWHERE in this file, including inside this multi-line command string —
+    # not just in top-level fields. Every `$` below that must reach the SHELL
+    # (not compose) is doubled as `$$`, the documented compose escape for a
+    # literal `$` (same convention already used by ../cleanup-hf-model.yaml).
+    # To keep that escaping burden small and auditable, the substantial logic
+    # (rewrite + recreate + health-check + rollback, all run inside
+    # compose-manager-launcher) is carried as a base64 blob instead of being
+    # written inline with `$$` on every line — base64's alphabet has no `$`,
+    # so compose cannot alter it. It decodes to the plain, unescaped script at
+    # docs/rotate-compose-manager-token.md#inner-script (keep the two in sync;
+    # CI's `scripts/validate_rotate_compose_manager_token.rb` checks the
+    # decoded blob's sha256 against a pinned value so drift fails loudly).
+    command:
+      - |
+        set -eu
+
+        # --- 1. Validate the new token without ever printing it. ---
+        # Reads the value via awk's ENVIRON, never as a -v/argv literal, so
+        # it cannot appear in this container's own process list either.
+        if ! awk 'BEGIN {
+              v = ENVIRON["NEW_BEARER_TOKEN"]
+              if (v == "") { print "NEW_BEARER_TOKEN is required and must be non-empty" > "/dev/stderr"; exit 1 }
+              n = length(v)
+              if (n < 16 || n > 256) { print "NEW_BEARER_TOKEN length " n " is out of bounds [16,256]" > "/dev/stderr"; exit 1 }
+              if (v ~ /[ \t\r\n,"'"'"']/) { print "NEW_BEARER_TOKEN contains a disallowed character (whitespace, comma or quote)" > "/dev/stderr"; exit 1 }
+              exit 0
+            }'; then
+          exit 1
+        fi
+        echo "$$(date -u +%Y-%m-%dT%H:%M:%SZ) [rotate-token] validated NEW_BEARER_TOKEN format (value not shown)"
+
+        # --- 2. Confirm the launcher sidecar is reachable before doing anything. ---
+        if ! docker exec compose-manager-launcher sh -c 'true' >/dev/null 2>&1; then
+          echo "[rotate-token] cannot exec into compose-manager-launcher -- aborting, nothing changed" >&2
+          exit 1
+        fi
+
+        # --- 3. Decode the inner script (see docs/rotate-compose-manager-token.md#inner-script
+        #        for the plaintext) and run it inside compose-manager-launcher,
+        #        which already holds the work volume, /dstack-env, curl and
+        #        docker-cli-compose, and whose own LAUNCHER_* env vars a
+        #        `docker exec` automatically inherits (confirmed live: `docker
+        #        exec <ctr> sh -c 'echo $$VAR'` sees that container's own
+        #        `environment:` -- no separate lookup call needed).
+        #        -e NEW_BEARER_TOKEN (bare, no "=value") forwards our own env
+        #        var's CURRENT value without ever putting it in this docker
+        #        exec command line; the decoded script arrives over the pipe
+        #        (stdin), never as an argument either.
+        INNER_B64='c2V0IC1ldQpFTlZfRklMRT0iJHtMQVVOQ0hFUl9FTlZfRklMRTotL2FwcC93b3JrLy5lbnYubGF1
+        bmNoZXJ9IgpCQVNFX0VOVl9GSUxFPSIke0xBVU5DSEVSX0JBU0VfRU5WX0ZJTEU6LS9kc3RhY2st
+        ZW52fSIKQ09NUE9TRV9GSUxFPSIke0xBVU5DSEVSX0NPTVBPU0VfRklMRTotL2FwcC93b3JrL2Nv
+        bXBvc2UtbWFuYWdlci55bWx9IgpQUk9KRUNUPSIke0xBVU5DSEVSX0NPTVBPU0VfUFJPSkVDVDot
+        ZHN0YWNrfSIKSEVBTFRIX1VSTD0iJHtMQVVOQ0hFUl9IRUFMVEhfVVJMOi1odHRwOi8vMTI3LjAu
+        MC4xOjgwODAvdmVyc2lvbn0iCiMgL3ZlcnNpb24gaXMgdW5hdXRoZW50aWNhdGVkICh2ZXJpZmll
+        ZCBsaXZlOiBubyBCRUFSRVJfVE9LRU4gcmVxdWlyZWQpIC0tCiMgaXQgb25seSBwcm92ZXMgdGhl
+        IGNvbnRhaW5lciBwcm9jZXNzIGlzIHVwIGFuZCBhbnN3ZXJpbmcsIE5PVCB0aGF0IHRoZQojIEJF
+        QVJFUl9UT0tFTiBvdmVycmlkZSBhY3R1YWxseSB0b29rIGVmZmVjdC4gRGVyaXZlIHRoZSBhdXRo
+        ZW50aWNhdGVkCiMgR0VUIC9kb2NrZXIvcHMgZW5kcG9pbnQgKHZlcmlmeV9iZWFyZXJfdG9rZW4t
+        Z2F0ZWQgaW4gY29tcG9zZS1tYW5hZ2VyJ3MKIyBvd24gc3JjL21haW4ucnMpIGZyb20gdGhlIHNh
+        bWUgaG9zdDpwb3J0IGluc3RlYWQgb2YgYSBzZWNvbmQgaGFyZGNvZGVkCiMgYXNzdW1wdGlvbi4K
+        QVVUSF9DSEVDS19VUkw9IiR7SEVBTFRIX1VSTCUvdmVyc2lvbn0vZG9ja2VyL3BzIgpUSU1FT1VU
+        PSIke0xBVU5DSEVSX0hFQUxUSF9USU1FT1VUOi0xODB9IgpUUz0iJChkYXRlIC11ICslWSVtJWRU
+        JUglTSVTWikiCkJBQ0tVUD0iIgoKaWYgWyAhIC1mICIkQ09NUE9TRV9GSUxFIiBdOyB0aGVuCiAg
+        ZWNobyAiW3JvdGF0ZS10b2tlbl0gJENPTVBPU0VfRklMRSBpcyBtaXNzaW5nIGluc2lkZSBjb21w
+        b3NlLW1hbmFnZXItbGF1bmNoZXIgLS0gYWJvcnRpbmcsIG5vdGhpbmcgY2hhbmdlZCIgPiYyCiAg
+        ZXhpdCAxCmZpCgppZiBbIC1mICIkRU5WX0ZJTEUiIF07IHRoZW4KICBCQUNLVVA9IiR7RU5WX0ZJ
+        TEV9LmJhay4ke1RTfSIKICBjcCAtcCAiJEVOVl9GSUxFIiAiJEJBQ0tVUCIKZWxzZQogIDogPiAi
+        JEVOVl9GSUxFIgpmaQoKcmV3cml0ZV90b2tlbigpIHsKICB0bXA9IiR7RU5WX0ZJTEV9LnRtcC4k
+        JCIKICBtb2RlPSIwNjQ0IgogIFsgLWYgIiRFTlZfRklMRSIgXSAmJiBtb2RlPSIkKHN0YXQgLWMg
+        JWEgIiRFTlZfRklMRSIgMj4vZGV2L251bGwgfHwgZWNobyAwNjQ0KSIKICBhd2sgLXYgaz0iQkVB
+        UkVSX1RPS0VOIiAnQkVHSU57dj1FTlZJUk9OWyJORVdfQkVBUkVSX1RPS0VOIl07IGZvdW5kPTB9
+        CiAgICBpbmRleCgkMCxrIj0iKT09MXtwcmludCBrIj0idjsgZm91bmQ9MTsgbmV4dH0KICAgIHtw
+        cmludH0KICAgIEVORHtpZighZm91bmQpIHByaW50IGsiPSJ2fScgIiRFTlZfRklMRSIgPiAiJHRt
+        cCIKICBjaG1vZCAiJG1vZGUiICIkdG1wIgogIG12ICIkdG1wIiAiJEVOVl9GSUxFIgp9CgpyZWNy
+        ZWF0ZSgpIHsKICBkb2NrZXIgY29tcG9zZSAtcCAiJFBST0pFQ1QiIC1mICIkQ09NUE9TRV9GSUxF
+        IiBcCiAgICAtLWVudi1maWxlICIkQkFTRV9FTlZfRklMRSIgLS1lbnYtZmlsZSAiJEVOVl9GSUxF
+        IiBcCiAgICB1cCAtZCAtLW5vLWRlcHMgY29tcG9zZS1tYW5hZ2VyCn0KCndhaXRfaGVhbHRoeSgp
+        IHsKICBpPTAKICBzdGVwcz0kKCggVElNRU9VVCAvIDMgKSkKICB3aGlsZSBbICIkaSIgLWx0ICIk
+        c3RlcHMiIF07IGRvCiAgICBpZiBjdXJsIC1mc1NMIC0tbWF4LXRpbWUgNSAiJEhFQUxUSF9VUkwi
+        ID4vZGV2L251bGwgMj4mMTsgdGhlbgogICAgICByZXR1cm4gMAogICAgZmkKICAgIGk9JCgoaSAr
+        IDEpKQogICAgc2xlZXAgMwogIGRvbmUKICByZXR1cm4gMQp9CgojIFBvbGxzIHRoZSBBVVRIRU5U
+        SUNBVEVEIEdFVCAvZG9ja2VyL3BzIHdpdGggTkVXX0JFQVJFUl9UT0tFTiwgYnVpbGRpbmcgdGhl
+        CiMgQXV0aG9yaXphdGlvbiBoZWFkZXIgdmlhIGN1cmwncyAtSyBjb25maWctZnJvbS1zdGRpbiBz
+        byB0aGUgdG9rZW4gaXMgbmV2ZXIKIyBhIGNvbW1hbmQtbGluZSBhcmd1bWVudCAobmV2ZXIgdmlz
+        aWJsZSBpbiBgcHNgL2Bkb2NrZXIgdG9wYCkgYW5kIGlzIG5ldmVyCiMgZWNob2VkL2xvZ2dlZC4g
+        TkVXX0JFQVJFUl9UT0tFTiB3YXMgYWxyZWFkeSBmb3JtYXQtdmFsaWRhdGVkIChubyBxdW90ZXMs
+        CiMgbm8gd2hpdGVzcGFjZSkgYnkgdGhlIG91dGVyIHdyYXBwZXIgYmVmb3JlIHRoaXMgc2NyaXB0
+        IGV2ZXIgcnVucy4Kd2FpdF9uZXdfdG9rZW5fYWNjZXB0ZWQoKSB7CiAgaT0wCiAgc3RlcHM9JCgo
+        IFRJTUVPVVQgLyAzICkpCiAgd2hpbGUgWyAiJGkiIC1sdCAiJHN0ZXBzIiBdOyBkbwogICAgaWYg
+        cHJpbnRmICdoZWFkZXIgPSAiQXV0aG9yaXphdGlvbjogQmVhcmVyICVzIlxuJyAiJE5FV19CRUFS
+        RVJfVE9LRU4iIFwKICAgICAgICAgfCBjdXJsIC1mc1NMIC1LIC0gLS1tYXgtdGltZSA1IC1vIC9k
+        ZXYvbnVsbCAiJEFVVEhfQ0hFQ0tfVVJMIiAyPi9kZXYvbnVsbDsgdGhlbgogICAgICByZXR1cm4g
+        MAogICAgZmkKICAgIGk9JCgoaSArIDEpKQogICAgc2xlZXAgMwogIGRvbmUKICByZXR1cm4gMQp9
+        Cgpyb2xsYmFja19hbmRfZXhpdCgpIHsKICByZWFzb249IiQxIgogIGVjaG8gIltyb3RhdGUtdG9r
+        ZW5dICRyZWFzb24gLS0gcm9sbGluZyBiYWNrIiA+JjIKICBpZiBbIC1uICIkQkFDS1VQIiBdICYm
+        IFsgLWYgIiRCQUNLVVAiIF07IHRoZW4KICAgIGNwIC1wICIkQkFDS1VQIiAiJEVOVl9GSUxFIgog
+        IGVsc2UKICAgIGVjaG8gIltyb3RhdGUtdG9rZW5dIG5vIGJhY2t1cCBleGlzdGVkIChmaWxlIHdh
+        cyBuZXdseSBjcmVhdGVkIHRoaXMgcnVuKSAtLSBsZWF2aW5nIGFzLWlzIiA+JjIKICBmaQogIHJl
+        Y3JlYXRlCiAgaWYgd2FpdF9oZWFsdGh5OyB0aGVuCiAgICBlY2hvICJbcm90YXRlLXRva2VuXSBy
+        b2xsYmFjayByZWNyZWF0ZSBzdWNjZWVkZWQgLS0gY29tcG9zZS1tYW5hZ2VyIGlzIGhlYWx0aHkg
+        YWdhaW4gb24gdGhlIE9MRCB0b2tlbiIgPiYyCiAgICBleGl0IDIKICBmaQogIGVjaG8gIltyb3Rh
+        dGUtdG9rZW5dIENSSVRJQ0FMOiByb2xsYmFjayByZWNyZWF0ZSBBTFNPIGZhaWxlZCB0byBiZWNv
+        bWUgaGVhbHRoeSAtLSBtYW51YWwgaW50ZXJ2ZW50aW9uIHJlcXVpcmVkIG9uIHRoaXMgaG9zdCIg
+        PiYyCiAgZXhpdCAzCn0KCmVjaG8gIltyb3RhdGUtdG9rZW5dIHJld3JpdGluZyBCRUFSRVJfVE9L
+        RU4gaW4gJEVOVl9GSUxFIChiYWNrdXA6ICR7QkFDS1VQOi1ub25lIGNyZWF0ZWQsIGZpbGUgd2Fz
+        IG1pc3Npbmd9KSIKcmV3cml0ZV90b2tlbgoKZWNobyAiW3JvdGF0ZS10b2tlbl0gcmVjcmVhdGlu
+        ZyBjb21wb3NlLW1hbmFnZXIgKHByb2plY3QgJFBST0pFQ1QsIC0tbm8tZGVwcywgbm8gb3RoZXIg
+        c2VydmljZSB0b3VjaGVkKSIKcmVjcmVhdGUKCmVjaG8gIltyb3RhdGUtdG9rZW5dIHdhaXRpbmcg
+        dXAgdG8gJHtUSU1FT1VUfXMgZm9yICRIRUFMVEhfVVJMIgppZiAhIHdhaXRfaGVhbHRoeTsgdGhl
+        bgogIHJvbGxiYWNrX2FuZF9leGl0ICJjb21wb3NlLW1hbmFnZXIgZGlkIE5PVCBiZWNvbWUgaGVh
+        bHRoeSB3aXRoaW4gJHtUSU1FT1VUfXMiCmZpCgojIC92ZXJzaW9uIGFuc3dlcmluZyAyMDAgb25s
+        eSBwcm92ZXMgdGhlIGNvbnRhaW5lciBwcm9jZXNzIGlzIHVwIC0tIGl0IGRvZXMKIyBOT1QgcHJv
+        dmUgdGhlIEJFQVJFUl9UT0tFTiBvdmVycmlkZSBhY3R1YWxseSB0b29rIGVmZmVjdCAoZS5nLiBh
+        bgojIGludGVycG9sYXRpb24vb3JkZXJpbmcgcmVncmVzc2lvbiBjb3VsZCBsZWF2ZSB0aGUgT0xE
+        IHRva2VuIGxpdmUgd2hpbGUgdGhlCiMgY29udGFpbmVyIHN0aWxsIGFuc3dlcnMgL3ZlcnNpb24g
+        bm9ybWFsbHkpLiBTZXBhcmF0ZWx5IGNvbmZpcm0gdGhlIE5FVwojIHRva2VuIGlzIGFjdHVhbGx5
+        IGFjY2VwdGVkIGJlZm9yZSBkZWNsYXJpbmcgc3VjY2Vzcy4KZWNobyAiW3JvdGF0ZS10b2tlbl0g
+        Y29tcG9zZS1tYW5hZ2VyIGhlYWx0aHk7IHZlcmlmeWluZyB0aGUgTkVXIHRva2VuIGlzIGFjY2Vw
+        dGVkIGF0ICRBVVRIX0NIRUNLX1VSTCIKaWYgISB3YWl0X25ld190b2tlbl9hY2NlcHRlZDsgdGhl
+        bgogIHJvbGxiYWNrX2FuZF9leGl0ICJjb21wb3NlLW1hbmFnZXIgaXMgaGVhbHRoeSBidXQgdGhl
+        IE5FVyB0b2tlbiB3YXMgcmVqZWN0ZWQgYXQgJEFVVEhfQ0hFQ0tfVVJMIChvdmVycmlkZSBkaWQg
+        bm90IHRha2UgZWZmZWN0KSIKZmkKCmVjaG8gIltyb3RhdGUtdG9rZW5dIGNvbXBvc2UtbWFuYWdl
+        ciBoZWFsdGh5IEFORCB0aGUgTkVXIHRva2VuIGlzIGFjY2VwdGVkIgpleGl0IDAK'
+
+        if printf '%s' "$$INNER_B64" | base64 -d | docker exec -i -e NEW_BEARER_TOKEN compose-manager-launcher sh -s; then
+          status=0
+        else
+          status=$$?
+        fi
+
+        echo "$$(date -u +%Y-%m-%dT%H:%M:%SZ) [rotate-token] exiting with status $${status}"
+        exit "$$status"
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"cm-token-rotate","service":"cm-token-rotate","tags":["deployment:cm-token-rotate"]}]'
+    logging: *logging-conf
