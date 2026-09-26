@@ -21,6 +21,13 @@ DCGM_VALIDATOR = Path("scripts/validate_glm53_dcgm_metrics.rb")
 CANONICAL = Path("prod/GLM-5.3-Flash-SGL-TP4.yaml")
 HICACHE = Path("prod/GLM-5.3-Flash-SGL-TP4-HiCache.yaml")
 RELEASED_IMAGE = Path("docker/sglang-glm53-hicache/RELEASED_IMAGE")
+APPROVED_R1_V2_IMAGE = "docker.io/nearaidev/sglang@sha256:8ff1a487b98a52fe08b781715bebd7c8c445d4fe068f312f03f527d5a3c77e84"
+SELECTED_R2_V3_IMAGE = "docker.io/nearaidev/sglang@sha256:47aff791090003a37f893e998c44794c410d3f7bdfc7fdd2dfab5eb5592b30bb"
+V1_IMAGE = "docker.io/nearaidev/sglang@sha256:fde25985aea3ebabf1eb581ae21d53be8540e32933eef942ee8b962a1bfbea20"
+UNKNOWN_IMAGE = "docker.io/nearaidev/sglang@sha256:" + "0" * 64
+R1_VARIANT = "fc91d24-long-context-w4afp8-c8192-qsplit-hicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
+R2_VARIANT = "fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdi2-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
+OLD_R2_VARIANT = R2_VARIANT.replace("-offloop-v3", "")
 
 
 def replace_nth(text: str, needle: str, index: int, replacement: str) -> str:
@@ -31,6 +38,11 @@ def replace_nth(text: str, needle: str, index: int, replacement: str) -> str:
         start = text.find(needle, start + 1)
     target = positions[index]
     return text[:target] + replacement + text[target + len(needle):]
+
+
+def rendered_engine_sections() -> tuple[str, str, str]:
+    rendered = generator.generate((ROOT / generator.SOURCE).read_text())
+    return rendered, generator.section(rendered, "x-sg-glm53-flash-common: &sg-glm53-flash-common\n", "\nx-dcgm-common: &dcgm-common\n", "shared engine anchor")[2], generator.section(rendered, "  model-sg-glm53-w4afp8-tp4-r2:\n", "\n  # Explicit operator-only semantic check;", "replica 2 service")[2]
 
 
 class GeneratedFileTest(unittest.TestCase):
@@ -66,6 +78,37 @@ class GeneratedFileTest(unittest.TestCase):
                 with self.assertRaises(generator.GenerationError):
                     generator.generate(source.replace(before, "\n" if before.startswith("\n") else ""))
 
+    def test_selected_v3_image_is_scoped_to_r2_with_v2_r1(self) -> None:
+        # Given independently approved immutable image references, when the source is rendered,
+        # then the shared r1 anchor remains v2 and only r2 carries the selected original #308 v3.
+        _, anchor, r2 = rendered_engine_sections()
+        self.assertIn(f"\n  image: {APPROVED_R1_V2_IMAGE}\n", anchor)
+        self.assertNotIn(SELECTED_R2_V3_IMAGE, anchor)
+        self.assertIn(f"\n    image: {SELECTED_R2_V3_IMAGE}\n", r2)
+        self.assertNotIn(f"\n    image: {APPROVED_R1_V2_IMAGE}\n", r2)
+
+    def test_offloop_v3_marker_is_truthful_on_all_three_r2_consumers_only(self) -> None:
+        # Given the two independently known telemetry variants, the generated labels, log tags,
+        # and Prometheus scrape labels must carry the marker exactly three times on r2 only.
+        rendered, _, _ = rendered_engine_sections()
+        self.assertEqual(rendered.count(R1_VARIANT), 3)
+        self.assertEqual(rendered.count(R2_VARIANT), 3)
+        self.assertNotIn(OLD_R2_VARIANT, rendered)
+
+    def test_runtime_parameters_remain_the_no_flag_8192_split_arm(self) -> None:
+        # Given the selected image-only r2 change, runtime activation remains unconditional:
+        # no dynamic-tokenizer flag, chunk 8192, QSPLIT=1 and pdi 1/2 stay observable.
+        _, anchor, r2 = rendered_engine_sections()
+        runtime = anchor + r2
+        self.assertNotIn("DYNAMIC_BATCH_TOKENIZER", runtime.upper())
+        self.assertNotIn("dynamic-batch-tokenizer", runtime.lower())
+        self.assertIn("\n      --chunked-prefill-size 8192\n", anchor)
+        self.assertIn("\n        --chunked-prefill-size 8192\n", r2)
+        self.assertIn("\n      --prefill-decode-interval 1\n", anchor)
+        self.assertIn("\n        --prefill-decode-interval 2\n", r2)
+        self.assertEqual(anchor.count("\n    - SGLANG_DSA_INDEXER_QSPLIT=1\n"), 1)
+        self.assertEqual(r2.count("\n      - SGLANG_DSA_INDEXER_QSPLIT=1\n"), 1)
+
 
 class ValidatorContractTest(unittest.TestCase):
     """Each mutation of the committed file must fail the production validator with its reason."""
@@ -79,6 +122,13 @@ class ValidatorContractTest(unittest.TestCase):
             shutil.copyfile(ROOT / name, self.root / name)
         self.target = self.root / generator.TARGET
         self.valid = self.target.read_text()
+
+    def selected_candidate(self) -> str:
+        candidate = self.valid.replace(f"    image: {APPROVED_R1_V2_IMAGE}\n", f"    image: {SELECTED_R2_V3_IMAGE}\n", 1)
+        candidate = candidate.replace(OLD_R2_VARIANT, R2_VARIANT)
+        self.assertEqual(candidate.count(f"    image: {SELECTED_R2_V3_IMAGE}\n"), 1)
+        self.assertEqual(candidate.count(R2_VARIANT), 3)
+        return candidate
 
     def run_ruby(self, script: Path) -> subprocess.CompletedProcess[str]:
         return subprocess.run(["ruby", str(self.root / script)], capture_output=True, text=True, check=False)
@@ -106,6 +156,35 @@ class ValidatorContractTest(unittest.TestCase):
                 result = self.run_ruby(script)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertIn("GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext.yaml", result.stdout)
+
+    def test_selected_candidate_passes_the_real_validator(self) -> None:
+        # Given the independently constructed r1-v2/r2-v3 candidate, the real Ruby validator
+        # must accept the exact image/telemetry pairing before the generated file can ship.
+        candidate = self.selected_candidate()
+        self.target.write_text(candidate)
+        result = self.run_ruby(VALIDATOR)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_rejects_image_and_split_capability_drift(self) -> None:
+        candidate = self.selected_candidate()
+        cases = (
+            (candidate.replace(f"    image: {SELECTED_R2_V3_IMAGE}\n", f"    image: {APPROVED_R1_V2_IMAGE}\n", 1), "model-sg-glm53-w4afp8-tp4-r2 image must be"),
+            (candidate.replace(f"  image: {APPROVED_R1_V2_IMAGE}\n", f"  image: {SELECTED_R2_V3_IMAGE}\n", 1), "model-sg-glm53-w4afp8-tp4-r1 image must be"),
+            (candidate.replace(f"  image: {APPROVED_R1_V2_IMAGE}\n", f"  image: {V1_IMAGE}\n", 1), "does not run an approved split-capable image"),
+            (candidate.replace(f"  image: {APPROVED_R1_V2_IMAGE}\n", f"  image: {UNKNOWN_IMAGE}\n", 1), "does not run an approved split-capable image"),
+        )
+        self.valid = candidate
+        for mutated, message in cases:
+            with self.subTest(message=message):
+                self.assert_fails(mutated, message)
+
+    def test_rejects_untruthful_offloop_marker_in_each_r2_consumer(self) -> None:
+        candidate = self.selected_candidate()
+        for index in range(3):
+            with self.subTest(consumer=index):
+                mutated = replace_nth(candidate, R2_VARIANT, index, R1_VARIANT)
+                self.valid = candidate
+                self.assert_fails(mutated, "config_variant")
 
     def test_rejects_engine_argv_drift(self) -> None:
         argv = "argv must be campaign-2 arm L2 exactly"
