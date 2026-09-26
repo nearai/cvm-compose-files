@@ -4,9 +4,8 @@
 # --max-prefill-tokens 32768, HiCache with CUDA-owned host memory and a fixed 406 GiB
 # startup host-memory budget per replica, and no admission reserve.
 #
-# Both replicas run chunk 8192 with SGLANG_DSA_INDEXER_QSPLIT=1. r1 stays on v2:
-#   docker.io/nearaidev/sglang@sha256:8ff1a487b98a52fe08b781715bebd7c8c445d4fe068f312f03f527d5a3c77e84
-# r2 is the original #308 offloop-v3 no-flag canary:
+# Both replicas run chunk 8192 with SGLANG_DSA_INDEXER_QSPLIT=1 and pin the original
+# #308 offloop-v3 no-flag image:
 #   docker.io/nearaidev/sglang@sha256:47aff791090003a37f893e998c44794c410d3f7bdfc7fdd2dfab5eb5592b30bb
 # (source aff61fca1798512dcaec8cc88756ee0f83bb78be; workflow 36210851936 SUCCESS).
 # The v3 off-loop path is unconditional: no dynamic-batch-tokenizer activation variable
@@ -39,7 +38,7 @@
 # This is the DEDICATED LONG-CONTEXT TIER variant of prod/GLM-5.3-Flash-SGL-TP4.yaml.
 # Generated from the long-context file. Routing remains the dedicated long-context
 # contract below; both replicas run a W4AFP8 + HiCache engine at chunk 8192 with the
-# DSA indexer split, and r2 is the offloop-v3 no-flag isolation arm at pdi2.
+# DSA indexer split and the offloop-v3 no-flag image at pdi1/r1 and pdi2/r2.
 #
 # *** LONG-CONTEXT TIER (dedicated host, both TP4/EP4 replicas) ***
 #   Deploy this file on exactly the host(s) chosen as the GLM-5.3 Flash long-context
@@ -82,7 +81,7 @@
 #       p95 TTFT 10.0 s -> 27.4 s on identical replicas. Judge it on the SLO you mean.
 #   The replicas' engine flags differ only in --dist-init-addr and
 #   --prefill-decode-interval (1 on r1, 2 on r2). Both run chunk 8192 and
-#   SGLANG_DSA_INDEXER_QSPLIT=1; r2 alone pins the offloop-v3 image. The 8192 chunk is the
+#   SGLANG_DSA_INDEXER_QSPLIT=1; both pin the offloop-v3 image. The 8192 chunk is the
 #   W4AFP8 setting: FP8 at 8192 OOMed in the DSA indexer under concurrent 400K+
 #   contexts, while W4AFP8's 2.4x larger device KV pool kept 3.7 GiB free through 8
 #   concurrent 647K-756K-token cold prefills on gpu31. 16384 was rejected then because
@@ -116,7 +115,7 @@ x-logging-conf: &logging-conf
 # the official GLM-5.3 branch. It contains upstream disconnect cleanup (#35255), the
 # final-prefill abort fix (#34153), the strict thinking-budget adapter, and two narrow
 # DSA import-cycle fixes. Both replicas pin a published split-capable
-# docker/sglang-glm53-hicache-w4afp8 derivative (r1 v2, r2 original #308 v3):
+# docker/sglang-glm53-hicache-w4afp8 derivative (original #308 v3 on both replicas):
 # the HCC-safe HiCache image (CUDA-owned
 # host memory) plus the W4AFP8 loader fix and the unconditional chunked-prefill pool
 # clamp. Two replicas share the CVM's RAM, so each replica's startup host-memory
@@ -177,7 +176,7 @@ x-vllm-proxy-common: &vllm-proxy-common
 x-sg-glm53-flash-common: &sg-glm53-flash-common
   <<: *nvidia
   init: true
-  image: docker.io/nearaidev/sglang@sha256:8ff1a487b98a52fe08b781715bebd7c8c445d4fe068f312f03f527d5a3c77e84
+  image: docker.io/nearaidev/sglang@sha256:47aff791090003a37f893e998c44794c410d3f7bdfc7fdd2dfab5eb5592b30bb
   command: >
       sglang serve
       --model-path /root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/snapshots/99f1fa70408c52b007d4fd69e02e5a522422e755
@@ -490,7 +489,7 @@ services:
               device_ids: ["0","1","2","3"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-bf16-kv","deployment:glm53-flash-sgl-tp4","config_variant:fc91d24-long-context-w4afp8-c8192-qsplit-hicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192","request_logging:disabled","engine_image:8ff1a487b98a","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:1"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-bf16-kv","deployment:glm53-flash-sgl-tp4","config_variant:fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192","request_logging:disabled","engine_image:47aff7910900","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:1"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -502,10 +501,10 @@ services:
       nearai.otel.model_path: "graphistry/GLM-5.3-Flash-W4AFP8"
       nearai.otel.served_model: "z-ai/glm-5.3-flash"
       nearai.otel.deployment: "glm53-flash-sgl-tp4"
-      nearai.otel.config_variant: "fc91d24-long-context-w4afp8-c8192-qsplit-hicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
+      nearai.otel.config_variant: "fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
       nearai.otel.thinking_budget_policy: "default8192-public-to-native"
       nearai.otel.request_logging: "disabled"
-      nearai.otel.engine_image: "8ff1a487b98a"
+      nearai.otel.engine_image: "47aff7910900"
       nearai.otel.instance: "1"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
@@ -1029,10 +1028,10 @@ configs:
                       ip: "${HOST_IP}"
                       port: "8000"
                       instance: "1"
-                      config_variant: "fc91d24-long-context-w4afp8-c8192-qsplit-hicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
+                      config_variant: "fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
                       thinking_budget_policy: "default8192-public-to-native"
                       request_logging: "disabled"
-                      engine_image: "8ff1a487b98a"
+                      engine_image: "47aff7910900"
               - job_name: sglang-model-sg-glm53-w4afp8-tp4-r2
                 scrape_interval: 15s
                 metrics_path: /metrics

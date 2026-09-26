@@ -28,10 +28,10 @@ CHECKPOINT_REVISION: Final = "99f1fa70408c52b007d4fd69e02e5a522422e755"
 FP8_REVISION: Final = "84c6a6aa9497188e15a635ba793b0f95a79b1033"
 SOURCE_IMAGE: Final = "docker.io/nearaidev/sglang@sha256:e9d29a1cb1cd65284392c4d62d5f2a36669628057e15c60fe93ea40cfe4fc7e7"
 SOURCE_HICACHE_IMAGE: Final = "docker.io/nearaidev/sglang@sha256:3eccc30709f5719c81084d1264f03ca5354b3059ec4cff62f0c5ff88c309680c"
-# r1 stays on glm53-hicache-w4afp8-v2, while r2 runs the selected original #308 offloop-v3
-# image. Both carry the DSA indexer split, which is enabled by the shared QSPLIT environment.
-IMAGE: Final = "docker.io/nearaidev/sglang@sha256:8ff1a487b98a52fe08b781715bebd7c8c445d4fe068f312f03f527d5a3c77e84"
-ENGINE_IMAGE_LABEL: Final = "8ff1a487b98a"
+# Both replicas run the released original #308 offloop-v3 image and carry the DSA indexer
+# split, which is enabled by the shared QSPLIT environment.
+IMAGE: Final = "docker.io/nearaidev/sglang@sha256:47aff791090003a37f893e998c44794c410d3f7bdfc7fdd2dfab5eb5592b30bb"
+ENGINE_IMAGE_LABEL: Final = "47aff7910900"
 R2_IMAGE: Final = "docker.io/nearaidev/sglang@sha256:47aff791090003a37f893e998c44794c410d3f7bdfc7fdd2dfab5eb5592b30bb"
 R2_ENGINE_IMAGE_LABEL: Final = "47aff7910900"
 REPLICA_IMAGE: Final = {1: IMAGE, 2: R2_IMAGE}
@@ -61,10 +61,10 @@ SOURCE_VARIANTS: Final = (
     "fc91d24-long-context-admission-reserve-disabled-hicache-disabled-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192",
     "fc91d24-long-context-admission-reserve-disabled-hicache-cuda-host-pooled-v1-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192",
 )
-# Both replicas carry the split at chunk 8192. The r2 marker makes its unconditional v3
+# Both replicas carry the split at chunk 8192. The marker makes their unconditional v3
 # off-loop implementation observable without introducing an activation flag.
 VARIANTS: Final = {
-    1: "fc91d24-long-context-w4afp8-c8192-qsplit-hicache-cuda-host-pooled-v1-admission-reserve-disabled"
+    1: "fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-admission-reserve-disabled"
     "-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192",
     2: "fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-admission-reserve-disabled"
     "-pool-clamp-pdi2-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192",
@@ -91,9 +91,8 @@ HEADER: Final = (
     "# --max-prefill-tokens 32768, HiCache with CUDA-owned host memory and a fixed 406 GiB\n"
     "# startup host-memory budget per replica, and no admission reserve.\n"
     "#\n"
-    "# Both replicas run chunk 8192 with SGLANG_DSA_INDEXER_QSPLIT=1. r1 stays on v2:\n"
-    f"#   {IMAGE}\n"
-    "# r2 is the original #308 offloop-v3 no-flag canary:\n"
+    "# Both replicas run chunk 8192 with SGLANG_DSA_INDEXER_QSPLIT=1 and pin the original\n"
+    "# #308 offloop-v3 no-flag image:\n"
     f"#   {R2_IMAGE}\n"
     "# (source aff61fca1798512dcaec8cc88756ee0f83bb78be; workflow 36210851936 SUCCESS).\n"
     "# The v3 off-loop path is unconditional: no dynamic-batch-tokenizer activation variable\n"
@@ -132,7 +131,7 @@ HEADER_REPLACEMENTS: Final = (
         "# HiCache experiment and therefore are not byte-identical to the canonical file.\n",
         "# Generated from the long-context file. Routing remains the dedicated long-context\n"
         "# contract below; both replicas run a W4AFP8 + HiCache engine at chunk 8192 with the\n"
-        "# DSA indexer split, and r2 is the offloop-v3 no-flag isolation arm at pdi2.\n",
+        "# DSA indexer split and the offloop-v3 no-flag image at pdi1/r1 and pdi2/r2.\n",
     ),
     (
         "#   tier; every other host keeps the canonical file. The inference-proxy and routing\n"
@@ -149,7 +148,7 @@ HEADER_REPLACEMENTS: Final = (
         "#   affinity stays on because the prefix cache is worth ~3x in request capacity.\n",
         "#   The replicas' engine flags differ only in --dist-init-addr and\n"
         "#   --prefill-decode-interval (1 on r1, 2 on r2). Both run chunk 8192 and\n"
-        "#   SGLANG_DSA_INDEXER_QSPLIT=1; r2 alone pins the offloop-v3 image. The 8192 chunk is the\n"
+        "#   SGLANG_DSA_INDEXER_QSPLIT=1; both pin the offloop-v3 image. The 8192 chunk is the\n"
         "#   W4AFP8 setting: FP8 at 8192 OOMed in the DSA indexer under concurrent 400K+\n"
         "#   contexts, while W4AFP8's 2.4x larger device KV pool kept 3.7 GiB free through 8\n"
         "#   concurrent 647K-756K-token cold prefills on gpu31. 16384 was rejected then because\n"
@@ -174,7 +173,7 @@ HEADER_REPLACEMENTS: Final = (
         "# startup host-memory budget across all four TP ranks by default. The deployment may\n"
         "# override that percentage with GLM53_HICACHE_RAM_BUDGET.\n",
         "# DSA import-cycle fixes. Both replicas pin a published split-capable\n"
-        "# docker/sglang-glm53-hicache-w4afp8 derivative (r1 v2, r2 original #308 v3):\n"
+        "# docker/sglang-glm53-hicache-w4afp8 derivative (original #308 v3 on both replicas):\n"
         "# the HCC-safe HiCache image (CUDA-owned\n"
         "# host memory) plus the W4AFP8 loader fix and the unconditional chunked-prefill pool\n"
         "# clamp. Two replicas share the CVM's RAM, so each replica's startup host-memory\n"

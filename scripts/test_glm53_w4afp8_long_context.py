@@ -21,13 +21,15 @@ DCGM_VALIDATOR = Path("scripts/validate_glm53_dcgm_metrics.rb")
 CANONICAL = Path("prod/GLM-5.3-Flash-SGL-TP4.yaml")
 HICACHE = Path("prod/GLM-5.3-Flash-SGL-TP4-HiCache.yaml")
 RELEASED_IMAGE = Path("docker/sglang-glm53-hicache/RELEASED_IMAGE")
-APPROVED_R1_V2_IMAGE = "docker.io/nearaidev/sglang@sha256:8ff1a487b98a52fe08b781715bebd7c8c445d4fe068f312f03f527d5a3c77e84"
-SELECTED_R2_V3_IMAGE = "docker.io/nearaidev/sglang@sha256:47aff791090003a37f893e998c44794c410d3f7bdfc7fdd2dfab5eb5592b30bb"
+PREVIOUS_R1_V2_IMAGE = "docker.io/nearaidev/sglang@sha256:8ff1a487b98a52fe08b781715bebd7c8c445d4fe068f312f03f527d5a3c77e84"
+RELEASED_V3_IMAGE = "docker.io/nearaidev/sglang@sha256:47aff791090003a37f893e998c44794c410d3f7bdfc7fdd2dfab5eb5592b30bb"
+RELEASED_V3_LABEL = "47aff7910900"
 V1_IMAGE = "docker.io/nearaidev/sglang@sha256:fde25985aea3ebabf1eb581ae21d53be8540e32933eef942ee8b962a1bfbea20"
 UNKNOWN_IMAGE = "docker.io/nearaidev/sglang@sha256:" + "0" * 64
-R1_VARIANT = "fc91d24-long-context-w4afp8-c8192-qsplit-hicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
+R1_VARIANT = "fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
 R2_VARIANT = "fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdi2-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
-OLD_R2_VARIANT = R2_VARIANT.replace("-offloop-v3", "")
+R1_WITHOUT_OFFLOOP_VARIANT = R1_VARIANT.replace("-offloop-v3", "")
+R2_WITHOUT_OFFLOOP_VARIANT = R2_VARIANT.replace("-offloop-v3", "")
 
 
 def replace_nth(text: str, needle: str, index: int, replacement: str) -> str:
@@ -46,6 +48,10 @@ def rendered_engine_sections() -> tuple[str, str, str]:
 
 
 class GeneratedFileTest(unittest.TestCase):
+    def test_both_replicas_use_the_released_v3_image_identity(self) -> None:
+        self.assertEqual(generator.REPLICA_IMAGE, {1: RELEASED_V3_IMAGE, 2: RELEASED_V3_IMAGE})
+        self.assertEqual(generator.REPLICA_IMAGE_LABEL, {1: RELEASED_V3_LABEL, 2: RELEASED_V3_LABEL})
+
     def test_committed_file_matches_generator(self) -> None:
         # Given the committed long-context source, the regenerated target is byte-identical.
         self.assertEqual(TARGET.read_text(), generator.generate((ROOT / generator.SOURCE).read_text()))
@@ -78,25 +84,22 @@ class GeneratedFileTest(unittest.TestCase):
                 with self.assertRaises(generator.GenerationError):
                     generator.generate(source.replace(before, "\n" if before.startswith("\n") else ""))
 
-    def test_selected_v3_image_is_scoped_to_r2_with_v2_r1(self) -> None:
-        # Given independently approved immutable image references, when the source is rendered,
-        # then the shared r1 anchor remains v2 and only r2 carries the selected original #308 v3.
+    def test_released_v3_image_is_pinned_on_both_replicas(self) -> None:
         _, anchor, r2 = rendered_engine_sections()
-        self.assertIn(f"\n  image: {APPROVED_R1_V2_IMAGE}\n", anchor)
-        self.assertNotIn(SELECTED_R2_V3_IMAGE, anchor)
-        self.assertIn(f"\n    image: {SELECTED_R2_V3_IMAGE}\n", r2)
-        self.assertNotIn(f"\n    image: {APPROVED_R1_V2_IMAGE}\n", r2)
+        self.assertIn(f"\n  image: {RELEASED_V3_IMAGE}\n", anchor)
+        self.assertNotIn(PREVIOUS_R1_V2_IMAGE, anchor)
+        self.assertIn(f"\n    image: {RELEASED_V3_IMAGE}\n", r2)
+        self.assertNotIn(PREVIOUS_R1_V2_IMAGE, r2)
 
-    def test_offloop_v3_marker_is_truthful_on_all_three_r2_consumers_only(self) -> None:
-        # Given the two independently known telemetry variants, the generated labels, log tags,
-        # and Prometheus scrape labels must carry the marker exactly three times on r2 only.
+    def test_offloop_v3_marker_is_truthful_on_both_replicas(self) -> None:
         rendered, _, _ = rendered_engine_sections()
         self.assertEqual(rendered.count(R1_VARIANT), 3)
         self.assertEqual(rendered.count(R2_VARIANT), 3)
-        self.assertNotIn(OLD_R2_VARIANT, rendered)
+        self.assertNotIn(R1_WITHOUT_OFFLOOP_VARIANT, rendered)
+        self.assertNotIn(R2_WITHOUT_OFFLOOP_VARIANT, rendered)
 
     def test_runtime_parameters_remain_the_no_flag_8192_split_arm(self) -> None:
-        # Given the selected image-only r2 change, runtime activation remains unconditional:
+        # Given the r1-only image promotion, runtime activation remains unconditional:
         # no dynamic-tokenizer flag, chunk 8192, QSPLIT=1 and pdi 1/2 stay observable.
         _, anchor, r2 = rendered_engine_sections()
         runtime = anchor + r2
@@ -124,11 +127,7 @@ class ValidatorContractTest(unittest.TestCase):
         self.valid = self.target.read_text()
 
     def selected_candidate(self) -> str:
-        candidate = self.valid.replace(f"    image: {APPROVED_R1_V2_IMAGE}\n", f"    image: {SELECTED_R2_V3_IMAGE}\n", 1)
-        candidate = candidate.replace(OLD_R2_VARIANT, R2_VARIANT)
-        self.assertEqual(candidate.count(f"    image: {SELECTED_R2_V3_IMAGE}\n"), 1)
-        self.assertEqual(candidate.count(R2_VARIANT), 3)
-        return candidate
+        return self.valid
 
     def run_ruby(self, script: Path) -> subprocess.CompletedProcess[str]:
         return subprocess.run(["ruby", str(self.root / script)], capture_output=True, text=True, check=False)
@@ -158,8 +157,6 @@ class ValidatorContractTest(unittest.TestCase):
                 self.assertIn("GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext.yaml", result.stdout)
 
     def test_selected_candidate_passes_the_real_validator(self) -> None:
-        # Given the independently constructed r1-v2/r2-v3 candidate, the real Ruby validator
-        # must accept the exact image/telemetry pairing before the generated file can ship.
         candidate = self.selected_candidate()
         self.target.write_text(candidate)
         result = self.run_ruby(VALIDATOR)
@@ -168,23 +165,24 @@ class ValidatorContractTest(unittest.TestCase):
     def test_rejects_image_and_split_capability_drift(self) -> None:
         candidate = self.selected_candidate()
         cases = (
-            (candidate.replace(f"    image: {SELECTED_R2_V3_IMAGE}\n", f"    image: {APPROVED_R1_V2_IMAGE}\n", 1), "model-sg-glm53-w4afp8-tp4-r2 image must be"),
-            (candidate.replace(f"  image: {APPROVED_R1_V2_IMAGE}\n", f"  image: {SELECTED_R2_V3_IMAGE}\n", 1), "model-sg-glm53-w4afp8-tp4-r1 image must be"),
-            (candidate.replace(f"  image: {APPROVED_R1_V2_IMAGE}\n", f"  image: {V1_IMAGE}\n", 1), "does not run an approved split-capable image"),
-            (candidate.replace(f"  image: {APPROVED_R1_V2_IMAGE}\n", f"  image: {UNKNOWN_IMAGE}\n", 1), "does not run an approved split-capable image"),
+            (candidate.replace(f"    image: {RELEASED_V3_IMAGE}\n", f"    image: {PREVIOUS_R1_V2_IMAGE}\n", 1), "model-sg-glm53-w4afp8-tp4-r2 image must be"),
+            (candidate.replace(f"  image: {RELEASED_V3_IMAGE}\n", f"  image: {PREVIOUS_R1_V2_IMAGE}\n", 1), "model-sg-glm53-w4afp8-tp4-r1 image must be"),
+            (candidate.replace(f"  image: {RELEASED_V3_IMAGE}\n", f"  image: {V1_IMAGE}\n", 1), "does not run an approved split-capable image"),
+            (candidate.replace(f"  image: {RELEASED_V3_IMAGE}\n", f"  image: {UNKNOWN_IMAGE}\n", 1), "does not run an approved split-capable image"),
         )
         self.valid = candidate
         for mutated, message in cases:
             with self.subTest(message=message):
                 self.assert_fails(mutated, message)
 
-    def test_rejects_untruthful_offloop_marker_in_each_r2_consumer(self) -> None:
+    def test_rejects_untruthful_offloop_marker_in_each_consumer(self) -> None:
         candidate = self.selected_candidate()
-        for index in range(3):
-            with self.subTest(consumer=index):
-                mutated = replace_nth(candidate, R2_VARIANT, index, R1_VARIANT)
-                self.valid = candidate
-                self.assert_fails(mutated, "config_variant")
+        for variant in (R1_VARIANT, R2_VARIANT):
+            for index in range(3):
+                with self.subTest(variant=variant, consumer=index):
+                    mutated = replace_nth(candidate, variant, index, variant.replace("-offloop-v3", ""))
+                    self.valid = candidate
+                    self.assert_fails(mutated, "config_variant")
 
     def test_rejects_engine_argv_drift(self) -> None:
         argv = "argv must be campaign-2 arm L2 exactly"
@@ -229,7 +227,7 @@ class ValidatorContractTest(unittest.TestCase):
     def test_rejects_the_split_on_an_image_without_the_patch(self) -> None:
         """The split flag is inert and misleading on v1, which does not carry the patch.
 
-        Both replicas now run v2, so this mutation has to name the v1 digest explicitly -- using
+        Both replicas now run v3, so this mutation has to name the v1 digest explicitly -- using
         generator.IMAGE would be a no-op and the test would pass without exercising anything.
         """
         v1 = "docker.io/nearaidev/sglang@sha256:fde25985aea3ebabf1eb581ae21d53be8540e32933eef942ee8b962a1bfbea20"
@@ -288,10 +286,10 @@ class ValidatorContractTest(unittest.TestCase):
              "nearai.otel.config_variant must be"),
             (f"config_variant:{generator.VARIANTS[1]}", "config_variant:incorrect-variant", 0, "log metadata must carry exactly config_variant:"),
             (f'      nearai.otel.engine_image: "{generator.ENGINE_IMAGE_LABEL}"\n', '      nearai.otel.engine_image: "e9d29a1cb1cd"\n', 0, "nearai.otel.engine_image must be"),
-            (f'      nearai.otel.engine_image: "{generator.R2_ENGINE_IMAGE_LABEL}"\n', '      nearai.otel.engine_image: "e9d29a1cb1cd"\n', 0, "nearai.otel.engine_image must be"),
+            (f'      nearai.otel.engine_image: "{generator.R2_ENGINE_IMAGE_LABEL}"\n', '      nearai.otel.engine_image: "e9d29a1cb1cd"\n', 1, "nearai.otel.engine_image must be"),
             ('"precision:int4-weights-fp8-activations-bf16-kv"', '"precision:fp8-weights-bf16-kv"', 0, "log metadata must carry precision:"),
             (f'                      engine_image: "{generator.ENGINE_IMAGE_LABEL}"\n', '                      engine_image: "e9d29a1cb1cd"\n', 0, "scrape label engine_image"),
-            (f'                      engine_image: "{generator.R2_ENGINE_IMAGE_LABEL}"\n', '                      engine_image: "e9d29a1cb1cd"\n', 0, "scrape label engine_image"),
+            (f'                      engine_image: "{generator.R2_ENGINE_IMAGE_LABEL}"\n', '                      engine_image: "e9d29a1cb1cd"\n', 1, "scrape label engine_image"),
             ('      nearai.otel.model_path: "graphistry/GLM-5.3-Flash-W4AFP8"\n', '      nearai.otel.model_path: "zai-org/GLM-5.3-Flash"\n', 2, "dcgm-glm53 nearai.otel.model_path"),
         )
         for needle, replacement, index, message in cases:
