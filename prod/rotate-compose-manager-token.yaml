@@ -40,7 +40,13 @@
 #     replaced atomically via tmp+mv, every other line preserved), then run
 #     the launcher's own recreate command above so the NEW compose-manager
 #     container picks up the new token — the sealed /dstack-env is never
-#     written to, so nothing here requires a CVM redeploy.
+#     written to, so nothing here requires a CVM redeploy. GET /version is
+#     UNAUTHENTICATED (verified live: no BEARER_TOKEN required), so it only
+#     proves the container process answers, not that the token override
+#     actually took effect — after /version comes back healthy we separately
+#     poll the AUTHENTICATED GET /docker/ps (verify_bearer_token-gated in
+#     compose-manager's own src/main.rs) with the NEW token before declaring
+#     success, and roll back if it's ever rejected despite a healthy /version.
 #   - This file's own `rotate-token` service never mounts the CVM decrypted
 #     env, dstack.sock, or any model/HF-cache volume, and never gets network
 #     access. Its only host access is the Docker socket, used solely to
@@ -62,9 +68,12 @@
 # confirms the container STARTED — check the container's own exit code via
 # POST /docker/ps or POST /compose/logs, project cm-token-rotate, to know
 # whether the rotation itself actually succeeded):
-#   0 = rotated; compose-manager came back healthy on the NEW token
-#   2 = rotation failed; automatically rolled back; compose-manager is healthy
-#       again on the OLD token
+#   0 = rotated; compose-manager came back healthy AND the NEW token was
+#       confirmed accepted on the authenticated GET /docker/ps
+#   2 = rotation failed (either /version never came healthy, or it did but
+#       GET /docker/ps rejected the new token — see the container's own log
+#       line for which); automatically rolled back; compose-manager is
+#       healthy again on the OLD token
 #   3 = CRITICAL: the rollback recreate also failed to come up healthy —
 #       manual intervention required on this host; do not assume either token
 #       works until checked by hand
@@ -176,44 +185,76 @@ services:
         ZW52fSIKQ09NUE9TRV9GSUxFPSIke0xBVU5DSEVSX0NPTVBPU0VfRklMRTotL2FwcC93b3JrL2Nv
         bXBvc2UtbWFuYWdlci55bWx9IgpQUk9KRUNUPSIke0xBVU5DSEVSX0NPTVBPU0VfUFJPSkVDVDot
         ZHN0YWNrfSIKSEVBTFRIX1VSTD0iJHtMQVVOQ0hFUl9IRUFMVEhfVVJMOi1odHRwOi8vMTI3LjAu
-        MC4xOjgwODAvdmVyc2lvbn0iClRJTUVPVVQ9IiR7TEFVTkNIRVJfSEVBTFRIX1RJTUVPVVQ6LTE4
-        MH0iClRTPSIkKGRhdGUgLXUgKyVZJW0lZFQlSCVNJVNaKSIKQkFDS1VQPSIiCgppZiBbICEgLWYg
-        IiRDT01QT1NFX0ZJTEUiIF07IHRoZW4KICBlY2hvICJbcm90YXRlLXRva2VuXSAkQ09NUE9TRV9G
-        SUxFIGlzIG1pc3NpbmcgaW5zaWRlIGNvbXBvc2UtbWFuYWdlci1sYXVuY2hlciAtLSBhYm9ydGlu
-        Zywgbm90aGluZyBjaGFuZ2VkIiA+JjIKICBleGl0IDEKZmkKCmlmIFsgLWYgIiRFTlZfRklMRSIg
-        XTsgdGhlbgogIEJBQ0tVUD0iJHtFTlZfRklMRX0uYmFrLiR7VFN9IgogIGNwIC1wICIkRU5WX0ZJ
-        TEUiICIkQkFDS1VQIgplbHNlCiAgOiA+ICIkRU5WX0ZJTEUiCmZpCgpyZXdyaXRlX3Rva2VuKCkg
-        ewogIHRtcD0iJHtFTlZfRklMRX0udG1wLiQkIgogIG1vZGU9IjA2NDQiCiAgWyAtZiAiJEVOVl9G
-        SUxFIiBdICYmIG1vZGU9IiQoc3RhdCAtYyAlYSAiJEVOVl9GSUxFIiAyPi9kZXYvbnVsbCB8fCBl
-        Y2hvIDA2NDQpIgogIGF3ayAtdiBrPSJCRUFSRVJfVE9LRU4iICdCRUdJTnt2PUVOVklST05bIk5F
-        V19CRUFSRVJfVE9LRU4iXTsgZm91bmQ9MH0KICAgIGluZGV4KCQwLGsiPSIpPT0xe3ByaW50IGsi
-        PSJ2OyBmb3VuZD0xOyBuZXh0fQogICAge3ByaW50fQogICAgRU5Ee2lmKCFmb3VuZCkgcHJpbnQg
-        ayI9InZ9JyAiJEVOVl9GSUxFIiA+ICIkdG1wIgogIGNobW9kICIkbW9kZSIgIiR0bXAiCiAgbXYg
-        IiR0bXAiICIkRU5WX0ZJTEUiCn0KCnJlY3JlYXRlKCkgewogIGRvY2tlciBjb21wb3NlIC1wICIk
-        UFJPSkVDVCIgLWYgIiRDT01QT1NFX0ZJTEUiIFwKICAgIC0tZW52LWZpbGUgIiRCQVNFX0VOVl9G
-        SUxFIiAtLWVudi1maWxlICIkRU5WX0ZJTEUiIFwKICAgIHVwIC1kIC0tbm8tZGVwcyBjb21wb3Nl
-        LW1hbmFnZXIKfQoKd2FpdF9oZWFsdGh5KCkgewogIGk9MAogIHN0ZXBzPSQoKCBUSU1FT1VUIC8g
-        MyApKQogIHdoaWxlIFsgIiRpIiAtbHQgIiRzdGVwcyIgXTsgZG8KICAgIGlmIGN1cmwgLWZzU0wg
-        LS1tYXgtdGltZSA1ICIkSEVBTFRIX1VSTCIgPi9kZXYvbnVsbCAyPiYxOyB0aGVuCiAgICAgIHJl
-        dHVybiAwCiAgICBmaQogICAgaT0kKChpICsgMSkpCiAgICBzbGVlcCAzCiAgZG9uZQogIHJldHVy
-        biAxCn0KCmVjaG8gIltyb3RhdGUtdG9rZW5dIHJld3JpdGluZyBCRUFSRVJfVE9LRU4gaW4gJEVO
-        Vl9GSUxFIChiYWNrdXA6ICR7QkFDS1VQOi1ub25lIGNyZWF0ZWQsIGZpbGUgd2FzIG1pc3Npbmd9
-        KSIKcmV3cml0ZV90b2tlbgoKZWNobyAiW3JvdGF0ZS10b2tlbl0gcmVjcmVhdGluZyBjb21wb3Nl
-        LW1hbmFnZXIgKHByb2plY3QgJFBST0pFQ1QsIC0tbm8tZGVwcywgbm8gb3RoZXIgc2VydmljZSB0
-        b3VjaGVkKSIKcmVjcmVhdGUKCmVjaG8gIltyb3RhdGUtdG9rZW5dIHdhaXRpbmcgdXAgdG8gJHtU
-        SU1FT1VUfXMgZm9yICRIRUFMVEhfVVJMIgppZiB3YWl0X2hlYWx0aHk7IHRoZW4KICBlY2hvICJb
-        cm90YXRlLXRva2VuXSBjb21wb3NlLW1hbmFnZXIgaGVhbHRoeSBvbiB0aGUgTkVXIHRva2VuIgog
-        IGV4aXQgMApmaQoKZWNobyAiW3JvdGF0ZS10b2tlbl0gY29tcG9zZS1tYW5hZ2VyIGRpZCBOT1Qg
-        YmVjb21lIGhlYWx0aHkgd2l0aGluICR7VElNRU9VVH1zIC0tIHJvbGxpbmcgYmFjayIgPiYyCmlm
-        IFsgLW4gIiRCQUNLVVAiIF0gJiYgWyAtZiAiJEJBQ0tVUCIgXTsgdGhlbgogIGNwIC1wICIkQkFD
-        S1VQIiAiJEVOVl9GSUxFIgplbHNlCiAgZWNobyAiW3JvdGF0ZS10b2tlbl0gbm8gYmFja3VwIGV4
-        aXN0ZWQgKGZpbGUgd2FzIG5ld2x5IGNyZWF0ZWQgdGhpcyBydW4pIC0tIGxlYXZpbmcgYXMtaXMi
-        ID4mMgpmaQpyZWNyZWF0ZQppZiB3YWl0X2hlYWx0aHk7IHRoZW4KICBlY2hvICJbcm90YXRlLXRv
-        a2VuXSByb2xsYmFjayByZWNyZWF0ZSBzdWNjZWVkZWQgLS0gY29tcG9zZS1tYW5hZ2VyIGlzIGhl
-        YWx0aHkgYWdhaW4gb24gdGhlIE9MRCB0b2tlbiIgPiYyCiAgZXhpdCAyCmZpCmVjaG8gIltyb3Rh
+        MC4xOjgwODAvdmVyc2lvbn0iCiMgL3ZlcnNpb24gaXMgdW5hdXRoZW50aWNhdGVkICh2ZXJpZmll
+        ZCBsaXZlOiBubyBCRUFSRVJfVE9LRU4gcmVxdWlyZWQpIC0tCiMgaXQgb25seSBwcm92ZXMgdGhl
+        IGNvbnRhaW5lciBwcm9jZXNzIGlzIHVwIGFuZCBhbnN3ZXJpbmcsIE5PVCB0aGF0IHRoZQojIEJF
+        QVJFUl9UT0tFTiBvdmVycmlkZSBhY3R1YWxseSB0b29rIGVmZmVjdC4gRGVyaXZlIHRoZSBhdXRo
+        ZW50aWNhdGVkCiMgR0VUIC9kb2NrZXIvcHMgZW5kcG9pbnQgKHZlcmlmeV9iZWFyZXJfdG9rZW4t
+        Z2F0ZWQgaW4gY29tcG9zZS1tYW5hZ2VyJ3MKIyBvd24gc3JjL21haW4ucnMpIGZyb20gdGhlIHNh
+        bWUgaG9zdDpwb3J0IGluc3RlYWQgb2YgYSBzZWNvbmQgaGFyZGNvZGVkCiMgYXNzdW1wdGlvbi4K
+        QVVUSF9DSEVDS19VUkw9IiR7SEVBTFRIX1VSTCUvdmVyc2lvbn0vZG9ja2VyL3BzIgpUSU1FT1VU
+        PSIke0xBVU5DSEVSX0hFQUxUSF9USU1FT1VUOi0xODB9IgpUUz0iJChkYXRlIC11ICslWSVtJWRU
+        JUglTSVTWikiCkJBQ0tVUD0iIgoKaWYgWyAhIC1mICIkQ09NUE9TRV9GSUxFIiBdOyB0aGVuCiAg
+        ZWNobyAiW3JvdGF0ZS10b2tlbl0gJENPTVBPU0VfRklMRSBpcyBtaXNzaW5nIGluc2lkZSBjb21w
+        b3NlLW1hbmFnZXItbGF1bmNoZXIgLS0gYWJvcnRpbmcsIG5vdGhpbmcgY2hhbmdlZCIgPiYyCiAg
+        ZXhpdCAxCmZpCgppZiBbIC1mICIkRU5WX0ZJTEUiIF07IHRoZW4KICBCQUNLVVA9IiR7RU5WX0ZJ
+        TEV9LmJhay4ke1RTfSIKICBjcCAtcCAiJEVOVl9GSUxFIiAiJEJBQ0tVUCIKZWxzZQogIDogPiAi
+        JEVOVl9GSUxFIgpmaQoKcmV3cml0ZV90b2tlbigpIHsKICB0bXA9IiR7RU5WX0ZJTEV9LnRtcC4k
+        JCIKICBtb2RlPSIwNjQ0IgogIFsgLWYgIiRFTlZfRklMRSIgXSAmJiBtb2RlPSIkKHN0YXQgLWMg
+        JWEgIiRFTlZfRklMRSIgMj4vZGV2L251bGwgfHwgZWNobyAwNjQ0KSIKICBhd2sgLXYgaz0iQkVB
+        UkVSX1RPS0VOIiAnQkVHSU57dj1FTlZJUk9OWyJORVdfQkVBUkVSX1RPS0VOIl07IGZvdW5kPTB9
+        CiAgICBpbmRleCgkMCxrIj0iKT09MXtwcmludCBrIj0idjsgZm91bmQ9MTsgbmV4dH0KICAgIHtw
+        cmludH0KICAgIEVORHtpZighZm91bmQpIHByaW50IGsiPSJ2fScgIiRFTlZfRklMRSIgPiAiJHRt
+        cCIKICBjaG1vZCAiJG1vZGUiICIkdG1wIgogIG12ICIkdG1wIiAiJEVOVl9GSUxFIgp9CgpyZWNy
+        ZWF0ZSgpIHsKICBkb2NrZXIgY29tcG9zZSAtcCAiJFBST0pFQ1QiIC1mICIkQ09NUE9TRV9GSUxF
+        IiBcCiAgICAtLWVudi1maWxlICIkQkFTRV9FTlZfRklMRSIgLS1lbnYtZmlsZSAiJEVOVl9GSUxF
+        IiBcCiAgICB1cCAtZCAtLW5vLWRlcHMgY29tcG9zZS1tYW5hZ2VyCn0KCndhaXRfaGVhbHRoeSgp
+        IHsKICBpPTAKICBzdGVwcz0kKCggVElNRU9VVCAvIDMgKSkKICB3aGlsZSBbICIkaSIgLWx0ICIk
+        c3RlcHMiIF07IGRvCiAgICBpZiBjdXJsIC1mc1NMIC0tbWF4LXRpbWUgNSAiJEhFQUxUSF9VUkwi
+        ID4vZGV2L251bGwgMj4mMTsgdGhlbgogICAgICByZXR1cm4gMAogICAgZmkKICAgIGk9JCgoaSAr
+        IDEpKQogICAgc2xlZXAgMwogIGRvbmUKICByZXR1cm4gMQp9CgojIFBvbGxzIHRoZSBBVVRIRU5U
+        SUNBVEVEIEdFVCAvZG9ja2VyL3BzIHdpdGggTkVXX0JFQVJFUl9UT0tFTiwgYnVpbGRpbmcgdGhl
+        CiMgQXV0aG9yaXphdGlvbiBoZWFkZXIgdmlhIGN1cmwncyAtSyBjb25maWctZnJvbS1zdGRpbiBz
+        byB0aGUgdG9rZW4gaXMgbmV2ZXIKIyBhIGNvbW1hbmQtbGluZSBhcmd1bWVudCAobmV2ZXIgdmlz
+        aWJsZSBpbiBgcHNgL2Bkb2NrZXIgdG9wYCkgYW5kIGlzIG5ldmVyCiMgZWNob2VkL2xvZ2dlZC4g
+        TkVXX0JFQVJFUl9UT0tFTiB3YXMgYWxyZWFkeSBmb3JtYXQtdmFsaWRhdGVkIChubyBxdW90ZXMs
+        CiMgbm8gd2hpdGVzcGFjZSkgYnkgdGhlIG91dGVyIHdyYXBwZXIgYmVmb3JlIHRoaXMgc2NyaXB0
+        IGV2ZXIgcnVucy4Kd2FpdF9uZXdfdG9rZW5fYWNjZXB0ZWQoKSB7CiAgaT0wCiAgc3RlcHM9JCgo
+        IFRJTUVPVVQgLyAzICkpCiAgd2hpbGUgWyAiJGkiIC1sdCAiJHN0ZXBzIiBdOyBkbwogICAgaWYg
+        cHJpbnRmICdoZWFkZXIgPSAiQXV0aG9yaXphdGlvbjogQmVhcmVyICVzIlxuJyAiJE5FV19CRUFS
+        RVJfVE9LRU4iIFwKICAgICAgICAgfCBjdXJsIC1mc1NMIC1LIC0gLS1tYXgtdGltZSA1IC1vIC9k
+        ZXYvbnVsbCAiJEFVVEhfQ0hFQ0tfVVJMIiAyPi9kZXYvbnVsbDsgdGhlbgogICAgICByZXR1cm4g
+        MAogICAgZmkKICAgIGk9JCgoaSArIDEpKQogICAgc2xlZXAgMwogIGRvbmUKICByZXR1cm4gMQp9
+        Cgpyb2xsYmFja19hbmRfZXhpdCgpIHsKICByZWFzb249IiQxIgogIGVjaG8gIltyb3RhdGUtdG9r
+        ZW5dICRyZWFzb24gLS0gcm9sbGluZyBiYWNrIiA+JjIKICBpZiBbIC1uICIkQkFDS1VQIiBdICYm
+        IFsgLWYgIiRCQUNLVVAiIF07IHRoZW4KICAgIGNwIC1wICIkQkFDS1VQIiAiJEVOVl9GSUxFIgog
+        IGVsc2UKICAgIGVjaG8gIltyb3RhdGUtdG9rZW5dIG5vIGJhY2t1cCBleGlzdGVkIChmaWxlIHdh
+        cyBuZXdseSBjcmVhdGVkIHRoaXMgcnVuKSAtLSBsZWF2aW5nIGFzLWlzIiA+JjIKICBmaQogIHJl
+        Y3JlYXRlCiAgaWYgd2FpdF9oZWFsdGh5OyB0aGVuCiAgICBlY2hvICJbcm90YXRlLXRva2VuXSBy
+        b2xsYmFjayByZWNyZWF0ZSBzdWNjZWVkZWQgLS0gY29tcG9zZS1tYW5hZ2VyIGlzIGhlYWx0aHkg
+        YWdhaW4gb24gdGhlIE9MRCB0b2tlbiIgPiYyCiAgICBleGl0IDIKICBmaQogIGVjaG8gIltyb3Rh
         dGUtdG9rZW5dIENSSVRJQ0FMOiByb2xsYmFjayByZWNyZWF0ZSBBTFNPIGZhaWxlZCB0byBiZWNv
         bWUgaGVhbHRoeSAtLSBtYW51YWwgaW50ZXJ2ZW50aW9uIHJlcXVpcmVkIG9uIHRoaXMgaG9zdCIg
-        PiYyCmV4aXQgMwo='
+        PiYyCiAgZXhpdCAzCn0KCmVjaG8gIltyb3RhdGUtdG9rZW5dIHJld3JpdGluZyBCRUFSRVJfVE9L
+        RU4gaW4gJEVOVl9GSUxFIChiYWNrdXA6ICR7QkFDS1VQOi1ub25lIGNyZWF0ZWQsIGZpbGUgd2Fz
+        IG1pc3Npbmd9KSIKcmV3cml0ZV90b2tlbgoKZWNobyAiW3JvdGF0ZS10b2tlbl0gcmVjcmVhdGlu
+        ZyBjb21wb3NlLW1hbmFnZXIgKHByb2plY3QgJFBST0pFQ1QsIC0tbm8tZGVwcywgbm8gb3RoZXIg
+        c2VydmljZSB0b3VjaGVkKSIKcmVjcmVhdGUKCmVjaG8gIltyb3RhdGUtdG9rZW5dIHdhaXRpbmcg
+        dXAgdG8gJHtUSU1FT1VUfXMgZm9yICRIRUFMVEhfVVJMIgppZiAhIHdhaXRfaGVhbHRoeTsgdGhl
+        bgogIHJvbGxiYWNrX2FuZF9leGl0ICJjb21wb3NlLW1hbmFnZXIgZGlkIE5PVCBiZWNvbWUgaGVh
+        bHRoeSB3aXRoaW4gJHtUSU1FT1VUfXMiCmZpCgojIC92ZXJzaW9uIGFuc3dlcmluZyAyMDAgb25s
+        eSBwcm92ZXMgdGhlIGNvbnRhaW5lciBwcm9jZXNzIGlzIHVwIC0tIGl0IGRvZXMKIyBOT1QgcHJv
+        dmUgdGhlIEJFQVJFUl9UT0tFTiBvdmVycmlkZSBhY3R1YWxseSB0b29rIGVmZmVjdCAoZS5nLiBh
+        bgojIGludGVycG9sYXRpb24vb3JkZXJpbmcgcmVncmVzc2lvbiBjb3VsZCBsZWF2ZSB0aGUgT0xE
+        IHRva2VuIGxpdmUgd2hpbGUgdGhlCiMgY29udGFpbmVyIHN0aWxsIGFuc3dlcnMgL3ZlcnNpb24g
+        bm9ybWFsbHkpLiBTZXBhcmF0ZWx5IGNvbmZpcm0gdGhlIE5FVwojIHRva2VuIGlzIGFjdHVhbGx5
+        IGFjY2VwdGVkIGJlZm9yZSBkZWNsYXJpbmcgc3VjY2Vzcy4KZWNobyAiW3JvdGF0ZS10b2tlbl0g
+        Y29tcG9zZS1tYW5hZ2VyIGhlYWx0aHk7IHZlcmlmeWluZyB0aGUgTkVXIHRva2VuIGlzIGFjY2Vw
+        dGVkIGF0ICRBVVRIX0NIRUNLX1VSTCIKaWYgISB3YWl0X25ld190b2tlbl9hY2NlcHRlZDsgdGhl
+        bgogIHJvbGxiYWNrX2FuZF9leGl0ICJjb21wb3NlLW1hbmFnZXIgaXMgaGVhbHRoeSBidXQgdGhl
+        IE5FVyB0b2tlbiB3YXMgcmVqZWN0ZWQgYXQgJEFVVEhfQ0hFQ0tfVVJMIChvdmVycmlkZSBkaWQg
+        bm90IHRha2UgZWZmZWN0KSIKZmkKCmVjaG8gIltyb3RhdGUtdG9rZW5dIGNvbXBvc2UtbWFuYWdl
+        ciBoZWFsdGh5IEFORCB0aGUgTkVXIHRva2VuIGlzIGFjY2VwdGVkIgpleGl0IDAK'
 
         if printf '%s' "$$INNER_B64" | base64 -d | docker exec -i -e NEW_BEARER_TOKEN compose-manager-launcher sh -s; then
           status=0

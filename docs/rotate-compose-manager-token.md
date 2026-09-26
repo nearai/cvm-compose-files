@@ -61,19 +61,27 @@ but always pass the project explicitly rather than relying on that refusal.
    against `POST /docker/ps` and `POST /compose/logs`.
 
 3. **Interpret the exit code:**
-   - `0` — rotated; compose-manager came back healthy on the **new** token.
-   - `2` — rotation failed; automatically rolled back; compose-manager is
-     healthy again on the **old** token. Investigate before retrying.
+   - `0` — rotated; compose-manager came back healthy **and** the new token
+     was confirmed accepted on an authenticated endpoint.
+   - `2` — rotation failed (either compose-manager never came back healthy,
+     or it did but the new token was rejected — see the container's own log
+     line for which); automatically rolled back; compose-manager is healthy
+     again on the **old** token. Investigate before retrying.
    - `3` — CRITICAL: the rollback recreate also failed to come up healthy.
      Manual intervention is required on this host — do not assume either
      token works until checked by hand.
 
-4. **Verify directly against the host**, independent of the exit code:
+4. **Verify directly against the host**, independent of the exit code. Use
+   `GET /docker/ps`, not `/version` — **`/version` is unauthenticated**
+   (confirmed live: `curl http://<host>:8080/version` returns 200 with no
+   `Authorization` header at all), so it can never tell you whether a token
+   is valid. `/docker/ps` does call `verify_bearer_token` (`src/main.rs:2269`
+   at `8e07c35`) and returns the live `docker ps` output on success:
 
    ```bash
-   curl -s -o /dev/null -w '%{http_code}\n' http://<host_ip>:8080/version \
+   curl -s -o /dev/null -w '%{http_code}\n' http://<host_ip>:8080/docker/ps \
      -H "Authorization: Bearer <OLD_TOKEN>"   # expect 401 on success (0)
-   curl -s -o /dev/null -w '%{http_code}\n' http://<host_ip>:8080/version \
+   curl -s -o /dev/null -w '%{http_code}\n' http://<host_ip>:8080/docker/ps \
      -H "Authorization: Bearer <NEW_TOKEN>"   # expect 200 on success (0)
    ```
 
@@ -85,7 +93,8 @@ but always pass the project explicitly rather than relying on that refusal.
 ## Rollback
 
 The `rotate-token` container already auto-rolls-back on a failed health
-check (exit `2`/`3` above). If a rotation reports success (`0`) but the new
+check **or** on the new token being rejected (exit `2`/`3` above). If a
+rotation reports success (`0`) but the new
 token turns out to be wrong for some other reason, run this same file again
 with `"env": {"NEW_BEARER_TOKEN": "<the OLD token value>"}` — it will back up
 the current `.env.launcher`, write the old token back in, and recreate
@@ -116,7 +125,7 @@ writing it inline with `docker compose`'s `$$`-escaping on every line —
 `docker compose` interpolates `$VAR` / `${VAR}` / `${VAR:-x}` anywhere in the
 compose file, including inside multi-line `command:` strings, and base64's
 alphabet contains no `$`, so the blob is immune to that. This is the exact
-plaintext it decodes to (sha256 `21b469e48311c159bbdcbf665a091f8146f4cf6339cbf7a72ea6ee7de3fc6e96`,
+plaintext it decodes to (sha256 `f74936ed5b57269ae823d6de2f47501ee1e75fc6483a6e5351541153d3718f42`,
 checked by `scripts/validate_rotate_compose_manager_token.rb` so the compose
 file and this doc can never silently drift apart):
 
@@ -127,6 +136,13 @@ BASE_ENV_FILE="${LAUNCHER_BASE_ENV_FILE:-/dstack-env}"
 COMPOSE_FILE="${LAUNCHER_COMPOSE_FILE:-/app/work/compose-manager.yml}"
 PROJECT="${LAUNCHER_COMPOSE_PROJECT:-dstack}"
 HEALTH_URL="${LAUNCHER_HEALTH_URL:-http://127.0.0.1:8080/version}"
+# /version is unauthenticated (verified live: no BEARER_TOKEN required) --
+# it only proves the container process is up and answering, NOT that the
+# BEARER_TOKEN override actually took effect. Derive the authenticated
+# GET /docker/ps endpoint (verify_bearer_token-gated in compose-manager's
+# own src/main.rs) from the same host:port instead of a second hardcoded
+# assumption.
+AUTH_CHECK_URL="${HEALTH_URL%/version}/docker/ps"
 TIMEOUT="${LAUNCHER_HEALTH_TIMEOUT:-180}"
 TS="$(date -u +%Y%m%dT%H%M%SZ)"
 BACKUP=""
@@ -174,6 +190,42 @@ wait_healthy() {
   return 1
 }
 
+# Polls the AUTHENTICATED GET /docker/ps with NEW_BEARER_TOKEN, building the
+# Authorization header via curl's -K config-from-stdin so the token is never
+# a command-line argument (never visible in `ps`/`docker top`) and is never
+# echoed/logged. NEW_BEARER_TOKEN was already format-validated (no quotes,
+# no whitespace) by the outer wrapper before this script ever runs.
+wait_new_token_accepted() {
+  i=0
+  steps=$(( TIMEOUT / 3 ))
+  while [ "$i" -lt "$steps" ]; do
+    if printf 'header = "Authorization: Bearer %s"\n' "$NEW_BEARER_TOKEN" \
+         | curl -fsSL -K - --max-time 5 -o /dev/null "$AUTH_CHECK_URL" 2>/dev/null; then
+      return 0
+    fi
+    i=$((i + 1))
+    sleep 3
+  done
+  return 1
+}
+
+rollback_and_exit() {
+  reason="$1"
+  echo "[rotate-token] $reason -- rolling back" >&2
+  if [ -n "$BACKUP" ] && [ -f "$BACKUP" ]; then
+    cp -p "$BACKUP" "$ENV_FILE"
+  else
+    echo "[rotate-token] no backup existed (file was newly created this run) -- leaving as-is" >&2
+  fi
+  recreate
+  if wait_healthy; then
+    echo "[rotate-token] rollback recreate succeeded -- compose-manager is healthy again on the OLD token" >&2
+    exit 2
+  fi
+  echo "[rotate-token] CRITICAL: rollback recreate ALSO failed to become healthy -- manual intervention required on this host" >&2
+  exit 3
+}
+
 echo "[rotate-token] rewriting BEARER_TOKEN in $ENV_FILE (backup: ${BACKUP:-none created, file was missing})"
 rewrite_token
 
@@ -181,24 +233,22 @@ echo "[rotate-token] recreating compose-manager (project $PROJECT, --no-deps, no
 recreate
 
 echo "[rotate-token] waiting up to ${TIMEOUT}s for $HEALTH_URL"
-if wait_healthy; then
-  echo "[rotate-token] compose-manager healthy on the NEW token"
-  exit 0
+if ! wait_healthy; then
+  rollback_and_exit "compose-manager did NOT become healthy within ${TIMEOUT}s"
 fi
 
-echo "[rotate-token] compose-manager did NOT become healthy within ${TIMEOUT}s -- rolling back" >&2
-if [ -n "$BACKUP" ] && [ -f "$BACKUP" ]; then
-  cp -p "$BACKUP" "$ENV_FILE"
-else
-  echo "[rotate-token] no backup existed (file was newly created this run) -- leaving as-is" >&2
+# /version answering 200 only proves the container process is up -- it does
+# NOT prove the BEARER_TOKEN override actually took effect (e.g. an
+# interpolation/ordering regression could leave the OLD token live while the
+# container still answers /version normally). Separately confirm the NEW
+# token is actually accepted before declaring success.
+echo "[rotate-token] compose-manager healthy; verifying the NEW token is accepted at $AUTH_CHECK_URL"
+if ! wait_new_token_accepted; then
+  rollback_and_exit "compose-manager is healthy but the NEW token was rejected at $AUTH_CHECK_URL (override did not take effect)"
 fi
-recreate
-if wait_healthy; then
-  echo "[rotate-token] rollback recreate succeeded -- compose-manager is healthy again on the OLD token" >&2
-  exit 2
-fi
-echo "[rotate-token] CRITICAL: rollback recreate ALSO failed to become healthy -- manual intervention required on this host" >&2
-exit 3
+
+echo "[rotate-token] compose-manager healthy AND the NEW token is accepted"
+exit 0
 ```
 
 `LAUNCHER_ENV_FILE`, `LAUNCHER_BASE_ENV_FILE`, `LAUNCHER_COMPOSE_FILE`,
@@ -211,8 +261,17 @@ itself (`cvm_configurations/compose-manager.yaml.j2` in
 defaults shown after `:-` match `launcher.sh`'s own defaults at `8e07c35` and
 only apply if a future launcher build drops one of these vars entirely.
 
-This mechanism, including the auto-rollback branch, was validated end-to-end
-against a local Docker sandbox standing in for a compose-manager CVM (a fake
-`compose-manager-launcher` with the same mounts/env, a stand-in
-`compose-manager` service, `docker compose ... up`/`--dry-run` run for real)
-before this file was opened for review — not just `docker compose config`.
+This mechanism was validated end-to-end against a local Docker sandbox
+standing in for a compose-manager CVM (a fake `compose-manager-launcher` with
+the same mounts/env, a stand-in `compose-manager` service that checks a
+bearer token on its own `/docker/ps`, `docker compose ... up`/`--dry-run` run
+for real, not just `docker compose config`) across three scenarios before
+this file was opened for review:
+1. a clean rotation (exit `0`; new token accepted, old token now `401`);
+2. compose-manager never becoming healthy at all (exit `3`; simulated via an
+   unreachable health URL);
+3. compose-manager coming back healthy but the token override **not** taking
+   effect (exit `2`; simulated by making the stand-in's `/docker/ps` keep
+   accepting only the old token regardless of what `BEARER_TOKEN` it was
+   recreated with) — this is the scenario `/version` alone can never catch,
+   which is why `wait_new_token_accepted` exists.

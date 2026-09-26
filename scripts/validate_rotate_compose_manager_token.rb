@@ -17,7 +17,7 @@ FILE = File.join(ROOT, "prod", "rotate-compose-manager-token.yaml")
 # this decodes to. Keeping the hash here (rather than trusting eyeballing)
 # means the compose file, the doc, and this check can never silently drift
 # apart -- any edit to the inner script must update all three together.
-INNER_SCRIPT_SHA256 = "21b469e48311c159bbdcbf665a091f8146f4cf6339cbf7a72ea6ee7de3fc6e96".freeze
+INNER_SCRIPT_SHA256 = "f74936ed5b57269ae823d6de2f47501ee1e75fc6483a6e5351541153d3718f42".freeze
 
 def yaml_load(content)
   YAML.load(content, aliases: true)
@@ -88,6 +88,21 @@ raise "Inner script must scope the recreate to --no-deps compose-manager only" \
   unless inner_script.include?("up -d --no-deps compose-manager")
 raise "Inner script must never write the sealed base env file" \
   if inner_script.match?(/>\s*"?\$\{?BASE_ENV_FILE\b/)
+
+# compose-manager's own GET /version is unauthenticated (verify_bearer_token
+# is never called by its handler), so it can only prove the container process
+# answers -- not that the BEARER_TOKEN override actually took effect. The
+# inner script must separately confirm the NEW token against an authenticated
+# endpoint (GET /docker/ps, which does call verify_bearer_token) before
+# declaring success, and must never put the token on a curl command line
+# (only ever through -K/config-from-stdin, so it can't show up in `ps`/
+# `docker top`).
+raise "Inner script must verify the new token against the authenticated /docker/ps endpoint" \
+  unless inner_script.include?("/docker/ps") && inner_script.include?("Authorization: Bearer")
+raise "Inner script must build the Authorization header via curl -K (never -H) so the token never reaches argv" \
+  unless inner_script.match?(/curl\s.*-K\s+-/) && !inner_script.match?(/-H\s+["']?Authorization:/)
+raise "Inner script must log a distinct message when the new token is rejected despite a healthy /version" \
+  unless inner_script.include?("was rejected")
 
 puts "Compose-manager token rotation contract OK (#{command.bytesize} byte command, " \
      "inner script #{inner_script.bytesize} bytes, sha256 #{actual_sha256[0, 12]}...)"
