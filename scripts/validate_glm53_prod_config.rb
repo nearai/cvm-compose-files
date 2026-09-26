@@ -624,20 +624,18 @@ end
 
 # W4AFP8 + HiCache long-context file (gpu02): both replicas run gpu31 campaign-2 arm L2
 # with exactly the argv below (only --dist-init-addr and --prefill-decode-interval differ:
-# r1 is the pdi 1 control, r2 the pdi 2 canary), the hicache-w4afp8 image,
+# r1 is the v2 pdi1 control, r2 the original #308 offloop-v3 pdi2 no-flag canary),
 # the long-context control environment plus the per-replica 406 GiB HiCache environment, and
 # no admission reserve. Outside the two engines and their truthful telemetry it must
 # equal the long-context file, so the long-domain routing contract (nginx and the :8001
 # discovery stub, registrar, proxy pooling) cannot drift.
 W4AFP8_LONG_CONTEXT_FILE = File.join(ROOT, "prod", "GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext.yaml")
-# Both replicas run the v2 split image; the v1 digest is retained only so the rollback
-# target in docs/glm53-w4afp8-long-context-rollout.md stays greppable from this file.
+# The v1 digest is retained only so the historical rollback target stays greppable.
 W4AFP8_LONG_CONTEXT_V1_IMAGE = "docker.io/nearaidev/sglang@sha256:fde25985aea3ebabf1eb581ae21d53be8540e32933eef942ee8b962a1bfbea20"
-W4AFP8_LONG_CONTEXT_IMAGE = "docker.io/nearaidev/sglang@sha256:8ff1a487b98a52fe08b781715bebd7c8c445d4fe068f312f03f527d5a3c77e84"
-# r2 runs the v2 image (#300) with the opt-in DSA indexer query split; r1 stays on the #294
-# image as the live control, so a targeted `compose up` recreates r2 alone.
-W4AFP8_LONG_CONTEXT_R2_IMAGE = "docker.io/nearaidev/sglang@sha256:8ff1a487b98a52fe08b781715bebd7c8c445d4fe068f312f03f527d5a3c77e84"
-W4AFP8_LONG_CONTEXT_VARIANT = "fc91d24-long-context-w4afp8-cCHUNK-QSPLIThicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdiPDI-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
+W4AFP8_LONG_CONTEXT_V2_IMAGE = "docker.io/nearaidev/sglang@sha256:8ff1a487b98a52fe08b781715bebd7c8c445d4fe068f312f03f527d5a3c77e84"
+W4AFP8_LONG_CONTEXT_V3_IMAGE = "docker.io/nearaidev/sglang@sha256:47aff791090003a37f893e998c44794c410d3f7bdfc7fdd2dfab5eb5592b30bb"
+W4AFP8_QSPLIT_CAPABLE_IMAGES = [W4AFP8_LONG_CONTEXT_V2_IMAGE, W4AFP8_LONG_CONTEXT_V3_IMAGE].freeze
+W4AFP8_LONG_CONTEXT_VARIANT = "fc91d24-long-context-w4afp8-cCHUNK-QSPLITOFFLOOPhicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdiPDI-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
 W4AFP8_QSPLIT_ENV = "SGLANG_DSA_INDEXER_QSPLIT"
 # c16384 is only memory-safe WITH the split: without it a concurrent long burst left 0.04-0.65 GB
 # free, the condition that preceded the gpu02 crash. Enforced below for every replica.
@@ -646,9 +644,9 @@ W4AFP8_CHECKPOINT = "graphistry/GLM-5.3-Flash-W4AFP8"
 W4AFP8_PRECISION = "int4-weights-fp8-activations-bf16-kv"
 W4AFP8_LONG_CONTEXT_REPLICAS = {
   "model-sg-glm53-w4afp8-tp4-r1" => { "devices" => %w[0 1 2 3], "dist_init" => "127.0.0.1:29510", "instance" => "1", "pdi" => "1",
-                                     "image" => W4AFP8_LONG_CONTEXT_R2_IMAGE, "chunk" => "8192", "qsplit" => "1" },
+                                     "image" => W4AFP8_LONG_CONTEXT_V2_IMAGE, "chunk" => "8192", "qsplit" => "1", "offloop" => nil },
   "model-sg-glm53-w4afp8-tp4-r2" => { "devices" => %w[4 5 6 7], "dist_init" => "127.0.0.1:29511", "instance" => "2", "pdi" => "2",
-                                     "image" => W4AFP8_LONG_CONTEXT_R2_IMAGE, "chunk" => "8192", "qsplit" => "1" },
+                                     "image" => W4AFP8_LONG_CONTEXT_V3_IMAGE, "chunk" => "8192", "qsplit" => "1", "offloop" => "offloop-v3" },
 }.freeze
 W4AFP8_LONG_CONTEXT_ARGV = Shellwords.split(<<~'ARGV').freeze
   sglang serve
@@ -747,8 +745,8 @@ def validate_w4afp8_long_context(errors, compose, reference)
     if actual_chunk == W4AFP8_SPLIT_REQUIRED_CHUNK && env[W4AFP8_QSPLIT_ENV] != "1"
       errors << "#{label} #{name} sets --chunked-prefill-size #{W4AFP8_SPLIT_REQUIRED_CHUNK} without #{W4AFP8_QSPLIT_ENV}=1; that pairing is required (without the split a concurrent long burst left 0.04-0.65 GB free, the condition that preceded the gpu02 crash)"
     end
-    if env[W4AFP8_QSPLIT_ENV] == "1" && service["image"] != W4AFP8_LONG_CONTEXT_R2_IMAGE
-      errors << "#{label} #{name} sets #{W4AFP8_QSPLIT_ENV}=1 but does not run #{W4AFP8_LONG_CONTEXT_R2_IMAGE}; only that image carries the split patch"
+    if env[W4AFP8_QSPLIT_ENV] == "1" && !W4AFP8_QSPLIT_CAPABLE_IMAGES.include?(service["image"])
+      errors << "#{label} #{name} sets #{W4AFP8_QSPLIT_ENV}=1 but does not run an approved split-capable image (expected one of #{W4AFP8_QSPLIT_CAPABLE_IMAGES.join(', ')})"
     end
     device_ids = Array(service.dig("deploy", "resources", "reservations", "devices", 0, "device_ids")).map(&:to_s)
     errors << "#{label} #{name} must use GPU device_ids #{spec['devices'].join(',')}" unless device_ids == spec["devices"]
@@ -768,6 +766,7 @@ def validate_w4afp8_long_context(errors, compose, reference)
     expected_variant = W4AFP8_LONG_CONTEXT_VARIANT
                        .sub("cCHUNK", "c#{spec['chunk']}")
                        .sub("QSPLIT", spec["qsplit"] ? "qsplit-" : "")
+                       .sub("OFFLOOP", spec["offloop"] ? "#{spec['offloop']}-" : "")
                        .sub("pdiPDI", "pdi#{spec['pdi']}")
     check_variant(errors, label, service, name, collector, expected_variant)
     scrape = scrape_job(errors, label, collector, "sglang-#{name}")
@@ -778,10 +777,8 @@ def validate_w4afp8_long_context(errors, compose, reference)
   end
 
   if replicas.length == 2
-    # The canary intentionally diverges on image and environment (r2 runs the v2 split image with
-    # SGLANG_DSA_INDEXER_QSPLIT=1; r1 is the untouched #294 control), and on command via --dist-init-addr,
-    # --prefill-decode-interval and --chunked-prefill-size. Those four are each asserted per replica
-    # above against an explicit expectation, so they are excluded here rather than left unchecked.
+    # The canary intentionally diverges on image, while command and environment are asserted in
+    # full per replica above. Runtime equality below covers every remaining service property.
     # Everything else must still be identical between the replicas.
     canary_divergent = %w[command image environment]
     contracts = replicas.values.map { |service| runtime_contract(service).reject { |key, _value| canary_divergent.include?(key) } }

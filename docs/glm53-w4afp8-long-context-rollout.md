@@ -1,5 +1,67 @@
 # GLM-5.3 Flash long-context tier on W4AFP8 + HiCache (gpu02)
 
+## Current status — original #308 authorized for an r2-only soak; not deployed
+
+This section is the current production record. The migration and c16384 canary material below is retained as historical context; its older image, chunk-size and rollout-state assertions do not describe the deployed gpu02 stack.
+
+### Engines and qualification state
+
+- gpu02 r1 and r2 currently run the signed v2 engine manifest `8ff1a487b98a52fe08b781715bebd7c8c445d4fe068f312f03f527d5a3c77e84` from #307. Both use 8192-token prefill chunks and `SGLANG_DSA_INDEXER_QSPLIT=1`; r1 uses `--prefill-decode-interval 1` and r2 uses `--prefill-decode-interval 2`.
+- Neither replica has the dynamic-batch-tokenizer flag or admission reserve enabled. The generated candidate preserves that runtime contract: the v3 off-loop fixes and detector are unconditional defaults, with no activation variable or CLI flag.
+- The v3 pin in this repository is a candidate, not a deployment or GPU qualification result. No engine was changed by preparing it. The user authorized the original #308 direction as "r2 first to soak", accepting the evidence limits recorded below; root still owns the later release and production write. #305 remains open until fresh v3 GPU evidence exists, and r1 must remain on v2 until an r2-only canary completes at least 24 hours and passes the agreed sample floor.
+- Fresh long-tier capacity has not been measured. That factual unknown is not a stop gate: preserve the r2-first, one-replica-at-a-time sequence and confirm fresh survivor readiness before stopping the peer. Temporary 429s during the restart are accepted; zero traffic and a 20-minute carry test are not prerequisites. Prior reloads also produced 500s, so do not promise 429-only impact. The image, review, no-flag, canary and rollback gates remain.
+
+### Selected v3 candidate and accepted logging gap
+
+- The user selected the original #308 image for r2, replacing the inaccessible gpu32 GPU-lab prerequisite with the production r2 canary. The separate cancelled-image cleanup logging correction is not selected. Cleanup failures during cancellation may therefore remain unlogged; watch `/dev/shm` consumption and growth explicitly throughout the canary.
+- Original #308 workflow run `36210851936` checked out source `aff61fca1798512dcaec8cc88756ee0f83bb78be` under workflow head `b996e382492b0b19e801d70b8d357e2c9d8160d1` and completed `SUCCESS` at 02:37:08 UTC on 2026-09-26.
+- In-image CPU steps 1–7 passed: the no-flag/event-loop regression suite reported 5 upstream tests with no skips, and the stall detector reported 58 tests with 0 failures. The scan found 65 fixable `HIGH` and 0 fixable `CRITICAL` vulnerabilities; that is not a vulnerability-free claim.
+- Root verification matched the embedded BuildKit checkout source, base `sha256:3eccc30709f5719c81084d1264f03ca5354b3059ec4cff62f0c5ff88c309680c` and context `docker/sglang-glm53-hicache-w4afp8`. The publisher workflow signer/source, exact SAN/OIDC identity, attestation and exact digest were independently verified against workflow head `b996e382492b0b19e801d70b8d357e2c9d8160d1`.
+- The selected immutable r2 reference is `docker.io/nearaidev/sglang@sha256:47aff791090003a37f893e998c44794c410d3f7bdfc7fdd2dfab5eb5592b30bb`; its telemetry prefix is `47aff7910900`. Publication, regression, provenance, attestation and signature gates passed, but image publication is not GPU-canary qualification and does not mean the authorized r2 soak has happened.
+- A singleton r2 engine recreation does not prove that the existing `otelcol-contrib` process reloaded its inline static scrape labels. The candidate YAML accurately describes the intended `engine_image` and `config_variant`, but the live labels may remain stale. Attribute the canary using the exact r2 service and deployment-time boundary together with the actual running immutable digest and container ID; disclose stale static labels, do not recreate the collector or any non-r2 service under this scope, and do not claim fresh labels without a separately verified collector reload.
+
+### Scoped proxy update observation
+
+- #309 merged as commit `b996e382492b0b19e801d70b8d357e2c9d8160d1` and tag `v0.0.451`. On gpu02, only `proxy-glm53` was recreated between 01:51 and 01:52 UTC. It still uses binary manifest `b3a8c6260834231271b4356c56a7aa2718608c8a537b35973916e0a56dc88fba`, now with a 3-second pooled-connection idle timeout.
+- The engine, nginx and registrar container identities did not change. The observation retained the brief startup/registry gap and six r2 upstream 503s. Both registries recovered, and a real completion succeeded at 01:53:19 UTC.
+- The observation completed at 02:53:19 UTC. Full-window weighted global key-check latency moved p95 by +5.74% and mean by +3.74% despite the rolling recovery. Together with the recovered registry gap and six actual r2 upstream 503s, the completed #309 hour is **INCONCLUSIVE** for the full no-worsening and continuous-registry gate. It is not causal proof against pool-idle. The user explicitly accepted this exception for the r2-only original #308 soak; it is not a general PASS or evidence that the hour was error-free.
+- This scoped gpu02 action did not update gpu03, gpu04 or gpu23. Preparing the r2 candidate here did not deploy any other base host or any gpu02 service.
+
+### Accepted evidence limits and dated readiness observations
+
+- As of 03:15 UTC on 2026-09-26, exact matching history for the deployed r2 v2, chunk-8192, pdi2 arm was about 7 hours 5 minutes, not 24 hours. The user accepted that limited baseline for starting the r2-only soak; the 24-hour-plus-sample-floor gate still applies before any r1 promotion.
+- Guest `/dev/shm` and per-process RSS visibility remain unavailable. Host SSH works with the existing infra key, user `ubuntu` and `IdentitiesOnly=yes`, but host access does not provide guest visibility. The gpu32 lab remains unreachable. The user accepted these visibility limits for the r2-only soak; `/dev/shm` and memory growth remain mandatory canary observations wherever visibility is available.
+- Readiness results are dated observations, not permanent readiness claims. An earlier 60-second generation probe and a later 5-second health probe timed out; neither timeout proves a wedged engine or a cause. A fresh root `/health` probe at `2026-09-26T03:30:58Z` returned HTTP 200 in 1.160314 seconds. A bounded generation started at `03:31:41.054` and ended at `03:32:07.171` UTC with exit 0, HTTP 200 in 25.648645 seconds, a nonempty response, finish reason `length`, and token counts prompt 18, completion 16, total 34. No response body was persisted.
+- Those fresh probes support the authorized direction but did not deploy or change r2. Fresh survivor readiness checks are still mandatory at the eventual deployment boundary.
+
+### Approved r2-only canary mechanics
+
+1. The user has authorized the original #308 r2-only soak; do not ask again for the accepted #309, short-history or visibility exceptions. At the execution boundary, root/operator must confirm the production-write gate remains active, retrieve the complete current gpu-manager environment without recording its values, confirm fresh r1 survivor readiness, and use a nonempty exact singleton service list: `model-sg-glm53-w4afp8-tp4-r2`.
+2. Preview the candidate `compose/up` with `dry_run: true`, `force_recreate: false`, the full environment and only that r2 service. An accepted preview writes the live compose file and temporary environment before simulation, so it is a production write and must happen only after GO. Inspect the complete raw action stream, not only advisory plan buckets; it must change exactly r2.
+3. Run the scoped `compose/down` for r2. There is no dry-run mode for down. Then run the scoped candidate `compose/up` for r2 with the same full environment and singleton service list. Do not recreate r1, the proxy, nginx or the registrar.
+4. Keep the dynamic-batch-tokenizer flag off. Check startup, direct readiness and deterministic generation, `/dev/shm`, restarts, Xid/CUDA/OOM errors, long-context queue/TTFT, the three `offloop-v3` telemetry consumers and the agreed sample floor. Continue for at least 24 hours before considering r1.
+5. Rollback is scoped to r2: down the candidate r2, then restore only r2 from tag `v0.0.451` with the fresh full environment. r1 remains the v2 survivor throughout.
+
+The deployed compose-manager evaluates the target commit's committer age, not an annotated tag's date; backdating only a tag annotation does not make a recent commit eligible.
+
+### Metrics and unresolved observations
+
+For the logical gauges below, `priority=""` is the aggregate series; querying it avoids counting the same requests twice:
+
+```promql
+sum by(container_name)(sglang_num_running_reqs{host="gpu02",priority=""})
+sum by(container_name)(sglang_num_queue_reqs{host="gpu02",priority=""})
+sum by(container_name)(sglang_pending_prealloc_token_usage{host="gpu02",priority=""})
+```
+
+That rule does not extend to active-request counters or histograms. Those series use disjoint priorities `-2`, `-1` and `0`; any `priority=""` aggregate placeholder for them is stale and must not be treated as current aggregate data.
+
+The reported 14–155-minute hangs and memory growth remain unexplained. Historical lab results below are not current production evidence for either issue.
+
+## Historical rollout record
+
+> **Historical:** The remaining sections preserve the original migration and c16384 canary procedures. They are not instructions to apply the old image/chunk combinations, and their rollout-state claims are superseded by the current status above.
+
 `prod/GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext.yaml` moves both gpu02 replicas to the gpu31 campaign-2 arm L2: `graphistry/GLM-5.3-Flash-W4AFP8` at `99f1fa7` and the signed `docker/sglang-glm53-hicache-w4afp8` image `docker.io/nearaidev/sglang@sha256:fde25985aea3ebabf1eb581ae21d53be8540e32933eef942ee8b962a1bfbea20`. Each replica gets 8192-token prefill chunks with `--max-prefill-tokens 32768`, HiCache with CUDA-owned host memory at a fixed 406 GiB startup budget, and no admission reserve. The file is generated from `prod/GLM-5.3-Flash-SGL-TP4-LongContext.yaml` by `scripts/prepare_glm53_w4afp8_long_context.py`. It supersedes the W4AFP8 canary on gpu02. gpu13 stays on its own configuration (#290).
 
 gpu02 is the first CVM run of this image's HCC/PPCIe host-memory path (`cudaMallocHost`) and of the 8192-token chunk's device headroom. Treat both replica moves as a soak, one replica at a time. The drain, direct-verification and rollback mechanics are the ones in [the gpu02 W4AFP8 runbook](gpu02-glm53-w4afp8-long-context.md); this document lists what differs.
@@ -88,7 +150,9 @@ Never let orphan removal perform the switch. On gpu02, the only orphan relative 
 - **Registries.** Both model-proxy peers list gpu02 healthy under `glm-5-3-flash-long.completions.near.ai`, and not under the base domain (`LONG_TIER_ONLY=true`).
 - **Telemetry.** Both engines report precision `int4-weights-fp8-activations-bf16-kv`, their L2 `config_variant` (`…-pool-clamp-pdi1-…` on r1, `…-pool-clamp-pdi2-…` on r2) and `engine_image` `fde25985aea3`.
 
-## Canary: `--prefill-decode-interval 2` on r2 (both replicas already on this file)
+## Historical canary: `--prefill-decode-interval 2` on r2
+
+> **Superseded state:** pdi2 is now deployed on r2 as described in the current-status section. The procedure and lab readout below document how that canary was originally evaluated.
 
 r2 runs `--prefill-decode-interval 2` (two decode steps between prefill chunks). r1 stays at 1 and is the live control. Nothing else differs, so an operator can split the two replicas' TTFT and TPOT dashboards by `config_variant`.
 
@@ -111,7 +175,9 @@ pdi 2 should cut r2's inter-token latency during prefills without moving TTFT.
 
 **Next.** If it holds, a follow-up PR moves r1 to pdi 2. If r2 regresses, roll back: redeploy the previous tag of this file for r2 only, with the same `compose/down` then `compose/up` pair.
 
-## Canary step 2: the DSA indexer split and chunk 16384 on r2
+## Historical canary step 2: the DSA indexer split and chunk 16384 on r2
+
+> **Superseded state:** chunk 16384 and the r2-only split described below are not the deployed configuration. Both replicas currently use the v2 manifest, chunk 8192 and the query split; the selected v3 remains an undeployed r2-only candidate.
 
 r2 additionally runs the v2 engine image (`8ff1a487b98a`, PR #300) with `SGLANG_DSA_INDEXER_QSPLIT=1` and `--chunked-prefill-size 16384`. r1 stays on the #294 image (`fde25985aea3`) at chunk 8192 with the split unset, so it remains an untouched control and a targeted `compose up` still recreates r2 alone.
 
@@ -135,7 +201,9 @@ Deployment is the same r2-only pair as the pdi 2 canary: `compose/down` then `co
 
 **Untested before this canary:** the all-gather's cost under CC/PPCIe inside a CVM. gpu31 is bare metal with CC off, so the r2 canary is the first measurement of it. If TTFT regresses against r1 rather than improving, suspect the all-gather and roll back.
 
-## Rollback
+## Historical rollback procedures
+
+> **Superseded state:** These rollback examples belong to the earlier engine migration and canaries. The current r2-only candidate rollback restores r2 from tag `v0.0.451` and does not restart any sibling service.
 
 Redeploy the previous tag and file, scoped to the same services, one replica at a time and under the same orphan rule. Keep at least one replica serving throughout.
 
