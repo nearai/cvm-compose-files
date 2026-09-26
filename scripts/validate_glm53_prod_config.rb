@@ -637,7 +637,7 @@ W4AFP8_LONG_CONTEXT_IMAGE = "docker.io/nearaidev/sglang@sha256:8ff1a487b98a52fe0
 # r2 runs the v2 image (#300) with the opt-in DSA indexer query split; r1 stays on the #294
 # image as the live control, so a targeted `compose up` recreates r2 alone.
 W4AFP8_LONG_CONTEXT_R2_IMAGE = "docker.io/nearaidev/sglang@sha256:8ff1a487b98a52fe08b781715bebd7c8c445d4fe068f312f03f527d5a3c77e84"
-W4AFP8_LONG_CONTEXT_VARIANT = "fc91d24-long-context-w4afp8-cCHUNK-QSPLIThicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdiPDI-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
+W4AFP8_LONG_CONTEXT_VARIANT = "fc91d24-long-context-w4afp8-cCHUNK-QSPLIThicache-cuda-host-pooled-v1-HOSTadmission-reserve-disabled-pool-clamp-pdiPDI-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
 W4AFP8_QSPLIT_ENV = "SGLANG_DSA_INDEXER_QSPLIT"
 # c16384 is only memory-safe WITH the split: without it a concurrent long burst left 0.04-0.65 GB
 # free, the condition that preceded the gpu02 crash. Enforced below for every replica.
@@ -646,9 +646,14 @@ W4AFP8_CHECKPOINT = "graphistry/GLM-5.3-Flash-W4AFP8"
 W4AFP8_PRECISION = "int4-weights-fp8-activations-bf16-kv"
 W4AFP8_LONG_CONTEXT_REPLICAS = {
   "model-sg-glm53-w4afp8-tp4-r1" => { "devices" => %w[0 1 2 3], "dist_init" => "127.0.0.1:29510", "instance" => "1", "pdi" => "1",
-                                     "image" => W4AFP8_LONG_CONTEXT_R2_IMAGE, "chunk" => "8192", "qsplit" => "1" },
+                                     "image" => W4AFP8_LONG_CONTEXT_R2_IMAGE, "chunk" => "8192", "qsplit" => "1",
+                                     "budget" => "${GLM53_HICACHE_RAM_BUDGET:-406GiB}", "host_variant" => "" },
   "model-sg-glm53-w4afp8-tp4-r2" => { "devices" => %w[4 5 6 7], "dist_init" => "127.0.0.1:29511", "instance" => "2", "pdi" => "2",
-                                     "image" => W4AFP8_LONG_CONTEXT_R2_IMAGE, "chunk" => "8192", "qsplit" => "1" },
+                                     "image" => W4AFP8_LONG_CONTEXT_R2_IMAGE, "chunk" => "8192", "qsplit" => "1",
+                                     # HiCache host-tier canary: write_through keeps the host tier an inclusive
+                                     # copy of the ~3.52M-token device pool, so 406 GiB (~4.99M tokens) adds only
+                                     # ~1.5M; 650 GiB (~8M) adds ~4.5M. r1 stays at 406 GiB as the control.
+                                     "budget" => "${GLM53_R2_HICACHE_RAM_BUDGET:-650GiB}", "host_variant" => "host650g-" },
 }.freeze
 W4AFP8_LONG_CONTEXT_ARGV = Shellwords.split(<<~'ARGV').freeze
   sglang serve
@@ -732,13 +737,14 @@ def validate_w4afp8_long_context(errors, compose, reference)
       errors << "#{label} #{name} argv must be campaign-2 arm L2 exactly (with --dist-init-addr #{spec['dist_init']} --prefill-decode-interval #{spec['pdi']}); differing tokens: #{drift.first(8).join(' ')}"
     end
     env = environment_map(service)
-    replica_expected_env = spec["qsplit"] ? expected_env.merge(W4AFP8_QSPLIT_ENV => spec["qsplit"]) : expected_env
+    replica_expected_env = expected_env.merge("SGLANG_HICACHE_RAM_BUDGET" => spec["budget"])
+    replica_expected_env = replica_expected_env.merge(W4AFP8_QSPLIT_ENV => spec["qsplit"]) if spec["qsplit"]
     reserve = env.keys & ADMISSION_RESERVE_ENV
     errors << "#{label} #{name} must not set admission-reserve environment: #{reserve.join(', ')}" unless reserve.empty?
     (env.keys & FORBIDDEN_ENV).each { |key| errors << "#{label} #{name} must not set #{key}" }
     unless env == replica_expected_env
       diff = (env.to_a - replica_expected_env.to_a) + (replica_expected_env.to_a - env.to_a)
-      errors << "#{label} #{name} environment must be the long-context control environment plus #{W4AFP8_LONG_CONTEXT_HICACHE_ENV.map { |key, value| "#{key}=#{value}" }.join(' ')}; differing: #{diff.map { |key, value| "#{key}=#{value}" }.uniq.join(' ')}"
+      errors << "#{label} #{name} environment must be the long-context control environment plus #{W4AFP8_LONG_CONTEXT_HICACHE_ENV.merge("SGLANG_HICACHE_RAM_BUDGET" => spec["budget"]).map { |key, value| "#{key}=#{value}" }.join(' ')}; differing: #{diff.map { |key, value| "#{key}=#{value}" }.uniq.join(' ')}"
     end
     # Hard pairing: a 16384 chunk without the indexer split is the pre-crash memory profile.
     # Assert it against what the file actually says, not against the expected spec, so the gate
@@ -769,6 +775,7 @@ def validate_w4afp8_long_context(errors, compose, reference)
                        .sub("cCHUNK", "c#{spec['chunk']}")
                        .sub("QSPLIT", spec["qsplit"] ? "qsplit-" : "")
                        .sub("pdiPDI", "pdi#{spec['pdi']}")
+                       .sub("HOST", spec["host_variant"])
     check_variant(errors, label, service, name, collector, expected_variant)
     scrape = scrape_job(errors, label, collector, "sglang-#{name}")
     scrape_labels = scrape&.dig("static_configs", 0, "labels") || {}

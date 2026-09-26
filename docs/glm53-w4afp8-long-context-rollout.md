@@ -12,7 +12,7 @@ gpu02 is the first CVM run of this image's HCC/PPCIe host-memory path (`cudaMall
 | Image | `fde25985…` (hicache-w4afp8) | `fde25985…` (hicache-w4afp8) |
 | Prefill | chunk 8192, `--max-prefill-tokens 32768` | same |
 | HiCache | write_through, direct IO, page_first_direct, pooled transfers, 64 staging pages | same |
-| Host budget | `${GLM53_HICACHE_RAM_BUDGET:-406GiB}` | same variable (it sets both) |
+| Host budget | `${GLM53_HICACHE_RAM_BUDGET:-406GiB}` | `${GLM53_R2_HICACHE_RAM_BUDGET:-650GiB}` (host-tier canary, see the end of this doc) |
 | Admission reserve | none | none |
 | `--dist-init-addr` | `127.0.0.1:29510` | `127.0.0.1:29511` |
 
@@ -143,3 +143,20 @@ Redeploy the previous tag and file, scoped to the same services, one replica at 
 - **r1:** `compose/down` this file `["model-sg-glm53-w4afp8-tp4-r1"]`, then `compose/up` the previous file and tag `["model-sg-glm53-w4afp8-tp4-r1"]`.
 - **Canary-only revert (r2 back to the #294 arm, r1 untouched):** redeploy the tag that preceded this change for `["model-sg-glm53-w4afp8-tp4-r2"]` alone. That restores r2's image to `fde25985aea3`, chunk 8192 and pdi 1 in one step; nothing else on the host is touched, and r1 keeps serving throughout.
 - Routing levers are unchanged: `LONG_TIER_ONLY=false` plus a registrar restart, or removing the cloud-api `long_context` block.
+
+## r2 host-tier canary (650 GiB)
+
+**Why.** With `write_through` the host tier is an inclusive copy of the GPU pool, so only host minus device tokens are extra cache. W4AFP8 grew the device pool to about 3.52M tokens while 406 GiB holds about 4.99M, so each replica gets only about 1.5M extra tokens. On 2026-09-25 host hits were about 1% of cached tokens on both replicas (18–24M of 1.5–1.9B per day), against 10–23% on the FP8 r2 with a 6.8x host tier. At 650 GiB r2 holds about 8M tokens (about 4.5M extra). r1 stays at 406 GiB as the control.
+
+**RAM.** On 2026-09-25 the gpu02 CVM had about 690 GiB free with both replicas at 406 GiB. r2 at 650 GiB takes 244 GiB of that and leaves about 450 GiB. Before deploying, make sure `GLM53_R2_HICACHE_RAM_BUDGET` is unset or `650GiB` in gpu02's env map.
+
+**Deploy.** Recreate r2 alone (`services: ["model-sg-glm53-w4afp8-tp4-r2"]`, dry-run first). Its startup log must show `rank_budget_bytes=174483046400` (650 GiB across four ranks); stop and fix the env otherwise. r1 is not touched.
+
+**Readout after 24 h, r2 against r1** (Grafana, `host="gpu02"`):
+- Host share: `increase(sglang_cached_tokens_total{cache_source="host"}[1d])` over all cached tokens. Should rise from about 1% to 10% or more.
+- Hit rate: cached over `sglang_prompt_tokens_total`. Should be at least r1's.
+- Uncached tokens per request; TTFT and ITL p90 within 10% of r1 (r1 and r2 also differ in pdi 1 vs 2, so compare against r2's own pre-canary days too).
+- `sglang_hicache_dropped_tokens_total{reason="write_through_unbacked_eviction"}` should fall.
+
+**Rollback.** Set `GLM53_R2_HICACHE_RAM_BUDGET=406GiB` in the env map and recreate r2, or redeploy the previous tag.
+
