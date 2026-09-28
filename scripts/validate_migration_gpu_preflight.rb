@@ -13,8 +13,8 @@ raise 'Privilege escalation allowed' unless service['security_opt'] == ['no-new-
 raise 'Unexpected host attachment' unless %w[privileged volumes ports pid ipc devices depends_on].none? { |key| service.key?(key) }
 raise 'Implicit activation' unless service['profiles'] == ['migration-preflight'] && service['restart'] == 'no'
 raise 'Image not pinned' unless service['image'].match?(/@sha256:[a-f0-9]{64}$/)
-raise 'Diagnostic log metadata missing' unless JSON.parse(service.fetch('labels').fetch('com.datadoghq.ad.logs')) == [{'source'=>'migration-preflight', 'service'=>'migration-preflight', 'tags'=>['deployment:migration-preflight']}]
-raise 'Diagnostic metadata not exported' unless service.dig('logging', 'options', 'labels') == 'com.datadoghq.ad.logs,com.docker.compose.service'
+raise 'Diagnostic log metadata missing' unless JSON.parse(service.fetch('labels').fetch('nearai.otel.logs')) == [{'source'=>'migration-preflight', 'service'=>'migration-preflight', 'tags'=>['deployment:migration-preflight']}]
+raise 'Diagnostic metadata not exported' unless service.dig('logging', 'options', 'labels') == 'nearai.otel.logs,com.docker.compose.service'
 end
 raise 'Unexpected GPU environment' unless doc['services']['migration-gpu-preflight']['environment'] == {'NVIDIA_VISIBLE_DEVICES'=>'all', 'NVIDIA_DRIVER_CAPABILITIES'=>'utility'}
 raise 'Missing GPU runtime' unless doc['services']['migration-gpu-preflight']['runtime'] == 'nvidia'

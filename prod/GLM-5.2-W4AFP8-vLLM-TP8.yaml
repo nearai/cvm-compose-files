@@ -15,7 +15,7 @@ x-logging-conf: &logging-conf
   options:
     max-size: "100m"
     max-file: "10"
-    labels: "com.datadoghq.ad.logs,com.docker.compose.service"
+    labels: "nearai.otel.logs,com.docker.compose.service"
 
 x-nvidia: &nvidia
   runtime: nvidia
@@ -138,7 +138,7 @@ services:
       - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
       - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:z-ai/glm-5.2","deployment:GLM-5.2-W4AFP8-vLLM-TP8","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000"]}]'
+      nearai.otel.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:z-ai/glm-5.2","deployment:GLM-5.2-W4AFP8-vLLM-TP8","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "inference-proxy"
       nearai.otel.service: "vllm-proxy"
@@ -175,7 +175,7 @@ services:
     stop_grace_period: 5m
     logging: *logging-conf
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:z-ai/glm-5.2","model_path:PhalaCloud/GLM-5.2-W4AFP8","precision:w4afp8","deployment:GLM-5.2-W4AFP8-vLLM-TP8","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000"]}]'
+      nearai.otel.logs: '[{"source":"vllm","service":"vllm","tags":["model:z-ai/glm-5.2","model_path:PhalaCloud/GLM-5.2-W4AFP8","precision:w4afp8","deployment:GLM-5.2-W4AFP8-vLLM-TP8","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
@@ -211,7 +211,7 @@ services:
     restart: unless-stopped
     logging: *logging-conf
     labels:
-      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:z-ai/glm-5.2","deployment:GLM-5.2-W4AFP8-vLLM-TP8","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+      nearai.otel.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:z-ai/glm-5.2","deployment:GLM-5.2-W4AFP8-vLLM-TP8","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "dcgm"
       nearai.otel.service: "dcgm-exporter"
@@ -256,7 +256,7 @@ services:
         max-size: "20m"
         max-file: "3"
     labels:
-      com.datadoghq.ad.logs: '[{"source":"otelcol-contrib","service":"otelcol-contrib","tags":["deployment:GLM-5.2-W4AFP8-vLLM-TP8","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+      nearai.otel.logs: '[{"source":"otelcol-contrib","service":"otelcol-contrib","tags":["deployment:GLM-5.2-W4AFP8-vLLM-TP8","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
 
 networks:
   default:

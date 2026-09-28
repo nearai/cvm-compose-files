@@ -17,7 +17,7 @@ x-logging-conf: &logging-conf
   options:
     max-size: "100m"
     max-file: "10"
-    labels: "com.datadoghq.ad.logs,com.docker.compose.service"
+    labels: "nearai.otel.logs,com.docker.compose.service"
 
 x-nvidia: &nvidia
   runtime: nvidia
@@ -160,7 +160,7 @@ services:
     environment:
       - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
     labels:
-      com.datadoghq.ad.logs: '[{"source":"model-downloader","service":"model-downloader","tags":["model:multi","deployment:qwen36-qwen38-gpu02","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:gpu02-capacity-v3"]}]'
+      nearai.otel.logs: '[{"source":"model-downloader","service":"model-downloader","tags":["model:multi","deployment:qwen36-qwen38-gpu02","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:gpu02-capacity-v3"]}]'
 
   nginx:
     image: nginx@sha256:1d13701a5f9f3fb01aaa88cef2344d65b6b5bf6b7d9fa4cf0dca557a8d7702ba
@@ -183,7 +183,7 @@ services:
     restart: unless-stopped
     logging: *logging-conf
     labels:
-      com.datadoghq.ad.logs: '[{"source":"nginx","service":"nginx","tags":["model:multi","deployment:qwen36-qwen38-gpu02","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:gpu02-capacity-v3"]}]'
+      nearai.otel.logs: '[{"source":"nginx","service":"nginx","tags":["model:multi","deployment:qwen36-qwen38-gpu02","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:gpu02-capacity-v3"]}]'
 
   model-proxy-registrar:
     image: curlimages/curl@sha256:d94d07ba9e7d6de898b6d96c1a072f6f8266c687af78a74f380087a0addf5d17
@@ -208,7 +208,7 @@ services:
         mode: 0755
     logging: *logging-conf
     labels:
-      com.datadoghq.ad.logs: '[{"source":"model-proxy-registrar","service":"model-proxy-registrar","tags":["model:multi","deployment:qwen36-qwen38-gpu02","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:gpu02-capacity-v3"]}]'
+      nearai.otel.logs: '[{"source":"model-proxy-registrar","service":"model-proxy-registrar","tags":["model:multi","deployment:qwen36-qwen38-gpu02","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:gpu02-capacity-v3"]}]'
 
   proxy-qwen38-27b:
     <<: *vllm-proxy-common
@@ -232,7 +232,7 @@ services:
       - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
       - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:Qwen/Qwen3.8-27B","deployment:qwen38-gpu02","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8002","gpu_pair:2-3","ppcie:true","config_variant:qwen38-h200-tp1-nonspec"]}]'
+      nearai.otel.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:Qwen/Qwen3.8-27B","deployment:qwen38-gpu02","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8002","gpu_pair:2-3","ppcie:true","config_variant:qwen38-h200-tp1-nonspec"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "inference-proxy"
       nearai.otel.service: "vllm-proxy"
@@ -272,7 +272,7 @@ services:
       - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
       - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:Qwen/Qwen3.6-35B-A3B-FP8","deployment:qwen36-gpu02","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8006","ppcie:true","config_variant:qwen36-sglang-v0516"]}]'
+      nearai.otel.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:Qwen/Qwen3.6-35B-A3B-FP8","deployment:qwen36-gpu02","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8006","ppcie:true","config_variant:qwen36-sglang-v0516"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "inference-proxy"
       nearai.otel.service: "vllm-proxy"
@@ -304,7 +304,7 @@ services:
               device_ids: ["2"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:Qwen/Qwen3.8-27B-FP8","served_model:Qwen/Qwen3.8-27B","model_revision:017b9c7af6b5689d5dd426a76e0bc077eb5ca20a","deployment:qwen38-gpu02","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8002","instance:1","gpu_pair:2","ppcie:true","config_variant:qwen38-h200-tp1-nonspec","quantization:fp8","sglang_revision:qwen38.27b.g561c8f3","engine_image:febfb971c735"]}]'
+      nearai.otel.logs: '[{"source":"sglang","service":"sglang","tags":["model:Qwen/Qwen3.8-27B-FP8","served_model:Qwen/Qwen3.8-27B","model_revision:017b9c7af6b5689d5dd426a76e0bc077eb5ca20a","deployment:qwen38-gpu02","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8002","instance:1","gpu_pair:2","ppcie:true","config_variant:qwen38-h200-tp1-nonspec","quantization:fp8","sglang_revision:qwen38.27b.g561c8f3","engine_image:febfb971c735"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -349,7 +349,7 @@ services:
               device_ids: ["3"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:Qwen/Qwen3.8-27B-FP8","served_model:Qwen/Qwen3.8-27B","model_revision:017b9c7af6b5689d5dd426a76e0bc077eb5ca20a","deployment:qwen38-gpu02","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8002","instance:2","gpu_pair:3","ppcie:true","config_variant:qwen38-h200-tp1-nonspec","quantization:fp8","sglang_revision:qwen38.27b.g561c8f3","engine_image:febfb971c735"]}]'
+      nearai.otel.logs: '[{"source":"sglang","service":"sglang","tags":["model:Qwen/Qwen3.8-27B-FP8","served_model:Qwen/Qwen3.8-27B","model_revision:017b9c7af6b5689d5dd426a76e0bc077eb5ca20a","deployment:qwen38-gpu02","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8002","instance:2","gpu_pair:3","ppcie:true","config_variant:qwen38-h200-tp1-nonspec","quantization:fp8","sglang_revision:qwen38.27b.g561c8f3","engine_image:febfb971c735"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -394,7 +394,7 @@ services:
               device_ids: ["5"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:Qwen/Qwen3.6-35B-A3B-FP8","deployment:qwen36-gpu02","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8006","gpu_pair:5","ppcie:true","config_variant:qwen36-sglang-v0516"]}]'
+      nearai.otel.logs: '[{"source":"sglang","service":"sglang","tags":["model:Qwen/Qwen3.6-35B-A3B-FP8","deployment:qwen36-gpu02","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8006","gpu_pair:5","ppcie:true","config_variant:qwen36-sglang-v0516"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -427,7 +427,7 @@ services:
               device_ids: ["4"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:Qwen/Qwen3.6-35B-A3B-FP8","deployment:qwen36-gpu02","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8006","instance:2","gpu_pair:4","ppcie:true","config_variant:qwen36-sglang-v0516"]}]'
+      nearai.otel.logs: '[{"source":"sglang","service":"sglang","tags":["model:Qwen/Qwen3.6-35B-A3B-FP8","deployment:qwen36-gpu02","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8006","instance:2","gpu_pair:4","ppcie:true","config_variant:qwen36-sglang-v0516"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -457,7 +457,7 @@ services:
               device_ids: ["2","3"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:Qwen/Qwen3.8-27B-FP8","served_model:Qwen/Qwen3.8-27B","deployment:qwen38-gpu02","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","gpu_pair:2-3","ppcie:true","config_variant:qwen38-h200-tp1-nonspec"]}]'
+      nearai.otel.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:Qwen/Qwen3.8-27B-FP8","served_model:Qwen/Qwen3.8-27B","deployment:qwen38-gpu02","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","gpu_pair:2-3","ppcie:true","config_variant:qwen38-h200-tp1-nonspec"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "dcgm"
       nearai.otel.service: "dcgm-exporter"
@@ -488,7 +488,7 @@ services:
               device_ids: ["5"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:Qwen/Qwen3.6-35B-A3B-FP8","deployment:qwen36-gpu02","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","gpu_pair:5","ppcie:true","config_variant:qwen36-sglang-v0516"]}]'
+      nearai.otel.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:Qwen/Qwen3.6-35B-A3B-FP8","deployment:qwen36-gpu02","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","gpu_pair:5","ppcie:true","config_variant:qwen36-sglang-v0516"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "dcgm"
       nearai.otel.service: "dcgm-exporter"
@@ -518,7 +518,7 @@ services:
               device_ids: ["4"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:Qwen/Qwen3.6-35B-A3B-FP8","deployment:qwen36-gpu02","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","gpu_pair:4","instance:2","ppcie:true","config_variant:qwen36-sglang-v0516"]}]'
+      nearai.otel.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:Qwen/Qwen3.6-35B-A3B-FP8","deployment:qwen36-gpu02","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","gpu_pair:4","instance:2","ppcie:true","config_variant:qwen36-sglang-v0516"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "dcgm"
       nearai.otel.service: "dcgm-exporter"
@@ -567,7 +567,7 @@ services:
         max-size: "20m"
         max-file: "3"
     labels:
-      com.datadoghq.ad.logs: '[{"source":"otelcol-contrib","service":"otelcol-contrib","tags":["model:multi","deployment:qwen36-qwen38-gpu02","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:gpu02-capacity-v3"]}]'
+      nearai.otel.logs: '[{"source":"otelcol-contrib","service":"otelcol-contrib","tags":["model:multi","deployment:qwen36-qwen38-gpu02","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:gpu02-capacity-v3"]}]'
 
 networks:
   default:
@@ -624,67 +624,67 @@ configs:
               regex: '/var/lib/docker/containers/(?P<container_id>[a-f0-9]{12})[a-f0-9]*/'
               on_error: send_quiet
             - type: regex_parser
-              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              parse_from: attributes["attrs"]["nearai.otel.logs"]
               regex: 'model:(?P<model>[^",\]]+)'
               on_error: send_quiet
             - type: regex_parser
-              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              parse_from: attributes["attrs"]["nearai.otel.logs"]
               regex: 'served_model:(?P<served_model>[^",\]]+)'
               on_error: send_quiet
             - type: regex_parser
-              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              parse_from: attributes["attrs"]["nearai.otel.logs"]
               regex: 'deployment:(?P<deployment>[^",\]]+)'
               on_error: send_quiet
             - type: regex_parser
-              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              parse_from: attributes["attrs"]["nearai.otel.logs"]
               regex: 'ip:(?P<ip>[^",\]]+)'
               on_error: send_quiet
             - type: regex_parser
-              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              parse_from: attributes["attrs"]["nearai.otel.logs"]
               regex: 'port:(?P<port>[^",\]]+)'
               on_error: send_quiet
             - type: regex_parser
-              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              parse_from: attributes["attrs"]["nearai.otel.logs"]
               regex: 'env:(?P<env>[^",\]]+)'
               on_error: send_quiet
             - type: regex_parser
-              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              parse_from: attributes["attrs"]["nearai.otel.logs"]
               regex: 'host:(?P<host>[^",\]]+)'
               on_error: send_quiet
             - type: regex_parser
-              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              parse_from: attributes["attrs"]["nearai.otel.logs"]
               regex: 'instance:(?P<instance>[^",\]]+)'
               on_error: send_quiet
             - type: regex_parser
-              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              parse_from: attributes["attrs"]["nearai.otel.logs"]
               regex: 'gpu_pair:(?P<gpu_pair>[^",\]]+)'
               on_error: send_quiet
             - type: regex_parser
-              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              parse_from: attributes["attrs"]["nearai.otel.logs"]
               regex: 'ppcie:(?P<ppcie>[^",\]]+)'
               on_error: send_quiet
             - type: regex_parser
-              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              parse_from: attributes["attrs"]["nearai.otel.logs"]
               regex: 'config_variant:(?P<config_variant>[^",\]]+)'
               on_error: send_quiet
             - type: regex_parser
-              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              parse_from: attributes["attrs"]["nearai.otel.logs"]
               regex: 'quantization:(?P<quantization>[^",\]]+)'
               on_error: send_quiet
             - type: regex_parser
-              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              parse_from: attributes["attrs"]["nearai.otel.logs"]
               regex: 'eagle:(?P<eagle>[^",\]]+)'
               on_error: send_quiet
             - type: regex_parser
-              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              parse_from: attributes["attrs"]["nearai.otel.logs"]
               regex: 'eagle_prefill_fairness:(?P<eagle_prefill_fairness>[^",\]]+)'
               on_error: send_quiet
             - type: regex_parser
-              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              parse_from: attributes["attrs"]["nearai.otel.logs"]
               regex: 'sglang_revision:(?P<sglang_revision>[^",\]]+)'
               on_error: send_quiet
             - type: regex_parser
-              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              parse_from: attributes["attrs"]["nearai.otel.logs"]
               regex: 'engine_image:(?P<engine_image>[^",\]]+)'
               on_error: send_quiet
             - type: add
@@ -939,10 +939,10 @@ configs:
             - context: log
               statements:
                 - set(attributes["service.name"], attributes["attrs"]["com.docker.compose.service"]) where attributes["attrs"] != nil and attributes["attrs"]["com.docker.compose.service"] != nil
-                - set(attributes["service.name"], ParseJSON(attributes["attrs"]["com.datadoghq.ad.logs"])[0]["service"]) where attributes["attrs"] != nil and attributes["attrs"]["com.datadoghq.ad.logs"] != nil
-                - set(attributes["log.source"], ParseJSON(attributes["attrs"]["com.datadoghq.ad.logs"])[0]["source"]) where attributes["attrs"] != nil and attributes["attrs"]["com.datadoghq.ad.logs"] != nil
-                - set(attributes["service"], attributes["service.name"]) where attributes["attrs"] != nil and attributes["attrs"]["com.datadoghq.ad.logs"] != nil and attributes["service.name"] != nil
-                - set(attributes["source"], attributes["log.source"]) where attributes["attrs"] != nil and attributes["attrs"]["com.datadoghq.ad.logs"] != nil and attributes["log.source"] != nil
+                - set(attributes["service.name"], ParseJSON(attributes["attrs"]["nearai.otel.logs"])[0]["service"]) where attributes["attrs"] != nil and attributes["attrs"]["nearai.otel.logs"] != nil
+                - set(attributes["log.source"], ParseJSON(attributes["attrs"]["nearai.otel.logs"])[0]["source"]) where attributes["attrs"] != nil and attributes["attrs"]["nearai.otel.logs"] != nil
+                - set(attributes["service"], attributes["service.name"]) where attributes["attrs"] != nil and attributes["attrs"]["nearai.otel.logs"] != nil and attributes["service.name"] != nil
+                - set(attributes["source"], attributes["log.source"]) where attributes["attrs"] != nil and attributes["attrs"]["nearai.otel.logs"] != nil and attributes["log.source"] != nil
                 - set(attributes["container.name"], attributes["attrs"]["com.docker.compose.service"]) where attributes["attrs"] != nil and attributes["attrs"]["com.docker.compose.service"] != nil
 
         filter/app_logs:
