@@ -680,7 +680,7 @@ services:
       - proxy-qwen3-reranker-0.6b
       - proxy-whisper-large-v3
       - proxy-privacy-filter
-    command: /bin/sh -c 'while :; do sleep 6h; nginx -s reload; done & nginx -g "daemon off;"'
+    command: /bin/sh -c 'cert=/etc/letsencrypt/live/completions.near.ai/fullchain.pem; last=$$(stat -L -c %Y "$$cert" 2>/dev/null); while :; do sleep 60; cur=$$(stat -L -c %Y "$$cert" 2>/dev/null); if [ -n "$$cur" ] && [ "$$cur" != "$$last" ]; then last=$$cur; echo "$$cert changed, reloading nginx"; nginx -s reload; fi; done & while :; do sleep 6h; nginx -s reload; done & nginx -g "daemon off;"'
     ports:
       - "80:80"
       - "8002:8002"
@@ -933,7 +933,7 @@ services:
     container_name: nginx-qwen38
     depends_on:
       - proxy-qwen38-27b
-    command: /bin/sh -c 'while :; do sleep 6h; nginx -s reload; done & nginx -g "daemon off;"'
+    command: /bin/sh -c 'cert=/etc/letsencrypt/live/completions.near.ai/fullchain.pem; last=$$(stat -L -c %Y "$$cert" 2>/dev/null); while :; do sleep 60; cur=$$(stat -L -c %Y "$$cert" 2>/dev/null); if [ -n "$$cur" ] && [ "$$cur" != "$$last" ]; then last=$$cur; echo "$$cert changed, reloading nginx"; nginx -s reload; fi; done & while :; do sleep 6h; nginx -s reload; done & nginx -g "daemon off;"'
     ports:
       - "8000:8000"
       - "8001:8001"

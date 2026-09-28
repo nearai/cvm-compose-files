@@ -78,7 +78,7 @@ services:
   nginx:
     image: nginx@sha256:1d13701a5f9f3fb01aaa88cef2344d65b6b5bf6b7d9fa4cf0dca557a8d7702ba
     container_name: nginx
-    command: /bin/sh -c 'while :; do sleep 6h; nginx -s reload; done & nginx -g "daemon off;"'
+    command: /bin/sh -c 'cert=/etc/letsencrypt/live/completions.near.ai/fullchain.pem; last=$$(stat -L -c %Y "$$cert" 2>/dev/null); while :; do sleep 60; cur=$$(stat -L -c %Y "$$cert" 2>/dev/null); if [ -n "$$cur" ] && [ "$$cur" != "$$last" ]; then last=$$cur; echo "$$cert changed, reloading nginx"; nginx -s reload; fi; done & while :; do sleep 6h; nginx -s reload; done & nginx -g "daemon off;"'
     depends_on:
       proxy-glm52:
         condition: service_started
