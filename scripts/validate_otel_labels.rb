@@ -6,8 +6,10 @@ require "yaml"
 
 ROOT = File.expand_path("..", __dir__)
 # Standalone one-shot tools, not serving stacks. The GPU diagnostic's isolation
-# and evidence contract is independently enforced by validate_migration_gpu_preflight.rb.
-EXCLUDED_FILES = ["cleanup-hf-model.yaml", "migration-gpu-preflight.yaml"].freeze
+# and evidence contract is independently enforced by validate_migration_gpu_preflight.rb;
+# the compose-manager token rotation tool's isolation contract is independently
+# enforced by validate_rotate_compose_manager_token.rb.
+EXCLUDED_FILES = ["cleanup-hf-model.yaml", "migration-gpu-preflight.yaml", "rotate-compose-manager-token.yaml"].freeze
 REQUIRED_COLLECTOR_ENV = %w[
   MONITORING_INGEST_TOKEN
   CVM_NAME
