@@ -57,15 +57,128 @@ raise "Diagnostic log metadata missing" \
 
 command = service.fetch("command").fetch(0)
 
-# The command must never contain a literal, un-escaped compose interpolation
-# target beyond the two intentional ones (NEW_BEARER_TOKEN in `environment:`,
-# checked above, is a separate field) -- every other `$` in this string must
-# already be doubled to `$$` so compose passes it through to the shell
-# unresolved. A single un-escaped `${...}` here would silently blank out at
-# render time (compose only warns) instead of failing loudly, which is
-# exactly the class of bug this check exists to catch.
-if command.scan(/(?<!\$)\$\{[A-Za-z_][A-Za-z0-9_]*(?::-[^}]*)?\}/).any?
-  raise "Un-escaped ${VAR} interpolation target found in command -- must be $${VAR} for the shell, not compose"
+# Compose interpolates BOTH the braced `${VAR}` / `${VAR:-x}` form AND the
+# un-braced `$VAR` form, anywhere in the file -- including inside this
+# multi-line `command:` string (see the compose file's own header comment).
+# Every `$` that must reach the shell (not compose) has to be doubled to
+# `$$`, compose's own escape for a literal `$`. This walks the string
+# instead of using a single regex because escaping is about RUNS of `$`,
+# not individual characters: `$$` is one literal `$` (safe), but `$$$VAR`
+# is `$$` (one literal `$`) followed by a genuine, un-escaped `$VAR` --
+# i.e. a run of an ODD number of `$` always leaves exactly one real
+# interpolation attempt behind, however many pairs precede it. A naive
+# `(?<!\$)\$...` regex only gets this right for runs of length 1 or 2.
+#
+# Returns one { line:, token: } per un-escaped interpolation target found,
+# `line` counted within `text` (1-indexed) so failures are easy to locate
+# in the compose file's `command:` block.
+def unescaped_compose_interpolations(text)
+  findings = []
+  i = 0
+  len = text.length
+  while i < len
+    if text[i] == "$"
+      run_start = i
+      i += 1 while i < len && text[i] == "$"
+      run_len = i - run_start
+      next if run_len.even? # fully paired off into literal `$`s -- safe
+
+      rest = text[i..-1]
+      token =
+        if (m = rest.match(/\A\{[A-Za-z_][A-Za-z0-9_]*(?::-[^}]*)?\}/))
+          "$#{m[0]}"
+        elsif (m = rest.match(/\A[A-Za-z_][A-Za-z0-9_]*/))
+          "$#{m[0]}"
+        end
+      next unless token # lone trailing `$` not followed by `{`/an identifier
+                         # isn't a compose interpolation target at all
+
+      findings << { line: text[0...i].count("\n") + 1, token: token }
+    else
+      i += 1
+    end
+  end
+  findings
+end
+
+# The one interpolation target this whole mechanism deliberately relies on:
+# `/compose/up`'s own `env` map is how `NEW_BEARER_TOKEN` reaches the
+# container (see the file's header comment) -- checked exactly against
+# `service["environment"]` above, so it's matched here by that same exact
+# string rather than by field path.
+INTENTIONAL_INTERPOLATIONS = ["NEW_BEARER_TOKEN=${NEW_BEARER_TOKEN}"].freeze
+
+# Sweep every string value anywhere in the parsed YAML doc -- not just
+# `command` -- so a `$`/`${...}` slipped into some other field (an added
+# `environment:` line, a label, a future field) fails loudly too instead of
+# being silently blanked out at compose render time (compose only warns).
+def each_yaml_string(value, path, &block)
+  case value
+  when String
+    yield(path, value)
+  when Array
+    value.each_with_index { |v, i| each_yaml_string(v, "#{path}[#{i}]", &block) }
+  when Hash
+    value.each { |k, v| each_yaml_string(v, "#{path}.#{k}", &block) }
+  end
+end
+
+# Self-test the guard itself against synthetic fixtures before trusting it
+# to judge the real file -- mirrors validate_migration_gpu_preflight.rb
+# always running its own embedded tests as part of a normal invocation (no
+# separate spec file or flag needed; this always runs when CI runs this
+# script).
+def assert_interpolations(label, text, expected_tokens)
+  found = unescaped_compose_interpolations(text).map { |f| f[:token] }
+  return if found == expected_tokens
+
+  raise "Guard self-test failed (#{label}): text=#{text.inspect} " \
+        "expected=#{expected_tokens.inspect} got=#{found.inspect}"
+end
+
+# (a) un-escaped, un-braced $FOO -- the exact case the review comments on
+# this file flagged as missed by the previous ${VAR}-only regex.
+assert_interpolations("bare $FOO", "before $FOO after", ["$FOO"])
+# (b) un-escaped ${FOO}
+assert_interpolations("braced ${FOO}", "before ${FOO} after", ["${FOO}"])
+# (c) un-escaped ${FOO:-x} (default-value form)
+assert_interpolations("braced with default ${FOO:-x}", "before ${FOO:-x} after", ["${FOO:-x}"])
+# $$FOO -- one escaped pair, safe, must NOT be flagged
+assert_interpolations("escaped $$FOO", "before $$FOO after", [])
+# $${FOO} -- one escaped pair, safe, must NOT be flagged
+assert_interpolations("escaped $${FOO}", "before $${FOO} after", [])
+# $$$FOO -- an escaped pair (one literal $) PLUS a genuine un-escaped $FOO
+# immediately after it; the failure mode a naive `(?<!\$)\$...` regex gets
+# wrong (see the comment on unescaped_compose_interpolations above).
+assert_interpolations("odd run $$$FOO", "before $$$FOO after", ["$FOO"])
+# $$$$FOO -- two escaped pairs, fully safe, must NOT be flagged.
+assert_interpolations("even run $$$$FOO", "before $$$$FOO after", [])
+# The exact allowed environment line: unescaped_compose_interpolations
+# itself must still DETECT it (it genuinely is an interpolation target) --
+# it's only exempt because INTENTIONAL_INTERPOLATIONS allow-lists that
+# exact string in the full-doc sweep below.
+assert_interpolations(
+  "allowed env line still detected on its own",
+  "NEW_BEARER_TOKEN=${NEW_BEARER_TOKEN}",
+  ["${NEW_BEARER_TOKEN}"]
+)
+raise "Guard self-test failed: allow-list did not exempt the intentional env line" \
+  unless INTENTIONAL_INTERPOLATIONS.include?("NEW_BEARER_TOKEN=${NEW_BEARER_TOKEN}")
+
+puts "Interpolation guard self-tests OK (8 cases)"
+
+violations = []
+each_yaml_string(doc, "doc") do |path, value|
+  next if INTENTIONAL_INTERPOLATIONS.include?(value)
+
+  unescaped_compose_interpolations(value).each do |f|
+    violations << "#{path} line #{f[:line]}: #{f[:token]}"
+  end
+end
+if violations.any?
+  raise "Un-escaped compose interpolation target(s) found -- must be $$ (for " \
+        "the shell, not compose) unless genuinely intentional:\n  " +
+        violations.join("\n  ")
 end
 
 match = command.match(/INNER_B64='([^']*)'/m)
