@@ -11,6 +11,63 @@ layout is:
 | 3 | FLUX, Qwen3-VL, embedding, reranker, and Whisper |
 | 4-7 | GLM-5.3-Flash |
 
+## Engine-only v3 image upgrade (not yet deployed)
+
+This candidate changes only `model-sg-glm53-fp8-tp4` from
+`docker.io/nearaidev/sglang@sha256:fde25985aea3ebabf1eb581ae21d53be8540e32933eef942ee8b962a1bfbea20`
+to the already-published original PR #308 v3 image
+`docker.io/nearaidev/sglang@sha256:47aff791090003a37f893e998c44794c410d3f7bdfc7fdd2dfab5eb5592b30bb`.
+It does not change flags, budgets, devices, environment, ports, model revisions,
+dependencies, or configured serving parameters. In particular, keep the existing
+406 GiB HiCache budget and CUDA-owned host-memory configuration.
+
+Before any live `compose/down`, require a merged candidate release tag with green
+repository CI and a passed tag-age gate. Refresh the full live baseline and prove
+that a surviving GLM backend can generate; do not rely on historical health alone,
+and do not recreate or mutate the survivor.
+
+1. Record all 32 container IDs and `CreatedAt` values, the deployed v0.0.454
+   source, and the complete dashboard `env_vars`. Pass that complete map as the
+   Compose Manager request's `env`; do not rename, omit, or reconstruct values.
+2. Run an exact `compose/up` dry-run for only
+   `model-sg-glm53-fp8-tp4`, with `force_recreate: false`. Inspect the complete
+   raw action stream and continue only if the singleton engine is the sole
+   create/recreate target and no other service is removed or changed.
+3. Use a service-scoped `compose/down` for the singleton at v0.0.454, wait until
+   that container is absent, and then use a service-scoped `compose/up` for the
+   same singleton at the candidate tag with the same complete `env` and
+   `force_recreate: false`. `compose/down` is live and has no dry-run; never use
+   an empty services list. Require the real streamed operation to finish with
+   `done`, `success: true`, and exit code 0.
+4. Verify the running digest and the v3 image source labels. Both
+   `org.opencontainers.image.source` and `nearai.build.repository` must equal
+   `https://github.com/nearai/cvm-compose-files`, while
+   `org.opencontainers.image.revision` and `nearai.build.source_revision` must
+   both equal
+   `aff61fca1798512dcaec8cc88756ee0f83bb78be`, and
+   `nearai.sglang.event_loop_stall_dump=v1-on-30s`. Confirm the startup log says
+   the stall detector is armed, without treating that detector as proof that
+   worker hangs are resolved. Confirm that all four TP ranks report
+   `rank_budget_bytes=108984795136`, then require readiness and a real completion
+   from `z-ai/glm-5.3-flash`.
+5. Re-read all 32 container IDs and `CreatedAt` values. The target must have a
+   new identity and every one of the other 31 containers must match the
+   pre-upgrade snapshot. Monitor the ready engine for 30 minutes for restarts,
+   OOM/CUDA/Xid errors, event-loop stall dumps, queue depth, TTFT, and HiCache
+   errors before accepting the upgrade.
+
+Rollback is singleton-only: scoped down/up of
+`model-sg-glm53-fp8-tp4` at v0.0.454 restores the old immutable pin above, using
+the fresh complete dashboard environment and `force_recreate: false`, followed
+by the same identity, readiness, completion, and monitoring checks.
+
+The collector's inline static `engine_image` label remains stale until the
+collector is separately recreated. This rollout does **not** authorize
+recreating the collector, proxy, nginx, registrar, or any other service, and it
+does not authorize changing the gateway. Attribute rollout evidence using the
+target container's actual digest, ID, and deployment-time boundary rather than
+claiming that the unchanged collector reloaded the new label.
+
 The handoff must be staged. Compose Manager always passes `--remove-orphans`,
 but orphan cleanup is not a GPU-release barrier. A full-project update may try
 to start the new GLM service while an old engine or a shared GPU-7 service is
