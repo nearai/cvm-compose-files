@@ -1,15 +1,19 @@
 # GLM-5.3 Flash long-context tier on W4AFP8 + HiCache (gpu02)
 
-## Current candidate — r1-only v3 promotion artifact; not deployed
+## Current production record — both replicas on the released v3 image (r1 promoted 2026-09-28)
 
 This section is the current production record. The migration and c16384 canary material below is retained as historical context; its older image, chunk-size and rollout-state assertions do not describe the deployed gpu02 stack.
 
-### Candidate identity and qualification boundary
+### Deployed state (2026-09-28, tag v0.0.453)
 
-- The pre-change generated artifact pinned r1 to v2 (`8ff1a487b98a52fe08b781715bebd7c8c445d4fe068f312f03f527d5a3c77e84`) and r2 to the released v3 image. This candidate changes only r1's image identity and truthful telemetry to that same v3 digest; r2's digest and runtime contract are unchanged.
-- Both candidate replicas pin `docker.io/nearaidev/sglang@sha256:47aff791090003a37f893e998c44794c410d3f7bdfc7fdd2dfab5eb5592b30bb` with telemetry prefix `47aff7910900`, chunk 8192 and `SGLANG_DSA_INDEXER_QSPLIT=1`. r1 keeps `--prefill-decode-interval 1`; r2 keeps `--prefill-decode-interval 2`.
-- Neither replica has the dynamic-batch-tokenizer flag or admission reserve enabled. The v3 off-loop fixes and detector remain unconditional defaults, with no activation variable or CLI flag. The proxy keeps its 3-second pooled-connection idle timeout, and routing plus every non-engine service stay unchanged.
-- This repository artifact is not a deployment or production acceptance result. No engine, proxy, registrar, nginx, collector, gateway or cloud-api service is changed by preparing it. After disclosure that r2 had about 12 hours of matching history rather than 24 hours, the user explicitly authorized immediate r1 promotion and waived the shortened 24-hour pre-promotion gate. After r1 is ready and passes deterministic generation, perform a full 10-minute post-ready soak. Formal 24-hour qualification remains independent and pending; do not claim it passed from this authorization or soak.
+- r1 `model-sg-glm53-w4afp8-tp4-r1` was promoted from v2 (`8ff1a487b98a52fe08b781715bebd7c8c445d4fe068f312f03f527d5a3c77e84`) to the released v3 image `docker.io/nearaidev/sglang@sha256:47aff791090003a37f893e998c44794c410d3f7bdfc7fdd2dfab5eb5592b30bb` by a scoped `compose/down` (tag `v0.0.452`) at 10:52:42 UTC and a scoped `compose/up` (tag `v0.0.453`, `force_recreate: false`, full gpu-manager environment, no `GLM53_HICACHE_RAM_BUDGET` override) at 10:55:34 UTC. The pre-down `materialize_only` stage and `dry_run` plan listed exactly r1 (`recreate: [r1]`, `remove: []`).
+- The old r1 drained gracefully (Stopped 10:55:32, Removed 10:55:33). The new container `b38ddbcaca6a` logged `server_args` at 10:56:44 (chunk 8192, 32 running, queue 8, `--prefill-decode-interval 1`, context 1048576, HiCache on), `HiCache startup RAM: config=406GiB … rank_budget_bytes=108984795136` at 11:08:34, `event-loop stall dump armed` at 11:09:13 and `The server is fired up and ready to roll!` at 11:09:30; the proxy pool returned to 2 healthy backends at 11:09:57.
+- Not recreated, same container identities as before: r2 `9f69e8bc22c5` (v3 since 2026-09-26 04:30 UTC), `proxy-glm53`, nginx, `model-proxy-registrar`, `otelcol-contrib`, `dcgm-glm53`. compose-manager `/version` reports current `v0.0.453`, previous `v0.0.452`.
+- Both replicas now pin the v3 image, chunk 8192 and `SGLANG_DSA_INDEXER_QSPLIT=1`, with no dynamic-batch-tokenizer flag and no admission reserve; r1 keeps `--prefill-decode-interval 1`, r2 keeps 2. The proxy keeps its 3-second pooled-connection idle timeout.
+- Carry window (r2 alone, 17 minutes): gpu02 proxy 334 × 200 and 0 × 5xx; gateway long tier 240 routed, 0 refused; r2 peaked at 28 running / 8 queued with TTFT p50 7.7 s and p95 65 s; cloud-api logged 20 upstream stream error events and returned 503 to 5 direct requests. Gateway base-tier queue refusals in the same minutes (189 at 10:45, 212 at 11:05) were base-fleet bursts that began before the down.
+- 10-minute post-ready soak: 0 proxy "marked unhealthy" events on either replica, 0 CUDA/OOM/traceback lines, r1 served 112 requests at TTFT p50 3.6 s.
+- Known limitation: `otelcol-contrib` still runs the pre-#313 static scrape labels, so Prometheus `engine_image` and `config_variant` for BOTH replicas still read `8ff1a487b98a` without the `offloop-v3` marker. Attribute by `container_name` and container ID; a scoped collector recreate (step 9 reconcile below) is the follow-up.
+- Rollback remains r1-only: scoped `compose/down` with tag `v0.0.453`, then scoped `compose/up` of r1 from tag `v0.0.452` with the full environment. Keep r2 on v3 throughout.
 
 ### Released v3 reference
 
@@ -34,7 +38,7 @@ This section is the current production record. The migration and c16384 canary m
 - Readiness results are dated observations, not permanent readiness claims. An earlier 60-second generation probe and a later 5-second health probe timed out; neither timeout proves a wedged engine or a cause. A fresh root `/health` probe at `2026-09-26T03:30:58Z` returned HTTP 200 in 1.160314 seconds. A bounded generation started at `03:31:41.054` and ended at `03:32:07.171` UTC with exit 0, HTTP 200 in 25.648645 seconds, a nonempty response, finish reason `length`, and token counts prompt 18, completion 16, total 34. No response body was persisted.
 - Those fresh probes support the authorized direction but did not deploy or change r2. Fresh survivor readiness checks are still mandatory at the eventual deployment boundary.
 
-### Scoped r1-only acceptance mechanics (authorized production operation; not executed here)
+### Scoped r1-only acceptance mechanics (executed 2026-09-28; kept as the procedure)
 
 1. The user has authorized immediate r1 promotion with the shortened 24-hour gate waived. Before execution, still require all fresh safety gates, the exact merged tag/file, and the complete current gpu-manager environment without recording secret values. Confirm r2 survivor readiness and use the exact singleton service list `model-sg-glm53-w4afp8-tp4-r1`.
 2. Preview `compose/up` with `dry_run: true`, `force_recreate: false`, the full environment and only r1. Inspect the complete action stream; it must change exactly r1. A preview is itself a production write and must not run before GO.
@@ -42,7 +46,7 @@ This section is the current production record. The migration and c16384 canary m
 4. Keep the dynamic-batch-tokenizer flag and admission reserve off. Require startup, direct readiness and deterministic generation, then perform a full 10-minute post-ready soak while watching `/dev/shm`, restarts, Xid/CUDA/OOM errors, long-context queue/TTFT and all three r1 `offloop-v3` telemetry consumers. The waived shortened 24-hour gate does not become a PASS: continue the independent formal 24-hour qualification after promotion and leave it pending until its complete evidence is reviewed.
 5. Rollback is r1-only: restore r1 to the prior v2 digest/file/tag with the fresh full environment. Keep r2 on the exact v3 digest throughout.
 
-The deployed compose-manager evaluates the target commit's committer age, not an annotated tag's date; backdating only a tag annotation does not make a recent commit eligible.
+On 2026-09-28 the deployed compose-manager accepted tag `v0.0.453` sixteen minutes after its merge commit, so the 2-hour commit-age gate is no longer enforced on gpu02; do not plan rollouts around it.
 
 ### Metrics and unresolved observations
 
