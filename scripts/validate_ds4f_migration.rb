@@ -125,7 +125,7 @@ end
 # gpu02 long r2's qualified W4AFP8+HiCache arm (campaign-2 L2):
 # prod/GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext.yaml, model-sg-glm53-w4afp8-tp4-r2.
 small_engine = small_services.fetch('model-sg-glm53-fp8-tp4')
-assert.call(small_engine['image'] == 'docker.io/nearaidev/sglang@sha256:fde25985aea3ebabf1eb581ae21d53be8540e32933eef942ee8b962a1bfbea20', 'Qualified gpu13 GLM image changed')
+assert.call(small_engine['image'] == 'docker.io/nearaidev/sglang@sha256:47aff791090003a37f893e998c44794c410d3f7bdfc7fdd2dfab5eb5592b30bb', 'Qualified gpu13 GLM image changed')
 small_engine_command = small_engine.fetch('command')
 assert.call(small_engine_command.include?('--model-path /root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/snapshots/99f1fa70408c52b007d4fd69e02e5a522422e755'), 'gpu13 GLM must serve the qualified W4AFP8 snapshot')
 {

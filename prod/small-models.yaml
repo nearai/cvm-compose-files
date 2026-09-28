@@ -210,7 +210,7 @@ x-downloader-common: &downloader-common
 x-sg-glm53-flash-common: &sg-glm53-flash-common
   <<: *nvidia
   init: true
-  image: docker.io/nearaidev/sglang@sha256:fde25985aea3ebabf1eb581ae21d53be8540e32933eef942ee8b962a1bfbea20
+  image: docker.io/nearaidev/sglang@sha256:47aff791090003a37f893e998c44794c410d3f7bdfc7fdd2dfab5eb5592b30bb
   command: >
       sglang serve
       --model-path /root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/snapshots/99f1fa70408c52b007d4fd69e02e5a522422e755
@@ -1033,7 +1033,7 @@ services:
               device_ids: ["4","5","6","7"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-bf16-kv","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8009","instance:1","gpu_pair:4-7","ppcie:true","config_variant:fc91d24-long-context-w4afp8-c8192-hicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192","request_logging:disabled","thinking_budget_policy:default8192-public-to-native","max_running_requests:32","max_queued_requests:8","engine_image:fde25985aea3"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-bf16-kv","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8009","instance:1","gpu_pair:4-7","ppcie:true","config_variant:fc91d24-long-context-w4afp8-c8192-hicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192","request_logging:disabled","thinking_budget_policy:default8192-public-to-native","max_running_requests:32","max_queued_requests:8","engine_image:47aff7910900"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -1059,7 +1059,7 @@ services:
       nearai.otel.watchdog_timeout: "1800"
       nearai.otel.max_running_requests: "32"
       nearai.otel.max_queued_requests: "8"
-      nearai.otel.engine_image: "fde25985aea3"
+      nearai.otel.engine_image: "47aff7910900"
 
   # --- FLUX x1 (GPU 3, shared with small models) ---
 
@@ -1793,7 +1793,7 @@ configs:
                       watchdog_timeout: "1800"
                       max_running_requests: "32"
                       max_queued_requests: "8"
-                      engine_image: "fde25985aea3"
+                      engine_image: "47aff7910900"
               - job_name: sglang-model-sg-flux2-klein-4b-tp1
                 scrape_interval: 15s
                 metrics_path: /metrics
