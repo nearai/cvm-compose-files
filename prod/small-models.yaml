@@ -277,14 +277,11 @@ x-sg-glm53-flash-common: &sg-glm53-flash-common
     # confirmed for that admission path.
     - SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE=1
     # HiCache host-memory budget across the four TP ranks, overridable per
-    # deployment. A fixed value, not a percentage: a percentage resolves
-    # against AVAILABLE RAM at engine start, not total. gpu13's CVM has about
-    # 2,029 GiB total with about 1,216 GiB already held by its other eight
-    # models, leaving about 813 GiB available; the qualified L2 value of a
-    # fixed 406 GiB takes the host to about 1,622 GiB used and leaves about
-    # 400 GiB for everything else. An oversized value fails at startup by
-    # design.
-    - SGLANG_HICACHE_RAM_BUDGET=${GLM53_HICACHE_RAM_BUDGET:-406GiB}
+    # deployment. The percentage resolves against RAM available at engine
+    # start, after co-located models have allocated their memory, not total
+    # CVM RAM. Keep 20% available for the OS, page cache, and other services;
+    # oversized values fail at startup by design.
+    - SGLANG_HICACHE_RAM_BUDGET=${GLM53_HICACHE_RAM_BUDGET:-80%}
     # CUDA-owned host memory (cudaMallocHost). Must stay 1 on TEE hosts: 0
     # selects cudaHostRegister, which fails with CUDA error 801 under HCC/PPCIe.
     - SGLANG_HICACHE_CUDA_HOST_MEMORY=${GLM53_HICACHE_CUDA_HOST_MEMORY:-1}
