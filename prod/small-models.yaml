@@ -1397,10 +1397,15 @@ services:
         FROM vllm/vllm-openai@sha256:ccd6a6dbf4aba4e94c6f7052d1835d6e742082b6a5095276552e9b7a5a47c2e5
         RUN pip install openai-whisper torchaudio librosa vllm[audio]
     container_name: model-vllm-whisper-large-v3-tp1
+    # 0.20 (~28 GiB, ~24 GiB KV): at 0.06 the 4.2 GiB KV cache capped whisper at
+    # 17 concurrent 30 s segments and preempted under sustained load. GPU 3 had
+    # ~53 GiB unallocated, so this takes free memory from no other tenant.
+    # Restart this service alone: a cold start alongside its GPU 3 neighbours
+    # can profile negative KV memory and crash-loop until they finish loading.
     command: >
         openai/whisper-large-v3
         --revision 06f233fe06e710322aca913c1bc4249a0d71fce1
-        --gpu-memory-utilization 0.06
+        --gpu-memory-utilization 0.20
     volumes:
       - hugginface_cache:/root/.cache/huggingface
       - vllm_cache:/root/.cache/vllm
