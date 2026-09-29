@@ -16,7 +16,7 @@ LONG_CONTEXT_FILE = File.join(ROOT, "prod", "GLM-5.3-Flash-SGL-TP4-LongContext.y
 LEGACY_CANARY_FILE = File.join(ROOT, "prod", "GLM-5.3-Flash-SGL-TP4-Canary.yaml")
 RELEASED_IMAGE_FILE = File.join(ROOT, "docker", "sglang-glm53-hicache", "RELEASED_IMAGE")
 ENGINE_IMAGE = "docker.io/nearaidev/sglang@sha256:e9d29a1cb1cd65284392c4d62d5f2a36669628057e15c60fe93ea40cfe4fc7e7"
-PROXY_IMAGE = "nearaidev/vllm-proxy-rs@sha256:b3a8c6260834231271b4356c56a7aa2718608c8a537b35973916e0a56dc88fba"
+PROXY_IMAGE = "nearaidev/vllm-proxy-rs@sha256:d61357da39918a57126864a451eaf054f06a6989c03fe9a1666f7e6374ba6907"
 # Engine-side priority scheduling is only safe behind an inference-proxy that
 # overwrites the `priority` of every forwarded request (build 2834196 onward,
 # nearai/inference-proxy#241). Any other proxy build lets client-chosen or
@@ -24,6 +24,8 @@ PROXY_IMAGE = "nearaidev/vllm-proxy-rs@sha256:b3a8c6260834231271b4356c56a7aa2718
 # lowest possible priority.
 PRIORITY_NORMALIZING_PROXY_IMAGES = [
   "nearaidev/vllm-proxy-rs@sha256:b3a8c6260834231271b4356c56a7aa2718608c8a537b35973916e0a56dc88fba",
+  # inference-proxy main 0f37728 (includes #241 and #274 replica-state publishing).
+  "nearaidev/vllm-proxy-rs@sha256:d61357da39918a57126864a451eaf054f06a6989c03fe9a1666f7e6374ba6907",
 ].freeze
 PRIORITY_SWITCHES = %w[--enable-priority-scheduling --disable-priority-preemption].freeze
 # The proxy assigns every request's priority; an engine-side default would
