@@ -150,7 +150,7 @@ end
 end
 small_engine_env = small_engine.fetch('environment')
 [
-  'SGLANG_HICACHE_RAM_BUDGET=${GLM53_HICACHE_RAM_BUDGET:-406GiB}',
+  'SGLANG_HICACHE_RAM_BUDGET=${GLM53_HICACHE_RAM_BUDGET:-80%}',
   'SGLANG_HICACHE_CUDA_HOST_MEMORY=${GLM53_HICACHE_CUDA_HOST_MEMORY:-1}'
 ].each do |entry|
   assert.call(small_engine_env.include?(entry), "gpu13 GLM HiCache host-memory contract changed: #{entry}")

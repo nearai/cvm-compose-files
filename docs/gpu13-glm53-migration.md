@@ -17,9 +17,13 @@ This candidate changes only `model-sg-glm53-fp8-tp4` from
 `docker.io/nearaidev/sglang@sha256:fde25985aea3ebabf1eb581ae21d53be8540e32933eef942ee8b962a1bfbea20`
 to the already-published original PR #308 v3 image
 `docker.io/nearaidev/sglang@sha256:47aff791090003a37f893e998c44794c410d3f7bdfc7fdd2dfab5eb5592b30bb`.
-It does not change flags, budgets, devices, environment, ports, model revisions,
-dependencies, or configured serving parameters. In particular, keep the existing
-406 GiB HiCache budget and CUDA-owned host-memory configuration.
+The image change itself does not alter flags, devices, ports, model revisions,
+dependencies, or configured serving parameters. This branch also changes the
+gpu13 GLM service's default total HiCache budget to 80% of RAM available inside
+the CVM at engine startup, after the co-located models have allocated memory;
+`GLM53_HICACHE_RAM_BUDGET` in the dashboard environment overrides that default.
+The old fixed 406 GiB budget is no longer the expected default. Keep the
+CUDA-owned host-memory configuration.
 
 Before any live `compose/down`, require a merged candidate release tag with green
 repository CI and a passed tag-age gate. Refresh the full live baseline and prove
@@ -47,9 +51,12 @@ and do not recreate or mutate the survivor.
    `aff61fca1798512dcaec8cc88756ee0f83bb78be`, and
    `nearai.sglang.event_loop_stall_dump=v1-on-30s`. Confirm the startup log says
    the stall detector is armed, without treating that detector as proof that
-   worker hangs are resolved. Confirm that all four TP ranks report
-   `rank_budget_bytes=108984795136`, then require readiness and a real completion
-   from `z-ai/glm-5.3-flash`.
+   worker hangs are resolved. Record the effective budget and each rank's
+   `available_bytes`; confirm all four TP ranks report the same
+   `rank_budget_bytes`, consistent with the effective percentage or explicit
+   override divided across the four ranks. The expected amount depends on
+   startup-available RAM and any dashboard override. Then require readiness and
+   a real completion from `z-ai/glm-5.3-flash`.
 5. Re-read all 32 container IDs and `CreatedAt` values. The target must have a
    new identity and every one of the other 31 containers must match the
    pre-upgrade snapshot. Monitor the ready engine for 30 minutes for restarts,
