@@ -3,7 +3,7 @@ FROM docker.io/nearaidev/sglang@sha256:3eccc30709f5719c81084d1264f03ca5354b3059e
 
 ARG BUILD_SOURCE_REVISION
 LABEL org.opencontainers.image.title="GLM-5.3 Flash HiCache W4AFP8 engine"
-LABEL org.opencontainers.image.description="HCC-safe HiCache engine with admission reserve v10, the W4AFP8 loader fix, the unconditional chunked-prefill pool clamp, the opt-in DSA indexer query split, request preprocessing and the multimodal shared-memory copy moved off the HTTP event loop, and an event-loop stall dump"
+LABEL org.opencontainers.image.description="HCC-safe HiCache engine with admission reserve v10, the W4AFP8 loader fix, the unconditional chunked-prefill pool clamp, the opt-in DSA indexer query split, request preprocessing and the multimodal shared-memory copy moved off the HTTP event loop, an event-loop stall dump, and an opt-in ghost prefix cache that measures would-be KV hits from keyed page hashes"
 LABEL org.opencontainers.image.source="https://github.com/nearai/cvm-compose-files"
 LABEL org.opencontainers.image.revision="${BUILD_SOURCE_REVISION}"
 LABEL org.opencontainers.image.base.name="docker.io/nearaidev/sglang"
@@ -24,6 +24,7 @@ LABEL nearai.sglang.dsa_indexer_qsplit="v1-opt-in"
 LABEL nearai.sglang.request_preprocessing_off_loop="pr30771-60a56aa"
 LABEL nearai.sglang.mm_shm_wrap_off_loop="v1"
 LABEL nearai.sglang.event_loop_stall_dump="v1-on-30s"
+LABEL nearai.sglang.ghost_prefix_cache="v1-opt-in"
 
 COPY Dockerfile \
      PROVENANCE \
@@ -33,12 +34,14 @@ COPY Dockerfile \
      chunked-prefill-pool-clamp.diff \
      dsa-indexer-qsplit.diff \
      event-loop-stall-dump.diff \
+     ghost-prefix-cache.diff \
      modules-to-not-convert.diff \
      sglang-pr30771.diff \
      shm-off-loop.diff \
      source-manifest.json \
      test-cpu.sh \
      test_stall_dump.py \
+     test_ghost_cache.py \
      /usr/share/nearai/glm53-hicache-w4afp8/
 RUN test -n "$BUILD_SOURCE_REVISION" \
     && cd /usr/share/nearai/glm53-hicache-w4afp8 \
@@ -53,6 +56,12 @@ RUN test -n "$BUILD_SOURCE_REVISION" \
 # The event-loop stall dump is on by default: after 30 s without a loop tick it writes every
 # thread's stack to stderr with the prefix [event-loop-stall]. SGLANG_EVENT_LOOP_STALL_DUMP_SECS=0
 # disables it; SGLANG_EVENT_LOOP_STALL_DUMP_REPEAT_SECS (default 60) spaces the repeats.
+# The ghost prefix cache is inert unless SGLANG_GHOST_CACHE=1: then TP rank 0 hashes each finished
+# request's 64-token pages with a per-process random key on a background thread and exports only
+# aggregate counters (sglang:ghost_*): prompt tokens seen before, by LRU reuse distance and by age.
+# With a shared SGLANG_GHOST_CACHE_KEY_FILE and SGLANG_GHOST_CACHE_SOCKET the replicas of one CVM also
+# send sampled digests to a sidecar (python3 -m sglang.srt.observability.ghost_aggregator) that keeps
+# a pooled ghost cache and counts tokens seen before only on another replica.
 # Everything inherited from the base stays opt-in: admission reserve v10 via
 # SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE, and HiCache via --enable-hierarchical-cache plus
 # SGLANG_HICACHE_*. On an HCC/PPCIe (TEE) host SGLANG_HICACHE_CUDA_HOST_MEMORY must stay 1; 0 selects
