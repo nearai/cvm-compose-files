@@ -54,6 +54,22 @@ Also, as for every base-host change:
 - set `force_recreate: false`;
 - run every call with `dry_run: true` first.
 
+**Image check (2026-10-01, gpu32):** `47aff791…` accepts `write_through_selective`. Its engine, cache, scheduler and DSA kernel sources are byte-identical to the lab build the TP2 numbers came from (`glm53-hicache-w4afp8:qsplit-verify`). Only the HTTP/event-loop files differ (`http_server.py`, `serving_base.py`, `tokenizer_manager.py`, `event_loop_stall_dump.py`: the off-loop patches and stall dump).
+
+## Tiered rollout
+
+The base tier has two hosts, gpu03 and gpu04. Move one host at a time, and each stage needs its gate before the next.
+
+| Stage | Where | What runs | Exit gate |
+|---|---|---|---|
+| 0 | lab (gpu31/gpu32) | TP2 quality gate (GSM8K, MMLU, perception) vs TP4 on the same image | parity with TP4 |
+| 1 | **gpu04, drained** (registrar down; gpu03 carries base alone in a low-traffic window) | This file, out of rotation. Perception check on r1..r4 and a short paired replay through the soak relay. | All 4 replicas up under CC with their 325 GiB tiers, no 801/NCCL/Xid/OOM, `MemAvailable` ≥ 20 GiB, perception `ok: true`, replay TTFT/throughput in line with the lab |
+| 2 | **gpu04 in rotation** (re-register) | 1 of 2 base hosts on 4x TP2; gpu03 stays on 2x TP4 as the live control | 24–48 h clean: no restarts/OOM, 503s not above gpu03, hit rate ≈ gpu03, TTFT p50/p90 by bucket ≤ gpu03 for ≤10K prompts |
+| 3 | **gpu03** | Same procedure as stages 1–2 | Another 24 h clean on both hosts |
+| 4 | follow-ups, lab first | Raise the TP2 running cap (`--max-mamba-cache-size`), then re-canary on one host | Separate change and PR |
+
+At any stage, roll back that host to `prod/GLM-5.3-Flash-SGL-TP4-W4AFP8.yaml` (see Rollback). The other base host stays on TP4 until stage 3, so the base domain always keeps one known-good host.
+
 ## The orphan rule
 
 compose-manager always runs `up -d --remove-orphans`. None of the four new engine names exists in the TP4 file, and neither of the two old names exists in the new file. Stop the old engines with a **scoped `compose/down` of the TP4 file first**, so their 5 m grace applies. **Never let `--remove-orphans` perform the switch.**
