@@ -16,7 +16,7 @@
   - The collector has one scrape job per engine.
   - The perception check loops over r1..r4.
   - The soak relay maps `:8008`–`:8011` to r1..r4.
-- **Telemetry.** `deployment` is `glm53-flash-sgl-tp2x4` on every service, so dashboards can split out the canary host. `config_variant` is `hicache-w4afp8-qsplit-selective325-c8192-admission-reserve-v10-pdi1-h200-tp2-ep2-eagle-adaptive-5-1-6-strict-budget8192` and `engine_image` is `47aff7910900`.
+- **Telemetry.** Prometheus scrape labels use `deployment="glm53-flash-sgl-tp4"`, so existing dashboards and alerts include the host, plus `topology="tp2x4"` to split out the canary. Container labels and log tags keep `glm53-flash-sgl-tp2x4`. `config_variant` is `hicache-w4afp8-qsplit-selective325-c8192-admission-reserve-v10-pdi1-h200-tp2-ep2-eagle-adaptive-5-1-6-strict-budget8192` and `engine_image` is `47aff7910900`.
 - **Unchanged.** Domains, nginx, the registrar (except one log line), the downloader, DCGM and the OTel pipeline. `scripts/validate_glm53_prod_config.rb` enforces this.
 
 ## Evidence
@@ -87,6 +87,8 @@ compose-manager always runs `up -d --remove-orphans`. None of the four new engin
    - Run `glm53-perception-check` and expect `qualification_finished` with `ok: true`.
    - `compose/down` both verification services.
 5. **Re-register.** Run `compose/up` on this file with `services: ["model-proxy-registrar"]`. Then send a real base completion and a cache-hit follow-up.
+
+For a collector-only config change, dry-run `compose/up` with `services: ["otelcol-contrib"]` and `force_recreate: true`: inline `configs:` are not hashed. Apply only when the dry-run plan recreates `otelcol-contrib` alone.
 
 ## Watch list (canary host vs the other base hosts)
 

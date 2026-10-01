@@ -562,6 +562,7 @@ W4AFP8_TP2X4_IMAGE = "docker.io/nearaidev/sglang@sha256:47aff791090003a37f893e99
 W4AFP8_TP2X4_VARIANT = "hicache-w4afp8-qsplit-selective325-c8192-admission-reserve-v10-pdi1-h200-tp2-ep2-eagle-adaptive-5-1-6-strict-budget8192"
 W4AFP8_TP2X4_DEPLOYMENT = "glm53-flash-sgl-tp2x4"
 W4AFP8_BASE_DEPLOYMENT = "glm53-flash-sgl-tp4"
+W4AFP8_TP2X4_TOPOLOGY = "tp2x4"
 W4AFP8_TP2X4_PREFIX = "model-sg-glm53-w4afp8-tp2-r"
 W4AFP8_TP2X4_REPLICAS = {
   "#{W4AFP8_TP2X4_PREFIX}1" => { "devices" => %w[0 1], "instance" => "1", "soak_port" => "8008" },
@@ -615,9 +616,11 @@ def w4afp8_tp2x4_view(errors, file_label, compose, replica_names)
   if otel && otel["content"]
     collector = load_embedded_yaml(errors, "#{file_label} otelcol_app_config", otel["content"])
     if collector
-      Array(collector.dig("receivers", "prometheus/apps", "config", "scrape_configs")).reject! do |job|
+      scrape_configs = Array(collector.dig("receivers", "prometheus/apps", "config", "scrape_configs"))
+      scrape_configs.reject! do |job|
         job.is_a?(Hash) && replica_names.any? { |name| job["job_name"] == "sglang-#{name}" }
       end
+      scrape_configs.each { |job| job.dig("static_configs", 0, "labels")&.delete("topology") if job.is_a?(Hash) }
       otel["content"] = collector
     end
   end
@@ -637,7 +640,9 @@ def validate_w4afp8_tp2x4(errors, compose, base, raw)
   errors << "#{label} is missing services: #{missing.join(', ')}" unless missing.empty?
   errors << "#{label} has unexpected services: #{extra.join(', ')}" unless extra.empty?
   errors << "#{label} file must not reference any TP4 engine (tp4-r)" if raw.include?("tp4-r")
-  errors << "#{label} file must not carry the #{W4AFP8_BASE_DEPLOYMENT} deployment label" if raw.include?("#{W4AFP8_BASE_DEPLOYMENT}\"")
+  if raw.include?("nearai.otel.deployment: \"#{W4AFP8_BASE_DEPLOYMENT}\"") || raw.include?("deployment:#{W4AFP8_BASE_DEPLOYMENT}\"")
+    errors << "#{label} file must not carry the #{W4AFP8_BASE_DEPLOYMENT} deployment label"
+  end
 
   expected_env = environment_map(base.dig("services", W4AFP8_BASE_REPLICAS.keys.first) || {}).merge(W4AFP8_TP2X4_EXTRA_ENV)
   collector = load_embedded_yaml(errors, "#{label} file otelcol_app_config", compose.dig("configs", "otelcol_app_config", "content"))
@@ -697,9 +702,19 @@ def validate_w4afp8_tp2x4(errors, compose, base, raw)
     errors << "#{label} sglang-#{name} must scrape #{name}:8000" if scrape && scrape.dig("static_configs", 0, "targets") != ["#{name}:8000"]
     {
       "container_name" => name, "model_path" => W4AFP8_CHECKPOINT, "precision" => W4AFP8_PRECISION, "engine_image" => engine_image_label,
-      "instance" => spec["instance"], "deployment" => W4AFP8_TP2X4_DEPLOYMENT,
+      "instance" => spec["instance"], "deployment" => W4AFP8_BASE_DEPLOYMENT, "topology" => W4AFP8_TP2X4_TOPOLOGY,
     }.each do |key, value|
       errors << "#{label} sglang-#{name} scrape label #{key} must be #{value.inspect}, got #{scrape_labels[key].inspect}" if scrape && scrape_labels[key] != value
+    end
+  end
+
+  %w[dcgm-dcgm-glm53 inference-proxy-proxy-glm53].each do |job_name|
+    scrape = scrape_job(errors, label, collector, job_name)
+    next if scrape.nil?
+
+    scrape_labels = scrape.dig("static_configs", 0, "labels") || {}
+    { "deployment" => W4AFP8_BASE_DEPLOYMENT, "topology" => W4AFP8_TP2X4_TOPOLOGY }.each do |key, value|
+      errors << "#{label} #{job_name} scrape label #{key} must be #{value.inspect}, got #{scrape_labels[key].inspect}" unless scrape_labels[key] == value
     end
   end
 
