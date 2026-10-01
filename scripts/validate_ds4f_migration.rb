@@ -149,6 +149,7 @@ end
   assert.call(small_engine_command.include?(flag), "gpu13 GLM HiCache contract changed: #{flag}")
 end
 small_engine_env = small_engine.fetch('environment')
+assert.call(small_engine_env.count('SGLANG_DSA_INDEXER_QSPLIT=1') == 1, 'gpu13 GLM must enable DSA indexer query split exactly once')
 [
   'SGLANG_HICACHE_RAM_BUDGET=${GLM53_HICACHE_RAM_BUDGET:-80%}',
   'SGLANG_HICACHE_CUDA_HOST_MEMORY=${GLM53_HICACHE_CUDA_HOST_MEMORY:-1}'
