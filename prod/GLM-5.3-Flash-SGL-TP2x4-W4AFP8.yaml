@@ -23,12 +23,15 @@
 #     DRAM tier per replica at 325 GiB.
 #   - write_through_selective (vs write_through) cut recomputed tokens 17-25% on the replay
 #     with no throughput/ITL cost.
-#   - Known limits: each TP2 replica caps at 15 running requests (mamba state cache,
-#     max_mamba_cache_size=77) and EAGLE target-verify graphs capture to batch 15. The lab
-#     arms ran exactly this way.
+#   - Running cap: 165 mamba state slots with BF16 SSM state (--max-mamba-cache-size 165
+#     --mamba-ssm-dtype bfloat16) let each TP2 replica run 32 requests instead of 15, with a
+#     1.0M-token VRAM pool and a 5.4M-token DRAM tier. Lab at 10 req/s offered per 8 GPUs vs
+#     the 15-running canary: 8.83 vs 7.74 req/s served (+14%), 2,064 vs 1,771 output tok/s
+#     (+16%), TTFT p50/p90 0.39/3.20 vs 1.60/5.56 s, backlog 228 vs 925, hit rate 76.8% vs
+#     71.5%. Cost: TPOT p90 188 vs 70 ms (bigger decode batches). Saturates at ~8.8 req/s.
 #
-# GATES before any deploy (docs/glm53-tp2x4-base-canary.md): (1) TP2 quality gate
-# (GSM8K/MMLU + perception check) at parity with TP4 in the lab - PENDING; (2) a prod-CVM
+# GATES before any deploy (docs/glm53-tp2x4-base-canary.md): (1) quality with BF16 mamba
+# state (GSM8K + perception check) at parity with the FP32-state TP2 file - PENDING; (2) a prod-CVM
 # test on a drained host agreed with Lloyd: CC-on startup of 4 x 325 GiB pinned host tiers
 # (cudaMallocHost), TP2 NCCL under PPCIe, CVM MemAvailable headroom, cold-start time;
 # (3) the image already pulled on the host; (4) Pranav + Lloyd go.
@@ -65,7 +68,7 @@ x-logging-conf: &logging-conf
 # SGLANG_ADMISSION_RESERVE_MAX_FRACTION=0.75 and --prefill-decode-interval 1. The
 # official CUDA 13 SGLang image is the pinned build base. The serving envelope is
 # intentionally conservative: BF16 KV, 0.80 static memory, 32 running requests (an
-# effective 15 per TP2 replica, see the file header), a
+# effective 32 per TP2 replica with 165 BF16 mamba state slots, see the file header), a
 # bounded 8-request queue, 8192-token prefill chunks with --max-prefill-tokens 32768,
 # decode graphs capped at batch 32, TileLang DSA, the CUTLASS W4A8 MoE path (hence no
 # --moe-runner-backend and no FP8 --revision), and adaptive EAGLE 5/1/6. This retains
@@ -154,6 +157,8 @@ x-sg-glm53-flash-common: &sg-glm53-flash-common
       --hicache-write-policy write_through_selective
       --hicache-io-backend direct
       --hicache-mem-layout page_first_direct
+      --max-mamba-cache-size 165
+      --mamba-ssm-dtype bfloat16
   volumes:
     - kernel_cache:/root/.cache
     - huggingface_cache:/root/.cache/huggingface
@@ -427,7 +432,7 @@ services:
               device_ids: ["0","1"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-bf16-kv","deployment:glm53-flash-sgl-tp2x4","config_variant:hicache-w4afp8-qsplit-selective325-c8192-admission-reserve-v10-pdi1-h200-tp2-ep2-eagle-adaptive-5-1-6-strict-budget8192","request_logging:disabled","engine_image:47aff7910900","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:1"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-bf16-kv","deployment:glm53-flash-sgl-tp2x4","config_variant:hicache-w4afp8-qsplit-selective325-mamba165-bf16state-c8192-admission-reserve-v10-pdi1-h200-tp2-ep2-eagle-adaptive-5-1-6-strict-budget8192","request_logging:disabled","engine_image:47aff7910900","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:1"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -439,7 +444,7 @@ services:
       nearai.otel.model_path: "graphistry/GLM-5.3-Flash-W4AFP8"
       nearai.otel.served_model: "z-ai/glm-5.3-flash"
       nearai.otel.deployment: "glm53-flash-sgl-tp2x4"
-      nearai.otel.config_variant: "hicache-w4afp8-qsplit-selective325-c8192-admission-reserve-v10-pdi1-h200-tp2-ep2-eagle-adaptive-5-1-6-strict-budget8192"
+      nearai.otel.config_variant: "hicache-w4afp8-qsplit-selective325-mamba165-bf16state-c8192-admission-reserve-v10-pdi1-h200-tp2-ep2-eagle-adaptive-5-1-6-strict-budget8192"
       nearai.otel.thinking_budget_policy: "default8192-public-to-native"
       nearai.otel.request_logging: "disabled"
       nearai.otel.engine_image: "47aff7910900"
@@ -465,7 +470,7 @@ services:
               device_ids: ["2","3"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-bf16-kv","deployment:glm53-flash-sgl-tp2x4","config_variant:hicache-w4afp8-qsplit-selective325-c8192-admission-reserve-v10-pdi1-h200-tp2-ep2-eagle-adaptive-5-1-6-strict-budget8192","request_logging:disabled","engine_image:47aff7910900","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:2"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-bf16-kv","deployment:glm53-flash-sgl-tp2x4","config_variant:hicache-w4afp8-qsplit-selective325-mamba165-bf16state-c8192-admission-reserve-v10-pdi1-h200-tp2-ep2-eagle-adaptive-5-1-6-strict-budget8192","request_logging:disabled","engine_image:47aff7910900","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:2"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -477,7 +482,7 @@ services:
       nearai.otel.model_path: "graphistry/GLM-5.3-Flash-W4AFP8"
       nearai.otel.served_model: "z-ai/glm-5.3-flash"
       nearai.otel.deployment: "glm53-flash-sgl-tp2x4"
-      nearai.otel.config_variant: "hicache-w4afp8-qsplit-selective325-c8192-admission-reserve-v10-pdi1-h200-tp2-ep2-eagle-adaptive-5-1-6-strict-budget8192"
+      nearai.otel.config_variant: "hicache-w4afp8-qsplit-selective325-mamba165-bf16state-c8192-admission-reserve-v10-pdi1-h200-tp2-ep2-eagle-adaptive-5-1-6-strict-budget8192"
       nearai.otel.thinking_budget_policy: "default8192-public-to-native"
       nearai.otel.request_logging: "disabled"
       nearai.otel.engine_image: "47aff7910900"
@@ -503,7 +508,7 @@ services:
               device_ids: ["4","5"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-bf16-kv","deployment:glm53-flash-sgl-tp2x4","config_variant:hicache-w4afp8-qsplit-selective325-c8192-admission-reserve-v10-pdi1-h200-tp2-ep2-eagle-adaptive-5-1-6-strict-budget8192","request_logging:disabled","engine_image:47aff7910900","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:3"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-bf16-kv","deployment:glm53-flash-sgl-tp2x4","config_variant:hicache-w4afp8-qsplit-selective325-mamba165-bf16state-c8192-admission-reserve-v10-pdi1-h200-tp2-ep2-eagle-adaptive-5-1-6-strict-budget8192","request_logging:disabled","engine_image:47aff7910900","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:3"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -515,7 +520,7 @@ services:
       nearai.otel.model_path: "graphistry/GLM-5.3-Flash-W4AFP8"
       nearai.otel.served_model: "z-ai/glm-5.3-flash"
       nearai.otel.deployment: "glm53-flash-sgl-tp2x4"
-      nearai.otel.config_variant: "hicache-w4afp8-qsplit-selective325-c8192-admission-reserve-v10-pdi1-h200-tp2-ep2-eagle-adaptive-5-1-6-strict-budget8192"
+      nearai.otel.config_variant: "hicache-w4afp8-qsplit-selective325-mamba165-bf16state-c8192-admission-reserve-v10-pdi1-h200-tp2-ep2-eagle-adaptive-5-1-6-strict-budget8192"
       nearai.otel.thinking_budget_policy: "default8192-public-to-native"
       nearai.otel.request_logging: "disabled"
       nearai.otel.engine_image: "47aff7910900"
@@ -541,7 +546,7 @@ services:
               device_ids: ["6","7"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-bf16-kv","deployment:glm53-flash-sgl-tp2x4","config_variant:hicache-w4afp8-qsplit-selective325-c8192-admission-reserve-v10-pdi1-h200-tp2-ep2-eagle-adaptive-5-1-6-strict-budget8192","request_logging:disabled","engine_image:47aff7910900","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:4"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-bf16-kv","deployment:glm53-flash-sgl-tp2x4","config_variant:hicache-w4afp8-qsplit-selective325-mamba165-bf16state-c8192-admission-reserve-v10-pdi1-h200-tp2-ep2-eagle-adaptive-5-1-6-strict-budget8192","request_logging:disabled","engine_image:47aff7910900","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:4"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -553,7 +558,7 @@ services:
       nearai.otel.model_path: "graphistry/GLM-5.3-Flash-W4AFP8"
       nearai.otel.served_model: "z-ai/glm-5.3-flash"
       nearai.otel.deployment: "glm53-flash-sgl-tp2x4"
-      nearai.otel.config_variant: "hicache-w4afp8-qsplit-selective325-c8192-admission-reserve-v10-pdi1-h200-tp2-ep2-eagle-adaptive-5-1-6-strict-budget8192"
+      nearai.otel.config_variant: "hicache-w4afp8-qsplit-selective325-mamba165-bf16state-c8192-admission-reserve-v10-pdi1-h200-tp2-ep2-eagle-adaptive-5-1-6-strict-budget8192"
       nearai.otel.thinking_budget_policy: "default8192-public-to-native"
       nearai.otel.request_logging: "disabled"
       nearai.otel.engine_image: "47aff7910900"
@@ -978,7 +983,7 @@ configs:
                       ip: "${HOST_IP}"
                       port: "8000"
                       instance: "1"
-                      config_variant: "hicache-w4afp8-qsplit-selective325-c8192-admission-reserve-v10-pdi1-h200-tp2-ep2-eagle-adaptive-5-1-6-strict-budget8192"
+                      config_variant: "hicache-w4afp8-qsplit-selective325-mamba165-bf16state-c8192-admission-reserve-v10-pdi1-h200-tp2-ep2-eagle-adaptive-5-1-6-strict-budget8192"
                       thinking_budget_policy: "default8192-public-to-native"
                       request_logging: "disabled"
                       engine_image: "47aff7910900"
@@ -1003,7 +1008,7 @@ configs:
                       ip: "${HOST_IP}"
                       port: "8000"
                       instance: "2"
-                      config_variant: "hicache-w4afp8-qsplit-selective325-c8192-admission-reserve-v10-pdi1-h200-tp2-ep2-eagle-adaptive-5-1-6-strict-budget8192"
+                      config_variant: "hicache-w4afp8-qsplit-selective325-mamba165-bf16state-c8192-admission-reserve-v10-pdi1-h200-tp2-ep2-eagle-adaptive-5-1-6-strict-budget8192"
                       thinking_budget_policy: "default8192-public-to-native"
                       request_logging: "disabled"
                       engine_image: "47aff7910900"
@@ -1028,7 +1033,7 @@ configs:
                       ip: "${HOST_IP}"
                       port: "8000"
                       instance: "3"
-                      config_variant: "hicache-w4afp8-qsplit-selective325-c8192-admission-reserve-v10-pdi1-h200-tp2-ep2-eagle-adaptive-5-1-6-strict-budget8192"
+                      config_variant: "hicache-w4afp8-qsplit-selective325-mamba165-bf16state-c8192-admission-reserve-v10-pdi1-h200-tp2-ep2-eagle-adaptive-5-1-6-strict-budget8192"
                       thinking_budget_policy: "default8192-public-to-native"
                       request_logging: "disabled"
                       engine_image: "47aff7910900"
@@ -1053,7 +1058,7 @@ configs:
                       ip: "${HOST_IP}"
                       port: "8000"
                       instance: "4"
-                      config_variant: "hicache-w4afp8-qsplit-selective325-c8192-admission-reserve-v10-pdi1-h200-tp2-ep2-eagle-adaptive-5-1-6-strict-budget8192"
+                      config_variant: "hicache-w4afp8-qsplit-selective325-mamba165-bf16state-c8192-admission-reserve-v10-pdi1-h200-tp2-ep2-eagle-adaptive-5-1-6-strict-budget8192"
                       thinking_budget_policy: "default8192-public-to-native"
                       request_logging: "disabled"
                       engine_image: "47aff7910900"
