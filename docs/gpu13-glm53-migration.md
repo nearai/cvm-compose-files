@@ -1,5 +1,26 @@
 # gpu13 GLM-5.3 Flash migration
 
+## 2026-10-01 DSA indexer query-split mitigation (source only)
+
+The gpu13 GLM engine crashed during uncached 8192-token prefill in
+`dsa_indexer_kpool._get_topk_ragged_kpool_plan -> deep_gemm.fp8_mqa_logits`:
+13.31–13.37 GiB transient GPU allocations exceeded available VRAM. The v3
+image (`47aff7910900`) was already live when this happened. This source change
+sets `SGLANG_DSA_INDEXER_QSPLIT=1` only on `model-sg-glm53-fp8-tp4`, dividing
+the DSA logits scratch across TP4 ranks. It reduces the per-rank allocation but
+does not bound it at every context length.
+
+Any live rollout requires separate approval. Before a future service-scoped
+rollout, capture a fresh deployed tag, full dashboard environment, engine image,
+container IDs and `CreatedAt` values, and prove the surviving long-tier capacity
+can generate. Dry-run an up of only `model-sg-glm53-fp8-tp4` and verify that no
+other service is targeted; then roll out only that engine. Verify its new image,
+argv and environment, readiness and a real generation, and unchanged IDs and
+`CreatedAt` for every other container. Watch for restarts, DSA/CUDA OOMs, and
+queue and latency regressions. If verification fails, roll back only the engine
+to the freshly recorded prior tag with the complete environment, then repeat
+identity, readiness, generation, and OOM checks.
+
 This procedure replaces the two retired DeepSeek-V4-Flash TP2 services in
 `prod/small-models.yaml` with one GLM-5.3-Flash TP4/EP4 service. The final GPU
 layout is:
@@ -11,7 +32,10 @@ layout is:
 | 3 | FLUX, Qwen3-VL, embedding, reranker, and Whisper |
 | 4-7 | GLM-5.3-Flash |
 
-## Engine-only v3 image upgrade (not yet deployed)
+## Historical: engine-only v3 image upgrade (deployed before 2026-10-01)
+
+The following is the earlier upgrade record; its deployment status and baseline
+values are historical.
 
 This candidate changes only `model-sg-glm53-fp8-tp4` from
 `docker.io/nearaidev/sglang@sha256:fde25985aea3ebabf1eb581ae21d53be8540e32933eef942ee8b962a1bfbea20`
