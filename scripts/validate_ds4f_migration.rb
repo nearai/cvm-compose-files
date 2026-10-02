@@ -163,7 +163,7 @@ end
   assert.call(small_engine_env.none? { |entry| entry.to_s.start_with?("#{var}=") }, "gpu13 GLM must not set #{var}: the admission reserve is unsafe on the long tier")
 end
 small_proxy = small_services.fetch('proxy-glm53')
-assert.call(small_proxy['image'] == 'nearaidev/vllm-proxy-rs@sha256:b3a8c6260834231271b4356c56a7aa2718608c8a537b35973916e0a56dc88fba', 'Qualified gpu13 GLM proxy image changed')
+assert.call(small_proxy['image'] == 'nearaidev/vllm-proxy-rs@sha256:d61357da39918a57126864a451eaf054f06a6989c03fe9a1666f7e6374ba6907', 'Qualified gpu13 GLM proxy image changed')
 assert.call(small_proxy.fetch('environment').include?('VLLM_BACKEND_URLS=http://model-sg-glm53-fp8-tp4:8000'), 'gpu13 GLM proxy must have one backend')
 assert.call(small_proxy.fetch('environment').include?('VLLM_BACKEND_CONVERSATION_AFFINITY=1'), 'gpu13 GLM affinity contract changed')
 dcgm_image = 'nvcr.io/nvidia/k8s/dcgm-exporter@sha256:ed594cf53fe6942e84b07b0740cdcbb249fa4b39cb21feeebf93881ae51f0b5e'
