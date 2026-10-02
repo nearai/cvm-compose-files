@@ -119,14 +119,8 @@ small_services.each do |name, service|
   device_ids = service.dig('deploy', 'resources', 'reservations', 'devices')&.flat_map { |device| device.fetch('device_ids') } || []
   next unless device_ids.any? { |id| %w[4 5 6 7].include?(id) }
 
-  assert.call(%w[model-sg-glm53-w4afp8-tp2-prefill model-sg-glm53-w4afp8-tp2-decode dcgm-glm53 glm53-pd-t0-probe].include?(name), "Unexpected gpu13 GPU 4-7 claim: #{name}")
+  assert.call(%w[model-sg-glm53-w4afp8-tp2-prefill model-sg-glm53-w4afp8-tp2-decode dcgm-glm53].include?(name), "Unexpected gpu13 GPU 4-7 claim: #{name}")
 end
-# The T0 transport probe shares GPUs 4-7 with the PD engines, so it must stay
-# profile-gated (never started by a plain compose/up) and must not restart.
-t0_probe = small_services.fetch('glm53-pd-t0-probe')
-assert.call(t0_probe['profiles'] == ['pd-t0'], 'gpu13 T0 probe must be gated behind the pd-t0 profile')
-assert.call(t0_probe['restart'] == 'no', 'gpu13 T0 probe must not restart')
-assert.call(small_ids.call('glm53-pd-t0-probe') == %w[4 5 6 7], 'gpu13 T0 probe must use GPUs 4-7')
 # gpu13's GLM replica is the OpenRouter lane's long-context backend and mirrors
 # gpu02 long r2's qualified W4AFP8+HiCache arm (campaign-2 L2):
 # prod/GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext.yaml, model-sg-glm53-w4afp8-tp4-r2.
