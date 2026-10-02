@@ -101,7 +101,7 @@ scalar_strings = lambda do |value|
   end
 end
 assert.call(scalar_strings.call(small).none? { |value| value.match?(/dsv4|deepseek|ds4f/i) }, 'gpu13 rendered configuration must not contain retired DS4F identities')
-assert.call(small_ids.call('model-sg-glm53-fp8-tp4') == %w[4 5 6 7], 'gpu13 GLM must use GPUs 4-7')
+assert.call(small_ids.call('model-sg-glm53-pd-prefill') == %w[4 5] && small_ids.call('model-sg-glm53-pd-decode') == %w[6 7], 'gpu13 GLM PD engines must use prefill GPUs 4-5 and decode GPUs 6-7')
 assert.call(small_ids.call('dcgm-glm53') == %w[4 5 6 7], 'gpu13 GLM exporter must use GPUs 4-7')
 shared_gpu3 = %w[
   model-sg-flux2-klein-4b-tp1
@@ -119,52 +119,59 @@ small_services.each do |name, service|
   device_ids = service.dig('deploy', 'resources', 'reservations', 'devices')&.flat_map { |device| device.fetch('device_ids') } || []
   next unless device_ids.any? { |id| %w[4 5 6 7].include?(id) }
 
-  assert.call(%w[model-sg-glm53-fp8-tp4 dcgm-glm53].include?(name), "Unexpected gpu13 GPU 4-7 claim: #{name}")
+  assert.call(%w[model-sg-glm53-pd-prefill model-sg-glm53-pd-decode dcgm-glm53 glm53-pd-t0-probe].include?(name), "Unexpected gpu13 GPU 4-7 claim: #{name}")
 end
+# The T0 transport probe shares GPUs 4-7 with the PD engines, so it must stay
+# profile-gated (never started by a plain compose/up) and must not restart.
+t0_probe = small_services.fetch('glm53-pd-t0-probe')
+assert.call(t0_probe['profiles'] == ['pd-t0'], 'gpu13 T0 probe must be gated behind the pd-t0 profile')
+assert.call(t0_probe['restart'] == 'no', 'gpu13 T0 probe must not restart')
+assert.call(small_ids.call('glm53-pd-t0-probe') == %w[4 5 6 7], 'gpu13 T0 probe must use GPUs 4-7')
 # gpu13's GLM replica is the OpenRouter lane's long-context backend and mirrors
 # gpu02 long r2's qualified W4AFP8+HiCache arm (campaign-2 L2):
 # prod/GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext.yaml, model-sg-glm53-w4afp8-tp4-r2.
-small_engine = small_services.fetch('model-sg-glm53-fp8-tp4')
-assert.call(small_engine['image'] == 'docker.io/nearaidev/sglang@sha256:47aff791090003a37f893e998c44794c410d3f7bdfc7fdd2dfab5eb5592b30bb', 'Qualified gpu13 GLM image changed')
-small_engine_command = small_engine.fetch('command')
-assert.call(small_engine_command.include?('--model-path /root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/snapshots/99f1fa70408c52b007d4fd69e02e5a522422e755'), 'gpu13 GLM must serve the qualified W4AFP8 snapshot')
-{
-  '--tp-size' => '4',
-  '--ep-size' => '4',
-  '--max-running-requests' => '32',
-  '--max-queued-requests' => '8',
-  '--cuda-graph-max-bs-decode' => '32'
-}.each do |flag, value|
-  exact_flag = /#{Regexp.escape(flag)} #{Regexp.escape(value)}\b/
-  assert.call(small_engine_command.match?(exact_flag), "gpu13 GLM runtime flag changed: #{flag} #{value}")
+prefill = small_services.fetch('model-sg-glm53-pd-prefill')
+decode = small_services.fetch('model-sg-glm53-pd-decode')
+router = small_services.fetch('glm53-pd-router')
+glm_image = 'docker.io/nearaidev/sglang@sha256:47aff791090003a37f893e998c44794c410d3f7bdfc7fdd2dfab5eb5592b30bb'
+[prefill, decode, router].each { |svc| assert.call(svc['image'] == glm_image, 'Qualified gpu13 GLM image changed') }
+model_path = '--model-path /root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/snapshots/99f1fa70408c52b007d4fd69e02e5a522422e755'
+{ 'prefill' => prefill, 'decode' => decode }.each do |role, svc|
+  command = svc.fetch('command')
+  env = svc.fetch('environment')
+  assert.call(command.include?(model_path), "gpu13 GLM #{role} must serve the qualified W4AFP8 snapshot")
+  { '--tp-size' => '2', '--ep-size' => '2', '--max-running-requests' => '32', '--cuda-graph-max-bs-decode' => '32',
+    '--disaggregation-mode' => role }.each do |flag, value|
+    assert.call(command.match?(/#{Regexp.escape(flag)} #{Regexp.escape(value)}\b/), "gpu13 GLM #{role} runtime flag changed: #{flag} #{value}")
+  end
+  assert.call(command.include?('--disaggregation-transfer-backend ${GLM53_PD_BACKEND:-mooncake}'), "gpu13 GLM #{role} transfer backend contract changed")
+  assert.call(command.include?('--speculative-algorithm EAGLE'), "gpu13 GLM #{role} must keep EAGLE")
+  assert.call(env.include?('MOONCAKE_PROTOCOL=tcp'), "gpu13 GLM #{role} must use the Mooncake TCP protocol")
+  assert.call(env.include?('NCCL_DEBUG=INFO') && env.include?('NCCL_DEBUG_SUBSYS=INIT,P2P,ENV'), "gpu13 GLM #{role} NCCL transport logging changed")
+  assert.call(env.count('SGLANG_DSA_INDEXER_QSPLIT=1') == 1, "gpu13 GLM #{role} must enable DSA indexer query split exactly once")
+  %w[SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE SGLANG_ADMISSION_RESERVE_MAX_FRACTION].each do |var|
+    assert.call(env.none? { |entry| entry.to_s.start_with?("#{var}=") }, "gpu13 GLM must not set #{var}: the admission reserve is unsafe on the long tier")
+  end
 end
-# HiCache is what buys this replica its long-context headroom; only the qualified
-# W4AFP8+HiCache image above may run it in a TEE guest.
-[
-  '--enable-hierarchical-cache',
-  '--hicache-write-policy write_through',
-  '--hicache-io-backend direct',
-  '--hicache-mem-layout page_first_direct'
-].each do |flag|
-  assert.call(small_engine_command.include?(flag), "gpu13 GLM HiCache contract changed: #{flag}")
+assert.call(prefill.fetch('command').include?('--disaggregation-bootstrap-port 8998'), 'gpu13 GLM prefill bootstrap port changed')
+# HiCache lives on prefill only; decode runs without a radix cache (incompatible with EAGLE).
+['--enable-hierarchical-cache', '--hicache-io-backend direct', '--hicache-mem-layout page_first_direct'].each do |flag|
+  assert.call(prefill.fetch('command').include?(flag), "gpu13 GLM prefill HiCache contract changed: #{flag}")
+  assert.call(!decode.fetch('command').include?(flag), "gpu13 GLM decode must not enable HiCache: #{flag}")
 end
-small_engine_env = small_engine.fetch('environment')
-assert.call(small_engine_env.count('SGLANG_DSA_INDEXER_QSPLIT=1') == 1, 'gpu13 GLM must enable DSA indexer query split exactly once')
+assert.call(decode.fetch('command').include?('--disable-radix-cache'), 'gpu13 GLM decode must disable the radix cache')
 [
-  'SGLANG_HICACHE_RAM_BUDGET=${GLM53_HICACHE_RAM_BUDGET:-80%}',
+  'SGLANG_HICACHE_RAM_BUDGET=${GLM53_PD_HICACHE_RAM_BUDGET:-325GiB}',
   'SGLANG_HICACHE_CUDA_HOST_MEMORY=${GLM53_HICACHE_CUDA_HOST_MEMORY:-1}'
 ].each do |entry|
-  assert.call(small_engine_env.include?(entry), "gpu13 GLM HiCache host-memory contract changed: #{entry}")
+  assert.call(prefill.fetch('environment').include?(entry), "gpu13 GLM prefill HiCache host-memory contract changed: #{entry}")
 end
-# The admission reserve crashed gpu02's long r2 with a Prefill OOM on 2026-09-18;
-# it is unsafe on the long tier until the pool-clamp guard is confirmed for gpu13,
-# and both gpu02 long arms run without it.
-%w[SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE SGLANG_ADMISSION_RESERVE_MAX_FRACTION].each do |var|
-  assert.call(small_engine_env.none? { |entry| entry.to_s.start_with?("#{var}=") }, "gpu13 GLM must not set #{var}: the admission reserve is unsafe on the long tier")
-end
+router_command = router.fetch('command')
+assert.call(router_command.include?('--pd-disaggregation') && router_command.include?('--prefill http://model-sg-glm53-pd-prefill:8000 8998') && router_command.include?('--decode http://model-sg-glm53-pd-decode:8000'), 'gpu13 GLM router must pair the PD prefill and decode engines')
+assert.call(!router.key?('ports'), 'gpu13 GLM router must stay internal')
 small_proxy = small_services.fetch('proxy-glm53')
 assert.call(small_proxy['image'] == 'nearaidev/vllm-proxy-rs@sha256:d61357da39918a57126864a451eaf054f06a6989c03fe9a1666f7e6374ba6907', 'Qualified gpu13 GLM proxy image changed')
-assert.call(small_proxy.fetch('environment').include?('VLLM_BACKEND_URLS=http://model-sg-glm53-fp8-tp4:8000'), 'gpu13 GLM proxy must have one backend')
+assert.call(small_proxy.fetch('environment').include?('VLLM_BACKEND_URLS=http://glm53-pd-router:8000'), 'gpu13 GLM proxy must have the PD router as its only backend')
 assert.call(small_proxy.fetch('environment').include?('VLLM_BACKEND_CONVERSATION_AFFINITY=1'), 'gpu13 GLM affinity contract changed')
 dcgm_image = 'nvcr.io/nvidia/k8s/dcgm-exporter@sha256:ed594cf53fe6942e84b07b0740cdcbb249fa4b39cb21feeebf93881ae51f0b5e'
 assert.call(small_services.fetch('dcgm-glm53')['image'] == dcgm_image, 'gpu13 GLM exporter image must be pinned')
@@ -189,7 +196,7 @@ tls_server_blocks = nginx.scan(/^server \{\n(?:.*\n)*?^\}$/).select { |block| bl
 host_name_blocks = tls_server_blocks.select { |block| block.include?('gpu13.hosts.near.ai') }
 assert.call(host_name_blocks.length == 1 && host_name_blocks.first.include?('proxy_pass http://proxy-glm53:8000;'), 'gpu13.hosts.near.ai must be bound to the GLM vhost only')
 small_jobs = YAML.safe_load(small.fetch('configs').fetch('otelcol_app_config').fetch('content')).dig('receivers', 'prometheus/apps', 'config', 'scrape_configs')
-%w[sglang-model-sg-glm53-fp8-tp4 dcgm-dcgm-glm53 dcgm-dcgm-shared-gpu3 inference-proxy-proxy-glm53].each do |job|
+%w[sglang-model-sg-glm53-pd-prefill sglang-model-sg-glm53-pd-decode sglang-router-glm53-pd-router dcgm-dcgm-glm53 dcgm-dcgm-shared-gpu3 inference-proxy-proxy-glm53].each do |job|
   assert.call(small_jobs.any? { |entry| entry['job_name'] == job }, "gpu13 OTel scrape missing: #{job}")
 end
 
