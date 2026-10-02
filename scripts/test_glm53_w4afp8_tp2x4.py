@@ -51,9 +51,12 @@ class GeneratedFileTest(unittest.TestCase):
         self.assertIn("ROLLBACK: prod/GLM-5.3-Flash-SGL-TP4-W4AFP8.yaml", header)
         self.assertIn(generator.IMAGE, header)
 
-    def test_no_tp4_engine_or_deployment_reference_survives(self) -> None:
+    def test_scrape_deployment_and_topology_preserve_service_identity(self) -> None:
         self.assertNotIn("tp4-r", self.target)
-        self.assertNotIn('glm53-flash-sgl-tp4"', self.target)
+        self.assertEqual(self.target.count('                      deployment: "glm53-flash-sgl-tp4"\n'), 6)
+        self.assertEqual(self.target.count('                      deployment: "glm53-flash-sgl-tp4"\n                      topology: "tp2x4"\n'), 6)
+        self.assertNotIn('nearai.otel.deployment: "glm53-flash-sgl-tp4"', self.target)
+        self.assertNotIn('deployment:glm53-flash-sgl-tp4', self.target)
         self.assertEqual(self.target.count("deployment:glm53-flash-sgl-tp2x4"), 12)
 
     def test_four_replicas_one_per_nvlink_pair(self) -> None:
@@ -207,6 +210,15 @@ class ValidatorContractTest(unittest.TestCase):
              "must not carry the glm53-flash-sgl-tp4 deployment label"),
             ('"deployment:glm53-flash-sgl-tp2x4"', '"deployment:glm53-flash-sgl-tp4"', 1,
              "must not carry the glm53-flash-sgl-tp4 deployment label"),
+            ('                      deployment: "glm53-flash-sgl-tp4"\n',
+             '                      deployment: "glm53-flash-sgl-tp2x4"\n', 0, "scrape label deployment"),
+            ('                      deployment: "glm53-flash-sgl-tp4"\n',
+             '                      deployment: "glm53-flash-sgl-tp2x4"\n', 4, "dcgm-dcgm-glm53 scrape label deployment"),
+            ('                      deployment: "glm53-flash-sgl-tp4"\n',
+             '                      deployment: "glm53-flash-sgl-tp2x4"\n', 5, "inference-proxy-proxy-glm53 scrape label deployment"),
+            ('                      topology: "tp2x4"\n', '', 0, "scrape label topology"),
+            ('                      topology: "tp2x4"\n', '', 4, "dcgm-dcgm-glm53 scrape label topology"),
+            ('                      topology: "tp2x4"\n', '', 5, "inference-proxy-proxy-glm53 scrape label topology"),
         )
         for needle, replacement, index, message in cases:
             with self.subTest(mutation=message):

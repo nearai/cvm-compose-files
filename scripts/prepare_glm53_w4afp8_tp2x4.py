@@ -11,7 +11,7 @@ HiCache + W4AFP8 image the long tier runs, with a 325 GiB write_through_selectiv
 per replica and the DSA indexer split. Everything else (domains, nginx, registrar, proxy
 behavior, DCGM, the OTel pipeline) stays byte-identical to the source apart from the replica
 names, the per-replica fan-out of the proxy pool, scrape jobs, perception check and soak
-relay, and the deployment label that splits the canary host on dashboards. `--write`
+relay, and the topology scrape label that splits the canary host on dashboards. `--write`
 regenerates the target; `--check` prints a diff and exits non-zero when the committed
 target is stale.
 """
@@ -35,6 +35,7 @@ SOURCE_SERVICE_PREFIX: Final = "model-sg-glm53-w4afp8-tp4-r"
 SERVICE_PREFIX: Final = "model-sg-glm53-w4afp8-tp2-r"
 SOURCE_DEPLOYMENT: Final = "glm53-flash-sgl-tp4"
 DEPLOYMENT: Final = "glm53-flash-sgl-tp2x4"
+TOPOLOGY: Final = "tp2x4"
 SOURCE_VARIANT: Final = "fc91d24-w4afp8-c4096-admission-reserve-v10-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
 VARIANT: Final = "hicache-w4afp8-qsplit-selective325-c8192-admission-reserve-v10-pdi1-h200-tp2-ep2-eagle-adaptive-5-1-6-strict-budget8192"
 REPLICAS: Final = (1, 2, 3, 4)
@@ -269,10 +270,15 @@ def generate(source: str) -> str:
         (f'"engine_image:{SOURCE_ENGINE_IMAGE_LABEL}"', f'"engine_image:{ENGINE_IMAGE_LABEL}"', 2, "log engine_image"),
         (f'engine_image: "{SOURCE_ENGINE_IMAGE_LABEL}"\n', f'engine_image: "{ENGINE_IMAGE_LABEL}"\n', 4, "metric engine_image"),
         (f'deployment:{SOURCE_DEPLOYMENT}"', f'deployment:{DEPLOYMENT}"', 10, "log deployment"),
-        (f'deployment: "{SOURCE_DEPLOYMENT}"\n', f'deployment: "{DEPLOYMENT}"\n', 8, "metric deployment"),
+        (f'nearai.otel.deployment: "{SOURCE_DEPLOYMENT}"\n', f'nearai.otel.deployment: "{DEPLOYMENT}"\n', 4, "container deployment"),
+        (f'                      deployment: "{SOURCE_DEPLOYMENT}"\n',
+         f'                      deployment: "{SOURCE_DEPLOYMENT}"\n                      topology: "{TOPOLOGY}"\n',
+         4, "scrape topology"),
     ):
         updated = replace_exact(updated, old, new, count, label)
-    if SOURCE_DEPLOYMENT + '"' in updated or SOURCE_ENGINE_IMAGE_LABEL in updated:
+    if (f'nearai.otel.deployment: "{SOURCE_DEPLOYMENT}"' in updated
+            or f'deployment:{SOURCE_DEPLOYMENT}"' in updated
+            or SOURCE_ENGINE_IMAGE_LABEL in updated):
         raise GenerationError("a source deployment or engine_image label survived")
 
     # Engine services: r1's block rendered once per replica.
