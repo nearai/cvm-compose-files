@@ -57,10 +57,13 @@ Run `dry_run: true` first wherever compose-manager supports it.
    - Leave every other gpu13 service running.
 4. **Deploy PD.**
    - `compose/up` with services
-     `["model-sg-glm53-w4afp8-tp2-prefill","model-sg-glm53-w4afp8-tp2-decode","model-sg-glm53-w4afp8-pd-router","proxy-glm53","dcgm-glm53"]`
-     and `force_recreate: false`.
-   - Run with `dry_run: true` first. The only removal allowed is the stopped `model-sg-glm53-fp8-tp4`.
-     Any other removal means abort.
+     `["model-sg-glm53-w4afp8-tp2-prefill","model-sg-glm53-w4afp8-tp2-decode","model-sg-glm53-w4afp8-pd-router","proxy-glm53","dcgm-glm53","otelcol-contrib"]`
+     and `force_recreate: false`. `otelcol-contrib` is included because its scrape config changes.
+   - Run with `dry_run: true` first. The only removal allowed is the `model-sg-glm53-fp8-tp4`
+     container. `--remove-orphans` removes it during this step. Any other removal means abort.
+   - nginx resolves `proxy-glm53` only at startup, and recreating `proxy-glm53` gives it a new
+     address. Run a separate `compose/up` with services `["nginx"]` and `force_recreate: true`
+     after `proxy-glm53` is up. Otherwise ports 8009 and 8444 return 502.
    - Cold start takes about 15-30 minutes.
 5. **Smoke check.**
    - Run `glm53-perception-check` and the `glm53-soak-relay` checks against `proxy-glm53`.
@@ -84,11 +87,14 @@ Any one of these means rollback:
 ## Rollback
 
 1. Remove gpu13 from the gateway lists and confirm zero traffic.
-2. `compose/down` with services
+2. `compose/down` at the PD commit with services
    `["model-sg-glm53-w4afp8-tp2-prefill","model-sg-glm53-w4afp8-tp2-decode","model-sg-glm53-w4afp8-pd-router"]`.
+   The previous file does not define these services, so use the PD commit for this step.
 3. `compose/up` of the previous `prod/small-models.yaml` commit with services
-   `["model-sg-glm53-fp8-tp4","proxy-glm53","dcgm-glm53"]`. Cold start takes about 50 minutes.
-4. Re-add gpu13 to the gateway after the soak checks pass.
+   `["model-sg-glm53-fp8-tp4","proxy-glm53","dcgm-glm53","otelcol-contrib"]`. Cold start takes
+   about 50 minutes.
+4. `compose/up` with services `["nginx"]` and `force_recreate: true`.
+5. Re-add gpu13 to the gateway after the soak checks pass.
 
 ## Before deploy
 
@@ -98,7 +104,14 @@ Any one of these means rollback:
   `GLM53_PD_BACKEND=mooncake_tcp`.
 - Confirm that host RAM on gpu13 fits the 325 GiB prefill pool (free RAM minus 10 GiB). If it does
   not, override with `GLM53_PD_HICACHE_RAM_BUDGET`.
-- Dashboards keyed on `deployment=glm53-flash-sgl-tp4` will not show the new engines.
+- The proxy health check uses the router's `/readiness`, not `/health`, which always returns 200.
+- Labels keep `deployment=glm53-flash-sgl-tp4`, so existing dashboards and alert rules keep working.
+  `config_variant` and `pd_role` identify the PD engines.
+- The proxy's `/v1/metrics` returns 404, because the router exposes Prometheus metrics on port 29000
+  and not on its serving port. The gateway's engine-load probe for gpu13 falls back to its own
+  request counts.
+- Check that the router passes `priority`, `reasoning_effort` and
+  `stream_options.continuous_usage_stats` through to the engines.
 
 ## Approvals
 
