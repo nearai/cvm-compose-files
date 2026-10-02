@@ -4,6 +4,8 @@
 # experiment. Admission reserve remains required in the first two files and is
 # forbidden in the long-context experiment pending a pool-clamp image. Every file's
 # model-downloader also pre-stages the W4AFP8 snapshot (see REQUIRED_DOWNLOADS).
+# The generated W4AFP8 base, 4x TP2 base canary and W4AFP8 long-context files each
+# have their own exact contract below.
 
 require "json"
 require "shellwords"
@@ -16,7 +18,7 @@ LONG_CONTEXT_FILE = File.join(ROOT, "prod", "GLM-5.3-Flash-SGL-TP4-LongContext.y
 LEGACY_CANARY_FILE = File.join(ROOT, "prod", "GLM-5.3-Flash-SGL-TP4-Canary.yaml")
 RELEASED_IMAGE_FILE = File.join(ROOT, "docker", "sglang-glm53-hicache", "RELEASED_IMAGE")
 ENGINE_IMAGE = "docker.io/nearaidev/sglang@sha256:e9d29a1cb1cd65284392c4d62d5f2a36669628057e15c60fe93ea40cfe4fc7e7"
-PROXY_IMAGE = "nearaidev/vllm-proxy-rs@sha256:b3a8c6260834231271b4356c56a7aa2718608c8a537b35973916e0a56dc88fba"
+PROXY_IMAGE = "nearaidev/vllm-proxy-rs@sha256:d61357da39918a57126864a451eaf054f06a6989c03fe9a1666f7e6374ba6907"
 # Engine-side priority scheduling is only safe behind an inference-proxy that
 # overwrites the `priority` of every forwarded request (build 2834196 onward,
 # nearai/inference-proxy#241). Any other proxy build lets client-chosen or
@@ -24,6 +26,8 @@ PROXY_IMAGE = "nearaidev/vllm-proxy-rs@sha256:b3a8c6260834231271b4356c56a7aa2718
 # lowest possible priority.
 PRIORITY_NORMALIZING_PROXY_IMAGES = [
   "nearaidev/vllm-proxy-rs@sha256:b3a8c6260834231271b4356c56a7aa2718608c8a537b35973916e0a56dc88fba",
+  # inference-proxy main 0f37728 (includes #241 and #274 replica-state publishing).
+  "nearaidev/vllm-proxy-rs@sha256:d61357da39918a57126864a451eaf054f06a6989c03fe9a1666f7e6374ba6907",
 ].freeze
 PRIORITY_SWITCHES = %w[--enable-priority-scheduling --disable-priority-preemption].freeze
 # The proxy assigns every request's priority; an engine-side default would
@@ -548,6 +552,200 @@ def validate_w4afp8_base(errors, compose, canonical)
   errors << "#{label} file must match the canonical file outside the two engines and their telemetry (first difference: #{difference})"
 end
 
+# 4x TP2 base-tier canary (generated from the W4AFP8 base file): four TP2/EP2 replicas, one
+# per NVLink GPU pair, on the HiCache + W4AFP8 image the long tier runs, with exactly the
+# lab-qualified TP2 argv, the base engine environment plus a 325 GiB HiCache host tier and the
+# DSA indexer split. Outside the engines, their telemetry, the four-way fan-out (proxy pool,
+# perception loop, soak relay) and the deployment label it must equal the W4AFP8 base file.
+W4AFP8_TP2X4_FILE = File.join(ROOT, "prod", "GLM-5.3-Flash-SGL-TP2x4-W4AFP8.yaml")
+W4AFP8_TP2X4_IMAGE = "docker.io/nearaidev/sglang@sha256:47aff791090003a37f893e998c44794c410d3f7bdfc7fdd2dfab5eb5592b30bb"
+W4AFP8_TP2X4_VARIANT = "hicache-w4afp8-qsplit-selective325-c8192-admission-reserve-v10-pdi1-h200-tp2-ep2-eagle-adaptive-5-1-6-strict-budget8192"
+W4AFP8_TP2X4_DEPLOYMENT = "glm53-flash-sgl-tp2x4"
+W4AFP8_BASE_DEPLOYMENT = "glm53-flash-sgl-tp4"
+W4AFP8_TP2X4_PREFIX = "model-sg-glm53-w4afp8-tp2-r"
+W4AFP8_TP2X4_REPLICAS = {
+  "#{W4AFP8_TP2X4_PREFIX}1" => { "devices" => %w[0 1], "instance" => "1", "soak_port" => "8008" },
+  "#{W4AFP8_TP2X4_PREFIX}2" => { "devices" => %w[2 3], "instance" => "2", "soak_port" => "8009" },
+  "#{W4AFP8_TP2X4_PREFIX}3" => { "devices" => %w[4 5], "instance" => "3", "soak_port" => "8010" },
+  "#{W4AFP8_TP2X4_PREFIX}4" => { "devices" => %w[6 7], "instance" => "4", "soak_port" => "8011" },
+}.freeze
+W4AFP8_TP2X4_ARGV = Shellwords.split(<<~'ARGV').freeze
+  sglang serve
+  --model-path /root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/snapshots/99f1fa70408c52b007d4fd69e02e5a522422e755
+  --served-model-name z-ai/glm-5.3-flash
+  --tp-size 2 --ep-size 2
+  --mem-fraction-static 0.80
+  --max-running-requests 32 --max-queued-requests 8
+  --enable-priority-scheduling --disable-priority-preemption
+  --chunked-prefill-size 8192 --max-prefill-tokens 32768 --prefill-decode-interval 1
+  --cuda-graph-max-bs-decode 32
+  --dsa-prefill-backend tilelang --dsa-decode-backend tilelang
+  --kv-cache-dtype bfloat16
+  --speculative-algorithm EAGLE --speculative-num-steps 5 --speculative-eagle-topk 1
+  --speculative-num-draft-tokens 6 --speculative-adaptive
+  --reasoning-parser glm45 --enable-strict-thinking --grammar-backend xgrammar --tool-call-parser glm47
+  --chat-template /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/3f1971b7b5f7a528c9c4ef6212c8785298a8c24a/chat_template.jinja
+  --context-length 1048576
+  --dist-init-addr 127.0.0.1:29510
+  --watchdog-timeout 1800 --host 0.0.0.0 --port 8000
+  --enable-metrics --enable-cache-report --log-requests-level 0
+  --disable-fast-image-processor --limit-mm-data-per-request '{"image": 64}'
+  --enable-hierarchical-cache --hicache-write-policy write_through_selective
+  --hicache-io-backend direct --hicache-mem-layout page_first_direct
+ARGV
+W4AFP8_TP2X4_EXTRA_ENV = HICACHE_ENV.merge(
+  "SGLANG_HICACHE_RAM_BUDGET" => "${GLM53_HICACHE_RAM_BUDGET:-325GiB}",
+  "SGLANG_DSA_INDEXER_QSPLIT" => "1",
+).freeze
+
+# The W4AFP8 base file and the 4x TP2 file, reduced to what must be identical: engines, the
+# engine anchor, the replicas' scrape jobs, the proxy pool, the perception command and the
+# soak relay's ports/config removed (each asserted separately), names and labels normalized.
+def w4afp8_tp2x4_view(errors, file_label, compose, replica_names)
+  view = Marshal.load(Marshal.dump(compose))
+  view.delete("x-sg-glm53-flash-common")
+  services = view.fetch("services", {})
+  replica_names.each { |name| services.delete(name) }
+  services["glm53-perception-check"]&.delete("command")
+  services["glm53-soak-relay"]&.delete("ports")
+  view.dig("configs", "glm53_soak_nginx_conf")&.delete("content")
+  proxy = services["proxy-glm53"]
+  proxy["environment"] = Array(proxy["environment"]).reject { |entry| entry.to_s.start_with?("VLLM_BACKEND_URLS=") } if proxy
+  otel = view.dig("configs", "otelcol_app_config")
+  if otel && otel["content"]
+    collector = load_embedded_yaml(errors, "#{file_label} otelcol_app_config", otel["content"])
+    if collector
+      Array(collector.dig("receivers", "prometheus/apps", "config", "scrape_configs")).reject! do |job|
+        job.is_a?(Hash) && replica_names.any? { |name| job["job_name"] == "sglang-#{name}" }
+      end
+      otel["content"] = collector
+    end
+  end
+  JSON.parse(
+    JSON.generate(view)
+        .gsub(W4AFP8_TP2X4_DEPLOYMENT, W4AFP8_BASE_DEPLOYMENT)
+        .gsub("(4x TP2/EP2)", "(2x TP4/EP4)"),
+  )
+end
+
+def validate_w4afp8_tp2x4(errors, compose, base, raw)
+  label = "W4AFP8 4x TP2"
+  services = compose.fetch("services", {})
+  expected_services = EXPECTED_SERVICES - REPLICAS.keys + W4AFP8_TP2X4_REPLICAS.keys
+  missing = expected_services - services.keys
+  extra = services.keys - expected_services
+  errors << "#{label} is missing services: #{missing.join(', ')}" unless missing.empty?
+  errors << "#{label} has unexpected services: #{extra.join(', ')}" unless extra.empty?
+  errors << "#{label} file must not reference any TP4 engine (tp4-r)" if raw.include?("tp4-r")
+  errors << "#{label} file must not carry the #{W4AFP8_BASE_DEPLOYMENT} deployment label" if raw.include?("#{W4AFP8_BASE_DEPLOYMENT}\"")
+
+  expected_env = environment_map(base.dig("services", W4AFP8_BASE_REPLICAS.keys.first) || {}).merge(W4AFP8_TP2X4_EXTRA_ENV)
+  collector = load_embedded_yaml(errors, "#{label} file otelcol_app_config", compose.dig("configs", "otelcol_app_config", "content"))
+  engine_image_label = W4AFP8_TP2X4_IMAGE.split(":").last[0, 12]
+  replicas = {}
+  W4AFP8_TP2X4_REPLICAS.each do |name, spec|
+    service = services[name]
+    next errors << "#{label} missing services.#{name}" if service.nil?
+
+    replicas[name] = service
+    errors << "#{label} #{name} container_name must be #{name}" unless service["container_name"] == name
+    errors << "#{label} #{name} image must be #{W4AFP8_TP2X4_IMAGE}" unless service["image"] == W4AFP8_TP2X4_IMAGE
+    errors << "#{label} #{name} must use the prebuilt signed image, not a host-local build" if service.key?("build")
+    actual_argv = begin
+      Shellwords.split(command_text(service))
+    rescue ArgumentError => error
+      errors << "#{label} #{name} command cannot be parsed: #{error.message}"
+      []
+    end
+    unless actual_argv == W4AFP8_TP2X4_ARGV
+      drift = ((actual_argv - W4AFP8_TP2X4_ARGV) + (W4AFP8_TP2X4_ARGV - actual_argv)).uniq
+      errors << "#{label} #{name} argv must be the lab-qualified TP2 argv exactly; differing tokens: #{drift.first(8).join(' ')}"
+    end
+    env = environment_map(service)
+    REQUIRED_ENV.each do |key, value|
+      errors << "#{label} #{name} must set #{key}=#{value}" unless env[key] == value
+    end
+    (env.keys & FORBIDDEN_ENV).each { |key| errors << "#{label} #{name} must not set #{key}" }
+    unless env == expected_env
+      diff = (env.to_a - expected_env.to_a) + (expected_env.to_a - env.to_a)
+      errors << "#{label} #{name} environment must be the W4AFP8 base engine environment plus #{W4AFP8_TP2X4_EXTRA_ENV.map { |key, value| "#{key}=#{value}" }.join(' ')}; differing: #{diff.map { |key, value| "#{key}=#{value}" }.uniq.join(' ')}"
+    end
+    if env[W4AFP8_QSPLIT_ENV] == "1" && !W4AFP8_QSPLIT_CAPABLE_IMAGES.include?(service["image"])
+      errors << "#{label} #{name} sets #{W4AFP8_QSPLIT_ENV}=1 but does not run an approved split-capable image"
+    end
+    device_ids = Array(service.dig("deploy", "resources", "reservations", "devices", 0, "device_ids")).map(&:to_s)
+    errors << "#{label} #{name} must use GPU device_ids #{spec['devices'].join(',')}" unless device_ids == spec["devices"]
+
+    labels = service["labels"].is_a?(Hash) ? service["labels"] : {}
+    {
+      "nearai.otel.container_name" => name, "nearai.otel.model_path" => W4AFP8_CHECKPOINT, "nearai.otel.engine_image" => engine_image_label,
+      "nearai.otel.instance" => spec["instance"], "nearai.otel.deployment" => W4AFP8_TP2X4_DEPLOYMENT,
+    }.each do |key, value|
+      errors << "#{label} #{name} #{key} must be #{value.inspect}, got #{labels[key].inspect}" unless labels[key] == value
+    end
+    tags = begin
+      Array(JSON.parse(labels["com.datadoghq.ad.logs"].to_s).first&.fetch("tags", []))
+    rescue JSON::ParserError
+      []
+    end
+    ["model_path:#{W4AFP8_CHECKPOINT}", "precision:#{W4AFP8_PRECISION}", "engine_image:#{engine_image_label}", "instance:#{spec['instance']}", "deployment:#{W4AFP8_TP2X4_DEPLOYMENT}"].each do |tag|
+      errors << "#{label} #{name} log metadata must carry #{tag}" unless tags.include?(tag)
+    end
+    check_variant(errors, label, service, name, collector, W4AFP8_TP2X4_VARIANT)
+    scrape = scrape_job(errors, label, collector, "sglang-#{name}")
+    scrape_labels = scrape&.dig("static_configs", 0, "labels") || {}
+    errors << "#{label} sglang-#{name} must scrape #{name}:8000" if scrape && scrape.dig("static_configs", 0, "targets") != ["#{name}:8000"]
+    {
+      "container_name" => name, "model_path" => W4AFP8_CHECKPOINT, "precision" => W4AFP8_PRECISION, "engine_image" => engine_image_label,
+      "instance" => spec["instance"], "deployment" => W4AFP8_TP2X4_DEPLOYMENT,
+    }.each do |key, value|
+      errors << "#{label} sglang-#{name} scrape label #{key} must be #{value.inspect}, got #{scrape_labels[key].inspect}" if scrape && scrape_labels[key] != value
+    end
+  end
+
+  if replicas.length == W4AFP8_TP2X4_REPLICAS.length
+    contracts = replicas.values.map { |service| runtime_contract(service) }
+    errors << "#{label} replicas must use identical runtime configuration" unless contracts.uniq.length == 1
+  end
+
+  dcgm_labels = services.dig("dcgm-glm53", "labels") || {}
+  errors << "#{label} dcgm-glm53 nearai.otel.model_path must be #{W4AFP8_CHECKPOINT}" unless dcgm_labels["nearai.otel.model_path"] == W4AFP8_CHECKPOINT
+
+  proxy = services["proxy-glm53"] || {}
+  proxy_env = environment_map(proxy)
+  expected_backends = W4AFP8_TP2X4_REPLICAS.keys.map { |name| "http://#{name}:8000" }.join(",")
+  errors << "#{label} proxy-glm53 must pool all four TP2 replicas" unless proxy_env["VLLM_BACKEND_URLS"] == expected_backends
+  errors << "#{label} proxy-glm53 must enable conversation affinity" unless proxy_env["VLLM_BACKEND_CONVERSATION_AFFINITY"] == "1"
+  unless PRIORITY_NORMALIZING_PROXY_IMAGES.include?(proxy["image"])
+    errors << "#{label} enables SGLang priority scheduling but proxy-glm53 image #{proxy['image'].inspect} is not a priority-normalizing inference-proxy build"
+  end
+
+  errors << "#{label} glm53-perception-check image must be #{ENGINE_IMAGE}" unless services.dig("glm53-perception-check", "image") == ENGINE_IMAGE
+  perception = command_text(services["glm53-perception-check"] || {})
+  unless perception.include?("for replica in (1, 2, 3, 4):") && perception.include?("base = f\"http://#{W4AFP8_TP2X4_PREFIX}{replica}:8000\"")
+    errors << "#{label} glm53-perception-check must check replicas 1-4 at http://#{W4AFP8_TP2X4_PREFIX}{replica}:8000"
+  end
+
+  relay_ports = Array(services.dig("glm53-soak-relay", "ports")).map(&:to_s)
+  expected_ports = W4AFP8_TP2X4_REPLICAS.values.map { |spec| "#{spec['soak_port']}:#{spec['soak_port']}" }
+  errors << "#{label} glm53-soak-relay must publish #{expected_ports.join(', ')}" unless relay_ports == expected_ports
+  relay_conf = compose.dig("configs", "glm53_soak_nginx_conf", "content").to_s
+  relay_servers = relay_conf.scan(/listen (\d+) ssl;.*?set \$\$backend http:\/\/([^:;]+):8000;/m)
+  expected_servers = W4AFP8_TP2X4_REPLICAS.map { |name, spec| [spec["soak_port"], name] }
+  errors << "#{label} glm53-soak-relay must map #{expected_servers.map { |port, name| "#{port}->#{name}" }.join(', ')}" unless relay_servers == expected_servers
+
+  base_view = w4afp8_tp2x4_view(errors, "W4AFP8 base file", base, W4AFP8_BASE_REPLICAS.keys)
+  base_relay = base.dig("configs", "glm53_soak_nginx_conf", "content").to_s
+  target_view = w4afp8_tp2x4_view(errors, "#{label} file", compose, W4AFP8_TP2X4_REPLICAS.keys)
+  # The relay's shared http block (auth, TLS, timeouts) must be unchanged: compare it with the
+  # per-replica server blocks removed.
+  strip_servers = ->(conf) { conf.gsub(%r{^ *server \{\n.*?^ *location / \{ return 404; \}\n *\}\n}m, "") }
+  errors << "#{label} glm53-soak-relay config must match the W4AFP8 base file outside its per-replica servers" unless strip_servers.call(relay_conf) == strip_servers.call(base_relay)
+  return if base_view == target_view
+
+  errors << "#{label} file must match the W4AFP8 base file outside the engines, their fan-out and telemetry (first difference: #{first_difference(base_view, target_view)})"
+end
+
 # HiCache file: r1 stays the disabled control on the plain engine image and
 # is telemetry-pinned to OFFICIAL_VARIANT; r2 pins RELEASED_IMAGE, enables
 # HiCache with exactly the pinned options/env, is otherwise identical to r1,
@@ -635,7 +833,7 @@ W4AFP8_LONG_CONTEXT_V1_IMAGE = "docker.io/nearaidev/sglang@sha256:fde25985aea3eb
 W4AFP8_LONG_CONTEXT_V2_IMAGE = "docker.io/nearaidev/sglang@sha256:8ff1a487b98a52fe08b781715bebd7c8c445d4fe068f312f03f527d5a3c77e84"
 W4AFP8_LONG_CONTEXT_V3_IMAGE = "docker.io/nearaidev/sglang@sha256:47aff791090003a37f893e998c44794c410d3f7bdfc7fdd2dfab5eb5592b30bb"
 W4AFP8_QSPLIT_CAPABLE_IMAGES = [W4AFP8_LONG_CONTEXT_V2_IMAGE, W4AFP8_LONG_CONTEXT_V3_IMAGE].freeze
-W4AFP8_LONG_CONTEXT_VARIANT = "fc91d24-long-context-w4afp8-cCHUNK-QSPLITOFFLOOPhicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdiPDI-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
+W4AFP8_LONG_CONTEXT_VARIANT = "fc91d24-long-context-w4afp8-cCHUNK-QSPLITOFFLOOPhicache-cuda-host-pooled-v1-HOSTadmission-reserve-disabled-pool-clamp-pdiPDI-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
 W4AFP8_QSPLIT_ENV = "SGLANG_DSA_INDEXER_QSPLIT"
 # c16384 is only memory-safe WITH the split: without it a concurrent long burst left 0.04-0.65 GB
 # free, the condition that preceded the gpu02 crash. Enforced below for every replica.
@@ -644,9 +842,14 @@ W4AFP8_CHECKPOINT = "graphistry/GLM-5.3-Flash-W4AFP8"
 W4AFP8_PRECISION = "int4-weights-fp8-activations-bf16-kv"
 W4AFP8_LONG_CONTEXT_REPLICAS = {
   "model-sg-glm53-w4afp8-tp4-r1" => { "devices" => %w[0 1 2 3], "dist_init" => "127.0.0.1:29510", "instance" => "1", "pdi" => "1",
-                                     "image" => W4AFP8_LONG_CONTEXT_V3_IMAGE, "chunk" => "8192", "qsplit" => "1", "offloop" => "offloop-v3" },
+                                     "image" => W4AFP8_LONG_CONTEXT_V3_IMAGE, "chunk" => "8192", "qsplit" => "1", "offloop" => "offloop-v3",
+                                     "budget" => "${GLM53_HICACHE_RAM_BUDGET:-406GiB}", "host_variant" => "" },
   "model-sg-glm53-w4afp8-tp4-r2" => { "devices" => %w[4 5 6 7], "dist_init" => "127.0.0.1:29511", "instance" => "2", "pdi" => "2",
-                                     "image" => W4AFP8_LONG_CONTEXT_V3_IMAGE, "chunk" => "8192", "qsplit" => "1", "offloop" => "offloop-v3" },
+                                     "image" => W4AFP8_LONG_CONTEXT_V3_IMAGE, "chunk" => "8192", "qsplit" => "1", "offloop" => "offloop-v3",
+                                     # HiCache host-tier canary: write_through keeps the host tier an inclusive
+                                     # copy of the ~3.52M-token device pool, so 406 GiB (~4.99M tokens) adds only
+                                     # ~1.5M; 650 GiB (~8M) adds ~4.5M. r1 stays at 406 GiB as the control.
+                                     "budget" => "${GLM53_R2_HICACHE_RAM_BUDGET:-650GiB}", "host_variant" => "host650g-" },
 }.freeze
 W4AFP8_LONG_CONTEXT_ARGV = Shellwords.split(<<~'ARGV').freeze
   sglang serve
@@ -730,13 +933,14 @@ def validate_w4afp8_long_context(errors, compose, reference)
       errors << "#{label} #{name} argv must be campaign-2 arm L2 exactly (with --dist-init-addr #{spec['dist_init']} --prefill-decode-interval #{spec['pdi']}); differing tokens: #{drift.first(8).join(' ')}"
     end
     env = environment_map(service)
-    replica_expected_env = spec["qsplit"] ? expected_env.merge(W4AFP8_QSPLIT_ENV => spec["qsplit"]) : expected_env
+    replica_expected_env = expected_env.merge("SGLANG_HICACHE_RAM_BUDGET" => spec["budget"])
+    replica_expected_env = replica_expected_env.merge(W4AFP8_QSPLIT_ENV => spec["qsplit"]) if spec["qsplit"]
     reserve = env.keys & ADMISSION_RESERVE_ENV
     errors << "#{label} #{name} must not set admission-reserve environment: #{reserve.join(', ')}" unless reserve.empty?
     (env.keys & FORBIDDEN_ENV).each { |key| errors << "#{label} #{name} must not set #{key}" }
     unless env == replica_expected_env
       diff = (env.to_a - replica_expected_env.to_a) + (replica_expected_env.to_a - env.to_a)
-      errors << "#{label} #{name} environment must be the long-context control environment plus #{W4AFP8_LONG_CONTEXT_HICACHE_ENV.map { |key, value| "#{key}=#{value}" }.join(' ')}; differing: #{diff.map { |key, value| "#{key}=#{value}" }.uniq.join(' ')}"
+      errors << "#{label} #{name} environment must be the long-context control environment plus #{W4AFP8_LONG_CONTEXT_HICACHE_ENV.merge("SGLANG_HICACHE_RAM_BUDGET" => spec["budget"]).map { |key, value| "#{key}=#{value}" }.join(' ')}; differing: #{diff.map { |key, value| "#{key}=#{value}" }.uniq.join(' ')}"
     end
     # Hard pairing: a 16384 chunk without the indexer split is the pre-crash memory profile.
     # Assert it against what the file actually says, not against the expected spec, so the gate
@@ -768,6 +972,7 @@ def validate_w4afp8_long_context(errors, compose, reference)
                        .sub("QSPLIT", spec["qsplit"] ? "qsplit-" : "")
                        .sub("OFFLOOP", spec["offloop"] ? "#{spec['offloop']}-" : "")
                        .sub("pdiPDI", "pdi#{spec['pdi']}")
+                       .sub("HOST", spec["host_variant"])
     check_variant(errors, label, service, name, collector, expected_variant)
     scrape = scrape_job(errors, label, collector, "sglang-#{name}")
     scrape_labels = scrape&.dig("static_configs", 0, "labels") || {}
@@ -880,6 +1085,17 @@ if w4afp8_base_present
   end
 end
 
+w4afp8_tp2x4_present = File.exist?(W4AFP8_TP2X4_FILE)
+if w4afp8_tp2x4_present
+  w4afp8_tp2x4_compose = load_compose_file(errors, "W4AFP8 4x TP2 file", W4AFP8_TP2X4_FILE)
+  if w4afp8_tp2x4_compose && w4afp8_base_compose
+    validate_w4afp8_tp2x4(errors, w4afp8_tp2x4_compose, w4afp8_base_compose, File.read(W4AFP8_TP2X4_FILE))
+    validate_model_cache(errors, "W4AFP8 4x TP2", w4afp8_tp2x4_compose.fetch("services", {}))
+  elsif w4afp8_tp2x4_compose
+    errors << "W4AFP8 4x TP2 file requires the W4AFP8 base file it is generated from"
+  end
+end
+
 hicache_compose = nil
 if hicache_present
   hicache_compose = load_compose_file(errors, "HiCache file", HICACHE_FILE)
@@ -934,6 +1150,7 @@ end
 
 puts "GLM-5.3 production contract OK (prod/GLM-5.3-Flash-SGL-TP4.yaml)"
 puts "GLM-5.3 production contract OK (prod/GLM-5.3-Flash-SGL-TP4-W4AFP8.yaml)" if w4afp8_base_present
+puts "GLM-5.3 production contract OK (prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8.yaml)" if w4afp8_tp2x4_present
 puts "GLM-5.3 production contract OK (prod/GLM-5.3-Flash-SGL-TP4-HiCache.yaml)" if hicache_present
 puts "GLM-5.3 production contract OK (prod/GLM-5.3-Flash-SGL-TP4-LongContext.yaml)" if long_context_present
 puts "GLM-5.3 production contract OK (prod/GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext.yaml)" if w4afp8_long_context_present

@@ -125,7 +125,7 @@ end
 # gpu02 long r2's qualified W4AFP8+HiCache arm (campaign-2 L2):
 # prod/GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext.yaml, model-sg-glm53-w4afp8-tp4-r2.
 small_engine = small_services.fetch('model-sg-glm53-fp8-tp4')
-assert.call(small_engine['image'] == 'docker.io/nearaidev/sglang@sha256:fde25985aea3ebabf1eb581ae21d53be8540e32933eef942ee8b962a1bfbea20', 'Qualified gpu13 GLM image changed')
+assert.call(small_engine['image'] == 'docker.io/nearaidev/sglang@sha256:47aff791090003a37f893e998c44794c410d3f7bdfc7fdd2dfab5eb5592b30bb', 'Qualified gpu13 GLM image changed')
 small_engine_command = small_engine.fetch('command')
 assert.call(small_engine_command.include?('--model-path /root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/snapshots/99f1fa70408c52b007d4fd69e02e5a522422e755'), 'gpu13 GLM must serve the qualified W4AFP8 snapshot')
 {
@@ -149,8 +149,9 @@ end
   assert.call(small_engine_command.include?(flag), "gpu13 GLM HiCache contract changed: #{flag}")
 end
 small_engine_env = small_engine.fetch('environment')
+assert.call(small_engine_env.count('SGLANG_DSA_INDEXER_QSPLIT=1') == 1, 'gpu13 GLM must enable DSA indexer query split exactly once')
 [
-  'SGLANG_HICACHE_RAM_BUDGET=${GLM53_HICACHE_RAM_BUDGET:-406GiB}',
+  'SGLANG_HICACHE_RAM_BUDGET=${GLM53_HICACHE_RAM_BUDGET:-80%}',
   'SGLANG_HICACHE_CUDA_HOST_MEMORY=${GLM53_HICACHE_CUDA_HOST_MEMORY:-1}'
 ].each do |entry|
   assert.call(small_engine_env.include?(entry), "gpu13 GLM HiCache host-memory contract changed: #{entry}")
@@ -162,7 +163,7 @@ end
   assert.call(small_engine_env.none? { |entry| entry.to_s.start_with?("#{var}=") }, "gpu13 GLM must not set #{var}: the admission reserve is unsafe on the long tier")
 end
 small_proxy = small_services.fetch('proxy-glm53')
-assert.call(small_proxy['image'] == 'nearaidev/vllm-proxy-rs@sha256:b3a8c6260834231271b4356c56a7aa2718608c8a537b35973916e0a56dc88fba', 'Qualified gpu13 GLM proxy image changed')
+assert.call(small_proxy['image'] == 'nearaidev/vllm-proxy-rs@sha256:d61357da39918a57126864a451eaf054f06a6989c03fe9a1666f7e6374ba6907', 'Qualified gpu13 GLM proxy image changed')
 assert.call(small_proxy.fetch('environment').include?('VLLM_BACKEND_URLS=http://model-sg-glm53-fp8-tp4:8000'), 'gpu13 GLM proxy must have one backend')
 assert.call(small_proxy.fetch('environment').include?('VLLM_BACKEND_CONVERSATION_AFFINITY=1'), 'gpu13 GLM affinity contract changed')
 dcgm_image = 'nvcr.io/nvidia/k8s/dcgm-exporter@sha256:ed594cf53fe6942e84b07b0740cdcbb249fa4b39cb21feeebf93881ae51f0b5e'

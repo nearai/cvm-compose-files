@@ -77,6 +77,14 @@ jobs:
               ghcr.io/astral-sh/uv:python3.11-bookworm-slim@sha256:4f5d923c9dcea037f57bda425dd209f3ec643da2f0b74227f68d09dab0b3bb36 \
               python3 -
 
+      - name: Validate compose-manager token rotation contract
+        run: |
+          docker run --rm \
+            -v "$PWD:/repo:ro" \
+            -w /repo \
+            ruby:3.3-alpine \
+            ruby scripts/validate_rotate_compose_manager_token.rb
+
       - name: Validate GLM-5.3 DCGM telemetry contract
         run: |
           docker run --rm \
@@ -102,6 +110,11 @@ jobs:
         run: |
           docker run --rm -v "$PWD:/repo:ro" -w /repo ruby:3.3-alpine \
             sh -c 'apk add --no-cache python3 >/dev/null && python3 scripts/prepare_glm53_w4afp8_base.py --check && python3 -m scripts.test_glm53_w4afp8_base'
+
+      - name: Validate GLM-5.3 W4AFP8 4x TP2 base canary file
+        run: |
+          docker run --rm -v "$PWD:/repo:ro" -w /repo ruby:3.3-alpine \
+            sh -c 'apk add --no-cache python3 >/dev/null && python3 scripts/prepare_glm53_w4afp8_tp2x4.py --check && python3 -m scripts.test_glm53_w4afp8_tp2x4'
 
       - name: Validate GLM-5.3 W4AFP8 long-context candidate
         run: |

@@ -67,7 +67,7 @@ x-nvidia: &nvidia
       hard: 65535
 
 x-vllm-proxy-common: &vllm-proxy-common
-  image: nearaidev/vllm-proxy-rs@sha256:b3a8c6260834231271b4356c56a7aa2718608c8a537b35973916e0a56dc88fba
+  image: nearaidev/vllm-proxy-rs@sha256:d61357da39918a57126864a451eaf054f06a6989c03fe9a1666f7e6374ba6907
   user: root
   privileged: true
   <<: *nvidia
@@ -265,7 +265,7 @@ services:
     container_name: nginx
     depends_on:
       - proxy-glm53
-    command: /bin/sh -c 'while :; do sleep 6h; nginx -s reload; done & nginx -g "daemon off;"'
+    command: /bin/sh -c 'cert=/etc/letsencrypt/live/completions.near.ai/fullchain.pem; last=$$(stat -L -c %Y "$$cert" 2>/dev/null); while :; do sleep 60; cur=$$(stat -L -c %Y "$$cert" 2>/dev/null); if [ -n "$$cur" ] && [ "$$cur" != "$$last" ]; then last=$$cur; echo "$$cert changed, reloading nginx"; nginx -s reload; fi; done & while :; do sleep 6h; nginx -s reload; done & nginx -g "daemon off;"'
     ports:
       - "8000:8000"
       - "8444:443"
@@ -339,6 +339,11 @@ services:
       - USE_NV_ATTESTATION_SDK=true
       - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
       - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
+      # Replica-state publishing (inference-proxy #274): off unless the host's deploy env sets
+      # REPLICA_STATE_REDIS_URL; a bad value logs one error and disables only this feature.
+      - REPLICA_STATE_REDIS_URL=${REPLICA_STATE_REDIS_URL:-}
+      - REPLICA_STATE_REDIS_CA_CERT=${REPLICA_STATE_REDIS_CA_CERT:-}
+      - REPLICA_STATE_HOST_ID=${CVM_HOST:-}
     labels:
       com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:z-ai/glm-5.3-flash","deployment:glm53-flash-sgl-tp4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000"]}]'
       nearai.otel.scrape: "true"

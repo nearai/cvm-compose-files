@@ -27,7 +27,7 @@ x-vllm-common: &vllm-common
   logging: *logging-conf
 
 x-vllm-proxy-common: &vllm-proxy-common
-  image: nearaidev/vllm-proxy-rs@sha256:7d1ffea266d7b473f3521ada05f49a0d0a88d9a9f242b150468bba0ab0632b6d
+  image: nearaidev/vllm-proxy-rs@sha256:d61357da39918a57126864a451eaf054f06a6989c03fe9a1666f7e6374ba6907
   user: root
   privileged: true
   <<: *nvidia
@@ -210,7 +210,7 @@ x-downloader-common: &downloader-common
 x-sg-glm53-flash-common: &sg-glm53-flash-common
   <<: *nvidia
   init: true
-  image: docker.io/nearaidev/sglang@sha256:fde25985aea3ebabf1eb581ae21d53be8540e32933eef942ee8b962a1bfbea20
+  image: docker.io/nearaidev/sglang@sha256:47aff791090003a37f893e998c44794c410d3f7bdfc7fdd2dfab5eb5592b30bb
   command: >
       sglang serve
       --model-path /root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/snapshots/99f1fa70408c52b007d4fd69e02e5a522422e755
@@ -277,19 +277,19 @@ x-sg-glm53-flash-common: &sg-glm53-flash-common
     # confirmed for that admission path.
     - SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE=1
     # HiCache host-memory budget across the four TP ranks, overridable per
-    # deployment. A fixed value, not a percentage: a percentage resolves
-    # against AVAILABLE RAM at engine start, not total. gpu13's CVM has about
-    # 2,029 GiB total with about 1,216 GiB already held by its other eight
-    # models, leaving about 813 GiB available; the qualified L2 value of a
-    # fixed 406 GiB takes the host to about 1,622 GiB used and leaves about
-    # 400 GiB for everything else. An oversized value fails at startup by
-    # design.
-    - SGLANG_HICACHE_RAM_BUDGET=${GLM53_HICACHE_RAM_BUDGET:-406GiB}
+    # deployment. The percentage resolves against RAM available at engine
+    # start, after co-located models have allocated their memory, not total
+    # CVM RAM. Keep 20% available for the OS, page cache, and other services;
+    # oversized values fail at startup by design.
+    - SGLANG_HICACHE_RAM_BUDGET=${GLM53_HICACHE_RAM_BUDGET:-80%}
     # CUDA-owned host memory (cudaMallocHost). Must stay 1 on TEE hosts: 0
     # selects cudaHostRegister, which fails with CUDA error 801 under HCC/PPCIe.
     - SGLANG_HICACHE_CUDA_HOST_MEMORY=${GLM53_HICACHE_CUDA_HOST_MEMORY:-1}
     - SGLANG_HICACHE_POOLED_TRANSFERS=1
     - SGLANG_HICACHE_STAGING_PAGES=64
+    # Split DSA indexer logits scratch across TP4 ranks. This reduces each
+    # rank's transient allocation but does not bound it at every context.
+    - SGLANG_DSA_INDEXER_QSPLIT=1
   restart: unless-stopped
   stop_grace_period: 5m
   logging: *logging-conf
@@ -680,7 +680,7 @@ services:
       - proxy-qwen3-reranker-0.6b
       - proxy-whisper-large-v3
       - proxy-privacy-filter
-    command: /bin/sh -c 'while :; do sleep 6h; nginx -s reload; done & nginx -g "daemon off;"'
+    command: /bin/sh -c 'cert=/etc/letsencrypt/live/completions.near.ai/fullchain.pem; last=$$(stat -L -c %Y "$$cert" 2>/dev/null); while :; do sleep 60; cur=$$(stat -L -c %Y "$$cert" 2>/dev/null); if [ -n "$$cur" ] && [ "$$cur" != "$$last" ]; then last=$$cur; echo "$$cert changed, reloading nginx"; nginx -s reload; fi; done & while :; do sleep 6h; nginx -s reload; done & nginx -g "daemon off;"'
     ports:
       - "80:80"
       - "8002:8002"
@@ -845,7 +845,7 @@ services:
 
   proxy-qwen38-27b:
     <<: *vllm-proxy-common
-    image: nearaidev/vllm-proxy-rs@sha256:7d1ffea266d7b473f3521ada05f49a0d0a88d9a9f242b150468bba0ab0632b6d
+    image: nearaidev/vllm-proxy-rs@sha256:d61357da39918a57126864a451eaf054f06a6989c03fe9a1666f7e6374ba6907
     container_name: proxy-qwen38-27b
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
@@ -933,7 +933,7 @@ services:
     container_name: nginx-qwen38
     depends_on:
       - proxy-qwen38-27b
-    command: /bin/sh -c 'while :; do sleep 6h; nginx -s reload; done & nginx -g "daemon off;"'
+    command: /bin/sh -c 'cert=/etc/letsencrypt/live/completions.near.ai/fullchain.pem; last=$$(stat -L -c %Y "$$cert" 2>/dev/null); while :; do sleep 60; cur=$$(stat -L -c %Y "$$cert" 2>/dev/null); if [ -n "$$cur" ] && [ "$$cur" != "$$last" ]; then last=$$cur; echo "$$cert changed, reloading nginx"; nginx -s reload; fi; done & while :; do sleep 6h; nginx -s reload; done & nginx -g "daemon off;"'
     ports:
       - "8000:8000"
       - "8001:8001"
@@ -979,7 +979,7 @@ services:
 
   proxy-glm53:
     <<: *vllm-proxy-common
-    image: nearaidev/vllm-proxy-rs@sha256:b3a8c6260834231271b4356c56a7aa2718608c8a537b35973916e0a56dc88fba
+    image: nearaidev/vllm-proxy-rs@sha256:d61357da39918a57126864a451eaf054f06a6989c03fe9a1666f7e6374ba6907
     container_name: proxy-glm53
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
@@ -1000,7 +1000,7 @@ services:
       - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
       - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:z-ai/glm-5.3-flash","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8009","gpu_pair:4-7","ppcie:true","config_variant:fc91d24-long-context-w4afp8-c8192-hicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:z-ai/glm-5.3-flash","deployment:glm53-flash-sgl-tp4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8009","gpu_pair:4-7","ppcie:true","config_variant:fc91d24-long-context-w4afp8-c8192-qsplit-hicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "inference-proxy"
       nearai.otel.service: "vllm-proxy"
@@ -1009,7 +1009,7 @@ services:
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "z-ai/glm-5.3-flash"
-      nearai.otel.deployment: "small-models"
+      nearai.otel.deployment: "glm53-flash-sgl-tp4"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
       nearai.otel.host_machine: "${CVM_HOST}"
@@ -1017,7 +1017,7 @@ services:
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.gpu_pair: "4-7"
       nearai.otel.ppcie: "true"
-      nearai.otel.config_variant: "fc91d24-long-context-w4afp8-c8192-hicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
+      nearai.otel.config_variant: "fc91d24-long-context-w4afp8-c8192-qsplit-hicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
 
   model-sg-glm53-fp8-tp4:
     <<: *sg-glm53-flash-common
@@ -1033,7 +1033,7 @@ services:
               device_ids: ["4","5","6","7"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-bf16-kv","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8009","instance:1","gpu_pair:4-7","ppcie:true","config_variant:fc91d24-long-context-w4afp8-c8192-hicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192","request_logging:disabled","thinking_budget_policy:default8192-public-to-native","max_running_requests:32","max_queued_requests:8","engine_image:fde25985aea3"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-bf16-kv","deployment:glm53-flash-sgl-tp4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8009","instance:1","gpu_pair:4-7","ppcie:true","config_variant:fc91d24-long-context-w4afp8-c8192-qsplit-hicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192","request_logging:disabled","thinking_budget_policy:default8192-public-to-native","max_running_requests:32","max_queued_requests:8","engine_image:47aff7910900"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -1044,7 +1044,7 @@ services:
       nearai.otel.model: "z-ai/glm-5.3-flash"
       nearai.otel.model_path: "graphistry/GLM-5.3-Flash-W4AFP8"
       nearai.otel.served_model: "z-ai/glm-5.3-flash"
-      nearai.otel.deployment: "small-models"
+      nearai.otel.deployment: "glm53-flash-sgl-tp4"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
       nearai.otel.host_machine: "${CVM_HOST}"
@@ -1053,13 +1053,13 @@ services:
       nearai.otel.instance: "1"
       nearai.otel.gpu_pair: "4-7"
       nearai.otel.ppcie: "true"
-      nearai.otel.config_variant: "fc91d24-long-context-w4afp8-c8192-hicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
+      nearai.otel.config_variant: "fc91d24-long-context-w4afp8-c8192-qsplit-hicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
       nearai.otel.thinking_budget_policy: "default8192-public-to-native"
       nearai.otel.request_logging: "disabled"
       nearai.otel.watchdog_timeout: "1800"
       nearai.otel.max_running_requests: "32"
       nearai.otel.max_queued_requests: "8"
-      nearai.otel.engine_image: "fde25985aea3"
+      nearai.otel.engine_image: "47aff7910900"
 
   # --- FLUX x1 (GPU 3, shared with small models) ---
 
@@ -1397,10 +1397,15 @@ services:
         FROM vllm/vllm-openai@sha256:ccd6a6dbf4aba4e94c6f7052d1835d6e742082b6a5095276552e9b7a5a47c2e5
         RUN pip install openai-whisper torchaudio librosa vllm[audio]
     container_name: model-vllm-whisper-large-v3-tp1
+    # 0.20 (~28 GiB, ~24 GiB KV): at 0.06 the 4.2 GiB KV cache capped whisper at
+    # 17 concurrent 30 s segments and preempted under sustained load. GPU 3 had
+    # ~53 GiB unallocated, so this takes free memory from no other tenant.
+    # Restart this service alone: a cold start alongside its GPU 3 neighbours
+    # can profile negative KV memory and crash-loop until they finish loading.
     command: >
         openai/whisper-large-v3
         --revision 06f233fe06e710322aca913c1bc4249a0d71fce1
-        --gpu-memory-utilization 0.06
+        --gpu-memory-utilization 0.20
     volumes:
       - hugginface_cache:/root/.cache/huggingface
       - vllm_cache:/root/.cache/vllm
@@ -1540,7 +1545,7 @@ services:
               device_ids: ["4","5","6","7"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:z-ai/glm-5.3-flash","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","gpu_pair:4-7","ppcie:true","config_variant:fc91d24-long-context-w4afp8-c8192-hicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"]}]'
+      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:z-ai/glm-5.3-flash","deployment:glm53-flash-sgl-tp4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","gpu_pair:4-7","ppcie:true","config_variant:fc91d24-long-context-w4afp8-c8192-qsplit-hicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "dcgm"
       nearai.otel.service: "dcgm-exporter"
@@ -1549,7 +1554,7 @@ services:
       nearai.otel.port: "9400"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "z-ai/glm-5.3-flash"
-      nearai.otel.deployment: "small-models"
+      nearai.otel.deployment: "glm53-flash-sgl-tp4"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
       nearai.otel.host_machine: "${CVM_HOST}"
@@ -1557,7 +1562,7 @@ services:
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.gpu_pair: "4-7"
       nearai.otel.ppcie: "true"
-      nearai.otel.config_variant: "fc91d24-long-context-w4afp8-c8192-hicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
+      nearai.otel.config_variant: "fc91d24-long-context-w4afp8-c8192-qsplit-hicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
 
   # GPU 3 is shared across FLUX, Qwen3-VL, embedding, reranker, whisper — DCGM
   # metrics here cannot be attributed to one model, so
@@ -1777,7 +1782,7 @@ configs:
                       model_path: "graphistry/GLM-5.3-Flash-W4AFP8"
                       served_model: "z-ai/glm-5.3-flash"
                       precision: "int4-weights-fp8-activations-bf16-kv"
-                      deployment: "small-models"
+                      deployment: "glm53-flash-sgl-tp4"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
                       host_machine: "${CVM_HOST}"
@@ -1787,13 +1792,13 @@ configs:
                       instance: "1"
                       gpu_pair: "4-7"
                       ppcie: "true"
-                      config_variant: "fc91d24-long-context-w4afp8-c8192-hicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
+                      config_variant: "fc91d24-long-context-w4afp8-c8192-qsplit-hicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
                       thinking_budget_policy: "default8192-public-to-native"
                       request_logging: "disabled"
                       watchdog_timeout: "1800"
                       max_running_requests: "32"
                       max_queued_requests: "8"
-                      engine_image: "fde25985aea3"
+                      engine_image: "47aff7910900"
               - job_name: sglang-model-sg-flux2-klein-4b-tp1
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -1924,7 +1929,7 @@ configs:
                       source: "dcgm-exporter"
                       container_name: "dcgm-glm53"
                       model: "z-ai/glm-5.3-flash"
-                      deployment: "small-models"
+                      deployment: "glm53-flash-sgl-tp4"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
                       host_machine: "${CVM_HOST}"
@@ -1933,7 +1938,7 @@ configs:
                       port: "9400"
                       gpu_pair: "4-7"
                       ppcie: "true"
-                      config_variant: "fc91d24-long-context-w4afp8-c8192-hicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
+                      config_variant: "fc91d24-long-context-w4afp8-c8192-qsplit-hicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
               - job_name: dcgm-dcgm-shared-gpu3
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -2029,7 +2034,7 @@ configs:
                       source: "vllm-proxy"
                       container_name: "proxy-glm53"
                       model: "z-ai/glm-5.3-flash"
-                      deployment: "small-models"
+                      deployment: "glm53-flash-sgl-tp4"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
                       host_machine: "${CVM_HOST}"
@@ -2038,7 +2043,7 @@ configs:
                       port: "8009"
                       gpu_pair: "4-7"
                       ppcie: "true"
-                      config_variant: "fc91d24-long-context-w4afp8-c8192-hicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
+                      config_variant: "fc91d24-long-context-w4afp8-c8192-qsplit-hicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
               - job_name: inference-proxy-proxy-flux2-klein-4b
                 scrape_interval: 15s
                 metrics_path: /metrics
