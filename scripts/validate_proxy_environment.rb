@@ -9,6 +9,8 @@ REQUIRED_PROXY_ENV = %w[
   WEB_CONTEXT_SEARCH_URL
   WEB_CONTEXT_SEARCH_API_KEY
 ].freeze
+# Advisory only: prod proxies should publish replica state (see AGENT.md). Warn, never fail.
+REPLICA_STATE_ENV = "REPLICA_STATE_REDIS_URL".freeze
 
 def yaml_load(content)
   YAML.load(content, aliases: true)
@@ -36,6 +38,7 @@ def inference_proxy_service?(env)
 end
 
 errors = []
+warnings = []
 
 compose_files = Dir.glob(File.join(ROOT, "prod", "*.yaml")) +
                 Dir.glob(File.join(ROOT, "experiments", "*.yaml")) +
@@ -52,6 +55,11 @@ compose_files.sort.each do |path|
     env = service_environment(service)
     next unless inference_proxy_service?(env)
 
+    if file.start_with?("prod/") && !env.key?(REPLICA_STATE_ENV)
+      warnings << "#{file}: services.#{service_name}.environment lacks #{REPLICA_STATE_ENV} " \
+                  "(replica-state publishing; required for new prod files, see AGENT.md)"
+    end
+
     missing = REQUIRED_PROXY_ENV.reject do |name|
       env[name] == "${#{name}}"
     end
@@ -62,6 +70,8 @@ compose_files.sort.each do |path|
 rescue StandardError => e
   errors << "#{file}: invalid YAML: #{e.message}"
 end
+
+warnings.each { |w| warn "::warning::#{w}" }
 
 if errors.any?
   warn "Proxy environment contract failed:"
