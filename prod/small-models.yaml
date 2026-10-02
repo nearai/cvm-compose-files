@@ -992,7 +992,13 @@ services:
       - TOKEN=${PROXY_TOKEN}
       - FUSION_ENABLED=${FUSION_ENABLED}
       - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
-      - VLLM_BACKEND_URLS=http://model-sg-glm53-fp8-tp4:8000
+      - VLLM_BACKEND_URLS=http://model-sg-glm53-w4afp8-pd-router:8000
+      # The PD router's /health is liveness only and returns 200 before its
+      # prefill/decode workers are ready (measured on gpu32: /health 200,
+      # /readiness 503, chat 503 "No prefill workers available"). /readiness
+      # makes this proxy's /healthz, and so the OpenRouter gateway, follow the
+      # real worker state during cold start and after an engine failure.
+      - VLLM_BACKEND_HEALTH_PATH=/readiness
       - VLLM_BACKEND_CONVERSATION_AFFINITY=1
       - VLLM_PROXY_MAX_REQUEST_SIZE=104857600
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
@@ -1275,14 +1281,6 @@ services:
       --worker-startup-timeout-secs 3600
       --request-timeout-secs 1800
       --disable-retries
-    # proxy-glm53 still targets http://model-sg-glm53-fp8-tp4:8000. This alias
-    # gives the router that name, so proxy-glm53 and nginx stay unchanged and
-    # are not recreated. Its health check uses the router's /health, which is
-    # liveness only; engine health is covered by engine metrics and alerts.
-    networks:
-      default:
-        aliases:
-          - model-sg-glm53-fp8-tp4
     restart: unless-stopped
     logging: *logging-conf
     labels:
