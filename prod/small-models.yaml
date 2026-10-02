@@ -992,10 +992,7 @@ services:
       - TOKEN=${PROXY_TOKEN}
       - FUSION_ENABLED=${FUSION_ENABLED}
       - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
-      - VLLM_BACKEND_URLS=http://model-sg-glm53-w4afp8-pd-router:8000
-      # The PD router's /health is liveness only (always 200); /readiness reports
-      # whether its prefill and decode workers are healthy.
-      - VLLM_BACKEND_HEALTH_PATH=/readiness
+      - VLLM_BACKEND_URLS=http://model-sg-glm53-fp8-tp4:8000
       - VLLM_BACKEND_CONVERSATION_AFFINITY=1
       - VLLM_PROXY_MAX_REQUEST_SIZE=104857600
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
@@ -1003,7 +1000,7 @@ services:
       - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
       - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:z-ai/glm-5.3-flash","deployment:glm53-flash-sgl-tp4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8009","gpu_pair:4-7","ppcie:true","config_variant:pd-tp2x2-w4afp8-mooncake-tcp-router-eagle-adaptive-5-1-6-strict-budget8192"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:z-ai/glm-5.3-flash","deployment:glm53-flash-sgl-tp4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8009","gpu_pair:4-7","ppcie:true","config_variant:fc91d24-long-context-w4afp8-c8192-qsplit-hicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "inference-proxy"
       nearai.otel.service: "vllm-proxy"
@@ -1020,9 +1017,8 @@ services:
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.gpu_pair: "4-7"
       nearai.otel.ppcie: "true"
-      nearai.otel.config_variant: "pd-tp2x2-w4afp8-mooncake-tcp-router-eagle-adaptive-5-1-6-strict-budget8192"
+      nearai.otel.config_variant: "fc91d24-long-context-w4afp8-c8192-qsplit-hicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
 
-  # --- GLM-5.3 Flash PD PREFILL engine (SGLang TP2/EP2, GPUs 4-5) ---
   model-sg-glm53-w4afp8-tp2-prefill:
     <<: *sg-glm53-flash-common
     container_name: model-sg-glm53-w4afp8-tp2-prefill
@@ -1279,6 +1275,14 @@ services:
       --worker-startup-timeout-secs 3600
       --request-timeout-secs 1800
       --disable-retries
+    # proxy-glm53 still targets http://model-sg-glm53-fp8-tp4:8000. This alias
+    # gives the router that name, so proxy-glm53 and nginx stay unchanged and
+    # are not recreated. Its health check uses the router's /health, which is
+    # liveness only; engine health is covered by engine metrics and alerts.
+    networks:
+      default:
+        aliases:
+          - model-sg-glm53-fp8-tp4
     restart: unless-stopped
     logging: *logging-conf
     labels:
@@ -1785,7 +1789,7 @@ services:
               device_ids: ["4","5","6","7"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:z-ai/glm-5.3-flash","deployment:glm53-flash-sgl-tp4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","gpu_pair:4-7","ppcie:true","config_variant:pd-tp2x2-w4afp8-mooncake-tcp-router-eagle-adaptive-5-1-6-strict-budget8192"]}]'
+      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:z-ai/glm-5.3-flash","deployment:glm53-flash-sgl-tp4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","gpu_pair:4-7","ppcie:true","config_variant:fc91d24-long-context-w4afp8-c8192-qsplit-hicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "dcgm"
       nearai.otel.service: "dcgm-exporter"
@@ -1802,7 +1806,7 @@ services:
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.gpu_pair: "4-7"
       nearai.otel.ppcie: "true"
-      nearai.otel.config_variant: "pd-tp2x2-w4afp8-mooncake-tcp-router-eagle-adaptive-5-1-6-strict-budget8192"
+      nearai.otel.config_variant: "fc91d24-long-context-w4afp8-c8192-qsplit-hicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
 
   # GPU 3 is shared across FLUX, Qwen3-VL, embedding, reranker, whisper — DCGM
   # metrics here cannot be attributed to one model, so
@@ -2218,7 +2222,7 @@ configs:
                       port: "9400"
                       gpu_pair: "4-7"
                       ppcie: "true"
-                      config_variant: "pd-tp2x2-w4afp8-mooncake-tcp-router-eagle-adaptive-5-1-6-strict-budget8192"
+                      config_variant: "fc91d24-long-context-w4afp8-c8192-qsplit-hicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
               - job_name: dcgm-dcgm-shared-gpu3
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -2323,7 +2327,7 @@ configs:
                       port: "8009"
                       gpu_pair: "4-7"
                       ppcie: "true"
-                      config_variant: "pd-tp2x2-w4afp8-mooncake-tcp-router-eagle-adaptive-5-1-6-strict-budget8192"
+                      config_variant: "fc91d24-long-context-w4afp8-c8192-qsplit-hicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
               - job_name: inference-proxy-proxy-flux2-klein-4b
                 scrape_interval: 15s
                 metrics_path: /metrics

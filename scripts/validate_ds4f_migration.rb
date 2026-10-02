@@ -165,7 +165,12 @@ assert.call(router_command.include?('--pd-disaggregation') && router_command.inc
 assert.call(!router.key?('ports'), 'gpu13 GLM router must stay internal')
 small_proxy = small_services.fetch('proxy-glm53')
 assert.call(small_proxy['image'] == 'nearaidev/vllm-proxy-rs@sha256:d61357da39918a57126864a451eaf054f06a6989c03fe9a1666f7e6374ba6907', 'Qualified gpu13 GLM proxy image changed')
-assert.call(small_proxy.fetch('environment').include?('VLLM_BACKEND_URLS=http://model-sg-glm53-w4afp8-pd-router:8000'), 'gpu13 GLM proxy must have the PD router as its only backend')
+assert.call(small_proxy.fetch('environment').include?('VLLM_BACKEND_URLS=http://model-sg-glm53-fp8-tp4:8000'), 'gpu13 GLM proxy must have one backend')
+# The router answers on the proxy's existing backend name via a network alias,
+# so proxy-glm53 and nginx are not recreated when switching to PD.
+router_aliases = router.dig('networks', 'default', 'aliases') || []
+assert.call(router_aliases == ['model-sg-glm53-fp8-tp4'], 'gpu13 GLM PD router must carry the proxy backend alias model-sg-glm53-fp8-tp4')
+assert.call(!small_services.key?('model-sg-glm53-fp8-tp4'), 'gpu13 GLM TP4 service must be absent while the PD router holds its alias')
 assert.call(small_proxy.fetch('environment').include?('VLLM_BACKEND_CONVERSATION_AFFINITY=1'), 'gpu13 GLM affinity contract changed')
 dcgm_image = 'nvcr.io/nvidia/k8s/dcgm-exporter@sha256:ed594cf53fe6942e84b07b0740cdcbb249fa4b39cb21feeebf93881ae51f0b5e'
 assert.call(small_services.fetch('dcgm-glm53')['image'] == dcgm_image, 'gpu13 GLM exporter image must be pinned')
