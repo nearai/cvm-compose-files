@@ -216,8 +216,10 @@ def engine_arguments(source: list[str]) -> list[str]:
     missing = sorted(argument for argument in (*replaced, *kept) if source.count(argument) != 1)
     if missing:
         raise GenerationError(f"source engine command changed: {missing}")
-    if any(argument.startswith(("--hicache", "--enable-hierarchical-cache", "--max-mamba-cache-size", "--mamba-ssm-dtype")) for argument in source):
-        raise GenerationError("source engine command already carries HiCache options")
+    owned = ("--hicache", "--enable-hierarchical-cache", "--max-mamba-cache-size", "--mamba-ssm-dtype")
+    present = sorted(argument for argument in source if argument.startswith(owned))
+    if present:
+        raise GenerationError(f"source engine command already carries HiCache or mamba-cache options this generator adds: {present}")
     return [replaced.get(argument, argument) for argument in source] + list(HICACHE_FLAGS) + list(MAMBA_FLAGS)
 
 
