@@ -89,7 +89,7 @@ HEADER: Final = (
     "#     71.5%. Cost: TPOT p90 188 vs 70 ms (bigger decode batches). Saturates at ~8.8 req/s.\n"
     "#\n"
     "# GATES before any deploy (docs/glm53-tp2x4-base-canary.md): (1) quality with BF16 mamba\n"
-    "# state (GSM8K + perception check) at parity with the FP32-state TP2 file - PENDING; (2) a prod-CVM\n"
+    "# state at parity - PASSED 2026-10-02 (GSM8K 97.8% vs 97.4% FP32 state, perception 7/7); (2) a prod-CVM\n"
     "# test on a drained host agreed with Lloyd: CC-on startup of 4 x 325 GiB pinned host tiers\n"
     "# (cudaMallocHost), TP2 NCCL under PPCIe, CVM MemAvailable headroom, cold-start time;\n"
     "# (3) the image already pulled on the host; (4) Pranav + Lloyd go.\n"

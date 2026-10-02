@@ -55,9 +55,14 @@ The lab ran on gpu31/gpu32 with CC off, on 2026-10-01. Both arms had 1,300 GiB o
 ## Gates before any deploy
 
 **For the 32-running change (on top of the live `v0.0.462` canary):**
-1. **BF16 mamba-state quality** at parity with the FP32-state TP2 file (GSM8K 97.4%, perception 7/7): PENDING.
+1. **BF16 mamba-state quality: PASSED (2026-10-02).** GSM8K 97.8% vs 97.4% (FP32-state TP2) and 97.5% (TP4); perception check 7/7; agent-trace replay 93.4% cached, TTFT p90 1.50 s (FP32-state 15-running: 93.1%, 1.54 s).
 2. **Product call** on the TPOT trade-off (tail TPOT about 2.7× worse, TTFT and throughput better).
-3. Roll out on gpu04 only (gpu03 stays on 2x TP4 as the control); rollback is the `v0.0.462` file.
+3. **Rollout (both base hosts already run the 15-running TP2 file since 2026-10-02).** One host at a time, in the lowest-traffic window:
+   - A TP2 host cold-starts in about 22 minutes (pinning 4 x 325 GiB under CC plus warm-up). For that whole window the other base host carries the entire base tier and saturates (seen 2026-10-02 04:50-05:15 UTC: TTFT p95 about 19 s on the remaining host). Do not start the second host until the first one is registered again (`/backends/list` shows two base handles on both model-proxy peers).
+   - Drain properly: stop the registrar AND `POST /unregister/endpoint` (the registrar's SIGTERM trap does not unregister), then wait for running requests to reach about 0. Expect a trickle of traffic to continue for 10+ minutes after unregistering.
+   - The gpu-manager dashboard's `compose/down` ignores `dry_run`: treat every down as real.
+   - Watch on the first host for 2 hours before the second: `num_running_reqs` should exceed 15 per replica under load, queue time p95 should drop, tail TPOT will rise (expected up to about 190 ms p90), no OOM (lab peak 127.5 of 140 GB per GPU).
+   - Rollback per host: the `v0.0.463` TP2 file (15 running), same orphan rule.
 
 **For the original 4x TP2 file (done 2026-10-01; gpu04 runs it since 18:40 UTC):**
 
