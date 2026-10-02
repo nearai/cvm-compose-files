@@ -9,9 +9,9 @@ Status: proposed. Not deployed.
 
 | Service | GPUs | Role |
 |---|---|---|
-| `model-sg-glm53-pd-prefill` | 4,5 | TP2/EP2 prefill, HiCache (325 GiB host pool, `cudaMallocHost`) |
-| `model-sg-glm53-pd-decode` | 6,7 | TP2/EP2 decode, EAGLE 5/1/6 adaptive, radix cache off |
-| `glm53-pd-router` | none | SGLang router `--pd-disaggregation`, internal port 8000 |
+| `model-sg-glm53-w4afp8-tp2-prefill` | 4,5 | TP2/EP2 prefill, HiCache (325 GiB host pool, `cudaMallocHost`) |
+| `model-sg-glm53-w4afp8-tp2-decode` | 6,7 | TP2/EP2 decode, EAGLE 5/1/6 adaptive, radix cache off |
+| `model-sg-glm53-w4afp8-pd-router` | none | SGLang router `--pd-disaggregation`, internal port 8000 |
 | `glm53-pd-t0-probe` | 4-7 | T0 transport probe, profile `pd-t0`, never started by a plain `compose/up` |
 
 `proxy-glm53` points at the router. The served model name stays `z-ai/glm-5.3-flash`.
@@ -59,7 +59,7 @@ supports it.
      and send/recv is at least 10 GB/s at 64 MB.
    - **No-go:** socket transport only, or under 1 GB/s. Skip PD and go to Rollback to restore TP4.
 5. **Deploy PD.** `compose/up` with services
-   `["model-sg-glm53-pd-prefill","model-sg-glm53-pd-decode","glm53-pd-router","proxy-glm53","dcgm-glm53"]`,
+   `["model-sg-glm53-w4afp8-tp2-prefill","model-sg-glm53-w4afp8-tp2-decode","model-sg-glm53-w4afp8-pd-router","proxy-glm53","dcgm-glm53"]`,
    `force_recreate: false`, `dry_run: true` first. The dry run may remove only the stopped
    `model-sg-glm53-fp8-tp4` and the finished T0 probe. Any other removal means abort.
    Cold start takes about 15-30 minutes.
@@ -80,7 +80,7 @@ Any one of these during step 6 or 7 means rollback:
 
 ## Rollback
 
-1. `compose/down` with services `["model-sg-glm53-pd-prefill","model-sg-glm53-pd-decode","glm53-pd-router"]`.
+1. `compose/down` with services `["model-sg-glm53-w4afp8-tp2-prefill","model-sg-glm53-w4afp8-tp2-decode","model-sg-glm53-w4afp8-pd-router"]`.
 2. `compose/up` of the previous `prod/small-models.yaml` commit with services
    `["model-sg-glm53-fp8-tp4","proxy-glm53","dcgm-glm53"]` (about 50 minutes cold start).
 3. Re-add gpu13 to the gateway after the soak checks pass.

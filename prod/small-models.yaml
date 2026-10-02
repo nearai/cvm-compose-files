@@ -992,7 +992,7 @@ services:
       - TOKEN=${PROXY_TOKEN}
       - FUSION_ENABLED=${FUSION_ENABLED}
       - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
-      - VLLM_BACKEND_URLS=http://glm53-pd-router:8000
+      - VLLM_BACKEND_URLS=http://model-sg-glm53-w4afp8-pd-router:8000
       - VLLM_BACKEND_CONVERSATION_AFFINITY=1
       - VLLM_PROXY_MAX_REQUEST_SIZE=104857600
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
@@ -1093,9 +1093,9 @@ services:
               capabilities: [gpu]
     logging: *logging-conf
 
-  model-sg-glm53-pd-prefill:
+  model-sg-glm53-w4afp8-tp2-prefill:
     <<: *sg-glm53-flash-common
-    container_name: model-sg-glm53-pd-prefill
+    container_name: model-sg-glm53-w4afp8-tp2-prefill
     command: >
       sglang serve
       --model-path /root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/snapshots/99f1fa70408c52b007d4fd69e02e5a522422e755
@@ -1195,7 +1195,7 @@ services:
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
       nearai.otel.source: "sglang"
-      nearai.otel.container_name: "model-sg-glm53-pd-prefill"
+      nearai.otel.container_name: "model-sg-glm53-w4afp8-tp2-prefill"
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "z-ai/glm-5.3-flash"
@@ -1220,9 +1220,9 @@ services:
       nearai.otel.engine_image: "47aff7910900"
 
   # --- GLM-5.3 Flash PD DECODE engine (SGLang TP2/EP2, GPUs 6-7; radix cache off for EAGLE) ---
-  model-sg-glm53-pd-decode:
+  model-sg-glm53-w4afp8-tp2-decode:
     <<: *sg-glm53-flash-common
-    container_name: model-sg-glm53-pd-decode
+    container_name: model-sg-glm53-w4afp8-tp2-decode
     command: >
       sglang serve
       --model-path /root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/snapshots/99f1fa70408c52b007d4fd69e02e5a522422e755
@@ -1305,7 +1305,7 @@ services:
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
       nearai.otel.source: "sglang"
-      nearai.otel.container_name: "model-sg-glm53-pd-decode"
+      nearai.otel.container_name: "model-sg-glm53-w4afp8-tp2-decode"
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "z-ai/glm-5.3-flash"
@@ -1329,18 +1329,18 @@ services:
       nearai.otel.engine_image: "47aff7910900"
 
   # --- GLM-5.3 Flash PD router (sglang_router, CPU only, internal network; no published ports) ---
-  glm53-pd-router:
+  model-sg-glm53-w4afp8-pd-router:
     image: docker.io/nearaidev/sglang@sha256:47aff791090003a37f893e998c44794c410d3f7bdfc7fdd2dfab5eb5592b30bb
-    container_name: glm53-pd-router
+    container_name: model-sg-glm53-w4afp8-pd-router
     init: true
     depends_on:
-      - model-sg-glm53-pd-prefill
-      - model-sg-glm53-pd-decode
+      - model-sg-glm53-w4afp8-tp2-prefill
+      - model-sg-glm53-w4afp8-tp2-decode
     command: >
       python3 -m sglang_router.launch_router
       --pd-disaggregation
-      --prefill http://model-sg-glm53-pd-prefill:8000 8998
-      --decode http://model-sg-glm53-pd-decode:8000
+      --prefill http://model-sg-glm53-w4afp8-tp2-prefill:8000 8998
+      --decode http://model-sg-glm53-w4afp8-tp2-decode:8000
       --policy round_robin
       --host 0.0.0.0
       --port 8000
@@ -1357,7 +1357,7 @@ services:
       nearai.otel.job: "sglang-router"
       nearai.otel.service: "sglang-router"
       nearai.otel.source: "sglang-router"
-      nearai.otel.container_name: "glm53-pd-router"
+      nearai.otel.container_name: "model-sg-glm53-w4afp8-pd-router"
       nearai.otel.port: "29000"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "z-ai/glm-5.3-flash"
@@ -2079,15 +2079,15 @@ configs:
                       ip: "${HOST_IP}"
                       port: "8008"
                       instance: "2"
-              - job_name: sglang-model-sg-glm53-pd-prefill
+              - job_name: sglang-model-sg-glm53-w4afp8-tp2-prefill
                 scrape_interval: 15s
                 metrics_path: /metrics
                 static_configs:
-                  - targets: ['model-sg-glm53-pd-prefill:8000']
+                  - targets: ['model-sg-glm53-w4afp8-tp2-prefill:8000']
                     labels:
                       service: "sglang"
                       source: "sglang"
-                      container_name: "model-sg-glm53-pd-prefill"
+                      container_name: "model-sg-glm53-w4afp8-tp2-prefill"
                       model: "z-ai/glm-5.3-flash"
                       model_path: "graphistry/GLM-5.3-Flash-W4AFP8"
                       served_model: "z-ai/glm-5.3-flash"
@@ -2104,15 +2104,15 @@ configs:
                       ppcie: "true"
                       config_variant: "pd-prefill-w4afp8-tp2-ep2-mooncake-tcp-c8192-qsplit-hicache-selective325-mamba165-pdi1-h200-eagle-adaptive-5-1-6-strict-budget8192"
                       pd_role: "prefill"
-              - job_name: sglang-model-sg-glm53-pd-decode
+              - job_name: sglang-model-sg-glm53-w4afp8-tp2-decode
                 scrape_interval: 15s
                 metrics_path: /metrics
                 static_configs:
-                  - targets: ['model-sg-glm53-pd-decode:8000']
+                  - targets: ['model-sg-glm53-w4afp8-tp2-decode:8000']
                     labels:
                       service: "sglang"
                       source: "sglang"
-                      container_name: "model-sg-glm53-pd-decode"
+                      container_name: "model-sg-glm53-w4afp8-tp2-decode"
                       model: "z-ai/glm-5.3-flash"
                       model_path: "graphistry/GLM-5.3-Flash-W4AFP8"
                       served_model: "z-ai/glm-5.3-flash"
@@ -2129,15 +2129,15 @@ configs:
                       ppcie: "true"
                       config_variant: "pd-decode-w4afp8-tp2-ep2-mooncake-tcp-radix-off-qsplit-mamba165-pdi1-h200-eagle-adaptive-5-1-6-strict-budget8192"
                       pd_role: "decode"
-              - job_name: sglang-router-glm53-pd-router
+              - job_name: sglang-router-model-sg-glm53-w4afp8-pd-router
                 scrape_interval: 15s
                 metrics_path: /metrics
                 static_configs:
-                  - targets: ['glm53-pd-router:29000']
+                  - targets: ['model-sg-glm53-w4afp8-pd-router:29000']
                     labels:
                       service: "sglang-router"
                       source: "sglang-router"
-                      container_name: "glm53-pd-router"
+                      container_name: "model-sg-glm53-w4afp8-pd-router"
                       model: "z-ai/glm-5.3-flash"
                       deployment: "glm53-flash-sgl-pd-tp2x2"
                       env: "${ENV}"
