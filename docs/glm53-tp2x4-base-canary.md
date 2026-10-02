@@ -35,9 +35,36 @@ The lab ran on gpu31/gpu32 with CC off, on 2026-10-01. Both arms had 1,300 GiB o
 - **TTFT.** It is lower for prompts of 10K tokens or fewer at every load. Long prompts (30K+) are slower at low load, because TP2 prefills with half the GPUs.
 - **Memory per replica.** TP2 holds 81.7 GiB of weights per GPU and a 1.08M-token VRAM KV pool. Its 325 GiB DRAM tier holds 5.87M tokens.
 - **Write policy.** `write_through_selective` (vs `write_through`) cut recomputed tokens by 17–25% on the replay, with no throughput or ITL cost.
-- **Known limits.** Each TP2 replica caps at **15 running requests** (mamba state cache, `max_mamba_cache_size=77`). EAGLE target-verify graphs capture to batch 15. The lab arms ran exactly this way.
+- **Running cap (second canary step).** With the default 77 mamba state slots, each TP2 replica caps at 15 running requests; that is what `v0.0.462` runs on gpu04. This file now sets `--max-mamba-cache-size 165 --mamba-ssm-dtype bfloat16`: 32 running per replica, with the VRAM KV pool kept at about 1.0M tokens and a 5.4M-token DRAM tier.
+
+  | 10 req/s offered, per 8 GPUs (lab, gpu32) | 15 running (gpu04 today) | 25 running (125 slots, FP32 state) | **32 running (165 slots, BF16 state)** |
+  |---|---|---|---|
+  | VRAM KV pool per replica | 1.08M | 0.50M | **1.00M** |
+  | Served req/s / output tok/s | 7.74 / 1,771 | 8.64 / 2,027 | **8.83 / 2,064 (+14% / +16%)** |
+  | Unserved at run end | 925 | 356 | **228** |
+  | TTFT p50 / p90 | 1.60 / 5.56 s | 0.43 / 3.89 s | **0.39 / 3.20 s** |
+  | TPOT p50 / p90 | 26 / 70 ms | 38 / 169 ms | 39 / **188 ms** |
+  | E2E p50 / p90 | 3.80 / 20.5 s | 3.04 / 21.5 s | 2.89 / 21.1 s |
+  | Hit rate | 71.5% | 75.4% | 76.8% |
+
+  - All three saturate at about 8–8.8 req/s; beyond that they only queue. The base tier is prefill-heavy, so bigger decode batches help less than 2×.
+  - **Cost: tail TPOT 70 → 188 ms** (each decode step carries a larger batch).
+  - Rejected: 165 slots with FP32 state left a 67K-token pool (3.1 req/s served at 8 offered); raising `--mem-fraction-static` to 0.88 instead OOMed under load.
+  - EAGLE target-verify graphs follow the running cap.
 
 ## Gates before any deploy
+
+**For the 32-running change (on top of the live `v0.0.462` canary):**
+1. **BF16 mamba-state quality: PASSED (2026-10-02).** GSM8K 97.8% vs 97.4% (FP32-state TP2) and 97.5% (TP4); perception check 7/7; agent-trace replay 93.4% cached, TTFT p90 1.50 s (FP32-state 15-running: 93.1%, 1.54 s).
+2. **Product call** on the TPOT trade-off (tail TPOT about 2.7× worse, TTFT and throughput better).
+3. **Rollout (both base hosts already run the 15-running TP2 file since 2026-10-02).** One host at a time, in the lowest-traffic window:
+   - A TP2 host cold-starts in about 22 minutes (pinning 4 x 325 GiB under CC plus warm-up). For that whole window the other base host carries the entire base tier and saturates (seen 2026-10-02 04:50-05:15 UTC: TTFT p95 about 19 s on the remaining host). Do not start the second host until the first one is registered again (`/backends/list` shows two base handles on both model-proxy peers).
+   - Drain properly: stop the registrar AND `POST /unregister/endpoint` (the registrar's SIGTERM trap does not unregister), then wait for running requests to reach about 0. Expect a trickle of traffic to continue for 10+ minutes after unregistering.
+   - The gpu-manager dashboard's `compose/down` ignores `dry_run`: treat every down as real.
+   - Watch on the first host for 2 hours before the second: `num_running_reqs` should exceed 15 per replica under load, queue time p95 should drop, tail TPOT will rise (expected up to about 190 ms p90), no OOM (lab peak 127.5 of 140 GB per GPU).
+   - Rollback per host: the `v0.0.463` TP2 file (15 running), same orphan rule.
+
+**For the original 4x TP2 file (done 2026-10-01; gpu04 runs it since 18:40 UTC):**
 
 1. **TP2 quality gate (pending).** In the lab, GSM8K, MMLU and the perception check must reach parity with TP4.
 2. **Prod-CVM test on a drained host, agreed with Lloyd.** Check:

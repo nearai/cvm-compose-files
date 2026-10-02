@@ -36,7 +36,7 @@ SERVICE_PREFIX: Final = "model-sg-glm53-w4afp8-tp2-r"
 SOURCE_DEPLOYMENT: Final = "glm53-flash-sgl-tp4"
 DEPLOYMENT: Final = "glm53-flash-sgl-tp2x4"
 SOURCE_VARIANT: Final = "fc91d24-w4afp8-c4096-admission-reserve-v10-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
-VARIANT: Final = "hicache-w4afp8-qsplit-selective325-c8192-admission-reserve-v10-pdi1-h200-tp2-ep2-eagle-adaptive-5-1-6-strict-budget8192"
+VARIANT: Final = "hicache-w4afp8-qsplit-selective325-mamba165-bf16state-c8192-admission-reserve-v10-pdi1-h200-tp2-ep2-eagle-adaptive-5-1-6-strict-budget8192"
 REPLICAS: Final = (1, 2, 3, 4)
 # Each pair sits inside one four-GPU NVLink island.
 DEVICE_IDS: Final = {1: ("0", "1"), 2: ("2", "3"), 3: ("4", "5"), 4: ("6", "7")}
@@ -46,6 +46,13 @@ HICACHE_FLAGS: Final = (
     "--hicache-write-policy write_through_selective",
     "--hicache-io-backend direct",
     "--hicache-mem-layout page_first_direct",
+)
+# 165 mamba state slots (5 per request) lift the per-replica running cap from 15 to 32. BF16
+# SSM state halves the state memory so the VRAM KV pool stays at ~1.0M tokens (FP32 state at
+# 165 slots left 67K tokens; raising --mem-fraction-static to 0.88 instead OOMed under load).
+MAMBA_FLAGS: Final = (
+    "--max-mamba-cache-size 165",
+    "--mamba-ssm-dtype bfloat16",
 )
 
 HEADER: Final = (
@@ -74,12 +81,15 @@ HEADER: Final = (
     "#     DRAM tier per replica at 325 GiB.\n"
     "#   - write_through_selective (vs write_through) cut recomputed tokens 17-25% on the replay\n"
     "#     with no throughput/ITL cost.\n"
-    "#   - Known limits: each TP2 replica caps at 15 running requests (mamba state cache,\n"
-    "#     max_mamba_cache_size=77) and EAGLE target-verify graphs capture to batch 15. The lab\n"
-    "#     arms ran exactly this way.\n"
+    "#   - Running cap: 165 mamba state slots with BF16 SSM state (--max-mamba-cache-size 165\n"
+    "#     --mamba-ssm-dtype bfloat16) let each TP2 replica run 32 requests instead of 15, with a\n"
+    "#     1.0M-token VRAM pool and a 5.4M-token DRAM tier. Lab at 10 req/s offered per 8 GPUs vs\n"
+    "#     the 15-running canary: 8.83 vs 7.74 req/s served (+14%), 2,064 vs 1,771 output tok/s\n"
+    "#     (+16%), TTFT p50/p90 0.39/3.20 vs 1.60/5.56 s, backlog 228 vs 925, hit rate 76.8% vs\n"
+    "#     71.5%. Cost: TPOT p90 188 vs 70 ms (bigger decode batches). Saturates at ~8.8 req/s.\n"
     "#\n"
-    "# GATES before any deploy (docs/glm53-tp2x4-base-canary.md): (1) TP2 quality gate\n"
-    "# (GSM8K/MMLU + perception check) at parity with TP4 in the lab - PENDING; (2) a prod-CVM\n"
+    "# GATES before any deploy (docs/glm53-tp2x4-base-canary.md): (1) quality with BF16 mamba\n"
+    "# state at parity - PASSED 2026-10-02 (GSM8K 97.8% vs 97.4% FP32 state, perception 7/7); (2) a prod-CVM\n"
     "# test on a drained host agreed with Lloyd: CC-on startup of 4 x 325 GiB pinned host tiers\n"
     "# (cudaMallocHost), TP2 NCCL under PPCIe, CVM MemAvailable headroom, cold-start time;\n"
     "# (3) the image already pulled on the host; (4) Pranav + Lloyd go.\n"
@@ -127,7 +137,7 @@ TEXT_REPLACEMENTS: Final = (
     (
         "# intentionally conservative: BF16 KV, 0.80 static memory, 32 running requests, a\n",
         "# intentionally conservative: BF16 KV, 0.80 static memory, 32 running requests (an\n"
-        "# effective 15 per TP2 replica, see the file header), a\n",
+        "# effective 32 per TP2 replica with 165 BF16 mamba state slots, see the file header), a\n",
         "running requests comment",
     ),
     (
@@ -206,9 +216,11 @@ def engine_arguments(source: list[str]) -> list[str]:
     missing = sorted(argument for argument in (*replaced, *kept) if source.count(argument) != 1)
     if missing:
         raise GenerationError(f"source engine command changed: {missing}")
-    if any(argument.startswith(("--hicache", "--enable-hierarchical-cache")) for argument in source):
-        raise GenerationError("source engine command already carries HiCache options")
-    return [replaced.get(argument, argument) for argument in source] + list(HICACHE_FLAGS)
+    owned = ("--hicache", "--enable-hierarchical-cache", "--max-mamba-cache-size", "--mamba-ssm-dtype")
+    present = sorted(argument for argument in source if argument.startswith(owned))
+    if present:
+        raise GenerationError(f"source engine command already carries HiCache or mamba-cache options this generator adds: {present}")
+    return [replaced.get(argument, argument) for argument in source] + list(HICACHE_FLAGS) + list(MAMBA_FLAGS)
 
 
 def render_replica(template: str, replica: int) -> str:

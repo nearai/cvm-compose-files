@@ -559,7 +559,7 @@ end
 # perception loop, soak relay) and the deployment label it must equal the W4AFP8 base file.
 W4AFP8_TP2X4_FILE = File.join(ROOT, "prod", "GLM-5.3-Flash-SGL-TP2x4-W4AFP8.yaml")
 W4AFP8_TP2X4_IMAGE = "docker.io/nearaidev/sglang@sha256:47aff791090003a37f893e998c44794c410d3f7bdfc7fdd2dfab5eb5592b30bb"
-W4AFP8_TP2X4_VARIANT = "hicache-w4afp8-qsplit-selective325-c8192-admission-reserve-v10-pdi1-h200-tp2-ep2-eagle-adaptive-5-1-6-strict-budget8192"
+W4AFP8_TP2X4_VARIANT = "hicache-w4afp8-qsplit-selective325-mamba165-bf16state-c8192-admission-reserve-v10-pdi1-h200-tp2-ep2-eagle-adaptive-5-1-6-strict-budget8192"
 W4AFP8_TP2X4_DEPLOYMENT = "glm53-flash-sgl-tp2x4"
 W4AFP8_BASE_DEPLOYMENT = "glm53-flash-sgl-tp4"
 W4AFP8_TP2X4_PREFIX = "model-sg-glm53-w4afp8-tp2-r"
@@ -592,6 +592,7 @@ W4AFP8_TP2X4_ARGV = Shellwords.split(<<~'ARGV').freeze
   --disable-fast-image-processor --limit-mm-data-per-request '{"image": 64}'
   --enable-hierarchical-cache --hicache-write-policy write_through_selective
   --hicache-io-backend direct --hicache-mem-layout page_first_direct
+  --max-mamba-cache-size 165 --mamba-ssm-dtype bfloat16
 ARGV
 W4AFP8_TP2X4_EXTRA_ENV = HICACHE_ENV.merge(
   "SGLANG_HICACHE_RAM_BUDGET" => "${GLM53_HICACHE_RAM_BUDGET:-325GiB}",
