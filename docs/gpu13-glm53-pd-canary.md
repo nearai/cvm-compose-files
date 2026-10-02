@@ -46,43 +46,35 @@ The canary measures how the KV transfer behaves under PPCIe.
 
 ## Procedure
 
-Run `dry_run: true` first wherever compose-manager supports it.
+No OpenRouter gateway change is needed. The gateway probes `proxy-glm53`'s `/healthz` every 5 s and
+ejects gpu13 after 3 failures. The proxy checks the router's `/readiness`. As a result:
 
-1. **Window and capacity.** The long tier is gpu02 (64 slots), gpu23 (64) and gpu13 (32). The gateway
-   runs `TIER_STRICT=1`, so while gpu13 is out, long-tier capacity drops by 20% and requests over
-   capacity get 429s. Choose a low-traffic window. See the 2026-09-21 fallback incident in
-   `docs/gpu02-glm53-w4afp8-long-context.md`.
-2. **Drain (optional).** When the TP4 engine stops, the gateway ejects gpu13 on its own within about
-   15 s (failed `/healthz`). Requests in flight on the engine at that moment fail. To avoid that,
-   drain first:
-   - In `vars/openrouter_gateway.yaml` (cvm-ansible-playbooks), remove gpu13 from
-     `openrouter_gateway_long_context_backend_urls` and `openrouter_gateway_long_context_probe_urls`,
-     then run "Deploy OpenRouter Gateway".
-   - Wait until
-     `sum(rate(sglang_num_requests_total{host_machine="gpu13",model="z-ai/glm-5.3-flash"}[5m]))` is 0.
-   - Re-add gpu13 after the smoke check (step 5).
-3. **Stop the TP4 engine only.**
-   - `compose/down` with services `["model-sg-glm53-fp8-tp4"]` (5 min grace).
-   - Leave every other gpu13 service running.
-4. **Deploy PD.**
-   - `compose/up` with services
-     `["model-sg-glm53-w4afp8-tp2-prefill","model-sg-glm53-w4afp8-tp2-decode","model-sg-glm53-w4afp8-pd-router","proxy-glm53","otelcol-contrib"]`
-     and `force_recreate: false`. `proxy-glm53` is recreated because its env changes.
-     `otelcol-contrib` is recreated because its scrape config changes.
-   - Run with `dry_run: true` first. The only removal allowed is the stopped `model-sg-glm53-fp8-tp4`
-     container. Any other removal, or a recreate of any other service, means abort.
-   - nginx resolves `proxy-glm53` only at startup (AGENT.md). Right after `proxy-glm53` is up, run
-     `compose/up` with services `["nginx"]` and `force_recreate: true`. This is a few seconds' blip for
-     every model nginx fronts on gpu13; the 2026-09-18 gpu13 migration did the same.
-   - Cold start takes about 15-30 minutes. The gateway keeps gpu13 out until `/readiness` passes.
-5. **Smoke check.**
-   - Run `glm53-perception-check` and the `glm53-soak-relay` checks against `proxy-glm53`.
-   - Read the NCCL INFO lines from both engines in Loki.
-   - Confirm `kv_transfer_*` metrics on a few requests.
-6. **Serve.**
-   - If step 2 drained gpu13, re-add it to both gateway lists. Otherwise the gateway re-admits it on
-     its own once `/readiness` passes.
-   - Watch TTFT, ITL, error rate, `KVTransferError` and the `kv_transfer_*` metrics against the gpu02
+- gpu13 leaves the pool about 15 s after the TP4 engine stops.
+- It stays out while the PD engines start.
+- It comes back on its own once both engines are ready.
+
+Run `dry_run: true` first wherever compose-manager supports it. Pass the full gpu-manager env map on
+every call, use `force_recreate: false` unless stated otherwise, and never send an empty `services` list.
+
+1. **Window.** gpu13 holds 32 of the 160 long-tier slots. While it is out, `TIER_STRICT=1` returns
+   429s for long requests over capacity. Choose a low-traffic window.
+2. **Stop the TP4 engine.**
+   - `compose/down` at the currently deployed tag with services `["model-sg-glm53-fp8-tp4"]`.
+     There is no dry run for this call.
+   - Requests in flight on the engine fail. Every other gpu13 service keeps running.
+3. **Deploy PD.**
+   - `compose/up` at the PD tag with services
+     `["model-sg-glm53-w4afp8-tp2-prefill","model-sg-glm53-w4afp8-tp2-decode","model-sg-glm53-w4afp8-pd-router","proxy-glm53","otelcol-contrib"]`.
+   - The dry-run plan must create the three PD services, recreate `proxy-glm53` (its env changes) and
+     `otelcol-contrib` (its scrape config changes), and remove nothing else. Anything more means abort.
+   - nginx resolves `proxy-glm53` only at startup. Right after `proxy-glm53` is up, run `compose/up`
+     with services `["nginx"]` and `force_recreate: true`. Every model nginx fronts on gpu13 sees a
+     few seconds' interruption. The 2026-09-18 gpu13 migration did the same.
+   - Cold start takes about 15-30 minutes.
+4. **Watch.**
+   - Read the engine logs for "ready", NCCL transport lines and Mooncake init.
+   - Confirm the gateway re-admits gpu13 once `/readiness` returns 200.
+   - Compare TTFT, ITL, error rate, `KVTransferError` and `kv_transfer_*` metrics against the gpu02
      and gpu23 TP4 replicas, which serve the same tier.
 
 ## Abort criteria
@@ -97,13 +89,13 @@ Any one of these means rollback:
 
 ## Rollback
 
-1. `compose/down` at the PD commit with services
+1. `compose/down` at the PD tag with services
    `["model-sg-glm53-w4afp8-tp2-prefill","model-sg-glm53-w4afp8-tp2-decode","model-sg-glm53-w4afp8-pd-router"]`.
-   The previous file does not define these services, so use the PD commit for this step. The proxy's
-   `/readiness` check fails and the gateway ejects gpu13 within about 15 s.
-2. `compose/up` of the previous `prod/small-models.yaml` commit with services
-   `["model-sg-glm53-fp8-tp4","proxy-glm53","otelcol-contrib"]`. Cold start takes about 50 minutes.
-3. `compose/up` with services `["nginx"]` and `force_recreate: true`.
+   The gateway ejects gpu13 within about 15 s.
+2. `compose/up` at the previous tag with services `["model-sg-glm53-fp8-tp4","proxy-glm53","otelcol-contrib"]`.
+   Cold start takes about 50 minutes.
+3. `compose/up` with services `["nginx"]` and `force_recreate: true`. The gateway re-admits gpu13 once
+   the TP4 engine is healthy.
 
 ## Before deploy
 
