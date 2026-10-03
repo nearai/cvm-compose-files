@@ -992,7 +992,13 @@ services:
       - TOKEN=${PROXY_TOKEN}
       - FUSION_ENABLED=${FUSION_ENABLED}
       - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
-      - VLLM_BACKEND_URLS=http://model-sg-glm53-fp8-tp4:8000
+      - VLLM_BACKEND_URLS=http://model-sg-glm53-w4afp8-pd-router:8000
+      # The PD router's /health is liveness only and returns 200 before its
+      # prefill/decode workers are ready (measured on gpu32: /health 200,
+      # /readiness 503, chat 503 "No prefill workers available"). /readiness
+      # makes this proxy's /healthz, and so the OpenRouter gateway, follow the
+      # real worker state during cold start and after an engine failure.
+      - VLLM_BACKEND_HEALTH_PATH=/readiness
       - VLLM_BACKEND_CONVERSATION_AFFINITY=1
       - VLLM_PROXY_MAX_REQUEST_SIZE=104857600
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
@@ -1019,9 +1025,92 @@ services:
       nearai.otel.ppcie: "true"
       nearai.otel.config_variant: "fc91d24-long-context-w4afp8-c8192-qsplit-hicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
 
-  model-sg-glm53-fp8-tp4:
+  model-sg-glm53-w4afp8-tp2-prefill:
     <<: *sg-glm53-flash-common
-    container_name: model-sg-glm53-fp8-tp4
+    container_name: model-sg-glm53-w4afp8-tp2-prefill
+    command: >
+      sglang serve
+      --model-path /root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/snapshots/99f1fa70408c52b007d4fd69e02e5a522422e755
+      --served-model-name z-ai/glm-5.3-flash
+      --tp-size 2
+      --ep-size 2
+      --mem-fraction-static 0.80
+      --max-running-requests 32
+      --max-queued-requests 8
+      --enable-priority-scheduling
+      --disable-priority-preemption
+      --chunked-prefill-size 8192
+      --max-prefill-tokens 32768
+      --prefill-decode-interval 1
+      --cuda-graph-max-bs-decode 32
+      --dsa-prefill-backend tilelang
+      --dsa-decode-backend tilelang
+      --kv-cache-dtype bfloat16
+      --speculative-algorithm EAGLE
+      --speculative-num-steps 5
+      --speculative-eagle-topk 1
+      --speculative-num-draft-tokens 6
+      --speculative-adaptive
+      --reasoning-parser glm45
+      --enable-strict-thinking
+      --grammar-backend xgrammar
+      --tool-call-parser glm47
+      --chat-template /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/3f1971b7b5f7a528c9c4ef6212c8785298a8c24a/chat_template.jinja
+      --context-length 1048576
+      --dist-init-addr 127.0.0.1:29511
+      --watchdog-timeout 1800
+      --host 0.0.0.0
+      --port 8000
+      --enable-metrics
+      --enable-cache-report
+      --log-requests-level 0
+      --disable-fast-image-processor
+      --limit-mm-data-per-request '{"image": 64}'
+      --disaggregation-mode prefill
+      --disaggregation-bootstrap-port 8998
+      --disaggregation-transfer-backend ${GLM53_PD_BACKEND:-mooncake}
+      --enable-hierarchical-cache
+      --hicache-write-policy write_through_selective
+      --hicache-io-backend direct
+      --hicache-mem-layout page_first_direct
+      --max-mamba-cache-size 165
+      --mamba-ssm-dtype bfloat16
+    environment:
+    - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+    - HF_HUB_OFFLINE=1
+    - TRANSFORMERS_OFFLINE=1
+    - HF_HUB_DISABLE_TELEMETRY=1
+    - DO_NOT_TRACK=1
+    - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    - OPENBLAS_L2_SIZE=2097152
+    # Capture the NCCL transport choice (P2P/NVLink vs SHM vs NET) in the engine log.
+    - NCCL_DEBUG=INFO
+    - NCCL_DEBUG_SUBSYS=INIT,P2P,ENV
+    # PD KV transfer over the Mooncake TCP transport (no RDMA NICs in the CVM).
+    # VERIFY: MOONCAKE_PROTOCOL is read by sglang/srt/environ.py (default rdma) and passed to
+    # TransferEngine.initialize(); GLM53_PD_BACKEND=mooncake_tcp additionally sets MC_FORCE_TCP=1.
+    - MOONCAKE_PROTOCOL=tcp
+    - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+    - TORCHINDUCTOR_CACHE_DIR=/root/.cache/torchinductor
+    - TRITON_CACHE_DIR=/root/.cache/triton
+    - TILELANG_CACHE_DIR=/root/.cache/tilelang
+    - SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION=0
+    # No admission reserve (see the long-tier note on the TP4 service this replaces).
+    - SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE=1
+    # HiCache host tier for this 2-rank engine: fixed 325 GiB, the same per-replica figure
+    # as prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8.yaml. A fixed size (not a percentage) keeps two
+    # TP2 engines started back to back from getting unequal pools. Startup fails if it
+    # exceeds available host RAM minus 10 GiB, so the host's free RAM after the Qwen/FLUX
+    # services must be confirmed before deploy. Dedicated variable: the TP4 service's
+    # GLM53_HICACHE_RAM_BUDGET (80%) must not leak into these.
+    - SGLANG_HICACHE_RAM_BUDGET=${GLM53_PD_HICACHE_RAM_BUDGET:-325GiB}
+    # CUDA-owned host memory (cudaMallocHost). Must stay 1 on TEE hosts: 0 selects
+    # cudaHostRegister, which fails with CUDA error 801 under HCC/PPCIe.
+    - SGLANG_HICACHE_CUDA_HOST_MEMORY=${GLM53_HICACHE_CUDA_HOST_MEMORY:-1}
+    - SGLANG_HICACHE_POOLED_TRANSFERS=1
+    - SGLANG_HICACHE_STAGING_PAGES=64
+    # Split DSA indexer logits scratch across the TP ranks (mitigation, not a bound).
+    - SGLANG_DSA_INDEXER_QSPLIT=1
     depends_on:
       model-downloader:
         condition: service_completed_successfully
@@ -1030,15 +1119,15 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["4","5","6","7"]
+              device_ids: ["4","5"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-bf16-kv","deployment:glm53-flash-sgl-tp4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8009","instance:1","gpu_pair:4-7","ppcie:true","config_variant:fc91d24-long-context-w4afp8-c8192-qsplit-hicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192","request_logging:disabled","thinking_budget_policy:default8192-public-to-native","max_running_requests:32","max_queued_requests:8","engine_image:47aff7910900"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-bf16-kv","deployment:glm53-flash-sgl-tp4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8009","instance:1","gpu_pair:4-5","ppcie:true","config_variant:pd-prefill-w4afp8-tp2-ep2-mooncake-tcp-c8192-qsplit-hicache-selective325-mamba165-pdi1-h200-eagle-adaptive-5-1-6-strict-budget8192","pd_role:prefill","request_logging:disabled","thinking_budget_policy:default8192-public-to-native","max_running_requests:32","max_queued_requests:8","engine_image:47aff7910900"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
       nearai.otel.source: "sglang"
-      nearai.otel.container_name: "model-sg-glm53-fp8-tp4"
+      nearai.otel.container_name: "model-sg-glm53-w4afp8-tp2-prefill"
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "z-ai/glm-5.3-flash"
@@ -1051,15 +1140,174 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.instance: "1"
-      nearai.otel.gpu_pair: "4-7"
+      nearai.otel.gpu_pair: "4-5"
       nearai.otel.ppcie: "true"
-      nearai.otel.config_variant: "fc91d24-long-context-w4afp8-c8192-qsplit-hicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
+      nearai.otel.config_variant: "pd-prefill-w4afp8-tp2-ep2-mooncake-tcp-c8192-qsplit-hicache-selective325-mamba165-pdi1-h200-eagle-adaptive-5-1-6-strict-budget8192"
+      nearai.otel.pd_role: "prefill"
       nearai.otel.thinking_budget_policy: "default8192-public-to-native"
       nearai.otel.request_logging: "disabled"
       nearai.otel.watchdog_timeout: "1800"
       nearai.otel.max_running_requests: "32"
       nearai.otel.max_queued_requests: "8"
       nearai.otel.engine_image: "47aff7910900"
+
+  # --- GLM-5.3 Flash PD DECODE engine (SGLang TP2/EP2, GPUs 6-7; radix cache off for EAGLE) ---
+  # Decode runs at --mem-fraction-static 0.72, not the 0.80 the other GLM TP2
+  # engines use. In decode mode each rank also allocates
+  # intermediate_ssm_state_cache (26.52 GB) and intermediate_conv_window_cache
+  # (1.86 GB). At 0.80 that left 7.02 GB after the pool, and the adaptive
+  # speculative CUDA graph capture ran out of memory (2/2 runs on gpu32). At 0.72
+  # the log shows 17.19 GB free after the pool.
+  model-sg-glm53-w4afp8-tp2-decode:
+    <<: *sg-glm53-flash-common
+    container_name: model-sg-glm53-w4afp8-tp2-decode
+    command: >
+      sglang serve
+      --model-path /root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/snapshots/99f1fa70408c52b007d4fd69e02e5a522422e755
+      --served-model-name z-ai/glm-5.3-flash
+      --tp-size 2
+      --ep-size 2
+      --mem-fraction-static 0.72
+      --max-running-requests 32
+      --enable-priority-scheduling
+      --disable-priority-preemption
+      --chunked-prefill-size 8192
+      --max-prefill-tokens 32768
+      --prefill-decode-interval 1
+      --cuda-graph-max-bs-decode 32
+      --dsa-prefill-backend tilelang
+      --dsa-decode-backend tilelang
+      --kv-cache-dtype bfloat16
+      --speculative-algorithm EAGLE
+      --speculative-num-steps 5
+      --speculative-eagle-topk 1
+      --speculative-num-draft-tokens 6
+      --speculative-adaptive
+      --reasoning-parser glm45
+      --enable-strict-thinking
+      --grammar-backend xgrammar
+      --tool-call-parser glm47
+      --chat-template /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/3f1971b7b5f7a528c9c4ef6212c8785298a8c24a/chat_template.jinja
+      --context-length 1048576
+      --dist-init-addr 127.0.0.1:29512
+      --watchdog-timeout 1800
+      --host 0.0.0.0
+      --port 8000
+      --enable-metrics
+      --enable-cache-report
+      --log-requests-level 0
+      --disable-fast-image-processor
+      --limit-mm-data-per-request '{"image": 64}'
+      --disaggregation-mode decode
+      --disaggregation-transfer-backend ${GLM53_PD_BACKEND:-mooncake}
+      --disable-radix-cache
+      --max-mamba-cache-size 165
+      --mamba-ssm-dtype bfloat16
+    environment:
+    - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+    - HF_HUB_OFFLINE=1
+    - TRANSFORMERS_OFFLINE=1
+    - HF_HUB_DISABLE_TELEMETRY=1
+    - DO_NOT_TRACK=1
+    - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    - OPENBLAS_L2_SIZE=2097152
+    # Capture the NCCL transport choice (P2P/NVLink vs SHM vs NET) in the engine log.
+    - NCCL_DEBUG=INFO
+    - NCCL_DEBUG_SUBSYS=INIT,P2P,ENV
+    # PD KV transfer over the Mooncake TCP transport (no RDMA NICs in the CVM).
+    # VERIFY: MOONCAKE_PROTOCOL is read by sglang/srt/environ.py (default rdma) and passed to
+    # TransferEngine.initialize(); GLM53_PD_BACKEND=mooncake_tcp additionally sets MC_FORCE_TCP=1.
+    - MOONCAKE_PROTOCOL=tcp
+    - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+    - TORCHINDUCTOR_CACHE_DIR=/root/.cache/torchinductor
+    - TRITON_CACHE_DIR=/root/.cache/triton
+    - TILELANG_CACHE_DIR=/root/.cache/tilelang
+    - SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION=0
+    # No admission reserve (see the long-tier note on the TP4 service this replaces).
+    - SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE=1
+    # Split DSA indexer logits scratch across the TP ranks (mitigation, not a bound).
+    - SGLANG_DSA_INDEXER_QSPLIT=1
+    depends_on:
+      model-downloader:
+        condition: service_completed_successfully
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["6","7"]
+              capabilities: [gpu]
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-bf16-kv","deployment:glm53-flash-sgl-tp4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8009","instance:2","gpu_pair:6-7","ppcie:true","config_variant:pd-decode-w4afp8-tp2-ep2-mooncake-tcp-radix-off-qsplit-mamba165-pdi1-h200-eagle-adaptive-5-1-6-strict-budget8192","pd_role:decode","request_logging:disabled","thinking_budget_policy:default8192-public-to-native","max_running_requests:32","engine_image:47aff7910900"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "sglang"
+      nearai.otel.service: "sglang"
+      nearai.otel.source: "sglang"
+      nearai.otel.container_name: "model-sg-glm53-w4afp8-tp2-decode"
+      nearai.otel.port: "8000"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "z-ai/glm-5.3-flash"
+      nearai.otel.model_path: "graphistry/GLM-5.3-Flash-W4AFP8"
+      nearai.otel.served_model: "z-ai/glm-5.3-flash"
+      nearai.otel.deployment: "glm53-flash-sgl-tp4"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
+      nearai.otel.instance: "2"
+      nearai.otel.gpu_pair: "6-7"
+      nearai.otel.ppcie: "true"
+      nearai.otel.config_variant: "pd-decode-w4afp8-tp2-ep2-mooncake-tcp-radix-off-qsplit-mamba165-pdi1-h200-eagle-adaptive-5-1-6-strict-budget8192"
+      nearai.otel.pd_role: "decode"
+      nearai.otel.thinking_budget_policy: "default8192-public-to-native"
+      nearai.otel.request_logging: "disabled"
+      nearai.otel.watchdog_timeout: "1800"
+      nearai.otel.max_running_requests: "32"
+      nearai.otel.engine_image: "47aff7910900"
+
+  # --- GLM-5.3 Flash PD router (sglang_router, CPU only, internal network; no published ports) ---
+  model-sg-glm53-w4afp8-pd-router:
+    image: docker.io/nearaidev/sglang@sha256:47aff791090003a37f893e998c44794c410d3f7bdfc7fdd2dfab5eb5592b30bb
+    container_name: model-sg-glm53-w4afp8-pd-router
+    init: true
+    depends_on:
+      - model-sg-glm53-w4afp8-tp2-prefill
+      - model-sg-glm53-w4afp8-tp2-decode
+    command: >
+      python3 -m sglang_router.launch_router
+      --pd-disaggregation
+      --prefill http://model-sg-glm53-w4afp8-tp2-prefill:8000 8998
+      --decode http://model-sg-glm53-w4afp8-tp2-decode:8000
+      --policy round_robin
+      --host 0.0.0.0
+      --port 8000
+      --prometheus-host 0.0.0.0
+      --prometheus-port 29000
+      --worker-startup-timeout-secs 3600
+      --request-timeout-secs 1800
+      --disable-retries
+    restart: unless-stopped
+    logging: *logging-conf
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"sglang-router","service":"sglang-router","tags":["model:z-ai/glm-5.3-flash","deployment:glm53-flash-sgl-tp4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8009","gpu_pair:4-7","ppcie:true","config_variant:pd-tp2x2-w4afp8-mooncake-tcp-router-eagle-adaptive-5-1-6-strict-budget8192"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "sglang-router"
+      nearai.otel.service: "sglang-router"
+      nearai.otel.source: "sglang-router"
+      nearai.otel.container_name: "model-sg-glm53-w4afp8-pd-router"
+      nearai.otel.port: "29000"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "z-ai/glm-5.3-flash"
+      nearai.otel.deployment: "glm53-flash-sgl-tp4"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
+      nearai.otel.gpu_pair: "4-7"
+      nearai.otel.ppcie: "true"
+      nearai.otel.config_variant: "pd-tp2x2-w4afp8-mooncake-tcp-router-eagle-adaptive-5-1-6-strict-budget8192"
 
   # --- FLUX x1 (GPU 3, shared with small models) ---
 
@@ -1769,15 +2017,15 @@ configs:
                       ip: "${HOST_IP}"
                       port: "8008"
                       instance: "2"
-              - job_name: sglang-model-sg-glm53-fp8-tp4
+              - job_name: sglang-model-sg-glm53-w4afp8-tp2-prefill
                 scrape_interval: 15s
                 metrics_path: /metrics
                 static_configs:
-                  - targets: ['model-sg-glm53-fp8-tp4:8000']
+                  - targets: ['model-sg-glm53-w4afp8-tp2-prefill:8000']
                     labels:
                       service: "sglang"
                       source: "sglang"
-                      container_name: "model-sg-glm53-fp8-tp4"
+                      container_name: "model-sg-glm53-w4afp8-tp2-prefill"
                       model: "z-ai/glm-5.3-flash"
                       model_path: "graphistry/GLM-5.3-Flash-W4AFP8"
                       served_model: "z-ai/glm-5.3-flash"
@@ -1790,15 +2038,55 @@ configs:
                       ip: "${HOST_IP}"
                       port: "8009"
                       instance: "1"
+                      gpu_pair: "4-5"
+                      ppcie: "true"
+                      config_variant: "pd-prefill-w4afp8-tp2-ep2-mooncake-tcp-c8192-qsplit-hicache-selective325-mamba165-pdi1-h200-eagle-adaptive-5-1-6-strict-budget8192"
+                      pd_role: "prefill"
+              - job_name: sglang-model-sg-glm53-w4afp8-tp2-decode
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['model-sg-glm53-w4afp8-tp2-decode:8000']
+                    labels:
+                      service: "sglang"
+                      source: "sglang"
+                      container_name: "model-sg-glm53-w4afp8-tp2-decode"
+                      model: "z-ai/glm-5.3-flash"
+                      model_path: "graphistry/GLM-5.3-Flash-W4AFP8"
+                      served_model: "z-ai/glm-5.3-flash"
+                      precision: "int4-weights-fp8-activations-bf16-kv"
+                      deployment: "glm53-flash-sgl-tp4"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      port: "8009"
+                      instance: "2"
+                      gpu_pair: "6-7"
+                      ppcie: "true"
+                      config_variant: "pd-decode-w4afp8-tp2-ep2-mooncake-tcp-radix-off-qsplit-mamba165-pdi1-h200-eagle-adaptive-5-1-6-strict-budget8192"
+                      pd_role: "decode"
+              - job_name: sglang-router-model-sg-glm53-w4afp8-pd-router
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['model-sg-glm53-w4afp8-pd-router:29000']
+                    labels:
+                      service: "sglang-router"
+                      source: "sglang-router"
+                      container_name: "model-sg-glm53-w4afp8-pd-router"
+                      model: "z-ai/glm-5.3-flash"
+                      deployment: "glm53-flash-sgl-tp4"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      port: "8009"
                       gpu_pair: "4-7"
                       ppcie: "true"
-                      config_variant: "fc91d24-long-context-w4afp8-c8192-qsplit-hicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
-                      thinking_budget_policy: "default8192-public-to-native"
-                      request_logging: "disabled"
-                      watchdog_timeout: "1800"
-                      max_running_requests: "32"
-                      max_queued_requests: "8"
-                      engine_image: "47aff7910900"
+                      config_variant: "pd-tp2x2-w4afp8-mooncake-tcp-router-eagle-adaptive-5-1-6-strict-budget8192"
               - job_name: sglang-model-sg-flux2-klein-4b-tp1
                 scrape_interval: 15s
                 metrics_path: /metrics
