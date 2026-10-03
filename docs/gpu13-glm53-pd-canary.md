@@ -99,6 +99,12 @@ Any one of these means rollback:
 
 ## Before deploy
 
+- Decode memory: decode runs at `--mem-fraction-static 0.72`. In decode mode each rank also allocates
+  `intermediate_ssm_state_cache` (26.52 GB) and `intermediate_conv_window_cache` (1.86 GB). At 0.80
+  that left 7.02 GB after the pool, and the adaptive speculative CUDA graph capture ran out of memory
+  on gpu32 (2/2 runs). At 0.72 the log shows 17.19 GB free after the pool. A full boot at 0.72 is not
+  yet confirmed: the gpu32 run stopped on a GPU hardware fault (Xid 175/154) unrelated to the config.
+
 - Confirm that `sglang_router` is in the prod image digest.
 - Confirm that the proxy's health probe works against the router.
 - Confirm that `MOONCAKE_PROTOCOL=tcp` alone avoids RDMA probing. If it does not, set

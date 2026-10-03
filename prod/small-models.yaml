@@ -1152,6 +1152,12 @@ services:
       nearai.otel.engine_image: "47aff7910900"
 
   # --- GLM-5.3 Flash PD DECODE engine (SGLang TP2/EP2, GPUs 6-7; radix cache off for EAGLE) ---
+  # Decode runs at --mem-fraction-static 0.72, not the 0.80 the other GLM TP2
+  # engines use. In decode mode each rank also allocates
+  # intermediate_ssm_state_cache (26.52 GB) and intermediate_conv_window_cache
+  # (1.86 GB). At 0.80 that left 7.02 GB after the pool, and the adaptive
+  # speculative CUDA graph capture ran out of memory (2/2 runs on gpu32). At 0.72
+  # the log shows 17.19 GB free after the pool.
   model-sg-glm53-w4afp8-tp2-decode:
     <<: *sg-glm53-flash-common
     container_name: model-sg-glm53-w4afp8-tp2-decode
@@ -1161,7 +1167,7 @@ services:
       --served-model-name z-ai/glm-5.3-flash
       --tp-size 2
       --ep-size 2
-      --mem-fraction-static 0.80
+      --mem-fraction-static 0.72
       --max-running-requests 32
       --enable-priority-scheduling
       --disable-priority-preemption
