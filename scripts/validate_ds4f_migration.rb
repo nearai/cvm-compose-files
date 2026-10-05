@@ -138,6 +138,8 @@ assert.call(small_engine_command.include?('--model-path /root/.cache/huggingface
   exact_flag = /#{Regexp.escape(flag)} #{Regexp.escape(value)}\b/
   assert.call(small_engine_command.match?(exact_flag), "gpu13 GLM runtime flag changed: #{flag} #{value}")
 end
+# Overlap-scheduler-off canary: CC makes host copies synchronous, so overlap buys little.
+assert.call(small_engine_command.scan('--disable-overlap-schedule').length == 1, 'gpu13 GLM must run the overlap-off canary flag exactly once')
 # HiCache is what buys this replica its long-context headroom; only the qualified
 # W4AFP8+HiCache image above may run it in a TEE guest.
 [
