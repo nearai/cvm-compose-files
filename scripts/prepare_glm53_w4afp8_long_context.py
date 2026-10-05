@@ -129,6 +129,11 @@ HEADER: Final = (
     "# Note this leaves no unsplit control on the tier. The split's cost under CC/PPCIe is\n"
     "# therefore measured against the pre-change history, not against a live sibling. Roll out\n"
     "# with docs/glm53-w4afp8-long-context-rollout.md, one replica at a time, and watch p95.\n"
+    "#\n"
+    "# gpu02 2xTP2 memory-optimized canary (docs/gpu02-glm53-2xtp2-memopt-canary.md): this file is\n"
+    "# shared by gpu02 and gpu23, so the TP4 r2 service is kept as-is for gpu23 and two TP2 services\n"
+    "# (model-sg-glm53-w4afp8-tp2-r2a on GPUs 4,5; -r2b on GPUs 6,7) are added for gpu02 to start in\n"
+    "# its place. proxy-glm53's pool is ${GLM53_BACKEND_URLS:-<r1,r2>}; only gpu02's env map sets it.\n"
     "# Do not hand-edit this file.\n"
 )
 
@@ -254,6 +259,46 @@ ANCHOR_ENV_NEW: Final = (
 )
 
 
+# --- gpu02-only 2xTP2 memory-optimized canary (replaces r2's GPUs 4-7 on gpu02) ---------------
+# This file is shared by gpu02 and gpu23 (each host's compose-manager scopes its own services).
+# The TP4 r2 definition above is therefore KEPT unchanged so gpu23 keeps deploying it. Two TP2
+# replicas are ADDED for gpu02 to start in r2's place, and the proxy backend list becomes
+# host-overridable: gpu23 never sets GLM53_BACKEND_URLS, so its effective value is unchanged.
+# docs/gpu02-glm53-2xtp2-memopt-canary.md is the runbook.
+R2_SERVICE: Final = f"{SERVICE_PREFIX}2"
+TP2_SERVICE_PREFIX: Final = "model-sg-glm53-w4afp8-tp2-r"
+# suffix -> (GPU pair, distinct --dist-init-addr port, HiCache budget variable)
+TP2_REPLICAS: Final = {
+    "2a": {"devices": ("4", "5"), "gpu_pair": "4-5", "dist_init": "127.0.0.1:29512", "budget_var": "GLM53_R2A_HICACHE_RAM_BUDGET"},
+    "2b": {"devices": ("6", "7"), "gpu_pair": "6-7", "dist_init": "127.0.0.1:29513", "budget_var": "GLM53_R2B_HICACHE_RAM_BUDGET"},
+}
+# Half of r2's 650 GiB budget each, so the two replicas together take what r2 took.
+TP2_HICACHE_BUDGET: Final = "325GiB"
+TP2_MAMBA_CACHE: Final = "330"
+TP2_VARIANT: Final = (
+    "fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host325g"
+    "-memopt-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192"
+)
+TP2_FLAG_CHANGES: Final = {
+    "--tp-size 4": "--tp-size 2",
+    "--ep-size 4": "--ep-size 2",
+    "--mem-fraction-static 0.80": "--mem-fraction-static 0.86",
+    "--max-running-requests 32": "--max-running-requests 24",
+    "--speculative-num-steps 5": "--speculative-num-steps 4",
+    "--speculative-num-draft-tokens 6": "--speculative-num-draft-tokens 5",
+    "--speculative-adaptive": None,
+}
+BACKEND_URLS_R1_R2: Final = f"http://{SERVICE_PREFIX}1:8000,http://{SERVICE_PREFIX}2:8000"
+PROXY_BACKEND_OLD: Final = f"      - VLLM_BACKEND_URLS={BACKEND_URLS_R1_R2}\n"
+PROXY_BACKEND_NEW: Final = (
+    "      # Host-overridable pool. Unset (gpu23, and gpu02 until the 2xTP2 canary), this is exactly r1 + r2.\n"
+    "      # gpu02's compose-manager env map sets GLM53_BACKEND_URLS to r1 + r2a + r2b for the canary;\n"
+    "      # gpu23 must never set it (docs/gpu02-glm53-2xtp2-memopt-canary.md).\n"
+    f"      - VLLM_BACKEND_URLS=${{GLM53_BACKEND_URLS:-{BACKEND_URLS_R1_R2}}}\n"
+)
+TP2_BUDGET_COMMENT_OLD_START: Final = "      # HiCache host tier: a fixed 406 GiB per replica"
+
+
 class GenerationError(ValueError):
     pass
 
@@ -357,6 +402,130 @@ def resolve_engine_image_labels(text: str) -> str:
     return text
 
 
+def tp2_service(r2: str, suffix: str) -> str:
+    """One TP2 replica of the gpu02 2xTP2 canary, derived from the generated r2 service text."""
+    spec = TP2_REPLICAS[suffix]
+    name = f"{TP2_SERVICE_PREFIX}{suffix}"
+    command_start = r2.index("    command: >\n") + len("    command: >\n")
+    env_start = r2.index("    environment:\n")
+    arguments = [line.strip() for line in r2[command_start:env_start].splitlines() if line.strip()]
+    rewritten: list[str] = []
+    for argument in arguments:
+        if argument in TP2_FLAG_CHANGES:
+            replacement = TP2_FLAG_CHANGES[argument]
+            if replacement is not None:
+                rewritten.append(replacement)
+        elif argument.startswith("--dist-init-addr "):
+            rewritten.append(f"--dist-init-addr {spec['dist_init']}")
+        else:
+            rewritten.append(argument)
+    for argument in TP2_FLAG_CHANGES:
+        if arguments.count(argument) != 1:
+            raise GenerationError(f"tp2 canary: r2 argv must carry {argument!r} exactly once")
+    rewritten.extend((f"--max-mamba-cache-size {TP2_MAMBA_CACHE}", "--mamba-ssm-dtype bfloat16"))
+
+    env_end = r2.index("    depends_on:\n")
+    environment = r2[env_start:env_end]
+    budget_line = f"      - SGLANG_HICACHE_RAM_BUDGET=${{GLM53_R2_HICACHE_RAM_BUDGET:-650GiB}}\n"
+    comment_start = environment.index(TP2_BUDGET_COMMENT_OLD_START)
+    if environment.count(budget_line) != 1 or environment.index(budget_line) < comment_start:
+        raise GenerationError("tp2 canary: r2 HiCache budget block changed")
+    comment_end = environment.index(budget_line) + len(budget_line)
+    environment = (
+        environment[:comment_start]
+        + "      # HiCache host tier: half of r2's 650 GiB per TP2 replica across its two TP ranks, so the\n"
+        + "      # pair together takes what the TP4 r2 took. Fixed (not a percentage) so the replica started\n"
+        + "      # second does not get less; startup fails if it exceeds available RAM minus 10 GiB.\n"
+        + f"      - SGLANG_HICACHE_RAM_BUDGET=${{{spec['budget_var']}:-{TP2_HICACHE_BUDGET}}}\n"
+        + environment[comment_end:]
+    )
+    devices = ",".join(f'"{device}"' for device in spec["devices"])
+    log_tags = (
+        '"model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash",'
+        f'"precision:{PRECISION}","deployment:glm53-flash-sgl-tp4","config_variant:{TP2_VARIANT}",'
+        f'"request_logging:disabled","engine_image:{R2_ENGINE_IMAGE_LABEL}","env:${{ENV}}","host:${{CVM_HOST}}",'
+        f'"ip:${{HOST_IP}}","port:8000","instance:{suffix}","gpu_pair:{spec["gpu_pair"]}"'
+    )
+    return (
+        f"  # --- GLM-5.3-Flash 2xTP2 memory-optimized canary replica {suffix} (SGLang TP2, GPUs {spec['gpu_pair']}) ---\n"
+        f"  # gpu02 only: gpu23 never starts this service (its compose-manager scopes its services).\n"
+        f"  {name}:\n"
+        "    <<: *sg-glm53-flash-common\n"
+        f"    container_name: {name}\n"
+        f"    image: {R2_IMAGE}\n"
+        + render_command(rewritten, 4)
+        + environment
+        + "    depends_on:\n      model-downloader:\n        condition: service_completed_successfully\n"
+        "    deploy:\n      resources:\n        reservations:\n          devices:\n"
+        f"            - driver: nvidia\n              device_ids: [{devices}]\n              capabilities: [gpu]\n"
+        "    labels:\n"
+        f"      com.datadoghq.ad.logs: '[{{\"source\":\"sglang\",\"service\":\"sglang\",\"tags\":[{log_tags}]}}]'\n"
+        '      nearai.otel.scrape: "true"\n      nearai.otel.job: "sglang"\n      nearai.otel.service: "sglang"\n'
+        '      nearai.otel.source: "sglang"\n'
+        f'      nearai.otel.container_name: "{name}"\n'
+        '      nearai.otel.port: "8000"\n      nearai.otel.path: "/metrics"\n'
+        '      nearai.otel.model: "z-ai/glm-5.3-flash"\n'
+        f'      nearai.otel.model_path: "{CHECKPOINT}"\n'
+        '      nearai.otel.served_model: "z-ai/glm-5.3-flash"\n'
+        '      nearai.otel.deployment: "glm53-flash-sgl-tp4"\n'
+        f'      nearai.otel.config_variant: "{TP2_VARIANT}"\n'
+        '      nearai.otel.thinking_budget_policy: "default8192-public-to-native"\n'
+        '      nearai.otel.request_logging: "disabled"\n'
+        f'      nearai.otel.engine_image: "{R2_ENGINE_IMAGE_LABEL}"\n'
+        f'      nearai.otel.instance: "{suffix}"\n'
+        f'      nearai.otel.gpu_pair: "{spec["gpu_pair"]}"\n'
+        '      nearai.otel.env: "${ENV}"\n      nearai.otel.host: "${CVM_HOST}"\n'
+        '      nearai.otel.host_machine: "${CVM_HOST}"\n      nearai.otel.cvm_name: "${CVM_NAME}"\n'
+        '      nearai.otel.ip: "${HOST_IP}"\n'
+    )
+
+
+def tp2_scrape_job(suffix: str) -> str:
+    spec = TP2_REPLICAS[suffix]
+    name = f"{TP2_SERVICE_PREFIX}{suffix}"
+    return (
+        f"              - job_name: sglang-{name}\n"
+        "                scrape_interval: 15s\n"
+        "                metrics_path: /metrics\n"
+        "                static_configs:\n"
+        f"                  - targets: ['{name}:8000']\n"
+        "                    labels:\n"
+        '                      service: "sglang"\n'
+        '                      source: "sglang"\n'
+        f'                      container_name: "{name}"\n'
+        '                      model: "z-ai/glm-5.3-flash"\n'
+        f'                      model_path: "{CHECKPOINT}"\n'
+        '                      served_model: "z-ai/glm-5.3-flash"\n'
+        f'                      precision: "{PRECISION}"\n'
+        '                      deployment: "glm53-flash-sgl-tp4"\n'
+        '                      env: "${ENV}"\n'
+        '                      host: "${CVM_HOST}"\n'
+        '                      host_machine: "${CVM_HOST}"\n'
+        '                      cvm_name: "${CVM_NAME}"\n'
+        '                      ip: "${HOST_IP}"\n'
+        '                      port: "8000"\n'
+        f'                      instance: "{suffix}"\n'
+        f'                      gpu_pair: "{spec["gpu_pair"]}"\n'
+        f'                      config_variant: "{TP2_VARIANT}"\n'
+        '                      thinking_budget_policy: "default8192-public-to-native"\n'
+        '                      request_logging: "disabled"\n'
+        f'                      engine_image: "{R2_ENGINE_IMAGE_LABEL}"\n'
+    )
+
+
+def add_tp2_canary(text: str) -> str:
+    """Add the gpu02 2xTP2 pair beside the untouched TP4 r2 and make the proxy pool overridable."""
+    text = replace_exact(text, PROXY_BACKEND_OLD, PROXY_BACKEND_NEW, 1, "proxy backend list")
+    r2_start, r2_end, r2 = section(
+        text, f"  {R2_SERVICE}:\n", "\n  # Explicit operator-only semantic check;", "replica 2 service"
+    )
+    pair = "".join("\n" + tp2_service(r2, suffix) for suffix in TP2_REPLICAS)
+    text = text[:r2_end] + pair + text[r2_end:]
+    job_marker = "              - job_name: dcgm-dcgm-glm53\n"
+    jobs = "".join(tp2_scrape_job(suffix) for suffix in TP2_REPLICAS)
+    return replace_exact(text, job_marker, jobs + job_marker, 1, "tp2 scrape jobs")
+
+
 def generate(source: str) -> str:
     if SERVICE_PREFIX in source or f"models--{CHECKPOINT.replace('/', '--')}/" in source:
         raise GenerationError("source compose already contains W4AFP8 engines")
@@ -429,6 +598,7 @@ def generate(source: str) -> str:
     ):
         updated = replace_exact(updated, old, new, count, label)
     updated = resolve_engine_image_labels(updated)
+    updated = add_tp2_canary(updated)
     return HEADER + updated
 
 

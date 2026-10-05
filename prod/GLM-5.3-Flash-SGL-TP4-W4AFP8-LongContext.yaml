@@ -34,6 +34,11 @@
 # Note this leaves no unsplit control on the tier. The split's cost under CC/PPCIe is
 # therefore measured against the pre-change history, not against a live sibling. Roll out
 # with docs/glm53-w4afp8-long-context-rollout.md, one replica at a time, and watch p95.
+#
+# gpu02 2xTP2 memory-optimized canary (docs/gpu02-glm53-2xtp2-memopt-canary.md): this file is
+# shared by gpu02 and gpu23, so the TP4 r2 service is kept as-is for gpu23 and two TP2 services
+# (model-sg-glm53-w4afp8-tp2-r2a on GPUs 4,5; -r2b on GPUs 6,7) are added for gpu02 to start in
+# its place. proxy-glm53's pool is ${GLM53_BACKEND_URLS:-<r1,r2>}; only gpu02's env map sets it.
 # Do not hand-edit this file.
 # This is the DEDICATED LONG-CONTEXT TIER variant of prod/GLM-5.3-Flash-SGL-TP4.yaml.
 # Generated from the long-context file. Routing remains the dedicated long-context
@@ -442,7 +447,10 @@ services:
       - TOKEN=${PROXY_TOKEN}
       - FUSION_ENABLED=${FUSION_ENABLED}
       - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
-      - VLLM_BACKEND_URLS=http://model-sg-glm53-w4afp8-tp4-r1:8000,http://model-sg-glm53-w4afp8-tp4-r2:8000
+      # Host-overridable pool. Unset (gpu23, and gpu02 until the 2xTP2 canary), this is exactly r1 + r2.
+      # gpu02's compose-manager env map sets GLM53_BACKEND_URLS to r1 + r2a + r2b for the canary;
+      # gpu23 must never set it (docs/gpu02-glm53-2xtp2-memopt-canary.md).
+      - VLLM_BACKEND_URLS=${GLM53_BACKEND_URLS:-http://model-sg-glm53-w4afp8-tp4-r1:8000,http://model-sg-glm53-w4afp8-tp4-r2:8000}
       # Keep append-only conversations on the replica that already holds their prefix cache
       # (inference-proxy #227); new conversations still balance by least-connections.
       - VLLM_BACKEND_CONVERSATION_AFFINITY=1
@@ -638,6 +646,262 @@ services:
       nearai.otel.request_logging: "disabled"
       nearai.otel.engine_image: "47aff7910900"
       nearai.otel.instance: "2"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
+
+  # --- GLM-5.3-Flash 2xTP2 memory-optimized canary replica 2a (SGLang TP2, GPUs 4-5) ---
+  # gpu02 only: gpu23 never starts this service (its compose-manager scopes its services).
+  model-sg-glm53-w4afp8-tp2-r2a:
+    <<: *sg-glm53-flash-common
+    container_name: model-sg-glm53-w4afp8-tp2-r2a
+    image: docker.io/nearaidev/sglang@sha256:47aff791090003a37f893e998c44794c410d3f7bdfc7fdd2dfab5eb5592b30bb
+    command: >
+        sglang serve
+        --model-path /root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/snapshots/99f1fa70408c52b007d4fd69e02e5a522422e755
+        --served-model-name z-ai/glm-5.3-flash
+        --tp-size 2
+        --ep-size 2
+        --mem-fraction-static 0.86
+        --max-running-requests 24
+        --max-queued-requests 8
+        --enable-priority-scheduling
+        --disable-priority-preemption
+        --chunked-prefill-size 8192
+        --max-prefill-tokens 32768
+        --prefill-decode-interval 2
+        --cuda-graph-max-bs-decode 32
+        --dsa-prefill-backend tilelang
+        --dsa-decode-backend tilelang
+        --kv-cache-dtype bfloat16
+        --speculative-algorithm EAGLE
+        --speculative-num-steps 4
+        --speculative-eagle-topk 1
+        --speculative-num-draft-tokens 5
+        --reasoning-parser glm45
+        --enable-strict-thinking
+        --grammar-backend xgrammar
+        --tool-call-parser glm47
+        --chat-template /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/3f1971b7b5f7a528c9c4ef6212c8785298a8c24a/chat_template.jinja
+        --context-length 1048576
+        --dist-init-addr 127.0.0.1:29512
+        --watchdog-timeout 1800
+        --host 0.0.0.0
+        --port 8000
+        --enable-metrics
+        --enable-cache-report
+        --log-requests-level 0
+        --disable-fast-image-processor
+        --limit-mm-data-per-request '{"image": 64}'
+        --enable-hierarchical-cache
+        --hicache-write-policy write_through
+        --hicache-io-backend direct
+        --hicache-mem-layout page_first_direct
+        --max-mamba-cache-size 330
+        --mamba-ssm-dtype bfloat16
+    environment:
+      - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+      # Local snapshot path; nothing is fetched at engine start.
+      - HF_HUB_OFFLINE=1
+      - TRANSFORMERS_OFFLINE=1
+      - HF_HUB_DISABLE_TELEMETRY=1
+      - DO_NOT_TRACK=1
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - OPENBLAS_L2_SIZE=2097152
+      - NCCL_DEBUG=WARN
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+      - TORCHINDUCTOR_CACHE_DIR=/root/.cache/torchinductor
+      - TRITON_CACHE_DIR=/root/.cache/triton
+      # Persist tilelang's DSA kernel JIT cache: it defaults to /root/.tilelang, outside
+      # the kernel_cache volume, so every restart re-paid ~22-24 compiles at 8-9 s each
+      # with the whole engine frozen (2026-09-12..16 capacity campaign).
+      - TILELANG_CACHE_DIR=/root/.cache/tilelang
+      # /health must not run a generation: at this pin health_generate submits a real
+      # 1-token request that queues behind any in-flight long prefill, so the CVM
+      # proxy's 3 s probe times out, the replica flaps unhealthy, and the conversation
+      # affinity pin is skipped (full re-prefill on the other replica). nearai/infra#234.
+      - SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION=0
+      # No admission reserve on the long tier (see the header); --prefill-decode-interval
+      # is set per replica, independently of the inert reserve patch.
+      - SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE=1
+      # HiCache host tier: half of r2's 650 GiB per TP2 replica across its two TP ranks, so the
+      # pair together takes what the TP4 r2 took. Fixed (not a percentage) so the replica started
+      # second does not get less; startup fails if it exceeds available RAM minus 10 GiB.
+      - SGLANG_HICACHE_RAM_BUDGET=${GLM53_R2A_HICACHE_RAM_BUDGET:-325GiB}
+      # CUDA-owned host memory (cudaMallocHost). Must stay 1 on TEE hosts: 0 selects
+      # cudaHostRegister, which fails with CUDA error 801 under HCC/PPCIe.
+      - SGLANG_HICACHE_CUDA_HOST_MEMORY=${GLM53_HICACHE_CUDA_HOST_MEMORY:-1}
+      - SGLANG_HICACHE_POOLED_TRANSFERS=1
+      - SGLANG_HICACHE_STAGING_PAGES=64
+      # DSA indexer query split, on BOTH replicas. Each TP rank scores 1/TP of a prefill
+      # chunk's rows instead of all of them, so the fp32 logits buffer -- sized
+      # new_tokens x total_context -- shrinks by TP. r1 crashed on 2026-09-25 without it:
+      # deep_gemm.fp8_mqa_logits asked for 11.96 GiB with 11.88 GiB free at ~392K context
+      # (dsa_indexer_kpool.py:919). At TP4 that allocation becomes ~3 GiB.
+      # This is a MITIGATION, not the fix. It divides the buffer by TP; it does not bound
+      # it. The same crash returns at ~4x the context, or at TP1. The real fix is calling
+      # _should_chunk_mqa_logits (defined, unused, at dsa_indexer_kpool.py:862) and chunking
+      # the logits against free memory, which holds at any context, chunk size and TP.
+      - SGLANG_DSA_INDEXER_QSPLIT=1
+    depends_on:
+      model-downloader:
+        condition: service_completed_successfully
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["4","5"]
+              capabilities: [gpu]
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-bf16-kv","deployment:glm53-flash-sgl-tp4","config_variant:fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host325g-memopt-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192","request_logging:disabled","engine_image:47aff7910900","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:2a","gpu_pair:4-5"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "sglang"
+      nearai.otel.service: "sglang"
+      nearai.otel.source: "sglang"
+      nearai.otel.container_name: "model-sg-glm53-w4afp8-tp2-r2a"
+      nearai.otel.port: "8000"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "z-ai/glm-5.3-flash"
+      nearai.otel.model_path: "graphistry/GLM-5.3-Flash-W4AFP8"
+      nearai.otel.served_model: "z-ai/glm-5.3-flash"
+      nearai.otel.deployment: "glm53-flash-sgl-tp4"
+      nearai.otel.config_variant: "fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host325g-memopt-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192"
+      nearai.otel.thinking_budget_policy: "default8192-public-to-native"
+      nearai.otel.request_logging: "disabled"
+      nearai.otel.engine_image: "47aff7910900"
+      nearai.otel.instance: "2a"
+      nearai.otel.gpu_pair: "4-5"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
+
+  # --- GLM-5.3-Flash 2xTP2 memory-optimized canary replica 2b (SGLang TP2, GPUs 6-7) ---
+  # gpu02 only: gpu23 never starts this service (its compose-manager scopes its services).
+  model-sg-glm53-w4afp8-tp2-r2b:
+    <<: *sg-glm53-flash-common
+    container_name: model-sg-glm53-w4afp8-tp2-r2b
+    image: docker.io/nearaidev/sglang@sha256:47aff791090003a37f893e998c44794c410d3f7bdfc7fdd2dfab5eb5592b30bb
+    command: >
+        sglang serve
+        --model-path /root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/snapshots/99f1fa70408c52b007d4fd69e02e5a522422e755
+        --served-model-name z-ai/glm-5.3-flash
+        --tp-size 2
+        --ep-size 2
+        --mem-fraction-static 0.86
+        --max-running-requests 24
+        --max-queued-requests 8
+        --enable-priority-scheduling
+        --disable-priority-preemption
+        --chunked-prefill-size 8192
+        --max-prefill-tokens 32768
+        --prefill-decode-interval 2
+        --cuda-graph-max-bs-decode 32
+        --dsa-prefill-backend tilelang
+        --dsa-decode-backend tilelang
+        --kv-cache-dtype bfloat16
+        --speculative-algorithm EAGLE
+        --speculative-num-steps 4
+        --speculative-eagle-topk 1
+        --speculative-num-draft-tokens 5
+        --reasoning-parser glm45
+        --enable-strict-thinking
+        --grammar-backend xgrammar
+        --tool-call-parser glm47
+        --chat-template /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/3f1971b7b5f7a528c9c4ef6212c8785298a8c24a/chat_template.jinja
+        --context-length 1048576
+        --dist-init-addr 127.0.0.1:29513
+        --watchdog-timeout 1800
+        --host 0.0.0.0
+        --port 8000
+        --enable-metrics
+        --enable-cache-report
+        --log-requests-level 0
+        --disable-fast-image-processor
+        --limit-mm-data-per-request '{"image": 64}'
+        --enable-hierarchical-cache
+        --hicache-write-policy write_through
+        --hicache-io-backend direct
+        --hicache-mem-layout page_first_direct
+        --max-mamba-cache-size 330
+        --mamba-ssm-dtype bfloat16
+    environment:
+      - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+      # Local snapshot path; nothing is fetched at engine start.
+      - HF_HUB_OFFLINE=1
+      - TRANSFORMERS_OFFLINE=1
+      - HF_HUB_DISABLE_TELEMETRY=1
+      - DO_NOT_TRACK=1
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - OPENBLAS_L2_SIZE=2097152
+      - NCCL_DEBUG=WARN
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+      - TORCHINDUCTOR_CACHE_DIR=/root/.cache/torchinductor
+      - TRITON_CACHE_DIR=/root/.cache/triton
+      # Persist tilelang's DSA kernel JIT cache: it defaults to /root/.tilelang, outside
+      # the kernel_cache volume, so every restart re-paid ~22-24 compiles at 8-9 s each
+      # with the whole engine frozen (2026-09-12..16 capacity campaign).
+      - TILELANG_CACHE_DIR=/root/.cache/tilelang
+      # /health must not run a generation: at this pin health_generate submits a real
+      # 1-token request that queues behind any in-flight long prefill, so the CVM
+      # proxy's 3 s probe times out, the replica flaps unhealthy, and the conversation
+      # affinity pin is skipped (full re-prefill on the other replica). nearai/infra#234.
+      - SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION=0
+      # No admission reserve on the long tier (see the header); --prefill-decode-interval
+      # is set per replica, independently of the inert reserve patch.
+      - SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE=1
+      # HiCache host tier: half of r2's 650 GiB per TP2 replica across its two TP ranks, so the
+      # pair together takes what the TP4 r2 took. Fixed (not a percentage) so the replica started
+      # second does not get less; startup fails if it exceeds available RAM minus 10 GiB.
+      - SGLANG_HICACHE_RAM_BUDGET=${GLM53_R2B_HICACHE_RAM_BUDGET:-325GiB}
+      # CUDA-owned host memory (cudaMallocHost). Must stay 1 on TEE hosts: 0 selects
+      # cudaHostRegister, which fails with CUDA error 801 under HCC/PPCIe.
+      - SGLANG_HICACHE_CUDA_HOST_MEMORY=${GLM53_HICACHE_CUDA_HOST_MEMORY:-1}
+      - SGLANG_HICACHE_POOLED_TRANSFERS=1
+      - SGLANG_HICACHE_STAGING_PAGES=64
+      # DSA indexer query split, on BOTH replicas. Each TP rank scores 1/TP of a prefill
+      # chunk's rows instead of all of them, so the fp32 logits buffer -- sized
+      # new_tokens x total_context -- shrinks by TP. r1 crashed on 2026-09-25 without it:
+      # deep_gemm.fp8_mqa_logits asked for 11.96 GiB with 11.88 GiB free at ~392K context
+      # (dsa_indexer_kpool.py:919). At TP4 that allocation becomes ~3 GiB.
+      # This is a MITIGATION, not the fix. It divides the buffer by TP; it does not bound
+      # it. The same crash returns at ~4x the context, or at TP1. The real fix is calling
+      # _should_chunk_mqa_logits (defined, unused, at dsa_indexer_kpool.py:862) and chunking
+      # the logits against free memory, which holds at any context, chunk size and TP.
+      - SGLANG_DSA_INDEXER_QSPLIT=1
+    depends_on:
+      model-downloader:
+        condition: service_completed_successfully
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["6","7"]
+              capabilities: [gpu]
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-bf16-kv","deployment:glm53-flash-sgl-tp4","config_variant:fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host325g-memopt-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192","request_logging:disabled","engine_image:47aff7910900","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:2b","gpu_pair:6-7"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "sglang"
+      nearai.otel.service: "sglang"
+      nearai.otel.source: "sglang"
+      nearai.otel.container_name: "model-sg-glm53-w4afp8-tp2-r2b"
+      nearai.otel.port: "8000"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "z-ai/glm-5.3-flash"
+      nearai.otel.model_path: "graphistry/GLM-5.3-Flash-W4AFP8"
+      nearai.otel.served_model: "z-ai/glm-5.3-flash"
+      nearai.otel.deployment: "glm53-flash-sgl-tp4"
+      nearai.otel.config_variant: "fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host325g-memopt-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192"
+      nearai.otel.thinking_budget_policy: "default8192-public-to-native"
+      nearai.otel.request_logging: "disabled"
+      nearai.otel.engine_image: "47aff7910900"
+      nearai.otel.instance: "2b"
+      nearai.otel.gpu_pair: "6-7"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
       nearai.otel.host_machine: "${CVM_HOST}"
@@ -1060,6 +1324,58 @@ configs:
                       port: "8000"
                       instance: "2"
                       config_variant: "fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host650g-admission-reserve-disabled-pool-clamp-pdi2-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
+                      thinking_budget_policy: "default8192-public-to-native"
+                      request_logging: "disabled"
+                      engine_image: "47aff7910900"
+              - job_name: sglang-model-sg-glm53-w4afp8-tp2-r2a
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['model-sg-glm53-w4afp8-tp2-r2a:8000']
+                    labels:
+                      service: "sglang"
+                      source: "sglang"
+                      container_name: "model-sg-glm53-w4afp8-tp2-r2a"
+                      model: "z-ai/glm-5.3-flash"
+                      model_path: "graphistry/GLM-5.3-Flash-W4AFP8"
+                      served_model: "z-ai/glm-5.3-flash"
+                      precision: "int4-weights-fp8-activations-bf16-kv"
+                      deployment: "glm53-flash-sgl-tp4"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      port: "8000"
+                      instance: "2a"
+                      gpu_pair: "4-5"
+                      config_variant: "fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host325g-memopt-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192"
+                      thinking_budget_policy: "default8192-public-to-native"
+                      request_logging: "disabled"
+                      engine_image: "47aff7910900"
+              - job_name: sglang-model-sg-glm53-w4afp8-tp2-r2b
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['model-sg-glm53-w4afp8-tp2-r2b:8000']
+                    labels:
+                      service: "sglang"
+                      source: "sglang"
+                      container_name: "model-sg-glm53-w4afp8-tp2-r2b"
+                      model: "z-ai/glm-5.3-flash"
+                      model_path: "graphistry/GLM-5.3-Flash-W4AFP8"
+                      served_model: "z-ai/glm-5.3-flash"
+                      precision: "int4-weights-fp8-activations-bf16-kv"
+                      deployment: "glm53-flash-sgl-tp4"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      port: "8000"
+                      instance: "2b"
+                      gpu_pair: "6-7"
+                      config_variant: "fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host325g-memopt-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192"
                       thinking_budget_policy: "default8192-public-to-native"
                       request_logging: "disabled"
                       engine_image: "47aff7910900"
