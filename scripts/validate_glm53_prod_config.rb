@@ -402,6 +402,115 @@ def validate_canonical(errors, compose, services, replica_services)
   end
 end
 
+# Opt-in observability (docker/sglang-glm53-hicache-w4afp8 v5: ghost-prefix-cache.diff and
+# kv-tier-metrics.diff), required on every replica of the W4AFP8 long-context and 4x TP2 files:
+# the ghost prefix cache in shared mode (one key file and one aggregator socket per CVM on the
+# in-memory ghost volume, a distinct replica name per engine), the KV tier metrics, and one
+# glm53-ghost-aggregator sidecar per CVM on the engines' image, scraped like the engines.
+# scripts/glm53_observability.py renders the same values; change them together.
+GHOST_SERVICE = "glm53-ghost-aggregator"
+GHOST_VOLUME = "ghost"
+GHOST_MOUNT = "#{GHOST_VOLUME}:/ghost"
+GHOST_KEY_FILE = "/ghost/key"
+GHOST_SOCKET = "/ghost/aggregator.sock"
+GHOST_SAMPLE = "16"
+GHOST_PORT = "9464"
+GHOST_JOB = "ghost-aggregator-#{GHOST_SERVICE}"
+GHOST_AGGREGATOR_ARGV = [
+  "python3", "-m", "sglang.srt.observability.ghost_aggregator",
+  "--socket", GHOST_SOCKET, "--port", GHOST_PORT, "--sample", GHOST_SAMPLE, "--model-name", "z-ai/glm-5.3-flash",
+].freeze
+OBSERVABILITY_VARIANT_SUFFIX = "-obs-v1"
+
+def observability_env(replica_label)
+  {
+    "SGLANG_GHOST_CACHE" => "1",
+    "SGLANG_GHOST_CACHE_SAMPLE" => GHOST_SAMPLE,
+    "SGLANG_GHOST_CACHE_KEY_FILE" => GHOST_KEY_FILE,
+    "SGLANG_GHOST_CACHE_SOCKET" => GHOST_SOCKET,
+    "SGLANG_GHOST_CACHE_REPLICA" => replica_label,
+    "SGLANG_KV_TIER_METRICS" => "1",
+  }
+end
+
+def argv_of(value)
+  value.is_a?(Array) ? value.map(&:to_s) : Shellwords.split(value.to_s)
+rescue ArgumentError
+  []
+end
+
+# `replicas` maps each engine service name to its ghost-cache replica name. Every engine must
+# carry the full observability environment and mount the ghost volume; the CVM's engines must
+# agree on one key file, one socket and one sample rate, with distinct replica names; the sidecar
+# must read that socket at that sample rate on the engines' image, and be scraped.
+def validate_observability(errors, label, compose, collector, replicas, engine_image, deployment)
+  services = compose.fetch("services", {})
+  replicas.each do |name, replica_label|
+    service = services[name]
+    next unless service
+
+    env = environment_map(service)
+    observability_env(replica_label).each do |key, value|
+      next if env[key] == value
+
+      errors << "#{label} #{name} must set #{key}=#{value} (opt-in observability is required on every replica), got #{env[key].inspect}"
+    end
+    errors << "#{label} #{name} must mount #{GHOST_MOUNT}" unless Array(service["volumes"]).map(&:to_s).include?(GHOST_MOUNT)
+  end
+  present = replicas.keys.select { |name| services[name] }
+  %w[SGLANG_GHOST_CACHE_KEY_FILE SGLANG_GHOST_CACHE_SOCKET SGLANG_GHOST_CACHE_SAMPLE].each do |key|
+    values = present.map { |name| environment_map(services[name])[key] }.uniq
+    errors << "#{label} replicas must share one #{key}, got #{values.inspect}" unless values.length <= 1
+  end
+  names = present.map { |name| environment_map(services[name])["SGLANG_GHOST_CACHE_REPLICA"] }
+  errors << "#{label} replicas must use distinct SGLANG_GHOST_CACHE_REPLICA names, got #{names.inspect}" unless names.uniq.length == names.length
+
+  sidecar = services[GHOST_SERVICE]
+  if sidecar.nil?
+    errors << "#{label} is missing the #{GHOST_SERVICE} sidecar"
+  else
+    errors << "#{label} #{GHOST_SERVICE} image must be the engines' image #{engine_image}" unless sidecar["image"] == engine_image
+    errors << "#{label} #{GHOST_SERVICE} must use the prebuilt signed image, not a host-local build" if sidecar.key?("build")
+    argv = argv_of(sidecar["entrypoint"]) + argv_of(sidecar["command"])
+    errors << "#{label} #{GHOST_SERVICE} must run #{GHOST_AGGREGATOR_ARGV.join(' ')}, got #{argv.join(' ')}" unless argv == GHOST_AGGREGATOR_ARGV
+    errors << "#{label} #{GHOST_SERVICE} must mount only #{GHOST_MOUNT}" unless Array(sidecar["volumes"]).map(&:to_s) == [GHOST_MOUNT]
+    errors << "#{label} #{GHOST_SERVICE} must not reserve GPUs" if sidecar.key?("deploy")
+    errors << "#{label} #{GHOST_SERVICE} must run under runc" unless sidecar["runtime"] == "runc"
+    errors << "#{label} #{GHOST_SERVICE} must not publish ports" if sidecar.key?("ports")
+    labels = sidecar["labels"].is_a?(Hash) ? sidecar["labels"] : {}
+    { "nearai.otel.scrape" => "true", "nearai.otel.port" => GHOST_PORT, "nearai.otel.path" => "/metrics",
+      "nearai.otel.container_name" => GHOST_SERVICE, "nearai.otel.deployment" => deployment }.each do |key, value|
+      errors << "#{label} #{GHOST_SERVICE} #{key} must be #{value.inspect}, got #{labels[key].inspect}" unless labels[key] == value
+    end
+  end
+
+  volume = compose.dig("volumes", GHOST_VOLUME)
+  unless volume.is_a?(Hash) && volume.dig("driver_opts", "type") == "tmpfs"
+    errors << "#{label} must declare the #{GHOST_VOLUME} volume as tmpfs (the shared key must never touch disk)"
+  end
+
+  scrape = scrape_job(errors, label, collector, GHOST_JOB)
+  return unless scrape
+
+  errors << "#{label} #{GHOST_JOB} must scrape #{GHOST_SERVICE}:#{GHOST_PORT}" unless scrape.dig("static_configs", 0, "targets") == ["#{GHOST_SERVICE}:#{GHOST_PORT}"]
+  scrape_labels = scrape.dig("static_configs", 0, "labels") || {}
+  { "container_name" => GHOST_SERVICE, "host" => "${CVM_HOST}", "deployment" => deployment }.each do |key, value|
+    errors << "#{label} #{GHOST_JOB} scrape label #{key} must be #{value.inspect}, got #{scrape_labels[key].inspect}" unless scrape_labels[key] == value
+  end
+end
+
+# Removes the observability additions (sidecar, its volume and scrape job) from a file view
+# compared with a source file that predates them; validate_observability asserts them.
+def strip_observability(view, collector)
+  view.fetch("services", {}).delete(GHOST_SERVICE)
+  view["volumes"]&.delete(GHOST_VOLUME)
+  return unless collector
+
+  Array(collector.dig("receivers", "prometheus/apps", "config", "scrape_configs")).reject! do |job|
+    job.is_a?(Hash) && job["job_name"] == GHOST_JOB
+  end
+end
+
 # W4AFP8 base file (gpu03, gpu04, gpu23): both replicas run gpu31 campaign-2 arm B5,
 # exactly the argv gpu02's W4AFP8 r1 runs, on the w4afp8 image with the canonical engine
 # environment (admission reserve on, no HiCache). Outside the two engines and their
@@ -559,7 +668,7 @@ end
 # perception loop, soak relay) and the deployment label it must equal the W4AFP8 base file.
 W4AFP8_TP2X4_FILE = File.join(ROOT, "prod", "GLM-5.3-Flash-SGL-TP2x4-W4AFP8.yaml")
 W4AFP8_TP2X4_IMAGE = "docker.io/nearaidev/sglang@sha256:47aff791090003a37f893e998c44794c410d3f7bdfc7fdd2dfab5eb5592b30bb"
-W4AFP8_TP2X4_VARIANT = "hicache-w4afp8-qsplit-selective325-mamba165-bf16state-c8192-admission-reserve-v10-pdi1-h200-tp2-ep2-eagle-adaptive-5-1-6-strict-budget8192"
+W4AFP8_TP2X4_VARIANT = "hicache-w4afp8-qsplit-selective325-mamba165-bf16state-c8192-admission-reserve-v10-pdi1-h200-tp2-ep2-eagle-adaptive-5-1-6-strict-budget8192#{OBSERVABILITY_VARIANT_SUFFIX}"
 W4AFP8_TP2X4_DEPLOYMENT = "glm53-flash-sgl-tp2x4"
 W4AFP8_BASE_DEPLOYMENT = "glm53-flash-sgl-tp4"
 W4AFP8_TP2X4_PREFIX = "model-sg-glm53-w4afp8-tp2-r"
@@ -567,14 +676,14 @@ W4AFP8_TP2X4_PREFIX = "model-sg-glm53-w4afp8-tp2-r"
 # r3/r4 canary after the gpu03 same-host bake (2026-10-06). The "control" role (the previous prod
 # argv, W4AFP8_TP2X4_ARGV) is kept for reverting a replica and is what the candidate edits derive from.
 W4AFP8_TP2X4_REPLICAS = {
-  "#{W4AFP8_TP2X4_PREFIX}1" => { "devices" => %w[0 1], "instance" => "1", "soak_port" => "8008", "role" => "candidate" },
-  "#{W4AFP8_TP2X4_PREFIX}2" => { "devices" => %w[2 3], "instance" => "2", "soak_port" => "8009", "role" => "candidate" },
-  "#{W4AFP8_TP2X4_PREFIX}3" => { "devices" => %w[4 5], "instance" => "3", "soak_port" => "8010", "role" => "candidate" },
-  "#{W4AFP8_TP2X4_PREFIX}4" => { "devices" => %w[6 7], "instance" => "4", "soak_port" => "8011", "role" => "candidate" },
+  "#{W4AFP8_TP2X4_PREFIX}1" => { "devices" => %w[0 1], "instance" => "1", "soak_port" => "8008", "role" => "candidate", "ghost_replica" => "r1" },
+  "#{W4AFP8_TP2X4_PREFIX}2" => { "devices" => %w[2 3], "instance" => "2", "soak_port" => "8009", "role" => "candidate", "ghost_replica" => "r2" },
+  "#{W4AFP8_TP2X4_PREFIX}3" => { "devices" => %w[4 5], "instance" => "3", "soak_port" => "8010", "role" => "candidate", "ghost_replica" => "r3" },
+  "#{W4AFP8_TP2X4_PREFIX}4" => { "devices" => %w[6 7], "instance" => "4", "soak_port" => "8011", "role" => "candidate", "ghost_replica" => "r4" },
 }.freeze
 W4AFP8_TP2X4_CANDIDATE_ANCHOR = "x-sg-glm53-flash-candidate"
 W4AFP8_TP2X4_CANDIDATE_PDI = "2"
-W4AFP8_TP2X4_CANDIDATE_VARIANT = "hicache-w4afp8-qsplit-selective325-mamba330-bf16state-memopt086-mr48-c8192-admission-reserve-v10-pdi#{W4AFP8_TP2X4_CANDIDATE_PDI}-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192"
+W4AFP8_TP2X4_CANDIDATE_VARIANT = "hicache-w4afp8-qsplit-selective325-mamba330-bf16state-memopt086-mr48-c8192-admission-reserve-v10-pdi#{W4AFP8_TP2X4_CANDIDATE_PDI}-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192#{OBSERVABILITY_VARIANT_SUFFIX}"
 W4AFP8_TP2X4_ARGV = Shellwords.split(<<~'ARGV').freeze
   sglang serve
   --model-path /root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/snapshots/99f1fa70408c52b007d4fd69e02e5a522422e755
@@ -634,6 +743,7 @@ def w4afp8_tp2x4_view(errors, file_label, compose, replica_names)
   proxy = services["proxy-glm53"]
   proxy["environment"] = Array(proxy["environment"]).reject { |entry| entry.to_s.start_with?("VLLM_BACKEND_URLS=") } if proxy
   otel = view.dig("configs", "otelcol_app_config")
+  collector = nil
   if otel && otel["content"]
     collector = load_embedded_yaml(errors, "#{file_label} otelcol_app_config", otel["content"])
     if collector
@@ -643,6 +753,7 @@ def w4afp8_tp2x4_view(errors, file_label, compose, replica_names)
       otel["content"] = collector
     end
   end
+  strip_observability(view, collector)
   JSON.parse(
     JSON.generate(view)
         .gsub(W4AFP8_TP2X4_DEPLOYMENT, W4AFP8_BASE_DEPLOYMENT)
@@ -653,7 +764,7 @@ end
 def validate_w4afp8_tp2x4(errors, compose, base, raw)
   label = "W4AFP8 4x TP2"
   services = compose.fetch("services", {})
-  expected_services = EXPECTED_SERVICES - REPLICAS.keys + W4AFP8_TP2X4_REPLICAS.keys
+  expected_services = EXPECTED_SERVICES - REPLICAS.keys + W4AFP8_TP2X4_REPLICAS.keys + [GHOST_SERVICE]
   missing = expected_services - services.keys
   extra = services.keys - expected_services
   errors << "#{label} is missing services: #{missing.join(', ')}" unless missing.empty?
@@ -674,7 +785,7 @@ def validate_w4afp8_tp2x4(errors, compose, base, raw)
     errors << "#{label} x-sg-glm53-flash-common argv must be the lab-qualified TP2 control argv exactly; differing tokens: #{drift.first(8).join(' ')}"
   end
 
-  expected_env = environment_map(base.dig("services", W4AFP8_BASE_REPLICAS.keys.first) || {}).merge(W4AFP8_TP2X4_EXTRA_ENV)
+  base_env = environment_map(base.dig("services", W4AFP8_BASE_REPLICAS.keys.first) || {}).merge(W4AFP8_TP2X4_EXTRA_ENV)
   collector = load_embedded_yaml(errors, "#{label} file otelcol_app_config", compose.dig("configs", "otelcol_app_config", "content"))
   engine_image_label = W4AFP8_TP2X4_IMAGE.split(":").last[0, 12]
   replicas = {}
@@ -712,13 +823,14 @@ def validate_w4afp8_tp2x4(errors, compose, base, raw)
     end
     errors << "#{label} #{name} --cuda-graph-max-bs-decode must equal --max-running-requests (#{running})" unless flag_value.call("--cuda-graph-max-bs-decode") == running
     env = environment_map(service)
+    expected_env = base_env.merge(observability_env(spec["ghost_replica"]))
     REQUIRED_ENV.each do |key, value|
       errors << "#{label} #{name} must set #{key}=#{value}" unless env[key] == value
     end
     (env.keys & FORBIDDEN_ENV).each { |key| errors << "#{label} #{name} must not set #{key}" }
     unless env == expected_env
       diff = (env.to_a - expected_env.to_a) + (expected_env.to_a - env.to_a)
-      errors << "#{label} #{name} environment must be the W4AFP8 base engine environment plus #{W4AFP8_TP2X4_EXTRA_ENV.map { |key, value| "#{key}=#{value}" }.join(' ')}; differing: #{diff.map { |key, value| "#{key}=#{value}" }.uniq.join(' ')}"
+      errors << "#{label} #{name} environment must be the W4AFP8 base engine environment plus #{W4AFP8_TP2X4_EXTRA_ENV.map { |key, value| "#{key}=#{value}" }.join(' ')} and the observability environment; differing: #{diff.map { |key, value| "#{key}=#{value}" }.uniq.join(' ')}"
     end
     if env[W4AFP8_QSPLIT_ENV] == "1" && !W4AFP8_QSPLIT_CAPABLE_IMAGES.include?(service["image"])
       errors << "#{label} #{name} sets #{W4AFP8_QSPLIT_ENV}=1 but does not run an approved split-capable image"
@@ -754,11 +866,13 @@ def validate_w4afp8_tp2x4(errors, compose, base, raw)
   end
 
   if replicas.length == W4AFP8_TP2X4_REPLICAS.length
-    # Everything except the argv (checked exactly per role above) is identical across all four
-    # replicas.
-    contracts = replicas.values.map { |service| runtime_contract(service).reject { |key, _value| key == "command" } }
+    # The argv is checked exactly per role and the environment in full per replica above (it
+    # differs only in the ghost-cache replica name); everything else is identical.
+    contracts = replicas.values.map { |service| runtime_contract(service).reject { |key, _value| %w[command environment].include?(key) } }
     errors << "#{label} replicas must use identical runtime configuration" unless contracts.uniq.length == 1
   end
+  validate_observability(errors, label, compose, collector, W4AFP8_TP2X4_REPLICAS.transform_values { |spec| spec["ghost_replica"] },
+                         W4AFP8_TP2X4_IMAGE, W4AFP8_TP2X4_DEPLOYMENT)
 
   dcgm_labels = services.dig("dcgm-glm53", "labels") || {}
   errors << "#{label} dcgm-glm53 nearai.otel.model_path must be #{W4AFP8_CHECKPOINT}" unless dcgm_labels["nearai.otel.model_path"] == W4AFP8_CHECKPOINT
@@ -885,7 +999,7 @@ W4AFP8_LONG_CONTEXT_V1_IMAGE = "docker.io/nearaidev/sglang@sha256:fde25985aea3eb
 W4AFP8_LONG_CONTEXT_V2_IMAGE = "docker.io/nearaidev/sglang@sha256:8ff1a487b98a52fe08b781715bebd7c8c445d4fe068f312f03f527d5a3c77e84"
 W4AFP8_LONG_CONTEXT_V3_IMAGE = "docker.io/nearaidev/sglang@sha256:47aff791090003a37f893e998c44794c410d3f7bdfc7fdd2dfab5eb5592b30bb"
 W4AFP8_QSPLIT_CAPABLE_IMAGES = [W4AFP8_LONG_CONTEXT_V2_IMAGE, W4AFP8_LONG_CONTEXT_V3_IMAGE].freeze
-W4AFP8_LONG_CONTEXT_VARIANT = "fc91d24-long-context-w4afp8-cCHUNK-QSPLITOFFLOOPhicache-cuda-host-pooled-v1-HOSTadmission-reserve-disabled-pool-clamp-pdiPDI-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
+W4AFP8_LONG_CONTEXT_VARIANT = "fc91d24-long-context-w4afp8-cCHUNK-QSPLITOFFLOOPhicache-cuda-host-pooled-v1-HOSTadmission-reserve-disabled-pool-clamp-pdiPDI-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192#{OBSERVABILITY_VARIANT_SUFFIX}"
 W4AFP8_QSPLIT_ENV = "SGLANG_DSA_INDEXER_QSPLIT"
 # c16384 is only memory-safe WITH the split: without it a concurrent long burst left 0.04-0.65 GB
 # free, the condition that preceded the gpu02 crash. Enforced below for every replica.
@@ -895,13 +1009,13 @@ W4AFP8_PRECISION = "int4-weights-fp8-activations-bf16-kv"
 W4AFP8_LONG_CONTEXT_REPLICAS = {
   "model-sg-glm53-w4afp8-tp4-r1" => { "devices" => %w[0 1 2 3], "dist_init" => "127.0.0.1:29510", "instance" => "1", "pdi" => "1",
                                      "image" => W4AFP8_LONG_CONTEXT_V3_IMAGE, "chunk" => "8192", "qsplit" => "1", "offloop" => "offloop-v3",
-                                     "budget" => "${GLM53_HICACHE_RAM_BUDGET:-406GiB}", "host_variant" => "" },
+                                     "budget" => "${GLM53_HICACHE_RAM_BUDGET:-406GiB}", "host_variant" => "", "ghost_replica" => "r1" },
   "model-sg-glm53-w4afp8-tp4-r2" => { "devices" => %w[4 5 6 7], "dist_init" => "127.0.0.1:29511", "instance" => "2", "pdi" => "2",
                                      "image" => W4AFP8_LONG_CONTEXT_V3_IMAGE, "chunk" => "8192", "qsplit" => "1", "offloop" => "offloop-v3",
                                      # HiCache host-tier canary: write_through keeps the host tier an inclusive
                                      # copy of the ~3.52M-token device pool, so 406 GiB (~4.99M tokens) adds only
                                      # ~1.5M; 650 GiB (~8M) adds ~4.5M. r1 stays at 406 GiB as the control.
-                                     "budget" => "${GLM53_R2_HICACHE_RAM_BUDGET:-650GiB}", "host_variant" => "host650g-" },
+                                     "budget" => "${GLM53_R2_HICACHE_RAM_BUDGET:-650GiB}", "host_variant" => "host650g-", "ghost_replica" => "r2" },
 }.freeze
 W4AFP8_LONG_CONTEXT_ARGV = Shellwords.split(<<~'ARGV').freeze
   sglang serve
@@ -936,21 +1050,21 @@ W4AFP8_LONG_CONTEXT_HICACHE_ENV = HICACHE_ENV.merge("SGLANG_HICACHE_RAM_BUDGET" 
 # graphs capped at 12 (user decision, prod KV-bound evidence in docs/long-context-glm53-2xtp2-rollout.md; the lab ran 24/8).
 W4AFP8_TP2_CANARY_REPLICAS = {
   "model-sg-glm53-w4afp8-tp2-r2a" => { "devices" => %w[4 5], "dist_init" => "127.0.0.1:29512", "instance" => "2a", "gpu_pair" => "4-5",
-                                       "budget" => "${GLM53_R2A_HICACHE_RAM_BUDGET:-325GiB}" },
+                                       "budget" => "${GLM53_R2A_HICACHE_RAM_BUDGET:-325GiB}", "ghost_replica" => "r2a" },
   "model-sg-glm53-w4afp8-tp2-r2b" => { "devices" => %w[6 7], "dist_init" => "127.0.0.1:29513", "instance" => "2b", "gpu_pair" => "6-7",
-                                       "budget" => "${GLM53_R2B_HICACHE_RAM_BUDGET:-325GiB}" },
+                                       "budget" => "${GLM53_R2B_HICACHE_RAM_BUDGET:-325GiB}", "ghost_replica" => "r2b" },
   # Long-context 2xTP2 rollout: the same pair in r1's place (GPUs 0-3).
   "model-sg-glm53-w4afp8-tp2-r1a" => { "devices" => %w[0 1], "dist_init" => "127.0.0.1:29514", "instance" => "1a", "gpu_pair" => "0-1",
-                                       "budget" => "${GLM53_R1A_HICACHE_RAM_BUDGET:-325GiB}" },
+                                       "budget" => "${GLM53_R1A_HICACHE_RAM_BUDGET:-325GiB}", "ghost_replica" => "r1a" },
   "model-sg-glm53-w4afp8-tp2-r1b" => { "devices" => %w[2 3], "dist_init" => "127.0.0.1:29515", "instance" => "1b", "gpu_pair" => "2-3",
-                                       "budget" => "${GLM53_R1B_HICACHE_RAM_BUDGET:-325GiB}" },
+                                       "budget" => "${GLM53_R1B_HICACHE_RAM_BUDGET:-325GiB}", "ghost_replica" => "r1b" },
 }.freeze
 # Each TP2 replica replaces one TP4 replica and must stay inside that replica's GPUs.
 W4AFP8_TP2_PARENT = {
   "model-sg-glm53-w4afp8-tp2-r1a" => "model-sg-glm53-w4afp8-tp4-r1", "model-sg-glm53-w4afp8-tp2-r1b" => "model-sg-glm53-w4afp8-tp4-r1",
   "model-sg-glm53-w4afp8-tp2-r2a" => "model-sg-glm53-w4afp8-tp4-r2", "model-sg-glm53-w4afp8-tp2-r2b" => "model-sg-glm53-w4afp8-tp4-r2",
 }.freeze
-W4AFP8_TP2_CANARY_VARIANT = "fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host325g-memopt-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-mr12q4-strict-budget8192"
+W4AFP8_TP2_CANARY_VARIANT = "fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host325g-memopt-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-mr12q4-strict-budget8192#{OBSERVABILITY_VARIANT_SUFFIX}"
 W4AFP8_TP2_CANARY_ARGV = Shellwords.split(<<~'ARGV').freeze
   sglang serve
   --model-path /root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/snapshots/99f1fa70408c52b007d4fd69e02e5a522422e755
@@ -998,6 +1112,7 @@ def w4afp8_long_context_view(errors, file_label, compose, replica_names)
     proxy_environment.map! { |item| item == "VLLM_BACKEND_URLS=#{W4AFP8_PROXY_BACKENDS_VALUE}" ? "VLLM_BACKEND_URLS=#{W4AFP8_PROXY_BACKENDS_DEFAULT}" : item }
   end
   otel = view.dig("configs", "otelcol_app_config")
+  collector = nil
   if otel && otel["content"]
     collector = load_embedded_yaml(errors, "#{file_label} otelcol_app_config", otel["content"])
     if collector
@@ -1007,6 +1122,7 @@ def w4afp8_long_context_view(errors, file_label, compose, replica_names)
       otel["content"] = collector
     end
   end
+  strip_observability(view, collector)
   normalized = JSON.generate(view)
                    .gsub("model-sg-glm53-w4afp8-tp4-r", "REPLICA-r").gsub("model-sg-glm53-fp8-tp4-r", "REPLICA-r")
                    .gsub(W4AFP8_CHECKPOINT, "CHECKPOINT").gsub("zai-org/GLM-5.3-Flash", "CHECKPOINT")
@@ -1016,7 +1132,7 @@ end
 def validate_w4afp8_long_context(errors, compose, reference)
   label = "W4AFP8 long-context"
   services = compose.fetch("services", {})
-  expected_services = EXPECTED_SERVICES - REPLICAS.keys + W4AFP8_LONG_CONTEXT_REPLICAS.keys + W4AFP8_TP2_CANARY_REPLICAS.keys
+  expected_services = EXPECTED_SERVICES - REPLICAS.keys + W4AFP8_LONG_CONTEXT_REPLICAS.keys + W4AFP8_TP2_CANARY_REPLICAS.keys + [GHOST_SERVICE]
   missing = expected_services - services.keys
   extra = services.keys - expected_services
   errors << "#{label} is missing services: #{missing.join(', ')}" unless missing.empty?
@@ -1048,12 +1164,13 @@ def validate_w4afp8_long_context(errors, compose, reference)
     env = environment_map(service)
     replica_expected_env = expected_env.merge("SGLANG_HICACHE_RAM_BUDGET" => spec["budget"])
     replica_expected_env = replica_expected_env.merge(W4AFP8_QSPLIT_ENV => spec["qsplit"]) if spec["qsplit"]
+    replica_expected_env = replica_expected_env.merge(observability_env(spec["ghost_replica"]))
     reserve = env.keys & ADMISSION_RESERVE_ENV
     errors << "#{label} #{name} must not set admission-reserve environment: #{reserve.join(', ')}" unless reserve.empty?
     (env.keys & FORBIDDEN_ENV).each { |key| errors << "#{label} #{name} must not set #{key}" }
     unless env == replica_expected_env
       diff = (env.to_a - replica_expected_env.to_a) + (replica_expected_env.to_a - env.to_a)
-      errors << "#{label} #{name} environment must be the long-context control environment plus #{W4AFP8_LONG_CONTEXT_HICACHE_ENV.merge("SGLANG_HICACHE_RAM_BUDGET" => spec["budget"]).map { |key, value| "#{key}=#{value}" }.join(' ')}; differing: #{diff.map { |key, value| "#{key}=#{value}" }.uniq.join(' ')}"
+      errors << "#{label} #{name} environment must be the long-context control environment plus #{W4AFP8_LONG_CONTEXT_HICACHE_ENV.merge("SGLANG_HICACHE_RAM_BUDGET" => spec["budget"]).map { |key, value| "#{key}=#{value}" }.join(' ')} and the observability environment; differing: #{diff.map { |key, value| "#{key}=#{value}" }.uniq.join(' ')}"
     end
     # Hard pairing: a 16384 chunk without the indexer split is the pre-crash memory profile.
     # Assert it against what the file actually says, not against the expected spec, so the gate
@@ -1101,6 +1218,12 @@ def validate_w4afp8_long_context(errors, compose, reference)
     contracts = replicas.values.map { |service| runtime_contract(service).reject { |key, _value| canary_divergent.include?(key) } }
     errors << "#{label} replicas must share one runtime configuration outside image, environment and command (each asserted per replica)" unless contracts.uniq.length == 1
   end
+  images = W4AFP8_LONG_CONTEXT_REPLICAS.values.map { |spec| spec["image"] }.uniq
+  errors << "#{label} replicas must share one image for the #{GHOST_SERVICE} sidecar to follow" unless images.length == 1
+  # Every GLM engine in the file: TP4 r1/r2 (gpu23, gpu02 r1) and the gpu02 TP2 pair r2a/r2b.
+  ghost_replicas = W4AFP8_LONG_CONTEXT_REPLICAS.merge(W4AFP8_TP2_CANARY_REPLICAS).transform_values { |spec| spec["ghost_replica"] }
+  validate_observability(errors, label, compose, collector, ghost_replicas,
+                         images.first, W4AFP8_BASE_DEPLOYMENT)
 
   dcgm_labels = services.dig("dcgm-glm53", "labels") || {}
   errors << "#{label} dcgm-glm53 nearai.otel.model_path must be #{W4AFP8_CHECKPOINT}" unless dcgm_labels["nearai.otel.model_path"] == W4AFP8_CHECKPOINT
@@ -1159,12 +1282,13 @@ def validate_w4afp8_tp2_canary(errors, label, services, collector, replicas)
     env = environment_map(service)
     expected_env = reference_env.merge(W4AFP8_LONG_CONTEXT_HICACHE_ENV)
                                 .merge("SGLANG_HICACHE_RAM_BUDGET" => spec["budget"], W4AFP8_QSPLIT_ENV => "1")
+                                .merge(observability_env(spec["ghost_replica"]))
     reserve = env.keys & ADMISSION_RESERVE_ENV
     errors << "#{label} #{name} must not set admission-reserve environment: #{reserve.join(', ')}" unless reserve.empty?
     (env.keys & FORBIDDEN_ENV).each { |key| errors << "#{label} #{name} must not set #{key}" }
     unless env == expected_env
       diff = (env.to_a - expected_env.to_a) + (expected_env.to_a - env.to_a)
-      errors << "#{label} #{name} environment must be the long-context environment plus per-replica SGLANG_HICACHE_RAM_BUDGET=#{spec['budget']} and #{W4AFP8_QSPLIT_ENV}=1; differing: #{diff.map { |key, value| "#{key}=#{value}" }.uniq.join(' ')}"
+      errors << "#{label} #{name} environment must be the long-context environment plus per-replica SGLANG_HICACHE_RAM_BUDGET=#{spec['budget']}, #{W4AFP8_QSPLIT_ENV}=1 and the observability environment; differing: #{diff.map { |key, value| "#{key}=#{value}" }.uniq.join(' ')}"
     end
 
     device_ids = Array(service.dig("deploy", "resources", "reservations", "devices", 0, "device_ids")).map(&:to_s)

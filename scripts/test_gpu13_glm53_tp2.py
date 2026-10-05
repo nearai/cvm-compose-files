@@ -74,6 +74,15 @@ class Gpu13Tp2Test(unittest.TestCase):
             (self.valid[:start_b] + b_block.replace('nearai.otel.instance: "1b"', 'nearai.otel.instance: "x"') + self.valid[end_b:], "instance must be 1b"),
             (self.valid.replace("pdi2-gpu13", "pdi1-overlap-off-gpu13"), "config_variant"),
             (self.valid.replace(f"http://{B}:8000", "", 1).replace(f"{A}:8000,", f"{A}:8000", 1), "must pool both TP2 replicas"),
+            # Opt-in observability on every replica: r1b (its own list) or r1a (the anchor) loses it,
+            # r1b reuses r1a's ghost replica name, or the sidecar, its mount or its scrape job drifts.
+            (self.valid[:start_b] + b_block.replace("      - SGLANG_GHOST_CACHE=1\n", "") + self.valid[end_b:], f"{B} must set SGLANG_GHOST_CACHE=1 exactly once"),
+            (self.valid.replace("\n    - SGLANG_KV_TIER_METRICS=1\n", "\n", 1), f"{A} must set SGLANG_KV_TIER_METRICS=1 exactly once"),
+            (self.valid.replace("SGLANG_GHOST_CACHE_REPLICA=r1b\n", "SGLANG_GHOST_CACHE_REPLICA=r1a\n", 1), f"{B} must set SGLANG_GHOST_CACHE_REPLICA=r1b"),
+            (self.valid.replace("\n    - ghost:/ghost\n", "\n", 1), f"{A} must mount ghost:/ghost"),
+            (self.valid.replace('"--socket", "/ghost/aggregator.sock"', '"--socket", "/tmp/x.sock"', 1), "glm53-ghost-aggregator argv changed"),
+            (self.valid.replace("job_name: ghost-aggregator-glm53-ghost-aggregator", "job_name: ghost-x", 1), "gpu13 OTel scrape missing: ghost-aggregator-glm53-ghost-aggregator"),
+            (self.valid.replace("-mr12q4-strict-budget8192-obs-v1", "-mr12q4-strict-budget8192"), "config_variant"),
         )
         for index, (mutated, message) in enumerate(cases):
             with self.subTest(index=index, message=message):

@@ -23,6 +23,10 @@ from pathlib import Path
 from typing import Final
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+from scripts import glm53_observability as obs  # noqa: E402
+
 SOURCE = Path("prod/GLM-5.3-Flash-SGL-TP4-W4AFP8.yaml")
 TARGET = Path("prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8.yaml")
 
@@ -36,7 +40,10 @@ SERVICE_PREFIX: Final = "model-sg-glm53-w4afp8-tp2-r"
 SOURCE_DEPLOYMENT: Final = "glm53-flash-sgl-tp4"
 DEPLOYMENT: Final = "glm53-flash-sgl-tp2x4"
 SOURCE_VARIANT: Final = "fc91d24-w4afp8-c4096-admission-reserve-v10-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
-VARIANT: Final = "hicache-w4afp8-qsplit-selective325-mamba165-bf16state-c8192-admission-reserve-v10-pdi1-h200-tp2-ep2-eagle-adaptive-5-1-6-strict-budget8192"
+VARIANT: Final = (
+    "hicache-w4afp8-qsplit-selective325-mamba165-bf16state-c8192-admission-reserve-v10-pdi1-h200-tp2-ep2-eagle-adaptive-5-1-6-strict-budget8192"
+    + obs.VARIANT_SUFFIX
+)
 REPLICAS: Final = (1, 2, 3, 4)
 # Base-tier memory-optimized config (tee-bench exp 25/25b/25c), promoted from the r3/r4 canary
 # (#339) to all four replicas after the gpu03 30 min same-host bake (2026-10-06). Every replica
@@ -44,7 +51,7 @@ REPLICAS: Final = (1, 2, 3, 4)
 # the base the candidate edits are derived from.
 CANDIDATE_REPLICAS: Final = (1, 2, 3, 4)
 CANDIDATE_PDI: Final = "2"
-CANDIDATE_VARIANT: Final = f"hicache-w4afp8-qsplit-selective325-mamba330-bf16state-memopt086-mr48-c8192-admission-reserve-v10-pdi{CANDIDATE_PDI}-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192"
+CANDIDATE_VARIANT: Final = f"hicache-w4afp8-qsplit-selective325-mamba330-bf16state-memopt086-mr48-c8192-admission-reserve-v10-pdi{CANDIDATE_PDI}-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192" + obs.VARIANT_SUFFIX
 # Token-for-token edits of the control argv. Each old token must occur exactly once.
 CANDIDATE_EDITS: Final = (
     ("--mem-fraction-static 0.80", "--mem-fraction-static 0.86"),
@@ -120,6 +127,14 @@ HEADER: Final = (
     "# None of the four engine names exists in the TP4 file (and vice versa): stop the old\n"
     "# engines with a scoped compose/down first; never let --remove-orphans do the switch.\n"
     "# ROLLBACK: prod/GLM-5.3-Flash-SGL-TP4-W4AFP8.yaml, under the same orphan rule.\n"
+    "#\n"
+    "# OBSERVABILITY: all four replicas enable the opt-in ghost prefix cache in shared mode\n"
+    "# (SGLANG_GHOST_CACHE_REPLICA r1-r4, one key and socket on the in-memory ghost volume) and\n"
+    "# the KV tier metrics; the glm53-ghost-aggregator sidecar pools the four replicas' digests\n"
+    "# and is scraped like the engines. Both need docker/sglang-glm53-hicache-w4afp8 v5: older\n"
+    "# images ignore the engine variables, and the sidecar exits until the image is bumped.\n"
+    "# r1 inherits the anchor environment; r2-r4 repeat it with their own replica name (a YAML\n"
+    "# merge key replaces a list wholesale).\n"
     "# Do not hand-edit this file.\n"
 )
 
@@ -203,7 +218,9 @@ ANCHOR_ENV_NEW: Final = (
     "    # by TP and does not bound it. The real fix is calling _should_chunk_mqa_logits\n"
     "    # (defined, unused, at dsa_indexer_kpool.py:862) and chunking against free memory.\n"
     "    - SGLANG_DSA_INDEXER_QSPLIT=1\n"
+    + obs.engine_environment("r1", 4)
 )
+ANCHOR_VOLUMES: Final = "  volumes:\n    - kernel_cache:/root/.cache\n    - huggingface_cache:/root/.cache/huggingface\n"
 
 
 class GenerationError(ValueError):
@@ -267,8 +284,12 @@ def candidate_anchor(arguments: list[str]) -> str:
     )
 
 
-def render_replica(template: str, replica: int) -> str:
-    """Render one engine service from the source r1 service block."""
+def render_replica(template: str, replica: int, anchor_environment: str) -> str:
+    """Render one engine service from the source r1 service block.
+
+    r1 inherits the anchor environment; every other replica carries the same list with its own
+    ghost-cache replica name, because a YAML merge key replaces a list rather than extending it.
+    """
     block = replace_exact(
         template,
         "  # --- GLM-5.3-Flash engine replica 1 (SGLang TP4, GPUs 0-3) ---\n",
@@ -283,7 +304,13 @@ def render_replica(template: str, replica: int) -> str:
     devices = ",".join(f'"{device}"' for device in DEVICE_IDS[replica])
     block = replace_exact(block, 'device_ids: ["0","1","2","3"]', f"device_ids: [{devices}]", 1, "replica devices")
     block = replace_exact(block, '"instance:1"', f'"instance:{replica}"', 1, "log instance")
-    return replace_exact(block, 'nearai.otel.instance: "1"\n', f'nearai.otel.instance: "{replica}"\n', 1, "otel instance")
+    block = replace_exact(block, 'nearai.otel.instance: "1"\n', f'nearai.otel.instance: "{replica}"\n', 1, "otel instance")
+    if replica == 1:
+        return block
+    environment = "".join(f"  {line}\n" if line.strip() else "\n" for line in anchor_environment.splitlines())
+    environment = replace_exact(environment, obs.replica_line("r1"), obs.replica_line(f"r{replica}"), 1, "ghost replica")
+    container = f"    container_name: {SERVICE_PREFIX}{replica}\n"
+    return replace_exact(block, container, container + environment, 1, "replica environment")
 
 
 def render_scrape_job(template: str, replica: int) -> str:
@@ -323,6 +350,8 @@ def generate(source: str) -> str:
     if "SGLANG_HICACHE_" in anchor or "SGLANG_DSA_INDEXER_QSPLIT" in anchor:
         raise GenerationError("source engine environment already carries HiCache or the indexer split")
     anchor = replace_exact(anchor, ANCHOR_ENV_OLD, ANCHOR_ENV_NEW, 1, "anchor environment")
+    anchor = replace_exact(anchor, ANCHOR_VOLUMES, f"{ANCHOR_VOLUMES}    - {obs.MOUNT}\n", 1, "anchor volumes")
+    _, _, anchor_environment = section(anchor, "  environment:\n", "  restart: unless-stopped\n", "anchor environment block")
     updated = updated[:anchor_start] + anchor + "\n" + candidate.rstrip("\n") + "\n" + updated[anchor_end:]
 
     # Telemetry identity shared by every replica, before the per-replica fan-out.
@@ -349,7 +378,7 @@ def generate(source: str) -> str:
     )
     if services.count(f"  {SOURCE_SERVICE_PREFIX}") != 2:
         raise GenerationError("source must define exactly two TP4 engine services")
-    updated = updated[:services_start] + "".join(render_replica(r1_block, replica) for replica in REPLICAS) + updated[services_end:]
+    updated = updated[:services_start] + "".join(render_replica(r1_block, replica, anchor_environment) for replica in REPLICAS) + updated[services_end:]
 
     # Proxy pool.
     updated = replace_exact(
@@ -390,6 +419,14 @@ def generate(source: str) -> str:
     )
     r1_job = jobs[: jobs.index(f"              - job_name: sglang-{SOURCE_SERVICE_PREFIX}2\n")]
     updated = updated[:jobs_start] + "".join(render_scrape_job(r1_job, replica) for replica in REPLICAS) + updated[jobs_end:]
+
+    # Observability: the per-CVM ghost aggregator, its in-memory volume and its scrape job.
+    for old, new, label in (
+        ("  # --- Full-host GPU telemetry ---\n", obs.sidecar_service(IMAGE, DEPLOYMENT, "All four engines") + "  # --- Full-host GPU telemetry ---\n", "ghost sidecar"),
+        ("\n  kernel_cache:\n", f"\n  kernel_cache:\n{obs.volume_declaration()}", "ghost volume"),
+        ("              - job_name: dcgm-dcgm-glm53\n", obs.scrape_job(DEPLOYMENT) + "              - job_name: dcgm-dcgm-glm53\n", "ghost scrape job"),
+    ):
+        updated = replace_exact(updated, old, new, 1, label)
 
     if SOURCE_SERVICE_PREFIX in updated or "tp4-r" in updated:
         raise GenerationError("a TP4 engine reference survived")
