@@ -101,7 +101,8 @@ scalar_strings = lambda do |value|
   end
 end
 assert.call(scalar_strings.call(small).none? { |value| value.match?(/dsv4|deepseek|ds4f/i) }, 'gpu13 rendered configuration must not contain retired DS4F identities')
-assert.call(small_ids.call('model-sg-glm53-w4afp8-tp2-prefill') == %w[4 5] && small_ids.call('model-sg-glm53-w4afp8-tp2-decode') == %w[6 7], 'gpu13 GLM PD engines must use prefill GPUs 4-5 and decode GPUs 6-7')
+assert.call(small_ids.call('model-sg-glm53-w4afp8-tp2-prefill') == %w[4 5], 'gpu13 GLM prefill must use GPUs 4-5')
+assert.call(small_ids.call('model-sg-glm53-w4afp8-tp2-decode') == %w[6 7], 'gpu13 GLM decode must use GPUs 6-7')
 assert.call(small_ids.call('dcgm-glm53') == %w[4 5 6 7], 'gpu13 GLM exporter must use GPUs 4-7')
 shared_gpu3 = %w[
   model-sg-flux2-klein-4b-tp1
@@ -148,8 +149,9 @@ model_path = '--model-path /root/.cache/huggingface/hub/models--graphistry--GLM-
   end
 end
 assert.call(prefill.fetch('command').include?('--disaggregation-bootstrap-port 8998'), 'gpu13 GLM prefill bootstrap port changed')
+assert.call(prefill.fetch('command').match?(/--max-queued-requests 8\b/), 'gpu13 GLM prefill queue limit changed')
 # HiCache lives on prefill only; decode runs without a radix cache (incompatible with EAGLE).
-['--enable-hierarchical-cache', '--hicache-io-backend direct', '--hicache-mem-layout page_first_direct'].each do |flag|
+['--enable-hierarchical-cache', '--hicache-write-policy write_through_selective', '--hicache-io-backend direct', '--hicache-mem-layout page_first_direct'].each do |flag|
   assert.call(prefill.fetch('command').include?(flag), "gpu13 GLM prefill HiCache contract changed: #{flag}")
   assert.call(!decode.fetch('command').include?(flag), "gpu13 GLM decode must not enable HiCache: #{flag}")
 end
@@ -161,8 +163,12 @@ assert.call(decode.fetch('command').include?('--disable-radix-cache'), 'gpu13 GL
   assert.call(prefill.fetch('environment').include?(entry), "gpu13 GLM prefill HiCache host-memory contract changed: #{entry}")
 end
 router_command = router.fetch('command')
-assert.call(router_command.include?('--pd-disaggregation') && router_command.include?('--prefill http://model-sg-glm53-w4afp8-tp2-prefill:8000 8998') && router_command.include?('--decode http://model-sg-glm53-w4afp8-tp2-decode:8000'), 'gpu13 GLM router must pair the PD prefill and decode engines')
+assert.call(router_command.include?('--pd-disaggregation'), 'gpu13 GLM router must run in PD disaggregation mode')
+assert.call(router_command.include?('--prefill http://model-sg-glm53-w4afp8-tp2-prefill:8000 8998'), 'gpu13 GLM router must pair the prefill engine via bootstrap port 8998')
+assert.call(router_command.include?('--decode http://model-sg-glm53-w4afp8-tp2-decode:8000'), 'gpu13 GLM router must pair the decode engine')
 assert.call(!router.key?('ports'), 'gpu13 GLM router must stay internal')
+assert.call(router_command.match?(/--port 8000\b/), 'gpu13 GLM router must serve the proxy on port 8000')
+assert.call(router_command.match?(/--prometheus-port 29000\b/), 'gpu13 GLM router must expose Prometheus metrics on port 29000')
 small_proxy = small_services.fetch('proxy-glm53')
 assert.call(small_proxy['image'] == 'nearaidev/vllm-proxy-rs@sha256:d61357da39918a57126864a451eaf054f06a6989c03fe9a1666f7e6374ba6907', 'Qualified gpu13 GLM proxy image changed')
 assert.call(small_proxy.fetch('environment').include?('VLLM_BACKEND_URLS=http://model-sg-glm53-w4afp8-pd-router:8000'), 'gpu13 GLM proxy must have the PD router as its only backend')
@@ -195,5 +201,6 @@ small_jobs = YAML.safe_load(small.fetch('configs').fetch('otelcol_app_config').f
 %w[sglang-model-sg-glm53-w4afp8-tp2-prefill sglang-model-sg-glm53-w4afp8-tp2-decode sglang-router-model-sg-glm53-w4afp8-pd-router dcgm-dcgm-glm53 dcgm-dcgm-shared-gpu3 inference-proxy-proxy-glm53].each do |job|
   assert.call(small_jobs.any? { |entry| entry['job_name'] == job }, "gpu13 OTel scrape missing: #{job}")
 end
+assert.call(small_jobs.none? { |entry| entry['job_name'] == 'sglang-model-sg-glm53-fp8-tp4' }, 'Retired gpu13 GLM TP4 engine must not be scraped')
 
 puts 'DS4F migration and gpu13 GLM replacement allocation, telemetry and registrar contracts OK'
