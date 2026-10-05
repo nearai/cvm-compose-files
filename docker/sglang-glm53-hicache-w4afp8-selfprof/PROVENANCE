@@ -1,0 +1,11 @@
+base_image=docker.io/nearaidev/sglang@sha256:47aff791090003a37f893e998c44794c410d3f7bdfc7fdd2dfab5eb5592b30bb
+base_recipe=docker/sglang-glm53-hicache-w4afp8
+source_repository=https://github.com/PierreLeGuen/sglang-upstream
+source_revision=fc91d2403cc210a86bd5fc715c6609f58c932e5a
+patch_source=https://github.com/nearai/cvm-compose-files
+patch_file_1=docker/sglang-glm53-hicache-w4afp8-selfprof/near-self-profile.diff
+patch_1_sha256=5a0fbc8e3b0debdd477c94f4bf5cfaa38d58bccd7e4fc9f2d4bb8da0671048ae
+patch_1_origin=new in this recipe (gpu32 lab 2026-10-05)
+patch_1_scope=new module python/sglang/srt/utils/near_self_profile.py (hook plus stdlib-only summariser); Scheduler.init_profiler creates the hook and Scheduler.run_batch calls hook.tick(batch) before the existing profiler predicate; SchedulerProfilerManager._stop_profile skips its all-rank barrier only when the hook drove the profile (only tp_rank 0 profiles). Inert unless NEAR_SELF_PROFILE=1
+patch_1_evidence=gpu32 island A TP4 prod config, CC off, 2026-10-05: see README.md
+build_recipe=docker/sglang-glm53-hicache-w4afp8-selfprof/Dockerfile

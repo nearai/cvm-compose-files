@@ -1,0 +1,239 @@
+diff --git a/python/sglang/srt/managers/scheduler.py b/python/sglang/srt/managers/scheduler.py
+index ae9dc35..05e2fa4 100644
+--- a/python/sglang/srt/managers/scheduler.py
++++ b/python/sglang/srt/managers/scheduler.py
+@@ -264,6 +264,7 @@ from sglang.srt.managers.scheduler_components.profiler_manager import (
+ from sglang.srt.managers.scheduler_components.recv_skipper import (
+     SchedulerRecvSkipper,
+ )
++from sglang.srt.utils.near_self_profile import maybe_create as maybe_create_self_profile
+ from sglang.srt.managers.scheduler_components.request_receiver import (
+     SchedulerRequestReceiver,
+ )
+@@ -2229,6 +2230,7 @@ class Scheduler(
+             dp_tp_cpu_group=self.dp_tp_cpu_group,
+             get_forward_ct=lambda: self.forward_ct,
+         )
++        self.near_self_profile = maybe_create_self_profile(self)  # inert unless NEAR_SELF_PROFILE=1
+ 
+     def init_weight_updater(self) -> None:
+         self.weight_updater = SchedulerWeightUpdaterManager(
+@@ -4256,6 +4258,8 @@ class Scheduler(
+         if self.scripted_scheduler_hook is not None:
+             self.scripted_scheduler_hook.on_run_batch(batch)
+ 
++        if getattr(self, "near_self_profile", None) is not None:
++            self.near_self_profile.tick(batch)
+         # Whether to run the profiler
+         self.profiler_manager._profile_batch_predicate(batch)
+         if self.forward_sleep_time is not None:
+diff --git a/python/sglang/srt/managers/scheduler_components/profiler_manager.py b/python/sglang/srt/managers/scheduler_components/profiler_manager.py
+index 63aa5aa..cab9c89 100644
+--- a/python/sglang/srt/managers/scheduler_components/profiler_manager.py
++++ b/python/sglang/srt/managers/scheduler_components/profiler_manager.py
+@@ -356,7 +356,8 @@ class SchedulerProfilerManager:
+                 self.torch_profiler.export_chrome_trace(
+                     os.path.join(self.torch_profiler_output_dir, filename)
+                 )
+-            torch.distributed.barrier(self.dp_tp_cpu_group)
++            if not getattr(self, "near_selfprof", False):  # only tp_rank 0 profiles
++                torch.distributed.barrier(self.dp_tp_cpu_group)
+ 
+         if self.rpd_profiler is not None:
+             self.rpd_profiler.rangePop()
+diff --git a/python/sglang/srt/utils/near_self_profile.py b/python/sglang/srt/utils/near_self_profile.py
+new file mode 100644
+index 0000000..c570d3e
+--- /dev/null
++++ b/python/sglang/srt/utils/near_self_profile.py
+@@ -0,0 +1,190 @@
++"""One-shot self-profiling hook (env NEAR_SELF_PROFILE=1) plus its trace summariser.
++
++The hook drives the scheduler's existing profiler once per process on tp_rank 0 and runs this file as a
++niced subprocess to print a compact `NEAR_PROFILE ` summary to stdout and delete the trace. Stdlib only.
++"""
++import bisect, collections, gzip, json, os, re, shutil, subprocess, sys, time
++
++OUT_DIR = "/tmp/near_selfprof"
++_FRAME = re.compile(r"(srt/[\w/]+\.py)\((\d+)\): (\w+)")
++_LAUNCH = ("cudaLaunchKernel", "cuLaunchKernel", "cuLaunchKernelEx", "cudaLaunchKernelExC")
++NO_KERNELS = 3  # summariser exit code: CUDA mode requested but the trace has no kernel events
++
++
++def p(msg):
++    print("NEAR_PROFILE " + msg, flush=True)
++
++
++class SelfProfileHook:
++    def __init__(self, sched):
++        self.s, self.t0, self.state, self.proc = sched, time.monotonic(), 0, None
++        self.after = float(os.environ.get("NEAR_SELF_PROFILE_AFTER_S", "600"))
++        self.steps = int(os.environ.get("NEAR_SELF_PROFILE_STEPS", "50"))
++        self.acts = ["CPU"] if os.environ.get("NEAR_SELF_PROFILE_ACTIVITIES", "").lower() == "cpu" else ["CPU", "GPU"]
++        self.retried = self.acts == ["CPU"]
++
++    def _start(self):
++        pm = self.s.profiler_manager
++        pm.near_selfprof = True  # profiler_manager skips its all-rank barriers; only tp_rank 0 profiles
++        try:
++            pm._init_profile(OUT_DIR, None, self.steps, self.acts, True, False, False, "near", False, "", False)
++            r = pm._start_profile()
++            ok, msg = (True, "") if r is None else (r.success, r.message)
++        except Exception as e:
++            ok, msg = False, repr(e)
++        if ok:
++            self.state = 1
++        elif "GPU" in self.acts:  # CUPTI may be unavailable under CC: retry once CPU-only
++            p(f"cuda activity start failed ({msg}); retrying cpu-only")
++            self.acts, self.retried = ["CPU"], True
++            self._start()
++        else:
++            raise RuntimeError(f"profiler start failed: {msg}")
++
++    def tick(self, batch):
++        if self.state < 0:
++            return
++        try:
++            if self.state == 0:
++                if time.monotonic() - self.t0 >= self.after and batch.forward_mode.is_decode():
++                    p(f"start steps={self.steps} activities={self.acts}")
++                    self._start()
++            elif self.state == 1 and not self.s.profiler_manager.profile_in_progress:
++                mode = "cuda+cpu" if "GPU" in self.acts else "cpu-only"
++                self.proc = subprocess.Popen([sys.executable, __file__, OUT_DIR, mode], stdin=subprocess.DEVNULL)
++                self.state = 2
++            elif self.state == 2 and self.proc.poll() is not None:
++                if self.proc.returncode == NO_KERNELS and not self.retried:
++                    p("no cuda kernel events in trace; retrying cpu-only")
++                    self.acts, self.retried = ["CPU"], True
++                    self._start()
++                else:
++                    self.state = -1
++        except Exception as e:
++            self.state = -1
++            p(f"error {e!r}; hook disabled")
++
++
++def maybe_create(sched):
++    try:
++        if os.environ.get("NEAR_SELF_PROFILE") == "1" and sched.ps.tp_rank == 0:
++            from sglang.srt.environ import envs
++            if envs.SGLANG_PROFILE_V2.get():
++                p("error SGLANG_PROFILE_V2 is not supported; hook disabled")
++                return None
++            return SelfProfileHook(sched)
++    except Exception as e:
++        p(f"error {e!r}; hook disabled")
++    return None
++
++
++def _frames(py, queries):
++    """Enclosing sglang frames for each (tid, ts) query, outermost first, via one sweep per thread."""
++    out, by_tid = {}, collections.defaultdict(list)
++    for tid, ts in queries:
++        by_tid[tid].append(ts)
++    for tid, tss in by_tid.items():
++        evs = sorted(py.get(tid, ()), key=lambda e: (e["ts"], -e.get("dur", 0)))
++        stack, i = [], 0
++        for ts in sorted(tss):
++            while i < len(evs) and evs[i]["ts"] <= ts:
++                while stack and stack[-1][0] <= evs[i]["ts"]:
++                    stack.pop()
++                m = _FRAME.search(evs[i]["name"])
++                stack.append((evs[i]["ts"] + evs[i].get("dur", 0), m and "%s:%s %s" % (m[1], m[2], m[3])))
++                i += 1
++            while stack and stack[-1][0] < ts:
++                stack.pop()
++            out[(tid, ts)] = [n for _, n in stack if n]
++    return out
++
++
++def summarise(path, mode):
++    ev = [e for e in json.load(gzip.open(path))["traceEvents"] if e.get("ph") == "X"]
++    cat = collections.defaultdict(list)
++    for e in ev:
++        cat[e.get("cat")].append(e)
++    del ev
++    rt = cat["cuda_runtime"] + cat["cuda_driver"]
++    gpu = sorted((e["ts"], e["ts"] + e.get("dur", 0)) for c in ("kernel", "gpu_memcpy", "gpu_memset") for e in cat[c])
++    if mode == "cuda+cpu" and not cat["kernel"]:
++        return NO_KERNELS
++    py = collections.defaultdict(list)
++    for e in cat["python_function"]:
++        py[e["tid"]].append(e)
++    rb = sorted((e for e in cat["python_function"] if e["name"].endswith(": run_batch") and "scheduler.py" in e["name"]), key=lambda e: e["ts"])
++    p(f"mode={mode} steps_captured={len(rb)}")
++    if len(rb) > 1:
++        d = [(b["ts"] - a["ts"]) / 1e3 for a, b in zip(rb, rb[1:])]
++        p(f"iteration wall ms: mean={sum(d) / len(d):.1f} p50={sorted(d)[len(d) // 2]:.1f} max={max(d):.1f}")
++    gaps = []
++    if gpu:
++        busy, (cs, ce) = 0, gpu[0]
++        for s, e in gpu[1:]:
++            if s > ce:
++                busy += ce - cs
++                gaps.append((s - ce, ce))
++                cs, ce = s, e
++            else:
++                ce = max(ce, e)
++        busy += ce - cs
++        span = gpu[-1][1] - gpu[0][0]
++        p(f"gpu span={span / 1e3:.1f}ms busy={100 * busy / span:.1f}% idle={100 * (span - busy) / span:.1f}%")
++        hist = []
++        for lo, hi in ((0, 5), (5, 20), (20, 100), (100, 1000), (1000, 1e12)):
++            g = [x for x, _ in gaps if lo <= x < hi]
++            hist.append(f"{lo}-{hi if hi < 1e12 else 'inf'}us:{len(g)}/{sum(g) / 1e3:.1f}ms")
++        p("idle gaps count/total " + " ".join(hist))
++    ng = sum(1 for e in rt if "GraphLaunch" in e["name"])
++    p(f"kernels={len(cat['kernel'])} graph_launches={ng} eager_launches={sum(1 for e in rt if e['name'] in _LAUNCH)}")
++    # Blocking calls: CUDA sync/blocking-copy runtime calls; with no CUDA events, item()/synchronize()/tolist() frames instead.
++    blk = [(e["tid"], e["ts"], e.get("dur", 0), e["name"]) for e in rt if "Synchronize" in e["name"] or e["name"] in ("cudaMemcpy", "cuMemcpyDtoH_v2")]
++    if not rt:
++        blk = [(e["tid"], e["ts"], e.get("dur", 0), "item") for e in cat["cpu_op"] if e["name"] in ("aten::item", "aten::_local_scalar_dense")]
++        blk += [(e["tid"], e["ts"], e.get("dur", 0), "sync/tolist") for e in cat["python_function"] if re.search(r"synchronize|tolist|method cpu", e["name"])]
++    kinds = collections.defaultdict(lambda: [0, 0.0])
++    for _, _, d, n in blk:
++        kinds[n][0] += 1
++        kinds[n][1] += d / 1e3
++    n_item = sum(1 for e in cat["cpu_op"] if e["name"] == "aten::item")
++    p("blocking calls: " + " ".join(f"{k}={v[0]}/{v[1]:.1f}ms" for k, v in kinds.items()) + f" item()={n_item}")
++    fr, agg = _frames(py, [(t, ts) for t, ts, _, _ in blk]), collections.defaultdict(lambda: [0, 0.0])
++    for t, ts, d, n in blk:
++        k = " < ".join(reversed(fr[(t, ts)][-2:])) or "(no sglang frame)"
++        agg[k][0] += 1
++        agg[k][1] += d / 1e3
++    for k, (c, ms) in sorted(agg.items(), key=lambda kv: -kv[1][1])[:8]:
++        p(f"  blocked {ms:7.1f}ms {c:4d}x {k}")
++    mc = collections.defaultdict(lambda: [0, 0])
++    for e in cat["gpu_memcpy"]:
++        k = (e["name"].split("(")[0].strip().replace("Memcpy ", "") or "?")
++        mc[k][0] += 1
++        mc[k][1] += (e.get("args") or {}).get("bytes", 0)
++    if mc:
++        p("memcpy " + " ".join(f"{k}={c}/{b / 1e6:.1f}MB" for k, (c, b) in mc.items()))
++    main = max(py, key=lambda t: len(py[t]), default=None)
++    for g, ts in sorted(gaps, reverse=True)[:5]:
++        mid = ts + g / 2
++        c = [e for e in py.get(main, ()) if e["ts"] <= mid <= e["ts"] + e.get("dur", 0) and _FRAME.search(e["name"])]
++        m = _FRAME.search(min(c, key=lambda e: e["dur"])["name"]) if c else None
++        p(f"  gap {g / 1e3:.2f}ms cpu: {m and '%s:%s %s' % (m[1], m[2], m[3])}")
++    return 0
++
++
++def main(d, mode):
++    os.nice(10)
++    rc = 1
++    try:
++        files = sorted(f for f in os.listdir(d) if f.endswith(".trace.json.gz"))
++        if not files:
++            raise FileNotFoundError("no trace file in " + d)
++        rc = summarise(os.path.join(d, files[0]), mode)
++    except Exception as e:
++        p(f"error summariser {e!r}")
++    finally:
++        shutil.rmtree(d, ignore_errors=True)
++    return rc
++
++
++if __name__ == "__main__":
++    sys.exit(main(sys.argv[1], sys.argv[2]))
