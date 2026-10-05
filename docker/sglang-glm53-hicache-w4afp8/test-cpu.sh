@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-# Resolved before the cd: step 7 runs a test file shipped next to this script.
+# Resolved before the cd: steps 7-9 run test files shipped next to this script.
 RECIPE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd /sgl-workspace/sglang
 # This pinned upstream test utility indexes the first visible-device digit.
@@ -317,5 +317,56 @@ if ! python3 -W ignore::DeprecationWarning "$RECIPE_DIR/test_stall_dump.py" \
 fi
 sed -n '/^SUMMARY/,$p' "$stall_report"
 echo "step 7 OK: the event-loop stall dump reports blocked-loop stacks and recoveries, and stays off at 0"
+
+# 8. The ghost prefix cache is hooked into release_kv_cache and inert by default. test_ghost_cache.py
+# then checks the installed modules: predicted hit tokens equal a brute-force LRU simulation at every
+# cache size with sampling off, 1/16 sampling stays within 5 points, compulsory misses equal
+# never-seen pages, only 16-byte keyed digests are retained, the tracked set is bounded, the hook
+# does nothing without SGLANG_GHOST_CACHE=1; racing replicas share one key file; the aggregator's
+# pooled counts equal a brute-force two-replica simulation with a failover; and two recorders feed a
+# running aggregator over a real unix socket whose /metrics match the direct computation.
+python3 - <<'EOF'
+import inspect
+
+import sglang.srt.mem_cache.common as common
+import sglang.srt.observability.ghost_cache as ghost
+
+release = inspect.getsource(common.release_kv_cache)
+assert release.index("observe_finished_req(req)") < release.index("assert (not req.kv.holds_kv)"), release
+assert common.observe_finished_req is ghost.observe_finished_req
+assert ghost._ENABLED is False and ghost._recorder is None
+EOF
+python3 "$RECIPE_DIR/test_ghost_cache.py" \
+  --module "$PWD/python/sglang/srt/observability/ghost_cache.py" \
+  --aggregator "$PWD/python/sglang/srt/observability/ghost_aggregator.py"
+echo "step 8 OK: the ghost prefix cache and its pooled aggregator match exact LRU, store only keyed digests, and are off by default"
+
+# 9. The KV tier metrics are inert by default and only observe. test_kv_tier_metrics.py checks the
+# installed module against a fake radix tree (evictions by outcome and kind, idle buckets, the four
+# tier gauges, all exact) and that every hook is in the installed unified_tree_core.py. Then the
+# upstream unified radix cache unit tests run on CPU with the recorder forced on (no TP group here)
+# and hook errors re-raised, so a hook that breaks on real tree operations fails here.
+# kvtm_check_plugin.py reports the tests that need a CUDA device as skipped and fails the session
+# unless the recorder ran, counted VRAM evictions and load-backs, and enough tests passed. It
+# deselects three tests that drive the tree with a Mock in place of its node arena, which the
+# strict-mode gauge walk cannot iterate; outside strict mode that error is logged and they pass.
+python3 - <<'EOF'
+import sglang.srt.mem_cache.unified_cache.unified_tree_core as utc
+import sglang.srt.observability.kv_tier_metrics as kvtm
+
+assert utc.kv_tier_metrics is kvtm
+assert kvtm._ENABLED is False and kvtm.recorder() is None
+node_cls = utc.UnifiedTreeNode
+assert isinstance(node_cls.__dict__["last_access_time"], property)
+EOF
+python3 "$RECIPE_DIR/test_kv_tier_metrics.py" \
+  --module "$PWD/python/sglang/srt/observability/kv_tier_metrics.py" \
+  --tree-core "$PWD/python/sglang/srt/mem_cache/unified_cache/unified_tree_core.py"
+SGLANG_KV_TIER_METRICS=1 SGLANG_KV_TIER_METRICS_FORCE=1 SGLANG_KV_TIER_METRICS_STRICT=1 \
+SGLANG_KV_TIER_METRICS_RESYNC_S=0 SGLANG_USE_CPU_ENGINE=1 \
+PYTHONPATH="$RECIPE_DIR${PYTHONPATH:+:$PYTHONPATH}" \
+  python3 -m pytest -q -p no:cacheprovider -p kvtm_check_plugin \
+  test/registered/unit/mem_cache/test_unified_radix_cache_unittest.py
+echo "step 9 OK: the KV tier metrics are exact, hooked into the tree core, off by default, and hold under the upstream cache tests in strict mode"
 
 echo "GLM-5.3 W4AFP8 combined-image CPU checks passed"

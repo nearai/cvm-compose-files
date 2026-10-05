@@ -11,7 +11,7 @@ CUDA error 801.
 
 Base `sha256:3eccc307…` (HiCache + admission reserve v10) plus two correctness patches, both
 byte-identical copies of the reviewed originals, one opt-in performance patch, two patches that move
-blocking work off the HTTP event loop, and one diagnostic:
+blocking work off the HTTP event loop, one diagnostic, and two opt-in measurements:
 
 | patch | origin | scope |
 | --- | --- | --- |
@@ -21,6 +21,8 @@ blocking work off the HTTP event loop, and one diagnostic:
 | `sglang-pr30771.diff` | upstream sglang PR #30771 (open), byte-identical to its diff at head `60a56aa` | `OpenAIServingBase.handle_request`, `TokenizerManager._tokenize_texts`, plus the PR's three CPU tests |
 | `shm-off-loop.diff` | new here, applied after `sglang-pr30771.diff` | `TokenizerManager._send_one_request`, requests with multimodal inputs only |
 | `event-loop-stall-dump.diff` | new here (diagnostic, on by default at 30 s) | new `utils/event_loop_stall_dump.py` plus a hook in the HTTP server lifespan |
+| `ghost-prefix-cache.diff` | new here (opt-in, `SGLANG_GHOST_CACHE=1`) | new `observability/ghost_cache.py` plus one call at the top of `mem_cache/common.py` `release_kv_cache` |
+| `kv-tier-metrics.diff` | new here (opt-in, `SGLANG_KV_TIER_METRICS=1`) | new `observability/kv_tier_metrics.py` plus recorder hooks in `mem_cache/unified_cache/unified_tree_core.py` eviction and load-back paths |
 
 ## DSA indexer query split (opt-in)
 
@@ -140,15 +142,178 @@ heartbeat every second and a daemon thread (`event-loop-stall-watch`) checks it.
 To read it, filter the engine log on `[event-loop-stall]`. Loop-thread CPU near 0 means the loop is
 waiting (a lock, I/O, the GIL); CPU close to the stall age means it is computing.
 
+## Ghost prefix cache (opt-in)
+
+The engine reports the prefix hits it got, but not the hits it missed because the KV had been
+evicted. So "would a bigger KV cache, write_back, or a disk tier help?" could only be answered by
+deploying each change and waiting. `ghost-prefix-cache.diff` measures it directly, without storing KV
+or text.
+
+With `SGLANG_GHOST_CACHE=1`, TP rank 0 takes each finished request (not aborted) as its KV is
+released and hands its token ids to a background thread (`sglang-ghost-cache`), which:
+
+1. cuts prompt + output into 64-token pages and hashes them as a chain, so each page hash covers
+   every token before it. The hash is BLAKE2b keyed with 32 random bytes drawn at process start.
+2. keeps an LRU of page hashes only, and for each prompt page records whether it was never seen
+   (a compulsory miss no cache can save) or seen before at LRU stack distance d: the number of
+   distinct tokens touched since that page was last used. A page hits in an LRU cache of C tokens
+   exactly when d < C, so one measurement gives the hit rate at every cache size. The chain keeps
+   the radix-tree prefix property: an ancestor page is touched whenever a descendant is.
+3. tracks only pages whose hash falls in a 1/`SGLANG_GHOST_CACHE_SAMPLE` slice (default 16) and
+   scales their counts, which bounds memory and CPU (SHARDS sampling). Hashing still covers every
+   page, because the chain needs it.
+
+**Confidentiality.** The key never leaves process memory and is never logged. Only 16-byte digests
+are kept, in RAM, and they are gone on restart. Nothing per request is logged or exported. What leaves
+the process is aggregate Prometheus counters, the same kind of numbers as `sglang:cached_tokens_total`.
+
+| metric | meaning |
+| --- | --- |
+| `sglang:ghost_prompt_tokens_total` | prompt tokens of the accounted requests |
+| `sglang:ghost_actual_cached_tokens_total` | tokens the engine really served from cache, same requests |
+| `sglang:ghost_lookup_tokens_total` | full-page prompt tokens looked up (sampled, scaled) |
+| `sglang:ghost_reused_tokens_total{within="5M"}` | of those, seen before at LRU distance under 5M tokens (cumulative buckets 0.25M-1024M, and `inf` = seen at any distance) |
+| `sglang:ghost_reused_age_tokens_total{within_s="600"}` | seen before, last used under 600 s earlier (cumulative, 10 s-24 h, `inf`) |
+| `sglang:ghost_requests_total`, `sglang:ghost_dropped_requests_total` | accounted, and skipped because the queue was full |
+| `sglang:ghost_tracked_pages` | sampled hashes held (bounded by `SGLANG_GHOST_CACHE_MAX_PAGES`, default 1,000,000) |
+
+How to read it, per replica over a window (each counter's `increase`):
+
+- **predicted hit rate with a C-token LRU cache** = `reused{within=C}` / `lookup`
+- **compulsory misses** = (`lookup` - `reused{within="inf"}`) / `lookup`: the share no cache can save
+- **avoidable misses** = `reused{within="inf"}` / `lookup` - `actual_cached` / `prompt`
+- the long tier's device pool is about 3.5M tokens; a 406 GiB write_through host tier holds about 5M
+  in total (it is an inclusive copy), 650 GiB about 8M; write_back adds host to device.
+
+Cost when enabled: 0.06 / 0.56 / 2.8 / 14 ms of background-thread CPU per 1.5K / 20K / 100K / 500K-
+token request (hashing dominates), a list copy of the token ids on the scheduler thread, and about
+150 bytes per tracked page (about 150 MB at the default cap, which covers about 1B tokens of history
+at 1/16). The engine's scheduling and caching are unchanged.
+
+Validated CPU-only by `test_ghost_cache.py` (step 8 of `test-cpu.sh`): with sampling off the predicted
+hit tokens equal a brute-force LRU page cache at six sizes; at 1/16 they stay within 0.5 points;
+compulsory misses equal never-seen pages; only keyed digests are retained; the tracked set is
+bounded; the hook is a no-op when disabled.
+
+Model limits: it predicts an LRU cache at page granularity. The engine rounds hits to its 256-token
+tree page, and a restored host hit only pays when loading it is faster than recomputing (true for
+the host tier). Without shared mode each replica has its own key, so cross-replica reuse is not
+visible.
+
+### Shared mode: one pooled ghost cache per CVM
+
+Two replicas in one CVM keep separate KV caches, and conversation affinity pins each conversation to
+one of them. Shared mode measures what that costs, for #304 (shared KV) and routing decisions:
+
+- `SGLANG_GHOST_CACHE_KEY_FILE` on every replica points at the same file on an in-memory volume that
+  only this CVM's replicas mount. The first replica to start creates it (32 random bytes, mode 0600,
+  atomic hard-link, so racing replicas agree); the others read it. The same prefix then has the same
+  digest on every replica.
+- `SGLANG_GHOST_CACHE_SOCKET` makes each engine also send its sampled digests (1/16 of pages, never
+  tokens) as unix datagrams to the aggregator; `SGLANG_GHOST_CACHE_REPLICA` names it in the metrics.
+  Sends never block: if the aggregator is down or behind, the message is dropped and counted in
+  `sglang:ghost_forward_dropped_total`.
+- The aggregator is a sidecar running the same image,
+  `python3 -m sglang.srt.observability.ghost_aggregator --socket /ghost/aggregator.sock --port 9464 --model-name z-ai/glm-5.3-flash`.
+  It keeps one LRU across replicas (digests in RAM only) and exports, per replica:
+
+| metric | meaning |
+| --- | --- |
+| `sglang:ghost_pool_lookup_tokens_total{replica}` | prompt tokens looked up (sampled, scaled) |
+| `sglang:ghost_pool_reused_tokens_total{replica,within}` | seen before on any replica, pooled LRU distance under `within` (cumulative, `inf` = any) |
+| `sglang:ghost_pool_other_replica_only_tokens_total{replica}` | seen before, but only on other replicas: what sharing KV or routing there could have served |
+| `sglang:ghost_pool_messages_total`, `sglang:ghost_pool_bad_messages_total`, `sglang:ghost_pool_tracked_pages` | health |
+
+Read `other_replica_only / lookup` as the upper bound on what cross-replica sharing recovers, and
+`ghost_pool_reused{within=2C}` against the engines' own `ghost_reused{within=C}` as the value of
+one cache of combined size C+C over two caches of size C.
+
+Compose sketch (not in any prod file yet; needs the published v4 digest):
+
+```yaml
+volumes:
+  ghost: {driver: local, driver_opts: {type: tmpfs, device: tmpfs, o: "size=1m,mode=0700"}}
+services:
+  model-sg-glm53-w4afp8-tp4-r1:
+    environment:
+      - SGLANG_GHOST_CACHE=1
+      - SGLANG_GHOST_CACHE_KEY_FILE=/ghost/key
+      - SGLANG_GHOST_CACHE_SOCKET=/ghost/aggregator.sock
+      - SGLANG_GHOST_CACHE_REPLICA=r1
+    volumes: [ghost:/ghost]
+  # r2: the same with SGLANG_GHOST_CACHE_REPLICA=r2
+  ghost-aggregator:
+    image: <v4 digest>
+    command: python3 -m sglang.srt.observability.ghost_aggregator --socket /ghost/aggregator.sock --port 9464 --model-name z-ai/glm-5.3-flash
+    volumes: [ghost:/ghost]
+```
+
+Validated CPU-only (step 8): 9 racing loaders get one key; the wire format round-trips and splits
+large requests into datagrams under 64 KB; the pooled counts equal a brute-force two-replica
+simulation with a failover halfway through (cross-replica tokens before it from shared system
+prompts, and after it from the failed-over conversations); and two recorders feeding a running
+aggregator over a real socket produce /metrics equal to the direct computation.
+
+## KV tier metrics (opt-in)
+
+The stock cache counters (`sglang:evicted_tokens_total`, `load_back_tokens_total`,
+`hicache_backup_tokens_total`, `hicache_dropped_tokens_total`) are created on every TP rank without a
+rank label, so multiprocess Prometheus sums them to TP x the real volume. They also cannot tell a VRAM
+eviction that demotes a prefix to DRAM from one that deletes it, or a DRAM eviction that frees a
+duplicate of VRAM-resident KV from one that throws away the only copy, which is what decides whether
+the HiCache host tier is used well. `kv-tier-metrics.diff` records those events.
+
+With `SGLANG_KV_TIER_METRICS=1`, TP rank 0 (PP rank 0) only:
+
+| metric | meaning |
+| --- | --- |
+| `sglang:kv_tier_vram_evicted_tokens_total{outcome="demoted"\|"deleted"}` | Full-KV tokens evicted from VRAM, kept on DRAM or gone |
+| `sglang:kv_tier_dram_evicted_tokens_total{kind="duplicate"\|"dram_only"}` | Full-KV tokens evicted from DRAM, a copy of VRAM data or the only copy |
+| `sglang:kv_tier_load_back_tokens_total` | tokens restored from DRAM to VRAM |
+| `sglang:kv_tier_{vram_evicted,dram_evicted,load_back}_idle_tokens_total{...,within_s}` | the same tokens by how long the prefix had been unused (cumulative, 10 s-7200 s, `inf` = all) |
+| `sglang:kv_tier_vram_cached_tokens` | gauge: tokens the radix tree holds in VRAM |
+| `sglang:kv_tier_dram_duplicate_tokens` | gauge: DRAM tokens that are also in VRAM (write_through copies) |
+| `sglang:kv_tier_dram_only_tokens` | gauge: DRAM-only tokens, the part that can produce DRAM hits |
+| `sglang:kv_tier_dram_only_matchable_tokens` | gauge: DRAM-only tokens with a mamba checkpoint at or below them; a hybrid-model match must end at one, so the rest cannot hit |
+
+The gauges come from an exact walk of the tree, at most every `SGLANG_KV_TIER_METRICS_RESYNC_S`
+seconds (default 30), triggered by an eviction or load-back. Idle time is wall-clock: the patch turns
+`UnifiedTreeNode.last_access_time` into a property whose setter also stamps `last_access_wall`
+(`time.monotonic()`). Every hook runs through `kv_tier_metrics.safe`, which logs and swallows errors,
+so accounting cannot break eviction. Eviction and caching decisions are unchanged.
+
+Validated CPU-only by `test_kv_tier_metrics.py` (step 9 of `test-cpu.sh`): inert by default, 15
+counters and gauges exact against a fake tree, all hooks present in the installed tree core, `safe()`
+logs unless strict. Step 9 also runs the upstream `test_unified_radix_cache_unittest.py` on CPU with
+the recorder forced on and hook errors raised (`SGLANG_KV_TIER_METRICS_FORCE=1`,
+`SGLANG_KV_TIER_METRICS_STRICT=1`, test-only switches): 489 tests pass, the tests that need a CUDA
+device are skipped, and `kvtm_check_plugin.py` fails the run unless the recorder existed and recorded
+VRAM evictions and load-backs. It deselects three tests that replace the tree's node arena with a
+Mock, which the strict-mode gauge walk cannot iterate (outside strict mode the error is logged and
+they pass); on the unpatched file the same run passes 492.
+
 ## Why the composition is safe
 
 The HiCache patches touch `mem_cache/*`, `disaggregation/*` and `schedule_batch.py`. None of the
-added patches touches any of those files, so the patch sets are disjoint. `source-manifest.json`
+added correctness, performance or event-loop patches touches any of those files, so those patch sets
+are disjoint. The two measurement patches do edit `mem_cache` files (`common.py`, and
+`unified_cache/unified_tree_core.py`, see below) with observation-only hooks, against the bytes the
+base ships with its HiCache patches applied. `source-manifest.json`
 is the one from `docker/sglang-glm53-w4afp8` plus the `dsa_indexer_kpool.py` entry and the
 event-loop entries: `http_server.py`, `serving_base.py`, `tokenizer_manager.py`, the new stall-dump
 module and the three new test files (`"before": null` asserts that a file is new).
 `tokenizer_manager.py` is the only file two patches touch (PR #30771, then shm-off-loop). Its
 manifest entry spans both, and `PROVENANCE` records the hash between them.
+
+`kv-tier-metrics.diff` is the one added patch inside the HiCache code: it edits
+`mem_cache/unified_cache/unified_tree_core.py`, whose before-hash is the file as the base image ships
+it (HiCache patches included). That file is byte-identical in the base `3eccc307…`, the published v3
+image `47aff791…` and the lab build the patch was written against (checked 2026-10-05), and no
+other patch in this recipe touches it:
+
+```
+e2f1884ddd55721786cb9b7365b5d0a619a9d9a6ebf88c9c09b690ee39b45b94  mem_cache/unified_cache/unified_tree_core.py
+```
 
 That disjointness was verified against the real base image, not assumed — all three patch targets
 hash identically in `3eccc307…` and in `e9d29a1c…`:
@@ -178,7 +343,9 @@ producing a silently different image.
 
 Added here: the DSA indexer query split is opt-in (`SGLANG_DSA_INDEXER_QSPLIT=1`), the two
 event-loop patches have no switch, and the stall dump is on at 30 s
-(`SGLANG_EVENT_LOOP_STALL_DUMP_SECS=0` turns it off). Inherited opt-ins:
+(`SGLANG_EVENT_LOOP_STALL_DUMP_SECS=0` turns it off), and the ghost prefix cache
+(`SGLANG_GHOST_CACHE=1`) and the KV tier metrics (`SGLANG_KV_TIER_METRICS=1`) are opt-in. Inherited
+opt-ins:
 
 - admission reserve — `SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE`
   (never set `SGLANG_ADMISSION_RESERVE_MIN_WAIT_S`: the wall-clock gate desynchronises TP ranks and
@@ -212,3 +379,12 @@ CPU-only container: `apply-patches.py`, then `test-cpu.sh` steps 1-7. On GPU the
 the same source bytes over the v1 image, all three patches together with the stall dump at its 30 s
 default. No v3 build has run on GPU, so the published image first does so as the long-context r2
 canary.
+
+**v4** adds the ghost prefix cache. The recipe was built and `test-cpu.sh` steps 1-8 run in a
+CPU-only container on gpu31 (2026-09-26). The GPU check compares its predictions with the hit rates
+measured at 406 GiB, 650 GiB and with HiCache off on the same replay (gpu31 HiCache write-policy A/B).
+
+**v5** adds the KV tier metrics on top of v4. The recipe was built and `test-cpu.sh` steps 1-9 run in
+a CPU-only container on gpu31 (2026-10-05, tag `glm53-hicache-w4afp8:v5-obs`). On GPU the lab
+bind-mounted the same module and patched tree core over the v4 lab image for the HiCache policy A/B
+(gpu31, 2026-09-30); this build has not run on GPU.
