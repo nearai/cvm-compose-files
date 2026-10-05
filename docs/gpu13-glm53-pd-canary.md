@@ -99,12 +99,13 @@ Any one of these means rollback:
 
 ## Before deploy
 
-- Decode memory: decode runs at `--mem-fraction-static 0.72`. In decode mode each rank also allocates
-  `intermediate_ssm_state_cache` (26.52 GB) and `intermediate_conv_window_cache` (1.86 GB). At 0.80
-  that left 7.02 GB after the pool, and the adaptive speculative CUDA graph capture ran out of memory
-  on gpu32 (2/2 runs). At 0.72 the log shows 17.19 GB free after the pool. A full boot at 0.72 is not
-  yet confirmed: the gpu32 run stopped on a GPU hardware fault (Xid 175/154) unrelated to the config.
-
+- Decode memory: decode runs at `--mem-fraction-static 0.80` with `--disaggregation-decode-extra-slots 8`.
+  Unset, SGLang reserves 2x `--max-running-requests` (64) extra slots for in-transfer requests and
+  sizes the KDA spec-verify scratch for running + extra slots (26.52 GB + 1.86 GB per rank, taken from
+  runtime headroom). At 0.80 that left 7.02 GB and CUDA graph capture ran out of memory on gpu32 (2/2
+  runs). Lowering `--mem-fraction-static` to 0.72 only shrank the KV pool (144K vs 1.0M tokens). Capping
+  extra slots at 8 cuts the scratch from 97 to 41 slots, about 16 GB freed (calculated). A boot with
+  this setting has not run yet: the gpu32 rehearsal stopped on a GPU hardware fault (Xid 175/154).
 - Confirm that `sglang_router` is in the prod image digest.
 - Confirm that the proxy's health probe works against the router.
 - Confirm that `MOONCAKE_PROTOCOL=tcp` alone avoids RDMA probing. If it does not, set

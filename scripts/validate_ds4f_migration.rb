@@ -156,6 +156,10 @@ assert.call(prefill.fetch('command').match?(/--max-queued-requests 8\b/), 'gpu13
   assert.call(!decode.fetch('command').include?(flag), "gpu13 GLM decode must not enable HiCache: #{flag}")
 end
 assert.call(decode.fetch('command').include?('--disable-radix-cache'), 'gpu13 GLM decode must disable the radix cache')
+# The KDA spec-verify scratch is sized for running + extra decode slots; the
+# SGLang default (2x running = 64) leaves too little headroom for CUDA graphs.
+assert.call(decode.fetch('command').match?(/--disaggregation-decode-extra-slots 8\b/), 'gpu13 GLM decode must cap pre-allocated transfer slots at 8')
+assert.call(prefill.fetch('command').match?(/--mem-fraction-static 0\.80\b/) && decode.fetch('command').match?(/--mem-fraction-static 0\.80\b/), 'gpu13 GLM PD engines must keep --mem-fraction-static 0.80 (lowering it shrinks the KV pool)')
 [
   'SGLANG_HICACHE_RAM_BUDGET=${GLM53_PD_HICACHE_RAM_BUDGET:-325GiB}',
   'SGLANG_HICACHE_CUDA_HOST_MEMORY=${GLM53_HICACHE_CUDA_HOST_MEMORY:-1}'
