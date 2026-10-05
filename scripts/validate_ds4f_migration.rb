@@ -1,5 +1,6 @@
 #!/usr/bin/env ruby
 require 'yaml'
+require 'json'
 require 'open3'
 
 root = File.expand_path('..', __dir__)
@@ -138,6 +139,8 @@ assert.call(small_engine_command.include?('--model-path /root/.cache/huggingface
   exact_flag = /#{Regexp.escape(flag)} #{Regexp.escape(value)}\b/
   assert.call(small_engine_command.match?(exact_flag), "gpu13 GLM runtime flag changed: #{flag} #{value}")
 end
+# Overlap-scheduler-off canary: CC makes host copies synchronous, so overlap buys little.
+assert.call(small_engine_command.scan('--disable-overlap-schedule').length == 1, 'gpu13 GLM must run the overlap-off canary flag exactly once')
 # HiCache is what buys this replica its long-context headroom; only the qualified
 # W4AFP8+HiCache image above may run it in a TEE guest.
 [
@@ -192,5 +195,12 @@ small_jobs = YAML.safe_load(small.fetch('configs').fetch('otelcol_app_config').f
 %w[sglang-model-sg-glm53-fp8-tp4 dcgm-dcgm-glm53 dcgm-dcgm-shared-gpu3 inference-proxy-proxy-glm53].each do |job|
   assert.call(small_jobs.any? { |entry| entry['job_name'] == job }, "gpu13 OTel scrape missing: #{job}")
 end
+# The overlap-off canary flag and its telemetry marker must move together, so a
+# rollback that drops the flag cannot leave gpu13 labelled overlap-off.
+engine_labels = small_engine.fetch('labels')
+engine_log_variants = JSON.parse(engine_labels.fetch('com.datadoghq.ad.logs')).flat_map { |entry| Array(entry['tags']) }.select { |tag| tag.start_with?('config_variant:') }
+engine_scrape = small_jobs.find { |entry| entry['job_name'] == 'sglang-model-sg-glm53-fp8-tp4' }
+engine_variants = [engine_labels['nearai.otel.config_variant'], engine_scrape&.dig('static_configs', 0, 'labels', 'config_variant'), *engine_log_variants]
+assert.call(engine_variants.compact.length == 3 && engine_variants.all? { |variant| variant.include?('overlap-off') }, "gpu13 GLM config_variant must advertise overlap-off on the OTel label, scrape job and log tag while the flag is set, got #{engine_variants.inspect}")
 
 puts 'DS4F migration and gpu13 GLM replacement allocation, telemetry and registrar contracts OK'
