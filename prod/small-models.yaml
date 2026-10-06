@@ -1145,8 +1145,8 @@ services:
       # (Loki, 2026-10-05 21:30 UTC) at the previous 80% = 830 GiB, so 650 GiB leaves about
       # 380 GiB for the OS, page cache and other services. A fixed value does not resolve
       # against RAM at start, so the replica started second gets the same. Overridable per
-      # deployment with GLM53_HICACHE_RAM_BUDGET (applies to both); oversized values fail at
-      # startup by design.
+      # deployment with GLM53_R1B_HICACHE_RAM_BUDGET (this replica only; r1a uses
+      # GLM53_R1A_HICACHE_RAM_BUDGET); oversized values fail at startup by design.
       - SGLANG_HICACHE_RAM_BUDGET=${GLM53_R1B_HICACHE_RAM_BUDGET:-325GiB}
       # CUDA-owned host memory (cudaMallocHost). Must stay 1 on TEE hosts: 0
       # selects cudaHostRegister, which fails with CUDA error 801 under HCC/PPCIe.
