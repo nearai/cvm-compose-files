@@ -37,24 +37,27 @@ Only the candidate replicas carry the new `config_variant`:
 
 ## KMS compose hash
 
-This changes the file content, so there is a new compose hash. Register it with the KMS contract before any deploy, as for the other file changes. gpu03 stays on its already-registered tag.
+This changes the file content, so there is a new compose hash. Register it with the KMS contract before any deploy, and keep the previous tag's hash registered so the rollback tag stays deployable. gpu03 stays on its already-registered tag.
 
 ## Preconditions
 
 - Merged tag that clears the commit-age gate; the host's complete gpu-manager env map; `force_recreate: false` unless stated; every call `dry_run: true` first (note `compose/down` ignores `dry_run`).
 - Low-traffic window. gpu04 must be registered and gpu03 healthy (it carries the control tier while r3/r4 cold-start, about 22 min each under CC).
 - Capture first: `docker/ps`, `/backends/list` (four gpu04 handles), container IDs of r1/r2 and a baseline of the dashboards below.
+- **Open gate: long-prompt memory (not measured, do before GO).** The DSA indexer logits buffer is fp32, `8192 x prompt_tokens x 4 B / 2` (TP2, qsplit): about 2 GiB at 131K, 6 GiB at 392K, 12 GiB at 786K, 16 GiB at 1.05M. Lab free memory at ready was 15.0 GiB on the candidate vs 15.5 GiB on the control. The tier has no input cap below the engine's `--context-length 1048576` (proxy and nginx allow 100 MiB bodies). Exp 25 only exercised passkey 32K and 4K-16K prompts. So prompts above about 0.85M tokens are at risk on both configs (a pre-existing risk), but on the candidate an OOM would also take down up to 48 in-flight requests and cost a 22 min cold start. Before GO, someone with lab access should run one 256K, 512K and 768K prefill on a candidate-config lane with the replica busy, and record the peak free GPU memory; this PR does not do that. Also check the peak prompt length seen on the base tier in the last 30 days.
+- Lab used a 150 GiB HiCache budget per lane; prod uses 325 GiB per replica. Hit-rate and host-tier effects of this config were not measured at the prod budget.
+- Pre-deploy A/A baseline: record r1 vs r2 spread (ITL p95, TTFT p95, 503 rate) over 24 h with the current file, so thresholds below can be set as max(stated guardrail, 3x observed spread).
 - No host or env change is needed: HiCache budget stays 325 GiB per replica (4 x 325 = 1,300 GiB, unchanged).
 
 ## Deploy (gpu04 only, one candidate replica at a time)
 
 Candidate replicas keep their service names, so `compose/up` recreates them; compose never removes r1/r2 or any other service.
 
-1. `dry_run` of `compose/up` for this tag with `services: ["model-sg-glm53-w4afp8-tp2-r4"]`. The plan must recreate r4 and nothing else (r1, r2, proxy, nginx unchanged). Apply. Compose stops r4 (5 m grace), so r1, r2, r3 serve meanwhile.
-2. Wait for r4 ready. Check the startup log against the lab boot facts (`--max-running-requests 48`, per-GPU values): KV pool about 1.06M tokens (1,062,848 in the lab), 330 mamba slots, about 15 GiB free at ready (lab 15,351 MiB), HiCache rank budget 325 GiB. Hold if free memory at ready is under 10 GiB, the KV pool is under 0.9M, or any CUDA 801, NCCL, Xid or OOM appears. Check `/backends/list` shows r4 healthy, one completion and a cache-hit follow-up.
-3. `dry_run` then `compose/up` with `services: ["model-sg-glm53-w4afp8-tp2-r3"]` and repeat the checks. Do not start r3 until r4 has been healthy for 30 minutes under traffic.
-4. `compose/up` with `services: ["otelcol-contrib"]`: the collector config changed (new `config_variant` labels). If the dry-run plan does not recreate it, send `force_recreate: true` for that service only. Verify the new `config_variant` shows for `instance` 3 and 4.
-5. Verify: r1/r2 container IDs and uptime unchanged; proxy and nginx not recreated.
+1. **Collector first, so the candidate is labelled from its first request.** `compose/up` with `services: ["otelcol-contrib"]` (its config changed: new `config_variant` labels; send `force_recreate: true` for that service only if the dry-run plan does not recreate it). Until r3/r4 are recreated, `instance` 3/4 still report the control variant; that is expected.
+2. `dry_run` of `compose/up` for this tag with `services: ["model-sg-glm53-w4afp8-tp2-r4"]` (pass no-deps semantics if compose-manager supports them; otherwise confirm `model-downloader` is not recreated). The plan must recreate r4 and nothing else: r1, r2, proxy, nginx, registrar, dcgm and the soak relay unchanged. Apply. Compose stops r4 (5 m grace), so r1, r2, r3 serve meanwhile. Conversation-affinity pins on r4 lose their KV and re-prefill elsewhere.
+3. Wait for r4 ready. Check the startup log against the lab boot facts (`--max-running-requests 48`, per-GPU values): KV pool about 1.06M tokens (1,062,848 in the lab), 330 mamba slots, about 15 GiB free at ready (lab 15,351 MiB), HiCache rank budget 325 GiB. Hold if free memory at ready is under 10 GiB, the KV pool is under 0.9M, or any CUDA 801, NCCL, Xid or OOM appears. Check `/backends/list` shows r4 healthy, one completion and a cache-hit follow-up.
+4. `dry_run` then `compose/up` with `services: ["model-sg-glm53-w4afp8-tp2-r3"]` and repeat the checks. Do not start r3 until r4 has been healthy for 30 minutes under traffic.
+5. Verify the new `config_variant` shows for `instance` 3 and 4, and: r1/r2 container IDs and uptime unchanged; proxy and nginx not recreated.
 
 ## What to watch (candidate r3/r4 vs control r1/r2, same host, matched concurrency)
 
@@ -66,20 +69,28 @@ After a **1 h cache warm-up per replica**, for at least 24 h that includes the d
 - Cache hit rate by source (device vs host tier), spec-decode accept length (fixed 4/1/5 vs adaptive).
 - Engine restarts, CUDA/NCCL errors, Xid.
 
-## Abort criteria (roll back r3/r4 immediately on any)
+## Abort criteria (roll back r3/r4 on any)
 
-1. Any exit or restart of r3/r4, any CUDA OOM or "out of memory" in their logs, any Xid on GPUs 4-7, or GPU free memory under 2 GiB for 5 minutes (DCGM).
-2. ITL p95 more than 20% above the control over 30 minutes at the same `num_running_reqs` band (lab at 2.5 conv/s: p95 111 vs 115 ms, i.e. not worse; mean 53 vs 44 ms, which is why mean is not the primary gate). ITL mean more than 40% above control over 30 minutes.
-3. TTFT p95 more than 25% above control over 60 minutes, overall or in any prompt bucket (lab: TTFT p50 about half, p95 lower at overload).
-4. Queue-full 503s on the candidate above the control's rate over 30 minutes while the control is not also saturated (lab: fewer rejections), or 5xx other than 503 above 0.5% of requests.
-5. Cache hit rate more than 5 points below control over 60 minutes.
-6. CVM `MemAvailable` under 20 GiB.
+These are guardrails chosen to sit well outside the lab deltas, not values derived from the data. Lab deltas for context (candidate lane vs control lane, bare metal, single runs, unmatched running counts): at 2.5 conv/s ITL p95 111 vs 115 ms and mean 53 vs 44 ms (+20%); at 1.75 conv/s p95 100 vs 112 ms, mean 43 vs 42 ms. Versus the mem-opt lane without mr48, p95 was +17% at 2.5 conv/s. Always compare r3/r4 with r1/r2 at the same `num_running_reqs` band (least-connections sends them more concurrent work, so raw ITL will look worse).
 
-Not an abort by itself: ITL mean up to about +20% at high concurrency (larger batches), a higher share of traffic on r3/r4 (least-connections), a transient TTFT spike during warm-up.
+Hard stops (immediate):
+1. Any exit or restart of r3/r4 (container restart count), any "out of memory" or CUDA error in their logs, any Xid on GPUs 4-7.
+2. Free GPU memory (DCGM FB_FREE, joined on GPU index 4-7, since DCGM series carry no `config_variant`) under 2 GiB for 5 minutes.
+
+Judgment stops (matched running band, after the 1 h warm-up):
+3. ITL p95 more than 20% above control for 30 minutes (and also in the low band of 1-6 running, where fixed EAGLE 4/1/5 vs adaptive 5/1/6 was never measured in the lab). ITL mean more than 40% above control for 30 minutes.
+4. TTFT p95 more than 25% above control for 60 minutes, overall or per prompt-length bucket (lab TTFT was lower at saturation only).
+5. Queue-full 503 rate above control for 30 minutes, judged only when control has at least 20 rejections in the window; any other 5xx above 0.5% of requests.
+6. Cache hit rate more than 5 points below control for 60 minutes (a new measurement: the lab used a smaller HiCache budget).
+7. Combined base-tier TTFT p95 for gpu04 above gpu03 by more than 25% for 60 minutes (guards against the candidate share hurting users overall).
+
+Manual check: CVM `MemAvailable` is not scraped by this file's collector; read it on the host at each stage and stop under 20 GiB. If a criterion needs a per-bucket or per-backend series that the dashboards do not have, say so before GO and add the panel; do not drop the criterion.
+
+Not an abort by itself: ITL mean up to about +20% at high concurrency, a higher share of traffic on r3/r4, a transient TTFT spike during warm-up.
 
 ## Gate to continue
 
-24 h clean on gpu04 with a peak window, no abort criterion hit, and the candidate at least matching the control on TTFT and rejections: then open the promotion PR (all four replicas, then gpu03 one host at a time under the existing two-host rules). If the peak never exceeded about 32 running per replica, the expected gain was not exercised: extend the window rather than concluding.
+24 h on gpu04 with a peak window (running per replica above 32 for a sustained period), no abort criterion hit, and the candidate at least matching the control on TTFT and rejections: then open the promotion PR (all four replicas, then gpu03 one host at a time under the existing two-host rules). A clean 24 h without a peak above 32 running per replica is inconclusive, not a pass: extend the window. Promotion is a separate PR; this canary is 2 of 8 base replicas for that window only.
 
 ## Rollback
 

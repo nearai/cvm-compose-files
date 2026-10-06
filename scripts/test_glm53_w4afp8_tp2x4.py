@@ -105,6 +105,16 @@ class GeneratedFileTest(unittest.TestCase):
         self.assertEqual(self.target.count(generator.CANDIDATE_VARIANT), 6)
         self.assertEqual(self.target.count(generator.VARIANT), 6)
 
+    def test_candidate_flag_values_are_pinned_literally(self) -> None:
+        # Independent of the generator's edit list: a shared typo in the generator and validator must still fail here.
+        _, _, anchor = generator.section(self.target, "x-sg-glm53-flash-candidate:", "\nx-dcgm-common", "candidate")
+        for flag in ("--mem-fraction-static 0.86", "--max-running-requests 48", "--cuda-graph-max-bs-decode 48", "--speculative-num-steps 4",
+                     "--speculative-eagle-topk 1", "--speculative-num-draft-tokens 5", "--max-mamba-cache-size 330", "--max-queued-requests 8",
+                     "--chunked-prefill-size 8192", "--hicache-write-policy write_through_selective", "--context-length 1048576"):
+            self.assertEqual(anchor.count(f"      {flag}\n"), 1, flag)
+        self.assertNotIn("--speculative-adaptive", anchor)
+        self.assertIn(f"--prefill-decode-interval {generator.CANDIDATE_PDI}", anchor)
+
     def test_candidate_derivation_refuses_a_drifted_control_argv(self) -> None:
         control = ["sglang serve", "--mem-fraction-static 0.80"]
         with self.assertRaises(generator.GenerationError):
@@ -252,6 +262,17 @@ class ValidatorContractTest(unittest.TestCase):
             self.replace_in_anchor(candidate, "\n      --cuda-graph-max-bs-decode 48\n", "\n      --cuda-graph-max-bs-decode 32\n"),
             "--cuda-graph-max-bs-decode must equal --max-running-requests (48)",
         )
+
+    def test_rejects_a_missing_capacity_flag(self) -> None:
+        self.assert_fails(
+            self.replace_in_anchor("x-sg-glm53-flash-candidate", "\n      --max-mamba-cache-size 330\n", "\n"),
+            "must set --max-mamba-cache-size",
+        )
+
+    def test_rejects_candidate_args_with_the_control_variant_label(self) -> None:
+        mutated = replace_nth(self.valid, f'nearai.otel.config_variant: "{generator.CANDIDATE_VARIANT}"', 0,
+                              f'nearai.otel.config_variant: "{generator.VARIANT}"')
+        self.assert_fails(mutated, "nearai.otel.config_variant must be")
 
     def test_rejects_candidate_environment_and_roles_drift(self) -> None:
         # The candidate inherits the control environment unchanged: an override on one candidate replica fails.

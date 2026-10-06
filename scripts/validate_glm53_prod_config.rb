@@ -686,7 +686,11 @@ def validate_w4afp8_tp2x4(errors, compose, base, raw)
       errors << "#{label} #{name} argv must be the #{candidate ? 'memory-optimized candidate' : 'lab-qualified TP2 control'} argv exactly; differing tokens: #{drift.first(8).join(' ')}"
     end
     # Capacity invariants, asserted on what the file says rather than on the expected argv.
-    flag_value = ->(flag) { actual_argv.each_cons(2).find { |token, _| token == flag }&.last.to_i }
+    flag_value = lambda do |flag|
+      found = actual_argv.each_cons(2).find { |token, _| token == flag }
+      errors << "#{label} #{name} must set #{flag}" if found.nil?
+      found ? found.last.to_i : 0
+    end
     slots = flag_value.call("--max-mamba-cache-size")
     running = flag_value.call("--max-running-requests")
     if slots < W4AFP8_TP2X4_MAMBA_SLOTS_PER_REQUEST * running
