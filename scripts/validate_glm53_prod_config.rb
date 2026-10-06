@@ -563,11 +563,12 @@ W4AFP8_TP2X4_VARIANT = "hicache-w4afp8-qsplit-selective325-mamba165-bf16state-c8
 W4AFP8_TP2X4_DEPLOYMENT = "glm53-flash-sgl-tp2x4"
 W4AFP8_BASE_DEPLOYMENT = "glm53-flash-sgl-tp4"
 W4AFP8_TP2X4_PREFIX = "model-sg-glm53-w4afp8-tp2-r"
-# r1/r2 are the control (current prod argv); r3/r4 are the memory-optimized canary (tee-bench exp
-# 25/25b/25c). Same host, same proxy pool, same traffic.
+# All four replicas run the memory-optimized argv (tee-bench exp 25/25b/25c), promoted from the
+# r3/r4 canary after the gpu03 same-host bake (2026-10-06). The "control" role (the previous prod
+# argv, W4AFP8_TP2X4_ARGV) is kept for reverting a replica and is what the candidate edits derive from.
 W4AFP8_TP2X4_REPLICAS = {
-  "#{W4AFP8_TP2X4_PREFIX}1" => { "devices" => %w[0 1], "instance" => "1", "soak_port" => "8008", "role" => "control" },
-  "#{W4AFP8_TP2X4_PREFIX}2" => { "devices" => %w[2 3], "instance" => "2", "soak_port" => "8009", "role" => "control" },
+  "#{W4AFP8_TP2X4_PREFIX}1" => { "devices" => %w[0 1], "instance" => "1", "soak_port" => "8008", "role" => "candidate" },
+  "#{W4AFP8_TP2X4_PREFIX}2" => { "devices" => %w[2 3], "instance" => "2", "soak_port" => "8009", "role" => "candidate" },
   "#{W4AFP8_TP2X4_PREFIX}3" => { "devices" => %w[4 5], "instance" => "3", "soak_port" => "8010", "role" => "candidate" },
   "#{W4AFP8_TP2X4_PREFIX}4" => { "devices" => %w[6 7], "instance" => "4", "soak_port" => "8011", "role" => "candidate" },
 }.freeze
@@ -660,6 +661,19 @@ def validate_w4afp8_tp2x4(errors, compose, base, raw)
   errors << "#{label} file must not reference any TP4 engine (tp4-r)" if raw.include?("tp4-r")
   errors << "#{label} file must not carry the #{W4AFP8_BASE_DEPLOYMENT} deployment label" if raw.include?("#{W4AFP8_BASE_DEPLOYMENT}\"")
 
+  # No replica merges the common anchor directly any more, but it is the previous prod argv a
+  # replica is reverted to and the base the candidate edits derive from, so it stays pinned.
+  common_argv = begin
+    Shellwords.split(command_text(compose["x-sg-glm53-flash-common"] || {}))
+  rescue ArgumentError => error
+    errors << "#{label} x-sg-glm53-flash-common command cannot be parsed: #{error.message}"
+    []
+  end
+  unless common_argv == W4AFP8_TP2X4_ARGV
+    drift = ((common_argv - W4AFP8_TP2X4_ARGV) + (W4AFP8_TP2X4_ARGV - common_argv)).uniq
+    errors << "#{label} x-sg-glm53-flash-common argv must be the lab-qualified TP2 control argv exactly; differing tokens: #{drift.first(8).join(' ')}"
+  end
+
   expected_env = environment_map(base.dig("services", W4AFP8_BASE_REPLICAS.keys.first) || {}).merge(W4AFP8_TP2X4_EXTRA_ENV)
   collector = load_embedded_yaml(errors, "#{label} file otelcol_app_config", compose.dig("configs", "otelcol_app_config", "content"))
   engine_image_label = W4AFP8_TP2X4_IMAGE.split(":").last[0, 12]
@@ -741,7 +755,7 @@ def validate_w4afp8_tp2x4(errors, compose, base, raw)
 
   if replicas.length == W4AFP8_TP2X4_REPLICAS.length
     # Everything except the argv (checked exactly per role above) is identical across all four
-    # replicas, so the canary differs from the control only by its engine flags.
+    # replicas.
     contracts = replicas.values.map { |service| runtime_contract(service).reject { |key, _value| key == "command" } }
     errors << "#{label} replicas must use identical runtime configuration" unless contracts.uniq.length == 1
   end

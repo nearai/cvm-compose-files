@@ -38,10 +38,11 @@ DEPLOYMENT: Final = "glm53-flash-sgl-tp2x4"
 SOURCE_VARIANT: Final = "fc91d24-w4afp8-c4096-admission-reserve-v10-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
 VARIANT: Final = "hicache-w4afp8-qsplit-selective325-mamba165-bf16state-c8192-admission-reserve-v10-pdi1-h200-tp2-ep2-eagle-adaptive-5-1-6-strict-budget8192"
 REPLICAS: Final = (1, 2, 3, 4)
-# Base-tier memory-optimized canary (tee-bench exp 25/25b/25c): r3 and r4 run the candidate argv
-# below, r1 and r2 keep the current prod argv as a same-host, same-traffic control. The shared
-# engine anchor (r1/r2) is untouched, so a scoped deploy of r3/r4 does not recreate r1/r2.
-CANDIDATE_REPLICAS: Final = (3, 4)
+# Base-tier memory-optimized config (tee-bench exp 25/25b/25c), promoted from the r3/r4 canary
+# (#339) to all four replicas after the gpu03 30 min same-host bake (2026-10-06). Every replica
+# runs the candidate argv below; the shared engine anchor keeps the previous prod argv only as
+# the base the candidate edits are derived from.
+CANDIDATE_REPLICAS: Final = (1, 2, 3, 4)
 CANDIDATE_PDI: Final = "2"
 CANDIDATE_VARIANT: Final = f"hicache-w4afp8-qsplit-selective325-mamba330-bf16state-memopt086-mr48-c8192-admission-reserve-v10-pdi{CANDIDATE_PDI}-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192"
 # Token-for-token edits of the control argv. Each old token must occur exactly once.
@@ -105,10 +106,10 @@ HEADER: Final = (
     "#     (+16%), TTFT p50/p90 0.39/3.20 vs 1.60/5.56 s, backlog 228 vs 925, hit rate 76.8% vs\n"
     "#     71.5%. Cost: TPOT p90 188 vs 70 ms (bigger decode batches). Saturates at ~8.8 req/s.\n"
     "#\n"
-    "# MEMORY-OPTIMIZED CANARY (docs/glm53-base-tier-memopt-canary.md): r3 and r4 run the candidate\n"
-    "# argv (mem 0.86, EAGLE fixed 4/1/5, 330 mamba slots, 48 running, pdi 2; tee-bench exp 25/25b/25c);\n"
-    "# r1 and r2 keep the argv above as the same-host control. On gpu32 bare metal under overload the\n"
-    "# candidate served +16% (1.75 conv/s) / +25% (2.5 conv/s) more requests than the control lane.\n"
+    "# MEMORY-OPTIMIZED CONFIG (docs/glm53-base-tier-memopt-canary.md): all four replicas run the\n"
+    "# candidate argv (mem 0.86, EAGLE fixed 4/1/5, 330 mamba slots, 48 running, pdi 2; tee-bench exp\n"
+    "# 25/25b/25c), promoted from the r3/r4 canary after the gpu03 same-host bake on 2026-10-06. On\n"
+    "# gpu32 bare metal under overload it served +16% (1.75 conv/s) / +25% (2.5 conv/s) more requests.\n"
     "#\n"
     "# GATES before any deploy (docs/glm53-tp2x4-base-canary.md): (1) quality with BF16 mamba\n"
     "# state at parity - PASSED 2026-10-02 (GSM8K 97.8% vs 97.4% FP32 state, perception 7/7); (2) a prod-CVM\n"
@@ -258,9 +259,9 @@ def candidate_arguments(control: list[str]) -> list[str]:
 def candidate_anchor(arguments: list[str]) -> str:
     return (
         "x-sg-glm53-flash-candidate: &sg-glm53-flash-candidate\n"
-        "  # Memory-optimized canary argv for r3/r4 (tee-bench exp 25/25b/25c): the control argv with\n"
+        "  # Memory-optimized argv for every replica (tee-bench exp 25/25b/25c): the previous argv with\n"
         "  # mem 0.86, EAGLE fixed 4/1/5 (no adaptive), 330 mamba slots, 48 running / graph batch 48.\n"
-        "  # Everything else, including the environment, is inherited from the control anchor.\n"
+        "  # Everything else, including the environment, is inherited from the common anchor.\n"
         "  <<: *sg-glm53-flash-common\n"
         "  command: >\n" + "".join(f"      {argument}\n" for argument in arguments) + "\n"
     )
