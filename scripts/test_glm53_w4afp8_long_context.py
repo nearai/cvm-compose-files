@@ -16,6 +16,9 @@ import unittest
 from pathlib import Path
 
 from scripts import prepare_glm53_w4afp8_long_context as generator
+# CI runs this module in the ruby image; importing the gpu13 TP2 contract tests here runs them there too
+# without a separate workflow step.
+from scripts.test_gpu13_glm53_tp2 import Gpu13Tp2Test  # noqa: F401
 
 ROOT = Path(__file__).resolve().parents[1]
 TARGET = ROOT / generator.TARGET
