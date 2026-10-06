@@ -32,12 +32,13 @@ CHECKPOINT_REVISION: Final = "99f1fa70408c52b007d4fd69e02e5a522422e755"
 FP8_REVISION: Final = "84c6a6aa9497188e15a635ba793b0f95a79b1033"
 SOURCE_IMAGE: Final = "docker.io/nearaidev/sglang@sha256:e9d29a1cb1cd65284392c4d62d5f2a36669628057e15c60fe93ea40cfe4fc7e7"
 SOURCE_HICACHE_IMAGE: Final = "docker.io/nearaidev/sglang@sha256:3eccc30709f5719c81084d1264f03ca5354b3059ec4cff62f0c5ff88c309680c"
-# Both replicas run the released original #308 offloop-v3 image and carry the DSA indexer
-# split, which is enabled by the shared QSPLIT environment.
-IMAGE: Final = "docker.io/nearaidev/sglang@sha256:47aff791090003a37f893e998c44794c410d3f7bdfc7fdd2dfab5eb5592b30bb"
-ENGINE_IMAGE_LABEL: Final = "47aff7910900"
-R2_IMAGE: Final = "docker.io/nearaidev/sglang@sha256:47aff791090003a37f893e998c44794c410d3f7bdfc7fdd2dfab5eb5592b30bb"
-R2_ENGINE_IMAGE_LABEL: Final = "47aff7910900"
+# Every replica runs the released glm53-hicache-w4afp8-v6 image (the #308 offloop-v3 off-loop path,
+# the opt-in ghost prefix cache and KV tier metrics, and the PyJWT fix) and carries the DSA
+# indexer split, which is enabled by the shared QSPLIT environment.
+IMAGE: Final = "docker.io/nearaidev/sglang@sha256:9c6ddd4319c4ab00e351d8650459e68b8830e36ffcc029d67fa5e19d0ac3ed17"
+ENGINE_IMAGE_LABEL: Final = IMAGE.split(":")[-1][:12]
+R2_IMAGE: Final = IMAGE
+R2_ENGINE_IMAGE_LABEL: Final = ENGINE_IMAGE_LABEL
 REPLICA_IMAGE: Final = {1: IMAGE, 2: R2_IMAGE}
 REPLICA_IMAGE_LABEL: Final = {1: ENGINE_IMAGE_LABEL, 2: R2_ENGINE_IMAGE_LABEL}
 # BOTH replicas run 8192. The 2026-09-25 canary ran the split at 16384 and inverted the lab
@@ -105,10 +106,10 @@ HEADER: Final = (
     "# --max-prefill-tokens 32768, HiCache with CUDA-owned host memory and a fixed 406 GiB\n"
     "# startup host-memory budget per replica, and no admission reserve.\n"
     "#\n"
-    "# Both replicas run chunk 8192 with SGLANG_DSA_INDEXER_QSPLIT=1 and pin the original\n"
-    "# #308 offloop-v3 no-flag image:\n"
+    "# Both replicas run chunk 8192 with SGLANG_DSA_INDEXER_QSPLIT=1 and pin the\n"
+    "# glm53-hicache-w4afp8-v6 image (the #308 offloop-v3 no-flag path, plus the ghost cache and KV tier metrics):\n"
     f"#   {R2_IMAGE}\n"
-    "# (source aff61fca1798512dcaec8cc88756ee0f83bb78be; workflow 36210851936 SUCCESS).\n"
+    "# (glm53-hicache-w4afp8-v6, source 678a6b5ee3e4e7b83340f810c76530958eecc499; workflow 37505271073 SUCCESS).\n"
     "# The v3 off-loop path is unconditional: no dynamic-batch-tokenizer activation variable\n"
     "# or CLI flag is added. r1/r2 keep --prefill-decode-interval 1/2 respectively.\n"
     "#\n"
@@ -148,7 +149,7 @@ HEADER: Final = (
     "# on the in-memory ghost volume) and the KV tier metrics; the glm53-ghost-aggregator sidecar\n"
     "# (one per CVM: include it in each host's scoped service list) pools the digests and is\n"
     "# scraped like the engines. Both need the docker/sglang-glm53-hicache-w4afp8 image with\n"
-    "# ghost-prefix-cache.diff and kv-tier-metrics.diff (v5 or later).\n"
+    "# ghost-prefix-cache.diff and kv-tier-metrics.diff (glm53-hicache-w4afp8-v6, pinned here).\n"
     "# Do not hand-edit this file.\n"
 )
 
@@ -201,7 +202,7 @@ HEADER_REPLACEMENTS: Final = (
         "# startup host-memory budget across all four TP ranks by default. The deployment may\n"
         "# override that percentage with GLM53_HICACHE_RAM_BUDGET.\n",
         "# DSA import-cycle fixes. Both replicas pin a published split-capable\n"
-        "# docker/sglang-glm53-hicache-w4afp8 derivative (original #308 v3 on both replicas):\n"
+        "# docker/sglang-glm53-hicache-w4afp8 derivative (glm53-hicache-w4afp8-v6 on every replica):\n"
         "# the HCC-safe HiCache image (CUDA-owned\n"
         "# host memory) plus the W4AFP8 loader fix and the unconditional chunked-prefill pool\n"
         "# clamp. Two replicas share the CVM's RAM, so each replica's startup host-memory\n"

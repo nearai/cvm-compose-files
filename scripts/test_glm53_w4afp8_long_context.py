@@ -30,6 +30,9 @@ RELEASED_IMAGE = Path("docker/sglang-glm53-hicache/RELEASED_IMAGE")
 PREVIOUS_R1_V2_IMAGE = "docker.io/nearaidev/sglang@sha256:8ff1a487b98a52fe08b781715bebd7c8c445d4fe068f312f03f527d5a3c77e84"
 RELEASED_V3_IMAGE = "docker.io/nearaidev/sglang@sha256:47aff791090003a37f893e998c44794c410d3f7bdfc7fdd2dfab5eb5592b30bb"
 RELEASED_V3_LABEL = "47aff7910900"
+# glm53-hicache-w4afp8-v6 (#340, workflow run 37505271073): what every replica pins now.
+RELEASED_V6_IMAGE = "docker.io/nearaidev/sglang@sha256:9c6ddd4319c4ab00e351d8650459e68b8830e36ffcc029d67fa5e19d0ac3ed17"
+RELEASED_V6_LABEL = "9c6ddd4319c4"
 V1_IMAGE = "docker.io/nearaidev/sglang@sha256:fde25985aea3ebabf1eb581ae21d53be8540e32933eef942ee8b962a1bfbea20"
 UNKNOWN_IMAGE = "docker.io/nearaidev/sglang@sha256:" + "0" * 64
 R1_VARIANT = "fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192-obs-v1"
@@ -74,8 +77,8 @@ def rendered_engine_sections() -> tuple[str, str, str]:
 
 class GeneratedFileTest(unittest.TestCase):
     def test_both_replicas_use_the_released_v3_image_identity(self) -> None:
-        self.assertEqual(generator.REPLICA_IMAGE, {1: RELEASED_V3_IMAGE, 2: RELEASED_V3_IMAGE})
-        self.assertEqual(generator.REPLICA_IMAGE_LABEL, {1: RELEASED_V3_LABEL, 2: RELEASED_V3_LABEL})
+        self.assertEqual(generator.REPLICA_IMAGE, {1: RELEASED_V6_IMAGE, 2: RELEASED_V6_IMAGE})
+        self.assertEqual(generator.REPLICA_IMAGE_LABEL, {1: RELEASED_V6_LABEL, 2: RELEASED_V6_LABEL})
 
     def test_committed_file_matches_generator(self) -> None:
         # Given the committed long-context source, the regenerated target is byte-identical.
@@ -111,9 +114,9 @@ class GeneratedFileTest(unittest.TestCase):
 
     def test_released_v3_image_is_pinned_on_both_replicas(self) -> None:
         _, anchor, r2 = rendered_engine_sections()
-        self.assertIn(f"\n  image: {RELEASED_V3_IMAGE}\n", anchor)
+        self.assertIn(f"\n  image: {RELEASED_V6_IMAGE}\n", anchor)
         self.assertNotIn(PREVIOUS_R1_V2_IMAGE, anchor)
-        self.assertIn(f"\n    image: {RELEASED_V3_IMAGE}\n", r2)
+        self.assertIn(f"\n    image: {RELEASED_V6_IMAGE}\n", r2)
         self.assertNotIn(PREVIOUS_R1_V2_IMAGE, r2)
 
     def test_offloop_v3_marker_is_truthful_on_both_replicas(self) -> None:
@@ -259,10 +262,10 @@ class ValidatorContractTest(unittest.TestCase):
     def test_rejects_image_and_split_capability_drift(self) -> None:
         candidate = self.selected_candidate()
         cases = (
-            (candidate.replace(f"    image: {RELEASED_V3_IMAGE}\n", f"    image: {PREVIOUS_R1_V2_IMAGE}\n", 1), "model-sg-glm53-w4afp8-tp4-r2 image must be"),
-            (candidate.replace(f"  image: {RELEASED_V3_IMAGE}\n", f"  image: {PREVIOUS_R1_V2_IMAGE}\n", 1), "model-sg-glm53-w4afp8-tp4-r1 image must be"),
-            (candidate.replace(f"  image: {RELEASED_V3_IMAGE}\n", f"  image: {V1_IMAGE}\n", 1), "does not run an approved split-capable image"),
-            (candidate.replace(f"  image: {RELEASED_V3_IMAGE}\n", f"  image: {UNKNOWN_IMAGE}\n", 1), "does not run an approved split-capable image"),
+            (candidate.replace(f"    image: {RELEASED_V6_IMAGE}\n", f"    image: {PREVIOUS_R1_V2_IMAGE}\n", 1), "model-sg-glm53-w4afp8-tp4-r2 image must be"),
+            (candidate.replace(f"  image: {RELEASED_V6_IMAGE}\n", f"  image: {PREVIOUS_R1_V2_IMAGE}\n", 1), "model-sg-glm53-w4afp8-tp4-r1 image must be"),
+            (candidate.replace(f"  image: {RELEASED_V6_IMAGE}\n", f"  image: {V1_IMAGE}\n", 1), "does not run an approved split-capable image"),
+            (candidate.replace(f"  image: {RELEASED_V6_IMAGE}\n", f"  image: {UNKNOWN_IMAGE}\n", 1), "does not run an approved split-capable image"),
         )
         self.valid = candidate
         for mutated, message in cases:
@@ -448,7 +451,7 @@ class ValidatorContractTest(unittest.TestCase):
                 ("nearai.otel.gpu_pair:", "nearai.otel.gpu_pairx:", "nearai.otel.gpu_pair must be"),
                 (f'nearai.otel.config_variant: "{TP2_VARIANT}"', 'nearai.otel.config_variant: "x"', "nearai.otel.config_variant must be"),
                 ('nearai.otel.deployment: "glm53-flash-sgl-tp4"', 'nearai.otel.deployment: "other"', "nearai.otel.deployment"),
-                (f"image: {RELEASED_V3_IMAGE}\n", f"image: {PREVIOUS_R1_V2_IMAGE}\n", "image must be"),
+                (f"image: {RELEASED_V6_IMAGE}\n", f"image: {PREVIOUS_R1_V2_IMAGE}\n", "image must be"),
                 ("    container_name: " + name + "\n", "    container_name: " + name + '\n    restart: "no"\n', "must share one runtime configuration outside command and environment"),
             )
             for before, after, message in cases:

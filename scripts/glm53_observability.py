@@ -1,7 +1,7 @@
 """Opt-in engine observability shared by the generated GLM-5.3 Flash prod files.
 
-docker/sglang-glm53-hicache-w4afp8 v5 carries two observation-only patches, both inert unless
-enabled (see that recipe's README):
+docker/sglang-glm53-hicache-w4afp8 v6 (tag glm53-hicache-w4afp8-v6, #340; v5 was never signed)
+carries two observation-only patches, both inert unless enabled (see that recipe's README):
 
 - ghost-prefix-cache.diff: SGLANG_GHOST_CACHE=1 makes TP rank 0 measure would-be prefix hits from
   keyed, sampled page digests (sglang:ghost_*). In shared mode every engine of one CVM reads one key
@@ -10,7 +10,7 @@ enabled (see that recipe's README):
 - kv-tier-metrics.diff: SGLANG_KV_TIER_METRICS=1 makes TP rank 0 export sglang:kv_tier_*.
 
 Older images ignore the engine variables. The sidecar runs the engines' image, so it only works once
-the engines run v5 too. scripts/validate_glm53_prod_config.rb and scripts/validate_ds4f_migration.rb
+the engines run v6 too. scripts/validate_glm53_prod_config.rb and scripts/validate_ds4f_migration.rb
 hold the same values; change them together.
 """
 
@@ -33,7 +33,7 @@ def engine_environment(replica: str, indent: int) -> str:
     """The engine environment entries, as list items at `indent` spaces."""
     pad = " " * indent
     lines = (
-        "# Opt-in observability (docker/sglang-glm53-hicache-w4afp8 v5; older images ignore it).",
+        "# Opt-in observability (docker/sglang-glm53-hicache-w4afp8 v6; older images ignore it).",
         "# TP rank 0 only, off the serving path. The ghost prefix cache hashes each finished",
         f"# request's pages into keyed digests (a 1/{SAMPLE} sample; tokens never leave the engine)",
         "# on a background thread and exports sglang:ghost_*. Every engine in this CVM shares the",

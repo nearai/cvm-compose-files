@@ -33,8 +33,8 @@ TARGET = Path("prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8.yaml")
 SOURCE_IMAGE: Final = "docker.io/nearaidev/sglang@sha256:8bce6a7cc872a80faded3bd1ef0a64873a1d7abae34c94e5358775ca21f133cc"
 SOURCE_ENGINE_IMAGE_LABEL: Final = "8bce6a7cc872"
 # The image both gpu02 long-tier replicas run (prod/GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext.yaml).
-IMAGE: Final = "docker.io/nearaidev/sglang@sha256:47aff791090003a37f893e998c44794c410d3f7bdfc7fdd2dfab5eb5592b30bb"
-ENGINE_IMAGE_LABEL: Final = "47aff7910900"
+IMAGE: Final = "docker.io/nearaidev/sglang@sha256:9c6ddd4319c4ab00e351d8650459e68b8830e36ffcc029d67fa5e19d0ac3ed17"
+ENGINE_IMAGE_LABEL: Final = IMAGE.split(":")[-1][:12]
 SOURCE_SERVICE_PREFIX: Final = "model-sg-glm53-w4afp8-tp4-r"
 SERVICE_PREFIX: Final = "model-sg-glm53-w4afp8-tp2-r"
 SOURCE_DEPLOYMENT: Final = "glm53-flash-sgl-tp4"
@@ -90,8 +90,8 @@ HEADER: Final = (
     "# per replica (4 x 325 GiB = 1,300 GiB) and the DSA indexer split. All four pin the\n"
     "# HiCache + W4AFP8 image the long tier runs:\n"
     f"#   {IMAGE}\n"
-    "# (docker/sglang-glm53-hicache-w4afp8, original #308 offloop-v3; source\n"
-    "# aff61fca1798512dcaec8cc88756ee0f83bb78be; workflow 36210851936 SUCCESS).\n"
+    "# (docker/sglang-glm53-hicache-w4afp8 glm53-hicache-w4afp8-v6; source\n"
+    "# 678a6b5ee3e4e7b83340f810c76530958eecc499; workflow 37505271073 SUCCESS).\n"
     "#\n"
     "# EVIDENCE (lab, gpu31/gpu32, CC off, 2026-10-01; 1,300 GiB DRAM per 8 GPUs in both arms;\n"
     "# base-tier synth traffic from the 2026-09-17 prod snapshot, least-conn + affinity router):\n"
@@ -131,8 +131,8 @@ HEADER: Final = (
     "# OBSERVABILITY: all four replicas enable the opt-in ghost prefix cache in shared mode\n"
     "# (SGLANG_GHOST_CACHE_REPLICA r1-r4, one key and socket on the in-memory ghost volume) and\n"
     "# the KV tier metrics; the glm53-ghost-aggregator sidecar pools the four replicas' digests\n"
-    "# and is scraped like the engines. Both need docker/sglang-glm53-hicache-w4afp8 v5: older\n"
-    "# images ignore the engine variables, and the sidecar exits until the image is bumped.\n"
+    "# and is scraped like the engines. Both need the glm53-hicache-w4afp8-v6 image pinned here\n"
+    "# (older images ignore the engine variables, and the sidecar would exit).\n"
     "# r1 inherits the anchor environment; r2-r4 repeat it with their own replica name (a YAML\n"
     "# merge key replaces a list wholesale).\n"
     "# Do not hand-edit this file.\n"
@@ -166,7 +166,7 @@ TEXT_REPLACEMENTS: Final = (
         "# admission-reserve v10 patch, nearai/inference-optimizer@fb94472) plus the W4AFP8\n"
         "# loader fix and the unconditional chunked-prefill pool clamp. The reserve is enabled\n",
         "# DSA import-cycle fixes. All four replicas pin the published split-capable\n"
-        "# docker/sglang-glm53-hicache-w4afp8 derivative the long tier runs (original #308 v3):\n"
+        "# docker/sglang-glm53-hicache-w4afp8 derivative the long tier runs (glm53-hicache-w4afp8-v6):\n"
         "# the HCC-safe HiCache image (CUDA-owned host memory, carrying the opt-in chunked-prefill\n"
         "# admission-reserve v10 patch, nearai/inference-optimizer@fb94472) plus the W4AFP8\n"
         "# loader fix and the unconditional chunked-prefill pool clamp. The reserve is enabled\n",

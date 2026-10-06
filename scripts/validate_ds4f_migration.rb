@@ -132,7 +132,7 @@ gpu13_variant = 'fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cud
 gpu13_ports = {}
 gpu13_glm.each_key do |name|
   engine = small_services.fetch(name)
-  assert.call(engine['image'] == 'docker.io/nearaidev/sglang@sha256:47aff791090003a37f893e998c44794c410d3f7bdfc7fdd2dfab5eb5592b30bb', "Qualified gpu13 GLM image changed: #{name}")
+  assert.call(engine['image'] == 'docker.io/nearaidev/sglang@sha256:9c6ddd4319c4ab00e351d8650459e68b8830e36ffcc029d67fa5e19d0ac3ed17', "Qualified gpu13 GLM image changed: #{name}")
   command = engine.fetch('command').to_s.split.each_slice(1).to_a.flatten.join(' ')
   assert.call(command.include?('--model-path /root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/snapshots/99f1fa70408c52b007d4fd69e02e5a522422e755'), "gpu13 GLM must serve the qualified W4AFP8 snapshot: #{name}")
   {

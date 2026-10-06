@@ -6,9 +6,9 @@
 # (the lab-qualified TP2 argv), HiCache with a write_through_selective 325 GiB host tier
 # per replica (4 x 325 GiB = 1,300 GiB) and the DSA indexer split. All four pin the
 # HiCache + W4AFP8 image the long tier runs:
-#   docker.io/nearaidev/sglang@sha256:47aff791090003a37f893e998c44794c410d3f7bdfc7fdd2dfab5eb5592b30bb
-# (docker/sglang-glm53-hicache-w4afp8, original #308 offloop-v3; source
-# aff61fca1798512dcaec8cc88756ee0f83bb78be; workflow 36210851936 SUCCESS).
+#   docker.io/nearaidev/sglang@sha256:9c6ddd4319c4ab00e351d8650459e68b8830e36ffcc029d67fa5e19d0ac3ed17
+# (docker/sglang-glm53-hicache-w4afp8 glm53-hicache-w4afp8-v6; source
+# 678a6b5ee3e4e7b83340f810c76530958eecc499; workflow 37505271073 SUCCESS).
 #
 # EVIDENCE (lab, gpu31/gpu32, CC off, 2026-10-01; 1,300 GiB DRAM per 8 GPUs in both arms;
 # base-tier synth traffic from the 2026-09-17 prod snapshot, least-conn + affinity router):
@@ -48,8 +48,8 @@
 # OBSERVABILITY: all four replicas enable the opt-in ghost prefix cache in shared mode
 # (SGLANG_GHOST_CACHE_REPLICA r1-r4, one key and socket on the in-memory ghost volume) and
 # the KV tier metrics; the glm53-ghost-aggregator sidecar pools the four replicas' digests
-# and is scraped like the engines. Both need docker/sglang-glm53-hicache-w4afp8 v5: older
-# images ignore the engine variables, and the sidecar exits until the image is bumped.
+# and is scraped like the engines. Both need the glm53-hicache-w4afp8-v6 image pinned here
+# (older images ignore the engine variables, and the sidecar would exit).
 # r1 inherits the anchor environment; r2-r4 repeat it with their own replica name (a YAML
 # merge key replaces a list wholesale).
 # Do not hand-edit this file.
@@ -73,7 +73,7 @@ x-logging-conf: &logging-conf
 # the official GLM-5.3 branch. It contains upstream disconnect cleanup (#35255), the
 # final-prefill abort fix (#34153), the strict thinking-budget adapter, and two narrow
 # DSA import-cycle fixes. All four replicas pin the published split-capable
-# docker/sglang-glm53-hicache-w4afp8 derivative the long tier runs (original #308 v3):
+# docker/sglang-glm53-hicache-w4afp8 derivative the long tier runs (glm53-hicache-w4afp8-v6):
 # the HCC-safe HiCache image (CUDA-owned host memory, carrying the opt-in chunked-prefill
 # admission-reserve v10 patch, nearai/inference-optimizer@fb94472) plus the W4AFP8
 # loader fix and the unconditional chunked-prefill pool clamp. The reserve is enabled
@@ -127,7 +127,7 @@ x-vllm-proxy-common: &vllm-proxy-common
 x-sg-glm53-flash-common: &sg-glm53-flash-common
   <<: *nvidia
   init: true
-  image: docker.io/nearaidev/sglang@sha256:47aff791090003a37f893e998c44794c410d3f7bdfc7fdd2dfab5eb5592b30bb
+  image: docker.io/nearaidev/sglang@sha256:9c6ddd4319c4ab00e351d8650459e68b8830e36ffcc029d67fa5e19d0ac3ed17
   command: >
       sglang serve
       --model-path /root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/snapshots/99f1fa70408c52b007d4fd69e02e5a522422e755
@@ -227,7 +227,7 @@ x-sg-glm53-flash-common: &sg-glm53-flash-common
     # by TP and does not bound it. The real fix is calling _should_chunk_mqa_logits
     # (defined, unused, at dsa_indexer_kpool.py:862) and chunking against free memory.
     - SGLANG_DSA_INDEXER_QSPLIT=1
-    # Opt-in observability (docker/sglang-glm53-hicache-w4afp8 v5; older images ignore it).
+    # Opt-in observability (docker/sglang-glm53-hicache-w4afp8 v6; older images ignore it).
     # TP rank 0 only, off the serving path. The ghost prefix cache hashes each finished
     # request's pages into keyed digests (a 1/16 sample; tokens never leave the engine)
     # on a background thread and exports sglang:ghost_*. Every engine in this CVM shares the
@@ -508,7 +508,7 @@ services:
               device_ids: ["0","1"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-bf16-kv","deployment:glm53-flash-sgl-tp2x4","config_variant:hicache-w4afp8-qsplit-selective325-mamba330-bf16state-memopt086-mr48-c8192-admission-reserve-v10-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192-obs-v1","request_logging:disabled","engine_image:47aff7910900","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:1"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-bf16-kv","deployment:glm53-flash-sgl-tp2x4","config_variant:hicache-w4afp8-qsplit-selective325-mamba330-bf16state-memopt086-mr48-c8192-admission-reserve-v10-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192-obs-v1","request_logging:disabled","engine_image:9c6ddd4319c4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:1"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -523,7 +523,7 @@ services:
       nearai.otel.config_variant: "hicache-w4afp8-qsplit-selective325-mamba330-bf16state-memopt086-mr48-c8192-admission-reserve-v10-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192-obs-v1"
       nearai.otel.thinking_budget_policy: "default8192-public-to-native"
       nearai.otel.request_logging: "disabled"
-      nearai.otel.engine_image: "47aff7910900"
+      nearai.otel.engine_image: "9c6ddd4319c4"
       nearai.otel.instance: "1"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
@@ -586,7 +586,7 @@ services:
       # by TP and does not bound it. The real fix is calling _should_chunk_mqa_logits
       # (defined, unused, at dsa_indexer_kpool.py:862) and chunking against free memory.
       - SGLANG_DSA_INDEXER_QSPLIT=1
-      # Opt-in observability (docker/sglang-glm53-hicache-w4afp8 v5; older images ignore it).
+      # Opt-in observability (docker/sglang-glm53-hicache-w4afp8 v6; older images ignore it).
       # TP rank 0 only, off the serving path. The ghost prefix cache hashes each finished
       # request's pages into keyed digests (a 1/16 sample; tokens never leave the engine)
       # on a background thread and exports sglang:ghost_*. Every engine in this CVM shares the
@@ -610,7 +610,7 @@ services:
               device_ids: ["2","3"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-bf16-kv","deployment:glm53-flash-sgl-tp2x4","config_variant:hicache-w4afp8-qsplit-selective325-mamba330-bf16state-memopt086-mr48-c8192-admission-reserve-v10-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192-obs-v1","request_logging:disabled","engine_image:47aff7910900","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:2"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-bf16-kv","deployment:glm53-flash-sgl-tp2x4","config_variant:hicache-w4afp8-qsplit-selective325-mamba330-bf16state-memopt086-mr48-c8192-admission-reserve-v10-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192-obs-v1","request_logging:disabled","engine_image:9c6ddd4319c4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:2"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -625,7 +625,7 @@ services:
       nearai.otel.config_variant: "hicache-w4afp8-qsplit-selective325-mamba330-bf16state-memopt086-mr48-c8192-admission-reserve-v10-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192-obs-v1"
       nearai.otel.thinking_budget_policy: "default8192-public-to-native"
       nearai.otel.request_logging: "disabled"
-      nearai.otel.engine_image: "47aff7910900"
+      nearai.otel.engine_image: "9c6ddd4319c4"
       nearai.otel.instance: "2"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
@@ -688,7 +688,7 @@ services:
       # by TP and does not bound it. The real fix is calling _should_chunk_mqa_logits
       # (defined, unused, at dsa_indexer_kpool.py:862) and chunking against free memory.
       - SGLANG_DSA_INDEXER_QSPLIT=1
-      # Opt-in observability (docker/sglang-glm53-hicache-w4afp8 v5; older images ignore it).
+      # Opt-in observability (docker/sglang-glm53-hicache-w4afp8 v6; older images ignore it).
       # TP rank 0 only, off the serving path. The ghost prefix cache hashes each finished
       # request's pages into keyed digests (a 1/16 sample; tokens never leave the engine)
       # on a background thread and exports sglang:ghost_*. Every engine in this CVM shares the
@@ -712,7 +712,7 @@ services:
               device_ids: ["4","5"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-bf16-kv","deployment:glm53-flash-sgl-tp2x4","config_variant:hicache-w4afp8-qsplit-selective325-mamba330-bf16state-memopt086-mr48-c8192-admission-reserve-v10-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192-obs-v1","request_logging:disabled","engine_image:47aff7910900","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:3"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-bf16-kv","deployment:glm53-flash-sgl-tp2x4","config_variant:hicache-w4afp8-qsplit-selective325-mamba330-bf16state-memopt086-mr48-c8192-admission-reserve-v10-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192-obs-v1","request_logging:disabled","engine_image:9c6ddd4319c4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:3"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -727,7 +727,7 @@ services:
       nearai.otel.config_variant: "hicache-w4afp8-qsplit-selective325-mamba330-bf16state-memopt086-mr48-c8192-admission-reserve-v10-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192-obs-v1"
       nearai.otel.thinking_budget_policy: "default8192-public-to-native"
       nearai.otel.request_logging: "disabled"
-      nearai.otel.engine_image: "47aff7910900"
+      nearai.otel.engine_image: "9c6ddd4319c4"
       nearai.otel.instance: "3"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
@@ -790,7 +790,7 @@ services:
       # by TP and does not bound it. The real fix is calling _should_chunk_mqa_logits
       # (defined, unused, at dsa_indexer_kpool.py:862) and chunking against free memory.
       - SGLANG_DSA_INDEXER_QSPLIT=1
-      # Opt-in observability (docker/sglang-glm53-hicache-w4afp8 v5; older images ignore it).
+      # Opt-in observability (docker/sglang-glm53-hicache-w4afp8 v6; older images ignore it).
       # TP rank 0 only, off the serving path. The ghost prefix cache hashes each finished
       # request's pages into keyed digests (a 1/16 sample; tokens never leave the engine)
       # on a background thread and exports sglang:ghost_*. Every engine in this CVM shares the
@@ -814,7 +814,7 @@ services:
               device_ids: ["6","7"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-bf16-kv","deployment:glm53-flash-sgl-tp2x4","config_variant:hicache-w4afp8-qsplit-selective325-mamba330-bf16state-memopt086-mr48-c8192-admission-reserve-v10-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192-obs-v1","request_logging:disabled","engine_image:47aff7910900","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:4"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-bf16-kv","deployment:glm53-flash-sgl-tp2x4","config_variant:hicache-w4afp8-qsplit-selective325-mamba330-bf16state-memopt086-mr48-c8192-admission-reserve-v10-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192-obs-v1","request_logging:disabled","engine_image:9c6ddd4319c4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:4"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -829,7 +829,7 @@ services:
       nearai.otel.config_variant: "hicache-w4afp8-qsplit-selective325-mamba330-bf16state-memopt086-mr48-c8192-admission-reserve-v10-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192-obs-v1"
       nearai.otel.thinking_budget_policy: "default8192-public-to-native"
       nearai.otel.request_logging: "disabled"
-      nearai.otel.engine_image: "47aff7910900"
+      nearai.otel.engine_image: "9c6ddd4319c4"
       nearai.otel.instance: "4"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
@@ -921,7 +921,7 @@ services:
   # both move together. Serving never depends on it: the engines do not wait for it, and an
   # image without ghost-prefix-cache.diff makes only this container exit and restart.
   glm53-ghost-aggregator:
-    image: docker.io/nearaidev/sglang@sha256:47aff791090003a37f893e998c44794c410d3f7bdfc7fdd2dfab5eb5592b30bb
+    image: docker.io/nearaidev/sglang@sha256:9c6ddd4319c4ab00e351d8650459e68b8830e36ffcc029d67fa5e19d0ac3ed17
     container_name: glm53-ghost-aggregator
     runtime: runc
     init: true
@@ -1303,7 +1303,7 @@ configs:
                       config_variant: "hicache-w4afp8-qsplit-selective325-mamba330-bf16state-memopt086-mr48-c8192-admission-reserve-v10-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192-obs-v1"
                       thinking_budget_policy: "default8192-public-to-native"
                       request_logging: "disabled"
-                      engine_image: "47aff7910900"
+                      engine_image: "9c6ddd4319c4"
               - job_name: sglang-model-sg-glm53-w4afp8-tp2-r2
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -1328,7 +1328,7 @@ configs:
                       config_variant: "hicache-w4afp8-qsplit-selective325-mamba330-bf16state-memopt086-mr48-c8192-admission-reserve-v10-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192-obs-v1"
                       thinking_budget_policy: "default8192-public-to-native"
                       request_logging: "disabled"
-                      engine_image: "47aff7910900"
+                      engine_image: "9c6ddd4319c4"
               - job_name: sglang-model-sg-glm53-w4afp8-tp2-r3
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -1353,7 +1353,7 @@ configs:
                       config_variant: "hicache-w4afp8-qsplit-selective325-mamba330-bf16state-memopt086-mr48-c8192-admission-reserve-v10-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192-obs-v1"
                       thinking_budget_policy: "default8192-public-to-native"
                       request_logging: "disabled"
-                      engine_image: "47aff7910900"
+                      engine_image: "9c6ddd4319c4"
               - job_name: sglang-model-sg-glm53-w4afp8-tp2-r4
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -1378,7 +1378,7 @@ configs:
                       config_variant: "hicache-w4afp8-qsplit-selective325-mamba330-bf16state-memopt086-mr48-c8192-admission-reserve-v10-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192-obs-v1"
                       thinking_budget_policy: "default8192-public-to-native"
                       request_logging: "disabled"
-                      engine_image: "47aff7910900"
+                      engine_image: "9c6ddd4319c4"
               - job_name: ghost-aggregator-glm53-ghost-aggregator
                 scrape_interval: 15s
                 metrics_path: /metrics

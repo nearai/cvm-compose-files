@@ -402,7 +402,7 @@ def validate_canonical(errors, compose, services, replica_services)
   end
 end
 
-# Opt-in observability (docker/sglang-glm53-hicache-w4afp8 v5: ghost-prefix-cache.diff and
+# Opt-in observability (docker/sglang-glm53-hicache-w4afp8 v6: ghost-prefix-cache.diff and
 # kv-tier-metrics.diff), required on every replica of the W4AFP8 long-context and 4x TP2 files:
 # the ghost prefix cache in shared mode (one key file and one aggregator socket per CVM on the
 # in-memory ghost volume, a distinct replica name per engine), the KV tier metrics, and one
@@ -667,7 +667,7 @@ end
 # DSA indexer split. Outside the engines, their telemetry, the four-way fan-out (proxy pool,
 # perception loop, soak relay) and the deployment label it must equal the W4AFP8 base file.
 W4AFP8_TP2X4_FILE = File.join(ROOT, "prod", "GLM-5.3-Flash-SGL-TP2x4-W4AFP8.yaml")
-W4AFP8_TP2X4_IMAGE = "docker.io/nearaidev/sglang@sha256:47aff791090003a37f893e998c44794c410d3f7bdfc7fdd2dfab5eb5592b30bb"
+W4AFP8_TP2X4_IMAGE = "docker.io/nearaidev/sglang@sha256:9c6ddd4319c4ab00e351d8650459e68b8830e36ffcc029d67fa5e19d0ac3ed17"
 W4AFP8_TP2X4_VARIANT = "hicache-w4afp8-qsplit-selective325-mamba165-bf16state-c8192-admission-reserve-v10-pdi1-h200-tp2-ep2-eagle-adaptive-5-1-6-strict-budget8192#{OBSERVABILITY_VARIANT_SUFFIX}"
 W4AFP8_TP2X4_DEPLOYMENT = "glm53-flash-sgl-tp2x4"
 W4AFP8_BASE_DEPLOYMENT = "glm53-flash-sgl-tp4"
@@ -998,7 +998,10 @@ W4AFP8_LONG_CONTEXT_FILE = File.join(ROOT, "prod", "GLM-5.3-Flash-SGL-TP4-W4AFP8
 W4AFP8_LONG_CONTEXT_V1_IMAGE = "docker.io/nearaidev/sglang@sha256:fde25985aea3ebabf1eb581ae21d53be8540e32933eef942ee8b962a1bfbea20"
 W4AFP8_LONG_CONTEXT_V2_IMAGE = "docker.io/nearaidev/sglang@sha256:8ff1a487b98a52fe08b781715bebd7c8c445d4fe068f312f03f527d5a3c77e84"
 W4AFP8_LONG_CONTEXT_V3_IMAGE = "docker.io/nearaidev/sglang@sha256:47aff791090003a37f893e998c44794c410d3f7bdfc7fdd2dfab5eb5592b30bb"
-W4AFP8_QSPLIT_CAPABLE_IMAGES = [W4AFP8_LONG_CONTEXT_V2_IMAGE, W4AFP8_LONG_CONTEXT_V3_IMAGE].freeze
+# glm53-hicache-w4afp8-v6 (#340): the v3 recipe plus the opt-in ghost prefix cache and KV tier
+# metrics (#336) and the PyJWT CVE fix; published, signed and attested by workflow run 37505271073.
+W4AFP8_LONG_CONTEXT_V6_IMAGE = "docker.io/nearaidev/sglang@sha256:9c6ddd4319c4ab00e351d8650459e68b8830e36ffcc029d67fa5e19d0ac3ed17"
+W4AFP8_QSPLIT_CAPABLE_IMAGES = [W4AFP8_LONG_CONTEXT_V2_IMAGE, W4AFP8_LONG_CONTEXT_V3_IMAGE, W4AFP8_LONG_CONTEXT_V6_IMAGE].freeze
 W4AFP8_LONG_CONTEXT_VARIANT = "fc91d24-long-context-w4afp8-cCHUNK-QSPLITOFFLOOPhicache-cuda-host-pooled-v1-HOSTadmission-reserve-disabled-pool-clamp-pdiPDI-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192#{OBSERVABILITY_VARIANT_SUFFIX}"
 W4AFP8_QSPLIT_ENV = "SGLANG_DSA_INDEXER_QSPLIT"
 # c16384 is only memory-safe WITH the split: without it a concurrent long burst left 0.04-0.65 GB
@@ -1008,10 +1011,10 @@ W4AFP8_CHECKPOINT = "graphistry/GLM-5.3-Flash-W4AFP8"
 W4AFP8_PRECISION = "int4-weights-fp8-activations-bf16-kv"
 W4AFP8_LONG_CONTEXT_REPLICAS = {
   "model-sg-glm53-w4afp8-tp4-r1" => { "devices" => %w[0 1 2 3], "dist_init" => "127.0.0.1:29510", "instance" => "1", "pdi" => "1",
-                                     "image" => W4AFP8_LONG_CONTEXT_V3_IMAGE, "chunk" => "8192", "qsplit" => "1", "offloop" => "offloop-v3",
+                                     "image" => W4AFP8_LONG_CONTEXT_V6_IMAGE, "chunk" => "8192", "qsplit" => "1", "offloop" => "offloop-v3",
                                      "budget" => "${GLM53_HICACHE_RAM_BUDGET:-406GiB}", "host_variant" => "", "ghost_replica" => "r1" },
   "model-sg-glm53-w4afp8-tp4-r2" => { "devices" => %w[4 5 6 7], "dist_init" => "127.0.0.1:29511", "instance" => "2", "pdi" => "2",
-                                     "image" => W4AFP8_LONG_CONTEXT_V3_IMAGE, "chunk" => "8192", "qsplit" => "1", "offloop" => "offloop-v3",
+                                     "image" => W4AFP8_LONG_CONTEXT_V6_IMAGE, "chunk" => "8192", "qsplit" => "1", "offloop" => "offloop-v3",
                                      # HiCache host-tier canary: write_through keeps the host tier an inclusive
                                      # copy of the ~3.52M-token device pool, so 406 GiB (~4.99M tokens) adds only
                                      # ~1.5M; 650 GiB (~8M) adds ~4.5M. r1 stays at 406 GiB as the control.
@@ -1260,8 +1263,8 @@ def validate_w4afp8_tp2_canary(errors, label, services, collector, replicas)
     next errors << "#{label} missing services.#{name}" if service.nil?
 
     tp2_services[name] = service
-    engine_image_label = W4AFP8_LONG_CONTEXT_V3_IMAGE.split(":").last[0, 12]
-    errors << "#{label} #{name} image must be #{W4AFP8_LONG_CONTEXT_V3_IMAGE}" unless service["image"] == W4AFP8_LONG_CONTEXT_V3_IMAGE
+    engine_image_label = W4AFP8_LONG_CONTEXT_V6_IMAGE.split(":").last[0, 12]
+    errors << "#{label} #{name} image must be #{W4AFP8_LONG_CONTEXT_V6_IMAGE}" unless service["image"] == W4AFP8_LONG_CONTEXT_V6_IMAGE
     errors << "#{label} #{name} must use the prebuilt signed image, not a host-local build" if service.key?("build")
     expected_argv = W4AFP8_TP2_CANARY_ARGV.map { |token| token == "DIST_INIT" ? spec["dist_init"] : token }
     actual_argv = begin
