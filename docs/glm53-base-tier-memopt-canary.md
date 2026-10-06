@@ -1,6 +1,27 @@
 # GLM-5.3 Flash base tier: memory-optimized TP2 canary (r3 + r4 on one host, r1 + r2 as control)
 
-Status: DRAFT canary, not deployed. Nothing here is approved to run; it needs an explicit GO, a merged tag that clears compose-manager's commit-age gate, and the abort criteria below.
+Status: **PROMOTED to all four replicas** (see "Promotion" below). The canary sections that follow are kept as the record of how r3/r4 were qualified. The canary ran on **gpu03** (not gpu04 as planned): r3/r4 at `v0.0.472` from 2026-10-06 16:24 UTC, gpu04 left on `v0.0.466`.
+
+## Promotion (2026-10-06)
+
+`CANDIDATE_REPLICAS` is now `(1, 2, 3, 4)`: r1 and r2 run the same memory-optimized argv as r3/r4 (mem 0.86, EAGLE fixed 4/1/5, 330 mamba slots, 48 running / graphs 48, pdi 2) and carry the candidate `config_variant`. The `x-sg-glm53-flash-common` anchor keeps the previous prod argv; no replica merges it directly, but the validator still pins it exactly because it is the revert target and the base the candidate edits derive from. **The file is shared by gpu03 and gpu04**: any deploy of a tag containing this change moves every replica it names to the candidate, so deploy one replica (or one pair) at a time with scoped `services` lists, as before.
+
+Evidence: gpu03 same-host bake, 30 min, 2026-10-06 16:36-17:06 UTC, candidate r3/r4 against control r1/r2 at matched load (8.5-8.6 running per replica, Prometheus via Grafana). Every abort criterion below passed; 0 restarts, OOM or Xid; proxy 3,004 x 200, 2 x 400, 0 x 503.
+
+| | r1 (control) | r2 (control) | r3 (candidate) | r4 (candidate) |
+|---|---|---|---|---|
+| requests (req/s) | 836 (0.47) | 692 (0.38) | 717 (0.40) | 747 (0.42) |
+| output tok/s | 466 | 461 | 465 | 471 |
+| TTFT p50 / p95 (s) | 1.11 / 3.6 | 1.01 / 3.8 | 1.05 / 4.2 | 1.16 / 4.2 |
+| ITL p50 / mean / p95 (ms) | 19.3 / 39.6 / 152 | 19.3 / 37.3 / 127 | 17.7 / 35.3 / 130 | 17.1 / 34.7 / 130 |
+| queue mean / p95 (s) | 0.10 / 0.2 | 0.12 / 0.7 | 0.15 / 0.6 | 0.13 / 0.4 |
+| KV used max | 0.49 | 0.51 | 0.35 | 0.35 |
+| cached fraction | 0.49 | 0.48 | 0.42 | 0.56 |
+| EAGLE accept length | 2.92 | 2.93 | 3.23 | 3.26 |
+
+Read: at normal load the candidate decodes faster (ITL p50 -8 to -11%, mean -7 to -12%, EAGLE acceptance +10%) at a small TTFT-tail cost (p95 +11-17%, inside the +25% trigger); throughput is equal because nothing saturated, so the lab's peak gain (+16-30% served) is still unverified in the TEE. Boot facts on gpu03: KV pool 0.98-0.99M tokens (about 7% under the lab's 1.06M, the same TEE shortfall the long tier shows), 15.5 GB free at ready, 325 GiB HiCache allocated. The 256K/512K/768K prefill gate in "Preconditions" was not run before the canary or this promotion (operator decision); watch large-prompt OOMs on every promoted replica.
+
+Promotion deploy, per host, one replica at a time: `compose/down` the replica at the previous tag, poll until gone, `compose/up` it at the promotion tag (`dry_run` first: one create, nothing removed), wait for ready and a real completion, then the next replica; finally recreate `otelcol-contrib` once with `force_recreate: true` so the scrape labels change. Rollback per replica: the same steps at the previous tag.
 
 ## What changes, and on which host
 

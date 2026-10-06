@@ -95,15 +95,16 @@ class GeneratedFileTest(unittest.TestCase):
         )
         self.assertEqual(len(control) - 1, len(candidate))
 
-    def test_control_and_candidate_replicas_differ_only_in_anchor_identity_and_variant(self) -> None:
+    def test_all_replicas_run_the_candidate_and_differ_only_in_identity(self) -> None:
         def block(name: str) -> str:
             return generator.section(self.target, f"  {name}:\n", "    labels:\n", name)[2]
-        control_block = block(NAMES[0]).replace(NAMES[0], "NAME").replace('["0","1"]', "DEV")
-        for name, devices in zip(NAMES[2:], ('["4","5"]', '["6","7"]')):
-            candidate_block = block(name).replace(name, "NAME").replace(devices, "DEV").replace("sg-glm53-flash-candidate", "sg-glm53-flash-common")
-            self.assertEqual(candidate_block, control_block)
-        self.assertEqual(self.target.count(generator.CANDIDATE_VARIANT), 6)
-        self.assertEqual(self.target.count(generator.VARIANT), 6)
+        first_block = block(NAMES[0]).replace(NAMES[0], "NAME").replace('["0","1"]', "DEV")
+        self.assertIn("    <<: *sg-glm53-flash-candidate\n", first_block)
+        for name, devices in zip(NAMES[1:], ('["2","3"]', '["4","5"]', '["6","7"]')):
+            self.assertEqual(block(name).replace(name, "NAME").replace(devices, "DEV"), first_block)
+        self.assertEqual(self.target.count("    <<: *sg-glm53-flash-common\n"), 0)
+        self.assertEqual(self.target.count(generator.CANDIDATE_VARIANT), 12)
+        self.assertEqual(self.target.count(generator.VARIANT), 0)
 
     def test_candidate_flag_values_are_pinned_literally(self) -> None:
         # Independent of the generator's edit list: a shared typo in the generator and validator must still fail here.
@@ -283,12 +284,12 @@ class ValidatorContractTest(unittest.TestCase):
             ),
             "environment must be the W4AFP8 base engine environment plus",
         )
-        # Moving a control replica onto the candidate anchor changes its argv, which is flagged.
+        # Moving a replica back onto the previous (common) anchor changes its argv, which is flagged.
         self.assert_fails(
             self.replace_once(
-                f"  {NAMES[1]}:\n    <<: *sg-glm53-flash-common\n", f"  {NAMES[1]}:\n    <<: *sg-glm53-flash-candidate\n"
+                f"  {NAMES[1]}:\n    <<: *sg-glm53-flash-candidate\n", f"  {NAMES[1]}:\n    <<: *sg-glm53-flash-common\n"
             ),
-            "argv must be the lab-qualified TP2 control argv exactly",
+            "argv must be the memory-optimized candidate argv exactly",
         )
 
     def test_rejects_engine_image_and_environment_drift(self) -> None:
@@ -338,17 +339,15 @@ class ValidatorContractTest(unittest.TestCase):
     def test_rejects_untruthful_telemetry(self) -> None:
         candidate_variant = generator.CANDIDATE_VARIANT
         cases = (
-            # The canary is distinguishable in Grafana only if r3/r4 carry the candidate variant everywhere.
+            # Every replica must carry the candidate variant everywhere (log tag, metric label, scrape job).
             (f'nearai.otel.config_variant: "{candidate_variant}"', f'nearai.otel.config_variant: "{generator.VARIANT}"', 1,
              "nearai.otel.config_variant must be"),
             (f"config_variant:{candidate_variant}", f"config_variant:{generator.VARIANT}", 0, "log metadata must carry exactly config_variant:"),
             (f'                      config_variant: "{candidate_variant}"', f'                      config_variant: "{generator.VARIANT}"', 1,
              "scrape label config_variant must be"),
-            (f'nearai.otel.config_variant: "{generator.VARIANT}"', f'nearai.otel.config_variant: "{candidate_variant}"', 0,
+            (f'nearai.otel.config_variant: "{candidate_variant}"', 'nearai.otel.config_variant: "incorrect-variant"', 3,
              "nearai.otel.config_variant must be"),
-            (f'nearai.otel.config_variant: "{generator.VARIANT}"', 'nearai.otel.config_variant: "incorrect-variant"', 1,
-             "nearai.otel.config_variant must be"),
-            (f"config_variant:{generator.VARIANT}", "config_variant:incorrect-variant", 1, "log metadata must carry exactly config_variant:"),
+            (f"config_variant:{candidate_variant}", "config_variant:incorrect-variant", 3, "log metadata must carry exactly config_variant:"),
             ('      nearai.otel.engine_image: "47aff7910900"\n', '      nearai.otel.engine_image: "8bce6a7cc872"\n', 1, "nearai.otel.engine_image must be"),
             ('      nearai.otel.instance: "4"\n', '      nearai.otel.instance: "2"\n', 0, "nearai.otel.instance must be"),
             ('                      instance: "3"\n', '                      instance: "1"\n', 0, "scrape label instance"),
