@@ -31,7 +31,7 @@
 #     71.5%. Cost: TPOT p90 188 vs 70 ms (bigger decode batches). Saturates at ~8.8 req/s.
 #
 # MEMORY-OPTIMIZED CANARY (docs/glm53-base-tier-memopt-canary.md): r3 and r4 run the candidate
-# argv (mem 0.86, EAGLE fixed 4/1/5, 330 mamba slots, 48 running; tee-bench exp 25/25b/25c);
+# argv (mem 0.86, EAGLE fixed 4/1/5, 330 mamba slots, 48 running, pdi 2; tee-bench exp 25/25b/25c);
 # r1 and r2 keep the argv above as the same-host control. On gpu32 bare metal under overload the
 # candidate served +16% (1.75 conv/s) / +25% (2.5 conv/s) more requests than the control lane.
 #
@@ -240,7 +240,7 @@ x-sg-glm53-flash-candidate: &sg-glm53-flash-candidate
       --disable-priority-preemption
       --chunked-prefill-size 8192
       --max-prefill-tokens 32768
-      --prefill-decode-interval 1
+      --prefill-decode-interval 2
       --cuda-graph-max-bs-decode 48
       --dsa-prefill-backend tilelang
       --dsa-decode-backend tilelang
@@ -562,7 +562,7 @@ services:
               device_ids: ["4","5"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-bf16-kv","deployment:glm53-flash-sgl-tp2x4","config_variant:hicache-w4afp8-qsplit-selective325-mamba330-bf16state-memopt086-mr48-c8192-admission-reserve-v10-pdi1-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192","request_logging:disabled","engine_image:47aff7910900","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:3"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-bf16-kv","deployment:glm53-flash-sgl-tp2x4","config_variant:hicache-w4afp8-qsplit-selective325-mamba330-bf16state-memopt086-mr48-c8192-admission-reserve-v10-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192","request_logging:disabled","engine_image:47aff7910900","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:3"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -574,7 +574,7 @@ services:
       nearai.otel.model_path: "graphistry/GLM-5.3-Flash-W4AFP8"
       nearai.otel.served_model: "z-ai/glm-5.3-flash"
       nearai.otel.deployment: "glm53-flash-sgl-tp2x4"
-      nearai.otel.config_variant: "hicache-w4afp8-qsplit-selective325-mamba330-bf16state-memopt086-mr48-c8192-admission-reserve-v10-pdi1-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192"
+      nearai.otel.config_variant: "hicache-w4afp8-qsplit-selective325-mamba330-bf16state-memopt086-mr48-c8192-admission-reserve-v10-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192"
       nearai.otel.thinking_budget_policy: "default8192-public-to-native"
       nearai.otel.request_logging: "disabled"
       nearai.otel.engine_image: "47aff7910900"
@@ -600,7 +600,7 @@ services:
               device_ids: ["6","7"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-bf16-kv","deployment:glm53-flash-sgl-tp2x4","config_variant:hicache-w4afp8-qsplit-selective325-mamba330-bf16state-memopt086-mr48-c8192-admission-reserve-v10-pdi1-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192","request_logging:disabled","engine_image:47aff7910900","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:4"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-bf16-kv","deployment:glm53-flash-sgl-tp2x4","config_variant:hicache-w4afp8-qsplit-selective325-mamba330-bf16state-memopt086-mr48-c8192-admission-reserve-v10-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192","request_logging:disabled","engine_image:47aff7910900","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:4"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -612,7 +612,7 @@ services:
       nearai.otel.model_path: "graphistry/GLM-5.3-Flash-W4AFP8"
       nearai.otel.served_model: "z-ai/glm-5.3-flash"
       nearai.otel.deployment: "glm53-flash-sgl-tp2x4"
-      nearai.otel.config_variant: "hicache-w4afp8-qsplit-selective325-mamba330-bf16state-memopt086-mr48-c8192-admission-reserve-v10-pdi1-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192"
+      nearai.otel.config_variant: "hicache-w4afp8-qsplit-selective325-mamba330-bf16state-memopt086-mr48-c8192-admission-reserve-v10-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192"
       nearai.otel.thinking_budget_policy: "default8192-public-to-native"
       nearai.otel.request_logging: "disabled"
       nearai.otel.engine_image: "47aff7910900"
@@ -1087,7 +1087,7 @@ configs:
                       ip: "${HOST_IP}"
                       port: "8000"
                       instance: "3"
-                      config_variant: "hicache-w4afp8-qsplit-selective325-mamba330-bf16state-memopt086-mr48-c8192-admission-reserve-v10-pdi1-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192"
+                      config_variant: "hicache-w4afp8-qsplit-selective325-mamba330-bf16state-memopt086-mr48-c8192-admission-reserve-v10-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192"
                       thinking_budget_policy: "default8192-public-to-native"
                       request_logging: "disabled"
                       engine_image: "47aff7910900"
@@ -1112,7 +1112,7 @@ configs:
                       ip: "${HOST_IP}"
                       port: "8000"
                       instance: "4"
-                      config_variant: "hicache-w4afp8-qsplit-selective325-mamba330-bf16state-memopt086-mr48-c8192-admission-reserve-v10-pdi1-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192"
+                      config_variant: "hicache-w4afp8-qsplit-selective325-mamba330-bf16state-memopt086-mr48-c8192-admission-reserve-v10-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192"
                       thinking_budget_policy: "default8192-public-to-native"
                       request_logging: "disabled"
                       engine_image: "47aff7910900"

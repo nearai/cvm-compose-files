@@ -42,7 +42,7 @@ REPLICAS: Final = (1, 2, 3, 4)
 # below, r1 and r2 keep the current prod argv as a same-host, same-traffic control. The shared
 # engine anchor (r1/r2) is untouched, so a scoped deploy of r3/r4 does not recreate r1/r2.
 CANDIDATE_REPLICAS: Final = (3, 4)
-CANDIDATE_PDI: Final = "1"
+CANDIDATE_PDI: Final = "2"
 CANDIDATE_VARIANT: Final = f"hicache-w4afp8-qsplit-selective325-mamba330-bf16state-memopt086-mr48-c8192-admission-reserve-v10-pdi{CANDIDATE_PDI}-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192"
 # Token-for-token edits of the control argv. Each old token must occur exactly once.
 CANDIDATE_EDITS: Final = (
@@ -106,7 +106,7 @@ HEADER: Final = (
     "#     71.5%. Cost: TPOT p90 188 vs 70 ms (bigger decode batches). Saturates at ~8.8 req/s.\n"
     "#\n"
     "# MEMORY-OPTIMIZED CANARY (docs/glm53-base-tier-memopt-canary.md): r3 and r4 run the candidate\n"
-    "# argv (mem 0.86, EAGLE fixed 4/1/5, 330 mamba slots, 48 running; tee-bench exp 25/25b/25c);\n"
+    "# argv (mem 0.86, EAGLE fixed 4/1/5, 330 mamba slots, 48 running, pdi 2; tee-bench exp 25/25b/25c);\n"
     "# r1 and r2 keep the argv above as the same-host control. On gpu32 bare metal under overload the\n"
     "# candidate served +16% (1.75 conv/s) / +25% (2.5 conv/s) more requests than the control lane.\n"
     "#\n"

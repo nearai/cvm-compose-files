@@ -572,7 +572,7 @@ W4AFP8_TP2X4_REPLICAS = {
   "#{W4AFP8_TP2X4_PREFIX}4" => { "devices" => %w[6 7], "instance" => "4", "soak_port" => "8011", "role" => "candidate" },
 }.freeze
 W4AFP8_TP2X4_CANDIDATE_ANCHOR = "x-sg-glm53-flash-candidate"
-W4AFP8_TP2X4_CANDIDATE_PDI = "1"
+W4AFP8_TP2X4_CANDIDATE_PDI = "2"
 W4AFP8_TP2X4_CANDIDATE_VARIANT = "hicache-w4afp8-qsplit-selective325-mamba330-bf16state-memopt086-mr48-c8192-admission-reserve-v10-pdi#{W4AFP8_TP2X4_CANDIDATE_PDI}-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192"
 W4AFP8_TP2X4_ARGV = Shellwords.split(<<~'ARGV').freeze
   sglang serve

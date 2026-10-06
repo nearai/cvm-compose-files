@@ -86,12 +86,12 @@ class GeneratedFileTest(unittest.TestCase):
         self.assertEqual(
             removed,
             sorted(["--mem-fraction-static 0.80", "--max-running-requests 32", "--cuda-graph-max-bs-decode 32", "--speculative-num-steps 5",
-                    "--speculative-num-draft-tokens 6", "--speculative-adaptive", "--max-mamba-cache-size 165"]),
+                    "--speculative-num-draft-tokens 6", "--speculative-adaptive", "--max-mamba-cache-size 165", "--prefill-decode-interval 1"]),
         )
         self.assertEqual(
             added,
             sorted(["--mem-fraction-static 0.86", "--max-running-requests 48", "--cuda-graph-max-bs-decode 48", "--speculative-num-steps 4",
-                    "--speculative-num-draft-tokens 5", "--max-mamba-cache-size 330"]),
+                    "--speculative-num-draft-tokens 5", "--max-mamba-cache-size 330", "--prefill-decode-interval 2"]),
         )
         self.assertEqual(len(control) - 1, len(candidate))
 
@@ -113,7 +113,7 @@ class GeneratedFileTest(unittest.TestCase):
                      "--chunked-prefill-size 8192", "--hicache-write-policy write_through_selective", "--context-length 1048576"):
             self.assertEqual(anchor.count(f"      {flag}\n"), 1, flag)
         self.assertNotIn("--speculative-adaptive", anchor)
-        self.assertIn(f"--prefill-decode-interval {generator.CANDIDATE_PDI}", anchor)
+        self.assertEqual(anchor.count("      --prefill-decode-interval 2\n"), 1)
 
     def test_candidate_derivation_refuses_a_drifted_control_argv(self) -> None:
         control = ["sglang serve", "--mem-fraction-static 0.80"]
@@ -238,7 +238,7 @@ class ValidatorContractTest(unittest.TestCase):
             ("\n      --mem-fraction-static 0.86\n", "\n      --mem-fraction-static 0.80\n"),
             ("\n      --mem-fraction-static 0.86\n", "\n      --mem-fraction-static 0.88\n"),
             ("\n      --max-running-requests 48\n", "\n      --max-running-requests 32\n"),
-            ("\n      --prefill-decode-interval 1\n", "\n      --prefill-decode-interval 2\n"),
+            ("\n      --prefill-decode-interval 2\n", "\n      --prefill-decode-interval 1\n"),
             ("\n      --speculative-num-steps 4\n", "\n      --speculative-num-steps 5\n"),
             ("\n      --speculative-num-draft-tokens 5\n", "\n      --speculative-num-draft-tokens 6\n"),
             ("\n      --speculative-eagle-topk 1\n", "\n      --speculative-eagle-topk 1\n      --speculative-adaptive\n"),
