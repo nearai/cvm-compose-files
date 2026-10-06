@@ -54,7 +54,8 @@ class GeneratedFileTest(unittest.TestCase):
     def test_no_tp4_engine_or_deployment_reference_survives(self) -> None:
         self.assertNotIn("tp4-r", self.target)
         self.assertNotIn('glm53-flash-sgl-tp4"', self.target)
-        self.assertEqual(self.target.count("deployment:glm53-flash-sgl-tp2x4"), 12)
+        # 12 inherited log tags plus the ghost aggregator's.
+        self.assertEqual(self.target.count("deployment:glm53-flash-sgl-tp2x4"), 13)
 
     def test_four_replicas_one_per_nvlink_pair(self) -> None:
         for name, devices in zip(NAMES, ('["0","1"]', '["2","3"]', '["4","5"]', '["6","7"]')):
@@ -97,7 +98,17 @@ class GeneratedFileTest(unittest.TestCase):
 
     def test_all_replicas_run_the_candidate_and_differ_only_in_identity(self) -> None:
         def block(name: str) -> str:
-            return generator.section(self.target, f"  {name}:\n", "    labels:\n", name)[2]
+            # r2-r4 repeat the anchor environment with their own ghost replica name (asserted below);
+            # outside that list every replica is identical.
+            text = generator.section(self.target, f"  {name}:\n", "    labels:\n", name)[2]
+            if "    environment:\n" in text:
+                start = text.index("    environment:\n")
+                end = text.index("    depends_on:\n", start)
+                environment = text[start:end]
+                replica = f"r{NAMES.index(name) + 1}"
+                self.assertEqual(environment.count(f"\n      - SGLANG_GHOST_CACHE_REPLICA={replica}\n"), 1, name)
+                text = text[:start] + text[end:]
+            return text
         first_block = block(NAMES[0]).replace(NAMES[0], "NAME").replace('["0","1"]', "DEV")
         self.assertIn("    <<: *sg-glm53-flash-candidate\n", first_block)
         for name, devices in zip(NAMES[1:], ('["2","3"]', '["4","5"]', '["6","7"]')):
@@ -277,11 +288,11 @@ class ValidatorContractTest(unittest.TestCase):
 
     def test_rejects_candidate_environment_and_roles_drift(self) -> None:
         # The candidate inherits the control environment unchanged: an override on one candidate replica fails.
+        # r3 carries its own copy of the environment (it needs its own ghost replica name); the
+        # needle with six spaces only matches r2-r4's lists, so occurrence 1 is r3's.
         self.assert_fails(
-            self.replace_once(
-                f"    container_name: {NAMES[2]}\n",
-                f'    container_name: {NAMES[2]}\n    environment:\n      - SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE=0\n',
-            ),
+            replace_nth(self.valid, "      - SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE=1\n", 1,
+                        "      - SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE=0\n"),
             "environment must be the W4AFP8 base engine environment plus",
         )
         # Moving a replica back onto the previous (common) anchor changes its argv, which is flagged.
@@ -307,9 +318,41 @@ class ValidatorContractTest(unittest.TestCase):
                 "replicas must use identical runtime configuration",
             ),
         )
+        # r2-r4 repeat the anchor environment with their own ghost replica name, so environment
+        # needles appear four times; the first occurrence is always the shared anchor (r1).
         for before, after, message in cases:
             with self.subTest(mutation=message):
-                self.assert_fails(self.replace_once(before, after), message)
+                self.assert_fails(replace_nth(self.valid, before, 0, after), message)
+
+    def test_rejects_missing_or_inconsistent_observability(self) -> None:
+        required = "(opt-in observability is required on every replica)"
+        cases = (
+            # SGLANG_GHOST_CACHE dropped from one replica only: r1 (the anchor) or r3 (its own list).
+            ("\n    - SGLANG_GHOST_CACHE=1\n", "\n", 0, f"{NAMES[0]} must set SGLANG_GHOST_CACHE=1 {required}"),
+            ("\n      - SGLANG_GHOST_CACHE=1\n", "\n", 1, f"{NAMES[2]} must set SGLANG_GHOST_CACHE=1 {required}"),
+            ("\n      - SGLANG_KV_TIER_METRICS=1\n", "\n", 2, f"{NAMES[3]} must set SGLANG_KV_TIER_METRICS=1 {required}"),
+            ("SGLANG_GHOST_CACHE_REPLICA=r3\n", "SGLANG_GHOST_CACHE_REPLICA=r2\n", 0, "must use distinct SGLANG_GHOST_CACHE_REPLICA names"),
+            ("SGLANG_GHOST_CACHE_SOCKET=/ghost/aggregator.sock\n", "SGLANG_GHOST_CACHE_SOCKET=/tmp/aggregator.sock\n", 3,
+             "replicas must share one SGLANG_GHOST_CACHE_SOCKET"),
+            ("SGLANG_GHOST_CACHE_KEY_FILE=/ghost/key\n", "SGLANG_GHOST_CACHE_KEY_FILE=/ghost/key2\n", 1,
+             "replicas must share one SGLANG_GHOST_CACHE_KEY_FILE"),
+            ("\n    - ghost:/ghost\n", "\n", 0, "must mount ghost:/ghost"),
+            ('"--socket", "/ghost/aggregator.sock"', '"--socket", "/ghost/other.sock"', 0, "glm53-ghost-aggregator must run python3 -m"),
+            ('"--sample", "16"', '"--sample", "1"', 0, "glm53-ghost-aggregator must run python3 -m"),
+            (f"    image: {generator.IMAGE}\n    container_name: glm53-ghost-aggregator\n",
+             f"    image: {generator.SOURCE_IMAGE}\n    container_name: glm53-ghost-aggregator\n", 0,
+             "glm53-ghost-aggregator image must be the engines' image"),
+            ("    runtime: runc\n    init: true\n", "    init: true\n", 0, "glm53-ghost-aggregator must run under runc"),
+            ("      type: tmpfs\n", "      type: none\n", 0, "must declare the ghost volume as tmpfs"),
+            ("['glm53-ghost-aggregator:9464']", "['glm53-ghost-aggregator:9465']", 0, "must scrape glm53-ghost-aggregator:9464"),
+            ("              - job_name: ghost-aggregator-glm53-ghost-aggregator\n", "              - job_name: ghost-aggregator\n", 0,
+             "missing ghost-aggregator-glm53-ghost-aggregator scrape job"),
+            (f'nearai.otel.config_variant: "{generator.CANDIDATE_VARIANT}"', f'nearai.otel.config_variant: "{generator.CANDIDATE_VARIANT.removesuffix("-obs-v1")}"', 0,
+             "nearai.otel.config_variant must be"),
+        )
+        for before, after, index, message in cases:
+            with self.subTest(mutation=message, occurrence=index):
+                self.assert_fails(replace_nth(self.valid, before, index, after), message)
 
     def test_rejects_fan_out_drift(self) -> None:
         backends = ",".join(f"http://{name}:8000" for name in NAMES)
@@ -348,10 +391,10 @@ class ValidatorContractTest(unittest.TestCase):
             (f'nearai.otel.config_variant: "{candidate_variant}"', 'nearai.otel.config_variant: "incorrect-variant"', 3,
              "nearai.otel.config_variant must be"),
             (f"config_variant:{candidate_variant}", "config_variant:incorrect-variant", 3, "log metadata must carry exactly config_variant:"),
-            ('      nearai.otel.engine_image: "47aff7910900"\n', '      nearai.otel.engine_image: "8bce6a7cc872"\n', 1, "nearai.otel.engine_image must be"),
+            ('      nearai.otel.engine_image: "9c6ddd4319c4"\n', '      nearai.otel.engine_image: "8bce6a7cc872"\n', 1, "nearai.otel.engine_image must be"),
             ('      nearai.otel.instance: "4"\n', '      nearai.otel.instance: "2"\n', 0, "nearai.otel.instance must be"),
             ('                      instance: "3"\n', '                      instance: "1"\n', 0, "scrape label instance"),
-            ('                      engine_image: "47aff7910900"\n', '                      engine_image: "8bce6a7cc872"\n', 3, "scrape label engine_image"),
+            ('                      engine_image: "9c6ddd4319c4"\n', '                      engine_image: "8bce6a7cc872"\n', 3, "scrape label engine_image"),
             ('nearai.otel.deployment: "glm53-flash-sgl-tp2x4"', 'nearai.otel.deployment: "glm53-flash-sgl-tp4"', 2,
              "must not carry the glm53-flash-sgl-tp4 deployment label"),
             ('"deployment:glm53-flash-sgl-tp2x4"', '"deployment:glm53-flash-sgl-tp4"', 1,
@@ -362,8 +405,8 @@ class ValidatorContractTest(unittest.TestCase):
                 self.assert_fails(replace_nth(self.valid, needle, index, replacement), message)
 
     def test_rejects_a_surviving_tp4_reference(self) -> None:
-        mutated = self.replace_once("    # Local snapshot path; nothing is fetched at engine start.\n",
-                                    "    # model-sg-glm53-w4afp8-tp4-r1\n    # Local snapshot path; nothing is fetched at engine start.\n")
+        mutated = replace_nth(self.valid, "    # Local snapshot path; nothing is fetched at engine start.\n", 0,
+                              "    # model-sg-glm53-w4afp8-tp4-r1\n    # Local snapshot path; nothing is fetched at engine start.\n")
         self.assert_fails(mutated, "must not reference any TP4 engine")
 
     def test_dcgm_validator_covers_the_file(self) -> None:

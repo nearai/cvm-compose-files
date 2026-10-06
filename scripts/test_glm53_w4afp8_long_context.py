@@ -30,11 +30,14 @@ RELEASED_IMAGE = Path("docker/sglang-glm53-hicache/RELEASED_IMAGE")
 PREVIOUS_R1_V2_IMAGE = "docker.io/nearaidev/sglang@sha256:8ff1a487b98a52fe08b781715bebd7c8c445d4fe068f312f03f527d5a3c77e84"
 RELEASED_V3_IMAGE = "docker.io/nearaidev/sglang@sha256:47aff791090003a37f893e998c44794c410d3f7bdfc7fdd2dfab5eb5592b30bb"
 RELEASED_V3_LABEL = "47aff7910900"
+# glm53-hicache-w4afp8-v6 (#340, workflow run 37505271073): what every replica pins now.
+RELEASED_V6_IMAGE = "docker.io/nearaidev/sglang@sha256:9c6ddd4319c4ab00e351d8650459e68b8830e36ffcc029d67fa5e19d0ac3ed17"
+RELEASED_V6_LABEL = "9c6ddd4319c4"
 V1_IMAGE = "docker.io/nearaidev/sglang@sha256:fde25985aea3ebabf1eb581ae21d53be8540e32933eef942ee8b962a1bfbea20"
 UNKNOWN_IMAGE = "docker.io/nearaidev/sglang@sha256:" + "0" * 64
-R1_VARIANT = "fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
+R1_VARIANT = "fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192-obs-v1"
 # r2 also carries the host650g marker of the HiCache host-tier canary (its 650 GiB budget).
-R2_VARIANT = "fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host650g-admission-reserve-disabled-pool-clamp-pdi2-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
+R2_VARIANT = "fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host650g-admission-reserve-disabled-pool-clamp-pdi2-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192-obs-v1"
 R1_WITHOUT_OFFLOOP_VARIANT = R1_VARIANT.replace("-offloop-v3", "")
 R2_WITHOUT_OFFLOOP_VARIANT = R2_VARIANT.replace("-offloop-v3", "")
 
@@ -74,8 +77,8 @@ def rendered_engine_sections() -> tuple[str, str, str]:
 
 class GeneratedFileTest(unittest.TestCase):
     def test_both_replicas_use_the_released_v3_image_identity(self) -> None:
-        self.assertEqual(generator.REPLICA_IMAGE, {1: RELEASED_V3_IMAGE, 2: RELEASED_V3_IMAGE})
-        self.assertEqual(generator.REPLICA_IMAGE_LABEL, {1: RELEASED_V3_LABEL, 2: RELEASED_V3_LABEL})
+        self.assertEqual(generator.REPLICA_IMAGE, {1: RELEASED_V6_IMAGE, 2: RELEASED_V6_IMAGE})
+        self.assertEqual(generator.REPLICA_IMAGE_LABEL, {1: RELEASED_V6_LABEL, 2: RELEASED_V6_LABEL})
 
     def test_committed_file_matches_generator(self) -> None:
         # Given the committed long-context source, the regenerated target is byte-identical.
@@ -111,9 +114,9 @@ class GeneratedFileTest(unittest.TestCase):
 
     def test_released_v3_image_is_pinned_on_both_replicas(self) -> None:
         _, anchor, r2 = rendered_engine_sections()
-        self.assertIn(f"\n  image: {RELEASED_V3_IMAGE}\n", anchor)
+        self.assertIn(f"\n  image: {RELEASED_V6_IMAGE}\n", anchor)
         self.assertNotIn(PREVIOUS_R1_V2_IMAGE, anchor)
-        self.assertIn(f"\n    image: {RELEASED_V3_IMAGE}\n", r2)
+        self.assertIn(f"\n    image: {RELEASED_V6_IMAGE}\n", r2)
         self.assertNotIn(PREVIOUS_R1_V2_IMAGE, r2)
 
     def test_offloop_v3_marker_is_truthful_on_both_replicas(self) -> None:
@@ -177,6 +180,29 @@ class GeneratedFileTest(unittest.TestCase):
                 self.assertIn(f"${{{spec['budget_var']}:-325GiB}}", service)
                 self.assertEqual(2 * 325, 650)  # r2 default is 650 GiB
 
+    def test_observability_is_on_every_replica_with_one_aggregator(self) -> None:
+        # Every GLM engine in the file (TP4 r1/r2 and the gpu02 TP2 pair r2a/r2b) carries the full
+        # observability environment under its own replica name; there is one sidecar and one job.
+        rendered = generator.generate((ROOT / generator.SOURCE).read_text())
+        blocks = {
+            "r1": (generator.section(rendered, "x-sg-glm53-flash-common: &sg-glm53-flash-common\n", "\nx-dcgm-common: &dcgm-common\n", "anchor")[2], "    "),
+            "r2": (generator.section(rendered, "  model-sg-glm53-w4afp8-tp4-r2:\n", "\n  # ", "r2")[2], "      "),
+        }
+        for suffix in generator.TP2_REPLICAS:
+            name = f"{generator.TP2_SERVICE_PREFIX}{suffix}"
+            blocks[f"r{suffix}"] = (generator.section(rendered, f"  {name}:\n", "\n  # ", name)[2], "      ")
+        self.assertEqual(sorted(blocks), ["r1", "r1a", "r1b", "r2", "r2a", "r2b"])
+        for replica, (block, indent) in blocks.items():
+            with self.subTest(replica=replica):
+                for entry in ("SGLANG_GHOST_CACHE=1", "SGLANG_GHOST_CACHE_SAMPLE=16", "SGLANG_GHOST_CACHE_KEY_FILE=/ghost/key",
+                              "SGLANG_GHOST_CACHE_SOCKET=/ghost/aggregator.sock", f"SGLANG_GHOST_CACHE_REPLICA={replica}",
+                              "SGLANG_KV_TIER_METRICS=1"):
+                    self.assertEqual(block.count(f"\n{indent}- {entry}\n"), 1, entry)
+        self.assertIn("\n    - ghost:/ghost\n", blocks["r1"][0])
+        self.assertEqual(rendered.count("\n  glm53-ghost-aggregator:\n"), 1)
+        self.assertEqual(rendered.count("- job_name: ghost-aggregator-glm53-ghost-aggregator\n"), 1)
+        self.assertIn(f"    image: {generator.IMAGE}\n    container_name: glm53-ghost-aggregator\n", rendered)
+        self.assertTrue(generator.TP2_VARIANT.endswith("-obs-v1"))
 
 
 class ValidatorContractTest(unittest.TestCase):
@@ -236,10 +262,10 @@ class ValidatorContractTest(unittest.TestCase):
     def test_rejects_image_and_split_capability_drift(self) -> None:
         candidate = self.selected_candidate()
         cases = (
-            (candidate.replace(f"    image: {RELEASED_V3_IMAGE}\n", f"    image: {PREVIOUS_R1_V2_IMAGE}\n", 1), "model-sg-glm53-w4afp8-tp4-r2 image must be"),
-            (candidate.replace(f"  image: {RELEASED_V3_IMAGE}\n", f"  image: {PREVIOUS_R1_V2_IMAGE}\n", 1), "model-sg-glm53-w4afp8-tp4-r1 image must be"),
-            (candidate.replace(f"  image: {RELEASED_V3_IMAGE}\n", f"  image: {V1_IMAGE}\n", 1), "does not run an approved split-capable image"),
-            (candidate.replace(f"  image: {RELEASED_V3_IMAGE}\n", f"  image: {UNKNOWN_IMAGE}\n", 1), "does not run an approved split-capable image"),
+            (candidate.replace(f"    image: {RELEASED_V6_IMAGE}\n", f"    image: {PREVIOUS_R1_V2_IMAGE}\n", 1), "model-sg-glm53-w4afp8-tp4-r2 image must be"),
+            (candidate.replace(f"  image: {RELEASED_V6_IMAGE}\n", f"  image: {PREVIOUS_R1_V2_IMAGE}\n", 1), "model-sg-glm53-w4afp8-tp4-r1 image must be"),
+            (candidate.replace(f"  image: {RELEASED_V6_IMAGE}\n", f"  image: {V1_IMAGE}\n", 1), "does not run an approved split-capable image"),
+            (candidate.replace(f"  image: {RELEASED_V6_IMAGE}\n", f"  image: {UNKNOWN_IMAGE}\n", 1), "does not run an approved split-capable image"),
         )
         self.valid = candidate
         for mutated, message in cases:
@@ -425,7 +451,7 @@ class ValidatorContractTest(unittest.TestCase):
                 ("nearai.otel.gpu_pair:", "nearai.otel.gpu_pairx:", "nearai.otel.gpu_pair must be"),
                 (f'nearai.otel.config_variant: "{TP2_VARIANT}"', 'nearai.otel.config_variant: "x"', "nearai.otel.config_variant must be"),
                 ('nearai.otel.deployment: "glm53-flash-sgl-tp4"', 'nearai.otel.deployment: "other"', "nearai.otel.deployment"),
-                (f"image: {RELEASED_V3_IMAGE}\n", f"image: {PREVIOUS_R1_V2_IMAGE}\n", "image must be"),
+                (f"image: {RELEASED_V6_IMAGE}\n", f"image: {PREVIOUS_R1_V2_IMAGE}\n", "image must be"),
                 ("    container_name: " + name + "\n", "    container_name: " + name + '\n    restart: "no"\n', "must share one runtime configuration outside command and environment"),
             )
             for before, after, message in cases:
@@ -486,6 +512,34 @@ class ValidatorContractTest(unittest.TestCase):
     def test_tp2_canary_services_are_required(self) -> None:
         start, end = tp2_bounds(self.valid, R2B)
         self.assert_fails(self.valid[:start] + self.valid[end:], "is missing services")
+
+    def test_rejects_missing_or_inconsistent_observability(self) -> None:
+        required = "(opt-in observability is required on every replica)"
+        cases = (
+            # SGLANG_GHOST_CACHE dropped from one replica only: r1 (the anchor) or r2 (its own list).
+            ("\n    - SGLANG_GHOST_CACHE=1\n", "\n", 0, f"model-sg-glm53-w4afp8-tp4-r1 must set SGLANG_GHOST_CACHE=1 {required}"),
+            ("\n      - SGLANG_GHOST_CACHE=1\n", "\n", 0, f"model-sg-glm53-w4afp8-tp4-r2 must set SGLANG_GHOST_CACHE=1 {required}"),
+            ("\n      - SGLANG_KV_TIER_METRICS=1\n", "\n", 0, f"model-sg-glm53-w4afp8-tp4-r2 must set SGLANG_KV_TIER_METRICS=1 {required}"),
+            ("SGLANG_GHOST_CACHE_REPLICA=r2\n", "SGLANG_GHOST_CACHE_REPLICA=r1\n", 0, "must use distinct SGLANG_GHOST_CACHE_REPLICA names"),
+            ("SGLANG_GHOST_CACHE_KEY_FILE=/ghost/key\n", "SGLANG_GHOST_CACHE_KEY_FILE=/ghost/r2-key\n", 1,
+             "replicas must share one SGLANG_GHOST_CACHE_KEY_FILE"),
+            # The gpu02 TP2 pair: r2b loses the ghost cache, r2a reuses r2b's name.
+            ("\n      - SGLANG_GHOST_CACHE=1\n", "\n", 2, f"{R2B} must set SGLANG_GHOST_CACHE=1 {required}"),
+            ("SGLANG_GHOST_CACHE_REPLICA=r2a\n", "SGLANG_GHOST_CACHE_REPLICA=r2b\n", 0, "must use distinct SGLANG_GHOST_CACHE_REPLICA names"),
+            (f'nearai.otel.config_variant: "{TP2_VARIANT}"', f'nearai.otel.config_variant: "{TP2_VARIANT.removesuffix("-obs-v1")}"', 1,
+             "nearai.otel.config_variant must be"),
+            ("\n    - ghost:/ghost\n", "\n", 0, "must mount ghost:/ghost"),
+            ('"--port", "9464"', '"--port", "9465"', 0, "glm53-ghost-aggregator must run python3 -m"),
+            (f"    image: {generator.IMAGE}\n    container_name: glm53-ghost-aggregator\n",
+             f"    image: {UNKNOWN_IMAGE}\n    container_name: glm53-ghost-aggregator\n", 0, "glm53-ghost-aggregator image must be the engines' image"),
+            ("      type: tmpfs\n", "      type: none\n", 0, "must declare the ghost volume as tmpfs"),
+            ("['glm53-ghost-aggregator:9464']", "['glm53-ghost-aggregator:9465']", 0, "must scrape glm53-ghost-aggregator:9464"),
+            (f'nearai.otel.config_variant: "{R2_VARIANT}"', f'nearai.otel.config_variant: "{R2_VARIANT.removesuffix("-obs-v1")}"', 0,
+             "nearai.otel.config_variant must be"),
+        )
+        for before, after, index, message in cases:
+            with self.subTest(mutation=message, occurrence=index):
+                self.assert_fails(replace_nth(self.valid, before, index, after), message)
 
     def test_dcgm_validator_covers_the_file(self) -> None:
         needle = "image: nvcr.io/nvidia/k8s/dcgm-exporter@sha256:613ab03c11d442fd960ff515f547e9921537454a712d08160bc8f677f89f1c35"

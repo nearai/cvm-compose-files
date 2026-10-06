@@ -128,11 +128,11 @@ end
 # per-replica argv as the long-context file's tp2-r2a/r2b (W4AFP8 + HiCache, campaign-2 L2 base):
 # prod/GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext.yaml, docs/long-context-glm53-2xtp2-rollout.md.
 # The #330 overlap-off canary ended when the TP4 replica was replaced; overlap stays ON.
-gpu13_variant = 'fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host325g-memopt-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-gpu13-h200-tp2-ep2-eagle-fixed-4-1-5-mr12q4-strict-budget8192'
+gpu13_variant = 'fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host325g-memopt-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-gpu13-h200-tp2-ep2-eagle-fixed-4-1-5-mr12q4-strict-budget8192-obs-v1'
 gpu13_ports = {}
 gpu13_glm.each_key do |name|
   engine = small_services.fetch(name)
-  assert.call(engine['image'] == 'docker.io/nearaidev/sglang@sha256:47aff791090003a37f893e998c44794c410d3f7bdfc7fdd2dfab5eb5592b30bb', "Qualified gpu13 GLM image changed: #{name}")
+  assert.call(engine['image'] == 'docker.io/nearaidev/sglang@sha256:9c6ddd4319c4ab00e351d8650459e68b8830e36ffcc029d67fa5e19d0ac3ed17', "Qualified gpu13 GLM image changed: #{name}")
   command = engine.fetch('command').to_s.split.each_slice(1).to_a.flatten.join(' ')
   assert.call(command.include?('--model-path /root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/snapshots/99f1fa70408c52b007d4fd69e02e5a522422e755'), "gpu13 GLM must serve the qualified W4AFP8 snapshot: #{name}")
   {
@@ -170,8 +170,43 @@ end
 # Both replicas must run the identical argv apart from the rendezvous port (r1b carries a full copy of the command), and the identical environment apart from the budget variable.
 argv_without_port = ->(name) { small_services.fetch(name).fetch('command').to_s.gsub(/--dist-init-addr \S+/, '').split }
 assert.call(argv_without_port.call('model-sg-glm53-w4afp8-tp2-r1a') == argv_without_port.call('model-sg-glm53-w4afp8-tp2-r1b'), 'gpu13 GLM replicas must have identical argv apart from --dist-init-addr')
-env_without_budget = ->(name) { small_services.fetch(name).fetch('environment').reject { |entry| entry.start_with?('SGLANG_HICACHE_RAM_BUDGET=') } }
-assert.call(env_without_budget.call('model-sg-glm53-w4afp8-tp2-r1a') == env_without_budget.call('model-sg-glm53-w4afp8-tp2-r1b'), 'gpu13 GLM replicas must have identical environment apart from the HiCache budget variable')
+# Opt-in observability (docker/sglang-glm53-hicache-w4afp8 ghost-prefix-cache.diff and
+# kv-tier-metrics.diff), required on every GLM-5.3 prod replica: the ghost prefix cache in shared
+# mode (one key and socket on the tmpfs ghost volume, a distinct replica name per engine), the KV
+# tier metrics, and one glm53-ghost-aggregator sidecar per CVM on the engines' image, scraped like
+# the engines. Same values as scripts/glm53_observability.py and scripts/validate_glm53_prod_config.rb.
+ghost_service = 'glm53-ghost-aggregator'
+ghost_socket = '/ghost/aggregator.sock'
+{ 'model-sg-glm53-w4afp8-tp2-r1a' => 'r1a', 'model-sg-glm53-w4afp8-tp2-r1b' => 'r1b' }.each do |name, replica|
+  engine = small_services.fetch(name)
+  env = engine.fetch('environment')
+  [
+    'SGLANG_GHOST_CACHE=1',
+    'SGLANG_GHOST_CACHE_SAMPLE=16',
+    'SGLANG_GHOST_CACHE_KEY_FILE=/ghost/key',
+    "SGLANG_GHOST_CACHE_SOCKET=#{ghost_socket}",
+    "SGLANG_GHOST_CACHE_REPLICA=#{replica}",
+    'SGLANG_KV_TIER_METRICS=1'
+  ].each do |entry|
+    key = entry.split('=', 2).first
+    assert.call(env.count(entry) == 1 && env.count { |e| e.to_s.start_with?("#{key}=") } == 1,
+                "gpu13 GLM #{name} must set #{entry} exactly once (opt-in observability is required on every replica)")
+  end
+  assert.call(engine.fetch('volumes').include?('ghost:/ghost'), "gpu13 GLM #{name} must mount ghost:/ghost")
+end
+ghost = small_services[ghost_service]
+assert.call(!ghost.nil?, "gpu13 must run the #{ghost_service} sidecar")
+assert.call(small_services.keys.count { |name| name.include?('ghost-aggregator') } == 1, "gpu13 must run exactly one #{ghost_service}")
+assert.call(gpu13_glm.keys.all? { |name| ghost['image'] == small_services.fetch(name)['image'] }, "gpu13 #{ghost_service} must run the GLM engines' image")
+ghost_argv = Array(ghost['entrypoint']) + Array(ghost['command'])
+assert.call(ghost_argv == ['python3', '-m', 'sglang.srt.observability.ghost_aggregator', '--socket', ghost_socket, '--port', '9464',
+                           '--sample', '16', '--model-name', 'z-ai/glm-5.3-flash'], "gpu13 #{ghost_service} argv changed")
+assert.call(ghost['volumes'] == ['ghost:/ghost'] && ghost['runtime'] == 'runc' && !ghost.key?('deploy') && !ghost.key?('ports'),
+            "gpu13 #{ghost_service} must mount only ghost:/ghost, run under runc, and claim no GPU or port")
+assert.call(small.dig('volumes', 'ghost', 'driver_opts', 'type') == 'tmpfs', 'gpu13 ghost volume must be tmpfs')
+# Checked after the per-replica observability asserts so a missing variable names its replica.
+env_without_budget = ->(name) { small_services.fetch(name).fetch('environment').reject { |entry| entry.start_with?('SGLANG_HICACHE_RAM_BUDGET=', 'SGLANG_GHOST_CACHE_REPLICA=') } }
+assert.call(env_without_budget.call('model-sg-glm53-w4afp8-tp2-r1a') == env_without_budget.call('model-sg-glm53-w4afp8-tp2-r1b'), 'gpu13 GLM replicas must have identical environment apart from the HiCache budget variable and the ghost-cache replica name')
 # Nothing else in the file may reuse a GLM rendezvous port.
 small_services.each do |name, service|
   next if gpu13_glm.key?(name)
@@ -205,9 +240,11 @@ tls_server_blocks = nginx.scan(/^server \{\n(?:.*\n)*?^\}$/).select { |block| bl
 host_name_blocks = tls_server_blocks.select { |block| block.include?('gpu13.hosts.near.ai') }
 assert.call(host_name_blocks.length == 1 && host_name_blocks.first.include?('proxy_pass http://proxy-glm53:8000;'), 'gpu13.hosts.near.ai must be bound to the GLM vhost only')
 small_jobs = YAML.safe_load(small.fetch('configs').fetch('otelcol_app_config').fetch('content')).dig('receivers', 'prometheus/apps', 'config', 'scrape_configs')
-%w[sglang-model-sg-glm53-w4afp8-tp2-r1a sglang-model-sg-glm53-w4afp8-tp2-r1b dcgm-dcgm-glm53 dcgm-dcgm-shared-gpu3 inference-proxy-proxy-glm53].each do |job|
+%w[sglang-model-sg-glm53-w4afp8-tp2-r1a sglang-model-sg-glm53-w4afp8-tp2-r1b dcgm-dcgm-glm53 dcgm-dcgm-shared-gpu3 inference-proxy-proxy-glm53 ghost-aggregator-glm53-ghost-aggregator].each do |job|
   assert.call(small_jobs.any? { |entry| entry['job_name'] == job }, "gpu13 OTel scrape missing: #{job}")
 end
+ghost_jobs = small_jobs.select { |entry| entry['job_name'] == 'ghost-aggregator-glm53-ghost-aggregator' }
+assert.call(ghost_jobs.length == 1 && ghost_jobs.first.dig('static_configs', 0, 'targets') == ['glm53-ghost-aggregator:9464'], 'gpu13 ghost aggregator scrape job must be one job targeting glm53-ghost-aggregator:9464')
 # Each replica's OTel label, scrape job and log tag must carry the same truthful config_variant,
 # its own instance and gpu_pair, and the proxy and exporter must advertise the same variant.
 { 'model-sg-glm53-w4afp8-tp2-r1a' => ['1a', '4-5'], 'model-sg-glm53-w4afp8-tp2-r1b' => ['1b', '6-7'] }.each do |name, (instance, pair)|

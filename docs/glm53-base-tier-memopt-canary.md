@@ -46,7 +46,8 @@ Candidate edits (everything else is inherited from the control anchor, including
 | `--prefill-decode-interval` | 1 | 2 (exp 25c: +4.7% served, -69% rejections, ITL mean -12%, p95 -8%, TTFT p95 -25% vs pdi 1 at 2.0 conv/s, two rounds) |
 
 Only the candidate replicas carry the new `config_variant`:
-`hicache-w4afp8-qsplit-selective325-mamba330-bf16state-memopt086-mr48-c8192-admission-reserve-v10-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192`
+`hicache-w4afp8-qsplit-selective325-mamba330-bf16state-memopt086-mr48-c8192-admission-reserve-v10-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192-obs-v1`
+(the `-obs-v1` suffix was added with the opt-in ghost cache and KV tier metrics, #337; the canary ran without it)
 (control keeps `...-mamba165-bf16state-c8192-...-eagle-adaptive-5-1-6-...`). It is set on the log tag, the metric label and the scrape job, and `instance` is `3`/`4` vs `1`/`2`. In Grafana, group sglang metrics by `config_variant` (or `instance`) for the host to get candidate vs control directly.
 
 ### Why this shape (same-host split on ONE host)
