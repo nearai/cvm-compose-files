@@ -102,7 +102,9 @@ scalar_strings = lambda do |value|
   end
 end
 assert.call(scalar_strings.call(small).none? { |value| value.match?(/dsv4|deepseek|ds4f/i) }, 'gpu13 rendered configuration must not contain retired DS4F identities')
-assert.call(small_ids.call('model-sg-glm53-fp8-tp4') == %w[4 5 6 7], 'gpu13 GLM must use GPUs 4-7')
+gpu13_glm = { 'model-sg-glm53-w4afp8-tp2-r13a' => %w[4 5], 'model-sg-glm53-w4afp8-tp2-r13b' => %w[6 7] }
+gpu13_glm.each { |name, devices| assert.call(small_ids.call(name) == devices, "gpu13 GLM replica #{name} must use GPUs #{devices.join(',')}") }
+assert.call(!small_services.key?('model-sg-glm53-fp8-tp4'), 'gpu13 must no longer run the TP4 GLM replica (replaced by two TP2 replicas)')
 assert.call(small_ids.call('dcgm-glm53') == %w[4 5 6 7], 'gpu13 GLM exporter must use GPUs 4-7')
 shared_gpu3 = %w[
   model-sg-flux2-klein-4b-tp1
@@ -120,54 +122,60 @@ small_services.each do |name, service|
   device_ids = service.dig('deploy', 'resources', 'reservations', 'devices')&.flat_map { |device| device.fetch('device_ids') } || []
   next unless device_ids.any? { |id| %w[4 5 6 7].include?(id) }
 
-  assert.call(%w[model-sg-glm53-fp8-tp4 dcgm-glm53].include?(name), "Unexpected gpu13 GPU 4-7 claim: #{name}")
+  assert.call((gpu13_glm.keys + %w[dcgm-glm53]).include?(name), "Unexpected gpu13 GPU 4-7 claim: #{name}")
 end
-# gpu13's GLM replica is the OpenRouter lane's long-context backend and mirrors
-# gpu02 long r2's qualified W4AFP8+HiCache arm (campaign-2 L2):
-# prod/GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext.yaml, model-sg-glm53-w4afp8-tp4-r2.
-small_engine = small_services.fetch('model-sg-glm53-fp8-tp4')
-assert.call(small_engine['image'] == 'docker.io/nearaidev/sglang@sha256:47aff791090003a37f893e998c44794c410d3f7bdfc7fdd2dfab5eb5592b30bb', 'Qualified gpu13 GLM image changed')
-small_engine_command = small_engine.fetch('command')
-assert.call(small_engine_command.include?('--model-path /root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/snapshots/99f1fa70408c52b007d4fd69e02e5a522422e755'), 'gpu13 GLM must serve the qualified W4AFP8 snapshot')
-{
-  '--tp-size' => '4',
-  '--ep-size' => '4',
-  '--max-running-requests' => '32',
-  '--max-queued-requests' => '8',
-  '--cuda-graph-max-bs-decode' => '32'
-}.each do |flag, value|
-  exact_flag = /#{Regexp.escape(flag)} #{Regexp.escape(value)}\b/
-  assert.call(small_engine_command.match?(exact_flag), "gpu13 GLM runtime flag changed: #{flag} #{value}")
+# gpu13's GLM is two memory-optimized TP2/EP2 replicas (GPUs 4,5 and 6,7) with the same
+# per-replica argv as the long-context file's tp2-r2a/r2b (W4AFP8 + HiCache, campaign-2 L2 base):
+# prod/GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext.yaml, docs/long-context-glm53-2xtp2-rollout.md.
+# The #330 overlap-off canary ended when the TP4 replica was replaced; overlap stays ON.
+gpu13_variant = 'fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host325g-memopt-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-gpu13-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192'
+gpu13_ports = {}
+gpu13_glm.each_key do |name|
+  engine = small_services.fetch(name)
+  assert.call(engine['image'] == 'docker.io/nearaidev/sglang@sha256:47aff791090003a37f893e998c44794c410d3f7bdfc7fdd2dfab5eb5592b30bb', "Qualified gpu13 GLM image changed: #{name}")
+  command = engine.fetch('command').to_s.split.each_slice(1).to_a.flatten.join(' ')
+  assert.call(command.include?('--model-path /root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/snapshots/99f1fa70408c52b007d4fd69e02e5a522422e755'), "gpu13 GLM must serve the qualified W4AFP8 snapshot: #{name}")
+  {
+    '--tp-size' => '2', '--ep-size' => '2', '--mem-fraction-static' => '0.86',
+    '--max-running-requests' => '24', '--max-queued-requests' => '8',
+    '--chunked-prefill-size' => '8192', '--max-prefill-tokens' => '32768', '--prefill-decode-interval' => '2',
+    '--cuda-graph-max-bs-decode' => '32', '--speculative-num-steps' => '4', '--speculative-eagle-topk' => '1',
+    '--speculative-num-draft-tokens' => '5', '--max-mamba-cache-size' => '330', '--mamba-ssm-dtype' => 'bfloat16'
+  }.each do |flag, value|
+    assert.call(command.match?(/(^| )#{Regexp.escape(flag)} #{Regexp.escape(value)}( |$)/), "gpu13 GLM runtime flag changed on #{name}: #{flag} #{value}")
+  end
+  # Overlap scheduling is ON and EAGLE is the fixed 4/1/5 arm: neither flag may return.
+  assert.call(!command.include?('--disable-overlap-schedule'), "gpu13 GLM #{name} must not disable the overlap scheduler (the #330 canary ended)")
+  assert.call(!command.include?('--speculative-adaptive'), "gpu13 GLM #{name} must use fixed EAGLE 4/1/5, not adaptive")
+  assert.call(command.scan('--chunked-prefill-size').length == 1, "gpu13 GLM #{name} must set the chunk exactly once")
+  [
+    '--enable-hierarchical-cache', '--hicache-write-policy write_through',
+    '--hicache-io-backend direct', '--hicache-mem-layout page_first_direct'
+  ].each { |flag| assert.call(command.include?(flag), "gpu13 GLM HiCache contract changed on #{name}: #{flag}") }
+  port = command[/--dist-init-addr (\S+)/, 1]
+  assert.call(port && !gpu13_ports.key?(port), "gpu13 GLM #{name} needs a unique --dist-init-addr, got #{port.inspect}")
+  gpu13_ports[port] = name
+  env = engine.fetch('environment')
+  assert.call(env.count('SGLANG_DSA_INDEXER_QSPLIT=1') == 1, "gpu13 GLM #{name} must enable DSA indexer query split exactly once")
+  [
+    'SGLANG_HICACHE_RAM_BUDGET=${GLM53_HICACHE_RAM_BUDGET:-325GiB}',
+    'SGLANG_HICACHE_CUDA_HOST_MEMORY=${GLM53_HICACHE_CUDA_HOST_MEMORY:-1}'
+  ].each { |entry| assert.call(env.include?(entry), "gpu13 GLM HiCache host-memory contract changed on #{name}: #{entry}") }
+  # The admission reserve crashed gpu02's long r2 with a Prefill OOM on 2026-09-18 and is unsafe
+  # on the long tier; every long arm runs without it.
+  %w[SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE SGLANG_ADMISSION_RESERVE_MAX_FRACTION].each do |var|
+    assert.call(env.none? { |entry| entry.to_s.start_with?("#{var}=") }, "gpu13 GLM #{name} must not set #{var}: the admission reserve is unsafe on the long tier")
+  end
 end
-# Overlap-scheduler-off canary: CC makes host copies synchronous, so overlap buys little.
-assert.call(small_engine_command.scan('--disable-overlap-schedule').length == 1, 'gpu13 GLM must run the overlap-off canary flag exactly once')
-# HiCache is what buys this replica its long-context headroom; only the qualified
-# W4AFP8+HiCache image above may run it in a TEE guest.
-[
-  '--enable-hierarchical-cache',
-  '--hicache-write-policy write_through',
-  '--hicache-io-backend direct',
-  '--hicache-mem-layout page_first_direct'
-].each do |flag|
-  assert.call(small_engine_command.include?(flag), "gpu13 GLM HiCache contract changed: #{flag}")
-end
-small_engine_env = small_engine.fetch('environment')
-assert.call(small_engine_env.count('SGLANG_DSA_INDEXER_QSPLIT=1') == 1, 'gpu13 GLM must enable DSA indexer query split exactly once')
-[
-  'SGLANG_HICACHE_RAM_BUDGET=${GLM53_HICACHE_RAM_BUDGET:-80%}',
-  'SGLANG_HICACHE_CUDA_HOST_MEMORY=${GLM53_HICACHE_CUDA_HOST_MEMORY:-1}'
-].each do |entry|
-  assert.call(small_engine_env.include?(entry), "gpu13 GLM HiCache host-memory contract changed: #{entry}")
-end
-# The admission reserve crashed gpu02's long r2 with a Prefill OOM on 2026-09-18;
-# it is unsafe on the long tier until the pool-clamp guard is confirmed for gpu13,
-# and both gpu02 long arms run without it.
-%w[SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE SGLANG_ADMISSION_RESERVE_MAX_FRACTION].each do |var|
-  assert.call(small_engine_env.none? { |entry| entry.to_s.start_with?("#{var}=") }, "gpu13 GLM must not set #{var}: the admission reserve is unsafe on the long tier")
+# Nothing else in the file may reuse a GLM rendezvous port.
+small_services.each do |name, service|
+  next if gpu13_glm.key?(name)
+
+  assert.call(!service.fetch('command', '').to_s.match?(/--dist-init-addr 127\.0\.0\.1:2951\d/), "gpu13 #{name} must not reuse a GLM dist-init port")
 end
 small_proxy = small_services.fetch('proxy-glm53')
 assert.call(small_proxy['image'] == 'nearaidev/vllm-proxy-rs@sha256:d61357da39918a57126864a451eaf054f06a6989c03fe9a1666f7e6374ba6907', 'Qualified gpu13 GLM proxy image changed')
-assert.call(small_proxy.fetch('environment').include?('VLLM_BACKEND_URLS=http://model-sg-glm53-fp8-tp4:8000'), 'gpu13 GLM proxy must have one backend')
+assert.call(small_proxy.fetch('environment').include?('VLLM_BACKEND_URLS=http://model-sg-glm53-w4afp8-tp2-r13a:8000,http://model-sg-glm53-w4afp8-tp2-r13b:8000'), 'gpu13 GLM proxy must pool both TP2 replicas')
 assert.call(small_proxy.fetch('environment').include?('VLLM_BACKEND_CONVERSATION_AFFINITY=1'), 'gpu13 GLM affinity contract changed')
 dcgm_image = 'nvcr.io/nvidia/k8s/dcgm-exporter@sha256:ed594cf53fe6942e84b07b0740cdcbb249fa4b39cb21feeebf93881ae51f0b5e'
 assert.call(small_services.fetch('dcgm-glm53')['image'] == dcgm_image, 'gpu13 GLM exporter image must be pinned')
@@ -192,15 +200,29 @@ tls_server_blocks = nginx.scan(/^server \{\n(?:.*\n)*?^\}$/).select { |block| bl
 host_name_blocks = tls_server_blocks.select { |block| block.include?('gpu13.hosts.near.ai') }
 assert.call(host_name_blocks.length == 1 && host_name_blocks.first.include?('proxy_pass http://proxy-glm53:8000;'), 'gpu13.hosts.near.ai must be bound to the GLM vhost only')
 small_jobs = YAML.safe_load(small.fetch('configs').fetch('otelcol_app_config').fetch('content')).dig('receivers', 'prometheus/apps', 'config', 'scrape_configs')
-%w[sglang-model-sg-glm53-fp8-tp4 dcgm-dcgm-glm53 dcgm-dcgm-shared-gpu3 inference-proxy-proxy-glm53].each do |job|
+%w[sglang-model-sg-glm53-w4afp8-tp2-r13a sglang-model-sg-glm53-w4afp8-tp2-r13b dcgm-dcgm-glm53 dcgm-dcgm-shared-gpu3 inference-proxy-proxy-glm53].each do |job|
   assert.call(small_jobs.any? { |entry| entry['job_name'] == job }, "gpu13 OTel scrape missing: #{job}")
 end
-# The overlap-off canary flag and its telemetry marker must move together, so a
-# rollback that drops the flag cannot leave gpu13 labelled overlap-off.
-engine_labels = small_engine.fetch('labels')
-engine_log_variants = JSON.parse(engine_labels.fetch('com.datadoghq.ad.logs')).flat_map { |entry| Array(entry['tags']) }.select { |tag| tag.start_with?('config_variant:') }
-engine_scrape = small_jobs.find { |entry| entry['job_name'] == 'sglang-model-sg-glm53-fp8-tp4' }
-engine_variants = [engine_labels['nearai.otel.config_variant'], engine_scrape&.dig('static_configs', 0, 'labels', 'config_variant'), *engine_log_variants]
-assert.call(engine_variants.compact.length == 3 && engine_variants.all? { |variant| variant.include?('overlap-off') }, "gpu13 GLM config_variant must advertise overlap-off on the OTel label, scrape job and log tag while the flag is set, got #{engine_variants.inspect}")
+# Each replica's OTel label, scrape job and log tag must carry the same truthful config_variant,
+# its own instance and gpu_pair, and the proxy and exporter must advertise the same variant.
+{ 'model-sg-glm53-w4afp8-tp2-r13a' => ['13a', '4-5'], 'model-sg-glm53-w4afp8-tp2-r13b' => ['13b', '6-7'] }.each do |name, (instance, pair)|
+  labels = small_services.fetch(name).fetch('labels')
+  log_tags = JSON.parse(labels.fetch('com.datadoghq.ad.logs')).flat_map { |entry| Array(entry['tags']) }
+  scrape = small_jobs.find { |entry| entry['job_name'] == "sglang-#{name}" }
+  scrape_labels = scrape.dig('static_configs', 0, 'labels')
+  assert.call(scrape.dig('static_configs', 0, 'targets') == ["#{name}:8000"], "gpu13 #{name} scrape target changed")
+  variants = [labels['nearai.otel.config_variant'], scrape_labels['config_variant'], *log_tags.select { |tag| tag.start_with?('config_variant:') }.map { |tag| tag.sub('config_variant:', '') }]
+  assert.call(variants.length == 3 && variants.all? { |variant| variant == gpu13_variant }, "gpu13 #{name} config_variant must be the TP2 variant on the label, scrape job and log tag, got #{variants.inspect}")
+  assert.call(labels['nearai.otel.instance'] == instance && scrape_labels['instance'] == instance && log_tags.include?("instance:#{instance}"), "gpu13 #{name} instance must be #{instance}")
+  assert.call(labels['nearai.otel.gpu_pair'] == pair && scrape_labels['gpu_pair'] == pair && log_tags.include?("gpu_pair:#{pair}"), "gpu13 #{name} gpu_pair must be #{pair}")
+  assert.call(labels['nearai.otel.max_running_requests'] == '24' && scrape_labels['max_running_requests'] == '24', "gpu13 #{name} max_running_requests label must be 24")
+end
+%w[proxy-glm53 dcgm-glm53].each do |name|
+  assert.call(small_services.fetch(name).fetch('labels')['nearai.otel.config_variant'] == gpu13_variant, "gpu13 #{name} config_variant must match the TP2 engines")
+end
+%w[inference-proxy-proxy-glm53 dcgm-dcgm-glm53].each do |job|
+  entry = small_jobs.find { |candidate| candidate['job_name'] == job }
+  assert.call(entry.dig('static_configs', 0, 'labels', 'config_variant') == gpu13_variant, "gpu13 scrape job #{job} config_variant must match the TP2 engines")
+end
 
 puts 'DS4F migration and gpu13 GLM replacement allocation, telemetry and registrar contracts OK'

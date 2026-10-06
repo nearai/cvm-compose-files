@@ -541,7 +541,7 @@ class ProxyPoolRenderTest(unittest.TestCase):
         }
         seen = {(host, stage) for host, stages in generator.HOST_POOLS.items() for stage in stages}
         self.assertEqual(seen, set(expected))
-        self.assertNotIn("gpu13", generator.HOST_POOLS)  # gpu13 deploys small-models.yaml, not this file
+        self.assertNotIn("gpu13", generator.HOST_POOLS)  # gpu13 deploys small-models.yaml with a fixed pool, not this file
         for (host, stage), urls in expected.items():
             with self.subTest(host=host, stage=stage):
                 value = generator.HOST_POOLS[host][stage]
