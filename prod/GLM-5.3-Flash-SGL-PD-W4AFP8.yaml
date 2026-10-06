@@ -5,12 +5,12 @@
 # NOT A SERVING CONFIG: no registrar, nginx or inference proxy, so the host never takes
 # production traffic while this file runs. Load reaches it only through glm53-pd-relay
 # (TLS, Bearer ${PROXY_TOKEN}, same scheme as glm53-soak-relay):
-#   :8008 -> pd-router-3p1d   :8009 -> pd-router-1p3d   :8010 -> pd-router-2p2d
-#   :8011 -> /m/<engine>/metrics
+#   :8008/:8009/:8010 -> PD router 1/2/3 of the running layout (one router per prefill engine;
+#   put a sticky-by-conversation front over them)   :8011 -> /m/<engine>/metrics
 # Pick the layout with the compose/up service list (each GPU pair runs at most one engine):
-#   3P:1D  model-sg-glm53-w4afp8-tp2-pf-r1,-pf-r2,-pf-r3, -dc-r4, pd-router-3p1d
-#   1P:3D  model-sg-glm53-w4afp8-tp2-pf-r1, -dc-r2,-dc-r3,-dc-r4, pd-router-1p3d
-#   2P:2D  model-sg-glm53-w4afp8-tp2-pf-r1,-pf-r3, -dc-r2,-dc-r4, pd-router-2p2d
+#   3P:1D  model-sg-glm53-w4afp8-tp2-pf-r1,-pf-r2,-pf-r3, -dc-r4, pd-router-3p1d-1,-2,-3
+#   1P:3D  model-sg-glm53-w4afp8-tp2-pf-r1, -dc-r2,-dc-r3,-dc-r4, pd-router-1p3d-1
+#   2P:2D  model-sg-glm53-w4afp8-tp2-pf-r1,-pf-r3, -dc-r2,-dc-r4, pd-router-2p2d-1,-2
 #   plus glm53-pd-relay, otelcol-contrib, dcgm-glm53 (model-downloader runs first).
 #
 # What makes P/D work (lab, gpu31/gpu32, 2026-10-03/04; docs/glm53-pd-qualification.md):
@@ -507,35 +507,86 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
-  pd-router-3p1d:
+  pd-router-3p1d-1:
     image: docker.io/lmsysorg/sglang@sha256:b1259f3ea3275f66237c498ea388919729018bc9f01c3d638391e06e2cf3f469
-    container_name: pd-router-3p1d
+    container_name: pd-router-3p1d-1
     runtime: runc
     entrypoint: ["python3", "-m", "sglang_router.launch_router"]
-    command: ["--pd-disaggregation", "--prefill", "http://model-sg-glm53-w4afp8-tp2-pf-r1:8000", "8998", "--prefill", "http://model-sg-glm53-w4afp8-tp2-pf-r2:8000", "8999", "--prefill", "http://model-sg-glm53-w4afp8-tp2-pf-r3:8000", "9000", "--decode", "http://model-sg-glm53-w4afp8-tp2-dc-r4:8000", "--prefill-policy", "power_of_two", "--decode-policy", "round_robin", "--host", "0.0.0.0", "--port", "8000", "--prometheus-port", "29001", "--request-timeout-secs", "3600"]
+    command: ["--pd-disaggregation", "--prefill", "http://model-sg-glm53-w4afp8-tp2-pf-r1:8000", "8998", "--decode", "http://model-sg-glm53-w4afp8-tp2-dc-r4:8000", "--prefill-policy", "round_robin", "--decode-policy", "round_robin", "--host", "0.0.0.0", "--port", "8000", "--prometheus-port", "29001", "--request-timeout-secs", "3600"]
     restart: unless-stopped
+    networks:
+      default:
+        aliases: [pd-front-1]
     logging: *logging-conf
     labels:
       com.datadoghq.ad.logs: '[{"source":"sglang-router","service":"sglang-router","tags":["model:z-ai/glm-5.3-flash","deployment:glm53-flash-sgl-pd-qual","layout:3p1d","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
 
-  pd-router-1p3d:
+  pd-router-3p1d-2:
     image: docker.io/lmsysorg/sglang@sha256:b1259f3ea3275f66237c498ea388919729018bc9f01c3d638391e06e2cf3f469
-    container_name: pd-router-1p3d
+    container_name: pd-router-3p1d-2
     runtime: runc
     entrypoint: ["python3", "-m", "sglang_router.launch_router"]
-    command: ["--pd-disaggregation", "--prefill", "http://model-sg-glm53-w4afp8-tp2-pf-r1:8000", "8998", "--decode", "http://model-sg-glm53-w4afp8-tp2-dc-r2:8000", "--decode", "http://model-sg-glm53-w4afp8-tp2-dc-r3:8000", "--decode", "http://model-sg-glm53-w4afp8-tp2-dc-r4:8000", "--prefill-policy", "round_robin", "--decode-policy", "power_of_two", "--host", "0.0.0.0", "--port", "8000", "--prometheus-port", "29002", "--request-timeout-secs", "3600"]
+    command: ["--pd-disaggregation", "--prefill", "http://model-sg-glm53-w4afp8-tp2-pf-r2:8000", "8999", "--decode", "http://model-sg-glm53-w4afp8-tp2-dc-r4:8000", "--prefill-policy", "round_robin", "--decode-policy", "round_robin", "--host", "0.0.0.0", "--port", "8000", "--prometheus-port", "29002", "--request-timeout-secs", "3600"]
     restart: unless-stopped
+    networks:
+      default:
+        aliases: [pd-front-2]
+    logging: *logging-conf
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"sglang-router","service":"sglang-router","tags":["model:z-ai/glm-5.3-flash","deployment:glm53-flash-sgl-pd-qual","layout:3p1d","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+
+  pd-router-3p1d-3:
+    image: docker.io/lmsysorg/sglang@sha256:b1259f3ea3275f66237c498ea388919729018bc9f01c3d638391e06e2cf3f469
+    container_name: pd-router-3p1d-3
+    runtime: runc
+    entrypoint: ["python3", "-m", "sglang_router.launch_router"]
+    command: ["--pd-disaggregation", "--prefill", "http://model-sg-glm53-w4afp8-tp2-pf-r3:8000", "9000", "--decode", "http://model-sg-glm53-w4afp8-tp2-dc-r4:8000", "--prefill-policy", "round_robin", "--decode-policy", "round_robin", "--host", "0.0.0.0", "--port", "8000", "--prometheus-port", "29003", "--request-timeout-secs", "3600"]
+    restart: unless-stopped
+    networks:
+      default:
+        aliases: [pd-front-3]
+    logging: *logging-conf
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"sglang-router","service":"sglang-router","tags":["model:z-ai/glm-5.3-flash","deployment:glm53-flash-sgl-pd-qual","layout:3p1d","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+
+  pd-router-1p3d-1:
+    image: docker.io/lmsysorg/sglang@sha256:b1259f3ea3275f66237c498ea388919729018bc9f01c3d638391e06e2cf3f469
+    container_name: pd-router-1p3d-1
+    runtime: runc
+    entrypoint: ["python3", "-m", "sglang_router.launch_router"]
+    command: ["--pd-disaggregation", "--prefill", "http://model-sg-glm53-w4afp8-tp2-pf-r1:8000", "8998", "--decode", "http://model-sg-glm53-w4afp8-tp2-dc-r2:8000", "--decode", "http://model-sg-glm53-w4afp8-tp2-dc-r3:8000", "--decode", "http://model-sg-glm53-w4afp8-tp2-dc-r4:8000", "--prefill-policy", "round_robin", "--decode-policy", "power_of_two", "--host", "0.0.0.0", "--port", "8000", "--prometheus-port", "29004", "--request-timeout-secs", "3600"]
+    restart: unless-stopped
+    networks:
+      default:
+        aliases: [pd-front-1]
     logging: *logging-conf
     labels:
       com.datadoghq.ad.logs: '[{"source":"sglang-router","service":"sglang-router","tags":["model:z-ai/glm-5.3-flash","deployment:glm53-flash-sgl-pd-qual","layout:1p3d","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
 
-  pd-router-2p2d:
+  pd-router-2p2d-1:
     image: docker.io/lmsysorg/sglang@sha256:b1259f3ea3275f66237c498ea388919729018bc9f01c3d638391e06e2cf3f469
-    container_name: pd-router-2p2d
+    container_name: pd-router-2p2d-1
     runtime: runc
     entrypoint: ["python3", "-m", "sglang_router.launch_router"]
-    command: ["--pd-disaggregation", "--prefill", "http://model-sg-glm53-w4afp8-tp2-pf-r1:8000", "8998", "--prefill", "http://model-sg-glm53-w4afp8-tp2-pf-r3:8000", "9000", "--decode", "http://model-sg-glm53-w4afp8-tp2-dc-r2:8000", "--decode", "http://model-sg-glm53-w4afp8-tp2-dc-r4:8000", "--prefill-policy", "power_of_two", "--decode-policy", "power_of_two", "--host", "0.0.0.0", "--port", "8000", "--prometheus-port", "29003", "--request-timeout-secs", "3600"]
+    command: ["--pd-disaggregation", "--prefill", "http://model-sg-glm53-w4afp8-tp2-pf-r1:8000", "8998", "--decode", "http://model-sg-glm53-w4afp8-tp2-dc-r2:8000", "--decode", "http://model-sg-glm53-w4afp8-tp2-dc-r4:8000", "--prefill-policy", "round_robin", "--decode-policy", "power_of_two", "--host", "0.0.0.0", "--port", "8000", "--prometheus-port", "29005", "--request-timeout-secs", "3600"]
     restart: unless-stopped
+    networks:
+      default:
+        aliases: [pd-front-1]
+    logging: *logging-conf
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"sglang-router","service":"sglang-router","tags":["model:z-ai/glm-5.3-flash","deployment:glm53-flash-sgl-pd-qual","layout:2p2d","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+
+  pd-router-2p2d-2:
+    image: docker.io/lmsysorg/sglang@sha256:b1259f3ea3275f66237c498ea388919729018bc9f01c3d638391e06e2cf3f469
+    container_name: pd-router-2p2d-2
+    runtime: runc
+    entrypoint: ["python3", "-m", "sglang_router.launch_router"]
+    command: ["--pd-disaggregation", "--prefill", "http://model-sg-glm53-w4afp8-tp2-pf-r3:8000", "9000", "--decode", "http://model-sg-glm53-w4afp8-tp2-dc-r2:8000", "--decode", "http://model-sg-glm53-w4afp8-tp2-dc-r4:8000", "--prefill-policy", "round_robin", "--decode-policy", "power_of_two", "--host", "0.0.0.0", "--port", "8000", "--prometheus-port", "29006", "--request-timeout-secs", "3600"]
+    restart: unless-stopped
+    networks:
+      default:
+        aliases: [pd-front-2]
     logging: *logging-conf
     labels:
       com.datadoghq.ad.logs: '[{"source":"sglang-router","service":"sglang-router","tags":["model:z-ai/glm-5.3-flash","deployment:glm53-flash-sgl-pd-qual","layout:2p2d","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
@@ -677,7 +728,7 @@ configs:
         listen 8008 ssl;
         server_name _;
         if ($$pd_authorized = 0) { return 401; }
-        set $$backend http://pd-router-3p1d:8000;
+        set $$backend http://pd-front-1:8000;
         location ~ ^/(health|v1/models|v1/chat/completions|v1/completions)$$ {
           limit_except GET POST { deny all; }
           proxy_pass $$backend$$request_uri;
@@ -688,7 +739,7 @@ configs:
         listen 8009 ssl;
         server_name _;
         if ($$pd_authorized = 0) { return 401; }
-        set $$backend http://pd-router-1p3d:8000;
+        set $$backend http://pd-front-2:8000;
         location ~ ^/(health|v1/models|v1/chat/completions|v1/completions)$$ {
           limit_except GET POST { deny all; }
           proxy_pass $$backend$$request_uri;
@@ -699,7 +750,7 @@ configs:
         listen 8010 ssl;
         server_name _;
         if ($$pd_authorized = 0) { return 401; }
-        set $$backend http://pd-router-2p2d:8000;
+        set $$backend http://pd-front-3:8000;
         location ~ ^/(health|v1/models|v1/chat/completions|v1/completions)$$ {
           limit_except GET POST { deny all; }
           proxy_pass $$backend$$request_uri;

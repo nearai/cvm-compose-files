@@ -66,9 +66,11 @@ Same orphan rule as `docs/glm53-tp2x4-base-canary.md`: compose-manager runs `up 
 
 | Layout | Services |
 |---|---|
-| 3P:1D | `pf-r1`, `pf-r2`, `pf-r3`, `dc-r4`, `pd-router-3p1d` (relay :8008) |
-| 1P:3D | `pf-r1`, `dc-r2`, `dc-r3`, `dc-r4`, `pd-router-1p3d` (relay :8009) |
-| 2P:2D | `pf-r1`, `pf-r3`, `dc-r2`, `dc-r4`, `pd-router-2p2d` (relay :8010) |
+| 3P:1D | `pf-r1`, `pf-r2`, `pf-r3`, `dc-r4`, `pd-router-3p1d-1`, `-2`, `-3` |
+| 1P:3D | `pf-r1`, `dc-r2`, `dc-r3`, `dc-r4`, `pd-router-1p3d-1` |
+| 2P:2D | `pf-r1`, `pf-r3`, `dc-r2`, `dc-r4`, `pd-router-2p2d-1`, `-2` |
+
+   - There is one PD router per prefill engine, and all of them share the layout's decodes. The k-th router answers on relay port 8008, 8009 or 8010 (network alias `pd-front-k`). Run a sticky-by-conversation front over those ports: `harness/router.py --policy leastconn --affinity`, the same front the colocated baseline uses. A single `sglang_router` over several prefills spreads one conversation's turns across them, so a cached 189K-token turn recomputes in full (25–35 s on gpu03).
 
    - Switch layouts with a scoped `compose/down` of the engines that leave. A GPU pair must never run two engines at once.
    - Engine metrics are at `:8011/m/<engine>/metrics` and in Grafana under `deployment="glm53-flash-sgl-pd-qual"`.

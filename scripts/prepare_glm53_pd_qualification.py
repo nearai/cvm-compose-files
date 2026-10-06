@@ -36,12 +36,21 @@ DEPLOYMENT: Final = "glm53-flash-sgl-pd-qual"
 SOURCE_DEPLOYMENT: Final = "glm53-flash-sgl-tp2x4"
 SOURCE_PREFIX: Final = "model-sg-glm53-w4afp8-tp2-r"
 PAIRS: Final = {1: 0, 2: 2, 3: 4, 4: 6}  # replica slot -> first GPU of its NVLink pair
+# One PD router per prefill engine, all sharing the layout's decodes. A sglang_router with several
+# prefills spreads turns of one conversation across them (no prefix affinity: a cached 189K turn
+# recomputed in full, gpu03 2026-10-06), so prefix affinity lives in a sticky front on the load
+# host, the same one the colocated baseline uses. Router k of the running layout answers on the
+# network alias pd-front-k, which the relay serves on port FRONT_PORTS[k-1].
 ROUTERS: Final = {
-    # name: (prefill slots, decode slots, relay port, prometheus port)
-    "pd-router-3p1d": ((1, 2, 3), (4,), 8008, 29001),
-    "pd-router-1p3d": ((1,), (2, 3, 4), 8009, 29002),
-    "pd-router-2p2d": ((1, 3), (2, 4), 8010, 29003),
+    # name: (prefill slot, decode slots, front index, prometheus port)
+    "pd-router-3p1d-1": (1, (4,), 1, 29001),
+    "pd-router-3p1d-2": (2, (4,), 2, 29002),
+    "pd-router-3p1d-3": (3, (4,), 3, 29003),
+    "pd-router-1p3d-1": (1, (2, 3, 4), 1, 29004),
+    "pd-router-2p2d-1": (1, (2, 4), 1, 29005),
+    "pd-router-2p2d-2": (3, (2, 4), 2, 29006),
 }
+FRONT_PORTS: Final = (8008, 8009, 8010)
 METRICS_PORT: Final = 8011  # relay: /m/<engine>/metrics -> that engine's /metrics
 
 COMMON_ARGS: Final = (
@@ -95,12 +104,12 @@ HEADER: Final = """\
 # NOT A SERVING CONFIG: no registrar, nginx or inference proxy, so the host never takes
 # production traffic while this file runs. Load reaches it only through glm53-pd-relay
 # (TLS, Bearer ${PROXY_TOKEN}, same scheme as glm53-soak-relay):
-#   :8008 -> pd-router-3p1d   :8009 -> pd-router-1p3d   :8010 -> pd-router-2p2d
-#   :8011 -> /m/<engine>/metrics
+#   :8008/:8009/:8010 -> PD router 1/2/3 of the running layout (one router per prefill engine;
+#   put a sticky-by-conversation front over them)   :8011 -> /m/<engine>/metrics
 # Pick the layout with the compose/up service list (each GPU pair runs at most one engine):
-#   3P:1D  model-sg-glm53-w4afp8-tp2-pf-r1,-pf-r2,-pf-r3, -dc-r4, pd-router-3p1d
-#   1P:3D  model-sg-glm53-w4afp8-tp2-pf-r1, -dc-r2,-dc-r3,-dc-r4, pd-router-1p3d
-#   2P:2D  model-sg-glm53-w4afp8-tp2-pf-r1,-pf-r3, -dc-r2,-dc-r4, pd-router-2p2d
+#   3P:1D  model-sg-glm53-w4afp8-tp2-pf-r1,-pf-r2,-pf-r3, -dc-r4, pd-router-3p1d-1,-2,-3
+#   1P:3D  model-sg-glm53-w4afp8-tp2-pf-r1, -dc-r2,-dc-r3,-dc-r4, pd-router-1p3d-1
+#   2P:2D  model-sg-glm53-w4afp8-tp2-pf-r1,-pf-r3, -dc-r2,-dc-r4, pd-router-2p2d-1,-2
 #   plus glm53-pd-relay, otelcol-contrib, dcgm-glm53 (model-downloader runs first).
 #
 # What makes P/D work (lab, gpu31/gpu32, 2026-10-03/04; docs/glm53-pd-qualification.md):
@@ -186,11 +195,11 @@ def engine_service(role: str, slot: int) -> str:
 
 
 def router_service(name: str) -> str:
-    pf, dc, _port, prom = ROUTERS[name]
-    prefill = " ".join(f"--prefill http://model-sg-glm53-w4afp8-tp2-pf-r{s}:8000 {8997 + s}" for s in pf)
+    pf, dc, front, prom = ROUTERS[name]
+    prefill = f"--prefill http://model-sg-glm53-w4afp8-tp2-pf-r{pf}:8000 {8997 + pf}"
     decode = " ".join(f"--decode http://model-sg-glm53-w4afp8-tp2-dc-r{s}:8000" for s in dc)
     # sglang_router refuses power_of_two with a single worker on a side.
-    ppol = "power_of_two" if len(pf) > 1 else "round_robin"
+    ppol = "round_robin"
     dpol = "power_of_two" if len(dc) > 1 else "round_robin"
     return f"""  {name}:
     image: {IMAGE}
@@ -199,21 +208,24 @@ def router_service(name: str) -> str:
     entrypoint: ["python3", "-m", "sglang_router.launch_router"]
     command: ["--pd-disaggregation", {", ".join(f'"{t}"' for t in f"{prefill} {decode}".split())}, "--prefill-policy", "{ppol}", "--decode-policy", "{dpol}", "--host", "0.0.0.0", "--port", "8000", "--prometheus-port", "{prom}", "--request-timeout-secs", "3600"]
     restart: unless-stopped
+    networks:
+      default:
+        aliases: [pd-front-{front}]
     logging: *logging-conf
     labels:
-      com.datadoghq.ad.logs: '[{{"source":"sglang-router","service":"sglang-router","tags":["model:z-ai/glm-5.3-flash","deployment:{DEPLOYMENT}","layout:{name[10:]}","env:${{ENV}}","host:${{CVM_HOST}}","ip:${{HOST_IP}}"]}}]'
+      com.datadoghq.ad.logs: '[{{"source":"sglang-router","service":"sglang-router","tags":["model:z-ai/glm-5.3-flash","deployment:{DEPLOYMENT}","layout:{name[10:14]}","env:${{ENV}}","host:${{CVM_HOST}}","ip:${{HOST_IP}}"]}}]'
 
 """
 
 
 def relay_conf() -> str:
     servers = []
-    for name, (_pf, _dc, port, _prom) in ROUTERS.items():
+    for k, port in enumerate(FRONT_PORTS, 1):
         servers.append(f"""    server {{
       listen {port} ssl;
       server_name _;
       if ($$pd_authorized = 0) {{ return 401; }}
-      set $$backend http://{name}:8000;
+      set $$backend http://pd-front-{k}:8000;
       location ~ ^/(health|v1/models|v1/chat/completions|v1/completions)$$ {{
         limit_except GET POST {{ deny all; }}
         proxy_pass $$backend$$request_uri;
