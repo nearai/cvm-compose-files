@@ -4,6 +4,9 @@
 #    docker/sglang-glm53-hicache-w4afp8/modules-to-not-convert.diff.
 # 2) Thinking budget: accept the public thinking_token_budget and default GLM5 (glm5_next) to 8192,
 #    the production policy (fork 1fea50d9f + e4d313ef0). Without it reasoning runs uncapped.
+# 3) P/D under CC: MetadataBuffers are pageable CPU tensors that NIXL registers as DRAM; UCX's
+#    cuda_copy MD then calls cuMemHostRegister, which HCC/PPCIe rejects (NIXL_ERR_BACKEND). Pinning
+#    them via cudaHostAlloc (torch pin_memory) makes UCX skip the register (gpu03, 2026-10-06).
 # Each edit is an exact-anchor replacement; any missing anchor aborts the start (fail closed).
 import os, pathlib, sys
 ROOT = pathlib.Path(os.environ.get("PD_PATCH_ROOT", "/sgl-workspace/sglang/python/sglang/srt"))
@@ -91,3 +94,16 @@ sub("entrypoints/openai/serving_chat.py",
         set_request_reasoning_end_token_ids(
             sampling_params, processed_messages.reasoning_end_token_ids
         )""", "serving_chat glm5 default thinking budget 8192")
+sub("disaggregation/utils.py",
+"""                    device=self.bootstrap_room.device,
+                )
+
+    def set_kv_checksum(""",
+"""                    device=self.bootstrap_room.device,
+                )
+        if torch.cuda.is_available():
+            for _name, _t in list(vars(self).items()):
+                if isinstance(_t, torch.Tensor) and _t.device.type == "cpu":
+                    setattr(self, _name, _t.pin_memory())
+
+    def set_kv_checksum(""", "disagg MetadataBuffers pinned host memory")
