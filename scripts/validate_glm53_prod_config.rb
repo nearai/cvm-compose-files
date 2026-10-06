@@ -563,12 +563,17 @@ W4AFP8_TP2X4_VARIANT = "hicache-w4afp8-qsplit-selective325-mamba165-bf16state-c8
 W4AFP8_TP2X4_DEPLOYMENT = "glm53-flash-sgl-tp2x4"
 W4AFP8_BASE_DEPLOYMENT = "glm53-flash-sgl-tp4"
 W4AFP8_TP2X4_PREFIX = "model-sg-glm53-w4afp8-tp2-r"
+# r1/r2 are the control (current prod argv); r3/r4 are the memory-optimized canary (tee-bench exp
+# 25/25b/25c). Same host, same proxy pool, same traffic.
 W4AFP8_TP2X4_REPLICAS = {
-  "#{W4AFP8_TP2X4_PREFIX}1" => { "devices" => %w[0 1], "instance" => "1", "soak_port" => "8008" },
-  "#{W4AFP8_TP2X4_PREFIX}2" => { "devices" => %w[2 3], "instance" => "2", "soak_port" => "8009" },
-  "#{W4AFP8_TP2X4_PREFIX}3" => { "devices" => %w[4 5], "instance" => "3", "soak_port" => "8010" },
-  "#{W4AFP8_TP2X4_PREFIX}4" => { "devices" => %w[6 7], "instance" => "4", "soak_port" => "8011" },
+  "#{W4AFP8_TP2X4_PREFIX}1" => { "devices" => %w[0 1], "instance" => "1", "soak_port" => "8008", "role" => "control" },
+  "#{W4AFP8_TP2X4_PREFIX}2" => { "devices" => %w[2 3], "instance" => "2", "soak_port" => "8009", "role" => "control" },
+  "#{W4AFP8_TP2X4_PREFIX}3" => { "devices" => %w[4 5], "instance" => "3", "soak_port" => "8010", "role" => "candidate" },
+  "#{W4AFP8_TP2X4_PREFIX}4" => { "devices" => %w[6 7], "instance" => "4", "soak_port" => "8011", "role" => "candidate" },
 }.freeze
+W4AFP8_TP2X4_CANDIDATE_ANCHOR = "x-sg-glm53-flash-candidate"
+W4AFP8_TP2X4_CANDIDATE_PDI = "2"
+W4AFP8_TP2X4_CANDIDATE_VARIANT = "hicache-w4afp8-qsplit-selective325-mamba330-bf16state-memopt086-mr48-c8192-admission-reserve-v10-pdi#{W4AFP8_TP2X4_CANDIDATE_PDI}-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192"
 W4AFP8_TP2X4_ARGV = Shellwords.split(<<~'ARGV').freeze
   sglang serve
   --model-path /root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/snapshots/99f1fa70408c52b007d4fd69e02e5a522422e755
@@ -594,6 +599,20 @@ W4AFP8_TP2X4_ARGV = Shellwords.split(<<~'ARGV').freeze
   --hicache-io-backend direct --hicache-mem-layout page_first_direct
   --max-mamba-cache-size 165 --mamba-ssm-dtype bfloat16
 ARGV
+# The candidate argv is the control argv with exactly these token edits, minus --speculative-adaptive.
+W4AFP8_TP2X4_CANDIDATE_EDITS = [
+  ["--mem-fraction-static", "0.86"], ["--max-running-requests", "48"], ["--prefill-decode-interval", W4AFP8_TP2X4_CANDIDATE_PDI],
+  ["--cuda-graph-max-bs-decode", "48"], ["--speculative-num-steps", "4"], ["--speculative-num-draft-tokens", "5"],
+  ["--max-mamba-cache-size", "330"],
+].freeze
+W4AFP8_TP2X4_CANDIDATE_ARGV = begin
+  argv = W4AFP8_TP2X4_ARGV.dup
+  W4AFP8_TP2X4_CANDIDATE_EDITS.each { |flag, value| argv[argv.index(flag) + 1] = value }
+  argv.delete("--speculative-adaptive")
+  argv.freeze
+end
+# Every running request needs 5 mamba state slots (prod: 165 slots for 32 running; candidate: 330 for 48).
+W4AFP8_TP2X4_MAMBA_SLOTS_PER_REQUEST = 5
 W4AFP8_TP2X4_EXTRA_ENV = HICACHE_ENV.merge(
   "SGLANG_HICACHE_RAM_BUDGET" => "${GLM53_HICACHE_RAM_BUDGET:-325GiB}",
   "SGLANG_DSA_INDEXER_QSPLIT" => "1",
@@ -605,6 +624,7 @@ W4AFP8_TP2X4_EXTRA_ENV = HICACHE_ENV.merge(
 def w4afp8_tp2x4_view(errors, file_label, compose, replica_names)
   view = Marshal.load(Marshal.dump(compose))
   view.delete("x-sg-glm53-flash-common")
+  view.delete(W4AFP8_TP2X4_CANDIDATE_ANCHOR)
   services = view.fetch("services", {})
   replica_names.each { |name| services.delete(name) }
   services["glm53-perception-check"]&.delete("command")
@@ -658,10 +678,25 @@ def validate_w4afp8_tp2x4(errors, compose, base, raw)
       errors << "#{label} #{name} command cannot be parsed: #{error.message}"
       []
     end
-    unless actual_argv == W4AFP8_TP2X4_ARGV
-      drift = ((actual_argv - W4AFP8_TP2X4_ARGV) + (W4AFP8_TP2X4_ARGV - actual_argv)).uniq
-      errors << "#{label} #{name} argv must be the lab-qualified TP2 argv exactly; differing tokens: #{drift.first(8).join(' ')}"
+    candidate = spec["role"] == "candidate"
+    expected_argv = candidate ? W4AFP8_TP2X4_CANDIDATE_ARGV : W4AFP8_TP2X4_ARGV
+    expected_variant = candidate ? W4AFP8_TP2X4_CANDIDATE_VARIANT : W4AFP8_TP2X4_VARIANT
+    unless actual_argv == expected_argv
+      drift = ((actual_argv - expected_argv) + (expected_argv - actual_argv)).uniq
+      errors << "#{label} #{name} argv must be the #{candidate ? 'memory-optimized candidate' : 'lab-qualified TP2 control'} argv exactly; differing tokens: #{drift.first(8).join(' ')}"
     end
+    # Capacity invariants, asserted on what the file says rather than on the expected argv.
+    flag_value = lambda do |flag|
+      found = actual_argv.each_cons(2).find { |token, _| token == flag }
+      errors << "#{label} #{name} must set #{flag}" if found.nil?
+      found ? found.last.to_i : 0
+    end
+    slots = flag_value.call("--max-mamba-cache-size")
+    running = flag_value.call("--max-running-requests")
+    if slots < W4AFP8_TP2X4_MAMBA_SLOTS_PER_REQUEST * running
+      errors << "#{label} #{name} --max-mamba-cache-size #{slots} cannot hold #{running} running requests (needs >= #{W4AFP8_TP2X4_MAMBA_SLOTS_PER_REQUEST} slots each)"
+    end
+    errors << "#{label} #{name} --cuda-graph-max-bs-decode must equal --max-running-requests (#{running})" unless flag_value.call("--cuda-graph-max-bs-decode") == running
     env = environment_map(service)
     REQUIRED_ENV.each do |key, value|
       errors << "#{label} #{name} must set #{key}=#{value}" unless env[key] == value
@@ -692,7 +727,7 @@ def validate_w4afp8_tp2x4(errors, compose, base, raw)
     ["model_path:#{W4AFP8_CHECKPOINT}", "precision:#{W4AFP8_PRECISION}", "engine_image:#{engine_image_label}", "instance:#{spec['instance']}", "deployment:#{W4AFP8_TP2X4_DEPLOYMENT}"].each do |tag|
       errors << "#{label} #{name} log metadata must carry #{tag}" unless tags.include?(tag)
     end
-    check_variant(errors, label, service, name, collector, W4AFP8_TP2X4_VARIANT)
+    check_variant(errors, label, service, name, collector, expected_variant)
     scrape = scrape_job(errors, label, collector, "sglang-#{name}")
     scrape_labels = scrape&.dig("static_configs", 0, "labels") || {}
     errors << "#{label} sglang-#{name} must scrape #{name}:8000" if scrape && scrape.dig("static_configs", 0, "targets") != ["#{name}:8000"]
@@ -705,7 +740,9 @@ def validate_w4afp8_tp2x4(errors, compose, base, raw)
   end
 
   if replicas.length == W4AFP8_TP2X4_REPLICAS.length
-    contracts = replicas.values.map { |service| runtime_contract(service) }
+    # Everything except the argv (checked exactly per role above) is identical across all four
+    # replicas, so the canary differs from the control only by its engine flags.
+    contracts = replicas.values.map { |service| runtime_contract(service).reject { |key, _value| key == "command" } }
     errors << "#{label} replicas must use identical runtime configuration" unless contracts.uniq.length == 1
   end
 
