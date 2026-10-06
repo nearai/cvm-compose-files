@@ -83,7 +83,7 @@ jobs:
                 break
               fi
 
-              latest=$(git tag --list 'v0.0.*' --sort=-v:refname | head -n1)
+              latest=$(git for-each-ref --count=1 --sort=-v:refname --format='%(refname:short)' 'refs/tags/v0.0.*')
               if [ -z "$latest" ]; then
                 next="v0.0.1"
               else
