@@ -1,0 +1,1318 @@
+# GLM-5.3 Flash prefill/decode (P/D) QUALIFICATION file for ONE DRAINED base-tier host, generated
+# from prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8.yaml by scripts/prepare_glm53_pd_qualification.py.
+# Do not hand-edit this file.
+#
+# NOT A SERVING CONFIG: no registrar, nginx or inference proxy, so the host never takes
+# production traffic while this file runs. Load reaches it only through glm53-pd-relay
+# (TLS, Bearer ${PROXY_TOKEN}, same scheme as glm53-soak-relay):
+#   :8008 -> pd-router-3p1d   :8009 -> pd-router-1p3d   :8010 -> pd-router-2p2d
+#   :8011 -> /m/<engine>/metrics
+# Pick the layout with the compose/up service list (each GPU pair runs at most one engine):
+#   3P:1D  model-sg-glm53-w4afp8-tp2-pf-r1,-pf-r2,-pf-r3, -dc-r4, pd-router-3p1d
+#   1P:3D  model-sg-glm53-w4afp8-tp2-pf-r1, -dc-r2,-dc-r3,-dc-r4, pd-router-1p3d
+#   2P:2D  model-sg-glm53-w4afp8-tp2-pf-r1,-pf-r3, -dc-r2,-dc-r4, pd-router-2p2d
+#   plus glm53-pd-relay, otelcol-contrib, dcgm-glm53 (model-downloader runs first).
+#
+# What makes P/D work (lab, gpu31/gpu32, 2026-10-03/04; docs/glm53-pd-qualification.md):
+#   - GPU->GPU KV over NIXL/UCX CUDA IPC needs ALL THREE: every engine sees all 8 GPUs (each
+#     pinned with --base-gpu-id), pid: host, and PYTORCH_CUDA_ALLOC_CONF=expandable_segments:False
+#     (VMM memory cannot be CUDA-IPC exported without fabric handles -> silent host staging at
+#     0.3 GB/s). With all three: 18 GB/s for SGLang's scattered 35K x 64 KB shape, cached 189K
+#     turn 0.45 s vs 6-11 s.
+#   - On H200 NVL lab hosts cross-NVLink-island CUDA IPC corrupted KV (GSM8K 0.0); prod hosts
+#     report "NVIDIA H200" (SXM/HGX, NVSwitch), which this qualification verifies first.
+#   - Fixed-step EAGLE (3/4) and decode mf 0.84: decode pool 1.64M tokens.
+# Not carried vs the base file: HiCache (upstream v0.5.21 registers host memory with
+# cudaHostRegister, CUDA error 801 under HCC/PPCIe), the admission reserve and the DSA indexer
+# query split (fork patches). Startup patches (configs: glm53_pd_startup_patch) restore the
+# W4AFP8 loader fix and the 8192 default thinking budget.
+# ROLLBACK: compose/down this file's services, then prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8.yaml
+# (full service list including model-proxy-registrar), per docs/glm53-tp2x4-base-canary.md.
+
+x-logging-conf: &logging-conf
+  driver: "json-file"
+  options:
+    max-size: "100m"
+    max-file: "10"
+    labels: "com.datadoghq.ad.logs,com.docker.compose.service"
+
+# GLM-5.3-Flash on four independent H200 TP2/EP2 replicas. Each replica stays
+# within one NVLink GPU pair; one inference-proxy uses its native
+# least-connections backend pool for health-aware balancing and failover.
+#
+# The engine is published by the repository's GitHub Actions workflow and pinned here by
+# its signed immutable registry digest. Its source is pinned to
+# PierreLeGuen/sglang-upstream commit fc91d24, derived from official SGLang main plus
+# the official GLM-5.3 branch. It contains upstream disconnect cleanup (#35255), the
+# final-prefill abort fix (#34153), the strict thinking-budget adapter, and two narrow
+# DSA import-cycle fixes. All four replicas pin the published split-capable
+# docker/sglang-glm53-hicache-w4afp8 derivative the long tier runs (original #308 v3):
+# the HCC-safe HiCache image (CUDA-owned host memory, carrying the opt-in chunked-prefill
+# admission-reserve v10 patch, nearai/inference-optimizer@fb94472) plus the W4AFP8
+# loader fix and the unconditional chunked-prefill pool clamp. The reserve is enabled
+# below with SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE=4096,
+# SGLANG_ADMISSION_RESERVE_MAX_FRACTION=0.75 and --prefill-decode-interval 1. The
+# official CUDA 13 SGLang image is the pinned build base. The serving envelope is
+# intentionally conservative: BF16 KV, 0.80 static memory, 32 running requests (an
+# effective 32 per TP2 replica with 165 BF16 mamba state slots, see the file header), a
+# bounded 8-request queue, 8192-token prefill chunks with --max-prefill-tokens 32768,
+# decode graphs capped at batch 32, TileLang DSA, the CUTLASS W4A8 MoE path (hence no
+# --moe-runner-backend and no FP8 --revision), and adaptive EAGLE 5/1/6. This retains
+# the full 1,048,576-token model context.
+# Priority scheduling (--enable-priority-scheduling, --disable-priority-preemption)
+# relies on the pinned inference-proxy below (build 2834196, nearai/inference-proxy#241)
+# overwriting the `priority` field of every forwarded request, so no client-chosen
+# or missing priority ever reaches the scheduler. --default-priority-value is
+# deliberately absent for the same reason. scripts/validate_glm53_prod_config.rb
+# refuses the priority switches unless proxy-glm53 pins a priority-normalizing build.
+#
+# A small fail-closed adapter patch maps the public thinking_token_budget field
+# to SGLang strict-thinking's custom_params.thinking_budget. Omitted values
+# default to 8192; explicit null remains an opt-out; an explicit native
+# custom_params.thinking_budget wins. Request/response payload logging is off.
+#
+# The vLLM GLM-5.3-Flash path is not used: its Hopper NVFP4/MLA path produced
+# non-finite logits and repetitive output. This pack also retires the previous
+# co-resident DeepSeek arm so both four-GPU islands serve GLM-5.3-Flash.
+
+x-nvidia: &nvidia
+  runtime: nvidia
+  ipc: host
+  ulimits:
+    memlock: -1
+    nofile:
+      soft: 65535
+      hard: 65535
+
+x-sg-glm53-pd-common: &sg-glm53-pd-common
+  <<: *nvidia
+  init: true
+  image: docker.io/lmsysorg/sglang@sha256:b1259f3ea3275f66237c498ea388919729018bc9f01c3d638391e06e2cf3f469
+  # The fast GPU->GPU KV path needs a shared PID namespace (UCX cuda_ipc) and all GPUs visible.
+  pid: host
+  entrypoint: ["bash", "-c"]
+  volumes:
+    - kernel_cache:/root/.cache
+    - huggingface_cache:/root/.cache/huggingface
+  configs:
+    - source: glm53_pd_startup_patch
+      target: /etc/glm53/pd_startup_patch.py
+      mode: 0444
+  environment:
+    - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+    - HF_HUB_OFFLINE=1
+    - TRANSFORMERS_OFFLINE=1
+    - HF_HUB_DISABLE_TELEMETRY=1
+    - DO_NOT_TRACK=1
+    - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    - CUDA_DEVICE_ORDER=PCI_BUS_ID
+    - NCCL_DEBUG=WARN
+    # MUST stay False: expandable segments put the KV pool in CUDA VMM memory, which UCX
+    # cuda_ipc cannot export without fabric handles, so NIXL silently falls back to host
+    # staging (0.28-0.39 GB/s). False gives 18-105 GB/s.
+    - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:False
+    - TORCHINDUCTOR_CACHE_DIR=/root/.cache/torchinductor
+    - TRITON_CACHE_DIR=/root/.cache/triton
+    - TILELANG_CACHE_DIR=/root/.cache/tilelang
+    - SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION=0
+    - SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE=1
+  restart: unless-stopped
+  stop_grace_period: 5m
+  logging: *logging-conf
+
+x-dcgm-common: &dcgm-common
+  image: nvcr.io/nvidia/k8s/dcgm-exporter@sha256:613ab03c11d442fd960ff515f547e9921537454a712d08160bc8f677f89f1c35
+  command: ["-f", "/etc/dcgm-exporter/nearai-h200.csv"]
+  runtime: nvidia
+  cap_add:
+    - SYS_ADMIN
+  configs:
+    - source: dcgm_h200_metrics
+      target: /etc/dcgm-exporter/nearai-h200.csv
+      mode: 0444
+  restart: unless-stopped
+  logging: *logging-conf
+
+services:
+  model-downloader:
+    image: ghcr.io/astral-sh/uv:python3.11-bookworm-slim@sha256:4f5d923c9dcea037f57bda425dd209f3ec643da2f0b74227f68d09dab0b3bb36
+    container_name: model-downloader
+    restart: "no"
+    entrypoint: ["sh", "-c"]
+    # Every dedicated GLM-5.3 Flash TP4 file (not prod/small-models.yaml) also fetches the
+    # W4AFP8 snapshot (~165 GiB; keep >=250 GiB free on the model-cache volume), so moving
+    # a host between the FP8 and W4AFP8 files costs only the engine cold start:
+    # compose-manager runs `up --remove-orphans`, so a new file's downloader cannot run
+    # while engines it does not define are still serving.
+    command:
+      - |
+        set -e
+        echo "Downloading zai-org/GLM-5.3-Flash..."
+        uvx --from 'huggingface_hub[hf_xet]' hf download zai-org/GLM-5.3-Flash --revision 84c6a6aa9497188e15a635ba793b0f95a79b1033
+        echo "Downloading corrected GLM-5.3-Flash chat template..."
+        uvx --from 'huggingface_hub[hf_xet]' hf download zai-org/GLM-5.3-Flash chat_template.jinja --revision 3f1971b7b5f7a528c9c4ef6212c8785298a8c24a
+        echo "Downloading graphistry/GLM-5.3-Flash-W4AFP8..."
+        uvx --from 'huggingface_hub[hf_xet]' hf download graphistry/GLM-5.3-Flash-W4AFP8 --revision 99f1fa70408c52b007d4fd69e02e5a522422e755
+        echo "Download complete."
+    volumes:
+      - huggingface_cache:/root/.cache/huggingface
+    environment:
+      - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+    logging: *logging-conf
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"model-downloader","service":"model-downloader","tags":["model:zai-org/GLM-5.3-Flash","served_model:z-ai/glm-5.3-flash","deployment:glm53-flash-sgl-tp2x4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+
+  # Dormant during normal deploys. Target this service explicitly with the
+  # maintenance profile when one model's shared HF cache must be evicted.
+  # Inlined copy of the root cleanup-hf-model.yaml service: compose-manager's
+  # compose/up fetches only the requested file, so cross-file `extends:` /
+  # `include:` must not be used here (they fail at config load).
+
+  # --- P/D prefill engine on GPUs 0-1 (TP2) ---
+  model-sg-glm53-w4afp8-tp2-pf-r1:
+    <<: *sg-glm53-pd-common
+    container_name: model-sg-glm53-w4afp8-tp2-pf-r1
+    command:
+      - |
+        python3 /etc/glm53/pd_startup_patch.py
+        exec sglang serve --model-path /root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/snapshots/99f1fa70408c52b007d4fd69e02e5a522422e755 --served-model-name z-ai/glm-5.3-flash --tp-size 2 --ep-size 2 --max-running-requests 32 --max-queued-requests 8 --enable-priority-scheduling --disable-priority-preemption --prefill-decode-interval 1 --cuda-graph-max-bs-decode 32 --dsa-prefill-backend tilelang --dsa-decode-backend tilelang --kv-cache-dtype bfloat16 --speculative-algorithm EAGLE --speculative-num-steps 3 --speculative-eagle-topk 1 --speculative-num-draft-tokens 4 --reasoning-parser glm45 --enable-strict-thinking --grammar-backend xgrammar --tool-call-parser glm47 --chat-template /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/3f1971b7b5f7a528c9c4ef6212c8785298a8c24a/chat_template.jinja --context-length 1048576 --watchdog-timeout 1800 --host 0.0.0.0 --port 8000 --enable-metrics --enable-cache-report --log-requests-level 0 --disable-fast-image-processor --limit-mm-data-per-request '{"image": 64}' --max-mamba-cache-size 165 --mamba-ssm-dtype bfloat16 --disaggregation-transfer-backend nixl --mem-fraction-static 0.80 --chunked-prefill-size 32768 --max-prefill-tokens 65536 --base-gpu-id 0 --dist-init-addr 127.0.0.1:29520 --disaggregation-mode prefill --disaggregation-bootstrap-port 8998
+    depends_on:
+      model-downloader:
+        condition: service_completed_successfully
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["0","1","2","3","4","5","6","7"]
+              capabilities: [gpu]
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-bf16-kv","deployment:glm53-flash-sgl-pd-qual","config_variant:pd-prefill-v0521-w4afp8-tp2-ep2-eagle-fixed-3-1-4-mf080-c32768-nixl-ipc","request_logging:disabled","engine_image:b1259f3ea327","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:pf1"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "sglang"
+      nearai.otel.service: "sglang"
+      nearai.otel.source: "sglang"
+      nearai.otel.container_name: "model-sg-glm53-w4afp8-tp2-pf-r1"
+      nearai.otel.port: "8000"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "z-ai/glm-5.3-flash"
+      nearai.otel.model_path: "graphistry/GLM-5.3-Flash-W4AFP8"
+      nearai.otel.served_model: "z-ai/glm-5.3-flash"
+      nearai.otel.deployment: "glm53-flash-sgl-pd-qual"
+      nearai.otel.config_variant: "pd-prefill-v0521-w4afp8-tp2-ep2-eagle-fixed-3-1-4-mf080-c32768-nixl-ipc"
+      nearai.otel.thinking_budget_policy: "default8192-startup-patch"
+      nearai.otel.request_logging: "disabled"
+      nearai.otel.engine_image: "b1259f3ea327"
+      nearai.otel.instance: "pf1"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
+
+  # --- P/D prefill engine on GPUs 2-3 (TP2) ---
+  model-sg-glm53-w4afp8-tp2-pf-r2:
+    <<: *sg-glm53-pd-common
+    container_name: model-sg-glm53-w4afp8-tp2-pf-r2
+    command:
+      - |
+        python3 /etc/glm53/pd_startup_patch.py
+        exec sglang serve --model-path /root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/snapshots/99f1fa70408c52b007d4fd69e02e5a522422e755 --served-model-name z-ai/glm-5.3-flash --tp-size 2 --ep-size 2 --max-running-requests 32 --max-queued-requests 8 --enable-priority-scheduling --disable-priority-preemption --prefill-decode-interval 1 --cuda-graph-max-bs-decode 32 --dsa-prefill-backend tilelang --dsa-decode-backend tilelang --kv-cache-dtype bfloat16 --speculative-algorithm EAGLE --speculative-num-steps 3 --speculative-eagle-topk 1 --speculative-num-draft-tokens 4 --reasoning-parser glm45 --enable-strict-thinking --grammar-backend xgrammar --tool-call-parser glm47 --chat-template /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/3f1971b7b5f7a528c9c4ef6212c8785298a8c24a/chat_template.jinja --context-length 1048576 --watchdog-timeout 1800 --host 0.0.0.0 --port 8000 --enable-metrics --enable-cache-report --log-requests-level 0 --disable-fast-image-processor --limit-mm-data-per-request '{"image": 64}' --max-mamba-cache-size 165 --mamba-ssm-dtype bfloat16 --disaggregation-transfer-backend nixl --mem-fraction-static 0.80 --chunked-prefill-size 32768 --max-prefill-tokens 65536 --base-gpu-id 2 --dist-init-addr 127.0.0.1:29530 --disaggregation-mode prefill --disaggregation-bootstrap-port 8999
+    depends_on:
+      model-downloader:
+        condition: service_completed_successfully
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["0","1","2","3","4","5","6","7"]
+              capabilities: [gpu]
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-bf16-kv","deployment:glm53-flash-sgl-pd-qual","config_variant:pd-prefill-v0521-w4afp8-tp2-ep2-eagle-fixed-3-1-4-mf080-c32768-nixl-ipc","request_logging:disabled","engine_image:b1259f3ea327","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:pf2"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "sglang"
+      nearai.otel.service: "sglang"
+      nearai.otel.source: "sglang"
+      nearai.otel.container_name: "model-sg-glm53-w4afp8-tp2-pf-r2"
+      nearai.otel.port: "8000"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "z-ai/glm-5.3-flash"
+      nearai.otel.model_path: "graphistry/GLM-5.3-Flash-W4AFP8"
+      nearai.otel.served_model: "z-ai/glm-5.3-flash"
+      nearai.otel.deployment: "glm53-flash-sgl-pd-qual"
+      nearai.otel.config_variant: "pd-prefill-v0521-w4afp8-tp2-ep2-eagle-fixed-3-1-4-mf080-c32768-nixl-ipc"
+      nearai.otel.thinking_budget_policy: "default8192-startup-patch"
+      nearai.otel.request_logging: "disabled"
+      nearai.otel.engine_image: "b1259f3ea327"
+      nearai.otel.instance: "pf2"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
+
+  # --- P/D prefill engine on GPUs 4-5 (TP2) ---
+  model-sg-glm53-w4afp8-tp2-pf-r3:
+    <<: *sg-glm53-pd-common
+    container_name: model-sg-glm53-w4afp8-tp2-pf-r3
+    command:
+      - |
+        python3 /etc/glm53/pd_startup_patch.py
+        exec sglang serve --model-path /root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/snapshots/99f1fa70408c52b007d4fd69e02e5a522422e755 --served-model-name z-ai/glm-5.3-flash --tp-size 2 --ep-size 2 --max-running-requests 32 --max-queued-requests 8 --enable-priority-scheduling --disable-priority-preemption --prefill-decode-interval 1 --cuda-graph-max-bs-decode 32 --dsa-prefill-backend tilelang --dsa-decode-backend tilelang --kv-cache-dtype bfloat16 --speculative-algorithm EAGLE --speculative-num-steps 3 --speculative-eagle-topk 1 --speculative-num-draft-tokens 4 --reasoning-parser glm45 --enable-strict-thinking --grammar-backend xgrammar --tool-call-parser glm47 --chat-template /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/3f1971b7b5f7a528c9c4ef6212c8785298a8c24a/chat_template.jinja --context-length 1048576 --watchdog-timeout 1800 --host 0.0.0.0 --port 8000 --enable-metrics --enable-cache-report --log-requests-level 0 --disable-fast-image-processor --limit-mm-data-per-request '{"image": 64}' --max-mamba-cache-size 165 --mamba-ssm-dtype bfloat16 --disaggregation-transfer-backend nixl --mem-fraction-static 0.80 --chunked-prefill-size 32768 --max-prefill-tokens 65536 --base-gpu-id 4 --dist-init-addr 127.0.0.1:29540 --disaggregation-mode prefill --disaggregation-bootstrap-port 9000
+    depends_on:
+      model-downloader:
+        condition: service_completed_successfully
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["0","1","2","3","4","5","6","7"]
+              capabilities: [gpu]
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-bf16-kv","deployment:glm53-flash-sgl-pd-qual","config_variant:pd-prefill-v0521-w4afp8-tp2-ep2-eagle-fixed-3-1-4-mf080-c32768-nixl-ipc","request_logging:disabled","engine_image:b1259f3ea327","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:pf3"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "sglang"
+      nearai.otel.service: "sglang"
+      nearai.otel.source: "sglang"
+      nearai.otel.container_name: "model-sg-glm53-w4afp8-tp2-pf-r3"
+      nearai.otel.port: "8000"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "z-ai/glm-5.3-flash"
+      nearai.otel.model_path: "graphistry/GLM-5.3-Flash-W4AFP8"
+      nearai.otel.served_model: "z-ai/glm-5.3-flash"
+      nearai.otel.deployment: "glm53-flash-sgl-pd-qual"
+      nearai.otel.config_variant: "pd-prefill-v0521-w4afp8-tp2-ep2-eagle-fixed-3-1-4-mf080-c32768-nixl-ipc"
+      nearai.otel.thinking_budget_policy: "default8192-startup-patch"
+      nearai.otel.request_logging: "disabled"
+      nearai.otel.engine_image: "b1259f3ea327"
+      nearai.otel.instance: "pf3"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
+
+  # --- P/D prefill engine on GPUs 6-7 (TP2) ---
+  model-sg-glm53-w4afp8-tp2-pf-r4:
+    <<: *sg-glm53-pd-common
+    container_name: model-sg-glm53-w4afp8-tp2-pf-r4
+    command:
+      - |
+        python3 /etc/glm53/pd_startup_patch.py
+        exec sglang serve --model-path /root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/snapshots/99f1fa70408c52b007d4fd69e02e5a522422e755 --served-model-name z-ai/glm-5.3-flash --tp-size 2 --ep-size 2 --max-running-requests 32 --max-queued-requests 8 --enable-priority-scheduling --disable-priority-preemption --prefill-decode-interval 1 --cuda-graph-max-bs-decode 32 --dsa-prefill-backend tilelang --dsa-decode-backend tilelang --kv-cache-dtype bfloat16 --speculative-algorithm EAGLE --speculative-num-steps 3 --speculative-eagle-topk 1 --speculative-num-draft-tokens 4 --reasoning-parser glm45 --enable-strict-thinking --grammar-backend xgrammar --tool-call-parser glm47 --chat-template /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/3f1971b7b5f7a528c9c4ef6212c8785298a8c24a/chat_template.jinja --context-length 1048576 --watchdog-timeout 1800 --host 0.0.0.0 --port 8000 --enable-metrics --enable-cache-report --log-requests-level 0 --disable-fast-image-processor --limit-mm-data-per-request '{"image": 64}' --max-mamba-cache-size 165 --mamba-ssm-dtype bfloat16 --disaggregation-transfer-backend nixl --mem-fraction-static 0.80 --chunked-prefill-size 32768 --max-prefill-tokens 65536 --base-gpu-id 6 --dist-init-addr 127.0.0.1:29550 --disaggregation-mode prefill --disaggregation-bootstrap-port 9001
+    depends_on:
+      model-downloader:
+        condition: service_completed_successfully
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["0","1","2","3","4","5","6","7"]
+              capabilities: [gpu]
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-bf16-kv","deployment:glm53-flash-sgl-pd-qual","config_variant:pd-prefill-v0521-w4afp8-tp2-ep2-eagle-fixed-3-1-4-mf080-c32768-nixl-ipc","request_logging:disabled","engine_image:b1259f3ea327","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:pf4"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "sglang"
+      nearai.otel.service: "sglang"
+      nearai.otel.source: "sglang"
+      nearai.otel.container_name: "model-sg-glm53-w4afp8-tp2-pf-r4"
+      nearai.otel.port: "8000"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "z-ai/glm-5.3-flash"
+      nearai.otel.model_path: "graphistry/GLM-5.3-Flash-W4AFP8"
+      nearai.otel.served_model: "z-ai/glm-5.3-flash"
+      nearai.otel.deployment: "glm53-flash-sgl-pd-qual"
+      nearai.otel.config_variant: "pd-prefill-v0521-w4afp8-tp2-ep2-eagle-fixed-3-1-4-mf080-c32768-nixl-ipc"
+      nearai.otel.thinking_budget_policy: "default8192-startup-patch"
+      nearai.otel.request_logging: "disabled"
+      nearai.otel.engine_image: "b1259f3ea327"
+      nearai.otel.instance: "pf4"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
+
+  # --- P/D decode engine on GPUs 0-1 (TP2) ---
+  model-sg-glm53-w4afp8-tp2-dc-r1:
+    <<: *sg-glm53-pd-common
+    container_name: model-sg-glm53-w4afp8-tp2-dc-r1
+    command:
+      - |
+        python3 /etc/glm53/pd_startup_patch.py
+        exec sglang serve --model-path /root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/snapshots/99f1fa70408c52b007d4fd69e02e5a522422e755 --served-model-name z-ai/glm-5.3-flash --tp-size 2 --ep-size 2 --max-running-requests 32 --max-queued-requests 8 --enable-priority-scheduling --disable-priority-preemption --prefill-decode-interval 1 --cuda-graph-max-bs-decode 32 --dsa-prefill-backend tilelang --dsa-decode-backend tilelang --kv-cache-dtype bfloat16 --speculative-algorithm EAGLE --speculative-num-steps 3 --speculative-eagle-topk 1 --speculative-num-draft-tokens 4 --reasoning-parser glm45 --enable-strict-thinking --grammar-backend xgrammar --tool-call-parser glm47 --chat-template /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/3f1971b7b5f7a528c9c4ef6212c8785298a8c24a/chat_template.jinja --context-length 1048576 --watchdog-timeout 1800 --host 0.0.0.0 --port 8000 --enable-metrics --enable-cache-report --log-requests-level 0 --disable-fast-image-processor --limit-mm-data-per-request '{"image": 64}' --max-mamba-cache-size 165 --mamba-ssm-dtype bfloat16 --disaggregation-transfer-backend nixl --mem-fraction-static 0.84 --chunked-prefill-size 8192 --max-prefill-tokens 32768 --base-gpu-id 0 --dist-init-addr 127.0.0.1:29525 --disaggregation-mode decode
+    depends_on:
+      model-downloader:
+        condition: service_completed_successfully
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["0","1","2","3","4","5","6","7"]
+              capabilities: [gpu]
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-bf16-kv","deployment:glm53-flash-sgl-pd-qual","config_variant:pd-decode-v0521-w4afp8-tp2-ep2-eagle-fixed-3-1-4-mf084-c8192-nixl-ipc","request_logging:disabled","engine_image:b1259f3ea327","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:dc1"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "sglang"
+      nearai.otel.service: "sglang"
+      nearai.otel.source: "sglang"
+      nearai.otel.container_name: "model-sg-glm53-w4afp8-tp2-dc-r1"
+      nearai.otel.port: "8000"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "z-ai/glm-5.3-flash"
+      nearai.otel.model_path: "graphistry/GLM-5.3-Flash-W4AFP8"
+      nearai.otel.served_model: "z-ai/glm-5.3-flash"
+      nearai.otel.deployment: "glm53-flash-sgl-pd-qual"
+      nearai.otel.config_variant: "pd-decode-v0521-w4afp8-tp2-ep2-eagle-fixed-3-1-4-mf084-c8192-nixl-ipc"
+      nearai.otel.thinking_budget_policy: "default8192-startup-patch"
+      nearai.otel.request_logging: "disabled"
+      nearai.otel.engine_image: "b1259f3ea327"
+      nearai.otel.instance: "dc1"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
+
+  # --- P/D decode engine on GPUs 2-3 (TP2) ---
+  model-sg-glm53-w4afp8-tp2-dc-r2:
+    <<: *sg-glm53-pd-common
+    container_name: model-sg-glm53-w4afp8-tp2-dc-r2
+    command:
+      - |
+        python3 /etc/glm53/pd_startup_patch.py
+        exec sglang serve --model-path /root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/snapshots/99f1fa70408c52b007d4fd69e02e5a522422e755 --served-model-name z-ai/glm-5.3-flash --tp-size 2 --ep-size 2 --max-running-requests 32 --max-queued-requests 8 --enable-priority-scheduling --disable-priority-preemption --prefill-decode-interval 1 --cuda-graph-max-bs-decode 32 --dsa-prefill-backend tilelang --dsa-decode-backend tilelang --kv-cache-dtype bfloat16 --speculative-algorithm EAGLE --speculative-num-steps 3 --speculative-eagle-topk 1 --speculative-num-draft-tokens 4 --reasoning-parser glm45 --enable-strict-thinking --grammar-backend xgrammar --tool-call-parser glm47 --chat-template /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/3f1971b7b5f7a528c9c4ef6212c8785298a8c24a/chat_template.jinja --context-length 1048576 --watchdog-timeout 1800 --host 0.0.0.0 --port 8000 --enable-metrics --enable-cache-report --log-requests-level 0 --disable-fast-image-processor --limit-mm-data-per-request '{"image": 64}' --max-mamba-cache-size 165 --mamba-ssm-dtype bfloat16 --disaggregation-transfer-backend nixl --mem-fraction-static 0.84 --chunked-prefill-size 8192 --max-prefill-tokens 32768 --base-gpu-id 2 --dist-init-addr 127.0.0.1:29535 --disaggregation-mode decode
+    depends_on:
+      model-downloader:
+        condition: service_completed_successfully
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["0","1","2","3","4","5","6","7"]
+              capabilities: [gpu]
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-bf16-kv","deployment:glm53-flash-sgl-pd-qual","config_variant:pd-decode-v0521-w4afp8-tp2-ep2-eagle-fixed-3-1-4-mf084-c8192-nixl-ipc","request_logging:disabled","engine_image:b1259f3ea327","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:dc2"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "sglang"
+      nearai.otel.service: "sglang"
+      nearai.otel.source: "sglang"
+      nearai.otel.container_name: "model-sg-glm53-w4afp8-tp2-dc-r2"
+      nearai.otel.port: "8000"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "z-ai/glm-5.3-flash"
+      nearai.otel.model_path: "graphistry/GLM-5.3-Flash-W4AFP8"
+      nearai.otel.served_model: "z-ai/glm-5.3-flash"
+      nearai.otel.deployment: "glm53-flash-sgl-pd-qual"
+      nearai.otel.config_variant: "pd-decode-v0521-w4afp8-tp2-ep2-eagle-fixed-3-1-4-mf084-c8192-nixl-ipc"
+      nearai.otel.thinking_budget_policy: "default8192-startup-patch"
+      nearai.otel.request_logging: "disabled"
+      nearai.otel.engine_image: "b1259f3ea327"
+      nearai.otel.instance: "dc2"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
+
+  # --- P/D decode engine on GPUs 4-5 (TP2) ---
+  model-sg-glm53-w4afp8-tp2-dc-r3:
+    <<: *sg-glm53-pd-common
+    container_name: model-sg-glm53-w4afp8-tp2-dc-r3
+    command:
+      - |
+        python3 /etc/glm53/pd_startup_patch.py
+        exec sglang serve --model-path /root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/snapshots/99f1fa70408c52b007d4fd69e02e5a522422e755 --served-model-name z-ai/glm-5.3-flash --tp-size 2 --ep-size 2 --max-running-requests 32 --max-queued-requests 8 --enable-priority-scheduling --disable-priority-preemption --prefill-decode-interval 1 --cuda-graph-max-bs-decode 32 --dsa-prefill-backend tilelang --dsa-decode-backend tilelang --kv-cache-dtype bfloat16 --speculative-algorithm EAGLE --speculative-num-steps 3 --speculative-eagle-topk 1 --speculative-num-draft-tokens 4 --reasoning-parser glm45 --enable-strict-thinking --grammar-backend xgrammar --tool-call-parser glm47 --chat-template /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/3f1971b7b5f7a528c9c4ef6212c8785298a8c24a/chat_template.jinja --context-length 1048576 --watchdog-timeout 1800 --host 0.0.0.0 --port 8000 --enable-metrics --enable-cache-report --log-requests-level 0 --disable-fast-image-processor --limit-mm-data-per-request '{"image": 64}' --max-mamba-cache-size 165 --mamba-ssm-dtype bfloat16 --disaggregation-transfer-backend nixl --mem-fraction-static 0.84 --chunked-prefill-size 8192 --max-prefill-tokens 32768 --base-gpu-id 4 --dist-init-addr 127.0.0.1:29545 --disaggregation-mode decode
+    depends_on:
+      model-downloader:
+        condition: service_completed_successfully
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["0","1","2","3","4","5","6","7"]
+              capabilities: [gpu]
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-bf16-kv","deployment:glm53-flash-sgl-pd-qual","config_variant:pd-decode-v0521-w4afp8-tp2-ep2-eagle-fixed-3-1-4-mf084-c8192-nixl-ipc","request_logging:disabled","engine_image:b1259f3ea327","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:dc3"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "sglang"
+      nearai.otel.service: "sglang"
+      nearai.otel.source: "sglang"
+      nearai.otel.container_name: "model-sg-glm53-w4afp8-tp2-dc-r3"
+      nearai.otel.port: "8000"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "z-ai/glm-5.3-flash"
+      nearai.otel.model_path: "graphistry/GLM-5.3-Flash-W4AFP8"
+      nearai.otel.served_model: "z-ai/glm-5.3-flash"
+      nearai.otel.deployment: "glm53-flash-sgl-pd-qual"
+      nearai.otel.config_variant: "pd-decode-v0521-w4afp8-tp2-ep2-eagle-fixed-3-1-4-mf084-c8192-nixl-ipc"
+      nearai.otel.thinking_budget_policy: "default8192-startup-patch"
+      nearai.otel.request_logging: "disabled"
+      nearai.otel.engine_image: "b1259f3ea327"
+      nearai.otel.instance: "dc3"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
+
+  # --- P/D decode engine on GPUs 6-7 (TP2) ---
+  model-sg-glm53-w4afp8-tp2-dc-r4:
+    <<: *sg-glm53-pd-common
+    container_name: model-sg-glm53-w4afp8-tp2-dc-r4
+    command:
+      - |
+        python3 /etc/glm53/pd_startup_patch.py
+        exec sglang serve --model-path /root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/snapshots/99f1fa70408c52b007d4fd69e02e5a522422e755 --served-model-name z-ai/glm-5.3-flash --tp-size 2 --ep-size 2 --max-running-requests 32 --max-queued-requests 8 --enable-priority-scheduling --disable-priority-preemption --prefill-decode-interval 1 --cuda-graph-max-bs-decode 32 --dsa-prefill-backend tilelang --dsa-decode-backend tilelang --kv-cache-dtype bfloat16 --speculative-algorithm EAGLE --speculative-num-steps 3 --speculative-eagle-topk 1 --speculative-num-draft-tokens 4 --reasoning-parser glm45 --enable-strict-thinking --grammar-backend xgrammar --tool-call-parser glm47 --chat-template /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/3f1971b7b5f7a528c9c4ef6212c8785298a8c24a/chat_template.jinja --context-length 1048576 --watchdog-timeout 1800 --host 0.0.0.0 --port 8000 --enable-metrics --enable-cache-report --log-requests-level 0 --disable-fast-image-processor --limit-mm-data-per-request '{"image": 64}' --max-mamba-cache-size 165 --mamba-ssm-dtype bfloat16 --disaggregation-transfer-backend nixl --mem-fraction-static 0.84 --chunked-prefill-size 8192 --max-prefill-tokens 32768 --base-gpu-id 6 --dist-init-addr 127.0.0.1:29555 --disaggregation-mode decode
+    depends_on:
+      model-downloader:
+        condition: service_completed_successfully
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["0","1","2","3","4","5","6","7"]
+              capabilities: [gpu]
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-bf16-kv","deployment:glm53-flash-sgl-pd-qual","config_variant:pd-decode-v0521-w4afp8-tp2-ep2-eagle-fixed-3-1-4-mf084-c8192-nixl-ipc","request_logging:disabled","engine_image:b1259f3ea327","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:dc4"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "sglang"
+      nearai.otel.service: "sglang"
+      nearai.otel.source: "sglang"
+      nearai.otel.container_name: "model-sg-glm53-w4afp8-tp2-dc-r4"
+      nearai.otel.port: "8000"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "z-ai/glm-5.3-flash"
+      nearai.otel.model_path: "graphistry/GLM-5.3-Flash-W4AFP8"
+      nearai.otel.served_model: "z-ai/glm-5.3-flash"
+      nearai.otel.deployment: "glm53-flash-sgl-pd-qual"
+      nearai.otel.config_variant: "pd-decode-v0521-w4afp8-tp2-ep2-eagle-fixed-3-1-4-mf084-c8192-nixl-ipc"
+      nearai.otel.thinking_budget_policy: "default8192-startup-patch"
+      nearai.otel.request_logging: "disabled"
+      nearai.otel.engine_image: "b1259f3ea327"
+      nearai.otel.instance: "dc4"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
+
+  pd-router-3p1d:
+    image: docker.io/lmsysorg/sglang@sha256:b1259f3ea3275f66237c498ea388919729018bc9f01c3d638391e06e2cf3f469
+    container_name: pd-router-3p1d
+    runtime: runc
+    entrypoint: ["python3", "-m", "sglang_router.launch_router"]
+    command: ["--pd-disaggregation", "--prefill", "http://model-sg-glm53-w4afp8-tp2-pf-r1:8000", "8998", "--prefill", "http://model-sg-glm53-w4afp8-tp2-pf-r2:8000", "8999", "--prefill", "http://model-sg-glm53-w4afp8-tp2-pf-r3:8000", "9000", "--decode", "http://model-sg-glm53-w4afp8-tp2-dc-r4:8000", "--prefill-policy", "power_of_two", "--decode-policy", "round_robin", "--host", "0.0.0.0", "--port", "8000", "--prometheus-port", "29001", "--request-timeout-secs", "3600"]
+    restart: unless-stopped
+    logging: *logging-conf
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"sglang-router","service":"sglang-router","tags":["model:z-ai/glm-5.3-flash","deployment:glm53-flash-sgl-pd-qual","layout:3p1d","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+
+  pd-router-1p3d:
+    image: docker.io/lmsysorg/sglang@sha256:b1259f3ea3275f66237c498ea388919729018bc9f01c3d638391e06e2cf3f469
+    container_name: pd-router-1p3d
+    runtime: runc
+    entrypoint: ["python3", "-m", "sglang_router.launch_router"]
+    command: ["--pd-disaggregation", "--prefill", "http://model-sg-glm53-w4afp8-tp2-pf-r1:8000", "8998", "--decode", "http://model-sg-glm53-w4afp8-tp2-dc-r2:8000", "--decode", "http://model-sg-glm53-w4afp8-tp2-dc-r3:8000", "--decode", "http://model-sg-glm53-w4afp8-tp2-dc-r4:8000", "--prefill-policy", "round_robin", "--decode-policy", "power_of_two", "--host", "0.0.0.0", "--port", "8000", "--prometheus-port", "29002", "--request-timeout-secs", "3600"]
+    restart: unless-stopped
+    logging: *logging-conf
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"sglang-router","service":"sglang-router","tags":["model:z-ai/glm-5.3-flash","deployment:glm53-flash-sgl-pd-qual","layout:1p3d","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+
+  pd-router-2p2d:
+    image: docker.io/lmsysorg/sglang@sha256:b1259f3ea3275f66237c498ea388919729018bc9f01c3d638391e06e2cf3f469
+    container_name: pd-router-2p2d
+    runtime: runc
+    entrypoint: ["python3", "-m", "sglang_router.launch_router"]
+    command: ["--pd-disaggregation", "--prefill", "http://model-sg-glm53-w4afp8-tp2-pf-r1:8000", "8998", "--prefill", "http://model-sg-glm53-w4afp8-tp2-pf-r3:8000", "9000", "--decode", "http://model-sg-glm53-w4afp8-tp2-dc-r2:8000", "--decode", "http://model-sg-glm53-w4afp8-tp2-dc-r4:8000", "--prefill-policy", "power_of_two", "--decode-policy", "power_of_two", "--host", "0.0.0.0", "--port", "8000", "--prometheus-port", "29003", "--request-timeout-secs", "3600"]
+    restart: unless-stopped
+    logging: *logging-conf
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"sglang-router","service":"sglang-router","tags":["model:z-ai/glm-5.3-flash","deployment:glm53-flash-sgl-pd-qual","layout:2p2d","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+
+  glm53-pd-relay:
+    image: nginx@sha256:1d13701a5f9f3fb01aaa88cef2344d65b6b5bf6b7d9fa4cf0dca557a8d7702ba
+    container_name: glm53-pd-relay
+    runtime: runc
+    cap_drop: [ALL]
+    cap_add: [CHOWN, SETUID, SETGID]
+    security_opt: ["no-new-privileges:true"]
+    restart: "no"
+    mem_limit: 256m
+    cpus: 1
+    stop_grace_period: 5m
+    ports: ["8008:8008", "8009:8009", "8010:8010", "8011:8011"]
+    volumes:
+      - certs:/etc/letsencrypt:ro
+    tmpfs:
+      - /var/cache/nginx:rw,noexec,nosuid,size=64m
+      - /var/run:rw,noexec,nosuid,size=4m
+    entrypoint: ["nginx", "-g", "daemon off;"]
+    configs:
+      - source: glm53_pd_relay_conf
+        target: /etc/nginx/nginx.conf
+        mode: 0600
+    logging: *logging-conf
+
+  dcgm-glm53:
+    <<: *dcgm-common
+    container_name: dcgm-glm53
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["0","1","2","3","4","5","6","7"]
+              capabilities: [gpu]
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","deployment:glm53-flash-sgl-pd-qual","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "dcgm"
+      nearai.otel.service: "dcgm-exporter"
+      nearai.otel.source: "dcgm-exporter"
+      nearai.otel.container_name: "dcgm-glm53"
+      nearai.otel.port: "9400"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "z-ai/glm-5.3-flash"
+      nearai.otel.model_path: "graphistry/GLM-5.3-Flash-W4AFP8"
+      nearai.otel.served_model: "z-ai/glm-5.3-flash"
+      nearai.otel.deployment: "glm53-flash-sgl-pd-qual"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
+
+
+  otelcol-contrib:
+    image: otel/opentelemetry-collector-contrib@sha256:85ac41c2db88d0df9bd6145e608a3cb023f5d8443868adbfbbf66efb51087917
+    container_name: otelcol-contrib
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    user: "0:0"
+    mem_limit: "768m"
+    environment:
+      - MONITORING_INGEST_TOKEN=${MONITORING_INGEST_TOKEN:-}
+      - CVM_NAME=${CVM_NAME:-unknown}
+      - CVM_HOST=${CVM_HOST:-unknown}
+      - DD_HOSTNAME=${DD_HOSTNAME:-unknown}
+      - ENV=${ENV:-unknown}
+      - HOST_IP=${HOST_IP:-unknown}
+    expose:
+      - "4317"
+      - "4318"
+    volumes:
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - otelcol_app_storage:/var/lib/otelcol-contrib
+    configs:
+      - source: otelcol_app_config
+        target: /etc/otelcol-contrib/config.yaml
+        mode: 0444
+    restart: unless-stopped
+    logging:
+      driver: "local"
+      options:
+        max-size: "20m"
+        max-file: "3"
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"otelcol-contrib","service":"otelcol-contrib","tags":["deployment:glm53-flash-sgl-pd-qual","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+
+
+networks:
+  default:
+    external: true
+    name: dstack_default
+
+volumes:
+  otelcol_app_storage:
+  huggingface_cache:
+  kernel_cache:
+  certs:
+    external: true
+    name: certs
+
+configs:
+  glm53_pd_relay_conf:
+    content: |
+      user nginx;
+      worker_processes 1;
+      pid /var/run/nginx.pid;
+      error_log /dev/null;
+      events { worker_connections 256; }
+      http {
+        # Qualification traffic only: no request/response logging or disk buffering.
+        access_log off;
+        client_max_body_size 100m;
+        client_body_timeout 3600s;
+        send_timeout 3600s;
+        resolver 127.0.0.11 valid=5s ipv6=off;
+        map_hash_bucket_size 256;
+        map $$http_authorization $$pd_authorized {
+          default 0;
+          "Bearer ${PROXY_TOKEN:?PROXY_TOKEN required for authenticated qualification access}" 1;
+        }
+        ssl_certificate /etc/letsencrypt/live/completions.near.ai/fullchain.pem;
+        ssl_certificate_key /etc/letsencrypt/live/completions.near.ai/privkey.pem;
+        ssl_protocols TLSv1.2 TLSv1.3;
+        proxy_http_version 1.1;
+        proxy_request_buffering off;
+        proxy_buffering off;
+        proxy_max_temp_file_size 0;
+        proxy_connect_timeout 10s;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+        proxy_set_header Authorization "";
+        proxy_set_header Connection "";
+        proxy_next_upstream off;
+      server {
+        listen 8008 ssl;
+        server_name _;
+        if ($$pd_authorized = 0) { return 401; }
+        set $$backend http://pd-router-3p1d:8000;
+        location ~ ^/(health|v1/models|v1/chat/completions|v1/completions)$$ {
+          limit_except GET POST { deny all; }
+          proxy_pass $$backend$$request_uri;
+        }
+        location / { return 404; }
+      }
+      server {
+        listen 8009 ssl;
+        server_name _;
+        if ($$pd_authorized = 0) { return 401; }
+        set $$backend http://pd-router-1p3d:8000;
+        location ~ ^/(health|v1/models|v1/chat/completions|v1/completions)$$ {
+          limit_except GET POST { deny all; }
+          proxy_pass $$backend$$request_uri;
+        }
+        location / { return 404; }
+      }
+      server {
+        listen 8010 ssl;
+        server_name _;
+        if ($$pd_authorized = 0) { return 401; }
+        set $$backend http://pd-router-2p2d:8000;
+        location ~ ^/(health|v1/models|v1/chat/completions|v1/completions)$$ {
+          limit_except GET POST { deny all; }
+          proxy_pass $$backend$$request_uri;
+        }
+        location / { return 404; }
+      }
+      server {
+        listen 8011 ssl;
+        server_name _;
+        if ($$pd_authorized = 0) { return 401; }
+        location ~ ^/m/(model-sg-glm53-w4afp8-tp2-(pf|dc)-r[1-4])/metrics$$ {
+          limit_except GET { deny all; }
+          proxy_pass http://$$1:8000/metrics;
+        }
+        location / { return 404; }
+      }
+      }
+
+  glm53_pd_startup_patch:
+    content: |
+      # Start-up patches for stock SGLang v0.5.21 (lmsysorg/sglang:v0.5.21-cu130) serving GLM-5.3-Flash W4AFP8.
+      # 1) W4AFP8 loader: from_config drops modules_to_not_convert, so narrow layers get FP8 block-quant and
+      #    fail ("output_partition_size = 16 is not divisible by block_n = 128"). Same fix as
+      #    docker/sglang-glm53-hicache-w4afp8/modules-to-not-convert.diff.
+      # 2) Thinking budget: accept the public thinking_token_budget and default GLM5 (glm5_next) to 8192,
+      #    the production policy (fork 1fea50d9f + e4d313ef0). Without it reasoning runs uncapped.
+      # Each edit is an exact-anchor replacement; any missing anchor aborts the start (fail closed).
+      import os, pathlib, sys
+      ROOT = pathlib.Path(os.environ.get("PD_PATCH_ROOT", "/sgl-workspace/sglang/python/sglang/srt"))
+      def sub(rel, old, new, label):
+          p = ROOT / rel; s = p.read_text()
+          if new in s:
+              print(f"[pd-patch] {label}: already applied", flush=True); return
+          n = s.count(old)
+          if n != 1:
+              sys.exit(f"[pd-patch] {label}: expected 1 anchor, found {n}")
+          p.write_text(s.replace(old, new)); print(f"[pd-patch] {label}: applied", flush=True)
+      sub("layers/quantization/w4afp8.py",
+      """        weight_block_size = [128, 128]
+              return cls(
+                  is_checkpoint_fp8_serialized=is_checkpoint_fp8_serialized,
+                  is_checkpoint_w4afp8_serialized=is_checkpoint_w4afp8_serialized,
+                  linear_activation_scheme=linear_activation_scheme,
+                  moe_activation_scheme=moe_activation_scheme,
+                  weight_block_size=weight_block_size,
+              )""",
+      """        weight_block_size = [128, 128]
+              ignored_layers = (
+                  config.get("modules_to_not_convert")
+                  or config.get("ignored_layers")
+                  or config.get("ignore")
+                  or []
+              )
+              return cls(
+                  is_checkpoint_fp8_serialized=is_checkpoint_fp8_serialized,
+                  is_checkpoint_w4afp8_serialized=is_checkpoint_w4afp8_serialized,
+                  linear_activation_scheme=linear_activation_scheme,
+                  moe_activation_scheme=moe_activation_scheme,
+                  ignored_layers=ignored_layers,
+                  weight_block_size=weight_block_size,
+              )""", "w4afp8 modules_to_not_convert")
+      sub("entrypoints/openai/protocol.py", "    StrictBool,\n    field_serializer,", "    StrictBool,\n    StrictInt,\n    field_serializer,", "protocol StrictInt import")
+      sub("entrypoints/openai/protocol.py",
+      """    custom_params: Optional[Dict] = None
+
+          # Pre-computed prompt token IDs: when provided""",
+      """    custom_params: Optional[Dict] = None
+          thinking_token_budget: Optional[StrictInt] = Field(default=None, ge=0)
+
+          # Pre-computed prompt token IDs: when provided""", "protocol thinking_token_budget field")
+      sub("entrypoints/openai/protocol.py",
+      """    @model_validator(mode="before")
+          @classmethod
+          def set_tool_choice_default(cls, values):""",
+      """    @model_validator(mode="before")
+          @classmethod
+          def normalize_thinking_token_budget(cls, values):
+              if not isinstance(values, dict):
+                  return values
+              custom_params = values.get("custom_params")
+              if custom_params is None:
+                  custom_params = {}
+              if not isinstance(custom_params, dict) or "thinking_budget" in custom_params:
+                  return values
+              if "thinking_token_budget" in values:
+                  budget = values.get("thinking_token_budget")
+              else:
+                  return values
+              if isinstance(budget, int) and not isinstance(budget, bool) and budget >= 0:
+                  values = dict(values)
+                  custom_params = dict(custom_params)
+                  custom_params["thinking_budget"] = budget
+                  values["custom_params"] = custom_params
+              return values
+
+          @model_validator(mode="before")
+          @classmethod
+          def set_tool_choice_default(cls, values):""", "protocol thinking_token_budget normalizer")
+      sub("entrypoints/openai/serving_chat.py",
+      """        set_request_reasoning_end_token_ids(
+                  sampling_params, processed_messages.reasoning_end_token_ids
+              )""",
+      """        if (
+                  getattr(self.tokenizer_manager.model_config.hf_config, "model_type", None)
+                  in ("glm5_next", "glm5_next_text")
+                  and "thinking_token_budget" not in request.model_fields_set
+              ):
+                  custom_params = dict(sampling_params.get("custom_params") or {})
+                  custom_params.setdefault("thinking_budget", 8192)
+                  sampling_params["custom_params"] = custom_params
+              set_request_reasoning_end_token_ids(
+                  sampling_params, processed_messages.reasoning_end_token_ids
+              )""", "serving_chat glm5 default thinking budget 8192")
+
+  dcgm_h200_metrics:
+    content: |
+      # NEAR AI H200 operational collector for DCGM 4.6.0 / exporter 4.8.3.
+      # Format: DCGM field, Prometheus type, help message.
+
+      # Clocks, temperature, power and cumulative GPU-board energy.
+      DCGM_FI_DEV_SM_CLOCK, gauge, SM clock frequency in MHz.
+      DCGM_FI_DEV_MEM_CLOCK, gauge, Memory clock frequency in MHz.
+      DCGM_FI_DEV_MEMORY_TEMP, gauge, Memory temperature in C.
+      DCGM_FI_DEV_GPU_TEMP, gauge, GPU temperature in C.
+      DCGM_FI_DEV_POWER_USAGE, gauge, GPU board power draw in W.
+      DCGM_FI_DEV_TOTAL_ENERGY_CONSUMPTION, counter, GPU board energy consumed since boot in mJ.
+
+      # Utilization, framebuffer and PCIe.
+      DCGM_FI_DEV_GPU_UTIL, gauge, GPU utilization in percent.
+      DCGM_FI_DEV_MEM_COPY_UTIL, gauge, Memory copy utilization in percent.
+      DCGM_FI_DEV_FB_FREE, gauge, Framebuffer memory free in MiB.
+      DCGM_FI_DEV_FB_USED, gauge, Framebuffer memory used in MiB.
+      DCGM_FI_DEV_FB_RESERVED, gauge, Framebuffer memory reserved in MiB.
+      DCGM_FI_PROF_PCIE_TX_BYTES, gauge, PCIe transmit throughput in bytes per second.
+      DCGM_FI_PROF_PCIE_RX_BYTES, gauge, PCIe receive throughput in bytes per second.
+      DCGM_FI_DEV_PCIE_REPLAY_COUNTER, counter, Total PCIe replay events.
+
+      # Raw and exporter-owned incident signals. Windowed counts provide a
+      # stable zero series; cumulative totals preserve observed event labels.
+      DCGM_FI_DEV_XID_ERRORS, gauge, Last XID error encountered.
+      DCGM_EXP_XID_ERRORS_COUNT, gauge, XID records observed in the configured window.
+      DCGM_EXP_XID_ERRORS_TOTAL, counter, XID records observed since exporter start.
+      DCGM_EXP_CLOCK_EVENTS_COUNT, gauge, Clock events observed in the configured window.
+      DCGM_EXP_CLOCK_EVENTS_TOTAL, counter, Clock event transitions observed since exporter start.
+      DCGM_EXP_GPU_HEALTH_STATUS, gauge, Current DCGM GPU health status by health watch.
+      DCGM_EXP_P2P_STATUS, gauge, Current NVLink P2P status for each ordered GPU pair.
+
+      # Throttling and reliability constraints.
+      DCGM_FI_DEV_POWER_VIOLATION, counter, Throttling duration due to power constraints in ns.
+      DCGM_FI_DEV_THERMAL_VIOLATION, counter, Throttling duration due to thermal constraints in ns.
+      DCGM_FI_DEV_SYNC_BOOST_VIOLATION, counter, Throttling duration due to sync boost constraints in ns.
+      DCGM_FI_DEV_BOARD_LIMIT_VIOLATION, counter, Throttling duration due to board constraints in ns.
+      DCGM_FI_DEV_LOW_UTIL_VIOLATION, counter, Throttling duration due to low utilization in ns.
+      DCGM_FI_DEV_RELIABILITY_VIOLATION, counter, Throttling duration due to reliability constraints in ns.
+
+      # ECC, retired pages and row remapping.
+      DCGM_FI_DEV_ECC_SBE_VOL_TOTAL, counter, Total volatile single-bit ECC errors.
+      DCGM_FI_DEV_ECC_DBE_VOL_TOTAL, counter, Total volatile double-bit ECC errors.
+      DCGM_FI_DEV_ECC_SBE_AGG_TOTAL, counter, Total aggregate single-bit ECC errors.
+      DCGM_FI_DEV_ECC_DBE_AGG_TOTAL, counter, Total aggregate double-bit ECC errors.
+      DCGM_FI_DEV_RETIRED_SBE, counter, Total pages retired due to single-bit errors.
+      DCGM_FI_DEV_RETIRED_DBE, counter, Total pages retired due to double-bit errors.
+      DCGM_FI_DEV_RETIRED_PENDING, counter, Pages pending retirement.
+      DCGM_FI_DEV_UNCORRECTABLE_REMAPPED_ROWS, counter, Total uncorrectable remapped rows.
+      DCGM_FI_DEV_CORRECTABLE_REMAPPED_ROWS, counter, Total correctable remapped rows.
+      DCGM_FI_DEV_ROW_REMAP_FAILURE, gauge, Whether row remapping has failed.
+
+      # NVLink traffic and integrity.
+      DCGM_FI_DEV_NVLINK_BANDWIDTH_TOTAL, gauge, Aggregate NVLink traffic rate across all lanes.
+      DCGM_FI_DEV_NVLINK_CRC_FLIT_ERROR_COUNT_TOTAL, counter, Total NVLink flow-control CRC errors.
+      DCGM_FI_DEV_NVLINK_CRC_DATA_ERROR_COUNT_TOTAL, counter, Total NVLink data CRC errors.
+      DCGM_FI_DEV_NVLINK_REPLAY_ERROR_COUNT_TOTAL, counter, Total NVLink replay errors.
+      DCGM_FI_DEV_NVLINK_RECOVERY_ERROR_COUNT_TOTAL, counter, Total NVLink recovery errors.
+
+      # Workload profiling. Unsupported fields are skipped by DCGM and must be
+      # represented as unsupported in Grafana rather than coerced to zero.
+      DCGM_FI_PROF_GR_ENGINE_ACTIVE, gauge, Ratio of time the graphics engine is active.
+      DCGM_FI_PROF_PIPE_TENSOR_ACTIVE, gauge, Ratio of cycles the tensor pipe is active.
+      DCGM_FI_PROF_DRAM_ACTIVE, gauge, Ratio of time the device memory interface is active.
+
+      # Stable software identity labels attached to emitted GPU metrics.
+      DCGM_FI_DRIVER_VERSION, label, NVIDIA driver version.
+      DCGM_FI_NVML_VERSION, label, NVML version.
+      DCGM_FI_DEV_BRAND, label, GPU product brand.
+      DCGM_FI_DEV_VBIOS_VERSION, label, GPU VBIOS version.
+
+  otelcol_app_config:
+    content: |
+      receivers:
+        otlp:
+          protocols:
+            grpc:
+              endpoint: 0.0.0.0:4317
+            http:
+              endpoint: 0.0.0.0:4318
+
+        filelog/docker_containers:
+          include: [/var/lib/docker/containers/*/*-json.log]
+          start_at: end
+          storage: file_storage
+          include_file_path: true
+          operators:
+            - type: json_parser
+              parse_from: body
+              parse_to: attributes
+              timestamp:
+                parse_from: attributes.time
+                layout_type: gotime
+                layout: '2006-01-02T15:04:05.999999999Z07:00'
+              on_error: send_quiet
+            - type: move
+              from: attributes.log
+              to: body
+              if: 'attributes.log != nil'
+            - type: move
+              from: attributes.stream
+              to: attributes["log.iostream"]
+              if: 'attributes.stream != nil'
+            - type: remove
+              field: attributes.time
+              if: 'attributes.time != nil'
+            - type: regex_parser
+              parse_from: attributes["log.file.path"]
+              regex: '/var/lib/docker/containers/(?P<container_id>[a-f0-9]{12})[a-f0-9]*/'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'model:(?P<model>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'served_model:(?P<served_model>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'model_path:(?P<model_path>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'precision:(?P<precision>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'deployment:(?P<deployment>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'ip:(?P<ip>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'port:(?P<port>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'env:(?P<env>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'host:(?P<host>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'instance:(?P<instance>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'replica:(?P<replica>[^",\]]+)'
+              on_error: send_quiet
+            - type: add
+              field: attributes["service.name"]
+              value: cvm-docker
+
+        prometheus/apps:
+          config:
+            scrape_configs:
+              - job_name: sglang-model-sg-glm53-w4afp8-tp2-pf-r1
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['model-sg-glm53-w4afp8-tp2-pf-r1:8000']
+                    labels:
+                      service: "sglang"
+                      source: "sglang"
+                      container_name: "model-sg-glm53-w4afp8-tp2-pf-r1"
+                      model: "z-ai/glm-5.3-flash"
+                      model_path: "graphistry/GLM-5.3-Flash-W4AFP8"
+                      served_model: "z-ai/glm-5.3-flash"
+                      precision: "int4-weights-fp8-activations-bf16-kv"
+                      deployment: "glm53-flash-sgl-pd-qual"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      port: "8000"
+                      instance: "pf1"
+                      config_variant: "pd-prefill-v0521-w4afp8-tp2-ep2-eagle-fixed-3-1-4-mf080-c32768-nixl-ipc"
+                      thinking_budget_policy: "default8192-startup-patch"
+                      request_logging: "disabled"
+                      engine_image: "b1259f3ea327"
+              - job_name: sglang-model-sg-glm53-w4afp8-tp2-pf-r2
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['model-sg-glm53-w4afp8-tp2-pf-r2:8000']
+                    labels:
+                      service: "sglang"
+                      source: "sglang"
+                      container_name: "model-sg-glm53-w4afp8-tp2-pf-r2"
+                      model: "z-ai/glm-5.3-flash"
+                      model_path: "graphistry/GLM-5.3-Flash-W4AFP8"
+                      served_model: "z-ai/glm-5.3-flash"
+                      precision: "int4-weights-fp8-activations-bf16-kv"
+                      deployment: "glm53-flash-sgl-pd-qual"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      port: "8000"
+                      instance: "pf2"
+                      config_variant: "pd-prefill-v0521-w4afp8-tp2-ep2-eagle-fixed-3-1-4-mf080-c32768-nixl-ipc"
+                      thinking_budget_policy: "default8192-startup-patch"
+                      request_logging: "disabled"
+                      engine_image: "b1259f3ea327"
+              - job_name: sglang-model-sg-glm53-w4afp8-tp2-pf-r3
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['model-sg-glm53-w4afp8-tp2-pf-r3:8000']
+                    labels:
+                      service: "sglang"
+                      source: "sglang"
+                      container_name: "model-sg-glm53-w4afp8-tp2-pf-r3"
+                      model: "z-ai/glm-5.3-flash"
+                      model_path: "graphistry/GLM-5.3-Flash-W4AFP8"
+                      served_model: "z-ai/glm-5.3-flash"
+                      precision: "int4-weights-fp8-activations-bf16-kv"
+                      deployment: "glm53-flash-sgl-pd-qual"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      port: "8000"
+                      instance: "pf3"
+                      config_variant: "pd-prefill-v0521-w4afp8-tp2-ep2-eagle-fixed-3-1-4-mf080-c32768-nixl-ipc"
+                      thinking_budget_policy: "default8192-startup-patch"
+                      request_logging: "disabled"
+                      engine_image: "b1259f3ea327"
+              - job_name: sglang-model-sg-glm53-w4afp8-tp2-pf-r4
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['model-sg-glm53-w4afp8-tp2-pf-r4:8000']
+                    labels:
+                      service: "sglang"
+                      source: "sglang"
+                      container_name: "model-sg-glm53-w4afp8-tp2-pf-r4"
+                      model: "z-ai/glm-5.3-flash"
+                      model_path: "graphistry/GLM-5.3-Flash-W4AFP8"
+                      served_model: "z-ai/glm-5.3-flash"
+                      precision: "int4-weights-fp8-activations-bf16-kv"
+                      deployment: "glm53-flash-sgl-pd-qual"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      port: "8000"
+                      instance: "pf4"
+                      config_variant: "pd-prefill-v0521-w4afp8-tp2-ep2-eagle-fixed-3-1-4-mf080-c32768-nixl-ipc"
+                      thinking_budget_policy: "default8192-startup-patch"
+                      request_logging: "disabled"
+                      engine_image: "b1259f3ea327"
+              - job_name: sglang-model-sg-glm53-w4afp8-tp2-dc-r1
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['model-sg-glm53-w4afp8-tp2-dc-r1:8000']
+                    labels:
+                      service: "sglang"
+                      source: "sglang"
+                      container_name: "model-sg-glm53-w4afp8-tp2-dc-r1"
+                      model: "z-ai/glm-5.3-flash"
+                      model_path: "graphistry/GLM-5.3-Flash-W4AFP8"
+                      served_model: "z-ai/glm-5.3-flash"
+                      precision: "int4-weights-fp8-activations-bf16-kv"
+                      deployment: "glm53-flash-sgl-pd-qual"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      port: "8000"
+                      instance: "dc1"
+                      config_variant: "pd-decode-v0521-w4afp8-tp2-ep2-eagle-fixed-3-1-4-mf084-c8192-nixl-ipc"
+                      thinking_budget_policy: "default8192-startup-patch"
+                      request_logging: "disabled"
+                      engine_image: "b1259f3ea327"
+              - job_name: sglang-model-sg-glm53-w4afp8-tp2-dc-r2
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['model-sg-glm53-w4afp8-tp2-dc-r2:8000']
+                    labels:
+                      service: "sglang"
+                      source: "sglang"
+                      container_name: "model-sg-glm53-w4afp8-tp2-dc-r2"
+                      model: "z-ai/glm-5.3-flash"
+                      model_path: "graphistry/GLM-5.3-Flash-W4AFP8"
+                      served_model: "z-ai/glm-5.3-flash"
+                      precision: "int4-weights-fp8-activations-bf16-kv"
+                      deployment: "glm53-flash-sgl-pd-qual"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      port: "8000"
+                      instance: "dc2"
+                      config_variant: "pd-decode-v0521-w4afp8-tp2-ep2-eagle-fixed-3-1-4-mf084-c8192-nixl-ipc"
+                      thinking_budget_policy: "default8192-startup-patch"
+                      request_logging: "disabled"
+                      engine_image: "b1259f3ea327"
+              - job_name: sglang-model-sg-glm53-w4afp8-tp2-dc-r3
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['model-sg-glm53-w4afp8-tp2-dc-r3:8000']
+                    labels:
+                      service: "sglang"
+                      source: "sglang"
+                      container_name: "model-sg-glm53-w4afp8-tp2-dc-r3"
+                      model: "z-ai/glm-5.3-flash"
+                      model_path: "graphistry/GLM-5.3-Flash-W4AFP8"
+                      served_model: "z-ai/glm-5.3-flash"
+                      precision: "int4-weights-fp8-activations-bf16-kv"
+                      deployment: "glm53-flash-sgl-pd-qual"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      port: "8000"
+                      instance: "dc3"
+                      config_variant: "pd-decode-v0521-w4afp8-tp2-ep2-eagle-fixed-3-1-4-mf084-c8192-nixl-ipc"
+                      thinking_budget_policy: "default8192-startup-patch"
+                      request_logging: "disabled"
+                      engine_image: "b1259f3ea327"
+              - job_name: sglang-model-sg-glm53-w4afp8-tp2-dc-r4
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['model-sg-glm53-w4afp8-tp2-dc-r4:8000']
+                    labels:
+                      service: "sglang"
+                      source: "sglang"
+                      container_name: "model-sg-glm53-w4afp8-tp2-dc-r4"
+                      model: "z-ai/glm-5.3-flash"
+                      model_path: "graphistry/GLM-5.3-Flash-W4AFP8"
+                      served_model: "z-ai/glm-5.3-flash"
+                      precision: "int4-weights-fp8-activations-bf16-kv"
+                      deployment: "glm53-flash-sgl-pd-qual"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      port: "8000"
+                      instance: "dc4"
+                      config_variant: "pd-decode-v0521-w4afp8-tp2-ep2-eagle-fixed-3-1-4-mf084-c8192-nixl-ipc"
+                      thinking_budget_policy: "default8192-startup-patch"
+                      request_logging: "disabled"
+                      engine_image: "b1259f3ea327"
+              - job_name: dcgm-dcgm-glm53
+                scrape_interval: 15s
+                scrape_timeout: 10s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['dcgm-glm53:9400']
+                    labels:
+                      service: "dcgm-exporter"
+                      source: "dcgm-exporter"
+                      container_name: "dcgm-glm53"
+                      model: "z-ai/glm-5.3-flash"
+                      model_path: "graphistry/GLM-5.3-Flash-W4AFP8"
+                      served_model: "z-ai/glm-5.3-flash"
+                      deployment: "glm53-flash-sgl-pd-qual"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      port: "9400"
+        prometheus/self:
+          config:
+            scrape_configs:
+              - job_name: otelcol-app
+                scrape_interval: 30s
+                static_configs:
+                  - targets: ['localhost:8888']
+
+      processors:
+        memory_limiter:
+          check_interval: 1s
+          limit_mib: 512
+          spike_limit_mib: 128
+
+        resource:
+          attributes:
+            - key: host.name
+              value: $${env:DD_HOSTNAME}
+              action: upsert
+            - key: cvm.name
+              value: $${env:CVM_NAME}
+              action: upsert
+            - key: host.machine
+              value: $${env:CVM_HOST}
+              action: insert
+            - key: deployment.environment
+              value: $${env:ENV}
+              action: upsert
+            - key: service.namespace
+              value: near-ai
+              action: insert
+
+        transform/docker_metadata:
+          error_mode: ignore
+          log_statements:
+            - context: log
+              statements:
+                - set(attributes["service.name"], attributes["attrs"]["com.docker.compose.service"]) where attributes["attrs"] != nil and attributes["attrs"]["com.docker.compose.service"] != nil
+                - set(attributes["service.name"], ParseJSON(attributes["attrs"]["com.datadoghq.ad.logs"])[0]["service"]) where attributes["attrs"] != nil and attributes["attrs"]["com.datadoghq.ad.logs"] != nil
+                - set(attributes["log.source"], ParseJSON(attributes["attrs"]["com.datadoghq.ad.logs"])[0]["source"]) where attributes["attrs"] != nil and attributes["attrs"]["com.datadoghq.ad.logs"] != nil
+                - set(attributes["service"], attributes["service.name"]) where attributes["attrs"] != nil and attributes["attrs"]["com.datadoghq.ad.logs"] != nil and attributes["service.name"] != nil
+                - set(attributes["source"], attributes["log.source"]) where attributes["attrs"] != nil and attributes["attrs"]["com.datadoghq.ad.logs"] != nil and attributes["log.source"] != nil
+                - set(attributes["container.name"], attributes["attrs"]["com.docker.compose.service"]) where attributes["attrs"] != nil and attributes["attrs"]["com.docker.compose.service"] != nil
+
+        filter/app_logs:
+          error_mode: ignore
+          logs:
+            log_record:
+              - 'attributes["model"] == nil and attributes["deployment"] == nil'
+              - 'attributes["service.name"] == "compose-manager"'
+              - 'attributes["service.name"] == "compose-manager-launcher"'
+              - 'attributes["service.name"] == "otelcol-management"'
+              - 'attributes["service.name"] == "otelcol-contrib"'
+              - 'attributes["service.name"] == "datadog-agent"'
+
+        groupbyattrs/docker_service:
+          keys:
+            - service.name
+            - service
+            - container.name
+            - log.source
+            - source
+            - log.iostream
+            - model
+            - served_model
+            - model_path
+            - precision
+            - deployment
+            - env
+            - host
+            - ip
+            - port
+            - instance
+            - replica
+
+        batch:
+          send_batch_size: 1024
+          send_batch_max_size: 2048
+          timeout: 5s
+
+      exporters:
+        otlphttp/gateway:
+          endpoint: https://telemetry.infra.near.ai
+          headers:
+            Authorization: "Bearer $${env:MONITORING_INGEST_TOKEN}"
+          sending_queue:
+            num_consumers: 1
+            queue_size: 128
+            storage: file_storage
+
+      extensions:
+        file_storage:
+          directory: /var/lib/otelcol-contrib/storage
+          create_directory: true
+
+      service:
+        extensions: [file_storage]
+        pipelines:
+          logs/app:
+            receivers: [filelog/docker_containers]
+            processors: [memory_limiter, resource, transform/docker_metadata, filter/app_logs, groupbyattrs/docker_service, batch]
+            exporters: [otlphttp/gateway]
+          metrics/app:
+            receivers: [prometheus/apps]
+            processors: [memory_limiter, resource, batch]
+            exporters: [otlphttp/gateway]
+          metrics/otlp:
+            receivers: [otlp]
+            processors: [memory_limiter, resource, batch]
+            exporters: [otlphttp/gateway]
+          metrics/self:
+            receivers: [prometheus/self]
+            processors: [memory_limiter, resource, batch]
+            exporters: [otlphttp/gateway]
+          traces:
+            receivers: [otlp]
+            processors: [memory_limiter, resource, batch]
+            exporters: [otlphttp/gateway]
+        telemetry:
+          metrics:
+            address: localhost:8888
+          logs:
+            level: info
