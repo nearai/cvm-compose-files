@@ -1,5 +1,7 @@
 # GLM-5.3 Flash base tier: 4x TP2 canary (one host, gpu03 or gpu04)
 
+> Update: replicas r3 and r4 are now the memory-optimized candidate (r1/r2 are the control). See `docs/glm53-base-tier-memopt-canary.md` for that canary's deploy, abort criteria and rollback; the text below describes the control argv and the original 4x TP2 rollout.
+
 `prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8.yaml` runs **four TP2/EP2 replicas** on one 8x H200 base-tier host instead of the two TP4/EP4 replicas of `prod/GLM-5.3-Flash-SGL-TP4-W4AFP8.yaml`. That TP4 file is the rollback. The new file is generated from it by `scripts/prepare_glm53_w4afp8_tp2x4.py`; do not hand-edit it. **Status: prepared, not deployed. Gates 1–4 below are open.**
 
 ## What changes

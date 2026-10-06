@@ -38,6 +38,23 @@ DEPLOYMENT: Final = "glm53-flash-sgl-tp2x4"
 SOURCE_VARIANT: Final = "fc91d24-w4afp8-c4096-admission-reserve-v10-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192"
 VARIANT: Final = "hicache-w4afp8-qsplit-selective325-mamba165-bf16state-c8192-admission-reserve-v10-pdi1-h200-tp2-ep2-eagle-adaptive-5-1-6-strict-budget8192"
 REPLICAS: Final = (1, 2, 3, 4)
+# Base-tier memory-optimized canary (tee-bench exp 25/25b/25c): r3 and r4 run the candidate argv
+# below, r1 and r2 keep the current prod argv as a same-host, same-traffic control. The shared
+# engine anchor (r1/r2) is untouched, so a scoped deploy of r3/r4 does not recreate r1/r2.
+CANDIDATE_REPLICAS: Final = (3, 4)
+CANDIDATE_PDI: Final = "1"
+CANDIDATE_VARIANT: Final = f"hicache-w4afp8-qsplit-selective325-mamba330-bf16state-memopt086-mr48-c8192-admission-reserve-v10-pdi{CANDIDATE_PDI}-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192"
+# Token-for-token edits of the control argv. Each old token must occur exactly once.
+CANDIDATE_EDITS: Final = (
+    ("--mem-fraction-static 0.80", "--mem-fraction-static 0.86"),
+    ("--max-running-requests 32", "--max-running-requests 48"),
+    ("--prefill-decode-interval 1", f"--prefill-decode-interval {CANDIDATE_PDI}"),
+    ("--cuda-graph-max-bs-decode 32", "--cuda-graph-max-bs-decode 48"),
+    ("--speculative-num-steps 5", "--speculative-num-steps 4"),
+    ("--speculative-num-draft-tokens 6", "--speculative-num-draft-tokens 5"),
+    ("--speculative-adaptive", None),
+    ("--max-mamba-cache-size 165", "--max-mamba-cache-size 330"),
+)
 # Each pair sits inside one four-GPU NVLink island.
 DEVICE_IDS: Final = {1: ("0", "1"), 2: ("2", "3"), 3: ("4", "5"), 4: ("6", "7")}
 SOAK_PORTS: Final = {1: 8008, 2: 8009, 3: 8010, 4: 8011}
@@ -87,6 +104,11 @@ HEADER: Final = (
     "#     the 15-running canary: 8.83 vs 7.74 req/s served (+14%), 2,064 vs 1,771 output tok/s\n"
     "#     (+16%), TTFT p50/p90 0.39/3.20 vs 1.60/5.56 s, backlog 228 vs 925, hit rate 76.8% vs\n"
     "#     71.5%. Cost: TPOT p90 188 vs 70 ms (bigger decode batches). Saturates at ~8.8 req/s.\n"
+    "#\n"
+    "# MEMORY-OPTIMIZED CANARY (docs/glm53-base-tier-memopt-canary.md): r3 and r4 run the candidate\n"
+    "# argv (mem 0.86, EAGLE fixed 4/1/5, 330 mamba slots, 48 running; tee-bench exp 25/25b/25c);\n"
+    "# r1 and r2 keep the argv above as the same-host control. On gpu32 bare metal under overload the\n"
+    "# candidate served +16% (1.75 conv/s) / +25% (2.5 conv/s) more requests than the control lane.\n"
     "#\n"
     "# GATES before any deploy (docs/glm53-tp2x4-base-canary.md): (1) quality with BF16 mamba\n"
     "# state at parity - PASSED 2026-10-02 (GSM8K 97.8% vs 97.4% FP32 state, perception 7/7); (2) a prod-CVM\n"
@@ -223,6 +245,27 @@ def engine_arguments(source: list[str]) -> list[str]:
     return [replaced.get(argument, argument) for argument in source] + list(HICACHE_FLAGS) + list(MAMBA_FLAGS)
 
 
+def candidate_arguments(control: list[str]) -> list[str]:
+    """The control TP2 argv turned into the memory-optimized candidate argv, order preserved."""
+    missing = sorted(old for old, _ in CANDIDATE_EDITS if control.count(old) != 1)
+    if missing:
+        raise GenerationError(f"control engine command changed, cannot derive the candidate argv: {missing}")
+    edits = dict(CANDIDATE_EDITS)
+    candidate = [edits[argument] if argument in edits else argument for argument in control]
+    return [argument for argument in candidate if argument is not None]
+
+
+def candidate_anchor(arguments: list[str]) -> str:
+    return (
+        "x-sg-glm53-flash-candidate: &sg-glm53-flash-candidate\n"
+        "  # Memory-optimized canary argv for r3/r4 (tee-bench exp 25/25b/25c): the control argv with\n"
+        "  # mem 0.86, EAGLE fixed 4/1/5 (no adaptive), 330 mamba slots, 48 running / graph batch 48.\n"
+        "  # Everything else, including the environment, is inherited from the control anchor.\n"
+        "  <<: *sg-glm53-flash-common\n"
+        "  command: >\n" + "".join(f"      {argument}\n" for argument in arguments) + "\n"
+    )
+
+
 def render_replica(template: str, replica: int) -> str:
     """Render one engine service from the source r1 service block."""
     block = replace_exact(
@@ -233,6 +276,9 @@ def render_replica(template: str, replica: int) -> str:
         "replica comment",
     )
     block = replace_exact(block, f"{SOURCE_SERVICE_PREFIX}1", f"{SERVICE_PREFIX}{replica}", 3, "replica name")
+    if replica in CANDIDATE_REPLICAS:
+        block = replace_exact(block, "    <<: *sg-glm53-flash-common\n", "    <<: *sg-glm53-flash-candidate\n", 1, "candidate anchor")
+        block = replace_exact(block, VARIANT, CANDIDATE_VARIANT, 2, "candidate config_variant")
     devices = ",".join(f'"{device}"' for device in DEVICE_IDS[replica])
     block = replace_exact(block, 'device_ids: ["0","1","2","3"]', f"device_ids: [{devices}]", 1, "replica devices")
     block = replace_exact(block, '"instance:1"', f'"instance:{replica}"', 1, "log instance")
@@ -241,6 +287,8 @@ def render_replica(template: str, replica: int) -> str:
 
 def render_scrape_job(template: str, replica: int) -> str:
     job = replace_exact(template, f"{SOURCE_SERVICE_PREFIX}1", f"{SERVICE_PREFIX}{replica}", 3, "scrape job name")
+    if replica in CANDIDATE_REPLICAS:
+        job = replace_exact(job, VARIANT, CANDIDATE_VARIANT, 1, "candidate scrape config_variant")
     return replace_exact(job, '                      instance: "1"\n', f'                      instance: "{replica}"\n', 1, "scrape instance")
 
 
@@ -267,13 +315,14 @@ def generate(source: str) -> str:
     command_start, command_end, command = section(anchor, "  command: >\n", "  volumes:\n", "anchor command")
     arguments = engine_arguments([line.strip() for line in command.splitlines()[1:] if line.strip()])
     anchor = anchor[:command_start] + "  command: >\n" + "".join(f"      {argument}\n" for argument in arguments) + anchor[command_end:]
+    candidate = candidate_anchor(candidate_arguments(arguments))
     for required in ("    - SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE=4096\n", "    - SGLANG_ADMISSION_RESERVE_MAX_FRACTION=0.75\n"):
         if anchor.count(required) != 1:
             raise GenerationError(f"source engine environment changed: {required.strip()}")
     if "SGLANG_HICACHE_" in anchor or "SGLANG_DSA_INDEXER_QSPLIT" in anchor:
         raise GenerationError("source engine environment already carries HiCache or the indexer split")
     anchor = replace_exact(anchor, ANCHOR_ENV_OLD, ANCHOR_ENV_NEW, 1, "anchor environment")
-    updated = updated[:anchor_start] + anchor + updated[anchor_end:]
+    updated = updated[:anchor_start] + anchor + "\n" + candidate.rstrip("\n") + "\n" + updated[anchor_end:]
 
     # Telemetry identity shared by every replica, before the per-replica fan-out.
     for old, new, count, label in (
