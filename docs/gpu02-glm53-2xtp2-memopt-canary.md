@@ -1,6 +1,6 @@
 # gpu02 GLM-5.3 Flash long tier: r2 as two memory-optimized TP2 replicas
 
-Status: DRAFT canary, not deployed. Nothing here is approved to run; it needs an explicit GO, a merged tag that clears compose-manager's commit-age gate, and the abort criteria below.
+Status: merged in #332 and deployed on gpu02 r2. Rolling it out to the other long-tier replicas is in `docs/long-context-glm53-2xtp2-rollout.md`. Any redeploy or rollback below still needs an explicit GO, a merged tag that clears compose-manager's commit-age gate, and the abort criteria below.
 
 ## What changes, and on which host
 
@@ -16,7 +16,7 @@ Status: DRAFT canary, not deployed. Nothing here is approved to run; it needs an
 
 - The TP4 r2 definition is untouched (the unit tests assert its rendered text is identical with and without the canary).
 - The proxy line is now `VLLM_BACKEND_URLS=${GLM53_BACKEND_URLS:-http://model-sg-glm53-w4afp8-tp4-r1:8000,http://model-sg-glm53-w4afp8-tp4-r2:8000}`. Conversation affinity (`VLLM_BACKEND_CONVERSATION_AFFINITY=1`) is unchanged.
-- **gpu23 must NOT get `GLM53_BACKEND_URLS`** in its compose-manager env map, and must keep deploying r2 with its scoped services list. Setting it there would point its proxy at services that do not run there.
+- **A host still running TP4 r1 + r2 (gpu23 until its own stage in `docs/long-context-glm53-2xtp2-rollout.md`) must NOT get `GLM53_BACKEND_URLS`** in its compose-manager env map, and must keep deploying r2 with its scoped services list. Setting it early would point its proxy at services that do not run there.
 - `GLM53_R2_HICACHE_RAM_BUDGET` (r2's 650 GiB override) does not affect the pair. The pair has its own per-replica variables, each defaulting to half of r2's budget: `GLM53_R2A_HICACHE_RAM_BUDGET` and `GLM53_R2B_HICACHE_RAM_BUDGET`, default `325GiB` (2 x 325 = 650 GiB, so total host RAM use is unchanged). Before starting, check gpu02's env map for a leftover `GLM53_R2_HICACHE_RAM_BUDGET` or `GLM53_HICACHE_RAM_BUDGET` and make sure the 406 + 325 + 325 GiB plan fits available RAM minus the 10 GiB reserve.
 - A bare unscoped `compose/up` of this file on gpu02 would start r2 (TP4, GPUs 4-7) beside the pair and collide on GPUs. Always send a scoped `services` list and never an empty one. The pair and r2 are mutually exclusive on gpu02; the validator enforces that the pair stays inside r2's GPUs and does not touch r1's.
 - otelcol: `sglang-model-sg-glm53-w4afp8-tp2-r2a` and `-r2b` scrape jobs carry the same `deployment` label as r1/r2 so dashboards match, and are distinguished by `instance` (`2a`, `2b`), `gpu_pair` (`4-5`, `6-7`) and `config_variant`. gpu23's collector also loads these two jobs from the shared file; their targets do not exist there, so expect `up == 0` for them on gpu23 (see risks in the PR).
@@ -29,7 +29,7 @@ Lab (tee-bench, bare metal): two TP2 replicas beat one TP4 replica on the same f
 - `--tp-size 2 --ep-size 2`, `--mem-fraction-static 0.86`
 - `--max-mamba-cache-size 330 --mamba-ssm-dtype bfloat16` (mamba/bf16-state settings from `prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8.yaml`, slots doubled for the memory headroom)
 - EAGLE fixed 4/1/5 (`--speculative-num-steps 4 --speculative-eagle-topk 1 --speculative-num-draft-tokens 5`, no `--speculative-adaptive`)
-- `--max-running-requests 24 --max-queued-requests 8`
+- `--max-running-requests 24 --max-queued-requests 8` as deployed by #332 (the long-context rollout PR moves every TP2 replica to 12/4 with graphs at 12; see `docs/long-context-glm53-2xtp2-rollout.md`)
 - chunked prefill stays 8192 (32K chunks are under test and conflict with 0.86 at TP2)
 - HiCache `write_through`, `direct` IO, `page_first_direct` layout, as r2 today
 - no admission-reserve environment (forbidden on the long tier), no `--disable-overlap-schedule` (gpu13 is the separate overlap-off canary)

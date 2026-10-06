@@ -878,27 +878,38 @@ W4AFP8_LONG_CONTEXT_ARGV = Shellwords.split(<<~'ARGV').freeze
 ARGV
 W4AFP8_LONG_CONTEXT_HICACHE_ENV = HICACHE_ENV.merge("SGLANG_HICACHE_RAM_BUDGET" => "${GLM53_HICACHE_RAM_BUDGET:-406GiB}").freeze
 
-# gpu02-only 2xTP2 memory-optimized canary. The file is shared by gpu02 and gpu23, so the TP4 r2
-# above stays defined (gpu23 keeps deploying it) and these two TP2 services are ADDED for gpu02 to
-# start in r2's place (same GPUs 4-7, so r2 and the pair are never up together). Lab-validated
-# (tee-bench exp 19): mem 0.86, 330 mamba slots, fixed EAGLE 4/1/5, 24 running / 8 queued.
+# 2xTP2 memory-optimized replicas. The file is shared by gpu02 and gpu23, so the TP4 r1/r2
+# above stay defined (a host not yet converted keeps deploying them) and these TP2 services are ADDED
+# to start in their place (same GPUs, so a TP4 replica and its pair are never up together). Lab-validated
+# (tee-bench exp 19): mem 0.86, 330 mamba slots, fixed EAGLE 4/1/5. Caps are 12 running / 4 queued with decode
+# graphs capped at 12 (user decision, prod KV-bound evidence in docs/long-context-glm53-2xtp2-rollout.md; the lab ran 24/8).
 W4AFP8_TP2_CANARY_REPLICAS = {
   "model-sg-glm53-w4afp8-tp2-r2a" => { "devices" => %w[4 5], "dist_init" => "127.0.0.1:29512", "instance" => "2a", "gpu_pair" => "4-5",
                                        "budget" => "${GLM53_R2A_HICACHE_RAM_BUDGET:-325GiB}" },
   "model-sg-glm53-w4afp8-tp2-r2b" => { "devices" => %w[6 7], "dist_init" => "127.0.0.1:29513", "instance" => "2b", "gpu_pair" => "6-7",
                                        "budget" => "${GLM53_R2B_HICACHE_RAM_BUDGET:-325GiB}" },
+  # Long-context 2xTP2 rollout: the same pair in r1's place (GPUs 0-3).
+  "model-sg-glm53-w4afp8-tp2-r1a" => { "devices" => %w[0 1], "dist_init" => "127.0.0.1:29514", "instance" => "1a", "gpu_pair" => "0-1",
+                                       "budget" => "${GLM53_R1A_HICACHE_RAM_BUDGET:-325GiB}" },
+  "model-sg-glm53-w4afp8-tp2-r1b" => { "devices" => %w[2 3], "dist_init" => "127.0.0.1:29515", "instance" => "1b", "gpu_pair" => "2-3",
+                                       "budget" => "${GLM53_R1B_HICACHE_RAM_BUDGET:-325GiB}" },
 }.freeze
-W4AFP8_TP2_CANARY_VARIANT = "fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host325g-memopt-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192"
+# Each TP2 replica replaces one TP4 replica and must stay inside that replica's GPUs.
+W4AFP8_TP2_PARENT = {
+  "model-sg-glm53-w4afp8-tp2-r1a" => "model-sg-glm53-w4afp8-tp4-r1", "model-sg-glm53-w4afp8-tp2-r1b" => "model-sg-glm53-w4afp8-tp4-r1",
+  "model-sg-glm53-w4afp8-tp2-r2a" => "model-sg-glm53-w4afp8-tp4-r2", "model-sg-glm53-w4afp8-tp2-r2b" => "model-sg-glm53-w4afp8-tp4-r2",
+}.freeze
+W4AFP8_TP2_CANARY_VARIANT = "fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host325g-memopt-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-mr12q4-strict-budget8192"
 W4AFP8_TP2_CANARY_ARGV = Shellwords.split(<<~'ARGV').freeze
   sglang serve
   --model-path /root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/snapshots/99f1fa70408c52b007d4fd69e02e5a522422e755
   --served-model-name z-ai/glm-5.3-flash
   --tp-size 2 --ep-size 2
   --mem-fraction-static 0.86
-  --max-running-requests 24 --max-queued-requests 8
+  --max-running-requests 12 --max-queued-requests 4
   --enable-priority-scheduling --disable-priority-preemption
   --chunked-prefill-size 8192 --max-prefill-tokens 32768 --prefill-decode-interval 2
-  --cuda-graph-max-bs-decode 32
+  --cuda-graph-max-bs-decode 12
   --dsa-prefill-backend tilelang --dsa-decode-backend tilelang
   --kv-cache-dtype bfloat16
   --speculative-algorithm EAGLE --speculative-num-steps 4 --speculative-eagle-topk 1
@@ -917,8 +928,8 @@ ARGV
 # Flags that must never appear on a TP2 canary replica: 32K chunks conflict with 0.86 at TP2,
 # adaptive EAGLE is replaced by the fixed 4/1/5 arm, and gpu13 is the separate overlap-off canary.
 W4AFP8_TP2_CANARY_FORBIDDEN_FLAGS = %w[--disable-overlap-schedule --speculative-adaptive].freeze
-# The proxy pool is host-overridable; its default MUST stay r1 + r2 so gpu23 (which never sets
-# GLM53_BACKEND_URLS) keeps its exact current backend list.
+# The proxy pool is host-overridable; its default MUST stay r1 + r2 so a host that has not
+# converted (and never sets GLM53_BACKEND_URLS) keeps its exact current backend list.
 W4AFP8_PROXY_BACKENDS_DEFAULT = "http://model-sg-glm53-w4afp8-tp4-r1:8000,http://model-sg-glm53-w4afp8-tp4-r2:8000"
 W4AFP8_PROXY_BACKENDS_VALUE = "${GLM53_BACKEND_URLS:-#{W4AFP8_PROXY_BACKENDS_DEFAULT}}"
 
@@ -1087,7 +1098,7 @@ def validate_w4afp8_tp2_canary(errors, label, services, collector, replicas)
     end
     unless actual_argv == expected_argv
       drift = ((actual_argv - expected_argv) + (expected_argv - actual_argv)).uniq
-      errors << "#{label} #{name} argv must be the memory-optimized TP2 argv exactly (tp2/ep2, 0.86, 330 mamba slots, bf16 state, fixed EAGLE 4/1/5, 24 running/8 queued, chunk 8192, write_through, --dist-init-addr #{spec['dist_init']}); differing tokens: #{drift.first(8).join(' ')}"
+      errors << "#{label} #{name} argv must be the memory-optimized TP2 argv exactly (tp2/ep2, 0.86, 330 mamba slots, bf16 state, fixed EAGLE 4/1/5, 12 running/4 queued, graphs 12, chunk 8192, write_through, --dist-init-addr #{spec['dist_init']}); differing tokens: #{drift.first(8).join(' ')}"
     end
     (actual_argv & W4AFP8_TP2_CANARY_FORBIDDEN_FLAGS).each { |flag| errors << "#{label} #{name} must not set #{flag}" }
     actual_argv.each_cons(2) do |flag, value|
@@ -1136,7 +1147,7 @@ def validate_w4afp8_tp2_canary(errors, label, services, collector, replicas)
   end
 
   # Pair parity: everything outside identity, command, environment and devices is shared.
-  if tp2_services.length == 2
+  if tp2_services.length == W4AFP8_TP2_CANARY_REPLICAS.length
     divergent = %w[command environment]
     contracts = tp2_services.values.map { |service| runtime_contract(service).reject { |key, _value| divergent.include?(key) } }
     errors << "#{label} the TP2 canary replicas must share one runtime configuration outside command and environment" unless contracts.uniq.length == 1
@@ -1153,14 +1164,18 @@ def validate_w4afp8_tp2_canary(errors, label, services, collector, replicas)
   duplicated = ports.group_by(&:last).select { |port, group| port && group.length > 1 }
   duplicated.each { |port, group| errors << "#{label} --dist-init-addr #{port} is used by more than one engine: #{group.map(&:first).join(', ')}" }
   device_sets = all_engines.transform_values { |service| Array(service.dig("deploy", "resources", "reservations", "devices", 0, "device_ids")).map(&:to_s) }
-  r1_devices = device_sets["model-sg-glm53-w4afp8-tp4-r1"] || []
-  r2_devices = device_sets["model-sg-glm53-w4afp8-tp4-r2"] || []
+  # Each TP2 replica stays inside the GPUs of the TP4 replica it replaces (never the other one's),
+  # and no two TP2 replicas share a GPU.
   tp2_services.each_key do |name|
-    errors << "#{label} #{name} must not share GPUs with model-sg-glm53-w4afp8-tp4-r1" unless (device_sets[name] & r1_devices).empty?
-    errors << "#{label} #{name} must stay within r2's GPUs #{r2_devices.join(',')} (the pair replaces r2 on gpu02)" unless (device_sets[name] - r2_devices).empty?
+    parent = W4AFP8_TP2_PARENT.fetch(name)
+    parent_devices = device_sets[parent] || []
+    other_devices = (device_sets.select { |other, _| W4AFP8_TP2_PARENT.value?(other) && other != parent }).values.flatten
+    errors << "#{label} #{name} must stay within #{parent}'s GPUs #{parent_devices.join(',')} (it replaces that replica)" unless (device_sets[name] - parent_devices).empty?
+    errors << "#{label} #{name} must not share GPUs with the other TP4 replica" unless (device_sets[name] & other_devices).empty?
   end
-  pair = tp2_services.keys.map { |name| device_sets[name] }
-  errors << "#{label} the TP2 canary replicas must not share GPUs" if pair.length == 2 && !(pair[0] & pair[1]).empty?
+  tp2_services.keys.combination(2).each do |left, right|
+    errors << "#{label} #{left} and #{right} must not share GPUs" unless (device_sets[left] & device_sets[right]).empty?
+  end
 end
 
 # Walks two equal-shaped (or not) structures and returns a dotted path to the
