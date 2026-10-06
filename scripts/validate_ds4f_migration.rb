@@ -102,7 +102,7 @@ scalar_strings = lambda do |value|
   end
 end
 assert.call(scalar_strings.call(small).none? { |value| value.match?(/dsv4|deepseek|ds4f/i) }, 'gpu13 rendered configuration must not contain retired DS4F identities')
-gpu13_glm = { 'model-sg-glm53-w4afp8-tp2-r13a' => %w[4 5], 'model-sg-glm53-w4afp8-tp2-r13b' => %w[6 7] }
+gpu13_glm = { 'model-sg-glm53-w4afp8-tp2-r1a' => %w[4 5], 'model-sg-glm53-w4afp8-tp2-r1b' => %w[6 7] }
 gpu13_glm.each { |name, devices| assert.call(small_ids.call(name) == devices, "gpu13 GLM replica #{name} must use GPUs #{devices.join(',')}") }
 assert.call(!small_services.key?('model-sg-glm53-fp8-tp4'), 'gpu13 must no longer run the TP4 GLM replica (replaced by two TP2 replicas)')
 assert.call(small_ids.call('dcgm-glm53') == %w[4 5 6 7], 'gpu13 GLM exporter must use GPUs 4-7')
@@ -158,7 +158,7 @@ gpu13_glm.each_key do |name|
   env = engine.fetch('environment')
   assert.call(env.count('SGLANG_DSA_INDEXER_QSPLIT=1') == 1, "gpu13 GLM #{name} must enable DSA indexer query split exactly once")
   [
-    "SGLANG_HICACHE_RAM_BUDGET=${GLM53_#{name.end_with?('a') ? 'R13A' : 'R13B'}_HICACHE_RAM_BUDGET:-325GiB}",
+    "SGLANG_HICACHE_RAM_BUDGET=${GLM53_#{name.end_with?('a') ? 'R1A' : 'R1B'}_HICACHE_RAM_BUDGET:-325GiB}",
     'SGLANG_HICACHE_CUDA_HOST_MEMORY=${GLM53_HICACHE_CUDA_HOST_MEMORY:-1}'
   ].each { |entry| assert.call(env.include?(entry), "gpu13 GLM HiCache host-memory contract changed on #{name}: #{entry}") }
   # The admission reserve crashed gpu02's long r2 with a Prefill OOM on 2026-09-18 and is unsafe
@@ -167,11 +167,11 @@ gpu13_glm.each_key do |name|
     assert.call(env.none? { |entry| entry.to_s.start_with?("#{var}=") }, "gpu13 GLM #{name} must not set #{var}: the admission reserve is unsafe on the long tier")
   end
 end
-# Both replicas must run the identical argv apart from the rendezvous port (r13b carries a full copy of the command), and the identical environment apart from the budget variable.
+# Both replicas must run the identical argv apart from the rendezvous port (r1b carries a full copy of the command), and the identical environment apart from the budget variable.
 argv_without_port = ->(name) { small_services.fetch(name).fetch('command').to_s.gsub(/--dist-init-addr \S+/, '').split }
-assert.call(argv_without_port.call('model-sg-glm53-w4afp8-tp2-r13a') == argv_without_port.call('model-sg-glm53-w4afp8-tp2-r13b'), 'gpu13 GLM replicas must have identical argv apart from --dist-init-addr')
+assert.call(argv_without_port.call('model-sg-glm53-w4afp8-tp2-r1a') == argv_without_port.call('model-sg-glm53-w4afp8-tp2-r1b'), 'gpu13 GLM replicas must have identical argv apart from --dist-init-addr')
 env_without_budget = ->(name) { small_services.fetch(name).fetch('environment').reject { |entry| entry.start_with?('SGLANG_HICACHE_RAM_BUDGET=') } }
-assert.call(env_without_budget.call('model-sg-glm53-w4afp8-tp2-r13a') == env_without_budget.call('model-sg-glm53-w4afp8-tp2-r13b'), 'gpu13 GLM replicas must have identical environment apart from the HiCache budget variable')
+assert.call(env_without_budget.call('model-sg-glm53-w4afp8-tp2-r1a') == env_without_budget.call('model-sg-glm53-w4afp8-tp2-r1b'), 'gpu13 GLM replicas must have identical environment apart from the HiCache budget variable')
 # Nothing else in the file may reuse a GLM rendezvous port.
 small_services.each do |name, service|
   next if gpu13_glm.key?(name)
@@ -180,7 +180,7 @@ small_services.each do |name, service|
 end
 small_proxy = small_services.fetch('proxy-glm53')
 assert.call(small_proxy['image'] == 'nearaidev/vllm-proxy-rs@sha256:d61357da39918a57126864a451eaf054f06a6989c03fe9a1666f7e6374ba6907', 'Qualified gpu13 GLM proxy image changed')
-assert.call(small_proxy.fetch('environment').include?('VLLM_BACKEND_URLS=http://model-sg-glm53-w4afp8-tp2-r13a:8000,http://model-sg-glm53-w4afp8-tp2-r13b:8000'), 'gpu13 GLM proxy must pool both TP2 replicas')
+assert.call(small_proxy.fetch('environment').include?('VLLM_BACKEND_URLS=http://model-sg-glm53-w4afp8-tp2-r1a:8000,http://model-sg-glm53-w4afp8-tp2-r1b:8000'), 'gpu13 GLM proxy must pool both TP2 replicas')
 assert.call(small_proxy.fetch('environment').include?('VLLM_BACKEND_CONVERSATION_AFFINITY=1'), 'gpu13 GLM affinity contract changed')
 dcgm_image = 'nvcr.io/nvidia/k8s/dcgm-exporter@sha256:ed594cf53fe6942e84b07b0740cdcbb249fa4b39cb21feeebf93881ae51f0b5e'
 assert.call(small_services.fetch('dcgm-glm53')['image'] == dcgm_image, 'gpu13 GLM exporter image must be pinned')
@@ -205,12 +205,12 @@ tls_server_blocks = nginx.scan(/^server \{\n(?:.*\n)*?^\}$/).select { |block| bl
 host_name_blocks = tls_server_blocks.select { |block| block.include?('gpu13.hosts.near.ai') }
 assert.call(host_name_blocks.length == 1 && host_name_blocks.first.include?('proxy_pass http://proxy-glm53:8000;'), 'gpu13.hosts.near.ai must be bound to the GLM vhost only')
 small_jobs = YAML.safe_load(small.fetch('configs').fetch('otelcol_app_config').fetch('content')).dig('receivers', 'prometheus/apps', 'config', 'scrape_configs')
-%w[sglang-model-sg-glm53-w4afp8-tp2-r13a sglang-model-sg-glm53-w4afp8-tp2-r13b dcgm-dcgm-glm53 dcgm-dcgm-shared-gpu3 inference-proxy-proxy-glm53].each do |job|
+%w[sglang-model-sg-glm53-w4afp8-tp2-r1a sglang-model-sg-glm53-w4afp8-tp2-r1b dcgm-dcgm-glm53 dcgm-dcgm-shared-gpu3 inference-proxy-proxy-glm53].each do |job|
   assert.call(small_jobs.any? { |entry| entry['job_name'] == job }, "gpu13 OTel scrape missing: #{job}")
 end
 # Each replica's OTel label, scrape job and log tag must carry the same truthful config_variant,
 # its own instance and gpu_pair, and the proxy and exporter must advertise the same variant.
-{ 'model-sg-glm53-w4afp8-tp2-r13a' => ['13a', '4-5'], 'model-sg-glm53-w4afp8-tp2-r13b' => ['13b', '6-7'] }.each do |name, (instance, pair)|
+{ 'model-sg-glm53-w4afp8-tp2-r1a' => ['1a', '4-5'], 'model-sg-glm53-w4afp8-tp2-r1b' => ['1b', '6-7'] }.each do |name, (instance, pair)|
   labels = small_services.fetch(name).fetch('labels')
   log_tags = JSON.parse(labels.fetch('com.datadoghq.ad.logs')).flat_map { |entry| Array(entry['tags']) }
   scrape = small_jobs.find { |entry| entry['job_name'] == "sglang-#{name}" }

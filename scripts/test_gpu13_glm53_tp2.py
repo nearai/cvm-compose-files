@@ -11,8 +11,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SMALL = Path("prod/small-models.yaml")
 VALIDATOR = Path("scripts/validate_ds4f_migration.rb")
-A = "model-sg-glm53-w4afp8-tp2-r13a"
-B = "model-sg-glm53-w4afp8-tp2-r13b"
+A = "model-sg-glm53-w4afp8-tp2-r1a"
+B = "model-sg-glm53-w4afp8-tp2-r1b"
 
 
 class Gpu13Tp2Test(unittest.TestCase):
@@ -65,11 +65,11 @@ class Gpu13Tp2Test(unittest.TestCase):
             (self.valid.replace("--cuda-graph-max-bs-decode 16", "--cuda-graph-max-bs-decode 32", 1), "runtime flag changed"),
             (self.valid.replace("--max-mamba-cache-size 330", "--max-mamba-cache-size 165", 1), "runtime flag changed"),
             (self.valid.replace("--tp-size 2", "--tp-size 4", 1), "runtime flag changed"),
-            (self.valid.replace("${GLM53_R13A_HICACHE_RAM_BUDGET:-325GiB}", "${GLM53_HICACHE_RAM_BUDGET:-80%}", 1), "HiCache host-memory contract changed"),
+            (self.valid.replace("${GLM53_R1A_HICACHE_RAM_BUDGET:-325GiB}", "${GLM53_HICACHE_RAM_BUDGET:-80%}", 1), "HiCache host-memory contract changed"),
             (self.valid.replace("    - SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE=1\n", "    - SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE=1\n    - SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE=4096\n", 1), "must not set SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE"),
             (self.valid[:start_b] + b_block.replace("127.0.0.1:29511", "127.0.0.1:29510") + self.valid[end_b:], "needs a unique --dist-init-addr"),
             (self.valid[:start_b] + b_block.replace('device_ids: ["6","7"]', 'device_ids: ["4","5"]') + self.valid[end_b:], "must use GPUs 6,7"),
-            (self.valid[:start_b] + b_block.replace('nearai.otel.instance: "13b"', 'nearai.otel.instance: "x"') + self.valid[end_b:], "instance must be 13b"),
+            (self.valid[:start_b] + b_block.replace('nearai.otel.instance: "1b"', 'nearai.otel.instance: "x"') + self.valid[end_b:], "instance must be 1b"),
             (self.valid.replace("pdi2-gpu13", "pdi1-overlap-off-gpu13"), "config_variant"),
             (self.valid.replace(f"http://{B}:8000", "", 1).replace(f"{A}:8000,", f"{A}:8000", 1), "must pool both TP2 replicas"),
         )
