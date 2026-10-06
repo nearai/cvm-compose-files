@@ -339,6 +339,11 @@ def generate(source: str) -> str:
     # cuda_ipc cannot export without fabric handles, so NIXL silently falls back to host
     # staging (0.28-0.39 GB/s). False gives 18-105 GB/s.
     - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:False
+    # Under HCC/PPCIe, UCX's cuda_copy memory domain pins host buffers with cuMemHostRegister,
+    # which the CVM rejects (\"operation not supported\"): NIXL's aux/state DRAM registration then
+    # fails with NIXL_ERR_BACKEND (gpu03, 2026-10-06). PD_UCX_TLS=^cuda_copy keeps cuda_ipc for
+    # GPU->GPU KV and registers host memory on the host transports only.
+    - UCX_TLS=${{PD_UCX_TLS:-all}}
     - TORCHINDUCTOR_CACHE_DIR=/root/.cache/torchinductor
     - TRITON_CACHE_DIR=/root/.cache/triton
     - TILELANG_CACHE_DIR=/root/.cache/tilelang
