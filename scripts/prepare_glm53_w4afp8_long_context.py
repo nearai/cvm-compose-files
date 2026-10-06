@@ -289,6 +289,10 @@ TP2_FLAG_CHANGES: Final = {
     "--speculative-adaptive": None,
 }
 BACKEND_URLS_R1_R2: Final = f"http://{SERVICE_PREFIX}1:8000,http://{SERVICE_PREFIX}2:8000"
+# The value gpu02's compose-manager env map sets for GLM53_BACKEND_URLS during the 2xTP2 canary.
+GPU02_BACKEND_URLS: Final = (
+    f"http://{SERVICE_PREFIX}1:8000,http://{TP2_SERVICE_PREFIX}2a:8000,http://{TP2_SERVICE_PREFIX}2b:8000"
+)
 PROXY_BACKEND_OLD: Final = f"      - VLLM_BACKEND_URLS={BACKEND_URLS_R1_R2}\n"
 PROXY_BACKEND_NEW: Final = (
     "      # Host-overridable pool. Unset (gpu23, and gpu02 until the 2xTP2 canary), this is exactly r1 + r2.\n"

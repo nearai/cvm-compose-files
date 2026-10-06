@@ -6,6 +6,9 @@
 # How to run: python3 -m unittest scripts.test_glm53_w4afp8_long_context (needs ruby for the validator cases)
 """The generated W4AFP8 + HiCache long-context file, its generator and its validator contract."""
 
+import json
+import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -438,6 +441,84 @@ class ValidatorContractTest(unittest.TestCase):
         needle = "image: nvcr.io/nvidia/k8s/dcgm-exporter@sha256:613ab03c11d442fd960ff515f547e9921537454a712d08160bc8f677f89f1c35"
         mutated = self.replace_once(needle, "image: nvcr.io/nvidia/k8s/dcgm-exporter@sha256:" + "0" * 64)
         self.assert_fails(mutated, "GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext.yaml", DCGM_VALIDATOR)
+
+
+CANARY_DOC = ROOT / "docs/gpu02-glm53-2xtp2-memopt-canary.md"
+
+
+def _defined_services(text: str) -> set[str]:
+    services = text[text.index("\nservices:\n") :]
+    return set(re.findall(r"^  ([a-z0-9-]+):$", services, flags=re.MULTILINE))
+
+
+def _interpolate(value: str, env: dict[str, str]) -> str:
+    """Compose's ${NAME:-default}: the default when NAME is unset or empty."""
+
+    def resolve(match: re.Match[str]) -> str:
+        return env.get(match.group(1)) or match.group(2)
+
+    return re.sub(r"\$\{([A-Z0-9_]+):-([^}]*)\}", resolve, value)
+
+
+class ProxyPoolRenderTest(unittest.TestCase):
+    """The effective proxy pool on each host: gpu23 (override unset) and gpu02 (canary override)."""
+
+    def setUp(self) -> None:
+        self.text = TARGET.read_text()
+        lines = [line.strip() for line in self.text.splitlines() if line.strip().startswith("- VLLM_BACKEND_URLS=")]
+        self.assertEqual(len(lines), 1, "exactly one proxy pool line")
+        self.expression = lines[0].removeprefix("- VLLM_BACKEND_URLS=")
+        self.services = _defined_services(self.text)
+
+    def assert_pool(self, pool: str, expected: str) -> None:
+        self.assertEqual(pool, expected)
+        for url in pool.split(","):
+            host = re.fullmatch(r"http://([a-z0-9-]+):8000", url)
+            self.assertIsNotNone(host, url)
+            self.assertIn(host.group(1), self.services, f"{url} must name a service in {generator.TARGET}")
+
+    def test_gpu23_pool_when_override_unset_or_empty(self) -> None:
+        for env in ({}, {"GLM53_BACKEND_URLS": ""}):
+            self.assert_pool(_interpolate(self.expression, env), generator.BACKEND_URLS_R1_R2)
+
+    def test_gpu02_pool_with_canary_override(self) -> None:
+        pool = _interpolate(self.expression, {"GLM53_BACKEND_URLS": generator.GPU02_BACKEND_URLS})
+        self.assert_pool(pool, generator.GPU02_BACKEND_URLS)
+
+    def test_runbook_sets_the_tested_gpu02_value_and_scopes_the_canary_services(self) -> None:
+        doc = CANARY_DOC.read_text()
+        self.assertIn(f"GLM53_BACKEND_URLS={generator.GPU02_BACKEND_URLS}", doc)
+        self.assertIn(
+            'services: ["model-sg-glm53-w4afp8-tp2-r2a", "model-sg-glm53-w4afp8-tp2-r2b", "proxy-glm53", "otelcol-contrib"]',
+            doc,
+        )
+        self.assertIn('services: ["model-sg-glm53-w4afp8-tp4-r2"]', doc)
+
+    @unittest.skipUnless(shutil.which("docker"), "docker CLI not available")
+    def test_docker_compose_render(self) -> None:
+        version = subprocess.run(["docker", "compose", "version"], capture_output=True, text=True, check=False)
+        if version.returncode != 0:
+            self.skipTest("docker compose plugin not available")
+
+        def rendered_pool(override: str | None) -> str:
+            env = {k: v for k, v in os.environ.items() if k != "GLM53_BACKEND_URLS"}
+            # Deploy-time secrets marked ${VAR:?...}: dummy values, as the CI compose render does.
+            for name in set(re.findall(r"\$\{([A-Z0-9_]+):?\?", self.text)):
+                env.setdefault(name, "ci-dummy")
+            if override is not None:
+                env["GLM53_BACKEND_URLS"] = override
+            result = subprocess.run(
+                ["docker", "compose", "-f", str(TARGET), "config", "--format", "json"],
+                capture_output=True,
+                text=True,
+                check=False,
+                env=env,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr[-2000:])
+            return json.loads(result.stdout)["services"]["proxy-glm53"]["environment"]["VLLM_BACKEND_URLS"]
+
+        self.assert_pool(rendered_pool(None), generator.BACKEND_URLS_R1_R2)
+        self.assert_pool(rendered_pool(generator.GPU02_BACKEND_URLS), generator.GPU02_BACKEND_URLS)
 
 
 if __name__ == "__main__":
