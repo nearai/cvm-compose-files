@@ -26,6 +26,7 @@ LABEL nearai.sglang.mm_shm_wrap_off_loop="v1"
 LABEL nearai.sglang.event_loop_stall_dump="v1-on-30s"
 LABEL nearai.sglang.ghost_prefix_cache="v1-opt-in"
 LABEL nearai.sglang.kv_tier_metrics="v1-opt-in"
+LABEL nearai.security_remediation="CVE-2026-102268:pyjwt-2.14.0"
 
 COPY Dockerfile \
      PROVENANCE \
@@ -46,11 +47,18 @@ COPY Dockerfile \
      test_ghost_cache.py \
      test_kv_tier_metrics.py \
      kvtm_check_plugin.py \
+     security-requirements.txt \
      /usr/share/nearai/glm53-hicache-w4afp8/
 RUN test -n "$BUILD_SOURCE_REVISION" \
     && cd /usr/share/nearai/glm53-hicache-w4afp8 \
     && sha256sum --check --strict SHA256SUMS \
     && python3 apply-patches.py
+
+# Security remediation: the base ships PyJWT 2.13.0 (CVE-2026-102268, fixed in 2.14.0). It is only a
+# dependency of msal; SGLang never imports it. Install the fixed wheel by exact hash, without deps.
+RUN /opt/sglang/bin/python3 -m pip install --no-cache-dir --no-deps --require-hashes \
+        -r /usr/share/nearai/glm53-hicache-w4afp8/security-requirements.txt \
+    && /opt/sglang/bin/python3 -c "import jwt; assert jwt.__version__ == '2.14.0', jwt.__version__"
 
 # The loader and pool-clamp patches are required for the W4AFP8 image and are unconditional. The DSA
 # indexer query split is inert unless SGLANG_DSA_INDEXER_QSPLIT=1. The two event-loop patches are

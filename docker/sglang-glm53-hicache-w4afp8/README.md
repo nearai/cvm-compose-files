@@ -388,3 +388,10 @@ measured at 406 GiB, 650 GiB and with HiCache off on the same replay (gpu31 HiCa
 a CPU-only container on gpu31 (2026-10-05, tag `glm53-hicache-w4afp8:v5-obs`). On GPU the lab
 bind-mounted the same module and patched tree core over the v4 lab image for the HiCache policy A/B
 (gpu31, 2026-09-30); this build has not run on GPU.
+
+## Security remediation
+
+The base image ships PyJWT 2.13.0, which has CVE-2026-102268 (critical, fixed in 2.14.0). PyJWT is only a
+dependency of `msal`; SGLang does not import it. The Dockerfile installs the fixed 2.14.0 wheel by exact
+hash (`security-requirements.txt`, `--require-hashes --no-deps`) and asserts the version. Published as
+`glm53-hicache-w4afp8-v6`; the v5 publish run stopped at the fixable-critical gate and was never signed.
