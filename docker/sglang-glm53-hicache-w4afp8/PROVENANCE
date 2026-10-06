@@ -53,4 +53,8 @@ hicache_tee_requirement=SGLANG_HICACHE_CUDA_HOST_MEMORY=1 (cudaMallocHost); 0 se
 qualification=gpu31 2026-09-23: loads and serves, HiCache attaches (hicache_attached=True, host pool 2,460,992 tokens), 30-minute soak 420 requests 0 errors. gpu31 reports CC status OFF, so the HCC/PPCIe allocator path is NOT covered and still needs a TEE-host soak.
 evidence=gpu31:/data/inference-optimizer-20260913/evals/hicache
 build_recipe=docker/sglang-glm53-hicache-w4afp8/Dockerfile
-security_remediation=CVE-2026-102268:pyjwt-2.14.0 (base ships PyJWT 2.13.0, a dependency of msal only; fixed wheel installed by exact sha256 from security-requirements.txt, --no-deps; found by the v5 publish Trivy gate, run 37431712793)
+security_remediation=CVE-2026-102268:pyjwt-2.14.0
+security_remediation_artifact=pyjwt-2.14.0-py3-none-any.whl
+security_remediation_artifact_sha256=ad0cef71c756a56e74863c2919cf0985f72decbcfcb550ee2f422e7c62b5eedc
+security_remediation_detail=the base (sha256:3eccc307..., recipe docker/sglang-glm53-hicache-admission-reserve) ships PyJWT 2.13.0, a dependency of msal only; this recipe installs the wheel above by exact hash from security-requirements.txt (--require-hashes --no-deps) and asserts jwt.__version__ == 2.14.0; found by the v5 publish Trivy gate, run 37431712793
+security_remediation_scope=this recipe only; the sibling variants of publish-glm53-admission-reserve.yaml (base, hicache, base-clamp, hicache-clamp, w4afp8) build from the same base and are not remediated by this change; their next publish needs the same fix
