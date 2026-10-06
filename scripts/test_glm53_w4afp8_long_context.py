@@ -6,6 +6,9 @@
 # How to run: python3 -m unittest scripts.test_glm53_w4afp8_long_context (needs ruby for the validator cases)
 """The generated W4AFP8 + HiCache long-context file, its generator and its validator contract."""
 
+import json
+import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -33,6 +36,12 @@ R1_WITHOUT_OFFLOOP_VARIANT = R1_VARIANT.replace("-offloop-v3", "")
 R2_WITHOUT_OFFLOOP_VARIANT = R2_VARIANT.replace("-offloop-v3", "")
 
 
+PROXY_POOL = "VLLM_BACKEND_URLS=${GLM53_BACKEND_URLS:-http://model-sg-glm53-w4afp8-tp4-r1:8000,http://model-sg-glm53-w4afp8-tp4-r2:8000}"
+TP2_VARIANT = generator.TP2_VARIANT
+R2A = "model-sg-glm53-w4afp8-tp2-r2a"
+R2B = "model-sg-glm53-w4afp8-tp2-r2b"
+
+
 def replace_nth(text: str, needle: str, index: int, replacement: str) -> str:
     positions = []
     start = text.find(needle)
@@ -45,7 +54,7 @@ def replace_nth(text: str, needle: str, index: int, replacement: str) -> str:
 
 def rendered_engine_sections() -> tuple[str, str, str]:
     rendered = generator.generate((ROOT / generator.SOURCE).read_text())
-    return rendered, generator.section(rendered, "x-sg-glm53-flash-common: &sg-glm53-flash-common\n", "\nx-dcgm-common: &dcgm-common\n", "shared engine anchor")[2], generator.section(rendered, "  model-sg-glm53-w4afp8-tp4-r2:\n", "\n  # Explicit operator-only semantic check;", "replica 2 service")[2]
+    return rendered, generator.section(rendered, "x-sg-glm53-flash-common: &sg-glm53-flash-common\n", "\nx-dcgm-common: &dcgm-common\n", "shared engine anchor")[2], generator.section(rendered, "  model-sg-glm53-w4afp8-tp4-r2:\n", "\n  # --- GLM-5.3-Flash 2xTP2 memory-optimized canary replica 2a", "replica 2 service")[2]
 
 
 class GeneratedFileTest(unittest.TestCase):
@@ -113,6 +122,48 @@ class GeneratedFileTest(unittest.TestCase):
         self.assertEqual(anchor.count("\n    - SGLANG_DSA_INDEXER_QSPLIT=1\n"), 1)
         self.assertEqual(r2.count("\n      - SGLANG_DSA_INDEXER_QSPLIT=1\n"), 1)
 
+    def test_tp2_canary_leaves_the_tp4_replicas_and_the_default_pool_untouched_for_gpu23(self) -> None:
+        # gpu23 deploys r1 + r2 from this same file with a scoped services list and never sets
+        # GLM53_BACKEND_URLS. Without the canary additions the file must be the same except for the
+        # proxy line's override wrapper, whose default is the exact previous value.
+        source = (ROOT / generator.SOURCE).read_text()
+        with_canary = generator.generate(source)
+        original_add = generator.add_tp2_canary
+        try:
+            generator.add_tp2_canary = lambda text: text
+            without = generator.generate(source)
+        finally:
+            generator.add_tp2_canary = original_add
+        r1 = "  model-sg-glm53-w4afp8-tp4-r1:\n"
+        r2 = "  model-sg-glm53-w4afp8-tp4-r2:\n"
+        self.assertEqual(
+            generator.section(with_canary, r1, r2, "r1")[2], generator.section(without, r1, r2, "r1")[2]
+        )
+        self.assertEqual(
+            generator.section(with_canary, r2, "\n  # --- GLM-5.3-Flash 2xTP2", "r2")[2],
+            generator.section(without, r2, "\n  # Explicit operator-only", "r2")[2],
+        )
+        self.assertIn(f"- VLLM_BACKEND_URLS={generator.BACKEND_URLS_R1_R2}\n", without)
+        self.assertIn("${GLM53_BACKEND_URLS:-" + generator.BACKEND_URLS_R1_R2 + "}", with_canary)
+
+    def test_tp2_pair_is_memory_optimized_and_half_of_r2_host_ram(self) -> None:
+        rendered = generator.generate((ROOT / generator.SOURCE).read_text())
+        for suffix, spec in generator.TP2_REPLICAS.items():
+            service = generator.section(
+                rendered, f"  {generator.TP2_SERVICE_PREFIX}{suffix}:\n", "\n  # --- GLM-5.3-Flash 2xTP2" if suffix == "2a" else "\n  # Explicit operator-only", suffix
+            )[2]
+            with self.subTest(replica=suffix):
+                for flag in ("--tp-size 2", "--ep-size 2", "--mem-fraction-static 0.86", "--max-mamba-cache-size 330", "--max-running-requests 24",
+                             "--max-queued-requests 8", "--speculative-num-steps 4", "--speculative-eagle-topk 1", "--speculative-num-draft-tokens 5",
+                             "--mamba-ssm-dtype bfloat16", "--chunked-prefill-size 8192", "--hicache-write-policy write_through",
+                             f"--dist-init-addr {spec['dist_init']}"):
+                    self.assertIn(f"\n        {flag}\n", service)
+                for forbidden in ("--speculative-adaptive", "--disable-overlap-schedule", "ADMISSION_RESERVE"):
+                    self.assertNotIn(forbidden, service)
+                self.assertIn(f"${{{spec['budget_var']}:-325GiB}}", service)
+                self.assertEqual(2 * 325, 650)  # r2 default is 650 GiB
+
+
 
 class ValidatorContractTest(unittest.TestCase):
     """Each mutation of the committed file must fail the production validator with its reason."""
@@ -149,6 +200,11 @@ class ValidatorContractTest(unittest.TestCase):
     def replace_once(self, before: str, after: str) -> str:
         self.assertEqual(self.valid.count(before), 1, before)
         return self.valid.replace(before, after)
+
+    def replace_r2(self, before: str, after: str) -> str:
+        """Mutate the TP4 r2 occurrence of a needle that the TP2 pair (rendered after r2) also carries."""
+        self.assertEqual(self.valid.count(before), 3, before)
+        return replace_nth(self.valid, before, 0, after)
 
     def test_committed_files_pass(self) -> None:
         for script in (VALIDATOR, DCGM_VALIDATOR):
@@ -206,7 +262,8 @@ class ValidatorContractTest(unittest.TestCase):
         )
         for before, after, message in cases:
             with self.subTest(mutation=after.strip()[:60]):
-                self.assert_fails(self.replace_once(before, after), message)
+                mutated = self.replace_r2(before, after) if before.startswith("\n        --") else self.replace_once(before, after)
+                self.assert_fails(mutated, message)
 
     def test_rejects_c16384_without_the_indexer_split(self) -> None:
         """Raising r2 to the 16384 chunk without the split must be rejected by the pairing gate.
@@ -217,13 +274,13 @@ class ValidatorContractTest(unittest.TestCase):
         the pairing error specifically, so the test cannot pass merely because some unrelated
         equality check fired first.
         """
-        mutated = self.replace_once("\n        --chunked-prefill-size 8192\n", "\n        --chunked-prefill-size 16384\n")
+        mutated = self.replace_r2("\n        --chunked-prefill-size 8192\n", "\n        --chunked-prefill-size 16384\n")
         mutated = mutated.replace("      - SGLANG_DSA_INDEXER_QSPLIT=1\n", "", 1)
         self.assert_fails(mutated, "without SGLANG_DSA_INDEXER_QSPLIT=1")
 
     def test_rejects_dropping_the_split_from_r2(self) -> None:
         """r2 carries the split in this arm; removing it is the whole variable under test."""
-        self.assert_fails(self.replace_once("      - SGLANG_DSA_INDEXER_QSPLIT=1\n", ""), "SGLANG_DSA_INDEXER_QSPLIT")
+        self.assert_fails(self.replace_r2("      - SGLANG_DSA_INDEXER_QSPLIT=1\n", ""), "SGLANG_DSA_INDEXER_QSPLIT")
 
     def test_rejects_the_split_on_an_image_without_the_patch(self) -> None:
         """The split flag is inert and misleading on v1, which does not carry the patch.
@@ -273,8 +330,16 @@ class ValidatorContractTest(unittest.TestCase):
             ('"id":"z-ai/glm-5.3-flash-long"', '"id":"z-ai/glm-5.3-flash"', outside),
             ("set $$backend http://model-sg-glm53-w4afp8-tp4-r2:8000;", "set $$backend http://model-sg-glm53-w4afp8-tp4-r1:8000;", outside),
             (
-                "VLLM_BACKEND_URLS=http://model-sg-glm53-w4afp8-tp4-r1:8000,http://model-sg-glm53-w4afp8-tp4-r2:8000",
-                "VLLM_BACKEND_URLS=http://model-sg-glm53-w4afp8-tp4-r1:8000",
+                PROXY_POOL,
+                "VLLM_BACKEND_URLS=${GLM53_BACKEND_URLS:-http://model-sg-glm53-w4afp8-tp4-r1:8000}",
+                "must pool both W4AFP8 replicas",
+            ),
+            # gpu23 never sets GLM53_BACKEND_URLS: dropping the override, or pooling the TP2 pair
+            # by default, would change what gpu23 deploys.
+            (PROXY_POOL, "VLLM_BACKEND_URLS=http://model-sg-glm53-w4afp8-tp4-r1:8000,http://model-sg-glm53-w4afp8-tp4-r2:8000", "must pool both W4AFP8 replicas"),
+            (
+                PROXY_POOL,
+                "VLLM_BACKEND_URLS=${GLM53_BACKEND_URLS:-http://model-sg-glm53-w4afp8-tp4-r1:8000,http://model-sg-glm53-w4afp8-tp2-r2a:8000,http://model-sg-glm53-w4afp8-tp2-r2b:8000}",
                 "must pool both W4AFP8 replicas",
             ),
         )
@@ -294,16 +359,166 @@ class ValidatorContractTest(unittest.TestCase):
             ('"precision:int4-weights-fp8-activations-bf16-kv"', '"precision:fp8-weights-bf16-kv"', 0, "log metadata must carry precision:"),
             (f'                      engine_image: "{generator.ENGINE_IMAGE_LABEL}"\n', '                      engine_image: "e9d29a1cb1cd"\n', 0, "scrape label engine_image"),
             (f'                      engine_image: "{generator.R2_ENGINE_IMAGE_LABEL}"\n', '                      engine_image: "e9d29a1cb1cd"\n', 1, "scrape label engine_image"),
-            ('      nearai.otel.model_path: "graphistry/GLM-5.3-Flash-W4AFP8"\n', '      nearai.otel.model_path: "zai-org/GLM-5.3-Flash"\n', 2, "dcgm-glm53 nearai.otel.model_path"),
+            ('      nearai.otel.model_path: "graphistry/GLM-5.3-Flash-W4AFP8"\n', '      nearai.otel.model_path: "zai-org/GLM-5.3-Flash"\n', 4, "dcgm-glm53 nearai.otel.model_path"),
         )
         for needle, replacement, index, message in cases:
             with self.subTest(mutation=message):
                 self.assert_fails(replace_nth(self.valid, needle, index, replacement), message)
 
+    def test_tp2_canary_rejects_flag_and_memory_drift(self) -> None:
+        argv = "argv must be the memory-optimized TP2 argv exactly"
+        for name in (R2A, R2B):
+            start = self.valid.index(f"  {name}:\n")
+            end = self.valid.index("\n  # ---", start + 10) if name == R2A else self.valid.index("\n  # Explicit operator-only", start)
+            block = self.valid[start:end]
+            cases = (
+                ("--mem-fraction-static 0.86", "--mem-fraction-static 0.80", argv),
+                ("--max-mamba-cache-size 330", "--max-mamba-cache-size 165", argv),
+                ("--max-running-requests 24", "--max-running-requests 32", argv),
+                ("--max-queued-requests 8", "--max-queued-requests 16", argv),
+                ("--speculative-num-steps 4", "--speculative-num-steps 5", argv),
+                ("--speculative-num-draft-tokens 5", "--speculative-num-draft-tokens 6", argv),
+                ("--tp-size 2", "--tp-size 4", argv),
+                ("--hicache-write-policy write_through", "--hicache-write-policy write_through_selective", argv),
+                ("--chunked-prefill-size 8192", "--chunked-prefill-size 32768", "must not enable 32K prefill chunks"),
+                ("--mamba-ssm-dtype bfloat16\n", "--mamba-ssm-dtype bfloat16\n        --speculative-adaptive\n", "must not set --speculative-adaptive"),
+                ("--mamba-ssm-dtype bfloat16\n", "--mamba-ssm-dtype bfloat16\n        --disable-overlap-schedule\n", "must not set --disable-overlap-schedule"),
+            )
+            for before, after, message in cases:
+                with self.subTest(replica=name, mutation=after.strip()[:50]):
+                    self.assertEqual(block.count(before), 1, before)
+                    self.assert_fails(self.valid[:start] + block.replace(before, after, 1) + self.valid[end:], message)
+
+    def test_tp2_canary_rejects_environment_pinning_and_telemetry_drift(self) -> None:
+        for name, devices, wrong_devices, budget, instance in (
+            (R2A, '["4","5"]', '["4","6"]', "${GLM53_R2A_HICACHE_RAM_BUDGET:-325GiB}", "2a"),
+            (R2B, '["6","7"]', '["0","1"]', "${GLM53_R2B_HICACHE_RAM_BUDGET:-325GiB}", "2b"),
+        ):
+            start = self.valid.index(f"  {name}:\n")
+            end = self.valid.index("\n  # ---", start + 10) if name == R2A else self.valid.index("\n  # Explicit operator-only", start)
+            block = self.valid[start:end]
+            cases = (
+                (f"device_ids: {devices}", f"device_ids: {wrong_devices}", "must use GPU device_ids"),
+                ("    environment:\n", "    environment:\n      - SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE=4096\n", "must not set admission-reserve environment"),
+                (budget, budget.replace("325GiB", "650GiB"), "environment must be the long-context environment plus per-replica"),
+                ("      - SGLANG_DSA_INDEXER_QSPLIT=1\n", "", "environment must be the long-context environment plus per-replica"),
+                (f'nearai.otel.instance: "{instance}"', 'nearai.otel.instance: "9"', "nearai.otel.instance must be"),
+                ("nearai.otel.gpu_pair:", "nearai.otel.gpu_pairx:", "nearai.otel.gpu_pair must be"),
+                (f'nearai.otel.config_variant: "{TP2_VARIANT}"', 'nearai.otel.config_variant: "x"', "nearai.otel.config_variant must be"),
+                ('nearai.otel.deployment: "glm53-flash-sgl-tp4"', 'nearai.otel.deployment: "other"', "nearai.otel.deployment"),
+                (f"image: {RELEASED_V3_IMAGE}\n", f"image: {PREVIOUS_R1_V2_IMAGE}\n", "image must be"),
+                ("    container_name: " + name + "\n", "    container_name: " + name + '\n    restart: "no"\n', "must share one runtime configuration outside command and environment"),
+            )
+            for before, after, message in cases:
+                with self.subTest(replica=name, message=message):
+                    self.assertGreaterEqual(block.count(before), 1, before)
+                    self.assert_fails(self.valid[:start] + block.replace(before, after, 1) + self.valid[end:], message)
+
+    def test_tp2_canary_rejects_duplicate_dist_init_port_and_gpu_overlap(self) -> None:
+        self.assert_fails(self.replace_once("        --dist-init-addr 127.0.0.1:29513\n", "        --dist-init-addr 127.0.0.1:29512\n"), "is used by more than one engine")
+        self.assert_fails(self.replace_once("        --dist-init-addr 127.0.0.1:29512\n", "        --dist-init-addr 127.0.0.1:29510\n"), "is used by more than one engine")
+        self.assert_fails(self.replace_once('device_ids: ["6","7"]', 'device_ids: ["4","5"]'), "must not share GPUs")
+
+    def test_tp2_canary_rejects_missing_scrape_job_and_scrape_label_drift(self) -> None:
+        job = generator.tp2_scrape_job("2a")
+        self.assertEqual(self.valid.count(job), 1)
+        self.assert_fails(self.valid.replace(job, "", 1), f"missing sglang-{R2A} scrape job")
+        for before, after, message in (
+            (f"                      instance: \"2a\"\n", "                      instance: \"2\"\n", "scrape label instance"),
+            ('                      gpu_pair: "4-5"\n', '                      gpu_pair: "0-1"\n', "scrape label gpu_pair"),
+            (f"                      config_variant: \"{TP2_VARIANT}\"\n", '                      config_variant: "x"\n', "scrape label config_variant"),
+            (f"['{R2A}:8000']", "['model-sg-glm53-w4afp8-tp4-r2:8000']", f"sglang-{R2A} must scrape"),
+        ):
+            with self.subTest(message=message):
+                self.assert_fails(replace_nth(self.valid, before, 0, after), message)
+
+    def test_tp2_canary_services_are_required(self) -> None:
+        start = self.valid.index(f"  {R2B}:\n")
+        end = self.valid.index("\n  # Explicit operator-only", start)
+        self.assert_fails(self.valid[:start] + self.valid[end:], "is missing services")
+
     def test_dcgm_validator_covers_the_file(self) -> None:
         needle = "image: nvcr.io/nvidia/k8s/dcgm-exporter@sha256:613ab03c11d442fd960ff515f547e9921537454a712d08160bc8f677f89f1c35"
         mutated = self.replace_once(needle, "image: nvcr.io/nvidia/k8s/dcgm-exporter@sha256:" + "0" * 64)
         self.assert_fails(mutated, "GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext.yaml", DCGM_VALIDATOR)
+
+
+CANARY_DOC = ROOT / "docs/gpu02-glm53-2xtp2-memopt-canary.md"
+
+
+def _defined_services(text: str) -> set[str]:
+    services = text[text.index("\nservices:\n") :]
+    return set(re.findall(r"^  ([a-z0-9-]+):$", services, flags=re.MULTILINE))
+
+
+def _interpolate(value: str, env: dict[str, str]) -> str:
+    """Compose's ${NAME:-default}: the default when NAME is unset or empty."""
+
+    def resolve(match: re.Match[str]) -> str:
+        return env.get(match.group(1)) or match.group(2)
+
+    return re.sub(r"\$\{([A-Z0-9_]+):-([^}]*)\}", resolve, value)
+
+
+class ProxyPoolRenderTest(unittest.TestCase):
+    """The effective proxy pool on each host: gpu23 (override unset) and gpu02 (canary override)."""
+
+    def setUp(self) -> None:
+        self.text = TARGET.read_text()
+        lines = [line.strip() for line in self.text.splitlines() if line.strip().startswith("- VLLM_BACKEND_URLS=")]
+        self.assertEqual(len(lines), 1, "exactly one proxy pool line")
+        self.expression = lines[0].removeprefix("- VLLM_BACKEND_URLS=")
+        self.services = _defined_services(self.text)
+
+    def assert_pool(self, pool: str, expected: str) -> None:
+        self.assertEqual(pool, expected)
+        for url in pool.split(","):
+            host = re.fullmatch(r"http://([a-z0-9-]+):8000", url)
+            self.assertIsNotNone(host, url)
+            self.assertIn(host.group(1), self.services, f"{url} must name a service in {generator.TARGET}")
+
+    def test_gpu23_pool_when_override_unset_or_empty(self) -> None:
+        for env in ({}, {"GLM53_BACKEND_URLS": ""}):
+            self.assert_pool(_interpolate(self.expression, env), generator.BACKEND_URLS_R1_R2)
+
+    def test_gpu02_pool_with_canary_override(self) -> None:
+        pool = _interpolate(self.expression, {"GLM53_BACKEND_URLS": generator.GPU02_BACKEND_URLS})
+        self.assert_pool(pool, generator.GPU02_BACKEND_URLS)
+
+    def test_runbook_sets_the_tested_gpu02_value_and_scopes_the_canary_services(self) -> None:
+        doc = CANARY_DOC.read_text()
+        self.assertIn(f"GLM53_BACKEND_URLS={generator.GPU02_BACKEND_URLS}", doc)
+        self.assertIn(
+            'services: ["model-sg-glm53-w4afp8-tp2-r2a", "model-sg-glm53-w4afp8-tp2-r2b", "proxy-glm53", "otelcol-contrib"]',
+            doc,
+        )
+        self.assertIn('services: ["model-sg-glm53-w4afp8-tp4-r2"]', doc)
+
+    @unittest.skipUnless(shutil.which("docker"), "docker CLI not available")
+    def test_docker_compose_render(self) -> None:
+        version = subprocess.run(["docker", "compose", "version"], capture_output=True, text=True, check=False)
+        if version.returncode != 0:
+            self.skipTest("docker compose plugin not available")
+
+        def rendered_pool(override: str | None) -> str:
+            env = {k: v for k, v in os.environ.items() if k != "GLM53_BACKEND_URLS"}
+            # Deploy-time secrets marked ${VAR:?...}: dummy values, as the CI compose render does.
+            for name in set(re.findall(r"\$\{([A-Z0-9_]+):?\?", self.text)):
+                env.setdefault(name, "ci-dummy")
+            if override is not None:
+                env["GLM53_BACKEND_URLS"] = override
+            result = subprocess.run(
+                ["docker", "compose", "-f", str(TARGET), "config", "--format", "json"],
+                capture_output=True,
+                text=True,
+                check=False,
+                env=env,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr[-2000:])
+            return json.loads(result.stdout)["services"]["proxy-glm53"]["environment"]["VLLM_BACKEND_URLS"]
+
+        self.assert_pool(rendered_pool(None), generator.BACKEND_URLS_R1_R2)
+        self.assert_pool(rendered_pool(generator.GPU02_BACKEND_URLS), generator.GPU02_BACKEND_URLS)
 
 
 if __name__ == "__main__":

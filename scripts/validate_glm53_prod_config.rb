@@ -878,6 +878,50 @@ W4AFP8_LONG_CONTEXT_ARGV = Shellwords.split(<<~'ARGV').freeze
 ARGV
 W4AFP8_LONG_CONTEXT_HICACHE_ENV = HICACHE_ENV.merge("SGLANG_HICACHE_RAM_BUDGET" => "${GLM53_HICACHE_RAM_BUDGET:-406GiB}").freeze
 
+# gpu02-only 2xTP2 memory-optimized canary. The file is shared by gpu02 and gpu23, so the TP4 r2
+# above stays defined (gpu23 keeps deploying it) and these two TP2 services are ADDED for gpu02 to
+# start in r2's place (same GPUs 4-7, so r2 and the pair are never up together). Lab-validated
+# (tee-bench exp 19): mem 0.86, 330 mamba slots, fixed EAGLE 4/1/5, 24 running / 8 queued.
+W4AFP8_TP2_CANARY_REPLICAS = {
+  "model-sg-glm53-w4afp8-tp2-r2a" => { "devices" => %w[4 5], "dist_init" => "127.0.0.1:29512", "instance" => "2a", "gpu_pair" => "4-5",
+                                       "budget" => "${GLM53_R2A_HICACHE_RAM_BUDGET:-325GiB}" },
+  "model-sg-glm53-w4afp8-tp2-r2b" => { "devices" => %w[6 7], "dist_init" => "127.0.0.1:29513", "instance" => "2b", "gpu_pair" => "6-7",
+                                       "budget" => "${GLM53_R2B_HICACHE_RAM_BUDGET:-325GiB}" },
+}.freeze
+W4AFP8_TP2_CANARY_VARIANT = "fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host325g-memopt-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192"
+W4AFP8_TP2_CANARY_ARGV = Shellwords.split(<<~'ARGV').freeze
+  sglang serve
+  --model-path /root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/snapshots/99f1fa70408c52b007d4fd69e02e5a522422e755
+  --served-model-name z-ai/glm-5.3-flash
+  --tp-size 2 --ep-size 2
+  --mem-fraction-static 0.86
+  --max-running-requests 24 --max-queued-requests 8
+  --enable-priority-scheduling --disable-priority-preemption
+  --chunked-prefill-size 8192 --max-prefill-tokens 32768 --prefill-decode-interval 2
+  --cuda-graph-max-bs-decode 32
+  --dsa-prefill-backend tilelang --dsa-decode-backend tilelang
+  --kv-cache-dtype bfloat16
+  --speculative-algorithm EAGLE --speculative-num-steps 4 --speculative-eagle-topk 1
+  --speculative-num-draft-tokens 5
+  --reasoning-parser glm45 --enable-strict-thinking --grammar-backend xgrammar --tool-call-parser glm47
+  --chat-template /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/3f1971b7b5f7a528c9c4ef6212c8785298a8c24a/chat_template.jinja
+  --context-length 1048576
+  --dist-init-addr DIST_INIT
+  --watchdog-timeout 1800 --host 0.0.0.0 --port 8000
+  --enable-metrics --enable-cache-report --log-requests-level 0
+  --disable-fast-image-processor --limit-mm-data-per-request '{"image": 64}'
+  --enable-hierarchical-cache --hicache-write-policy write_through
+  --hicache-io-backend direct --hicache-mem-layout page_first_direct
+  --max-mamba-cache-size 330 --mamba-ssm-dtype bfloat16
+ARGV
+# Flags that must never appear on a TP2 canary replica: 32K chunks conflict with 0.86 at TP2,
+# adaptive EAGLE is replaced by the fixed 4/1/5 arm, and gpu13 is the separate overlap-off canary.
+W4AFP8_TP2_CANARY_FORBIDDEN_FLAGS = %w[--disable-overlap-schedule --speculative-adaptive].freeze
+# The proxy pool is host-overridable; its default MUST stay r1 + r2 so gpu23 (which never sets
+# GLM53_BACKEND_URLS) keeps its exact current backend list.
+W4AFP8_PROXY_BACKENDS_DEFAULT = "http://model-sg-glm53-w4afp8-tp4-r1:8000,http://model-sg-glm53-w4afp8-tp4-r2:8000"
+W4AFP8_PROXY_BACKENDS_VALUE = "${GLM53_BACKEND_URLS:-#{W4AFP8_PROXY_BACKENDS_DEFAULT}}"
+
 # The long-context file and the W4AFP8 long-context file, reduced to what must be
 # identical: engines, the engine anchor and the replicas' scrape jobs removed, replica
 # names and the checkpoint behind the telemetry normalized.
@@ -885,12 +929,18 @@ def w4afp8_long_context_view(errors, file_label, compose, replica_names)
   view = Marshal.load(Marshal.dump(compose))
   view.delete("x-sg-glm53-flash-common")
   replica_names.each { |name| view.fetch("services", {}).delete(name) }
+  # The gpu02 2xTP2 canary services and the host-overridable proxy pool are validated separately.
+  W4AFP8_TP2_CANARY_REPLICAS.each_key { |name| view.fetch("services", {}).delete(name) }
+  proxy_environment = view.dig("services", "proxy-glm53", "environment")
+  if proxy_environment.is_a?(Array)
+    proxy_environment.map! { |item| item == "VLLM_BACKEND_URLS=#{W4AFP8_PROXY_BACKENDS_VALUE}" ? "VLLM_BACKEND_URLS=#{W4AFP8_PROXY_BACKENDS_DEFAULT}" : item }
+  end
   otel = view.dig("configs", "otelcol_app_config")
   if otel && otel["content"]
     collector = load_embedded_yaml(errors, "#{file_label} otelcol_app_config", otel["content"])
     if collector
       Array(collector.dig("receivers", "prometheus/apps", "config", "scrape_configs")).reject! do |job|
-        job.is_a?(Hash) && replica_names.any? { |name| job["job_name"] == "sglang-#{name}" }
+        job.is_a?(Hash) && (replica_names + W4AFP8_TP2_CANARY_REPLICAS.keys).any? { |name| job["job_name"] == "sglang-#{name}" }
       end
       otel["content"] = collector
     end
@@ -904,7 +954,7 @@ end
 def validate_w4afp8_long_context(errors, compose, reference)
   label = "W4AFP8 long-context"
   services = compose.fetch("services", {})
-  expected_services = EXPECTED_SERVICES - REPLICAS.keys + W4AFP8_LONG_CONTEXT_REPLICAS.keys
+  expected_services = EXPECTED_SERVICES - REPLICAS.keys + W4AFP8_LONG_CONTEXT_REPLICAS.keys + W4AFP8_TP2_CANARY_REPLICAS.keys
   missing = expected_services - services.keys
   extra = services.keys - expected_services
   errors << "#{label} is missing services: #{missing.join(', ')}" unless missing.empty?
@@ -997,11 +1047,14 @@ def validate_w4afp8_long_context(errors, compose, reference)
   proxy = services["proxy-glm53"] || {}
   proxy_env = environment_map(proxy)
   expected_backends = W4AFP8_LONG_CONTEXT_REPLICAS.keys.map { |name| "http://#{name}:8000" }.join(",")
-  errors << "#{label} proxy-glm53 must pool both W4AFP8 replicas" unless proxy_env["VLLM_BACKEND_URLS"] == expected_backends
+  errors << "#{label} proxy-glm53 default pool must stay exactly #{expected_backends} (gpu23 never sets GLM53_BACKEND_URLS and must keep it)" unless W4AFP8_PROXY_BACKENDS_DEFAULT == expected_backends
+  errors << "#{label} proxy-glm53 must pool both W4AFP8 replicas by default and stay host-overridable: VLLM_BACKEND_URLS=#{W4AFP8_PROXY_BACKENDS_VALUE}" unless proxy_env["VLLM_BACKEND_URLS"] == W4AFP8_PROXY_BACKENDS_VALUE
   errors << "#{label} proxy-glm53 must enable conversation affinity" unless proxy_env["VLLM_BACKEND_CONVERSATION_AFFINITY"] == "1"
   unless PRIORITY_NORMALIZING_PROXY_IMAGES.include?(proxy["image"])
     errors << "#{label} enables SGLang priority scheduling but proxy-glm53 image #{proxy['image'].inspect} is not a priority-normalizing inference-proxy build"
   end
+
+  validate_w4afp8_tp2_canary(errors, label, services, collector, replicas)
 
   reference_view = w4afp8_long_context_view(errors, "long-context file", reference, REPLICAS.keys)
   target_view = w4afp8_long_context_view(errors, "#{label} file", compose, W4AFP8_LONG_CONTEXT_REPLICAS.keys)
@@ -1009,6 +1062,105 @@ def validate_w4afp8_long_context(errors, compose, reference)
 
   difference = first_difference(reference_view, target_view)
   errors << "#{label} file must match the long-context file outside the two engines and their telemetry (first difference: #{difference})"
+end
+
+# The gpu02 2xTP2 memory-optimized pair, checked as rigorously as r1/r2: exact argv and
+# environment, GPU pinning, no admission reserve, telemetry, and scrape jobs. `replicas` holds the
+# TP4 r1/r2 services so port and GPU collisions against them can be rejected.
+def validate_w4afp8_tp2_canary(errors, label, services, collector, replicas)
+  reference_env = environment_map(services.fetch("model-sg-glm53-w4afp8-tp4-r1", {}))
+  tp2_services = {}
+  W4AFP8_TP2_CANARY_REPLICAS.each do |name, spec|
+    service = services[name]
+    next errors << "#{label} missing services.#{name}" if service.nil?
+
+    tp2_services[name] = service
+    engine_image_label = W4AFP8_LONG_CONTEXT_V3_IMAGE.split(":").last[0, 12]
+    errors << "#{label} #{name} image must be #{W4AFP8_LONG_CONTEXT_V3_IMAGE}" unless service["image"] == W4AFP8_LONG_CONTEXT_V3_IMAGE
+    errors << "#{label} #{name} must use the prebuilt signed image, not a host-local build" if service.key?("build")
+    expected_argv = W4AFP8_TP2_CANARY_ARGV.map { |token| token == "DIST_INIT" ? spec["dist_init"] : token }
+    actual_argv = begin
+      Shellwords.split(command_text(service))
+    rescue ArgumentError => error
+      errors << "#{label} #{name} command cannot be parsed: #{error.message}"
+      []
+    end
+    unless actual_argv == expected_argv
+      drift = ((actual_argv - expected_argv) + (expected_argv - actual_argv)).uniq
+      errors << "#{label} #{name} argv must be the memory-optimized TP2 argv exactly (tp2/ep2, 0.86, 330 mamba slots, bf16 state, fixed EAGLE 4/1/5, 24 running/8 queued, chunk 8192, write_through, --dist-init-addr #{spec['dist_init']}); differing tokens: #{drift.first(8).join(' ')}"
+    end
+    (actual_argv & W4AFP8_TP2_CANARY_FORBIDDEN_FLAGS).each { |flag| errors << "#{label} #{name} must not set #{flag}" }
+    actual_argv.each_cons(2) do |flag, value|
+      errors << "#{label} #{name} must not enable 32K prefill chunks (conflicts with 0.86 at TP2)" if flag == "--chunked-prefill-size" && value.to_i > 8192
+    end
+
+    env = environment_map(service)
+    expected_env = reference_env.merge(W4AFP8_LONG_CONTEXT_HICACHE_ENV)
+                                .merge("SGLANG_HICACHE_RAM_BUDGET" => spec["budget"], W4AFP8_QSPLIT_ENV => "1")
+    reserve = env.keys & ADMISSION_RESERVE_ENV
+    errors << "#{label} #{name} must not set admission-reserve environment: #{reserve.join(', ')}" unless reserve.empty?
+    (env.keys & FORBIDDEN_ENV).each { |key| errors << "#{label} #{name} must not set #{key}" }
+    unless env == expected_env
+      diff = (env.to_a - expected_env.to_a) + (expected_env.to_a - env.to_a)
+      errors << "#{label} #{name} environment must be the long-context environment plus per-replica SGLANG_HICACHE_RAM_BUDGET=#{spec['budget']} and #{W4AFP8_QSPLIT_ENV}=1; differing: #{diff.map { |key, value| "#{key}=#{value}" }.uniq.join(' ')}"
+    end
+
+    device_ids = Array(service.dig("deploy", "resources", "reservations", "devices", 0, "device_ids")).map(&:to_s)
+    errors << "#{label} #{name} must use GPU device_ids #{spec['devices'].join(',')}" unless device_ids == spec["devices"]
+
+    labels = service["labels"].is_a?(Hash) ? service["labels"] : {}
+    { "nearai.otel.model_path" => W4AFP8_CHECKPOINT, "nearai.otel.engine_image" => engine_image_label, "nearai.otel.instance" => spec["instance"],
+      "nearai.otel.gpu_pair" => spec["gpu_pair"], "nearai.otel.deployment" => labels["nearai.otel.deployment"] }.each do |key, value|
+      errors << "#{label} #{name} #{key} must be #{value.inspect}, got #{labels[key].inspect}" unless labels[key] == value
+    end
+    errors << "#{label} #{name} nearai.otel.deployment must match proxy-glm53 so dashboards line up" unless labels["nearai.otel.deployment"] == services.dig("proxy-glm53", "labels", "nearai.otel.deployment")
+    tags = begin
+      Array(JSON.parse(labels["com.datadoghq.ad.logs"].to_s).first&.fetch("tags", []))
+    rescue JSON::ParserError
+      []
+    end
+    ["model_path:#{W4AFP8_CHECKPOINT}", "precision:#{W4AFP8_PRECISION}", "engine_image:#{engine_image_label}", "instance:#{spec['instance']}", "gpu_pair:#{spec['gpu_pair']}"].each do |tag|
+      errors << "#{label} #{name} log metadata must carry #{tag}" unless tags.include?(tag)
+    end
+    check_variant(errors, label, service, name, collector, W4AFP8_TP2_CANARY_VARIANT)
+    scrape = scrape_job(errors, label, collector, "sglang-#{name}")
+    if scrape
+      targets = scrape.dig("static_configs", 0, "targets")
+      errors << "#{label} sglang-#{name} must scrape #{name}:8000, got #{targets.inspect}" unless targets == ["#{name}:8000"]
+      scrape_labels = scrape.dig("static_configs", 0, "labels") || {}
+      { "container_name" => name, "model_path" => W4AFP8_CHECKPOINT, "precision" => W4AFP8_PRECISION, "engine_image" => engine_image_label,
+        "instance" => spec["instance"], "gpu_pair" => spec["gpu_pair"], "deployment" => labels["nearai.otel.deployment"] }.each do |key, value|
+        errors << "#{label} sglang-#{name} scrape label #{key} must be #{value.inspect}, got #{scrape_labels[key].inspect}" unless scrape_labels[key] == value
+      end
+    end
+  end
+
+  # Pair parity: everything outside identity, command, environment and devices is shared.
+  if tp2_services.length == 2
+    divergent = %w[command environment]
+    contracts = tp2_services.values.map { |service| runtime_contract(service).reject { |key, _value| divergent.include?(key) } }
+    errors << "#{label} the TP2 canary replicas must share one runtime configuration outside command and environment" unless contracts.uniq.length == 1
+  end
+
+  # Unique rendezvous ports across every engine in the file, and no GPU overlap with r1. The pair
+  # deliberately reuses r2's GPUs 4-7 (r2 is stopped before the pair starts), so each TP2 pair's
+  # devices must be a subset of r2's and the pair must not overlap each other.
+  all_engines = replicas.merge(tp2_services)
+  ports = all_engines.map do |name, service|
+    argv = begin Shellwords.split(command_text(service)) rescue [] end
+    [name, argv.each_cons(2).find { |flag, _| flag == "--dist-init-addr" }&.last]
+  end
+  duplicated = ports.group_by(&:last).select { |port, group| port && group.length > 1 }
+  duplicated.each { |port, group| errors << "#{label} --dist-init-addr #{port} is used by more than one engine: #{group.map(&:first).join(', ')}" }
+  device_sets = all_engines.transform_values { |service| Array(service.dig("deploy", "resources", "reservations", "devices", 0, "device_ids")).map(&:to_s) }
+  r1_devices = device_sets["model-sg-glm53-w4afp8-tp4-r1"] || []
+  r2_devices = device_sets["model-sg-glm53-w4afp8-tp4-r2"] || []
+  tp2_services.each_key do |name|
+    errors << "#{label} #{name} must not share GPUs with model-sg-glm53-w4afp8-tp4-r1" unless (device_sets[name] & r1_devices).empty?
+    errors << "#{label} #{name} must stay within r2's GPUs #{r2_devices.join(',')} (the pair replaces r2 on gpu02)" unless (device_sets[name] - r2_devices).empty?
+  end
+  pair = tp2_services.keys.map { |name| device_sets[name] }
+  errors << "#{label} the TP2 canary replicas must not share GPUs" if pair.length == 2 && !(pair[0] & pair[1]).empty?
 end
 
 # Walks two equal-shaped (or not) structures and returns a dotted path to the
