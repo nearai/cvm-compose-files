@@ -48,7 +48,8 @@ class Gpu13Tp2Test(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_tp4_service_is_gone_and_pool_has_both_replicas(self) -> None:
-        self.assertNotIn("model-sg-glm53-fp8-tp4", self.valid.replace("model-sg-glm53-fp8-tp4 (scoped", ""))
+        services = self.valid[self.valid.index("\nservices:\n"):]
+        self.assertNotIn("\n  model-sg-glm53-fp8-tp4:\n", services)
         self.assertIn(f"VLLM_BACKEND_URLS=http://{A}:8000,http://{B}:8000", self.valid)
 
     def test_rejects_drift(self) -> None:
@@ -61,7 +62,7 @@ class Gpu13Tp2Test(unittest.TestCase):
             (self.valid.replace("--mem-fraction-static 0.86", "--mem-fraction-static 0.80", 1), "runtime flag changed"),
             (self.valid.replace("--max-mamba-cache-size 330", "--max-mamba-cache-size 165", 1), "runtime flag changed"),
             (self.valid.replace("--tp-size 2", "--tp-size 4", 1), "runtime flag changed"),
-            (self.valid.replace("${GLM53_HICACHE_RAM_BUDGET:-325GiB}", "${GLM53_HICACHE_RAM_BUDGET:-80%}", 1), "HiCache host-memory contract changed"),
+            (self.valid.replace("${GLM53_R13A_HICACHE_RAM_BUDGET:-325GiB}", "${GLM53_HICACHE_RAM_BUDGET:-80%}", 1), "HiCache host-memory contract changed"),
             (self.valid.replace("    - SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE=1\n", "    - SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE=1\n    - SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE=4096\n", 1), "must not set SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE"),
             (self.valid[:start_b] + b_block.replace("127.0.0.1:29511", "127.0.0.1:29510") + self.valid[end_b:], "needs a unique --dist-init-addr"),
             (self.valid[:start_b] + b_block.replace('device_ids: ["6","7"]', 'device_ids: ["4","5"]') + self.valid[end_b:], "must use GPUs 6,7"),
@@ -69,8 +70,8 @@ class Gpu13Tp2Test(unittest.TestCase):
             (self.valid.replace("pdi2-gpu13", "pdi1-overlap-off-gpu13"), "config_variant"),
             (self.valid.replace(f"http://{B}:8000", "", 1).replace(f"{A}:8000,", f"{A}:8000", 1), "must pool both TP2 replicas"),
         )
-        for mutated, message in cases:
-            with self.subTest(message=message, mutation=hash(mutated) % 1000):
+        for index, (mutated, message) in enumerate(cases):
+            with self.subTest(index=index, message=message):
                 self.assert_fails(mutated, message)
 
 

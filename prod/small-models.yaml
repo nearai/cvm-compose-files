@@ -287,9 +287,10 @@ x-sg-glm53-flash-common: &sg-glm53-flash-common
     # (Loki, 2026-10-05 21:30 UTC) at the previous 80% = 830 GiB, so 650 GiB leaves about
     # 380 GiB for the OS, page cache and other services. A fixed value does not resolve
     # against RAM at start, so the replica started second gets the same. Overridable per
-    # deployment with GLM53_HICACHE_RAM_BUDGET (applies to both); oversized values fail at
-    # startup by design.
-    - SGLANG_HICACHE_RAM_BUDGET=${GLM53_HICACHE_RAM_BUDGET:-325GiB}
+    # deployment with GLM53_R13A_HICACHE_RAM_BUDGET / GLM53_R13B_HICACHE_RAM_BUDGET (one per
+    # replica, so a stale shared value cannot starve the second one); oversized values fail at
+    # startup by design. r13b carries its own copy of this block (a merge key replaces lists).
+    - SGLANG_HICACHE_RAM_BUDGET=${GLM53_R13A_HICACHE_RAM_BUDGET:-325GiB}
     # CUDA-owned host memory (cudaMallocHost). Must stay 1 on TEE hosts: 0
     # selects cudaHostRegister, which fails with CUDA error 801 under HCC/PPCIe.
     - SGLANG_HICACHE_CUDA_HOST_MEMORY=${GLM53_HICACHE_CUDA_HOST_MEMORY:-1}
@@ -1119,6 +1120,43 @@ services:
         --hicache-mem-layout page_first_direct
         --max-mamba-cache-size 330
         --mamba-ssm-dtype bfloat16
+    environment:
+      - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+      - HF_HUB_OFFLINE=1
+      - TRANSFORMERS_OFFLINE=1
+      - HF_HUB_DISABLE_TELEMETRY=1
+      - DO_NOT_TRACK=1
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - OPENBLAS_L2_SIZE=2097152
+      - NCCL_DEBUG=WARN
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+      - TORCHINDUCTOR_CACHE_DIR=/root/.cache/torchinductor
+      - TRITON_CACHE_DIR=/root/.cache/triton
+      - TILELANG_CACHE_DIR=/root/.cache/tilelang
+      - SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION=0
+      # No admission reserve: it crashed gpu02's long r2 with a Prefill OOM on
+      # 2026-09-18 (reserve v10 admitted a 292K-cached waiter beside an in-flight
+      # chunked prefill at pool 0.99) and the qualified L2 arm runs without it.
+      # Follow-up: canary the reserve on gpu13 once the pool-clamp guard is
+      # confirmed for that admission path.
+      - SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE=1
+      # HiCache host-memory budget per replica across its two TP ranks: a fixed 325 GiB (the
+      # validated value; two replicas take 650 GiB). gpu13 had about 1038 GiB available to GLM
+      # (Loki, 2026-10-05 21:30 UTC) at the previous 80% = 830 GiB, so 650 GiB leaves about
+      # 380 GiB for the OS, page cache and other services. A fixed value does not resolve
+      # against RAM at start, so the replica started second gets the same. Overridable per
+      # deployment with GLM53_HICACHE_RAM_BUDGET (applies to both); oversized values fail at
+      # startup by design.
+      - SGLANG_HICACHE_RAM_BUDGET=${GLM53_R13B_HICACHE_RAM_BUDGET:-325GiB}
+      # CUDA-owned host memory (cudaMallocHost). Must stay 1 on TEE hosts: 0
+      # selects cudaHostRegister, which fails with CUDA error 801 under HCC/PPCIe.
+      - SGLANG_HICACHE_CUDA_HOST_MEMORY=${GLM53_HICACHE_CUDA_HOST_MEMORY:-1}
+      - SGLANG_HICACHE_POOLED_TRANSFERS=1
+      - SGLANG_HICACHE_STAGING_PAGES=64
+      # Split DSA indexer logits scratch across the TP2 ranks. This reduces each
+      # rank's transient allocation but does not bound it at every context (at TP2 the
+      # share is twice TP4's; see the rollout runbook's capacity check).
+      - SGLANG_DSA_INDEXER_QSPLIT=1
     deploy:
       resources:
         reservations:

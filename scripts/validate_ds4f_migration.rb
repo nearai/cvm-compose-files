@@ -158,7 +158,7 @@ gpu13_glm.each_key do |name|
   env = engine.fetch('environment')
   assert.call(env.count('SGLANG_DSA_INDEXER_QSPLIT=1') == 1, "gpu13 GLM #{name} must enable DSA indexer query split exactly once")
   [
-    'SGLANG_HICACHE_RAM_BUDGET=${GLM53_HICACHE_RAM_BUDGET:-325GiB}',
+    "SGLANG_HICACHE_RAM_BUDGET=${GLM53_#{name.end_with?('a') ? 'R13A' : 'R13B'}_HICACHE_RAM_BUDGET:-325GiB}",
     'SGLANG_HICACHE_CUDA_HOST_MEMORY=${GLM53_HICACHE_CUDA_HOST_MEMORY:-1}'
   ].each { |entry| assert.call(env.include?(entry), "gpu13 GLM HiCache host-memory contract changed on #{name}: #{entry}") }
   # The admission reserve crashed gpu02's long r2 with a Prefill OOM on 2026-09-18 and is unsafe
@@ -167,6 +167,11 @@ gpu13_glm.each_key do |name|
     assert.call(env.none? { |entry| entry.to_s.start_with?("#{var}=") }, "gpu13 GLM #{name} must not set #{var}: the admission reserve is unsafe on the long tier")
   end
 end
+# Both replicas must run the identical argv apart from the rendezvous port (r13b carries a full copy of the command), and the identical environment apart from the budget variable.
+argv_without_port = ->(name) { small_services.fetch(name).fetch('command').to_s.gsub(/--dist-init-addr \S+/, '').split }
+assert.call(argv_without_port.call('model-sg-glm53-w4afp8-tp2-r13a') == argv_without_port.call('model-sg-glm53-w4afp8-tp2-r13b'), 'gpu13 GLM replicas must have identical argv apart from --dist-init-addr')
+env_without_budget = ->(name) { small_services.fetch(name).fetch('environment').reject { |entry| entry.start_with?('SGLANG_HICACHE_RAM_BUDGET=') } }
+assert.call(env_without_budget.call('model-sg-glm53-w4afp8-tp2-r13a') == env_without_budget.call('model-sg-glm53-w4afp8-tp2-r13b'), 'gpu13 GLM replicas must have identical environment apart from the HiCache budget variable')
 # Nothing else in the file may reuse a GLM rendezvous port.
 small_services.each do |name, service|
   next if gpu13_glm.key?(name)
