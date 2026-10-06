@@ -167,7 +167,7 @@ class GeneratedFileTest(unittest.TestCase):
             begin, finish = tp2_bounds(rendered, f"{generator.TP2_SERVICE_PREFIX}{suffix}")
             service = rendered[begin:finish]
             with self.subTest(replica=suffix):
-                for flag in ("--tp-size 2", "--ep-size 2", "--mem-fraction-static 0.86", "--max-mamba-cache-size 330", "--max-running-requests 16", "--cuda-graph-max-bs-decode 16",
+                for flag in ("--tp-size 2", "--ep-size 2", "--mem-fraction-static 0.86", "--max-mamba-cache-size 330", "--max-running-requests 12", "--cuda-graph-max-bs-decode 12",
                              "--max-queued-requests 4", "--speculative-num-steps 4", "--speculative-eagle-topk 1", "--speculative-num-draft-tokens 5",
                              "--mamba-ssm-dtype bfloat16", "--chunked-prefill-size 8192", "--hicache-write-policy write_through",
                              f"--dist-init-addr {spec['dist_init']}"):
@@ -387,11 +387,13 @@ class ValidatorContractTest(unittest.TestCase):
             cases = (
                 ("--mem-fraction-static 0.86", "--mem-fraction-static 0.80", argv),
                 ("--max-mamba-cache-size 330", "--max-mamba-cache-size 165", argv),
-                ("--max-running-requests 16", "--max-running-requests 32", argv),
-                ("--max-running-requests 16", "--max-running-requests 24", argv),
+                ("--max-running-requests 12", "--max-running-requests 32", argv),
+                ("--max-running-requests 12", "--max-running-requests 24", argv),
+                ("--max-running-requests 12", "--max-running-requests 16", argv),
                 ("--max-queued-requests 4", "--max-queued-requests 8", argv),
                 ("--max-queued-requests 4", "--max-queued-requests 16", argv),
-                ("--cuda-graph-max-bs-decode 16", "--cuda-graph-max-bs-decode 32", argv),
+                ("--cuda-graph-max-bs-decode 12", "--cuda-graph-max-bs-decode 32", argv),
+                ("--cuda-graph-max-bs-decode 12", "--cuda-graph-max-bs-decode 16", argv),
                 ("--speculative-num-steps 4", "--speculative-num-steps 5", argv),
                 ("--speculative-num-draft-tokens 5", "--speculative-num-draft-tokens 6", argv),
                 ("--tp-size 2", "--tp-size 4", argv),

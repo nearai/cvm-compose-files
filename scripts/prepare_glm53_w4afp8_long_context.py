@@ -282,15 +282,15 @@ TP2_HICACHE_BUDGET: Final = "325GiB"
 TP2_MAMBA_CACHE: Final = "330"
 TP2_VARIANT: Final = (
     "fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host325g"
-    "-memopt-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-mr16q4-strict-budget8192"
+    "-memopt-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-mr12q4-strict-budget8192"
 )
 TP2_FLAG_CHANGES: Final = {
     "--tp-size 4": "--tp-size 2",
     "--ep-size 4": "--ep-size 2",
     "--mem-fraction-static 0.80": "--mem-fraction-static 0.86",
-    "--max-running-requests 32": "--max-running-requests 16",
+    "--max-running-requests 32": "--max-running-requests 12",
     "--max-queued-requests 8": "--max-queued-requests 4",
-    "--cuda-graph-max-bs-decode 32": "--cuda-graph-max-bs-decode 16",
+    "--cuda-graph-max-bs-decode 32": "--cuda-graph-max-bs-decode 12",
     "--speculative-num-steps 5": "--speculative-num-steps 4",
     "--speculative-num-draft-tokens 6": "--speculative-num-draft-tokens 5",
     "--speculative-adaptive": None,

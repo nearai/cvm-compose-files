@@ -128,7 +128,7 @@ end
 # per-replica argv as the long-context file's tp2-r2a/r2b (W4AFP8 + HiCache, campaign-2 L2 base):
 # prod/GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext.yaml, docs/long-context-glm53-2xtp2-rollout.md.
 # The #330 overlap-off canary ended when the TP4 replica was replaced; overlap stays ON.
-gpu13_variant = 'fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host325g-memopt-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-gpu13-h200-tp2-ep2-eagle-fixed-4-1-5-mr16q4-strict-budget8192'
+gpu13_variant = 'fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host325g-memopt-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-gpu13-h200-tp2-ep2-eagle-fixed-4-1-5-mr12q4-strict-budget8192'
 gpu13_ports = {}
 gpu13_glm.each_key do |name|
   engine = small_services.fetch(name)
@@ -137,9 +137,9 @@ gpu13_glm.each_key do |name|
   assert.call(command.include?('--model-path /root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/snapshots/99f1fa70408c52b007d4fd69e02e5a522422e755'), "gpu13 GLM must serve the qualified W4AFP8 snapshot: #{name}")
   {
     '--tp-size' => '2', '--ep-size' => '2', '--mem-fraction-static' => '0.86',
-    '--max-running-requests' => '16', '--max-queued-requests' => '4',
+    '--max-running-requests' => '12', '--max-queued-requests' => '4',
     '--chunked-prefill-size' => '8192', '--max-prefill-tokens' => '32768', '--prefill-decode-interval' => '2',
-    '--cuda-graph-max-bs-decode' => '16', '--speculative-num-steps' => '4', '--speculative-eagle-topk' => '1',
+    '--cuda-graph-max-bs-decode' => '12', '--speculative-num-steps' => '4', '--speculative-eagle-topk' => '1',
     '--speculative-num-draft-tokens' => '5', '--max-mamba-cache-size' => '330', '--mamba-ssm-dtype' => 'bfloat16'
   }.each do |flag, value|
     assert.call(command.match?(/(^| )#{Regexp.escape(flag)} #{Regexp.escape(value)}( |$)/), "gpu13 GLM runtime flag changed on #{name}: #{flag} #{value}")
@@ -220,7 +220,7 @@ end
   assert.call(variants.length == 3 && variants.all? { |variant| variant == gpu13_variant }, "gpu13 #{name} config_variant must be the TP2 variant on the label, scrape job and log tag, got #{variants.inspect}")
   assert.call(labels['nearai.otel.instance'] == instance && scrape_labels['instance'] == instance && log_tags.include?("instance:#{instance}"), "gpu13 #{name} instance must be #{instance}")
   assert.call(labels['nearai.otel.gpu_pair'] == pair && scrape_labels['gpu_pair'] == pair && log_tags.include?("gpu_pair:#{pair}"), "gpu13 #{name} gpu_pair must be #{pair}")
-  assert.call(labels['nearai.otel.max_running_requests'] == '16' && scrape_labels['max_running_requests'] == '16' && labels['nearai.otel.max_queued_requests'] == '4' && scrape_labels['max_queued_requests'] == '4', "gpu13 #{name} max_running/max_queued labels must be 16/4")
+  assert.call(labels['nearai.otel.max_running_requests'] == '12' && scrape_labels['max_running_requests'] == '12' && labels['nearai.otel.max_queued_requests'] == '4' && scrape_labels['max_queued_requests'] == '4', "gpu13 #{name} max_running/max_queued labels must be 12/4")
 end
 %w[proxy-glm53 dcgm-glm53].each do |name|
   assert.call(small_services.fetch(name).fetch('labels')['nearai.otel.config_variant'] == gpu13_variant, "gpu13 #{name} config_variant must match the TP2 engines")

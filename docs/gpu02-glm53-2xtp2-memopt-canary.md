@@ -29,7 +29,7 @@ Lab (tee-bench, bare metal): two TP2 replicas beat one TP4 replica on the same f
 - `--tp-size 2 --ep-size 2`, `--mem-fraction-static 0.86`
 - `--max-mamba-cache-size 330 --mamba-ssm-dtype bfloat16` (mamba/bf16-state settings from `prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8.yaml`, slots doubled for the memory headroom)
 - EAGLE fixed 4/1/5 (`--speculative-num-steps 4 --speculative-eagle-topk 1 --speculative-num-draft-tokens 5`, no `--speculative-adaptive`)
-- `--max-running-requests 24 --max-queued-requests 8` as deployed by #332 (the long-context rollout PR moves every TP2 replica to 16/4 with graphs at 16; see `docs/long-context-glm53-2xtp2-rollout.md`)
+- `--max-running-requests 24 --max-queued-requests 8` as deployed by #332 (the long-context rollout PR moves every TP2 replica to 12/4 with graphs at 12; see `docs/long-context-glm53-2xtp2-rollout.md`)
 - chunked prefill stays 8192 (32K chunks are under test and conflict with 0.86 at TP2)
 - HiCache `write_through`, `direct` IO, `page_first_direct` layout, as r2 today
 - no admission-reserve environment (forbidden on the long tier), no `--disable-overlap-schedule` (gpu13 is the separate overlap-off canary)

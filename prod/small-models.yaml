@@ -223,14 +223,14 @@ x-sg-glm53-flash-common: &sg-glm53-flash-common
       --tp-size 2
       --ep-size 2
       --mem-fraction-static 0.86
-      --max-running-requests 16
+      --max-running-requests 12
       --max-queued-requests 4
       --enable-priority-scheduling
       --disable-priority-preemption
       --chunked-prefill-size 8192
       --max-prefill-tokens 32768
       --prefill-decode-interval 2
-      --cuda-graph-max-bs-decode 16
+      --cuda-graph-max-bs-decode 12
       --dsa-prefill-backend tilelang
       --dsa-decode-backend tilelang
       --kv-cache-dtype bfloat16
@@ -1010,7 +1010,7 @@ services:
       - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
       - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:z-ai/glm-5.3-flash","deployment:glm53-flash-sgl-tp4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8009","gpu_pair:4-7","ppcie:true","config_variant:fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host325g-memopt-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-gpu13-h200-tp2-ep2-eagle-fixed-4-1-5-mr16q4-strict-budget8192"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:z-ai/glm-5.3-flash","deployment:glm53-flash-sgl-tp4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8009","gpu_pair:4-7","ppcie:true","config_variant:fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host325g-memopt-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-gpu13-h200-tp2-ep2-eagle-fixed-4-1-5-mr12q4-strict-budget8192"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "inference-proxy"
       nearai.otel.service: "vllm-proxy"
@@ -1027,7 +1027,7 @@ services:
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.gpu_pair: "4-7"
       nearai.otel.ppcie: "true"
-      nearai.otel.config_variant: "fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host325g-memopt-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-gpu13-h200-tp2-ep2-eagle-fixed-4-1-5-mr16q4-strict-budget8192"
+      nearai.otel.config_variant: "fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host325g-memopt-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-gpu13-h200-tp2-ep2-eagle-fixed-4-1-5-mr12q4-strict-budget8192"
 
   model-sg-glm53-w4afp8-tp2-r1a:
     <<: *sg-glm53-flash-common
@@ -1043,7 +1043,7 @@ services:
               device_ids: ["4","5"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-bf16-kv","deployment:glm53-flash-sgl-tp4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8009","instance:1a","gpu_pair:4-5","ppcie:true","config_variant:fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host325g-memopt-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-gpu13-h200-tp2-ep2-eagle-fixed-4-1-5-mr16q4-strict-budget8192","request_logging:disabled","thinking_budget_policy:default8192-public-to-native","max_running_requests:16","max_queued_requests:4","engine_image:47aff7910900"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-bf16-kv","deployment:glm53-flash-sgl-tp4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8009","instance:1a","gpu_pair:4-5","ppcie:true","config_variant:fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host325g-memopt-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-gpu13-h200-tp2-ep2-eagle-fixed-4-1-5-mr12q4-strict-budget8192","request_logging:disabled","thinking_budget_policy:default8192-public-to-native","max_running_requests:12","max_queued_requests:4","engine_image:47aff7910900"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -1063,11 +1063,11 @@ services:
       nearai.otel.instance: "1a"
       nearai.otel.gpu_pair: "4-5"
       nearai.otel.ppcie: "true"
-      nearai.otel.config_variant: "fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host325g-memopt-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-gpu13-h200-tp2-ep2-eagle-fixed-4-1-5-mr16q4-strict-budget8192"
+      nearai.otel.config_variant: "fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host325g-memopt-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-gpu13-h200-tp2-ep2-eagle-fixed-4-1-5-mr12q4-strict-budget8192"
       nearai.otel.thinking_budget_policy: "default8192-public-to-native"
       nearai.otel.request_logging: "disabled"
       nearai.otel.watchdog_timeout: "1800"
-      nearai.otel.max_running_requests: "16"
+      nearai.otel.max_running_requests: "12"
       nearai.otel.max_queued_requests: "4"
       nearai.otel.engine_image: "47aff7910900"
 
@@ -1084,14 +1084,14 @@ services:
         --tp-size 2
         --ep-size 2
         --mem-fraction-static 0.86
-        --max-running-requests 16
+        --max-running-requests 12
         --max-queued-requests 4
         --enable-priority-scheduling
         --disable-priority-preemption
         --chunked-prefill-size 8192
         --max-prefill-tokens 32768
         --prefill-decode-interval 2
-        --cuda-graph-max-bs-decode 16
+        --cuda-graph-max-bs-decode 12
         --dsa-prefill-backend tilelang
         --dsa-decode-backend tilelang
         --kv-cache-dtype bfloat16
@@ -1165,7 +1165,7 @@ services:
               device_ids: ["6","7"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-bf16-kv","deployment:glm53-flash-sgl-tp4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8009","instance:1b","gpu_pair:6-7","ppcie:true","config_variant:fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host325g-memopt-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-gpu13-h200-tp2-ep2-eagle-fixed-4-1-5-mr16q4-strict-budget8192","request_logging:disabled","thinking_budget_policy:default8192-public-to-native","max_running_requests:16","max_queued_requests:4","engine_image:47aff7910900"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-bf16-kv","deployment:glm53-flash-sgl-tp4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8009","instance:1b","gpu_pair:6-7","ppcie:true","config_variant:fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host325g-memopt-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-gpu13-h200-tp2-ep2-eagle-fixed-4-1-5-mr12q4-strict-budget8192","request_logging:disabled","thinking_budget_policy:default8192-public-to-native","max_running_requests:12","max_queued_requests:4","engine_image:47aff7910900"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -1185,11 +1185,11 @@ services:
       nearai.otel.instance: "1b"
       nearai.otel.gpu_pair: "6-7"
       nearai.otel.ppcie: "true"
-      nearai.otel.config_variant: "fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host325g-memopt-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-gpu13-h200-tp2-ep2-eagle-fixed-4-1-5-mr16q4-strict-budget8192"
+      nearai.otel.config_variant: "fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host325g-memopt-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-gpu13-h200-tp2-ep2-eagle-fixed-4-1-5-mr12q4-strict-budget8192"
       nearai.otel.thinking_budget_policy: "default8192-public-to-native"
       nearai.otel.request_logging: "disabled"
       nearai.otel.watchdog_timeout: "1800"
-      nearai.otel.max_running_requests: "16"
+      nearai.otel.max_running_requests: "12"
       nearai.otel.max_queued_requests: "4"
       nearai.otel.engine_image: "47aff7910900"
 
@@ -1677,7 +1677,7 @@ services:
               device_ids: ["4","5","6","7"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:z-ai/glm-5.3-flash","deployment:glm53-flash-sgl-tp4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","gpu_pair:4-7","ppcie:true","config_variant:fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host325g-memopt-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-gpu13-h200-tp2-ep2-eagle-fixed-4-1-5-mr16q4-strict-budget8192"]}]'
+      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:z-ai/glm-5.3-flash","deployment:glm53-flash-sgl-tp4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","gpu_pair:4-7","ppcie:true","config_variant:fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host325g-memopt-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-gpu13-h200-tp2-ep2-eagle-fixed-4-1-5-mr12q4-strict-budget8192"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "dcgm"
       nearai.otel.service: "dcgm-exporter"
@@ -1694,7 +1694,7 @@ services:
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.gpu_pair: "4-7"
       nearai.otel.ppcie: "true"
-      nearai.otel.config_variant: "fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host325g-memopt-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-gpu13-h200-tp2-ep2-eagle-fixed-4-1-5-mr16q4-strict-budget8192"
+      nearai.otel.config_variant: "fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host325g-memopt-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-gpu13-h200-tp2-ep2-eagle-fixed-4-1-5-mr12q4-strict-budget8192"
 
   # GPU 3 is shared across FLUX, Qwen3-VL, embedding, reranker, whisper — DCGM
   # metrics here cannot be attributed to one model, so
@@ -1924,11 +1924,11 @@ configs:
                       instance: "1a"
                       gpu_pair: "4-5"
                       ppcie: "true"
-                      config_variant: "fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host325g-memopt-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-gpu13-h200-tp2-ep2-eagle-fixed-4-1-5-mr16q4-strict-budget8192"
+                      config_variant: "fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host325g-memopt-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-gpu13-h200-tp2-ep2-eagle-fixed-4-1-5-mr12q4-strict-budget8192"
                       thinking_budget_policy: "default8192-public-to-native"
                       request_logging: "disabled"
                       watchdog_timeout: "1800"
-                      max_running_requests: "16"
+                      max_running_requests: "12"
                       max_queued_requests: "4"
                       engine_image: "47aff7910900"
               - job_name: sglang-model-sg-glm53-w4afp8-tp2-r1b
@@ -1954,11 +1954,11 @@ configs:
                       instance: "1b"
                       gpu_pair: "6-7"
                       ppcie: "true"
-                      config_variant: "fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host325g-memopt-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-gpu13-h200-tp2-ep2-eagle-fixed-4-1-5-mr16q4-strict-budget8192"
+                      config_variant: "fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host325g-memopt-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-gpu13-h200-tp2-ep2-eagle-fixed-4-1-5-mr12q4-strict-budget8192"
                       thinking_budget_policy: "default8192-public-to-native"
                       request_logging: "disabled"
                       watchdog_timeout: "1800"
-                      max_running_requests: "16"
+                      max_running_requests: "12"
                       max_queued_requests: "4"
                       engine_image: "47aff7910900"
               - job_name: sglang-model-sg-flux2-klein-4b-tp1
@@ -2100,7 +2100,7 @@ configs:
                       port: "9400"
                       gpu_pair: "4-7"
                       ppcie: "true"
-                      config_variant: "fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host325g-memopt-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-gpu13-h200-tp2-ep2-eagle-fixed-4-1-5-mr16q4-strict-budget8192"
+                      config_variant: "fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host325g-memopt-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-gpu13-h200-tp2-ep2-eagle-fixed-4-1-5-mr12q4-strict-budget8192"
               - job_name: dcgm-dcgm-shared-gpu3
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -2205,7 +2205,7 @@ configs:
                       port: "8009"
                       gpu_pair: "4-7"
                       ppcie: "true"
-                      config_variant: "fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host325g-memopt-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-gpu13-h200-tp2-ep2-eagle-fixed-4-1-5-mr16q4-strict-budget8192"
+                      config_variant: "fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host325g-memopt-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-gpu13-h200-tp2-ep2-eagle-fixed-4-1-5-mr12q4-strict-budget8192"
               - job_name: inference-proxy-proxy-flux2-klein-4b
                 scrape_interval: 15s
                 metrics_path: /metrics

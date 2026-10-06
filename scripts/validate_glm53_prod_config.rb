@@ -881,8 +881,8 @@ W4AFP8_LONG_CONTEXT_HICACHE_ENV = HICACHE_ENV.merge("SGLANG_HICACHE_RAM_BUDGET" 
 # 2xTP2 memory-optimized replicas. The file is shared by gpu02 and gpu23, so the TP4 r1/r2
 # above stay defined (a host not yet converted keeps deploying them) and these TP2 services are ADDED
 # to start in their place (same GPUs, so a TP4 replica and its pair are never up together). Lab-validated
-# (tee-bench exp 19): mem 0.86, 330 mamba slots, fixed EAGLE 4/1/5. Caps are 16 running / 4 queued with decode
-# graphs capped at 16 (user decision, prod KV-bound evidence in docs/long-context-glm53-2xtp2-rollout.md; the lab ran 24/8).
+# (tee-bench exp 19): mem 0.86, 330 mamba slots, fixed EAGLE 4/1/5. Caps are 12 running / 4 queued with decode
+# graphs capped at 12 (user decision, prod KV-bound evidence in docs/long-context-glm53-2xtp2-rollout.md; the lab ran 24/8).
 W4AFP8_TP2_CANARY_REPLICAS = {
   "model-sg-glm53-w4afp8-tp2-r2a" => { "devices" => %w[4 5], "dist_init" => "127.0.0.1:29512", "instance" => "2a", "gpu_pair" => "4-5",
                                        "budget" => "${GLM53_R2A_HICACHE_RAM_BUDGET:-325GiB}" },
@@ -899,17 +899,17 @@ W4AFP8_TP2_PARENT = {
   "model-sg-glm53-w4afp8-tp2-r1a" => "model-sg-glm53-w4afp8-tp4-r1", "model-sg-glm53-w4afp8-tp2-r1b" => "model-sg-glm53-w4afp8-tp4-r1",
   "model-sg-glm53-w4afp8-tp2-r2a" => "model-sg-glm53-w4afp8-tp4-r2", "model-sg-glm53-w4afp8-tp2-r2b" => "model-sg-glm53-w4afp8-tp4-r2",
 }.freeze
-W4AFP8_TP2_CANARY_VARIANT = "fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host325g-memopt-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-mr16q4-strict-budget8192"
+W4AFP8_TP2_CANARY_VARIANT = "fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host325g-memopt-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-mr12q4-strict-budget8192"
 W4AFP8_TP2_CANARY_ARGV = Shellwords.split(<<~'ARGV').freeze
   sglang serve
   --model-path /root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/snapshots/99f1fa70408c52b007d4fd69e02e5a522422e755
   --served-model-name z-ai/glm-5.3-flash
   --tp-size 2 --ep-size 2
   --mem-fraction-static 0.86
-  --max-running-requests 16 --max-queued-requests 4
+  --max-running-requests 12 --max-queued-requests 4
   --enable-priority-scheduling --disable-priority-preemption
   --chunked-prefill-size 8192 --max-prefill-tokens 32768 --prefill-decode-interval 2
-  --cuda-graph-max-bs-decode 16
+  --cuda-graph-max-bs-decode 12
   --dsa-prefill-backend tilelang --dsa-decode-backend tilelang
   --kv-cache-dtype bfloat16
   --speculative-algorithm EAGLE --speculative-num-steps 4 --speculative-eagle-topk 1
