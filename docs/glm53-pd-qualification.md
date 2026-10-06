@@ -29,7 +29,8 @@ The goal is to find whether a P:D ratio beats colocated 4×TP2 (v0.0.466), and w
 - **Image:** stock `lmsysorg/sglang:v0.5.21-cu130`. It includes #39340, the DSA multi-chunk prefill fix.
 - **Start-up patches** (`configs: glm53_pd_startup_patch`), applied by exact anchor and fail-closed:
   - the W4AFP8 `modules_to_not_convert` loader fix;
-  - the 8192 default thinking budget.
+  - the 8192 default thinking budget;
+  - pinned P/D metadata buffers. Under HCC/PPCIe, UCX's cuda_copy transport calls `cuMemHostRegister` on pageable host memory, and the CVM rejects it (`NIXL_ERR_BACKEND` at aux registration, gpu03 2026-10-06). Buffers allocated with `cudaHostAlloc` (torch `pin_memory`) skip that call. `UCX_TLS=^cuda_copy` is not an alternative: NIXL refuses any `UCX_TLS` without `cuda_copy` or `cuda`.
 - **Not carried:**
   - HiCache: upstream uses `cudaHostRegister`, which fails with CUDA error 801 under HCC/PPCIe.
   - The admission reserve and the DSA indexer query split: these are fork patches.
@@ -58,7 +59,8 @@ Same orphan rule as `docs/glm53-tp2x4-base-canary.md`: compose-manager runs `up 
 1. **Drain.**
    1. `compose/down` the current base file with `services: ["model-proxy-registrar"]`. Note that dashboard `compose/down` ignores `dry_run`.
    2. Unregister the endpoint and confirm the peers list one fewer backend.
-   3. Wait for `num_running_reqs` to reach 0.
+   3. Stop `proxy-glm53` as well. cloud-api placement routes on the inference proxy's replica-state reports, so a host with a live proxy keeps getting traffic after the unregister (gpu03, 2026-10-06).
+   4. Wait for `num_running_reqs` to reach 0.
 2. **Stop the base engines** with a scoped `compose/down` of the four `tp2-r*` engines, `proxy-glm53` and `nginx`.
 3. **Bring up a layout.** `compose/up` this file with the layout's services, plus `glm53-pd-relay`, `otelcol-contrib` and `dcgm-glm53`. Dry-run first.
 
