@@ -130,10 +130,12 @@ HEADER: Final = (
     "# therefore measured against the pre-change history, not against a live sibling. Roll out\n"
     "# with docs/glm53-w4afp8-long-context-rollout.md, one replica at a time, and watch p95.\n"
     "#\n"
-    "# gpu02 2xTP2 memory-optimized canary (docs/gpu02-glm53-2xtp2-memopt-canary.md): this file is\n"
-    "# shared by gpu02 and gpu23, so the TP4 r2 service is kept as-is for gpu23 and two TP2 services\n"
-    "# (model-sg-glm53-w4afp8-tp2-r2a on GPUs 4,5; -r2b on GPUs 6,7) are added for gpu02 to start in\n"
-    "# its place. proxy-glm53's pool is ${GLM53_BACKEND_URLS:-<r1,r2>}; only gpu02's env map sets it.\n"
+    "# 2xTP2 memory-optimized replicas (docs/gpu02-glm53-2xtp2-memopt-canary.md,\n"
+    "# docs/long-context-glm53-2xtp2-rollout.md): this file is shared by gpu02 and gpu23. The TP4 r1/r2\n"
+    "# services are kept as-is, and four TP2 services are added to start in their place, per host and\n"
+    "# per stage, through a scoped services list: -r2a (GPUs 4,5) and -r2b (6,7) replace r2; -r1a (0,1)\n"
+    "# and -r1b (2,3) replace r1. proxy-glm53's pool is ${GLM53_BACKEND_URLS:-<r1,r2>}; a host sets it\n"
+    "# only once it runs TP2 services (the per-host values are HOST_POOLS in the generator).\n"
     "# Do not hand-edit this file.\n"
 )
 
@@ -259,18 +261,21 @@ ANCHOR_ENV_NEW: Final = (
 )
 
 
-# --- gpu02-only 2xTP2 memory-optimized canary (replaces r2's GPUs 4-7 on gpu02) ---------------
+# --- 2xTP2 memory-optimized replicas (replace r2's GPUs 4-7 and, later, r1's GPUs 0-3) ---------------
 # This file is shared by gpu02 and gpu23 (each host's compose-manager scopes its own services).
-# The TP4 r2 definition above is therefore KEPT unchanged so gpu23 keeps deploying it. Two TP2
-# replicas are ADDED for gpu02 to start in r2's place, and the proxy backend list becomes
-# host-overridable: gpu23 never sets GLM53_BACKEND_URLS, so its effective value is unchanged.
-# docs/gpu02-glm53-2xtp2-memopt-canary.md is the runbook.
+# The TP4 r1/r2 definitions above are KEPT unchanged so a host not yet converted keeps deploying them.
+# TP2 replicas are ADDED to start in their place (2a/2b over r2's GPUs, 1a/1b over r1's), and the proxy backend list becomes
+# host-overridable: a host still on TP4 never sets GLM53_BACKEND_URLS, so its effective value is unchanged.
+# docs/gpu02-glm53-2xtp2-memopt-canary.md and docs/long-context-glm53-2xtp2-rollout.md are the runbooks.
 R2_SERVICE: Final = f"{SERVICE_PREFIX}2"
 TP2_SERVICE_PREFIX: Final = "model-sg-glm53-w4afp8-tp2-r"
 # suffix -> (GPU pair, distinct --dist-init-addr port, HiCache budget variable)
 TP2_REPLICAS: Final = {
     "2a": {"devices": ("4", "5"), "gpu_pair": "4-5", "dist_init": "127.0.0.1:29512", "budget_var": "GLM53_R2A_HICACHE_RAM_BUDGET"},
     "2b": {"devices": ("6", "7"), "gpu_pair": "6-7", "dist_init": "127.0.0.1:29513", "budget_var": "GLM53_R2B_HICACHE_RAM_BUDGET"},
+    # Long-context 2xTP2 rollout: the same pair, in r1's place on GPUs 0-3 (docs/long-context-glm53-2xtp2-rollout.md).
+    "1a": {"devices": ("0", "1"), "gpu_pair": "0-1", "dist_init": "127.0.0.1:29514", "budget_var": "GLM53_R1A_HICACHE_RAM_BUDGET"},
+    "1b": {"devices": ("2", "3"), "gpu_pair": "2-3", "dist_init": "127.0.0.1:29515", "budget_var": "GLM53_R1B_HICACHE_RAM_BUDGET"},
 }
 # Half of r2's 650 GiB budget each, so the two replicas together take what r2 took.
 TP2_HICACHE_BUDGET: Final = "325GiB"
@@ -293,11 +298,32 @@ BACKEND_URLS_R1_R2: Final = f"http://{SERVICE_PREFIX}1:8000,http://{SERVICE_PREF
 GPU02_BACKEND_URLS: Final = (
     f"http://{SERVICE_PREFIX}1:8000,http://{TP2_SERVICE_PREFIX}2a:8000,http://{TP2_SERVICE_PREFIX}2b:8000"
 )
+TP2_URL: Final = {suffix: f"http://{TP2_SERVICE_PREFIX}{suffix}:8000" for suffix in TP2_REPLICAS}
+R1_URL: Final = f"http://{SERVICE_PREFIX}1:8000"
+# Effective proxy pool per host and stage: the value that host's compose-manager env map sets for
+# GLM53_BACKEND_URLS. A host not listed (or a stage not reached) leaves the variable UNSET, which
+# resolves to BACKEND_URLS_R1_R2. gpu13 is deliberately absent: it deploys prod/small-models.yaml.
+HOST_POOLS: Final = {
+    "gpu02": {
+        # r2 -> r2a + r2b, r1 stays TP4 (#332, deployed).
+        "r2-pair": ",".join((R1_URL, TP2_URL["2a"], TP2_URL["2b"])),
+        # r1 -> r1a + r1b as well: no TP4 replica left on the host.
+        "all-tp2": ",".join((TP2_URL["1a"], TP2_URL["1b"], TP2_URL["2a"], TP2_URL["2b"])),
+    },
+    "gpu23": {
+        "r2-pair": ",".join((R1_URL, TP2_URL["2a"], TP2_URL["2b"])),
+        "all-tp2": ",".join((TP2_URL["1a"], TP2_URL["1b"], TP2_URL["2a"], TP2_URL["2b"])),
+    },
+}
+GPU02_ALL_TP2_BACKEND_URLS: Final = HOST_POOLS["gpu02"]["all-tp2"]
+GPU23_R2_PAIR_BACKEND_URLS: Final = HOST_POOLS["gpu23"]["r2-pair"]
+GPU23_ALL_TP2_BACKEND_URLS: Final = HOST_POOLS["gpu23"]["all-tp2"]
 PROXY_BACKEND_OLD: Final = f"      - VLLM_BACKEND_URLS={BACKEND_URLS_R1_R2}\n"
 PROXY_BACKEND_NEW: Final = (
-    "      # Host-overridable pool. Unset (gpu23, and gpu02 until the 2xTP2 canary), this is exactly r1 + r2.\n"
-    "      # gpu02's compose-manager env map sets GLM53_BACKEND_URLS to r1 + r2a + r2b for the canary;\n"
-    "      # gpu23 must never set it (docs/gpu02-glm53-2xtp2-memopt-canary.md).\n"
+    "      # Host-overridable pool. Unset, this is exactly r1 + r2 (the TP4 replicas). A host whose\n"
+    "      # compose-manager env map starts TP2 replicas sets GLM53_BACKEND_URLS to that stage's pool\n"
+    "      # (HOST_POOLS in scripts/prepare_glm53_w4afp8_long_context.py); a host still on TP4 must not.\n"
+    "      # docs/long-context-glm53-2xtp2-rollout.md lists the value per host and stage.\n"
     f"      - VLLM_BACKEND_URLS=${{GLM53_BACKEND_URLS:-{BACKEND_URLS_R1_R2}}}\n"
 )
 TP2_BUDGET_COMMENT_OLD_START: Final = "      # HiCache host tier: a fixed 406 GiB per replica"
@@ -437,8 +463,8 @@ def tp2_service(r2: str, suffix: str) -> str:
     comment_end = environment.index(budget_line) + len(budget_line)
     environment = (
         environment[:comment_start]
-        + "      # HiCache host tier: half of r2's 650 GiB per TP2 replica across its two TP ranks, so the\n"
-        + "      # pair together takes what the TP4 r2 took. Fixed (not a percentage) so the replica started\n"
+        + "      # HiCache host tier: 325 GiB per TP2 replica across its two TP ranks (half of r2's 650 GiB; the\n"
+        + "      # pair takes what the TP4 r2 took, and two pairs take 1300 GiB per host, more than 406 + 650 for r1 + r2). Fixed (not a percentage) so the replica started\n"
         + "      # second does not get less; startup fails if it exceeds available RAM minus 10 GiB.\n"
         + f"      - SGLANG_HICACHE_RAM_BUDGET=${{{spec['budget_var']}:-{TP2_HICACHE_BUDGET}}}\n"
         + environment[comment_end:]
@@ -452,7 +478,7 @@ def tp2_service(r2: str, suffix: str) -> str:
     )
     return (
         f"  # --- GLM-5.3-Flash 2xTP2 memory-optimized canary replica {suffix} (SGLang TP2, GPUs {spec['gpu_pair']}) ---\n"
-        f"  # gpu02 only: gpu23 never starts this service (its compose-manager scopes its services).\n"
+        f"  # Started only by a scoped services list naming it (never by an unscoped up, which would collide with the TP4 replica on these GPUs).\n"
         f"  {name}:\n"
         "    <<: *sg-glm53-flash-common\n"
         f"    container_name: {name}\n"
