@@ -1098,7 +1098,7 @@ def validate_w4afp8_tp2_canary(errors, label, services, collector, replicas)
     end
     unless actual_argv == expected_argv
       drift = ((actual_argv - expected_argv) + (expected_argv - actual_argv)).uniq
-      errors << "#{label} #{name} argv must be the memory-optimized TP2 argv exactly (tp2/ep2, 0.86, 330 mamba slots, bf16 state, fixed EAGLE 4/1/5, 16 running/4 queued, graphs 16, chunk 8192, write_through, --dist-init-addr #{spec['dist_init']}); differing tokens: #{drift.first(8).join(' ')}"
+      errors << "#{label} #{name} argv must be the memory-optimized TP2 argv exactly (tp2/ep2, 0.86, 330 mamba slots, bf16 state, fixed EAGLE 4/1/5, 12 running/4 queued, graphs 12, chunk 8192, write_through, --dist-init-addr #{spec['dist_init']}); differing tokens: #{drift.first(8).join(' ')}"
     end
     (actual_argv & W4AFP8_TP2_CANARY_FORBIDDEN_FLAGS).each { |flag| errors << "#{label} #{name} must not set #{flag}" }
     actual_argv.each_cons(2) do |flag, value|
