@@ -16,6 +16,7 @@ import concurrent.futures as cf, json, os, random, re, time, urllib.request
 
 TARGETS = [t.strip() for t in os.environ.get("KVQ_TARGETS", "http://kvq-router:8000").split(",") if t.strip()]
 MODEL = os.environ.get("KVQ_MODEL", "z-ai/glm-5.3-flash")
+LAST_REASONING = []  # reasoning_content of the last chat() call
 TESTS = os.environ.get("KVQ_TESTS", "health,gsm8k,longturn,cold").split(",")
 
 
@@ -32,7 +33,7 @@ def chat(base, messages, max_tokens, thinking=True, stream=True):
     """Returns (ttft_s, total_s, text, usage)."""
     body = {"model": MODEL, "messages": messages, "max_tokens": max_tokens, "temperature": 0.0, "stream": stream,
             "stream_options": {"include_usage": True}, "chat_template_kwargs": {"enable_thinking": thinking}}
-    t0 = time.perf_counter(); ttft = None; text = []; usage = None
+    t0 = time.perf_counter(); ttft = None; text = []; usage = None; LAST_REASONING.clear()
     with post(base, "/v1/chat/completions", body) as r:
         for raw in r:
             line = raw.decode(errors="replace").strip()
@@ -47,6 +48,7 @@ def chat(base, messages, max_tokens, thinking=True, stream=True):
                 if piece and ttft is None:
                     ttft = time.perf_counter() - t0
                 text.append(d.get("content") or "")
+                LAST_REASONING.append(d.get("reasoning_content") or "")
     return ttft, time.perf_counter() - t0, "".join(text), usage
 
 
@@ -125,7 +127,8 @@ def longturn(name="longturn", salt=None):
     res.update(turn2_ttft_s=round(ttft2 or tot2, 2), turn2_total_s=round(tot2, 2),
                turn2_prompt_tokens=(u2 or {}).get("prompt_tokens"),
                turn2_cached=((u2 or {}).get("prompt_tokens_details") or {}).get("cached_tokens"),
-               recalled=code in (text2 or ""), answer=(text2 or "")[:80], code=code)
+               recalled=code in ((text2 or "") + "".join(LAST_REASONING)), answer=(text2 or "")[:80],
+               reasoning="".join(LAST_REASONING)[:160], code=code)
     out(name, **res)
 
 
@@ -137,7 +140,10 @@ def main():
                 out("hold", targets=TARGETS, tests=TESTS); time.sleep(int(os.environ.get("KVQ_HOLD_S", "600")))
             elif t == "health": health()
             elif t == "gsm8k": gsm8k()
-            elif t == "longturn": longturn()
+            elif t == "longturn":
+                base = int(os.environ.get("KVQ_LONG_SEED", "7"))
+                for i in range(int(os.environ.get("KVQ_LONG_REPEAT", "1"))):
+                    longturn(salt=base + i)
             elif t == "cold": longturn("cold", salt=random.randint(10**6, 10**7))
         except SystemExit:
             raise
