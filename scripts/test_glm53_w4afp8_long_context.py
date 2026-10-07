@@ -15,7 +15,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from scripts import glm53_v8_bundle as v8
 from scripts import prepare_glm53_w4afp8_long_context as generator
+# The v8 canary contract (release gate, env-map printer, render checks) is shared with the base file's tests.
+from scripts.test_glm53_v8_bundle import SlotRenderChecks, V8ReleaseGateTest, _block, telemetry as telemetry_of  # noqa: F401
 # CI runs this module in the ruby image; importing the gpu13 TP2 contract tests here runs them there too
 # without a separate workflow step.
 from scripts.test_gpu13_glm53_tp2 import Gpu13Tp2Test  # noqa: F401
@@ -61,6 +64,15 @@ def replace_nth(text: str, needle: str, index: int, replacement: str) -> str:
 
 
 ALL_TP2 = tuple(f"model-sg-glm53-w4afp8-tp2-r{suffix}" for suffix in ("2a", "2b", "1a", "1b"))
+
+
+def slotify(name: str, text: str) -> str:
+    """Spell a flag line the way the v8 slot (r2a) renders it: its value behind the slot's variable."""
+    if name != "model-sg-glm53-w4afp8-tp2-r2a":
+        return text
+    for argument, (flag, variable, default) in generator.V8_ARGUMENT_VARIABLES.items():
+        text = text.replace(argument, f"{flag} {v8.expression(generator.V8_PREFIX, variable, default)}")
+    return text
 
 
 def tp2_bounds(text: str, name: str) -> tuple[int, int]:
@@ -168,7 +180,7 @@ class GeneratedFileTest(unittest.TestCase):
         rendered = generator.generate((ROOT / generator.SOURCE).read_text())
         for suffix, spec in generator.TP2_REPLICAS.items():
             begin, finish = tp2_bounds(rendered, f"{generator.TP2_SERVICE_PREFIX}{suffix}")
-            service = rendered[begin:finish]
+            service = re.sub(r"\$\{GLM53_V8_[A-Z0-9_]+:-([^}]*)\}", r"\1", rendered[begin:finish])  # the slot's defaults are today's values
             with self.subTest(replica=suffix):
                 for flag in ("--tp-size 2", "--ep-size 2", "--mem-fraction-static 0.86", "--max-mamba-cache-size 330", "--max-running-requests 12", "--cuda-graph-max-bs-decode 12",
                              "--max-queued-requests 4", "--speculative-num-steps 4", "--speculative-eagle-topk 1", "--speculative-num-draft-tokens 5",
@@ -203,6 +215,60 @@ class GeneratedFileTest(unittest.TestCase):
         self.assertEqual(rendered.count("- job_name: ghost-aggregator-glm53-ghost-aggregator\n"), 1)
         self.assertIn(f"    image: {generator.IMAGE}\n    container_name: glm53-ghost-aggregator\n", rendered)
         self.assertTrue(generator.TP2_VARIANT.endswith("-obs-v1"))
+
+
+class LongSlotRenderTest(SlotRenderChecks, unittest.TestCase):
+    """gpu02's r2a is the v8 canary slot of this file; gpu23, r2b, r1a, r1b and the TP4 replicas must render as before."""
+
+    kind = "long"
+    generator = generator
+    target = TARGET
+    slot = R2A
+    engines = ALL_TP2
+    sibling = R2B
+    prefix = generator.V8_PREFIX
+    other_kind = "base"
+    canary_flags = {
+        "--kv-cache-dtype": "fp8_e4m3",
+        "--dsa-prefill-backend": "flashmla_kv",
+        "--dsa-decode-backend": "flashmla_kv",
+        "--max-running-requests": str(generator.V8_LONG_MAX_RUNNING),
+        "--cuda-graph-max-bs-decode": str(generator.V8_LONG_MAX_RUNNING),
+        "--max-queued-requests": str(generator.V8_LONG_MAX_QUEUED),
+    }
+    disable_slot = {"V8_SLOT": "none"}
+    default_variant = generator.TP2_VARIANT
+    extra_variable_names = {"MAX_QUEUED"}
+
+    def adapt_to(self, name: str, argv: list[str]) -> list[str]:
+        suffix = name.rsplit("r", 1)[1]
+        out = list(argv)
+        out[out.index("--dist-init-addr") + 1] = generator.TP2_REPLICAS[suffix]["dist_init"]
+        return out
+
+    def test_the_slot_is_r2a_and_everything_but_the_bundle_stays_the_tp2_argv(self) -> None:
+        self.assertEqual(generator.V8_SLOT, "2a")
+        self.assertEqual(generator.V8_PREFIX, "GLM53_V8_R2A_")
+        argv = self.argv(self.slot, self.canary_env())
+        for flag, value in (("--tp-size", "2"), ("--mem-fraction-static", "0.86"), ("--max-mamba-cache-size", "330"),
+                            ("--speculative-num-steps", "4"), ("--speculative-num-draft-tokens", "5"), ("--chunked-prefill-size", "8192"),
+                            ("--prefill-decode-interval", "2"), ("--hicache-write-policy", "write_through"), ("--dist-init-addr", "127.0.0.1:29512")):
+            self.assertEqual(argv[argv.index(flag) + 1], value, flag)
+        # 5 mamba slots per running request must fit the unchanged 330.
+        self.assertGreaterEqual(330, 5 * generator.V8_LONG_MAX_RUNNING)
+
+    def test_the_long_caps_are_single_generator_constants_and_the_file_keeps_12_4(self) -> None:
+        self.assertEqual((generator.V8_LONG_MAX_RUNNING, generator.V8_LONG_MAX_QUEUED), (16, 6))
+        self.assertEqual(self.argv(self.slot, {})[self.argv(self.slot, {}).index("--max-running-requests") + 1], "12")
+        self.assertEqual(self.argv(self.slot, {})[self.argv(self.slot, {}).index("--max-queued-requests") + 1], "4")
+        self.assertNotIn(f"-{generator.V8_LONG_MAX_RUNNING}q{generator.V8_LONG_MAX_QUEUED}", self.text)  # the caps live in the env map only
+
+    def test_tp4_replicas_ignore_the_canary_env_map(self) -> None:
+        for name in ("model-sg-glm53-w4afp8-tp4-r1", "model-sg-glm53-w4afp8-tp4-r2"):
+            with self.subTest(replica=name):
+                self.assertNotIn("GLM53_V8_", _block(self.text, name))
+                self.assertEqual(self.argv(name, self.canary_env()), self.argv(name, {}))
+                self.assertEqual(telemetry_of(self.text, name, self.canary_env()), telemetry_of(self.text, name, {}))
 
 
 class ValidatorContractTest(unittest.TestCase):
@@ -429,6 +495,7 @@ class ValidatorContractTest(unittest.TestCase):
                 ("--mamba-ssm-dtype bfloat16\n", "--mamba-ssm-dtype bfloat16\n        --disable-overlap-schedule\n", "must not set --disable-overlap-schedule"),
             )
             for before, after, message in cases:
+                before = slotify(name, before)
                 with self.subTest(replica=name, mutation=after.strip()[:50]):
                     self.assertEqual(block.count(before), 1, before)
                     self.assert_fails(self.valid[:start] + block.replace(before, after, 1) + self.valid[end:], message)
@@ -449,15 +516,72 @@ class ValidatorContractTest(unittest.TestCase):
                 ("      - SGLANG_DSA_INDEXER_QSPLIT=1\n", "", "environment must be the long-context environment plus per-replica"),
                 (f'nearai.otel.instance: "{instance}"', 'nearai.otel.instance: "9"', "nearai.otel.instance must be"),
                 ("nearai.otel.gpu_pair:", "nearai.otel.gpu_pairx:", "nearai.otel.gpu_pair must be"),
-                (f'nearai.otel.config_variant: "{TP2_VARIANT}"', 'nearai.otel.config_variant: "x"', "nearai.otel.config_variant must be"),
+                (f'nearai.otel.config_variant: "{TP2_VARIANT}', 'nearai.otel.config_variant: "x', "nearai.otel.config_variant must be"),
                 ('nearai.otel.deployment: "glm53-flash-sgl-tp4"', 'nearai.otel.deployment: "other"', "nearai.otel.deployment"),
-                (f"image: {RELEASED_V6_IMAGE}\n", f"image: {PREVIOUS_R1_V2_IMAGE}\n", "image must be"),
-                ("    container_name: " + name + "\n", "    container_name: " + name + '\n    restart: "no"\n', "must share one runtime configuration outside command and environment"),
+                (f"image: {generator.V8_IMAGE_EXPRESSION if name == R2A else RELEASED_V6_IMAGE}\n", f"image: {PREVIOUS_R1_V2_IMAGE}\n", "image must be"),
+                ("    container_name: " + name + "\n", "    container_name: " + name + '\n    restart: "no"\n', "must share one runtime configuration outside command, environment and image"),
             )
             for before, after, message in cases:
                 with self.subTest(replica=name, message=message):
                     self.assertGreaterEqual(block.count(before), 1, before)
                     self.assert_fails(self.valid[:start] + block.replace(before, after, 1) + self.valid[end:], message)
+
+    def test_rejects_v8_slot_drift(self) -> None:
+        p = generator.V8_PREFIX
+        extra = f"${{{p}EXTRA_ARGS:-}}"
+        env_prefix = f"${{{p}ENV_PREFIX:-}}"
+        image = generator.V8_IMAGE_EXPRESSION
+        pinned = "is not a v8 slot variable with its pinned default"
+        r2b_command_end = "        --max-mamba-cache-size 330\n        --mamba-ssm-dtype bfloat16\n"
+        r2b_start, r2b_end = tp2_bounds(self.valid, R2B)
+        r2b_block = self.valid[r2b_start:r2b_end]
+        self.assertEqual(r2b_block.count(r2b_command_end), 1)
+        cases = (
+            # A default that is not today's value / empty: would turn the bundle on for gpu23 and every other replica.
+            (self.valid.replace(extra, f"${{{p}EXTRA_ARGS:---disable-overlap-schedule}}"), pinned),
+            (self.valid.replace(env_prefix, f"${{{p}ENV_PREFIX:-env SGLANG_PREPROCESS_WORKERS=4}}"), pinned),
+            (self.valid.replace(f"${{{p}VARIANT_SUFFIX:-}}", f"${{{p}VARIANT_SUFFIX:--v8bundle}}"), pinned),
+            (self.valid.replace(f"${{{p}MAX_RUNNING:-12}}", f"${{{p}MAX_RUNNING:-16}}"), pinned),
+            (self.valid.replace(f"${{{p}MAX_QUEUED:-4}}", f"${{{p}MAX_QUEUED:-6}}"), pinned),
+            (self.valid.replace(f"${{{p}KV_DTYPE:-bfloat16}}", f"${{{p}KV_DTYPE:-fp8_e4m3}}"), pinned),
+            (self.valid.replace(f"${{{p}DSA_BACKEND:-tilelang}}", f"${{{p}DSA_BACKEND:-flashmla_kv}}"), pinned),
+            (self.valid.replace(f"${{{p}PRECISION:-int4-weights-fp8-activations-bf16-kv}}", f"${{{p}PRECISION:-int4-weights-fp8-activations-fp8-kv}}"), pinned),
+            (self.valid.replace(extra, f"${{{p}EXTRA_ARGS}}"), pinned),
+            (self.valid.replace(extra, f"${p}EXTRA_ARGS"), "references GLM53_V8_ outside a ${NAME:-default} expression"),
+            # The image: a placeholder digest as the default, a different default, or a bare reference.
+            (self.valid.replace(image, f"${{{p}IMAGE:-docker.io/nearaidev/sglang@{v8.IMAGE_DIGEST_PLACEHOLDER}}}"), "contains the v8 placeholder"),
+            (self.valid.replace(image, f"${{{p}IMAGE:-{PREVIOUS_R1_V2_IMAGE}}}"), pinned),
+            (self.valid.replace(image, f"${{{p}IMAGE}}"), pinned),
+            (self.valid.replace(env_prefix, "", 1), "argv must be the memory-optimized TP2 argv exactly"),
+            # The flag, the environment, the dtype or the backend as literals anywhere.
+            (self.valid.replace(extra, "--disable-overlap-schedule"), "must not hardcode --disable-overlap-schedule"),
+            (self.valid.replace(extra, "env NEAR_SELF_PROFILE=1"), "must not hardcode NEAR_SELF_PROFILE"),
+            (self.valid[:r2b_start] + r2b_block.replace("    environment:\n", "    environment:\n      - NEAR_SELF_PROFILE=1\n", 1) + self.valid[r2b_end:],
+             "must not hardcode NEAR_SELF_PROFILE"),
+            (self.valid.replace(env_prefix, "env SGLANG_PREPROCESS_WORKERS=4"), "must not hardcode SGLANG_PREPROCESS_"),
+            (self.valid.replace(f"${{{p}KV_DTYPE:-bfloat16}}", "fp8_e4m3"), "must not hardcode fp8_e4m3"),
+            (self.valid.replace(f"${{{p}DSA_BACKEND:-tilelang}}", "flashmla_kv", 1), "must not hardcode flashmla_kv"),
+            # The slot's variables on the wrong replica (the sibling r2b, a gpu23-era r1a, a TP4 replica) or a shared anchor.
+            (self.valid[:r2b_start] + r2b_block.replace(r2b_command_end, r2b_command_end + f"        {extra}\n") + self.valid[r2b_end:],
+             f"{R2B} must not reference GLM53_V8_ variables; only {R2A} does"),
+            (replace_nth(self.valid, 'nearai.otel.engine_image: "9c6ddd4319c4"', 1, f'nearai.otel.engine_image: "{generator.V8_IMAGE_LABEL_EXPRESSION}"'),
+             "must not reference GLM53_V8_ variables; only"),
+            (self.replace_once("      - VLLM_BACKEND_CONVERSATION_AFFINITY=1\n", f"      - VLLM_BACKEND_CONVERSATION_AFFINITY=1\n      - X={extra}\n"),
+             "proxy-glm53 must not reference GLM53_V8_ variables"),
+            (self.valid.replace("\n  image: " + RELEASED_V6_IMAGE + "\n", "\n  image: " + RELEASED_V6_IMAGE + f"\n  x-leak: {extra}\n", 1),
+             "x-sg-glm53-flash-common must not reference GLM53_V8_ variables"),
+            # Another file's slot prefix, a second variable for the graph batch.
+            (self.valid.replace(extra, "${GLM53_V8_R4_EXTRA_ARGS:-}"), pinned),
+            (self.valid.replace(f"--cuda-graph-max-bs-decode ${{{p}MAX_RUNNING:-12}}", f"--cuda-graph-max-bs-decode ${{{p}GRAPH_BS:-12}}"), pinned),
+            # A telemetry place that lost the suffix or the precision/label expression (counts are pinned).
+            (replace_nth(self.valid, generator.V8_VARIANT_EXPRESSION, 2, ""), "must appear exactly 3 time(s)"),
+            (replace_nth(self.valid, generator.V8_PRECISION_EXPRESSION, 1, "int4-weights-fp8-activations-bf16-kv"), "must appear exactly 2 time(s)"),
+            (replace_nth(self.valid, generator.V8_IMAGE_LABEL_EXPRESSION, 2, "9c6ddd4319c4"), "must appear exactly 3 time(s)"),
+        )
+        for mutated, message in cases:
+            with self.subTest(expect=message, mutation=hash(mutated) % 10000):
+                self.assertNotEqual(mutated, self.valid)
+                self.assert_fails(mutated, message)
 
     def test_tp2_canary_rejects_duplicate_dist_init_port_and_gpu_overlap(self) -> None:
         self.assert_fails(self.replace_once("        --dist-init-addr 127.0.0.1:29513\n", "        --dist-init-addr 127.0.0.1:29512\n"), "is used by more than one engine")

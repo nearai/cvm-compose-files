@@ -35,6 +35,12 @@
 # 25/25b/25c), promoted from the r3/r4 canary after the gpu03 same-host bake on 2026-10-06. On
 # gpu32 bare metal under overload it served +16% (1.75 conv/s) / +25% (2.5 conv/s) more requests.
 #
+# v8-BUNDLE CANARY SLOT (docs/glm53-v8-bundle-canary.md): r4 alone reads the ${GLM53_V8_R4_*} override
+# variables below (image, kv dtype, DSA backend, running cap, mamba slots, extra args, environment prefix,
+# telemetry suffix). Every one is empty or today's value unless the canary host's compose-manager env map sets
+# it (only gpu03's does), so r1-r3 and the other host render exactly what they did without them. Never set
+# them on gpu04; never set them for any replica but r4.
+#
 # GATES before any deploy (docs/glm53-tp2x4-base-canary.md): (1) quality with BF16 mamba
 # state at parity - PASSED 2026-10-02 (GSM8K 97.8% vs 97.4% FP32 state, perception 7/7); (2) a prod-CVM
 # test on a drained host agreed with Lloyd: CC-on startup of 4 x 325 GiB pinned host tiers
@@ -803,6 +809,57 @@ services:
       - SGLANG_GHOST_CACHE_SOCKET=/ghost/aggregator.sock
       - SGLANG_GHOST_CACHE_REPLICA=r4
       - SGLANG_KV_TIER_METRICS=1
+    # v8 canary slot: the candidate with every value the v8 bundle changes behind a per-replica variable. Each defaults
+    # to today's value (or to nothing), so with the canary host's env map unset this is the candidate exactly. The command
+    # is a string that compose splits like a shell, so an empty token adds no argv element. ENV_PREFIX is `env NAME=value
+    # ...` (the bundle's preprocessing environment) and EXTRA_ARGS carries the scheduler flag; neither the flag nor
+    # the environment is ever a literal in this file.
+    image: ${GLM53_V8_R4_IMAGE:-docker.io/nearaidev/sglang@sha256:9c6ddd4319c4ab00e351d8650459e68b8830e36ffcc029d67fa5e19d0ac3ed17}
+    command: >
+      ${GLM53_V8_R4_ENV_PREFIX:-}
+      sglang serve
+      --model-path /root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/snapshots/99f1fa70408c52b007d4fd69e02e5a522422e755
+      --served-model-name z-ai/glm-5.3-flash
+      --tp-size 2
+      --ep-size 2
+      --mem-fraction-static 0.86
+      --max-running-requests ${GLM53_V8_R4_MAX_RUNNING:-48}
+      --max-queued-requests 8
+      --enable-priority-scheduling
+      --disable-priority-preemption
+      --chunked-prefill-size 8192
+      --max-prefill-tokens 32768
+      --prefill-decode-interval 2
+      --cuda-graph-max-bs-decode ${GLM53_V8_R4_MAX_RUNNING:-48}
+      --dsa-prefill-backend ${GLM53_V8_R4_DSA_BACKEND:-tilelang}
+      --dsa-decode-backend ${GLM53_V8_R4_DSA_BACKEND:-tilelang}
+      --kv-cache-dtype ${GLM53_V8_R4_KV_DTYPE:-bfloat16}
+      --speculative-algorithm EAGLE
+      --speculative-num-steps 4
+      --speculative-eagle-topk 1
+      --speculative-num-draft-tokens 5
+      --reasoning-parser glm45
+      --enable-strict-thinking
+      --grammar-backend xgrammar
+      --tool-call-parser glm47
+      --chat-template /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/3f1971b7b5f7a528c9c4ef6212c8785298a8c24a/chat_template.jinja
+      --context-length 1048576
+      --dist-init-addr 127.0.0.1:29510
+      --watchdog-timeout 1800
+      --host 0.0.0.0
+      --port 8000
+      --enable-metrics
+      --enable-cache-report
+      --log-requests-level 0
+      --disable-fast-image-processor
+      --limit-mm-data-per-request '{"image": 64}'
+      --enable-hierarchical-cache
+      --hicache-write-policy write_through_selective
+      --hicache-io-backend direct
+      --hicache-mem-layout page_first_direct
+      --max-mamba-cache-size ${GLM53_V8_R4_MAMBA_SLOTS:-330}
+      --mamba-ssm-dtype bfloat16
+      ${GLM53_V8_R4_EXTRA_ARGS:-}
     depends_on:
       model-downloader:
         condition: service_completed_successfully
@@ -814,7 +871,7 @@ services:
               device_ids: ["6","7"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-bf16-kv","deployment:glm53-flash-sgl-tp2x4","config_variant:hicache-w4afp8-qsplit-selective325-mamba330-bf16state-memopt086-mr48-c8192-admission-reserve-v10-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192-obs-v1","request_logging:disabled","engine_image:9c6ddd4319c4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:4"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:${GLM53_V8_R4_PRECISION:-int4-weights-fp8-activations-bf16-kv}","deployment:glm53-flash-sgl-tp2x4","config_variant:hicache-w4afp8-qsplit-selective325-mamba330-bf16state-memopt086-mr48-c8192-admission-reserve-v10-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192-obs-v1${GLM53_V8_R4_VARIANT_SUFFIX:-}","request_logging:disabled","engine_image:${GLM53_V8_R4_IMAGE_LABEL:-9c6ddd4319c4}","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:4"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -826,10 +883,10 @@ services:
       nearai.otel.model_path: "graphistry/GLM-5.3-Flash-W4AFP8"
       nearai.otel.served_model: "z-ai/glm-5.3-flash"
       nearai.otel.deployment: "glm53-flash-sgl-tp2x4"
-      nearai.otel.config_variant: "hicache-w4afp8-qsplit-selective325-mamba330-bf16state-memopt086-mr48-c8192-admission-reserve-v10-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192-obs-v1"
+      nearai.otel.config_variant: "hicache-w4afp8-qsplit-selective325-mamba330-bf16state-memopt086-mr48-c8192-admission-reserve-v10-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192-obs-v1${GLM53_V8_R4_VARIANT_SUFFIX:-}"
       nearai.otel.thinking_budget_policy: "default8192-public-to-native"
       nearai.otel.request_logging: "disabled"
-      nearai.otel.engine_image: "9c6ddd4319c4"
+      nearai.otel.engine_image: "${GLM53_V8_R4_IMAGE_LABEL:-9c6ddd4319c4}"
       nearai.otel.instance: "4"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
@@ -1366,7 +1423,7 @@ configs:
                       model: "z-ai/glm-5.3-flash"
                       model_path: "graphistry/GLM-5.3-Flash-W4AFP8"
                       served_model: "z-ai/glm-5.3-flash"
-                      precision: "int4-weights-fp8-activations-bf16-kv"
+                      precision: "${GLM53_V8_R4_PRECISION:-int4-weights-fp8-activations-bf16-kv}"
                       deployment: "glm53-flash-sgl-tp2x4"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
@@ -1375,10 +1432,10 @@ configs:
                       ip: "${HOST_IP}"
                       port: "8000"
                       instance: "4"
-                      config_variant: "hicache-w4afp8-qsplit-selective325-mamba330-bf16state-memopt086-mr48-c8192-admission-reserve-v10-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192-obs-v1"
+                      config_variant: "hicache-w4afp8-qsplit-selective325-mamba330-bf16state-memopt086-mr48-c8192-admission-reserve-v10-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192-obs-v1${GLM53_V8_R4_VARIANT_SUFFIX:-}"
                       thinking_budget_policy: "default8192-public-to-native"
                       request_logging: "disabled"
-                      engine_image: "9c6ddd4319c4"
+                      engine_image: "${GLM53_V8_R4_IMAGE_LABEL:-9c6ddd4319c4}"
               - job_name: ghost-aggregator-glm53-ghost-aggregator
                 scrape_interval: 15s
                 metrics_path: /metrics

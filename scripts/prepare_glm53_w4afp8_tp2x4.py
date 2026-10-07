@@ -26,6 +26,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 from scripts import glm53_observability as obs  # noqa: E402
+from scripts import glm53_v8_bundle as v8  # noqa: E402
 
 SOURCE = Path("prod/GLM-5.3-Flash-SGL-TP4-W4AFP8.yaml")
 TARGET = Path("prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8.yaml")
@@ -52,6 +53,32 @@ REPLICAS: Final = (1, 2, 3, 4)
 CANDIDATE_REPLICAS: Final = (1, 2, 3, 4)
 CANDIDATE_PDI: Final = "2"
 CANDIDATE_VARIANT: Final = f"hicache-w4afp8-qsplit-selective325-mamba330-bf16state-memopt086-mr48-c8192-admission-reserve-v10-pdi{CANDIDATE_PDI}-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192" + obs.VARIANT_SUFFIX
+# v8-bundle canary slot (docs/glm53-v8-bundle-canary.md): exactly one replica of this shared file (gpu03 and
+# gpu04 both deploy it) reads per-replica override variables. Each is empty, or today's prod value, unless
+# the canary host's compose-manager env map sets it, so every other replica and the other host render
+# byte-for-byte what they rendered before. The bundle's flags REPLACE the candidate's values in place
+# (a flag is never repeated) and --disable-overlap-schedule arrives only through EXTRA_ARGS.
+V8_REPLICA: Final = 4
+V8_PREFIX: Final = "GLM53_V8_R4_"
+PRECISION: Final = "int4-weights-fp8-activations-bf16-kv"
+# The values the canary host's env map sets for the slot (the env-map printer emits exactly these).
+V8_MAX_RUNNING: Final = "64"
+V8_MAMBA_SLOTS: Final = "380"
+# Candidate argv lines whose value becomes a variable, with the variable and its default (today's value).
+V8_ARGUMENT_VARIABLES: Final = {
+    "--kv-cache-dtype bfloat16": ("--kv-cache-dtype", "KV_DTYPE", "bfloat16"),
+    "--dsa-prefill-backend tilelang": ("--dsa-prefill-backend", "DSA_BACKEND", "tilelang"),
+    "--dsa-decode-backend tilelang": ("--dsa-decode-backend", "DSA_BACKEND", "tilelang"),
+    "--max-running-requests 48": ("--max-running-requests", "MAX_RUNNING", "48"),
+    "--cuda-graph-max-bs-decode 48": ("--cuda-graph-max-bs-decode", "MAX_RUNNING", "48"),
+    "--max-mamba-cache-size 330": ("--max-mamba-cache-size", "MAMBA_SLOTS", "330"),
+}
+V8_IMAGE_EXPRESSION: Final = v8.expression(V8_PREFIX, "IMAGE", IMAGE)
+V8_IMAGE_LABEL_EXPRESSION: Final = v8.expression(V8_PREFIX, "IMAGE_LABEL", ENGINE_IMAGE_LABEL)
+V8_PRECISION_EXPRESSION: Final = v8.expression(V8_PREFIX, "PRECISION", PRECISION)
+V8_VARIANT_EXPRESSION: Final = v8.expression(V8_PREFIX, "VARIANT_SUFFIX", "")
+V8_EXTRA_ARGS_EXPRESSION: Final = v8.expression(V8_PREFIX, "EXTRA_ARGS", "")
+V8_ENV_PREFIX_EXPRESSION: Final = v8.expression(V8_PREFIX, "ENV_PREFIX", "")
 # Token-for-token edits of the control argv. Each old token must occur exactly once.
 CANDIDATE_EDITS: Final = (
     ("--mem-fraction-static 0.80", "--mem-fraction-static 0.86"),
@@ -117,6 +144,12 @@ HEADER: Final = (
     "# candidate argv (mem 0.86, EAGLE fixed 4/1/5, 330 mamba slots, 48 running, pdi 2; tee-bench exp\n"
     "# 25/25b/25c), promoted from the r3/r4 canary after the gpu03 same-host bake on 2026-10-06. On\n"
     "# gpu32 bare metal under overload it served +16% (1.75 conv/s) / +25% (2.5 conv/s) more requests.\n"
+    "#\n"
+    "# v8-BUNDLE CANARY SLOT (docs/glm53-v8-bundle-canary.md): r4 alone reads the ${GLM53_V8_R4_*} override\n"
+    "# variables below (image, kv dtype, DSA backend, running cap, mamba slots, extra args, environment prefix,\n"
+    "# telemetry suffix). Every one is empty or today's value unless the canary host's compose-manager env map sets\n"
+    "# it (only gpu03's does), so r1-r3 and the other host render exactly what they did without them. Never set\n"
+    "# them on gpu04; never set them for any replica but r4.\n"
     "#\n"
     "# GATES before any deploy (docs/glm53-tp2x4-base-canary.md): (1) quality with BF16 mamba\n"
     "# state at parity - PASSED 2026-10-02 (GSM8K 97.8% vs 97.4% FP32 state, perception 7/7); (2) a prod-CVM\n"
@@ -284,7 +317,36 @@ def candidate_anchor(arguments: list[str]) -> str:
     )
 
 
-def render_replica(template: str, replica: int, anchor_environment: str) -> str:
+def v8_arguments(candidate: list[str]) -> list[str]:
+    """The candidate argv as the v8 slot's command: values that the bundle changes become variables
+    (default = the candidate's value), the environment prefix is the first token and the extra args the last."""
+    missing = sorted(argument for argument in V8_ARGUMENT_VARIABLES if candidate.count(argument) != 1)
+    if missing:
+        raise GenerationError(f"candidate engine command changed, cannot derive the v8 slot argv: {missing}")
+    rewritten = []
+    for argument in candidate:
+        if argument in V8_ARGUMENT_VARIABLES:
+            flag, name, default = V8_ARGUMENT_VARIABLES[argument]
+            argument = f"{flag} {v8.expression(V8_PREFIX, name, default)}"
+        rewritten.append(argument)
+    return [V8_ENV_PREFIX_EXPRESSION, *rewritten, V8_EXTRA_ARGS_EXPRESSION]
+
+
+def v8_service_overrides(candidate: list[str]) -> str:
+    """The image and command r4 sets on top of the candidate anchor it merges (no new anchor: a new top-level key would
+    show up in `docker compose config` of every host)."""
+    return (
+        "    # v8 canary slot: the candidate with every value the v8 bundle changes behind a per-replica variable. Each defaults\n"
+        "    # to today's value (or to nothing), so with the canary host's env map unset this is the candidate exactly. The command\n"
+        "    # is a string that compose splits like a shell, so an empty token adds no argv element. ENV_PREFIX is `env NAME=value\n"
+        "    # ...` (the bundle's preprocessing environment) and EXTRA_ARGS carries the scheduler flag; neither the flag nor\n"
+        "    # the environment is ever a literal in this file.\n"
+        f"    image: {V8_IMAGE_EXPRESSION}\n"
+        "    command: >\n" + "".join(f"      {argument}\n" for argument in v8_arguments(candidate))
+    )
+
+
+def render_replica(template: str, replica: int, anchor_environment: str, candidate_argv: list[str]) -> str:
     """Render one engine service from the source r1 service block.
 
     r1 inherits the anchor environment; every other replica carries the same list with its own
@@ -300,7 +362,11 @@ def render_replica(template: str, replica: int, anchor_environment: str) -> str:
     block = replace_exact(block, f"{SOURCE_SERVICE_PREFIX}1", f"{SERVICE_PREFIX}{replica}", 3, "replica name")
     if replica in CANDIDATE_REPLICAS:
         block = replace_exact(block, "    <<: *sg-glm53-flash-common\n", "    <<: *sg-glm53-flash-candidate\n", 1, "candidate anchor")
-        block = replace_exact(block, VARIANT, CANDIDATE_VARIANT, 2, "candidate config_variant")
+        block = replace_exact(block, VARIANT, CANDIDATE_VARIANT + (V8_VARIANT_EXPRESSION if replica == V8_REPLICA else ""), 2, "candidate config_variant")
+    if replica == V8_REPLICA:
+        block = replace_exact(block, f'"precision:{PRECISION}"', f'"precision:{V8_PRECISION_EXPRESSION}"', 1, "v8 log precision")
+        block = replace_exact(block, f'"engine_image:{ENGINE_IMAGE_LABEL}"', f'"engine_image:{V8_IMAGE_LABEL_EXPRESSION}"', 1, "v8 log engine_image")
+        block = replace_exact(block, f'nearai.otel.engine_image: "{ENGINE_IMAGE_LABEL}"\n', f'nearai.otel.engine_image: "{V8_IMAGE_LABEL_EXPRESSION}"\n', 1, "v8 metric engine_image")
     devices = ",".join(f'"{device}"' for device in DEVICE_IDS[replica])
     block = replace_exact(block, 'device_ids: ["0","1","2","3"]', f"device_ids: [{devices}]", 1, "replica devices")
     block = replace_exact(block, '"instance:1"', f'"instance:{replica}"', 1, "log instance")
@@ -310,13 +376,19 @@ def render_replica(template: str, replica: int, anchor_environment: str) -> str:
     environment = "".join(f"  {line}\n" if line.strip() else "\n" for line in anchor_environment.splitlines())
     environment = replace_exact(environment, obs.replica_line("r1"), obs.replica_line(f"r{replica}"), 1, "ghost replica")
     container = f"    container_name: {SERVICE_PREFIX}{replica}\n"
-    return replace_exact(block, container, container + environment, 1, "replica environment")
+    block = replace_exact(block, container, container + environment, 1, "replica environment")
+    if replica == V8_REPLICA:
+        block = replace_exact(block, "    depends_on:\n", v8_service_overrides(candidate_argv) + "    depends_on:\n", 1, "v8 image and command")
+    return block
 
 
 def render_scrape_job(template: str, replica: int) -> str:
     job = replace_exact(template, f"{SOURCE_SERVICE_PREFIX}1", f"{SERVICE_PREFIX}{replica}", 3, "scrape job name")
     if replica in CANDIDATE_REPLICAS:
-        job = replace_exact(job, VARIANT, CANDIDATE_VARIANT, 1, "candidate scrape config_variant")
+        job = replace_exact(job, VARIANT, CANDIDATE_VARIANT + (V8_VARIANT_EXPRESSION if replica == V8_REPLICA else ""), 1, "candidate scrape config_variant")
+    if replica == V8_REPLICA:
+        job = replace_exact(job, f'precision: "{PRECISION}"\n', f'precision: "{V8_PRECISION_EXPRESSION}"\n', 1, "v8 scrape precision")
+        job = replace_exact(job, f'engine_image: "{ENGINE_IMAGE_LABEL}"\n', f'engine_image: "{V8_IMAGE_LABEL_EXPRESSION}"\n', 1, "v8 scrape engine_image")
     return replace_exact(job, '                      instance: "1"\n', f'                      instance: "{replica}"\n', 1, "scrape instance")
 
 
@@ -343,7 +415,8 @@ def generate(source: str) -> str:
     command_start, command_end, command = section(anchor, "  command: >\n", "  volumes:\n", "anchor command")
     arguments = engine_arguments([line.strip() for line in command.splitlines()[1:] if line.strip()])
     anchor = anchor[:command_start] + "  command: >\n" + "".join(f"      {argument}\n" for argument in arguments) + anchor[command_end:]
-    candidate = candidate_anchor(candidate_arguments(arguments))
+    candidate_argv = candidate_arguments(arguments)
+    candidate = candidate_anchor(candidate_argv)
     for required in ("    - SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE=4096\n", "    - SGLANG_ADMISSION_RESERVE_MAX_FRACTION=0.75\n"):
         if anchor.count(required) != 1:
             raise GenerationError(f"source engine environment changed: {required.strip()}")
@@ -378,7 +451,7 @@ def generate(source: str) -> str:
     )
     if services.count(f"  {SOURCE_SERVICE_PREFIX}") != 2:
         raise GenerationError("source must define exactly two TP4 engine services")
-    updated = updated[:services_start] + "".join(render_replica(r1_block, replica, anchor_environment) for replica in REPLICAS) + updated[services_end:]
+    updated = updated[:services_start] + "".join(render_replica(r1_block, replica, anchor_environment, candidate_argv) for replica in REPLICAS) + updated[services_end:]
 
     # Proxy pool.
     updated = replace_exact(

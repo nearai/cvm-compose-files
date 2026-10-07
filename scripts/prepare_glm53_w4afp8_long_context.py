@@ -23,6 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 from scripts import glm53_observability as obs  # noqa: E402
+from scripts import glm53_v8_bundle as v8  # noqa: E402
 
 SOURCE = Path("prod/GLM-5.3-Flash-SGL-TP4-LongContext.yaml")
 TARGET = Path("prod/GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext.yaml")
@@ -143,6 +144,11 @@ HEADER: Final = (
     "# per stage, through a scoped services list: -r2a (GPUs 4,5) and -r2b (6,7) replace r2; -r1a (0,1)\n"
     "# and -r1b (2,3) replace r1. proxy-glm53's pool is ${GLM53_BACKEND_URLS:-<r1,r2>}; a host sets it\n"
     "# only once it runs TP2 services (the per-host values are HOST_POOLS in the generator).\n"
+    "#\n"
+    "# v8-BUNDLE CANARY SLOT (docs/glm53-v8-bundle-canary.md): -r2a alone reads the ${GLM53_V8_R2A_*} override\n"
+    "# variables (image, kv dtype, DSA backend, running and queued caps, extra args, environment prefix, telemetry\n"
+    "# suffix). Each is empty or today's value unless gpu02's compose-manager env map sets it, so every other service\n"
+    "# and gpu23 render exactly what they did without them. gpu23 must never set them; no other replica reads them.\n"
     "#\n"
     "# OBSERVABILITY: every replica (TP4 r1/r2 and TP2 r1a/r1b/r2a/r2b) enables the opt-in ghost\n"
     "# prefix cache in shared mode (SGLANG_GHOST_CACHE_REPLICA = its own name, one key and socket\n"
@@ -312,6 +318,33 @@ TP2_FLAG_CHANGES: Final = {
     "--speculative-num-draft-tokens 6": "--speculative-num-draft-tokens 5",
     "--speculative-adaptive": None,
 }
+# v8-bundle canary slot (docs/glm53-v8-bundle-canary.md): exactly one TP2 replica of this shared file (gpu02 and gpu23
+# both deploy it) reads per-replica override variables. The canary is gpu02's r2a (GPUs 4,5), with r1a, r1b and the
+# island-mate r2b as same-host controls and gpu23's r2a as the cross-host reference. Each variable is empty, or today's
+# prod value, unless gpu02's compose-manager env map sets it; every other service and gpu23 render byte-for-byte what
+# they rendered before.
+V8_SLOT: Final = "2a"
+V8_PREFIX: Final = "GLM53_V8_R2A_"
+# THE CAPS UNDER TEST. They are the only place the canary's running/queued caps live: the env-map printer
+# (scripts/glm53_v8_canary_env.py), the runbook table and the tests all read these two constants. Pending the lab result
+# (2026-10-07 ~21:30 UTC); change them here, regenerate nothing (the file only holds the 12/4 defaults), and re-run the tests.
+V8_LONG_MAX_RUNNING: Final = 16
+V8_LONG_MAX_QUEUED: Final = 6
+# Arguments of the TP2 argv whose value becomes a variable, with the variable and its default (today's value).
+V8_ARGUMENT_VARIABLES: Final = {
+    "--kv-cache-dtype bfloat16": ("--kv-cache-dtype", "KV_DTYPE", "bfloat16"),
+    "--dsa-prefill-backend tilelang": ("--dsa-prefill-backend", "DSA_BACKEND", "tilelang"),
+    "--dsa-decode-backend tilelang": ("--dsa-decode-backend", "DSA_BACKEND", "tilelang"),
+    "--max-running-requests 12": ("--max-running-requests", "MAX_RUNNING", "12"),
+    "--cuda-graph-max-bs-decode 12": ("--cuda-graph-max-bs-decode", "MAX_RUNNING", "12"),
+    "--max-queued-requests 4": ("--max-queued-requests", "MAX_QUEUED", "4"),
+}
+V8_IMAGE_EXPRESSION: Final = v8.expression(V8_PREFIX, "IMAGE", R2_IMAGE)
+V8_IMAGE_LABEL_EXPRESSION: Final = v8.expression(V8_PREFIX, "IMAGE_LABEL", R2_ENGINE_IMAGE_LABEL)
+V8_PRECISION_EXPRESSION: Final = v8.expression(V8_PREFIX, "PRECISION", PRECISION)
+V8_VARIANT_EXPRESSION: Final = v8.expression(V8_PREFIX, "VARIANT_SUFFIX", "")
+V8_EXTRA_ARGS_EXPRESSION: Final = v8.expression(V8_PREFIX, "EXTRA_ARGS", "")
+V8_ENV_PREFIX_EXPRESSION: Final = v8.expression(V8_PREFIX, "ENV_PREFIX", "")
 BACKEND_URLS_R1_R2: Final = f"http://{SERVICE_PREFIX}1:8000,http://{SERVICE_PREFIX}2:8000"
 # The value gpu02's compose-manager env map sets for GLM53_BACKEND_URLS during the 2xTP2 canary.
 GPU02_BACKEND_URLS: Final = (
@@ -472,6 +505,22 @@ def tp2_service(r2: str, suffix: str) -> str:
         if arguments.count(argument) != 1:
             raise GenerationError(f"tp2 canary: r2 argv must carry {argument!r} exactly once")
     rewritten.extend((f"--max-mamba-cache-size {TP2_MAMBA_CACHE}", "--mamba-ssm-dtype bfloat16"))
+    v8_slot = suffix == V8_SLOT
+    if v8_slot:
+        missing = sorted(argument for argument in V8_ARGUMENT_VARIABLES if rewritten.count(argument) != 1)
+        if missing:
+            raise GenerationError(f"tp2 canary: the TP2 argv changed, cannot derive the v8 slot argv: {missing}")
+        rewritten = [
+            f"{V8_ARGUMENT_VARIABLES[argument][0]} {v8.expression(V8_PREFIX, V8_ARGUMENT_VARIABLES[argument][1], V8_ARGUMENT_VARIABLES[argument][2])}"
+            if argument in V8_ARGUMENT_VARIABLES
+            else argument
+            for argument in rewritten
+        ]
+        rewritten = [V8_ENV_PREFIX_EXPRESSION, *rewritten, V8_EXTRA_ARGS_EXPRESSION]
+    image = V8_IMAGE_EXPRESSION if v8_slot else R2_IMAGE
+    variant = TP2_VARIANT + (V8_VARIANT_EXPRESSION if v8_slot else "")
+    precision = V8_PRECISION_EXPRESSION if v8_slot else PRECISION
+    engine_label = V8_IMAGE_LABEL_EXPRESSION if v8_slot else R2_ENGINE_IMAGE_LABEL
 
     env_end = r2.index("    depends_on:\n")
     environment = r2[env_start:env_end]
@@ -495,8 +544,8 @@ def tp2_service(r2: str, suffix: str) -> str:
     devices = ",".join(f'"{device}"' for device in spec["devices"])
     log_tags = (
         '"model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash",'
-        f'"precision:{PRECISION}","deployment:glm53-flash-sgl-tp4","config_variant:{TP2_VARIANT}",'
-        f'"request_logging:disabled","engine_image:{R2_ENGINE_IMAGE_LABEL}","env:${{ENV}}","host:${{CVM_HOST}}",'
+        f'"precision:{precision}","deployment:glm53-flash-sgl-tp4","config_variant:{variant}",'
+        f'"request_logging:disabled","engine_image:{engine_label}","env:${{ENV}}","host:${{CVM_HOST}}",'
         f'"ip:${{HOST_IP}}","port:8000","instance:{suffix}","gpu_pair:{spec["gpu_pair"]}"'
     )
     return (
@@ -505,7 +554,14 @@ def tp2_service(r2: str, suffix: str) -> str:
         f"  {name}:\n"
         "    <<: *sg-glm53-flash-common\n"
         f"    container_name: {name}\n"
-        f"    image: {R2_IMAGE}\n"
+        + (
+            "    # v8 canary slot (docs/glm53-v8-bundle-canary.md): every value the bundle changes is behind a per-replica variable that\n"
+            "    # is empty or today's value unless gpu02's env map sets it. ENV_PREFIX is `env NAME=value ...`, EXTRA_ARGS carries\n"
+            "    # the scheduler flag; neither flag nor environment is ever a literal in this file.\n"
+            if v8_slot
+            else ""
+        )
+        + f"    image: {image}\n"
         + render_command(rewritten, 4)
         + environment
         + "    depends_on:\n      model-downloader:\n        condition: service_completed_successfully\n"
@@ -521,10 +577,10 @@ def tp2_service(r2: str, suffix: str) -> str:
         f'      nearai.otel.model_path: "{CHECKPOINT}"\n'
         '      nearai.otel.served_model: "z-ai/glm-5.3-flash"\n'
         '      nearai.otel.deployment: "glm53-flash-sgl-tp4"\n'
-        f'      nearai.otel.config_variant: "{TP2_VARIANT}"\n'
+        f'      nearai.otel.config_variant: "{variant}"\n'
         '      nearai.otel.thinking_budget_policy: "default8192-public-to-native"\n'
         '      nearai.otel.request_logging: "disabled"\n'
-        f'      nearai.otel.engine_image: "{R2_ENGINE_IMAGE_LABEL}"\n'
+        f'      nearai.otel.engine_image: "{engine_label}"\n'
         f'      nearai.otel.instance: "{suffix}"\n'
         f'      nearai.otel.gpu_pair: "{spec["gpu_pair"]}"\n'
         '      nearai.otel.env: "${ENV}"\n      nearai.otel.host: "${CVM_HOST}"\n'
@@ -536,6 +592,10 @@ def tp2_service(r2: str, suffix: str) -> str:
 def tp2_scrape_job(suffix: str) -> str:
     spec = TP2_REPLICAS[suffix]
     name = f"{TP2_SERVICE_PREFIX}{suffix}"
+    v8_slot = suffix == V8_SLOT
+    variant = TP2_VARIANT + (V8_VARIANT_EXPRESSION if v8_slot else "")
+    precision = V8_PRECISION_EXPRESSION if v8_slot else PRECISION
+    engine_label = V8_IMAGE_LABEL_EXPRESSION if v8_slot else R2_ENGINE_IMAGE_LABEL
     return (
         f"              - job_name: sglang-{name}\n"
         "                scrape_interval: 15s\n"
@@ -549,7 +609,7 @@ def tp2_scrape_job(suffix: str) -> str:
         '                      model: "z-ai/glm-5.3-flash"\n'
         f'                      model_path: "{CHECKPOINT}"\n'
         '                      served_model: "z-ai/glm-5.3-flash"\n'
-        f'                      precision: "{PRECISION}"\n'
+        f'                      precision: "{precision}"\n'
         '                      deployment: "glm53-flash-sgl-tp4"\n'
         '                      env: "${ENV}"\n'
         '                      host: "${CVM_HOST}"\n'
@@ -559,10 +619,10 @@ def tp2_scrape_job(suffix: str) -> str:
         '                      port: "8000"\n'
         f'                      instance: "{suffix}"\n'
         f'                      gpu_pair: "{spec["gpu_pair"]}"\n'
-        f'                      config_variant: "{TP2_VARIANT}"\n'
+        f'                      config_variant: "{variant}"\n'
         '                      thinking_budget_policy: "default8192-public-to-native"\n'
         '                      request_logging: "disabled"\n'
-        f'                      engine_image: "{R2_ENGINE_IMAGE_LABEL}"\n'
+        f'                      engine_image: "{engine_label}"\n'
     )
 
 
