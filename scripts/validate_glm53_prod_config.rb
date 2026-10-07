@@ -893,7 +893,7 @@ def validate_w4afp8_tp2x4(errors, compose, base, raw)
   # literal in any service command (comments are not parsed), and the override variables never
   # appear outside the r3/r4 services and their scrape jobs.
   services.each do |service_name, service|
-    errors << "#{label} #{service_name} must not hardcode #{W4AFP8_TP2X4_OVERLAP_FLAG}; it may only arrive through #{W4AFP8_TP2X4_AB_ARGS_TOKEN} on r3/r4" if command_text(service).include?(W4AFP8_TP2X4_OVERLAP_FLAG)
+    errors << "#{label} #{service_name} must not hardcode #{W4AFP8_TP2X4_OVERLAP_FLAG} in its command, environment or labels; it may only arrive through #{W4AFP8_TP2X4_AB_ARGS_TOKEN} on r3/r4" if JSON.generate(service).include?(W4AFP8_TP2X4_OVERLAP_FLAG)
     next if W4AFP8_TP2X4_REPLICAS.key?(service_name)
 
     errors << "#{label} #{service_name} must not reference #{W4AFP8_TP2X4_AB_ARGS_ENV} or #{W4AFP8_TP2X4_AB_VARIANT_ENV}" if JSON.generate(service).match?(/GLM53_R34_/)

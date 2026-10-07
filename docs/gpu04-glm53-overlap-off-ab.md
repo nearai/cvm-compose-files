@@ -6,14 +6,16 @@ Status: **prepared, not deployed.** Nothing here is deployed by merging. The ove
 
 ## Why run this
 
-| Evidence | Result | Weight |
+| Evidence | Result (metric, n as supplied by the requester; CIs not available here) | Why it is only suggestive |
 |---|---|---|
-| tee-bench exp 2, in a TEE, on the Kimi-Linear proxy model | Overlap off gave +54% capacity at SLO (3 replicates) | Right environment, wrong model |
-| tee-bench exp 7 / exp 9, bare-metal GLM | -8.6% (overlap off was worse) | Right model, wrong environment (no confidential-computing copy cost) |
+| tee-bench exp 2, in a TEE, Kimi-Linear proxy model | Overlap off: +54% capacity at SLO, 3 replicates | Different architecture, so transfer to GLM-5.3 is unknown |
+| tee-bench exp 7 / exp 9, bare-metal GLM | Overlap off: -8.6% | Right model, but not in a TEE; whether the TEE changes the sign is a hypothesis, untested |
 | gpu13 #330 canary (TP4, GLM-5.3) | Inconclusive: no same-host control, and the canary replica saw 2-3x the concurrency of its peers | No usable signal |
-| Prod base-tier GPUs | 52-58% busy, scheduler 87% of its time in `run_batch` | Host-side overhead dominates; an overlap scheduler hides exactly that, but under CC the host copies it overlaps are synchronous, so it may buy little |
+| Prod base-tier GPUs | 52-58% busy; scheduler 87% of its time in `run_batch` | Hypothesis, untested: that host overhead dominates and that overlap does or does not hide it. Time inside `run_batch` can also be waiting on the GPU stream |
 
-The evidence points both ways: the TEE result favours turning overlap off, the only bare-metal GLM result disfavours it, and the one prod attempt could not decide. A same-host A/B on the real model in the real TEE is the experiment that was missing. The Kimi-Linear result is a proxy and is not a prediction for GLM-5.3.
+No row is a prediction of the result. We have no calibrated prior for the sign or the size of the effect, and a null is plausible. The mechanism usually offered (host copies under confidential computing are synchronous, so the overlap scheduler buys little) is a hypothesis; this A/B measures the outcome, and the mechanism metrics below are there to help attribute it.
+
+**What this window can and cannot show.** Prod is 52-58% busy, so this measures latency and per-stream speed at the organic load of the window, not capacity at SLO (the quantity in exp 2). No "capacity" claim follows from it. A capacity claim needs a measured high-load slice (the top-decile load hours of the window) or a synthetic load pass with the tee-bench harness on r1-r4; neither is part of this PR.
 
 ## What changes, and on which host
 
@@ -44,21 +46,23 @@ The env value must be a single flag or space-separated flags with no quoting; `-
 ## Confounds and how the design handles them
 
 - **Same host, same time, same image and argv except the flag.** r1/r2 are the control. Host-vs-host comparison (gpu04 vs gpu03) is not used.
-- **Routing is not identical per replica.** The gateway spreads load evenly across all 8 base replicas (4 on gpu03, 4 on gpu04), so the offered load is matched on average. The proxy is still least-connections with conversation affinity, so an arm that finishes requests faster will receive more of them, and a replica that is slower will hold more concurrent requests. That is a real effect of the flag and also a confound for raw comparisons. **Compare at matched `num_running_reqs` bins**, and report the request share per replica as an outcome, not as noise.
-- **Position.** r3/r4 sit on GPUs 4-7 (second NVLink island) and r1/r2 on GPUs 0-3. A host-position effect is possible. Take the A/A baseline (below) to measure it. If the result is marginal, swap the arms (flag on r1/r2, off on r3/r4) for a second period before drawing a conclusion; that needs a code change and is not part of this PR.
-- **n = 2 vs 2 replicas, one host, one week.** The result is evidence about gpu04's TEE configuration under that week's traffic mix, not a general law. State that in any write-up.
-- **Cache warm-up.** Each recreated replica starts with a cold HiCache and loses its conversation-affinity pins. Discard the first hour after each replica is ready.
+- **Routing is not identical per replica.** The gateway spreads load evenly across all 8 base replicas (4 on gpu03, 4 on gpu04), so offered load is matched on average. The proxy is still least-connections with conversation affinity, so a faster arm attracts more concurrent requests. That is a real effect of the flag and a confound for comparisons conditioned on running requests: `num_running_reqs` is a consequence of the treatment, so conditioning on it can hide a throughput gain. The analysis therefore reports (a) latency against concurrency at matched `num_running_reqs` bands and (b) the unconditional per-replica comparison, including request share, mean prompt tokens, mean output tokens and cache hit rate per replica. Do not claim capacity from (a). If an arm's request share differs from its A/A share by more than 15% relative, flag the latency comparison as mix-confounded and restrict it to prompt-length-matched buckets.
+- **Position (the arms are aliased with the GPU island).** r3/r4 sit on GPUs 4-7 and r1/r2 on GPUs 0-3, so a single-direction A/B cannot separate the flag from the island. The A/A baseline is the only control for it, and it is a gate: **if A/A shows a gap above 10% on the primary metric, do not flip**, because the result would be uninterpretable. A swapped-arm period (flag on r1/r2) would remove the aliasing but needs a symmetric variable and a code change; it is out of scope for this PR and is the named follow-up if the result is marginal.
+- **n = 2 vs 2 replicas, one host, one traffic mix.** The unit of analysis is the replica-hour, clustered by replica and day. Report r3 and r4 separately next to r1 and r2; do not pool them for inference. An effect is claimed only if both r3 and r4 move the same direction relative to both r1 and r2. The result concerns gpu04's TEE configuration under that window's traffic, not a general law.
+- **Cache warm-up.** Each recreated replica starts with a cold HiCache and loses its conversation-affinity pins, while r1/r2 are warm. Record the prefix/HiCache hit rate per replica and exclude r3/r4 data until their hit rate is within 10% of r1/r2 for 2 consecutive hours (at least 1 h after ready). TTFT is biased against the off arm until then.
 
 ## KMS compose hash
 
-This changes the file content, so there is a new compose hash. Register it with the KMS contract before any deploy and keep the previous tag's hash registered so the rollback stays deployable. Confirm with the compose-manager owners whether env-map values are part of what is attested; if they are, register accordingly before setting the variables.
+This changes the file content, so there is a new compose hash. Register it with the KMS contract before any deploy and keep the previous tag's hash registered so the rollback stays deployable. **Deploy blocker, answer before approval:** are env-map values part of what the TEE attests? If they are, the flag change must be registered accordingly; if they are not, the flag is not attested and the statement that the TEE environment is otherwise unchanged is weaker. Get the answer from the compose-manager owners and record it in the PR.
 
 ## Preconditions
 
 - gpu04's replicas r1-r4 must **all already run the memory-optimized candidate argv** (the promotion in `docs/glm53-base-tier-memopt-canary.md`). If gpu04's r1/r2 are still on the old argv, this is not a clean A/B. Check `docker/ps` and each replica's startup log (`mem_fraction_static=0.86`, `max_running_requests=48`).
 - The merged tag clears the commit-age gate; use the gpu04 host's complete env map; `dry_run: true` first on every call (`compose/down` ignores `dry_run`).
 - A low-traffic window: each of r3/r4 takes about 22 minutes to cold-start under CC, and gpu03 plus the other gpu04 replicas carry the traffic meanwhile.
-- **A/A baseline, 24 h before the flip:** with the current argv on all four replicas, record r3/r4 against r1/r2 for decode tok/s, per-stream tok/s, ITL mean/p95 and TTFT p50/p95 at matched bins, using the same queries as the read below. This sets the position/noise floor. If A/A already differs by more than 10% on a metric, that metric cannot support a conclusion at a 10% threshold.
+- **A/A baseline and go/no-go gate.** Before the flip, with the current argv on all four replicas, record r3/r4 against r1/r2 for the metrics below over the same day-of-week composition as the A/B window (at least one weekday busy period), as per-hour or per-day pair differences (not a single point). Gate: if the A/A gap on the primary metric is above 10%, or its spread makes a 10% effect undetectable, do not flip. Use the same frozen queries as the read.
+- **Freeze the analysis before the flip.** Commit the exact queries, bin edges (concurrency bands and prompt-length buckets), the per-bin minimum sample count and the analysis script to the repo, and record the commit hash and the reviewer sign-off on the thresholds below in the PR thread. No rule changes after the A/A read.
+- **Histogram resolution.** p95 must be computed from summed histogram buckets over the window, never averaged across hours or replicas. If the bucket edges around the observed p95 are wider than 5% relative, use per-request logs instead.
 - Capture first: `docker/ps`, `/backends/list` (four gpu04 handles), container IDs of r1/r2, and the dashboards below.
 
 ## Deploy (gpu04 only, one replica at a time)
@@ -66,7 +70,7 @@ This changes the file content, so there is a new compose hash. Register it with 
 1. **Register the KMS compose hash** (above).
 2. **Dump gpu04's compose-manager env map.** Save it (without values that are secrets) as the rollback reference. Confirm neither `GLM53_R34_SCHED_ARGS` nor `GLM53_R34_VARIANT_SUFFIX` is present. **Confirm the same on gpu03's env map; neither variable may ever be set there.**
 3. **Deploy the tag with the variables still unset**, `dry_run: true` first: the plan must recreate nothing (the rendered services are identical to the previous tag). Apply. This confirms the tag is live before anything changes behaviour.
-4. **Set both variables on gpu04's env map only**, preserving every existing key (the map is replaced whole): `GLM53_R34_SCHED_ARGS=--disable-overlap-schedule` and `GLM53_R34_VARIANT_SUFFIX=-overlap-off`.
+4. **Set both variables on gpu04's env map only**, preserving every existing key (the map is replaced whole): `GLM53_R34_SCHED_ARGS=--disable-overlap-schedule` and `GLM53_R34_VARIANT_SUFFIX=-overlap-off`. Then assert on both hosts' env maps: gpu03 has neither key; gpu04 has both keys with exactly these values (compose splits the value into argv, so any other value injects flags into r3/r4). **From now until step 8 every `compose/up` must carry a `services:` list**: an unscoped call, or a collector recreate before both replicas flipped, would label overlap-on engines `-overlap-off` and recreate r3/r4 together.
 5. **r4 first**: `compose/up` with `services: ["model-sg-glm53-w4afp8-tp2-r4"]`, `dry_run: true`. The plan must show exactly one recreate (r4) and no other service, including `otelcol-contrib`. Apply. Wait for ready (about 22 minutes), then check the startup log and one real completion. Hold if free GPU memory at ready is under 10 GiB or any CUDA 801, NCCL, Xid or OOM appears.
 6. **Verify the flag in the startup log.** The `server_args` line shows `disable_overlap_schedule=True` on r4 and `disable_overlap_schedule=False` on r1 and r2 (and r3 until it is flipped). If r4 shows `False`, the variable did not reach the container: stop and check the env map.
 7. After r4 has been healthy for **30 minutes under traffic**, repeat steps 5-6 with `services: ["model-sg-glm53-w4afp8-tp2-r3"]`.
@@ -75,34 +79,30 @@ This changes the file content, so there is a new compose hash. Register it with 
 
 The A/B window starts at the later of "r3 ready" and "collector recreated", plus 1 hour of warm-up. Metrics before that carry the wrong `config_variant` for r3/r4 and are excluded.
 
-## Read at 48 h
+## Read after the window
 
-After at least 48 h that includes a weekday busy period. Per-replica series, r3/r4 against r1/r2 (the pooled mean of each pair), **at matched `num_running_reqs` bins** (for example 1-4, 5-8, 9-16, 17+; use the bins where both arms have at least 30 minutes of data), plus the whole-window total:
+The window is at least 48 h and must contain at least one weekday busy period and enough data for the per-bin minimum sample count in the frozen analysis; extend it (ideally to 3 weekdays) if it does not. 48 h can trigger an abort; it supports "evidence for" only if the sample counts and the A/A comparison hold. Measures per replica, r3 and r4 shown separately next to r1 and r2:
 
-| Measure | Source (confirm metric names in Grafana) |
-|---|---|
-| Decode throughput (tok/s) per replica | `sglang:gen_throughput` |
-| Per-stream tok/s | decode tok/s divided by `sglang:num_running_reqs` in the same bin |
-| ITL mean and p95 | inter-token-latency histogram |
-| TTFT p50 and p95 | time-to-first-token histogram, also by prompt-length bucket |
-| Requests completed | request counter per replica; also the share of the host's requests per replica |
-| Aborts | aborted-request counter and queue-full 503 rate |
-| GPU utilisation | DCGM `GPU_UTIL` for GPUs 4-7 against GPUs 0-3 |
-| Health | restart counts, Xid, OOM, CVM `MemAvailable` |
+| Measure | Role | Source (names to be confirmed in Grafana and frozen in the committed queries) |
+|---|---|---|
+| ITL p95, by concurrency band (matched `num_running_reqs`) and prompt-length bucket, pooled with weights fixed to the A/A window's band distribution | **Primary** | inter-token-latency histogram |
+| ITL mean; TTFT p50 and p95 by prompt-length bucket; per-stream tok/s (token counter over time-weighted running-request integral, not a ratio of sampled gauges) | Secondary | histograms, counters |
+| Request share, prompt tokens, output tokens, prefix/HiCache hit rate, queue depth/time | Traffic-mix and cache context | counters |
+| Requests completed, aborts, queue-full 503 rate | Exploratory (demand-driven under least-connections) | counters |
+| GPU utilisation (DCGM `GPU_UTIL`, GPUs 4-7 vs 0-3), scheduler time in `run_batch` and idle gaps, scheduler CPU use | Mechanism: attributes a result, does not decide it | DCGM, engine metrics, host |
+| Restart counts, Xid, OOM, CVM `MemAvailable` | Safety | |
 
-Report effect sizes with the A/A baseline next to them. Say plainly what the data cannot show.
+Also check that `disable_overlap_schedule` in the startup logs agrees with the `config_variant` suffix for the whole window (a mid-window collector recreate must not change either). Only the primary metric decides; every other measure is descriptive. Compute uncertainty with a block bootstrap (block = hour, resampled across days) and report effect sizes next to the A/A difference.
 
 ## Pre-registered thresholds
 
-Abort numbers (from the request that created this PR):
+**Abort (safety rule, not the inference rule).** Roll back if r3/r4 ITL p95 **or** TTFT p95 is more than **20% worse** than r1/r2 at matched bands over **3 busy hours** (the 3 highest-load hours of a day, need not be consecutive, fixed in advance as hour-of-day slots), **or** on any engine restart or Xid on GPUs 4-7, or any OOM/CUDA error in the r3/r4 logs. If the A/A gap on that metric exceeded 10 points, the abort line is A/A gap + 10 points. A named person checks once a day at a fixed time and after any alert; the daily check is the only repeated test of this rule.
 
-- **Abort and roll back** if r3/r4 ITL p95 **or** TTFT p95 is more than **20% worse** than r1/r2 at matched bins over **3 busy hours**, **or** on any engine restart or Xid on GPUs 4-7, or any OOM/CUDA error in the r3/r4 logs.
+**Outcome rules for the primary metric (ITL p95)** (the +/-10% values below are **proposed by the author and need reviewer confirmation before any deploy**; the requester specified only the abort numbers). The decision statistic is the A/B difference minus the A/A difference, with a bootstrap CI.
 
-Proposed outcome rules for the 48 h read (set before looking at data; the PR reviewer should confirm or change them before deploy):
-
-- **Evidence for overlap-off:** at matched bins, ITL mean and p95 both at least 10% lower **or** per-stream tok/s at least 10% higher, TTFT p95 no worse than +10%, requests completed not lower, no abort. This justifies a longer or swapped-arm follow-up on gpu04, not a fleet change.
-- **Inconclusive:** every measure within +/-10%, or the A/A baseline already shows a difference of that size. Do nothing; do not extend this PR into a rollout.
-- **Evidence against:** ITL mean or p95 more than 10% worse (inside the 20% abort line) at matched bins. Roll back at the end of the window.
+- **Evidence for overlap-off:** the CI excludes 0 and the point estimate is at least 10% better, both r3 and r4 are better than both r1 and r2, per-stream tok/s is not worse, TTFT p95 is no worse than +10%, and no abort. This justifies a longer or swapped-arm follow-up on gpu04 (and a capacity test), not a fleet change.
+- **Inconclusive:** anything else inside +/-10%, the CI includes 0, the A/A gap was already that large, the traffic mix was flagged confounded, or TTFT p95 is 10-20% worse with ITL unchanged. Do nothing; do not extend this PR into a rollout.
+- **Evidence against:** ITL p95 more than 10% worse (inside the abort line) with the CI excluding 0. Roll back at the end of the window.
 
 Any rollout beyond gpu04 is a separate PR with its own review.
 

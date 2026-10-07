@@ -344,13 +344,16 @@ class OverlapOffRunbookTest(unittest.TestCase):
         self.assertIn("more than **20% worse**", self.runbook)
         self.assertIn("**3 busy hours**", self.runbook)
         self.assertIn("Xid", self.runbook)
-        self.assertIn("matched `num_running_reqs` bins", self.runbook)
+        self.assertIn("matched `num_running_reqs`", self.runbook)
+        self.assertIn("A/A shows a gap above 10%", self.runbook)
+        self.assertIn("every `compose/up` must carry a `services:` list", self.runbook)
 
     def test_runbook_does_not_overclaim(self) -> None:
         for claim in ("+54% capacity at SLO", "-8.6%", "Inconclusive", "Kimi-Linear"):
             self.assertIn(claim, self.runbook)
         # The proxy result is evidence about a different model, never a prediction for GLM-5.3.
-        self.assertIn("is not a prediction for GLM-5.3", self.runbook)
+        self.assertIn("No row is a prediction of the result", self.runbook)
+        self.assertIn("need reviewer confirmation before any deploy", self.runbook)
 
 
 class ValidatorContractTest(unittest.TestCase):
@@ -608,6 +611,12 @@ class ValidatorContractTest(unittest.TestCase):
             (self.replace_in_anchor(ab_anchor, AB_ARGS_TOKEN, "${GLM53_R34_SCHED_ARGS}"), "GLM53_R34_SCHED_ARGS must default to empty"),
             (self.replace_in_anchor(ab_anchor, AB_ARGS_TOKEN, "${GLM53_R34_SCHED_ARGS:-nothing}"), "GLM53_R34_SCHED_ARGS must default to empty"),
             (self.valid.replace(AB_VARIANT_EXPRESSION, "${GLM53_R34_VARIANT_SUFFIX:--overlap-off}"), "scrape label config_variant must be"),
+            # A literal flag smuggled through environment or labels, not just the command.
+            (self.replace_once("      - SGLANG_DSA_INDEXER_QSPLIT=1\n      - SGLANG_GHOST_CACHE=1\n", "      - SGLANG_DSA_INDEXER_QSPLIT=1\n      - SGLANG_GHOST_CACHE=1\n      - EXTRA=--disable-overlap-schedule\n") if self.valid.count("      - SGLANG_DSA_INDEXER_QSPLIT=1\n      - SGLANG_GHOST_CACHE=1\n")==1 else replace_nth(self.valid, "    container_name: " + NAMES[2] + "\n    environment:\n", 0, "    container_name: " + NAMES[2] + "\n    environment:\n      - EXTRA=--disable-overlap-schedule\n"),
+             "in its command, environment or labels"),
+            # The suffix moved from r4's scrape job onto r1's (the global count stays 6).
+            (replace_nth(replace_nth(self.valid, f'                      config_variant: "{cv}{AB_VARIANT_EXPRESSION}"', 1, f'                      config_variant: "{cv}"'),
+                         f'                      config_variant: "{cv}"', 0, f'                      config_variant: "{cv}{AB_VARIANT_EXPRESSION}"'), "scrape label config_variant must be"),
             # A variant-suffix mismatch between the flag arm's three telemetry places.
             (replace_nth(self.valid, f'config_variant:{cv}{AB_VARIANT_EXPRESSION}"', 0, f'config_variant:{cv}"'), "log metadata must carry exactly config_variant:"),
             (replace_nth(self.valid, f'                      config_variant: "{cv}{AB_VARIANT_EXPRESSION}"', 1, f'                      config_variant: "{cv}"'),
