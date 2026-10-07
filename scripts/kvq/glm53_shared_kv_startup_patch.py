@@ -35,7 +35,7 @@ EXPECTED = {
     "managers/cache_controller.py": ("ffb53c980497d0a94f4ffea7c54efa86b3e97077a08d8b8a3282ccbf2531c779",
         "5a7c6a25d39de57be74ad094ff38e72de29c8b7a1629ba19892e77196dbbed60"),
     "mem_cache/hicache_storage.py": ("40d892d038557bbce41f3b35369c8a1bf2feeed56b907f709492f7e0f113d313",
-        "2b2cea371dee79a320e129e7f89e367f3ff693b246be527d8f3fbd5a11331ff1"),
+        "77d798100f48a56a946d35bc95beb6e0f1a96e39e1b85c441051b1ac89dfbf6b"),
 }
 staged = {}
 def sha(text):
@@ -353,7 +353,7 @@ sub(H, """    def _sidecar_rank_tag(self, component_name) -> str:
         # Same contract as HiCacheController._generic_page_get (count of the contiguous prefix
         # of pages restored, stop at the first miss or on termination), but each worker thread
         # reuses one scratch page instead of allocating a pinned page per page, and pages are
-        # read in parallel (SGLANG_KVSHARE_READ_THREADS, default 8). Counts self/peer hits.
+        # read in parallel (SGLANG_KVSHARE_READ_THREADS, default 2: tmpfs reads in a TDX guest contend, 8 threads ran ~4x slower than 1-2). Counts self/peer hits.
         if operation.is_terminated():
             return 0
         t_start = time.perf_counter()
@@ -392,7 +392,7 @@ sub(H, """    def _sidecar_rank_tag(self, component_name) -> str:
             stage[1] += time.perf_counter() - t1
             return "self" if self._get_suffixed_key(key) in self._kvshare_written else "peer"
 
-        workers = int(os.environ.get("SGLANG_KVSHARE_READ_THREADS", "8"))
+        workers = int(os.environ.get("SGLANG_KVSHARE_READ_THREADS", "2"))
         items = list(zip(hash_values, offsets))
         if workers > 1 and len(items) > 1:
             pool = getattr(self, "_kvshare_read_pool", None)
@@ -523,7 +523,7 @@ sub(H, """            results[transfer.name] = [
             ]
         return results
 """, """            offsets = host_indices[::page_size].tolist()
-            workers = int(os.environ.get("SGLANG_KVSHARE_READ_THREADS", "8"))
+            workers = int(os.environ.get("SGLANG_KVSHARE_READ_THREADS", "2"))
             if op_fn == self._read_page and workers > 1 and len(keys) > 1:
                 pool = getattr(self, "_kvshare_read_pool", None)
                 if pool is None:

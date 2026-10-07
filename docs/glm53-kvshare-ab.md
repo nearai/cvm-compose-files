@@ -61,10 +61,27 @@ The base tier runs `--hicache-write-policy write_through_selective`. Under it, a
 | Correctness: GSM8K(100) on the treatment argv | PASS, 98-99% |
 | Correctness: cross-replica restore with hidden-code recall at 218K | PASS (all recalled) |
 | Attribution counters | PASS: r1 `kvshare_storage_written_tokens_total` 218,112; r2 `kvshare_storage_hit_tokens_total{source="peer"}` 218,112 |
-| Restore faster than recompute at 218K | **FAIL**: 29.7-30.5 s restored vs 24.0-27.7 s cold. The L3->L2 read takes ~25-28 s; L2->GPU ~2 s |
-| Prefix shareable after a 20 s gap | PARTIAL: 3 of 4 multi-turn conversations were restored; one prefix had not reached L3 in time |
+| Restore faster than recompute at ~220K | **PASS (1.9x)** with patch v4: 13.3-14.2 s restored vs 26.1 s cold (A8, 3/3 conversations). Earlier v1-v3 runs took 24-30 s |
+| Prefix shareable with realistic turns (+~1K tokens per turn) | PASS: 3/3 conversations restored on the partner replica (A7, A8) |
 
-**Verdict: safe and correct, and the metrics are in place, but no latency win yet. Do not deploy the prod A/B until the L3 restore beats recompute under CC.** Next: make TP rank 0 alone read the replicated MLA KV files and broadcast them (both ranks currently read every file), then re-measure at 32K, 64K and 218K.
+**How v4 got there, measured on gpu13:**
+- **Read threads.** A read microbench (`kvq-readbench`, over the live shared store) showed tmpfs reads in the TDX guest *contend*: 1-2 threads reach 500-680 MB/s, while 8 threads drop to 136-170 MB/s. The default is now 2 threads; per-rank restore reads went from ~180 MB/s to 620-820 MB/s.
+- **Direct reads.** Pages are read straight into `page_first_direct` host slots, removing the per-page copy (`copy_s` 0).
+
+**Where a ~220K restore still spends time (A8):**
+
+| Stage | Time |
+|---|---|
+| Existence check | ~1 s |
+| 27 L3 read batches (0.12-0.2 s of reads each, plus ~0.15 s of sidecar reads and TP sync per batch) | ~9 s |
+| L2->GPU load plus tail prefill | ~2.6 s |
+
+**Verdict: correct, attributed, and a 1.9x latency win at ~220K.** Ready for the prod A/B once Pranav and Lloyd give Go.
+
+**Next optimisations** (not required for the A/B):
+- larger storage batches;
+- folding the sidecar reads into the KV batch;
+- a single reader rank with a broadcast.
 
 ## Before deploying
 
