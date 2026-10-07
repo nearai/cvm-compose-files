@@ -8,6 +8,7 @@ KVQ_TESTS (comma list, run in order):
             turn 2 (same prefix + question) on target B (A again if one target). Reports TTFT of
             both turns, cached_tokens and whether turn 2 recalls the code (KV correctness).
             With two targets this is the cross-replica restore test (shared tier / GPU fetch).
+  metrics   print ghost/cache counters scraped from KVQ_METRICS_URLS (lab engines are not in Prometheus)
   hold      print one line and sleep KVQ_HOLD_S (log-path check)
   cold      the same turn-2 prompt with a fresh salt on target B: the recompute baseline.
 Results are printed as `KVQ {json}` lines; `KVQ_DONE` at the end.
@@ -132,6 +133,24 @@ def longturn(name="longturn", salt=None):
     out(name, **res)
 
 
+def metrics():
+    """Print ghost / prefix-cache / HiCache counters from each KVQ_METRICS_URLS endpoint (summed per name)."""
+    want = re.compile(r"^(sglang[:_](ghost_[a-z_]+|cache_hit_rate|prompt_tokens_total|cached_tokens_total|"
+                      r"kv_tier_[a-z_]+|hicache_[a-z_]+|realtime_tokens_total))(\{[^}]*\})?\s+([0-9.eE+-]+)\Z")
+    for url in [u.strip() for u in os.environ.get("KVQ_METRICS_URLS", "").split(",") if u.strip()]:
+        try:
+            body = urllib.request.urlopen(url, timeout=20).read().decode(errors="replace")
+        except Exception as e:  # noqa: BLE001
+            out("metrics", url=url, error=repr(e)[:200]); continue
+        agg = {}
+        for line in body.splitlines():
+            m = want.match(line.strip())
+            if m:
+                key = m.group(1) + (m.group(3) or "")
+                agg[key] = agg.get(key, 0.0) + float(m.group(4))
+        out("metrics", url=url, values=agg)
+
+
 def main():
     for t in TESTS:
         t = t.strip()
@@ -140,6 +159,7 @@ def main():
                 out("hold", targets=TARGETS, tests=TESTS); time.sleep(int(os.environ.get("KVQ_HOLD_S", "600")))
             elif t == "health": health()
             elif t == "gsm8k": gsm8k()
+            elif t == "metrics": metrics()
             elif t == "longturn":
                 base = int(os.environ.get("KVQ_LONG_SEED", "7"))
                 for i in range(int(os.environ.get("KVQ_LONG_REPEAT", "1"))):
