@@ -19,6 +19,13 @@ BASE_FILE = "prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8.yaml"
 VARIANT_SUFFIX = "-kvshare-l3file-v1"
 KV4_FILE = "prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8-KVShare4.yaml"
 KV4_SUFFIX = "-kvshare4-l3file-v1"
+SMALL_FILE = "prod/small-models.yaml"          # gpu13 base file
+KV2_FILE = "prod/small-models-GLM53-KVShare2.yaml"
+KV2_SUFFIX = "-kvshare2-l3file-v1"
+OFF_FILES = {"r3": "prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8-HiCacheOff-34.yaml", "r4": "prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8-HiCacheOff-34.yaml",
+             "r1": "prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8-HiCacheOff-12.yaml", "r2": "prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8-HiCacheOff-12.yaml"}
+OFF_SUFFIX = "-hicacheoff-v1"
+TREATED = (VARIANT_SUFFIX, KV4_SUFFIX, KV2_SUFFIX, OFF_SUFFIX)
 
 
 def token():
@@ -116,8 +123,10 @@ def done_success(out):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--host", required=True)
-    ap.add_argument("--replica", required=True, choices=["r1", "r2", "r3", "r4"])
+    ap.add_argument("--replica", required=True, choices=["r1", "r2", "r3", "r4", "r1a", "r1b"])
     ap.add_argument("--four", action="store_true", help="host-level treatment: all four replicas share (KVShare4 file)")
+    ap.add_argument("--hicache-off", action="store_true", help="arm B: this replica without HiCache (HiCacheOff-12/34 file)")
+    ap.add_argument("--gpu13", action="store_true", help="arm D: gpu13 r1a/r1b share one store (small-models KVShare2 file)")
     ap.add_argument("--tag", default=None, help="commit SHA to deploy (default: this checkout's HEAD)")
     ap.add_argument("--rollback", action="store_true")
     ap.add_argument("--apply", action="store_true")
@@ -130,25 +139,38 @@ def main():
     iid, env = inst["id"], inst["env_vars"]
     work = json.loads(api(f"instances/{iid}/version")).get("projects", {}).get("work", {}).get("current", {})
     print(f"{a.host}: work tag={work.get('tag')} file={work.get('file')}")
-    if work.get("file") not in (BASE_FILE, AB_FILE, KV4_FILE):
+    if work.get("file") not in (BASE_FILE, AB_FILE, KV4_FILE, SMALL_FILE, KV2_FILE, *OFF_FILES.values()):
         sys.exit("host is not on the base-tier file; refusing")
     svc = f"model-sg-glm53-w4afp8-tp2-{a.replica}"
+    gpu13 = a.replica in ("r1a", "r1b")
+    if gpu13 != a.gpu13 and not a.rollback:
+        sys.exit("r1a/r1b are gpu13's replicas: use --gpu13 (and only for them)")
+    base_file = SMALL_FILE if gpu13 else BASE_FILE
     if a.rollback:
-        tag, file = (work.get("tag"), BASE_FILE) if work.get("file") == BASE_FILE else (None, BASE_FILE)
-        if tag is None:
-            sys.exit("current work deployment is the A/B file; pass --tag <base tag> for the rollback")
+        # Back to the host's prod file. A tag is needed when the host's current deployment is a
+        # test file (its tag is then a branch SHA, not the prod release).
+        tag, file = (work.get("tag"), base_file) if work.get("file") == base_file else (None, base_file)
         if a.tag:
             tag = a.tag
+        if tag is None:
+            sys.exit(f"current work deployment is a test file; pass --tag <prod tag> (e.g. v0.0.475 base, v0.0.476 gpu13)")
+        suffix = None
     else:
         tag = a.tag or subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
-        file = KV4_FILE if a.four else AB_FILE
-        if not a.four and a.replica in ("r1", "r2"):
-            sys.exit("r1/r2 are the control in the 2-way file; use --four for host-level sharing")
+        if a.gpu13:
+            file, suffix = KV2_FILE, KV2_SUFFIX
+        elif a.hicache_off:
+            file, suffix = OFF_FILES[a.replica], OFF_SUFFIX
+        elif a.four:
+            file, suffix = KV4_FILE, KV4_SUFFIX
+        else:
+            if a.replica in ("r1", "r2"):
+                sys.exit("r1/r2 are the control in the 2-way file; use --four or --hicache-off")
+            file, suffix = AB_FILE, VARIANT_SUFFIX
     want_treatment = not a.rollback
-    suffix = KV4_SUFFIX if a.four else VARIANT_SUFFIX
 
     def is_target(c):
-        treated = c["variant"].endswith(KV4_SUFFIX) or c["variant"].endswith(VARIANT_SUFFIX)
+        treated = any(c["variant"].endswith(x) for x in TREATED)
         ok_variant = c["variant"].endswith(suffix) if want_treatment else not treated
         return c["state"] == "running" and ok_variant and c["file"].endswith(file)
 
