@@ -142,6 +142,11 @@ def metrics():
             body = urllib.request.urlopen(url, timeout=20).read().decode(errors="replace")
         except Exception as e:  # noqa: BLE001
             out("metrics", url=url, error=repr(e)[:200]); continue
+        grep = os.environ.get("KVQ_METRICS_GREP", "")
+        if grep:  # raw mode: print matching sample lines as-is (histograms included)
+            rx = re.compile(grep)
+            out("metrics_raw", url=url, lines=[l for l in body.splitlines() if rx.search(l) and not l.startswith("#")][:400])
+            continue
         agg = {}
         for line in body.splitlines():
             m = want.match(line.strip())

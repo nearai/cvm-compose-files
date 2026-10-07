@@ -360,6 +360,7 @@ services:
       KVQ_LONG_SEED: ${{KVQ_LONG_SEED:-7}}
       KVQ_LONG_REPEAT: ${{KVQ_LONG_REPEAT:-1}}
       KVQ_METRICS_URLS: ${{KVQ_METRICS_URLS:-}}
+      KVQ_METRICS_GREP: ${{KVQ_METRICS_GREP:-}}
     restart: "no"
     logging: *logging-conf
 {log_label("kvq-driver")}

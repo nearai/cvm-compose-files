@@ -371,7 +371,7 @@ services:
     runtime: runc
     entrypoint: ["python3", "/etc/kvq/driver.py"]
     configs:
-      - source: kvq_driver_py_8d5cb270
+      - source: kvq_driver_py_8ca5e030
         target: /etc/kvq/driver.py
         mode: 0444
     environment:
@@ -382,6 +382,7 @@ services:
       KVQ_LONG_SEED: ${KVQ_LONG_SEED:-7}
       KVQ_LONG_REPEAT: ${KVQ_LONG_REPEAT:-1}
       KVQ_METRICS_URLS: ${KVQ_METRICS_URLS:-}
+      KVQ_METRICS_GREP: ${KVQ_METRICS_GREP:-}
     restart: "no"
     logging: *logging-conf
     labels:
@@ -782,7 +783,7 @@ configs:
           finally:
               print("KVQ_DONE", flush=True)
 
-  kvq_driver_py_8d5cb270:
+  kvq_driver_py_8ca5e030:
     content: |
       #!/usr/bin/env python3
       """In-CVM load driver for the KV-sharing qualification (stdlib only, no ports exposed).
@@ -928,6 +929,11 @@ configs:
                   body = urllib.request.urlopen(url, timeout=20).read().decode(errors="replace")
               except Exception as e:  # noqa: BLE001
                   out("metrics", url=url, error=repr(e)[:200]); continue
+              grep = os.environ.get("KVQ_METRICS_GREP", "")
+              if grep:  # raw mode: print matching sample lines as-is (histograms included)
+                  rx = re.compile(grep)
+                  out("metrics_raw", url=url, lines=[l for l in body.splitlines() if rx.search(l) and not l.startswith("#")][:400])
+                  continue
               agg = {}
               for line in body.splitlines():
                   m = want.match(line.strip())
