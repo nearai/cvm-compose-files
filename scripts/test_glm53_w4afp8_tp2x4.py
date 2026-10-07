@@ -13,10 +13,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from scripts import glm53_v7_bundle as v7
 from scripts import prepare_glm53_w4afp8_tp2x4 as generator
-# The v7 canary contract (release gate, env-map printer, render checks) is shared with the long-context file's tests.
-from scripts.test_glm53_v7_bundle import SlotRenderChecks, EnvMapCheckTest, V7ReleaseGateTest, V7RunbookTest, _block as _replica_block  # noqa: F401
+
+from scripts.test_glm53_v7_canary import CanaryFilesTest, V7ReleaseGateTest  # noqa: F401
+from scripts.test_glm53_v7_canary import RunbookTest as V7RunbookTest, ValidatorContractTest as V7ValidatorContractTest  # noqa: F401
 
 ROOT = Path(__file__).resolve().parents[1]
 TARGET = ROOT / generator.TARGET
@@ -24,10 +24,6 @@ VALIDATOR = Path("scripts/validate_glm53_prod_config.rb")
 DCGM_VALIDATOR = Path("scripts/validate_glm53_dcgm_metrics.rb")
 CANONICAL = Path("prod/GLM-5.3-Flash-SGL-TP4.yaml")
 NAMES = [f"model-sg-glm53-w4afp8-tp2-r{replica}" for replica in (1, 2, 3, 4)]
-V7_PREFIX = generator.V7_PREFIX
-V7_VARIANT = generator.V7_VARIANT_EXPRESSION
-V7_LABEL = generator.V7_IMAGE_LABEL_EXPRESSION
-V7_PRECISION = generator.V7_PRECISION_EXPRESSION
 
 
 def replace_nth(text: str, needle: str, index: int, replacement: str) -> str:
@@ -181,52 +177,6 @@ class RunbookTest(unittest.TestCase):
     def test_only_candidate_replicas_use_the_candidate_anchor(self) -> None:
         self.assertEqual(self.target.count("<<: *sg-glm53-flash-candidate"), len(generator.CANDIDATE_REPLICAS))
         self.assertEqual(self.target.count("    <<: *sg-glm53-flash-common"), len(generator.REPLICAS) - len(generator.CANDIDATE_REPLICAS))
-
-
-class BaseSlotRenderTest(SlotRenderChecks, unittest.TestCase):
-    """gpu03's r4 is the v7 canary slot of this file; gpu04 and every other replica must render as before."""
-
-    kind = "base"
-    generator = generator
-    target = TARGET
-    slot = NAMES[3]
-    engines = tuple(NAMES)
-    sibling = NAMES[0]
-    prefix = V7_PREFIX
-    other_kind = "long"
-    canary_flags = {
-        "--kv-cache-dtype": "fp8_e4m3",
-        "--dsa-prefill-backend": "flashmla_kv",
-        "--dsa-decode-backend": "flashmla_kv",
-        "--max-running-requests": "64",
-        "--cuda-graph-max-bs-decode": "64",
-        "--max-mamba-cache-size": "380",
-    }
-    disable_slot = {"V7_REPLICA": 0}
-    default_variant = generator.CANDIDATE_VARIANT
-    extra_variable_names = {"MAMBA_SLOTS"}
-
-    def test_the_slot_is_r4_and_the_canary_gives_it_fp8_overlap_off_and_64_380(self) -> None:
-        self.assertEqual(generator.V7_REPLICA, 4)
-        self.assertEqual(generator.V7_PREFIX, "GLM53_V7_R4_")
-        argv = self.argv(self.slot, self.canary_env())
-        for flag, value in (("--kv-cache-dtype", "fp8_e4m3"), ("--dsa-prefill-backend", "flashmla_kv"), ("--dsa-decode-backend", "flashmla_kv"),
-                            ("--max-running-requests", "64"), ("--cuda-graph-max-bs-decode", "64"), ("--max-mamba-cache-size", "380"),
-                            ("--mem-fraction-static", "0.86"), ("--speculative-num-steps", "4"), ("--speculative-eagle-topk", "1"),
-                            ("--speculative-num-draft-tokens", "5"), ("--prefill-decode-interval", "2"), ("--chunked-prefill-size", "8192"),
-                            ("--hicache-write-policy", "write_through_selective")):
-            self.assertEqual(argv[argv.index(flag) + 1], value, flag)
-        self.assertGreaterEqual(380, 5 * 64)  # 5 mamba slots per running request
-
-    def test_every_other_replica_keeps_the_plain_candidate_anchor(self) -> None:
-        for name in NAMES[:3]:
-            self.assertIn("    <<: *sg-glm53-flash-candidate\n", _replica_block(self.text, name))
-            self.assertNotIn("    image:", _replica_block(self.text, name))
-            self.assertNotIn("    command:", _replica_block(self.text, name))
-        slot = _replica_block(self.text, NAMES[3])
-        self.assertIn("    <<: *sg-glm53-flash-candidate\n", slot)
-        self.assertIn(f"    image: {generator.V7_IMAGE_EXPRESSION}\n", slot)
-        self.assertEqual(self.text.count("x-sg-glm53-flash-"), 2 + 0)  # common + candidate anchors only: no new top-level key
 
 
 class ValidatorContractTest(unittest.TestCase):
@@ -441,20 +391,13 @@ class ValidatorContractTest(unittest.TestCase):
             (f"config_variant:{candidate_variant}", f"config_variant:{generator.VARIANT}", 0, "log metadata must carry exactly config_variant:"),
             (f'                      config_variant: "{candidate_variant}"', f'                      config_variant: "{generator.VARIANT}"', 1,
              "scrape label config_variant must be"),
-            (f'nearai.otel.config_variant: "{candidate_variant}"', 'nearai.otel.config_variant: "incorrect-variant"', 2,
+            (f'nearai.otel.config_variant: "{candidate_variant}"', 'nearai.otel.config_variant: "incorrect-variant"', 3,
              "nearai.otel.config_variant must be"),
-            (f"config_variant:{candidate_variant}", "config_variant:incorrect-variant", 2, "log metadata must carry exactly config_variant:"),
+            (f"config_variant:{candidate_variant}", "config_variant:incorrect-variant", 3, "log metadata must carry exactly config_variant:"),
             ('      nearai.otel.engine_image: "9c6ddd4319c4"\n', '      nearai.otel.engine_image: "8bce6a7cc872"\n', 1, "nearai.otel.engine_image must be"),
-            # r4 (the v7 slot) must keep its three telemetry expressions truthful too.
-            (f'nearai.otel.config_variant: "{candidate_variant}{V7_VARIANT}"', 'nearai.otel.config_variant: "incorrect-variant"', 0, "nearai.otel.config_variant must be"),
-            (f'config_variant:{candidate_variant}{V7_VARIANT}"', 'config_variant:incorrect-variant"', 0, "log metadata must carry exactly config_variant:"),
-            (f'nearai.otel.engine_image: "{V7_LABEL}"', 'nearai.otel.engine_image: "8bce6a7cc872"', 0, "nearai.otel.engine_image must be"),
-            (f'                      engine_image: "{V7_LABEL}"', '                      engine_image: "8bce6a7cc872"', 0, "scrape label engine_image"),
-            (f'precision: "{V7_PRECISION}"', 'precision: "int4-weights-fp8-activations-fp8-kv"', 0, "scrape label precision"),
-            (f'"precision:{V7_PRECISION}"', '"precision:fp8-weights-bf16-kv"', 0, "log metadata must carry precision:"),
             ('      nearai.otel.instance: "4"\n', '      nearai.otel.instance: "2"\n', 0, "nearai.otel.instance must be"),
             ('                      instance: "3"\n', '                      instance: "1"\n', 0, "scrape label instance"),
-            ('                      engine_image: "9c6ddd4319c4"\n', '                      engine_image: "8bce6a7cc872"\n', 2, "scrape label engine_image"),
+            ('                      engine_image: "9c6ddd4319c4"\n', '                      engine_image: "8bce6a7cc872"\n', 3, "scrape label engine_image"),
             ('nearai.otel.deployment: "glm53-flash-sgl-tp2x4"', 'nearai.otel.deployment: "glm53-flash-sgl-tp4"', 2,
              "must not carry the glm53-flash-sgl-tp4 deployment label"),
             ('"deployment:glm53-flash-sgl-tp2x4"', '"deployment:glm53-flash-sgl-tp4"', 1,
@@ -463,64 +406,6 @@ class ValidatorContractTest(unittest.TestCase):
         for needle, replacement, index, message in cases:
             with self.subTest(mutation=message):
                 self.assert_fails(replace_nth(self.valid, needle, index, replacement), message)
-
-    def test_rejects_v7_slot_drift(self) -> None:
-        slot = NAMES[3]
-        p = V7_PREFIX
-        extra = f"${{{p}EXTRA_ARGS:-}}"
-        env_prefix = f"${{{p}ENV_PREFIX:-}}"
-        image = generator.V7_IMAGE_EXPRESSION
-        max_running = f"${{{p}MAX_RUNNING:-48}}"
-        pinned = "is not a v7 slot variable with its pinned default"
-        cases = (
-            # A default that is not today's value / empty: the flag, the environment or a changed cap on every host.
-            (self.valid.replace(extra, f"${{{p}EXTRA_ARGS:---disable-overlap-schedule}}"), pinned),
-            (self.valid.replace(env_prefix, f"${{{p}ENV_PREFIX:-env SGLANG_PREPROCESS_WORKERS=4}}"), pinned),
-            (self.valid.replace(f"${{{p}VARIANT_SUFFIX:-}}", f"${{{p}VARIANT_SUFFIX:--v7}}"), pinned),
-            (self.valid.replace(max_running, f"${{{p}MAX_RUNNING:-64}}"), pinned),
-            (self.valid.replace(f"${{{p}MAMBA_SLOTS:-330}}", f"${{{p}MAMBA_SLOTS:-380}}"), pinned),
-            (self.valid.replace(f"${{{p}KV_DTYPE:-bfloat16}}", f"${{{p}KV_DTYPE:-fp8_e4m3}}"), pinned),
-            (self.valid.replace(f"${{{p}DSA_BACKEND:-tilelang}}", f"${{{p}DSA_BACKEND:-flashmla_kv}}"), pinned),
-            (self.valid.replace(f"${{{p}PRECISION:-int4-weights-fp8-activations-bf16-kv}}", f"${{{p}PRECISION:-int4-weights-fp8-activations-fp8-kv}}"), pinned),
-            (self.valid.replace(extra, f"${{{p}EXTRA_ARGS}}"), pinned),
-            (self.valid.replace(extra, f"${p}EXTRA_ARGS"), "references GLM53_V7_ outside a ${NAME:-default} expression"),
-            # The image: a placeholder digest as the default, a different default, or a bare reference.
-            (self.valid.replace(generator.IMAGE, "docker.io/nearaidev/sglang@" + v7.IMAGE_DIGEST_PLACEHOLDER, 1), "contains the v7 placeholder"),
-            (self.valid.replace(image, f"${{{p}IMAGE:-{generator.SOURCE_IMAGE}}}"), pinned),
-            (self.valid.replace(image, f"${{{p}IMAGE}}"), pinned),
-            (self.valid.replace(env_prefix, "", 1), "argv must be the v7 slot"),
-            # The flag, the environment, the dtype or the backend as literals anywhere.
-            (self.valid.replace(extra, "--disable-overlap-schedule"), "must not hardcode --disable-overlap-schedule"),
-            (self.valid.replace(extra, "env NEAR_SELF_PROFILE=1"), "must not hardcode NEAR_SELF_PROFILE"),
-            (self.replace_once(f"    container_name: {NAMES[2]}\n    environment:\n", f"    container_name: {NAMES[2]}\n    environment:\n      - NEAR_SELF_PROFILE=1\n"),
-             "must not hardcode NEAR_SELF_PROFILE"),
-            (self.valid.replace(env_prefix, "env SGLANG_PREPROCESS_WORKERS=4"), "must not hardcode SGLANG_PREPROCESS_"),
-            (self.replace_once(f"    container_name: {slot}\n    environment:\n", f"    container_name: {slot}\n    environment:\n      - SGLANG_PREPROCESS_WORKERS=4\n"),
-             "must not hardcode SGLANG_PREPROCESS_"),
-            (self.valid.replace(f"${{{p}KV_DTYPE:-bfloat16}}", "fp8_e4m3"), "must not hardcode fp8_e4m3"),
-            # The slot's variables on the wrong replica, an anchor, or another service.
-            (self.replace_once(f"    container_name: {NAMES[2]}\n", f"    container_name: {NAMES[2]}\n    command: sglang serve {extra}\n"),
-             f"{NAMES[2]} must not reference GLM53_V7_ variables; only {slot} does"),
-            (replace_nth(self.valid, 'nearai.otel.engine_image: "9c6ddd4319c4"', 0, f'nearai.otel.engine_image: "{generator.V7_IMAGE_LABEL_EXPRESSION}"'),
-             f"{NAMES[0]} must not reference GLM53_V7_ variables; only {slot} does"),
-            (self.replace_in_anchor("x-sg-glm53-flash-candidate", "      --mamba-ssm-dtype bfloat16\n", f"      --mamba-ssm-dtype bfloat16\n      {extra}\n"),
-             "x-sg-glm53-flash-candidate must not reference GLM53_V7_ variables"),
-            (self.replace_in_anchor("x-sg-glm53-flash-common", "      --mamba-ssm-dtype bfloat16\n", f"      --mamba-ssm-dtype bfloat16\n      {extra}\n"),
-             "x-sg-glm53-flash-common must not reference GLM53_V7_ variables"),
-            (self.replace_once("      - VLLM_BACKEND_CONVERSATION_AFFINITY=1\n", f"      - VLLM_BACKEND_CONVERSATION_AFFINITY=1\n      - X={extra}\n"),
-             "proxy-glm53 must not reference GLM53_V7_ variables"),
-            # A neighbouring replica's prefix, or a second variable for the graph batch.
-            (self.valid.replace(extra, f"${{GLM53_V7_R3_EXTRA_ARGS:-}}"), pinned),
-            (self.valid.replace(f"--cuda-graph-max-bs-decode {max_running}", f"--cuda-graph-max-bs-decode ${{{p}GRAPH_BS:-48}}"), pinned),
-            # A telemetry place that lost the suffix or the precision/label expression (counts are pinned).
-            (replace_nth(self.valid, f"{V7_VARIANT}", 2, ""), "must appear exactly 3 time(s)"),
-            (replace_nth(self.valid, V7_PRECISION, 1, "int4-weights-fp8-activations-bf16-kv"), "must appear exactly 2 time(s)"),
-            (replace_nth(self.valid, V7_LABEL, 2, "9c6ddd4319c4"), "must appear exactly 3 time(s)"),
-        )
-        for mutated, message in cases:
-            with self.subTest(expect=message, mutation=hash(mutated) % 10000):
-                self.assertNotEqual(mutated, self.valid)
-                self.assert_fails(mutated, message)
 
     def test_rejects_a_surviving_tp4_reference(self) -> None:
         mutated = replace_nth(self.valid, "    # Local snapshot path; nothing is fetched at engine start.\n", 0,

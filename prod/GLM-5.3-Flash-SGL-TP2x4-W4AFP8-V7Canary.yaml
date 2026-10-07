@@ -1,3 +1,10 @@
+# GLM-5.3 Flash v7 bundle CANARY file for gpu03, generated from prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8.yaml by
+# scripts/prepare_glm53_v7_canary.py (do not hand-edit). It is a full copy of the host's file with ONLY the canary replica
+# model-sg-glm53-w4afp8-tp2-r4 changed: the glm53-hicache-w4afp8-v7 image (sha256:fa730e6e62b2...), FP8 KV with flashmla_kv
+# DSA backends, 64 running requests, --disable-overlap-schedule, the bundle environment, and the
+# precision / engine_image / config_variant (-v7) telemetry labels. Deploy it ONLY to gpu03, scoped to that one
+# service and otelcol-contrib; roll back by redeploying the source file for the same service. docs/glm53-v7-canary.md.
+#
 # GLM-5.3 Flash base-tier 4x TP2 CANARY (one 8x H200 host: gpu03 or gpu04), generated from
 # prod/GLM-5.3-Flash-SGL-TP4-W4AFP8.yaml by scripts/prepare_glm53_w4afp8_tp2x4.py.
 # Four independent TP2/EP2 replicas, one per NVLink GPU pair (0-1, 2-3, 4-5, 6-7), replace
@@ -803,6 +810,63 @@ services:
       - SGLANG_GHOST_CACHE_SOCKET=/ghost/aggregator.sock
       - SGLANG_GHOST_CACHE_REPLICA=r4
       - SGLANG_KV_TIER_METRICS=1
+      # v7 bundle canary (docs/glm53-v7-canary.md): preprocessing pool and tool-schema caps (SGLANG_PREPROCESS_WORKERS=0
+      # or the caps at 0 turn each off) and the one-shot self-profile (inert unless NEAR_SELF_PROFILE is exactly 1).
+      - SGLANG_PREPROCESS_WORKERS=4
+      - SGLANG_PREPROCESS_TIMEOUT_S=60
+      - SGLANG_PREPROCESS_LOG_SLOW_S=5
+      - SGLANG_TOOL_SCHEMA_MAX_DEPTH=32
+      - SGLANG_TOOL_SCHEMA_MAX_NODES=25000
+      - NEAR_SELF_PROFILE=1
+      - NEAR_SELF_PROFILE_AFTER_S=900
+      - NEAR_SELF_PROFILE_STEPS=50
+    # v7 bundle canary: the candidate argv with FP8 KV (both flashmla_kv DSA backends), 64 running / 64 graphs / 380 mamba
+    # slots, the overlap scheduler off, and the v7 image. Every other replica keeps the candidate anchor and the v6 image.
+    image: docker.io/nearaidev/sglang@sha256:fa730e6e62b2ae8058114ce540487ade33ab93bc42b1179ae78edc92bd563fc5
+    command: >
+      sglang serve
+      --model-path /root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/snapshots/99f1fa70408c52b007d4fd69e02e5a522422e755
+      --served-model-name z-ai/glm-5.3-flash
+      --tp-size 2
+      --ep-size 2
+      --mem-fraction-static 0.86
+      --max-running-requests 64
+      --max-queued-requests 8
+      --enable-priority-scheduling
+      --disable-priority-preemption
+      --chunked-prefill-size 8192
+      --max-prefill-tokens 32768
+      --prefill-decode-interval 2
+      --cuda-graph-max-bs-decode 64
+      --dsa-prefill-backend flashmla_kv
+      --dsa-decode-backend flashmla_kv
+      --kv-cache-dtype fp8_e4m3
+      --speculative-algorithm EAGLE
+      --speculative-num-steps 4
+      --speculative-eagle-topk 1
+      --speculative-num-draft-tokens 5
+      --reasoning-parser glm45
+      --enable-strict-thinking
+      --grammar-backend xgrammar
+      --tool-call-parser glm47
+      --chat-template /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/3f1971b7b5f7a528c9c4ef6212c8785298a8c24a/chat_template.jinja
+      --context-length 1048576
+      --dist-init-addr 127.0.0.1:29510
+      --watchdog-timeout 1800
+      --host 0.0.0.0
+      --port 8000
+      --enable-metrics
+      --enable-cache-report
+      --log-requests-level 0
+      --disable-fast-image-processor
+      --limit-mm-data-per-request '{"image": 64}'
+      --enable-hierarchical-cache
+      --hicache-write-policy write_through_selective
+      --hicache-io-backend direct
+      --hicache-mem-layout page_first_direct
+      --max-mamba-cache-size 380
+      --mamba-ssm-dtype bfloat16
+      --disable-overlap-schedule
     depends_on:
       model-downloader:
         condition: service_completed_successfully
@@ -814,7 +878,7 @@ services:
               device_ids: ["6","7"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-bf16-kv","deployment:glm53-flash-sgl-tp2x4","config_variant:hicache-w4afp8-qsplit-selective325-mamba330-bf16state-memopt086-mr48-c8192-admission-reserve-v10-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192-obs-v1","request_logging:disabled","engine_image:9c6ddd4319c4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:4"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-fp8-kv","deployment:glm53-flash-sgl-tp2x4","config_variant:hicache-w4afp8-qsplit-selective325-mamba330-bf16state-memopt086-mr48-c8192-admission-reserve-v10-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192-obs-v1-v7","request_logging:disabled","engine_image:fa730e6e62b2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:4"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -826,10 +890,10 @@ services:
       nearai.otel.model_path: "graphistry/GLM-5.3-Flash-W4AFP8"
       nearai.otel.served_model: "z-ai/glm-5.3-flash"
       nearai.otel.deployment: "glm53-flash-sgl-tp2x4"
-      nearai.otel.config_variant: "hicache-w4afp8-qsplit-selective325-mamba330-bf16state-memopt086-mr48-c8192-admission-reserve-v10-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192-obs-v1"
+      nearai.otel.config_variant: "hicache-w4afp8-qsplit-selective325-mamba330-bf16state-memopt086-mr48-c8192-admission-reserve-v10-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192-obs-v1-v7"
       nearai.otel.thinking_budget_policy: "default8192-public-to-native"
       nearai.otel.request_logging: "disabled"
-      nearai.otel.engine_image: "9c6ddd4319c4"
+      nearai.otel.engine_image: "fa730e6e62b2"
       nearai.otel.instance: "4"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
@@ -1366,7 +1430,7 @@ configs:
                       model: "z-ai/glm-5.3-flash"
                       model_path: "graphistry/GLM-5.3-Flash-W4AFP8"
                       served_model: "z-ai/glm-5.3-flash"
-                      precision: "int4-weights-fp8-activations-bf16-kv"
+                      precision: "int4-weights-fp8-activations-fp8-kv"
                       deployment: "glm53-flash-sgl-tp2x4"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
@@ -1375,10 +1439,10 @@ configs:
                       ip: "${HOST_IP}"
                       port: "8000"
                       instance: "4"
-                      config_variant: "hicache-w4afp8-qsplit-selective325-mamba330-bf16state-memopt086-mr48-c8192-admission-reserve-v10-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192-obs-v1"
+                      config_variant: "hicache-w4afp8-qsplit-selective325-mamba330-bf16state-memopt086-mr48-c8192-admission-reserve-v10-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192-obs-v1-v7"
                       thinking_budget_policy: "default8192-public-to-native"
                       request_logging: "disabled"
-                      engine_image: "9c6ddd4319c4"
+                      engine_image: "fa730e6e62b2"
               - job_name: ghost-aggregator-glm53-ghost-aggregator
                 scrape_interval: 15s
                 metrics_path: /metrics
