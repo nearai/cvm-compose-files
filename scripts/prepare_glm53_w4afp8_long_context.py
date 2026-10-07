@@ -329,7 +329,7 @@ V8_PREFIX: Final = "GLM53_V8_R2A_"
 # (scripts/glm53_v8_canary_env.py), the runbook table and the tests all read these two constants. Pending the lab result
 # (2026-10-07 ~21:30 UTC); change them here, regenerate nothing (the file only holds the 12/4 defaults), and re-run the tests.
 V8_LONG_MAX_RUNNING: Final = 16
-V8_LONG_MAX_QUEUED: Final = 6
+V8_LONG_MAX_QUEUED: Final = 4  # 16/4: the lab measured 16 running with 6 queued; 16/4 itself is not lab-measured
 # Arguments of the TP2 argv whose value becomes a variable, with the variable and its default (today's value).
 V8_ARGUMENT_VARIABLES: Final = {
     "--kv-cache-dtype bfloat16": ("--kv-cache-dtype", "KV_DTYPE", "bfloat16"),

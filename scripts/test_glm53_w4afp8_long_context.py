@@ -258,7 +258,7 @@ class LongSlotRenderTest(SlotRenderChecks, unittest.TestCase):
         self.assertGreaterEqual(330, 5 * generator.V8_LONG_MAX_RUNNING)
 
     def test_the_long_caps_are_single_generator_constants_and_the_file_keeps_12_4(self) -> None:
-        self.assertEqual((generator.V8_LONG_MAX_RUNNING, generator.V8_LONG_MAX_QUEUED), (16, 6))
+        self.assertEqual((generator.V8_LONG_MAX_RUNNING, generator.V8_LONG_MAX_QUEUED), (16, 4))
         self.assertEqual(self.argv(self.slot, {})[self.argv(self.slot, {}).index("--max-running-requests") + 1], "12")
         self.assertEqual(self.argv(self.slot, {})[self.argv(self.slot, {}).index("--max-queued-requests") + 1], "4")
         self.assertNotIn(f"-{generator.V8_LONG_MAX_RUNNING}q{generator.V8_LONG_MAX_QUEUED}", self.text)  # the caps live in the env map only

@@ -30,10 +30,10 @@ Both files stay byte-identical in effect for every other service and for the oth
 | `..._DSA_BACKEND` | `tilelang` | `flashmla_kv` | `--dsa-prefill-backend` and `--dsa-decode-backend` (one variable: they travel together) |
 | `..._MAX_RUNNING` | 48 (base) / 12 (long) | 64 (base) / 16 (long) | `--max-running-requests` and `--cuda-graph-max-bs-decode` (one variable: the validator requires them equal) |
 | `GLM53_V8_R4_MAMBA_SLOTS` | 330 | 380 | `--max-mamba-cache-size` (5 slots per running request: 64 x 5 = 320 <= 380) |
-| `GLM53_V8_R2A_MAX_QUEUED` | 4 | 6 | `--max-queued-requests` |
-| `..._VARIANT_SUFFIX` | empty | `-v8bundle` (base), `-v8bundle-mr16q6` (long) | suffix on `config_variant` in all three telemetry places |
+| `GLM53_V8_R2A_MAX_QUEUED` | 4 | 4 (unchanged) | `--max-queued-requests` |
+| `..._VARIANT_SUFFIX` | empty | `-v8bundle` (base), `-v8bundle-mr16q4` (long) | suffix on `config_variant` in all three telemetry places |
 | `..._EXTRA_ARGS` | empty | `--disable-overlap-schedule` | last token of the command |
-| `..._ENV_PREFIX` | empty | `env SGLANG_PREPROCESS_WORKERS=4 SGLANG_PREPROCESS_TIMEOUT_S=60 SGLANG_TOOL_SCHEMA_MAX_DEPTH=<n> NEAR_SELF_PROFILE=1 NEAR_SELF_PROFILE_AFTER_S=900 NEAR_SELF_PROFILE_STEPS=50` | first tokens of the command |
+| `..._ENV_PREFIX` | empty | `env SGLANG_PREPROCESS_WORKERS=4 SGLANG_PREPROCESS_TIMEOUT_S=60 SGLANG_TOOL_SCHEMA_MAX_DEPTH=32 SGLANG_TOOL_SCHEMA_MAX_NODES=25000 SGLANG_PREPROCESS_LOG_SLOW_S=5 NEAR_SELF_PROFILE=1 NEAR_SELF_PROFILE_AFTER_S=900 NEAR_SELF_PROFILE_STEPS=50` | first tokens of the command |
 
 Everything else is unchanged: mem 0.86, EAGLE fixed 4/1/5, `--prefill-decode-interval 2`, chunk 8192, HiCache (`write_through_selective` on base, `write_through` on long), the admission-reserve environment on base and none on long, the DSA indexer split, the observability environment.
 
@@ -47,7 +47,7 @@ How the mechanism works, and why it looks like this:
 
 ## The env map to set (exactly these keys, on exactly one host)
 
-Print it, never type it: `python3 scripts/glm53_v8_canary_env.py base` (gpu03) or `... long` (gpu02). The printer refuses (exit 2) while the digest or the depth is a placeholder. With today's constants it prints, for the long file:
+Print it, never type it: `python3 scripts/glm53_v8_canary_env.py base` (gpu03) or `... long` (gpu02). The printer refuses (exit 2) while the digest is a placeholder. With today's constants it prints, for the long file:
 
 ```
 GLM53_V8_R2A_IMAGE=docker.io/nearaidev/sglang@sha256:<v8 digest>
@@ -56,27 +56,27 @@ GLM53_V8_R2A_PRECISION=int4-weights-fp8-activations-fp8-kv
 GLM53_V8_R2A_KV_DTYPE=fp8_e4m3
 GLM53_V8_R2A_DSA_BACKEND=flashmla_kv
 GLM53_V8_R2A_MAX_RUNNING=16
-GLM53_V8_R2A_MAX_QUEUED=6
-GLM53_V8_R2A_VARIANT_SUFFIX=-v8bundle-mr16q6
+GLM53_V8_R2A_MAX_QUEUED=4
+GLM53_V8_R2A_VARIANT_SUFFIX=-v8bundle-mr16q4
 GLM53_V8_R2A_EXTRA_ARGS=--disable-overlap-schedule
-GLM53_V8_R2A_ENV_PREFIX=env SGLANG_PREPROCESS_WORKERS=4 SGLANG_PREPROCESS_TIMEOUT_S=60 SGLANG_TOOL_SCHEMA_MAX_DEPTH=<n> NEAR_SELF_PROFILE=1 NEAR_SELF_PROFILE_AFTER_S=900 NEAR_SELF_PROFILE_STEPS=50
+GLM53_V8_R2A_ENV_PREFIX=env SGLANG_PREPROCESS_WORKERS=4 SGLANG_PREPROCESS_TIMEOUT_S=60 SGLANG_TOOL_SCHEMA_MAX_DEPTH=32 SGLANG_TOOL_SCHEMA_MAX_NODES=25000 SGLANG_PREPROCESS_LOG_SLOW_S=5 NEAR_SELF_PROFILE=1 NEAR_SELF_PROFILE_AFTER_S=900 NEAR_SELF_PROFILE_STEPS=50
 ```
 
 and for the base file the same ten keys with prefix `GLM53_V8_R4_`, `MAX_RUNNING=64`, `MAMBA_SLOTS=380` in place of `MAX_QUEUED`, and `VARIANT_SUFFIX=-v8bundle`.
 
-- **The long-context caps (16 running, 6 queued) are provisional** pending the 2026-10-07 ~21:30 UTC lab result. They are the single generator constants `V8_LONG_MAX_RUNNING` and `V8_LONG_MAX_QUEUED` in `scripts/prepare_glm53_w4afp8_long_context.py`. Change them there; the printer, the suffix (`-mr16q6`) and the tests follow, and no compose file changes (the file holds only the 12/4 defaults). The mamba slots (330) must hold 5 per running request, so the printer refuses a cap above 66.
-- **The preprocessing values are constants in `scripts/glm53_v8_bundle.py`**: `PREPROCESS_WORKERS` (4), `PREPROCESS_TIMEOUT_S` (60), and `TOOL_SCHEMA_MAX_DEPTH` (placeholder `<tbd>`). Change them there.
+- **The long-context caps (16 running, 4 queued) are final per the coordinator** after the 0.09 lab result (FP8 16/6 against bf16 12/4: tok/s +10%, served +12%, TTFT p95 23.3 against 19.3 s, +21%, after +18% at 0.06); 16 running was lab-measured, 16/4 itself was not. They are the single generator constants `V8_LONG_MAX_RUNNING` and `V8_LONG_MAX_QUEUED` in `scripts/prepare_glm53_w4afp8_long_context.py`. Change them there; the printer, the suffix (`-mr16q4`) and the tests follow, and no compose file changes (the file holds only the 12/4 defaults). The mamba slots (330) must hold 5 per running request, so the printer refuses a cap above 66.
+- **The preprocessing values are constants in `scripts/glm53_v8_bundle.py`**: `PREPROCESS_WORKERS` (4), `PREPROCESS_TIMEOUT_S` (60), and `TOOL_SCHEMA_MAX_DEPTH` (32), `TOOL_SCHEMA_MAX_NODES` (25000, the real guard: `check_schema` is linear in node count; both default to off in the image) and `PREPROCESS_LOG_SLOW_S` (5). Change them there.
 - **gpu04's and gpu23's env maps must never contain any `GLM53_V8_` key.** Nothing on those hosts reads them, but a leftover key would activate the slot the day that host's replica set changes.
 - The env map is replaced whole by compose-manager: dump it first, add the ten keys, preserve every existing key.
 
 ## Before anything is deployed
 
-1. **Fill in the placeholders** in `scripts/glm53_v8_bundle.py`: `V8_IMAGE_DIGEST` (the published digest of the v8 bundle image, `sha256:<64 hex>`) and `TOOL_SCHEMA_MAX_DEPTH` (the image PR's cap). Until then `V8ReleaseGateTest.test_committed_bundle_values_are_filled_in` fails in both generators' CI steps and `glm53_v8_canary_env.py` exits 2. That red check is deliberate. Do not merge with it red, and do not weaken it. Check the digest by pulling it on the canary host first (requirement 3 of the base canary docs: image already on the host).
+1. **Fill in the placeholders** in `scripts/glm53_v8_bundle.py`: `V8_IMAGE_DIGEST` (the published digest of `glm53-hicache-w4afp8-v8`, `sha256:<64 hex>`). The tool-schema caps are already set to the image PR's (#345) values. Until then `V8ReleaseGateTest.test_committed_bundle_values_are_filled_in` fails in both generators' CI steps and `glm53_v8_canary_env.py` exits 2. That red check is deliberate. Do not merge with it red, and do not weaken it. Check the digest by pulling it on the canary host first (requirement 3 of the base canary docs: image already on the host).
 2. **KMS compose hash.** Both files change, so there are two new compose hashes. Register them with the KMS contract before any deploy of either file on any host (gpu04 and gpu23 are affected even though their running services do not change), and keep the previous tag's hashes registered so the rollback stays deployable. **Open question for the compose-manager owners (deploy blocker):** are env-map values, including the image reference, part of what the TEE attests or what the hash covers? If they are, the canary's image and flags must be registered with it; if they are not, the canary image is not attested by the compose hash and the statement that the TEE environment is otherwise unchanged is weaker. Record the answer in the PR.
 3. **Env-map dump** of the canary host and of the other host of the same file, saved as the rollback reference. Assert with `python3 scripts/glm53_v8_check_env_map.py --host <host> --expect none <env-map.json>` (exit 0): no `GLM53_V8_` key on gpu04, gpu23 or the canary host before step "set the env map". Also assert `GLM53_BACKEND_URLS` is as documented for gpu02's stage (`docs/long-context-glm53-2xtp2-rollout.md`).
 4. **The v8 image must be split-capable** (`SGLANG_DSA_INDEXER_QSPLIT=1` stays set on the slot) and contain `/usr/bin/env`; the validator checks the default v6 image only.
-4a. **Image facts from the image PR's author, written into the PR thread**: the exact startup log line for the preprocess pool (this runbook expects `preprocess pool started` with the worker count), the `server_args` field names, that the hook is the #343 module (inert unless `NEAR_SELF_PROFILE` is exactly `1`, TP rank 0 only), whether `SGLANG_PREPROCESS_WORKERS=0` disables the pool (the preprocess rollback relies on it), and that the image contains `/usr/bin/env`.
-5. **Quality gate, outside this repo.** FP8 KV changes model outputs; a throughput bake cannot show quality. The owner records the lab parity result for FP8 KV with `flashmla_kv` (GSM8K, perception, and a tool-call suite on the bundle) in the PR thread before GO. The bake below reads quality proxies only.
+4a. **Image facts from the image PR's author, written into the PR thread**: the exact startup log line for the preprocess pool (this runbook expects `preprocess pool started` with the worker count), the `server_args` field names, that the hook is the #343 module (inert unless `NEAR_SELF_PROFILE` is exactly `1`, TP rank 0 only), and that the image contains `/usr/bin/env`.
+5. **Quality gate, outside this repo.** FP8 KV needs `--kv-cache-dtype fp8_e4m3` AND both `--dsa-prefill-backend flashmla_kv` and `--dsa-decode-backend flashmla_kv`; the patch does not assert the pairing, so the file does (one variable feeds both flags; test `test_fp8_kv_needs_both_dsa_backends_and_the_dtype_together`). FP8 KV changes model outputs; a throughput bake cannot show quality. The owner records the lab parity result for FP8 KV with `flashmla_kv` (GSM8K, perception, and a tool-call suite on the bundle) in the PR thread before GO. The bake below reads quality proxies only.
 6. **Both hosts' replicas on the expected baseline.** Base: all four gpu03 replicas and all four gpu04 replicas run the memory-optimized candidate (startup log `mem_fraction_static=0.86`, `max_running_requests=48`). Long: gpu02 r1a, r1b, r2a and r2b all run `max_running_requests=12` / `max_queued_requests=4` on TP2 (config_variant ends `-mr12q4-strict-budget8192-obs-v1`); if any gpu02 replica is still TP4 or at 24/8 it is not a matched sibling, so hold or exclude it from the controls.
 7. **A named person** checks the dashboards every 30 minutes during the bake and owns the rollback decision.
 
@@ -105,7 +105,7 @@ and for the base file the same ten keys with prefix `GLM53_V8_R4_`, `MAX_RUNNING
 3. Deploy the merged tag with the variables unset, `dry_run` first: the plan recreates nothing. Apply.
 4. **Set the ten keys** from `glm53_v8_canary_env.py long` in gpu02's env map only. Re-read the map.
 5. `compose/up`, `services: ["model-sg-glm53-w4afp8-tp2-r2a"]`, `dry_run: true`: one recreate, nothing else, image = the v8 digest. Apply. Wait until r2a is ready and back in the proxy pool.
-6. Run "Verify". Then the collector: `compose/up`, `services: ["otelcol-contrib"]`, `force_recreate: true`, `dry_run` first. Verify `config_variant` ends `-obs-v1-v8bundle-mr16q6` for `instance` 2a and is unchanged for 1, 2, 2b.
+6. Run "Verify". Then the collector: `compose/up`, `services: ["otelcol-contrib"]`, `force_recreate: true`, `dry_run` first. Verify `config_variant` ends `-obs-v1-v8bundle-mr16q4` for `instance` 2a and is unchanged for 1, 2, 2b.
 7. **Do not touch r2b, r1a, r1b or gpu23 until r2a is baked** (rule above).
 
 ## Verify (startup log and runtime, before the bake clock starts)
@@ -122,7 +122,7 @@ On the canary replica's startup log (`docker logs`) and `/get_server_info` or th
 | cuda graph batch sizes reach | 64 | 16 |
 | `max_mamba_cache_size` | 380 | 330 (unchanged) |
 | preprocess pool | `preprocess pool started` with 4 workers (line text per the image PR) | same |
-| `/proc/<engine pid>/environ` | `SGLANG_PREPROCESS_WORKERS=4`, `SGLANG_PREPROCESS_TIMEOUT_S=60`, `SGLANG_TOOL_SCHEMA_MAX_DEPTH=<n>` | same |
+| `/proc/<engine pid>/environ` | `SGLANG_PREPROCESS_WORKERS=4`, `SGLANG_PREPROCESS_TIMEOUT_S=60`, `SGLANG_TOOL_SCHEMA_MAX_DEPTH=32` | same |
 | image and command | `docker inspect` shows the v8 digest and `.Path` = `env`, `.Args` = `SGLANG_PREPROCESS_WORKERS=4 ... sglang serve ...`; the container did not exit 127 | same |
 | profiling hook | `NEAR_SELF_PROFILE=1` only on the canary; startup does not profile, the one-shot profile runs about 15 minutes later (below) | same |
 
@@ -186,7 +186,7 @@ Safety (immediate):
 Judgment (after the 60 minute warm-up, matched bins, summed histograms):
 
 5. ITL p95 more than **20% worse** than the siblings (difference of ratios) when its one-sided 90% lower bound exceeds +20% over a trailing 90 minutes with at least 12 blocks and 300 requests, or its point estimate exceeds +50% over 30 minutes. Base TTFT p95 likewise (prompt buckets whose cache hit rate is within 10 points of the siblings). Long TTFT p95 is reported against the same lines but is not a judgment abort at this sample size, except a point estimate above +50% over 90 minutes.
-   **Long-tier TTFT risk, known in advance.** The lab at L2 0.06 (16/6 FP8 against 12/4 bf16, same session) gave tok/s +11% (129 against 116), served +13% (475 against 422), ITL mean/p95 19/147 against 22/164 ms (better), but **TTFT p95 +18% (18.6 against 15.7 s)**: inside criterion 5's 20% by 2 points. Expect this guard to be the first to bind on the long canary. The first remedy is not an abort: drop the queue cap with the env map (`GLM53_V8_R2A_MAX_QUEUED=4`, i.e. 16/4, which the coordinator may confirm after the 0.09 result at ~21:30 UTC) and recreate the one replica; abort only if TTFT p95 stays above +20% at the final caps. The lab's +11% tok/s is below the +25% target: the runbook's verdict rules apply as written, and "positive but unproven" or "no evidence for the target" are the likely outcomes there.
+      **Long-tier TTFT risk, known in advance.** Lab TTFT p95 was +18% (0.06) and +21% (0.09) at 16/6, already at or over the 20% line; the queue cap was cut to 4 for that reason, and 16/4 is not itself lab-measured. TTFT p95 is reported, not a long-tier judgment abort (see criterion 5); if the tail is still bad at 16/4, roll back the cap pieces.
 6. 5xx other than queue-full 503, or aborts, when the one-sided 95% exact lower bound on the rate difference to the siblings exceeds 1 percentage point over 90 minutes (long: 2 points).
 7. Queue-full 503 rate above the siblings' by more than 3 percentage points (95% lower bound above zero) over 30 minutes while the canary's running count is below its cap.
 8. A quality-proxy gross failure: tool-call parse failures or empty outputs above the siblings' rate by more than 2 percentage points over 60 minutes.
@@ -205,7 +205,7 @@ Per piece, by editing the canary host's env map and recreating the **one** repli
 | FP8 off | delete `..._KV_DTYPE`, `..._DSA_BACKEND`, `..._PRECISION` and the caps (`..._MAX_RUNNING`, and `..._MAMBA_SLOTS` / `..._MAX_QUEUED`) | bf16 KV and the TileLang DSA backends together (`flashmla_kv` needs the fp8 cache); the caps return with them because they were sized for FP8's larger KV pool. The image and other pieces stay. Delete `..._VARIANT_SUFFIX` too if the suffix should stop claiming the bundle. |
 | Overlap back on | delete `..._EXTRA_ARGS` | the flag disappears from the argv |
 | Profiling off | set `..._ENV_PREFIX` to the same value with `NEAR_SELF_PROFILE=0` (or drop the three `NEAR_SELF_PROFILE*` words) | the hook is one-shot per start, so this only matters at the next recreate |
-| Preprocess workers 0 | set `..._ENV_PREFIX` to the same value with `SGLANG_PREPROCESS_WORKERS=0` | relies on 0 disabling the pool, which is **unconfirmed**: if the image PR says otherwise, the only preprocess rollback is the full revert (image back to v6). There is no rollback for the tool-schema depth cap short of the image |
+| Preprocess workers 0 | set `..._ENV_PREFIX` to the same value with `SGLANG_PREPROCESS_WORKERS=0` | `SGLANG_PREPROCESS_WORKERS` defaults to 0 = pool off in the image (confirmed by the #345 author). The tool-schema caps default to 0 = off too: set both `SGLANG_TOOL_SCHEMA_MAX_DEPTH=0 SGLANG_TOOL_SCHEMA_MAX_NODES=0` in the `ENV_PREFIX` to disable them |
 | Caps back | set `..._MAX_RUNNING` (and `..._MAX_QUEUED`, `..._MAMBA_SLOTS`) to today's values, or delete them | |
 | **Full revert** | delete all ten `GLM53_V8_*` keys | the replica renders exactly what the previous tag rendered (v6, bf16, overlap on, 48 or 12/4). No tag rollback needed. |
 

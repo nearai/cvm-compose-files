@@ -32,7 +32,7 @@ from scripts import prepare_glm53_w4afp8_tp2x4 as base_generator
 ROOT = Path(__file__).resolve().parents[1]
 FAKE_DIGEST = "sha256:" + "ab" * 32
 FAKE_IMAGE = f"{v8.IMAGE_REPO}@{FAKE_DIGEST}"
-FAKE_DEPTH = "8"
+FAKE_DEPTH = "32"
 
 
 def filled_in():
@@ -52,7 +52,7 @@ class V8ReleaseGateTest(unittest.TestCase):
         self.assertEqual(v8.release_errors(), [], "fill in scripts/glm53_v8_bundle.py before merging or deploying")
 
     def test_gate_rejects_every_placeholder_and_malformed_digest(self) -> None:
-        good_environment = {"SGLANG_PREPROCESS_WORKERS": "4", "SGLANG_PREPROCESS_TIMEOUT_S": "60", "SGLANG_TOOL_SCHEMA_MAX_DEPTH": "8"}
+        good_environment = {"SGLANG_PREPROCESS_WORKERS": "4", "SGLANG_PREPROCESS_TIMEOUT_S": "60", "SGLANG_TOOL_SCHEMA_MAX_DEPTH": "32", "SGLANG_TOOL_SCHEMA_MAX_NODES": "25000"}
         self.assertEqual(v8.release_errors(FAKE_DIGEST, good_environment), [])
         for digest in (
             v8.IMAGE_DIGEST_PLACEHOLDER,
@@ -67,6 +67,9 @@ class V8ReleaseGateTest(unittest.TestCase):
         for depth in ("<tbd>", "TBD", "", "0", "08", "-1", "8.5", "eight", "8 9"):
             with self.subTest(depth=depth):
                 self.assertTrue(v8.release_errors(FAKE_DIGEST, good_environment | {"SGLANG_TOOL_SCHEMA_MAX_DEPTH": depth}))
+        for nodes in ("0", "<tbd>", "", "25,000"):
+            with self.subTest(nodes=nodes):
+                self.assertTrue(v8.release_errors(FAKE_DIGEST, good_environment | {"SGLANG_TOOL_SCHEMA_MAX_NODES": nodes}))
         for workers in ("4 5", "<n>", "tbd", ""):
             with self.subTest(workers=workers):
                 self.assertTrue(v8.release_errors(FAKE_DIGEST, good_environment | {"SGLANG_PREPROCESS_WORKERS": workers}))
@@ -75,12 +78,12 @@ class V8ReleaseGateTest(unittest.TestCase):
         for kind in ("base", "long"):
             with self.subTest(kind=kind):
                 stderr, stdout = io.StringIO(), io.StringIO()
-                with mock.patch("sys.argv", ["glm53_v8_canary_env.py", kind]), contextlib.redirect_stderr(stderr), contextlib.redirect_stdout(stdout):
+                with mock.patch.object(v8, "V8_IMAGE_DIGEST", v8.IMAGE_DIGEST_PLACEHOLDER), mock.patch("sys.argv", ["glm53_v8_canary_env.py", kind]), contextlib.redirect_stderr(stderr), contextlib.redirect_stdout(stdout):
                     self.assertEqual(printer.main(), 2)
                 self.assertEqual(stdout.getvalue(), "")
                 self.assertIn("REFUSING", stderr.getvalue())
                 # A half-filled bundle (digest set, depth still a placeholder) is refused too.
-                with mock.patch.object(v8, "V8_IMAGE_DIGEST", FAKE_DIGEST), mock.patch("sys.argv", ["x", kind]):
+                with mock.patch.object(v8, "V8_IMAGE_DIGEST", FAKE_DIGEST), mock.patch.object(v8, "TOOL_SCHEMA_MAX_DEPTH", "<tbd>"), mock.patch("sys.argv", ["x", kind]):
                     with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
                         self.assertEqual(printer.main(), 2)
                 stdout = io.StringIO()
@@ -109,7 +112,7 @@ class V8ReleaseGateTest(unittest.TestCase):
                 "GLM53_V8_R4_MAMBA_SLOTS": "380",
                 "GLM53_V8_R4_VARIANT_SUFFIX": "-v8bundle",
                 "GLM53_V8_R4_EXTRA_ARGS": "--disable-overlap-schedule",
-                "GLM53_V8_R4_ENV_PREFIX": "env SGLANG_PREPROCESS_WORKERS=4 SGLANG_PREPROCESS_TIMEOUT_S=60 SGLANG_TOOL_SCHEMA_MAX_DEPTH=8 NEAR_SELF_PROFILE=1 NEAR_SELF_PROFILE_AFTER_S=900 NEAR_SELF_PROFILE_STEPS=50",
+                "GLM53_V8_R4_ENV_PREFIX": "env SGLANG_PREPROCESS_WORKERS=4 SGLANG_PREPROCESS_TIMEOUT_S=60 SGLANG_TOOL_SCHEMA_MAX_DEPTH=32 SGLANG_TOOL_SCHEMA_MAX_NODES=25000 SGLANG_PREPROCESS_LOG_SLOW_S=5 NEAR_SELF_PROFILE=1 NEAR_SELF_PROFILE_AFTER_S=900 NEAR_SELF_PROFILE_STEPS=50",
             },
         )
         self.assertEqual(
@@ -121,10 +124,10 @@ class V8ReleaseGateTest(unittest.TestCase):
                 "GLM53_V8_R2A_KV_DTYPE": "fp8_e4m3",
                 "GLM53_V8_R2A_DSA_BACKEND": "flashmla_kv",
                 "GLM53_V8_R2A_MAX_RUNNING": "16",
-                "GLM53_V8_R2A_MAX_QUEUED": "6",
-                "GLM53_V8_R2A_VARIANT_SUFFIX": "-v8bundle-mr16q6",
+                "GLM53_V8_R2A_MAX_QUEUED": "4",
+                "GLM53_V8_R2A_VARIANT_SUFFIX": "-v8bundle-mr16q4",
                 "GLM53_V8_R2A_EXTRA_ARGS": "--disable-overlap-schedule",
-                "GLM53_V8_R2A_ENV_PREFIX": "env SGLANG_PREPROCESS_WORKERS=4 SGLANG_PREPROCESS_TIMEOUT_S=60 SGLANG_TOOL_SCHEMA_MAX_DEPTH=8 NEAR_SELF_PROFILE=1 NEAR_SELF_PROFILE_AFTER_S=900 NEAR_SELF_PROFILE_STEPS=50",
+                "GLM53_V8_R2A_ENV_PREFIX": "env SGLANG_PREPROCESS_WORKERS=4 SGLANG_PREPROCESS_TIMEOUT_S=60 SGLANG_TOOL_SCHEMA_MAX_DEPTH=32 SGLANG_TOOL_SCHEMA_MAX_NODES=25000 SGLANG_PREPROCESS_LOG_SLOW_S=5 NEAR_SELF_PROFILE=1 NEAR_SELF_PROFILE_AFTER_S=900 NEAR_SELF_PROFILE_STEPS=50",
             },
         )
 
@@ -149,7 +152,7 @@ class V8ReleaseGateTest(unittest.TestCase):
             piece = printer.rollback_piece("base", "preprocess")
         self.assertEqual(
             piece,
-            {"GLM53_V8_R4_ENV_PREFIX": "env SGLANG_PREPROCESS_WORKERS=0 SGLANG_PREPROCESS_TIMEOUT_S=60 SGLANG_TOOL_SCHEMA_MAX_DEPTH=8 NEAR_SELF_PROFILE=1 NEAR_SELF_PROFILE_AFTER_S=900 NEAR_SELF_PROFILE_STEPS=50"},
+            {"GLM53_V8_R4_ENV_PREFIX": "env SGLANG_PREPROCESS_WORKERS=0 SGLANG_PREPROCESS_TIMEOUT_S=60 SGLANG_TOOL_SCHEMA_MAX_DEPTH=32 SGLANG_TOOL_SCHEMA_MAX_NODES=25000 SGLANG_PREPROCESS_LOG_SLOW_S=5 NEAR_SELF_PROFILE=1 NEAR_SELF_PROFILE_AFTER_S=900 NEAR_SELF_PROFILE_STEPS=50"},
         )
 
     def test_the_other_files_variables_never_collide(self) -> None:
@@ -354,6 +357,25 @@ class SlotRenderChecks:
                 return match.group(1)
         raise AssertionError(name)
 
+    def test_fp8_kv_needs_both_dsa_backends_and_the_dtype_together(self) -> None:
+        # The FP8 patch does not assert this pairing, so the file must: one variable feeds both flags, and every
+        # rendering that has fp8 KV has flashmla_kv for prefill AND decode (never one without the others).
+        env = self.canary_env()
+        for name in self.engines:
+            for label, e in (("unset", {}), ("canary", env)):
+                argv = self.argv(name, e)
+                got = (argv[argv.index("--kv-cache-dtype") + 1], argv[argv.index("--dsa-prefill-backend") + 1], argv[argv.index("--dsa-decode-backend") + 1])
+                with self.subTest(replica=name, env=label):
+                    self.assertEqual(got, ("fp8_e4m3", "flashmla_kv", "flashmla_kv") if (name == self.slot and e) else got)
+                    self.assertEqual(got[0] == "fp8_e4m3", got[1] == "flashmla_kv")
+                    self.assertEqual(got[1], got[2])
+        # Rolling back FP8 reverts all three; setting only the dtype or only the backend is not a state this file renders by default.
+        with filled_in():
+            edits = printer.rollback_piece(self.kind, "fp8")
+        for var in ("KV_DTYPE", "DSA_BACKEND"):
+            self.assertIsNone(edits[f"{self.prefix}{var}"])
+        self.assertEqual(self.text.count(f"${{{self.prefix}DSA_BACKEND:-tilelang}}"), 2)
+
     def test_self_profile_is_enabled_on_the_slot_only_and_never_a_literal(self) -> None:
         # The hook (#343) is inert unless NEAR_SELF_PROFILE is exactly "1"; it must be "1" on the canary replica alone.
         env = self.canary_env()
@@ -498,7 +520,7 @@ class V8RunbookTest(unittest.TestCase):
             self.assertIn(f"_{name}`", self.runbook, name)
         for text in (
             "fp8_e4m3", "flashmla_kv", "--disable-overlap-schedule", "int4-weights-fp8-activations-fp8-kv", "SGLANG_PREPROCESS_WORKERS=4",
-            "SGLANG_PREPROCESS_TIMEOUT_S=60", "SGLANG_TOOL_SCHEMA_MAX_DEPTH", "-v8bundle", "`9c6ddd4319c4`", "64 x 5 = 320 <= 380",
+            "SGLANG_PREPROCESS_TIMEOUT_S=60", "SGLANG_TOOL_SCHEMA_MAX_DEPTH=32", "SGLANG_TOOL_SCHEMA_MAX_NODES=25000", "-v8bundle", "`9c6ddd4319c4`", "64 x 5 = 320 <= 380",
         ):
             self.assertIn(text, self.runbook)
         self.assertNotIn(v8.IMAGE_DIGEST_PLACEHOLDER, self.runbook)

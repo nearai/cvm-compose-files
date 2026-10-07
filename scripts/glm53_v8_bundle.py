@@ -22,7 +22,11 @@ IMAGE_REPO: Final = "docker.io/nearaidev/sglang"
 IMAGE_DIGEST_PLACEHOLDER: Final = "sha256:REPLACE_WITH_V8_BUNDLE_DIGEST_AFTER_PUBLISH"
 V8_IMAGE_DIGEST: Final = IMAGE_DIGEST_PLACEHOLDER
 TOOL_SCHEMA_MAX_DEPTH_PLACEHOLDER: Final = "<tbd>"
-TOOL_SCHEMA_MAX_DEPTH: Final = TOOL_SCHEMA_MAX_DEPTH_PLACEHOLDER
+# Final per the image PR (#345): both tool-schema knobs default to 0/off in the image; the node cap is the real guard
+# (check_schema is linear in node count).
+TOOL_SCHEMA_MAX_DEPTH: Final = "32"
+TOOL_SCHEMA_MAX_NODES: Final = "25000"
+PREPROCESS_LOG_SLOW_S: Final = "5"
 # ------------------------------------------------------------------------------------------------------
 
 # The preprocessing environment of the bundle, in the order the printer emits it. Names as reported by
@@ -42,6 +46,8 @@ def preprocess_environment() -> dict[str, str]:
         "SGLANG_PREPROCESS_WORKERS": PREPROCESS_WORKERS,
         "SGLANG_PREPROCESS_TIMEOUT_S": PREPROCESS_TIMEOUT_S,
         "SGLANG_TOOL_SCHEMA_MAX_DEPTH": TOOL_SCHEMA_MAX_DEPTH,
+        "SGLANG_TOOL_SCHEMA_MAX_NODES": TOOL_SCHEMA_MAX_NODES,
+        "SGLANG_PREPROCESS_LOG_SLOW_S": PREPROCESS_LOG_SLOW_S,
     }
 
 
@@ -97,13 +103,16 @@ def release_errors(digest: str | None = None, environment: dict[str, str] | None
             "scripts/glm53_v8_bundle.py (the generated compose files hold only today's value as the default and do not change)"
         )
     for name, value in (environment if environment is not None else preprocess_environment()).items():
-        if name == "SGLANG_TOOL_SCHEMA_MAX_DEPTH":
-            continue  # checked below as an integer
+        if name in ("SGLANG_TOOL_SCHEMA_MAX_DEPTH", "SGLANG_TOOL_SCHEMA_MAX_NODES"):
+            continue  # checked below as integers
         if not re.fullmatch(r"[A-Za-z0-9_.:/=-]+", value) or "<" in value or "tbd" in value.lower():
             errors.append(f"{name}={value!r} is a placeholder or not a single plain word: set the real value in scripts/glm53_v8_bundle.py")
     depth = (environment if environment is not None else preprocess_environment()).get("SGLANG_TOOL_SCHEMA_MAX_DEPTH", "")
     if not re.fullmatch(r"[1-9][0-9]*", depth):
         errors.append(f"SGLANG_TOOL_SCHEMA_MAX_DEPTH={depth!r} must be a positive integer (the depth cap the image PR chose)")
+    nodes = (environment if environment is not None else preprocess_environment()).get("SGLANG_TOOL_SCHEMA_MAX_NODES", "")
+    if not re.fullmatch(r"[1-9][0-9]*", nodes):
+        errors.append(f"SGLANG_TOOL_SCHEMA_MAX_NODES={nodes!r} must be a positive integer (the node cap is the real tool-schema guard)")
     return errors
 
 
