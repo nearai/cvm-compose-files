@@ -3,11 +3,11 @@
 # requires-python = ">=3.11"
 # dependencies = []
 # ///
-# How to run: python3 -m unittest scripts.test_glm53_v8_bundle
-"""The v8 bundle canary: release gate, env-map printer, and the per-replica override contract of both files.
+# How to run: python3 -m unittest scripts.test_glm53_v7_bundle
+"""The v7 bundle canary: release gate, env-map printer, and the per-replica override contract of both files.
 
 `SlotRenderChecks` is imported (as a mixin) by test_glm53_w4afp8_tp2x4.py and
-test_glm53_w4afp8_long_context.py, which run in CI; `V8ReleaseGateTest` is imported by both so a placeholder
+test_glm53_w4afp8_long_context.py, which run in CI; `V7ReleaseGateTest` is imported by both so a placeholder
 fails in each file's CI step.
 """
 
@@ -24,38 +24,38 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from scripts import glm53_v8_bundle as v8
-from scripts import glm53_v8_canary_env as printer
+from scripts import glm53_v7_bundle as v7
+from scripts import glm53_v7_canary_env as printer
 from scripts import prepare_glm53_w4afp8_long_context as long_generator
 from scripts import prepare_glm53_w4afp8_tp2x4 as base_generator
 
 ROOT = Path(__file__).resolve().parents[1]
 FAKE_DIGEST = "sha256:" + "ab" * 32
-FAKE_IMAGE = f"{v8.IMAGE_REPO}@{FAKE_DIGEST}"
+FAKE_IMAGE = f"{v7.IMAGE_REPO}@{FAKE_DIGEST}"
 FAKE_DEPTH = "32"
 
 
 def filled_in():
     """Patch the two placeholders with plausible real values (what the owner fills in after publish)."""
     stack = contextlib.ExitStack()
-    stack.enter_context(mock.patch.object(v8, "V8_IMAGE_DIGEST", FAKE_DIGEST))
-    stack.enter_context(mock.patch.object(v8, "TOOL_SCHEMA_MAX_DEPTH", FAKE_DEPTH))
+    stack.enter_context(mock.patch.object(v7, "V7_IMAGE_DIGEST", FAKE_DIGEST))
+    stack.enter_context(mock.patch.object(v7, "TOOL_SCHEMA_MAX_DEPTH", FAKE_DEPTH))
     return stack
 
 
-class V8ReleaseGateTest(unittest.TestCase):
+class V7ReleaseGateTest(unittest.TestCase):
     """The placeholder digest and depth must keep this change undeployable until they are replaced."""
 
     def test_committed_bundle_values_are_filled_in(self) -> None:
-        # RED BY DESIGN until the owner replaces V8_IMAGE_DIGEST and TOOL_SCHEMA_MAX_DEPTH in
-        # scripts/glm53_v8_bundle.py with the published digest and the image PR's depth cap.
-        self.assertEqual(v8.release_errors(), [], "fill in scripts/glm53_v8_bundle.py before merging or deploying")
+        # RED BY DESIGN until the owner replaces V7_IMAGE_DIGEST and TOOL_SCHEMA_MAX_DEPTH in
+        # scripts/glm53_v7_bundle.py with the published digest and the image PR's depth cap.
+        self.assertEqual(v7.release_errors(), [], "fill in scripts/glm53_v7_bundle.py before merging or deploying")
 
     def test_gate_rejects_every_placeholder_and_malformed_digest(self) -> None:
         good_environment = {"SGLANG_PREPROCESS_WORKERS": "4", "SGLANG_PREPROCESS_TIMEOUT_S": "60", "SGLANG_TOOL_SCHEMA_MAX_DEPTH": "32", "SGLANG_TOOL_SCHEMA_MAX_NODES": "25000"}
-        self.assertEqual(v8.release_errors(FAKE_DIGEST, good_environment), [])
+        self.assertEqual(v7.release_errors(FAKE_DIGEST, good_environment), [])
         for digest in (
-            v8.IMAGE_DIGEST_PLACEHOLDER,
+            v7.IMAGE_DIGEST_PLACEHOLDER,
             "sha256:" + "ab" * 31,
             "sha256:" + "AB" * 32,
             "sha256:" + "zz" * 32,
@@ -63,27 +63,27 @@ class V8ReleaseGateTest(unittest.TestCase):
             "sha256:" + "a" * 64 + "\n",
         ):
             with self.subTest(digest=digest):
-                self.assertTrue(v8.release_errors(digest, good_environment))
+                self.assertTrue(v7.release_errors(digest, good_environment))
         for depth in ("<tbd>", "TBD", "", "0", "08", "-1", "8.5", "eight", "8 9"):
             with self.subTest(depth=depth):
-                self.assertTrue(v8.release_errors(FAKE_DIGEST, good_environment | {"SGLANG_TOOL_SCHEMA_MAX_DEPTH": depth}))
+                self.assertTrue(v7.release_errors(FAKE_DIGEST, good_environment | {"SGLANG_TOOL_SCHEMA_MAX_DEPTH": depth}))
         for nodes in ("0", "<tbd>", "", "25,000"):
             with self.subTest(nodes=nodes):
-                self.assertTrue(v8.release_errors(FAKE_DIGEST, good_environment | {"SGLANG_TOOL_SCHEMA_MAX_NODES": nodes}))
+                self.assertTrue(v7.release_errors(FAKE_DIGEST, good_environment | {"SGLANG_TOOL_SCHEMA_MAX_NODES": nodes}))
         for workers in ("4 5", "<n>", "tbd", ""):
             with self.subTest(workers=workers):
-                self.assertTrue(v8.release_errors(FAKE_DIGEST, good_environment | {"SGLANG_PREPROCESS_WORKERS": workers}))
+                self.assertTrue(v7.release_errors(FAKE_DIGEST, good_environment | {"SGLANG_PREPROCESS_WORKERS": workers}))
 
     def test_printer_refuses_a_placeholder_and_prints_once_filled_in(self) -> None:
         for kind in ("base", "long"):
             with self.subTest(kind=kind):
                 stderr, stdout = io.StringIO(), io.StringIO()
-                with mock.patch.object(v8, "V8_IMAGE_DIGEST", v8.IMAGE_DIGEST_PLACEHOLDER), mock.patch("sys.argv", ["glm53_v8_canary_env.py", kind]), contextlib.redirect_stderr(stderr), contextlib.redirect_stdout(stdout):
+                with mock.patch.object(v7, "V7_IMAGE_DIGEST", v7.IMAGE_DIGEST_PLACEHOLDER), mock.patch("sys.argv", ["glm53_v7_canary_env.py", kind]), contextlib.redirect_stderr(stderr), contextlib.redirect_stdout(stdout):
                     self.assertEqual(printer.main(), 2)
                 self.assertEqual(stdout.getvalue(), "")
                 self.assertIn("REFUSING", stderr.getvalue())
                 # A half-filled bundle (digest set, depth still a placeholder) is refused too.
-                with mock.patch.object(v8, "V8_IMAGE_DIGEST", FAKE_DIGEST), mock.patch.object(v8, "TOOL_SCHEMA_MAX_DEPTH", "<tbd>"), mock.patch("sys.argv", ["x", kind]):
+                with mock.patch.object(v7, "V7_IMAGE_DIGEST", FAKE_DIGEST), mock.patch.object(v7, "TOOL_SCHEMA_MAX_DEPTH", "<tbd>"), mock.patch("sys.argv", ["x", kind]):
                     with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
                         self.assertEqual(printer.main(), 2)
                 stdout = io.StringIO()
@@ -103,42 +103,42 @@ class V8ReleaseGateTest(unittest.TestCase):
         self.assertEqual(
             base,
             {
-                "GLM53_V8_R4_IMAGE": FAKE_IMAGE,
-                "GLM53_V8_R4_IMAGE_LABEL": "abababababab",
-                "GLM53_V8_R4_PRECISION": "int4-weights-fp8-activations-fp8-kv",
-                "GLM53_V8_R4_KV_DTYPE": "fp8_e4m3",
-                "GLM53_V8_R4_DSA_BACKEND": "flashmla_kv",
-                "GLM53_V8_R4_MAX_RUNNING": "64",
-                "GLM53_V8_R4_MAMBA_SLOTS": "380",
-                "GLM53_V8_R4_VARIANT_SUFFIX": "-v8bundle",
-                "GLM53_V8_R4_EXTRA_ARGS": "--disable-overlap-schedule",
-                "GLM53_V8_R4_ENV_PREFIX": "env SGLANG_PREPROCESS_WORKERS=4 SGLANG_PREPROCESS_TIMEOUT_S=60 SGLANG_TOOL_SCHEMA_MAX_DEPTH=32 SGLANG_TOOL_SCHEMA_MAX_NODES=25000 SGLANG_PREPROCESS_LOG_SLOW_S=5 NEAR_SELF_PROFILE=1 NEAR_SELF_PROFILE_AFTER_S=900 NEAR_SELF_PROFILE_STEPS=50",
+                "GLM53_V7_R4_IMAGE": FAKE_IMAGE,
+                "GLM53_V7_R4_IMAGE_LABEL": "abababababab",
+                "GLM53_V7_R4_PRECISION": "int4-weights-fp8-activations-fp8-kv",
+                "GLM53_V7_R4_KV_DTYPE": "fp8_e4m3",
+                "GLM53_V7_R4_DSA_BACKEND": "flashmla_kv",
+                "GLM53_V7_R4_MAX_RUNNING": "64",
+                "GLM53_V7_R4_MAMBA_SLOTS": "380",
+                "GLM53_V7_R4_VARIANT_SUFFIX": "-v7",
+                "GLM53_V7_R4_EXTRA_ARGS": "--disable-overlap-schedule",
+                "GLM53_V7_R4_ENV_PREFIX": "env SGLANG_PREPROCESS_WORKERS=4 SGLANG_PREPROCESS_TIMEOUT_S=60 SGLANG_TOOL_SCHEMA_MAX_DEPTH=32 SGLANG_TOOL_SCHEMA_MAX_NODES=25000 SGLANG_PREPROCESS_LOG_SLOW_S=5 NEAR_SELF_PROFILE=1 NEAR_SELF_PROFILE_AFTER_S=900 NEAR_SELF_PROFILE_STEPS=50",
             },
         )
         self.assertEqual(
             long,
             {
-                "GLM53_V8_R2A_IMAGE": FAKE_IMAGE,
-                "GLM53_V8_R2A_IMAGE_LABEL": "abababababab",
-                "GLM53_V8_R2A_PRECISION": "int4-weights-fp8-activations-fp8-kv",
-                "GLM53_V8_R2A_KV_DTYPE": "fp8_e4m3",
-                "GLM53_V8_R2A_DSA_BACKEND": "flashmla_kv",
-                "GLM53_V8_R2A_MAX_RUNNING": "16",
-                "GLM53_V8_R2A_MAX_QUEUED": "4",
-                "GLM53_V8_R2A_VARIANT_SUFFIX": "-v8bundle-mr16q4",
-                "GLM53_V8_R2A_EXTRA_ARGS": "--disable-overlap-schedule",
-                "GLM53_V8_R2A_ENV_PREFIX": "env SGLANG_PREPROCESS_WORKERS=4 SGLANG_PREPROCESS_TIMEOUT_S=60 SGLANG_TOOL_SCHEMA_MAX_DEPTH=32 SGLANG_TOOL_SCHEMA_MAX_NODES=25000 SGLANG_PREPROCESS_LOG_SLOW_S=5 NEAR_SELF_PROFILE=1 NEAR_SELF_PROFILE_AFTER_S=900 NEAR_SELF_PROFILE_STEPS=50",
+                "GLM53_V7_R2A_IMAGE": FAKE_IMAGE,
+                "GLM53_V7_R2A_IMAGE_LABEL": "abababababab",
+                "GLM53_V7_R2A_PRECISION": "int4-weights-fp8-activations-fp8-kv",
+                "GLM53_V7_R2A_KV_DTYPE": "fp8_e4m3",
+                "GLM53_V7_R2A_DSA_BACKEND": "flashmla_kv",
+                "GLM53_V7_R2A_MAX_RUNNING": "16",
+                "GLM53_V7_R2A_MAX_QUEUED": "4",
+                "GLM53_V7_R2A_VARIANT_SUFFIX": "-v7-mr16q4",
+                "GLM53_V7_R2A_EXTRA_ARGS": "--disable-overlap-schedule",
+                "GLM53_V7_R2A_ENV_PREFIX": "env SGLANG_PREPROCESS_WORKERS=4 SGLANG_PREPROCESS_TIMEOUT_S=60 SGLANG_TOOL_SCHEMA_MAX_DEPTH=32 SGLANG_TOOL_SCHEMA_MAX_NODES=25000 SGLANG_PREPROCESS_LOG_SLOW_S=5 NEAR_SELF_PROFILE=1 NEAR_SELF_PROFILE_AFTER_S=900 NEAR_SELF_PROFILE_STEPS=50",
             },
         )
 
     def test_the_long_caps_are_one_generator_constant_that_flows_through(self) -> None:
-        with filled_in(), mock.patch.object(long_generator, "V8_LONG_MAX_RUNNING", 14), mock.patch.object(long_generator, "V8_LONG_MAX_QUEUED", 5):
+        with filled_in(), mock.patch.object(long_generator, "V7_LONG_MAX_RUNNING", 14), mock.patch.object(long_generator, "V7_LONG_MAX_QUEUED", 5):
             values = printer.env_map("long")
-        self.assertEqual(values["GLM53_V8_R2A_MAX_RUNNING"], "14")
-        self.assertEqual(values["GLM53_V8_R2A_MAX_QUEUED"], "5")
-        self.assertEqual(values["GLM53_V8_R2A_VARIANT_SUFFIX"], "-v8bundle-mr14q5")
+        self.assertEqual(values["GLM53_V7_R2A_MAX_RUNNING"], "14")
+        self.assertEqual(values["GLM53_V7_R2A_MAX_QUEUED"], "5")
+        self.assertEqual(values["GLM53_V7_R2A_VARIANT_SUFFIX"], "-v7-mr14q5")
         # Mamba slots (330) must hold 5 per running request: a cap above 66 is refused rather than printed.
-        with filled_in(), mock.patch.object(long_generator, "V8_LONG_MAX_RUNNING", 67):
+        with filled_in(), mock.patch.object(long_generator, "V7_LONG_MAX_RUNNING", 67):
             with self.assertRaises(ValueError):
                 printer.env_map("long")
 
@@ -146,13 +146,13 @@ class V8ReleaseGateTest(unittest.TestCase):
         with filled_in():
             self.assertEqual(
                 printer.rollback_piece("base", "fp8"),
-                {f"GLM53_V8_R4_{n}": None for n in ("KV_DTYPE", "DSA_BACKEND", "PRECISION", "MAX_RUNNING", "MAMBA_SLOTS")},
+                {f"GLM53_V7_R4_{n}": None for n in ("KV_DTYPE", "DSA_BACKEND", "PRECISION", "MAX_RUNNING", "MAMBA_SLOTS")},
             )
-            self.assertEqual(printer.rollback_piece("long", "overlap"), {"GLM53_V8_R2A_EXTRA_ARGS": None})
+            self.assertEqual(printer.rollback_piece("long", "overlap"), {"GLM53_V7_R2A_EXTRA_ARGS": None})
             piece = printer.rollback_piece("base", "preprocess")
         self.assertEqual(
             piece,
-            {"GLM53_V8_R4_ENV_PREFIX": "env SGLANG_PREPROCESS_WORKERS=0 SGLANG_PREPROCESS_TIMEOUT_S=60 SGLANG_TOOL_SCHEMA_MAX_DEPTH=32 SGLANG_TOOL_SCHEMA_MAX_NODES=25000 SGLANG_PREPROCESS_LOG_SLOW_S=5 NEAR_SELF_PROFILE=1 NEAR_SELF_PROFILE_AFTER_S=900 NEAR_SELF_PROFILE_STEPS=50"},
+            {"GLM53_V7_R4_ENV_PREFIX": "env SGLANG_PREPROCESS_WORKERS=0 SGLANG_PREPROCESS_TIMEOUT_S=60 SGLANG_TOOL_SCHEMA_MAX_DEPTH=32 SGLANG_TOOL_SCHEMA_MAX_NODES=25000 SGLANG_PREPROCESS_LOG_SLOW_S=5 NEAR_SELF_PROFILE=1 NEAR_SELF_PROFILE_AFTER_S=900 NEAR_SELF_PROFILE_STEPS=50"},
         )
 
     def test_the_other_files_variables_never_collide(self) -> None:
@@ -205,7 +205,7 @@ def telemetry(text: str, name: str, env: dict[str, str]) -> dict[str, list[str]]
         "precision": re.findall(r'"precision:([^"]+)"', block) + re.findall(r'precision: "([^"]*)"', job),
         "engine_image": re.findall(r'"engine_image:([^"]+)"', block) + re.findall(r'nearai\.otel\.engine_image: "([^"]*)"', block) + re.findall(r'engine_image: "([^"]*)"', job),
     }
-    return {key: [v8.interpolate(value, env) for value in values] for key, values in found.items()}
+    return {key: [v7.interpolate(value, env) for value in values] for key, values in found.items()}
 
 
 class SlotRenderChecks:
@@ -214,7 +214,7 @@ class SlotRenderChecks:
     kind: str
     generator: object
     target: Path
-    slot: str  # the one replica that reads GLM53_V8_*
+    slot: str  # the one replica that reads GLM53_V7_*
     engines: tuple[str, ...]  # every engine service that exists in the file
     sibling: str  # a plain engine whose argv is the slot's argv with the defaults
     prefix: str
@@ -238,7 +238,7 @@ class SlotRenderChecks:
             return printer.env_map(self.other_kind)
 
     def argv(self, name: str, env: dict[str, str], text: str | None = None) -> list[str]:
-        return shlex.split(v8.interpolate(command_of(text or self.text, name), env))
+        return shlex.split(v7.interpolate(command_of(text or self.text, name), env))
 
     def default_argv(self, name: str) -> list[str]:
         argv = self.argv(self.sibling, {})
@@ -255,14 +255,14 @@ class SlotRenderChecks:
 
     # ---- unset (every other host, and the canary host before it opts in)
     def test_unset_env_map_renders_the_plain_argv_for_every_engine(self) -> None:
-        for env in ({}, {f"{self.prefix}{name}": "" for name in (*v8.SLOT_VALUE_VARIABLES, *v8.SLOT_EMPTY_VARIABLES)}):
+        for env in ({}, {f"{self.prefix}{name}": "" for name in (*v7.SLOT_VALUE_VARIABLES, *v7.SLOT_EMPTY_VARIABLES)}):
             for name in self.engines:
                 with self.subTest(replica=name, env=bool(env)):
                     argv = self.argv(name, env)
                     self.assertNotIn("", argv)
                     self.assertEqual(argv[:2], ["sglang", "serve"])  # no environment prefix, nothing leading
                     self.assertEqual(argv, self.default_argv(name))
-                    self.assertNotIn(v8.OVERLAP_FLAG, argv)
+                    self.assertNotIn(v7.OVERLAP_FLAG, argv)
                     for forbidden in ("fp8_e4m3", "flashmla_kv"):
                         self.assertNotIn(forbidden, argv)
 
@@ -284,7 +284,7 @@ class SlotRenderChecks:
             for attribute, value in self.disable_slot.items():
                 stack.enter_context(mock.patch.object(self.generator, attribute, value))
             without_slot = self.generator.generate((ROOT / self.generator.SOURCE).read_text())
-        self.assertNotIn("GLM53_V8_", "\n".join(line for line in without_slot.splitlines() if not line.lstrip().startswith("#")))
+        self.assertNotIn("GLM53_V7_", "\n".join(line for line in without_slot.splitlines() if not line.lstrip().startswith("#")))
 
         def normalise(text: str) -> list[str]:
             # The slot's own image and command are compared separately (argv per engine, below); everything else must
@@ -293,7 +293,7 @@ class SlotRenderChecks:
             stripped = re.sub(r"(?m)^    image: .*\n", "", block)
             stripped = re.sub(r"(?m)^    command: >\n(?:^ {6,}.*\n|^\n)*", "", stripped)
             text = text.replace(block, stripped)
-            resolved = v8.interpolate(text, {})
+            resolved = v7.interpolate(text, {})
             lines = [line.rstrip() for line in resolved.splitlines() if line.strip() and not line.lstrip().startswith("#")]
             return [line for line in lines if not re.match(r"\s+image: docker\.io/nearaidev/sglang@sha256:9c6ddd4319c4", line)]
 
@@ -311,7 +311,7 @@ class SlotRenderChecks:
                     self.assertEqual(argv, self.default_argv(name))
                     continue
                 self.assertEqual(argv, self.expected_canary_argv(self.default_argv(name), env))
-                self.assertEqual(argv.count(v8.OVERLAP_FLAG), 1)
+                self.assertEqual(argv.count(v7.OVERLAP_FLAG), 1)
                 for flag in self.canary_flags:
                     self.assertEqual(argv.count(flag), 1, flag)
                 self.assertEqual(argv.count("--kv-cache-dtype"), 1)
@@ -319,7 +319,7 @@ class SlotRenderChecks:
                 self.assertEqual(argv[argv.index("sglang") :][:2], ["sglang", "serve"])
                 # the preprocessing environment is exactly the three names, once each, before the program
                 prefix = argv[1 : argv.index("sglang")]
-                self.assertEqual([item.split("=")[0] for item in prefix], list(v8.preprocess_environment() | v8.PROFILE_ENVIRONMENT))
+                self.assertEqual([item.split("=")[0] for item in prefix], list(v7.preprocess_environment() | v7.PROFILE_ENVIRONMENT))
 
     def test_canary_telemetry_labels_only_the_slot(self) -> None:
         env = self.canary_env()
@@ -341,9 +341,9 @@ class SlotRenderChecks:
         for name in self.engines:
             image = re.search(r"^    image: (\S+)$", _block(self.text, name), re.MULTILINE)
             anchor_image = None if image else self.anchor_image(name)
-            resolved = v8.interpolate((image.group(1) if image else anchor_image), env)
+            resolved = v7.interpolate((image.group(1) if image else anchor_image), env)
             with self.subTest(replica=name):
-                self.assertEqual(resolved, FAKE_IMAGE if name == self.slot else v8.interpolate(image.group(1) if image else anchor_image, {}))
+                self.assertEqual(resolved, FAKE_IMAGE if name == self.slot else v7.interpolate(image.group(1) if image else anchor_image, {}))
                 if name != self.slot:
                     self.assertTrue(resolved.endswith("sha256:9c6ddd4319c4ab00e351d8650459e68b8830e36ffcc029d67fa5e19d0ac3ed17"))
 
@@ -393,13 +393,13 @@ class SlotRenderChecks:
             with self.subTest(replica=name):
                 self.assertEqual(self.argv(name, other), self.argv(name, {}))
                 self.assertEqual(telemetry(self.text, name, other), telemetry(self.text, name, {}))
-        self.assertEqual(v8.interpolate(self.text, other), v8.interpolate(self.text, {}))
+        self.assertEqual(v7.interpolate(self.text, other), v7.interpolate(self.text, {}))
 
     def test_a_neighbouring_replicas_variables_are_inert(self) -> None:
-        # Someone sets the slot's variables under the wrong replica's prefix (e.g. GLM53_V8_R3_*, GLM53_V8_R2B_*).
-        env = {key.replace(self.prefix, "GLM53_V8_R3_").replace("R2A_", "R2B_"): value for key, value in self.canary_env().items()}
+        # Someone sets the slot's variables under the wrong replica's prefix (e.g. GLM53_V7_R3_*, GLM53_V7_R2B_*).
+        env = {key.replace(self.prefix, "GLM53_V7_R3_").replace("R2A_", "R2B_"): value for key, value in self.canary_env().items()}
         self.assertFalse(any(key.startswith(self.prefix) for key in env))
-        self.assertEqual(v8.interpolate(self.text, env), v8.interpolate(self.text, {}))
+        self.assertEqual(v7.interpolate(self.text, env), v7.interpolate(self.text, {}))
 
     def test_each_piece_rolls_back_independently(self) -> None:
         full = self.canary_env()
@@ -411,7 +411,7 @@ class SlotRenderChecks:
             env.update({key: value for key, value in edits.items() if value is not None})
             argv = self.argv(self.slot, env)
             with self.subTest(piece=piece):
-                self.assertEqual(argv.count(v8.OVERLAP_FLAG), 0 if piece == "overlap" else 1)
+                self.assertEqual(argv.count(v7.OVERLAP_FLAG), 0 if piece == "overlap" else 1)
                 has_fp8 = "fp8_e4m3" in argv
                 if piece == "fp8":  # caps return to today's values together with bf16
                     self.assertEqual(argv[argv.index("--max-running-requests") + 1], self.default_argv(self.slot)[self.default_argv(self.slot).index("--max-running-requests") + 1])
@@ -427,15 +427,15 @@ class SlotRenderChecks:
     # ---- the file's own contract
     def test_every_override_variable_is_pinned_to_todays_value_or_empty(self) -> None:
         body = "\n".join(line for line in self.text.splitlines() if not line.lstrip().startswith("#"))
-        found = re.findall(r"\$\{(GLM53_V8_[A-Z0-9_]+):-([^}]*)\}", body)
+        found = re.findall(r"\$\{(GLM53_V7_[A-Z0-9_]+):-([^}]*)\}", body)
         self.assertTrue(found)
-        self.assertEqual(body.count("GLM53_V8_"), len(found))
+        self.assertEqual(body.count("GLM53_V7_"), len(found))
         names = {name for name, _ in found}
         self.assertEqual(names, {f"{self.prefix}{name}" for name in self.expected_variable_names()})
         for name, default in found:
             short = name.removeprefix(self.prefix)
             with self.subTest(variable=short):
-                if short in v8.SLOT_EMPTY_VARIABLES:
+                if short in v7.SLOT_EMPTY_VARIABLES:
                     self.assertEqual(default, "")
                 else:
                     self.assertNotEqual(default, "")
@@ -445,23 +445,23 @@ class SlotRenderChecks:
         return "docker.io/nearaidev/sglang@sha256:9c6ddd4319c4ab00e351d8650459e68b8830e36ffcc029d67fa5e19d0ac3ed17"
 
     def expected_variable_names(self) -> set[str]:
-        return set(v8.SLOT_VALUE_VARIABLES) | set(v8.SLOT_EMPTY_VARIABLES) | self.extra_variable_names
+        return set(v7.SLOT_VALUE_VARIABLES) | set(v7.SLOT_EMPTY_VARIABLES) | self.extra_variable_names
 
     extra_variable_names: set[str] = set()
 
     def test_the_bundle_is_never_a_literal_in_the_file(self) -> None:
         body = "\n".join(line for line in self.text.splitlines() if not line.lstrip().startswith("#"))
-        for literal in (v8.OVERLAP_FLAG, "SGLANG_PREPROCESS_", "SGLANG_TOOL_SCHEMA", "fp8_e4m3", "flashmla_kv", v8.IMAGE_DIGEST_PLACEHOLDER, "REPLACE_WITH_V8", "<tbd>"):
+        for literal in (v7.OVERLAP_FLAG, "SGLANG_PREPROCESS_", "SGLANG_TOOL_SCHEMA", "fp8_e4m3", "flashmla_kv", v7.IMAGE_DIGEST_PLACEHOLDER, "REPLACE_WITH_V7", "<tbd>"):
             self.assertNotIn(literal, body)
 
     def test_variables_exist_only_on_the_slot_service_and_its_scrape_job(self) -> None:
         for name in self.engines:
             if name == self.slot:
                 continue
-            self.assertNotIn("GLM53_V8_", _block(self.text, name), name)
-            self.assertNotIn("GLM53_V8_", scrape_job(self.text, name), name)
+            self.assertNotIn("GLM53_V7_", _block(self.text, name), name)
+            self.assertNotIn("GLM53_V7_", scrape_job(self.text, name), name)
         top = self.text[: self.text.index("\nservices:\n")]
-        self.assertNotIn("GLM53_V8_", "\n".join(line for line in top.splitlines() if not line.lstrip().startswith("#")))
+        self.assertNotIn("GLM53_V7_", "\n".join(line for line in top.splitlines() if not line.lstrip().startswith("#")))
 
     @unittest.skipUnless(shutil.which("docker"), "docker CLI not available")
     def test_docker_compose_config_unset_vs_set(self) -> None:
@@ -488,7 +488,7 @@ class SlotRenderChecks:
             rendered = canary["services"][name]["command"]
             if name == self.slot:
                 self.assertEqual(rendered, self.expected_canary_argv(self.default_argv(name), self.canary_env()))
-                self.assertEqual(rendered.count(v8.OVERLAP_FLAG), 1)
+                self.assertEqual(rendered.count(v7.OVERLAP_FLAG), 1)
                 self.assertEqual(canary["services"][name]["image"], FAKE_IMAGE)
             else:
                 self.assertEqual(rendered, command)
@@ -498,11 +498,11 @@ class SlotRenderChecks:
         self.assertEqual({key: value for key, value in canary.items() if key not in ("services", "configs")}, {key: value for key, value in unset.items() if key not in ("services", "configs")})
 
 
-class V8RunbookTest(unittest.TestCase):
+class V7RunbookTest(unittest.TestCase):
     """The runbook must carry the exact keys, values, scoped services, rules and pre-registered numbers the files implement."""
 
     def setUp(self) -> None:
-        self.runbook = (ROOT / "docs/glm53-v8-bundle-canary.md").read_text()
+        self.runbook = (ROOT / "docs/glm53-v7-canary.md").read_text()
 
     def test_names_the_slots_hosts_and_scoped_services_and_never_an_unscoped_call(self) -> None:
         for text in (
@@ -516,22 +516,22 @@ class V8RunbookTest(unittest.TestCase):
             self.assertNotIn(f'services: ["model-sg-glm53-w4afp8-tp2-{sibling}"]', self.runbook)
 
     def test_lists_every_variable_with_its_default_and_canary_value(self) -> None:
-        for name in (*v8.SLOT_VALUE_VARIABLES, *v8.SLOT_EMPTY_VARIABLES, "MAMBA_SLOTS", "MAX_QUEUED"):
+        for name in (*v7.SLOT_VALUE_VARIABLES, *v7.SLOT_EMPTY_VARIABLES, "MAMBA_SLOTS", "MAX_QUEUED"):
             self.assertIn(f"_{name}`", self.runbook, name)
         for text in (
             "fp8_e4m3", "flashmla_kv", "--disable-overlap-schedule", "int4-weights-fp8-activations-fp8-kv", "SGLANG_PREPROCESS_WORKERS=4",
-            "SGLANG_PREPROCESS_TIMEOUT_S=60", "SGLANG_TOOL_SCHEMA_MAX_DEPTH=32", "SGLANG_TOOL_SCHEMA_MAX_NODES=25000", "-v8bundle", "`9c6ddd4319c4`", "64 x 5 = 320 <= 380",
+            "SGLANG_PREPROCESS_TIMEOUT_S=60", "SGLANG_TOOL_SCHEMA_MAX_DEPTH=32", "SGLANG_TOOL_SCHEMA_MAX_NODES=25000", "-v7", "`9c6ddd4319c4`", "64 x 5 = 320 <= 380",
         ):
             self.assertIn(text, self.runbook)
-        self.assertNotIn(v8.IMAGE_DIGEST_PLACEHOLDER, self.runbook)
+        self.assertNotIn(v7.IMAGE_DIGEST_PLACEHOLDER, self.runbook)
 
     def test_long_caps_in_the_runbook_are_the_generator_constants(self) -> None:
-        running, queued = long_generator.V8_LONG_MAX_RUNNING, long_generator.V8_LONG_MAX_QUEUED
-        self.assertIn(f"`-v8bundle-mr{running}q{queued}`", self.runbook)
-        self.assertIn(f"GLM53_V8_R2A_MAX_RUNNING={running}", self.runbook)
-        self.assertIn(f"GLM53_V8_R2A_MAX_QUEUED={queued}", self.runbook)
-        self.assertIn("V8_LONG_MAX_RUNNING", self.runbook)
-        self.assertIn("V8_LONG_MAX_QUEUED", self.runbook)
+        running, queued = long_generator.V7_LONG_MAX_RUNNING, long_generator.V7_LONG_MAX_QUEUED
+        self.assertIn(f"`-v7-mr{running}q{queued}`", self.runbook)
+        self.assertIn(f"GLM53_V7_R2A_MAX_RUNNING={running}", self.runbook)
+        self.assertIn(f"GLM53_V7_R2A_MAX_QUEUED={queued}", self.runbook)
+        self.assertIn("V7_LONG_MAX_RUNNING", self.runbook)
+        self.assertIn("V7_LONG_MAX_QUEUED", self.runbook)
         self.assertIn(f"{running} running, {queued} queued", self.runbook.replace("16 running, 6 queued", f"{running} running, {queued} queued"))
         self.assertIn(f"| 64 (base) / {running} (long) |", self.runbook)
 
@@ -568,10 +568,10 @@ class V8RunbookTest(unittest.TestCase):
 
 
 class EnvMapCheckTest(unittest.TestCase):
-    """scripts/glm53_v8_check_env_map.py: the operator-side guard for the env maps."""
+    """scripts/glm53_v7_check_env_map.py: the operator-side guard for the env maps."""
 
     def test_none_and_canary_expectations_per_host(self) -> None:
-        from scripts import glm53_v8_check_env_map as check
+        from scripts import glm53_v7_check_env_map as check
 
         with filled_in():
             base, long = printer.env_map("base"), printer.env_map("long")
@@ -584,5 +584,5 @@ class EnvMapCheckTest(unittest.TestCase):
             self.assertTrue(check.problems(long, "gpu23", "canary"))
             self.assertTrue(check.problems(long, "gpu03", "canary"))
             self.assertTrue(check.problems({k: v for k, v in base.items() if not k.endswith("KV_DTYPE")}, "gpu03", "canary"))
-            self.assertTrue(check.problems(base | {"GLM53_V8_R4_EXTRA_ARGS": "--disable-overlap-schedule --kv-cache-dtype bfloat16"}, "gpu03", "canary"))
-            self.assertTrue(check.problems(base | {"GLM53_V8_R3_ENV_PREFIX": "env NEAR_SELF_PROFILE=1"}, "gpu03", "canary"))
+            self.assertTrue(check.problems(base | {"GLM53_V7_R4_EXTRA_ARGS": "--disable-overlap-schedule --kv-cache-dtype bfloat16"}, "gpu03", "canary"))
+            self.assertTrue(check.problems(base | {"GLM53_V7_R3_ENV_PREFIX": "env NEAR_SELF_PROFILE=1"}, "gpu03", "canary"))
