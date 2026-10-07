@@ -33,7 +33,7 @@ EXPECTED = {
     "mem_cache/unified_radix_cache.py": ("98f175f529614ebb33618a27c54248105eff3bf80c1365ffd3716bd346add278",
         "88263caaca4967d542a9f9e20af7230114d5c8ddcb5dfcd2d9c9cec1fee42c2d"),
     "mem_cache/hicache_storage.py": ("40d892d038557bbce41f3b35369c8a1bf2feeed56b907f709492f7e0f113d313",
-        "8c6dfd39eb9ab53ba1ed4c5c65b24e848956f77e754ba06514d6f45e95c2b52c"),
+        "1f3ab1e990c400477da73f9d63b7e950ea1843cbc228bfc89a8d57519eafd637"),
 }
 staged = {}
 def sha(text):
@@ -406,6 +406,63 @@ import threading
 import threading
 from collections import OrderedDict
 """, "file backend kvshare import")
+
+# --- 6) hicache_storage.py: faster shared-tier restores (port addition, gpu13 CC 2026-10-07) ---
+# A 218K-token cross-replica restore spent ~11 s in L3->L2 reads: one Python read per 64-token page
+# per pool, sequential, each into a freshly allocated, zeroed, pinned (cudaHostAlloc) scratch page.
+# Reuse one scratch page per pool per thread, and read the pages of a batch with a small thread pool
+# (file reads release the GIL; each page lands in a distinct host slot; the evictor and metadata
+# cache are already lock-protected). SGLANG_KVSHARE_READ_THREADS=1 restores the sequential path.
+sub(H, """    def _read_page(self, pool_name: str, key: str, host_pool, page_offset: int) -> bool:
+        \"\"\"Read one page from storage into host_pool at page_offset.\"\"\"
+        storage_key = self._log_key(pool_name, key)
+        data_page = self.get(storage_key, host_pool.get_dummy_flat_data_page())
+""", """    def _scratch_page(self, host_pool):
+        local = getattr(self, "_kvshare_tls", None)
+        if local is None:
+            local = self._kvshare_tls = threading.local()
+        pages = getattr(local, "pages", None)
+        if pages is None:
+            pages = local.pages = {}
+        page = pages.get(id(host_pool))
+        if page is None:
+            page = pages[id(host_pool)] = host_pool.get_dummy_flat_data_page()
+        return page
+
+    def _read_page(self, pool_name: str, key: str, host_pool, page_offset: int) -> bool:
+        \"\"\"Read one page from storage into host_pool at page_offset.\"\"\"
+        storage_key = self._log_key(pool_name, key)
+        data_page = self.get(storage_key, self._scratch_page(host_pool))
+""", "file backend reuse scratch page")
+sub(H, """            results[transfer.name] = [
+                op_fn(transfer.name, key, host_pool, host_indices[i * page_size].item())
+                for i, key in enumerate(keys)
+            ]
+        return results
+""", """            offsets = host_indices[::page_size].tolist()
+            workers = int(os.environ.get("SGLANG_KVSHARE_READ_THREADS", "8"))
+            if op_fn == self._read_page and workers > 1 and len(keys) > 1:
+                pool = getattr(self, "_kvshare_read_pool", None)
+                if pool is None:
+                    from concurrent.futures import ThreadPoolExecutor
+
+                    pool = self._kvshare_read_pool = ThreadPoolExecutor(
+                        max_workers=workers, thread_name_prefix="hicache-file-read"
+                    )
+                name = transfer.name
+                results[transfer.name] = list(
+                    pool.map(
+                        lambda item: op_fn(name, item[0], host_pool, item[1]),
+                        zip(keys, offsets),
+                    )
+                )
+            else:
+                results[transfer.name] = [
+                    op_fn(transfer.name, key, host_pool, offsets[i])
+                    for i, key in enumerate(keys)
+                ]
+        return results
+""", "file backend threaded batch reads")
 
 # --- verify every file, then write ---
 for rel, (before, after) in EXPECTED.items():
