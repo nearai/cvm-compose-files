@@ -258,6 +258,25 @@ services:
   # --- Step 2 (Test B): 1P:1D GPU->GPU KV move over NIXL. Prefill on GPUs 4-5, decode on 6-7 ---
 {engine("kvq-pf", PF_ARGS, "kvq-pd-prefill-v0521-gpu45-nixl-ipc", "kvq-pf")}
 {engine("kvq-dc", DC_ARGS, "kvq-pd-decode-v0521-gpu67-nixl-ipc", "kvq-dc")}
+  # One-shot: which UCX transports (cuda_ipc? cuda_copy?) the NIXL engines' UCX sees, same GPU set.
+  kvq-ucxinfo:
+    <<: *kvq-gpu
+    image: {V0521}
+    container_name: kvq-ucxinfo
+    entrypoint: ["bash", "-c"]
+    command:
+      - |
+        U=$$(command -v ucx_info || find / -name ucx_info -type f 2>/dev/null | head -1)
+        echo "KVQ_UCX bin=$$U"
+        python3 -c "import nixl, os; print('KVQ_UCX nixl', os.path.dirname(nixl.__file__))" 2>&1 | head -2
+        find / -name 'libuct_cuda*.so*' 2>/dev/null | head -5 | sed 's/^/KVQ_UCX lib /'
+        [ -n "$$U" ] && $$U -v | sed 's/^/KVQ_UCX /'
+        [ -n "$$U" ] && $$U -d | grep -E 'Transport|Device|Memory domain|Component|bandwidth' | sed 's/^/KVQ_UCX /'
+        echo KVQ_DONE
+    environment:
+      <<: *kvq-env
+    restart: "no"
+{log_label("kvq-ucxinfo")}
   kvq-router:
     image: {V0521}
     container_name: kvq-router

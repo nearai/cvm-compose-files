@@ -141,6 +141,27 @@ services:
       nearai.otel.host: "${CVM_HOST}"
       nearai.otel.host_machine: "${CVM_HOST}"
 
+  # One-shot: which UCX transports (cuda_ipc? cuda_copy?) the NIXL engines' UCX sees, same GPU set.
+  kvq-ucxinfo:
+    <<: *kvq-gpu
+    image: docker.io/lmsysorg/sglang@sha256:b1259f3ea3275f66237c498ea388919729018bc9f01c3d638391e06e2cf3f469
+    container_name: kvq-ucxinfo
+    entrypoint: ["bash", "-c"]
+    command:
+      - |
+        U=$$(command -v ucx_info || find / -name ucx_info -type f 2>/dev/null | head -1)
+        echo "KVQ_UCX bin=$$U"
+        python3 -c "import nixl, os; print('KVQ_UCX nixl', os.path.dirname(nixl.__file__))" 2>&1 | head -2
+        find / -name 'libuct_cuda*.so*' 2>/dev/null | head -5 | sed 's/^/KVQ_UCX lib /'
+        [ -n "$$U" ] && $$U -v | sed 's/^/KVQ_UCX /'
+        [ -n "$$U" ] && $$U -d | grep -E 'Transport|Device|Memory domain|Component|bandwidth' | sed 's/^/KVQ_UCX /'
+        echo KVQ_DONE
+    environment:
+      <<: *kvq-env
+    restart: "no"
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"kvq-ucxinfo","service":"kvq-ucxinfo","tags":["deployment:glm53-flash-sgl-kvshare-qual","env:${ENV}","host:${CVM_HOST}"]}]'
+
   kvq-router:
     image: docker.io/lmsysorg/sglang@sha256:b1259f3ea3275f66237c498ea388919729018bc9f01c3d638391e06e2cf3f469
     container_name: kvq-router
