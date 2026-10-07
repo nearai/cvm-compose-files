@@ -15,7 +15,7 @@ on:
           - w4afp8
           - hicache-w4afp8
       tag:
-        description: Docker Hub tag; empty derives the per-variant default (glm53-admission-reserve-v10, glm53-hicache-admission-reserve-v10, glm53-pool-clamp-v1, glm53-hicache-pool-clamp-v1, glm53-w4afp8-pool-clamp-v1, glm53-hicache-w4afp8-v6)
+        description: Docker Hub tag; empty derives the per-variant default (glm53-admission-reserve-v10, glm53-hicache-admission-reserve-v10, glm53-pool-clamp-v1, glm53-hicache-pool-clamp-v1, glm53-w4afp8-pool-clamp-v1, glm53-hicache-w4afp8-v7)
         required: false
         type: string
         default: ''
@@ -119,12 +119,12 @@ jobs:
             hicache-w4afp8)
               echo "BUILD_CONTEXT=docker/sglang-glm53-hicache-w4afp8" >> "$GITHUB_ENV"
               echo "BASE_DIGEST=sha256:3eccc30709f5719c81084d1264f03ca5354b3059ec4cff62f0c5ff88c309680c" >> "$GITHUB_ENV"
-              echo "EXPECTED_DOCKERFILE_SHA256=7d2eb67434eb2f15641fa313bd062dd1a404fec0669ee70666e80165b5df5cdc" >> "$GITHUB_ENV"
-              echo "EXPECTED_PROVENANCE_SHA256=f7a6822a34feae5aa4b2a11f10f3909c68c0a25d73490cdfbcc1a4849ec18281" >> "$GITHUB_ENV"
-              echo "EXPECTED_SHA256SUMS_SHA256=99614e8f51cdfa301c60236922285a541d5f12f4264e26b5ef76d4dfc34bb8ed" >> "$GITHUB_ENV"
+              echo "EXPECTED_DOCKERFILE_SHA256=d37994a723948ede1ca33273ff69e1cce43d2b8ea58c6ec7bd3654f0a58d7626" >> "$GITHUB_ENV"
+              echo "EXPECTED_PROVENANCE_SHA256=ed4fca19a3f3fe1f20387502cd23e11c2965ad504013add2202efed6c61b3ea7" >> "$GITHUB_ENV"
+              echo "EXPECTED_SHA256SUMS_SHA256=9da1e8b69704a2cbee2e6b92d24e0270436f63627a734f0d89b795200cb18018" >> "$GITHUB_ENV"
               echo "TEST_SCRIPT=/usr/share/nearai/glm53-hicache-w4afp8/test-cpu.sh" >> "$GITHUB_ENV"
               echo "EVIDENCE_PREFIX=glm53-hicache-w4afp8" >> "$GITHUB_ENV"
-              DEFAULT_TAG=glm53-hicache-w4afp8-v6
+              DEFAULT_TAG=glm53-hicache-w4afp8-v7
               ;;
             *)
               echo "Unknown variant: $VARIANT" >&2
