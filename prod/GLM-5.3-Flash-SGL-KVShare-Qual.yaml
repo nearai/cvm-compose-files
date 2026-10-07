@@ -80,6 +80,8 @@ services:
     environment:
       <<: *kvq-env
     restart: "no"
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"kvq-probe","service":"kvq-probe","tags":["deployment:glm53-flash-sgl-kvshare-qual","env:${ENV}","host:${CVM_HOST}"]}]'
 
   # --- Step 2 (Test B): 1P:1D GPU->GPU KV move over NIXL. Prefill on GPUs 4-5, decode on 6-7 ---
   kvq-pf:
@@ -142,6 +144,8 @@ services:
     command: ["--pd-disaggregation", "--prefill", "http://kvq-pf:8000", "8998", "--decode", "http://kvq-dc:8000", "--prefill-policy", "round_robin", "--decode-policy", "round_robin", "--host", "0.0.0.0", "--port", "8000", "--prometheus-port", "29040", "--request-timeout-secs", "3600"]
     restart: "no"
     logging: *logging-conf
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"kvq-router","service":"kvq-router","tags":["deployment:glm53-flash-sgl-kvshare-qual","env:${ENV}","host:${CVM_HOST}"]}]'
 
   # --- Load driver (one-shot, stdlib only). KVQ_TESTS/KVQ_TARGETS come from the deploy env. ---
   kvq-driver:
@@ -161,6 +165,8 @@ services:
       KVQ_LONG_SEED: ${KVQ_LONG_SEED:-7}
     restart: "no"
     logging: *logging-conf
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"kvq-driver","service":"kvq-driver","tags":["deployment:glm53-flash-sgl-kvshare-qual","env:${ENV}","host:${CVM_HOST}"]}]'
 
 networks:
   default:

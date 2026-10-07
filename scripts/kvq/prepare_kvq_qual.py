@@ -50,6 +50,13 @@ def block(text, indent):
     return "\n".join((pad + l) if l.strip() else "" for l in text.replace("$", "$$").rstrip("\n").split("\n"))
 
 
+def log_label(service):
+    """Without this label the gpu13 log collector skips the container (results are read from Loki)."""
+    return f"""    labels:
+      com.datadoghq.ad.logs: '[{{"source":"{service}","service":"{service}","tags":["deployment:{DEPLOYMENT}","env:${{ENV}}","host:${{CVM_HOST}}"]}}]'
+"""
+
+
 def labels(name, variant, image_short, instance):
     return f"""    labels:
       com.datadoghq.ad.logs: '[{{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","deployment:{DEPLOYMENT}","config_variant:{variant}","engine_image:{image_short}","env:${{ENV}}","host:${{CVM_HOST}}","instance:{instance}"]}}]'
@@ -169,7 +176,7 @@ services:
     environment:
       <<: *kvq-env
     restart: "no"
-
+{log_label("kvq-probe")}
   # --- Step 2 (Test B): 1P:1D GPU->GPU KV move over NIXL. Prefill on GPUs 4-5, decode on 6-7 ---
 {engine("kvq-pf", PF_ARGS, "kvq-pd-prefill-v0521-gpu45-nixl-ipc", "kvq-pf")}
 {engine("kvq-dc", DC_ARGS, "kvq-pd-decode-v0521-gpu67-nixl-ipc", "kvq-dc")}
@@ -181,7 +188,7 @@ services:
     command: ["--pd-disaggregation", "--prefill", "http://kvq-pf:8000", "8998", "--decode", "http://kvq-dc:8000", "--prefill-policy", "round_robin", "--decode-policy", "round_robin", "--host", "0.0.0.0", "--port", "8000", "--prometheus-port", "29040", "--request-timeout-secs", "3600"]
     restart: "no"
     logging: *logging-conf
-
+{log_label("kvq-router")}
   # --- Load driver (one-shot, stdlib only). KVQ_TESTS/KVQ_TARGETS come from the deploy env. ---
   kvq-driver:
     image: {V0521}
@@ -200,7 +207,7 @@ services:
       KVQ_LONG_SEED: ${{KVQ_LONG_SEED:-7}}
     restart: "no"
     logging: *logging-conf
-
+{log_label("kvq-driver")}
 networks:
   default:
     external: true
