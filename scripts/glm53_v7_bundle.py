@@ -1,16 +1,16 @@
 """Shared constants and release gate for the GLM-5.3 Flash "v7 bundle" canary slots.
 
 The v7 bundle is one engine image: v6 + the FP8 KV patch + the preprocessing stall fix + a
-profiling hook (off) + the tool-schema depth cap (docs/glm53-v7-canary.md). It canaries on
+profiling hook (on for the two canaries) + the tool-schema caps (docs/glm53-v7-canary.md). It canaries on
 exactly one replica of the base file (gpu03 r4) and one TP2 replica of the long-context file
 (gpu02 r2a). Both files are deployed by two hosts, so neither file hardcodes the bundle: each canary
 slot reads a set of per-replica override variables that are empty (or the current prod value) by
 default and are set only in the canary host's compose-manager env map. This module owns what the two
 generators and the env-map printer share.
 
-FILL AFTER PUBLISH: `V7_IMAGE_DIGEST` and `TOOL_SCHEMA_MAX_DEPTH`. Both are placeholders on purpose;
-`release_errors()` fails on them (the unit tests and `scripts/glm53_v7_canary_env.py` call it), so the
-change cannot be deployed with a placeholder by accident.
+`V7_IMAGE_DIGEST` is the published v7 image (publish run 37693106399 from main 29a7db9, tag
+glm53-hicache-w4afp8-v7). `release_errors()` still rejects a placeholder or malformed digest or depth (the unit
+tests and `scripts/glm53_v7_canary_env.py` call it), so a later edit cannot ship a placeholder by accident.
 """
 
 import re
@@ -18,9 +18,9 @@ from typing import Final
 
 IMAGE_REPO: Final = "docker.io/nearaidev/sglang"
 
-# ---- FILL AFTER PUBLISH (the parallel image PR reports the digest and the depth cap) ----------------
+# ---- Release values (published v7 image, #345) ------------------------------------------------------
 IMAGE_DIGEST_PLACEHOLDER: Final = "sha256:REPLACE_WITH_V7_BUNDLE_DIGEST_AFTER_PUBLISH"
-V7_IMAGE_DIGEST: Final = IMAGE_DIGEST_PLACEHOLDER
+V7_IMAGE_DIGEST: Final = "sha256:fa730e6e62b2ae8058114ce540487ade33ab93bc42b1179ae78edc92bd563fc5"
 TOOL_SCHEMA_MAX_DEPTH_PLACEHOLDER: Final = "<tbd>"
 # Final per the image PR (#345): both tool-schema knobs default to 0/off in the image; the node cap is the real guard
 # (check_schema is linear in node count).

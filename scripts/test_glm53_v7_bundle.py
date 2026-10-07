@@ -92,7 +92,8 @@ class V7ReleaseGateTest(unittest.TestCase):
                 self.assertIn(FAKE_IMAGE, stdout.getvalue())
                 self.assertNotIn("PREVIEW", stdout.getvalue())
         preview = io.StringIO()
-        with mock.patch("sys.argv", ["x", "base", "--allow-placeholder"]), contextlib.redirect_stdout(preview):
+        # The preview path is for a placeholder digest; pin it explicitly so the check does not depend on the committed value.
+        with mock.patch.object(v7, "V7_IMAGE_DIGEST", v7.IMAGE_DIGEST_PLACEHOLDER), mock.patch("sys.argv", ["x", "base", "--allow-placeholder"]), contextlib.redirect_stdout(preview):
             self.assertEqual(printer.main(), 0)
         self.assertIn("PREVIEW ONLY - DO NOT DEPLOY", preview.getvalue())
 
