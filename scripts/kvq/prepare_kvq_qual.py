@@ -149,6 +149,11 @@ x-kvq-env: &kvq-env
   # cudaIpc / UCX cuda_ipc cannot export; NIXL then silently falls back to host staging.
   PYTORCH_CUDA_ALLOC_CONF: expandable_segments:False
   UCX_TLS: ${{KVQ_UCX_TLS:-all}}
+  # Diagnostics, off by default: UCX_PROTO_INFO=y prints the protocol (cuda_ipc vs host staging
+  # vs tcp) chosen for each transfer shape; a shorter KV wait surfaces a stuck transfer sooner.
+  UCX_PROTO_INFO: ${{KVQ_UCX_PROTO_INFO:-n}}
+  UCX_LOG_LEVEL: ${{KVQ_UCX_LOG_LEVEL:-warn}}
+  SGLANG_DISAGGREGATION_WAITING_TIMEOUT: ${{KVQ_PD_WAIT_TIMEOUT:-300}}
   TORCHINDUCTOR_CACHE_DIR: /root/.cache/torchinductor
   TRITON_CACHE_DIR: /root/.cache/triton
   TILELANG_CACHE_DIR: /root/.cache/tilelang
