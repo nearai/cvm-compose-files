@@ -1,0 +1,322 @@
+diff -ru -x _ v6/python/sglang/srt/mem_cache/hicache_storage.py ported/python/sglang/srt/mem_cache/hicache_storage.py
+--- v6/python/sglang/srt/mem_cache/hicache_storage.py	2026-09-04 21:54:40
++++ ported/python/sglang/srt/mem_cache/hicache_storage.py	2026-10-06 18:32:39
+@@ -397,6 +397,11 @@
+         # page, so give each rank its own file key to avoid a cross-rank write race.
+         if attn_cp_size > 1:
+             self.config_suffix += f"_cp{attn_cp_rank}_{attn_cp_size}"
++        # MLA KV is rank-replicated and keyed without a rank, but Mamba/KDA state is a per-rank
++        # head shard: key it by rank or every TP rank reads and writes the same file.
++        self._sharded_sidecar_tag = (
++            f"_tp{tp_rank}_{tp_size}" if is_mla_model and tp_size > 1 else ""
++        )
+ 
+         if not os.path.exists(self.file_path) and tp_rank == 0 and attn_cp_rank == 0:
+             os.makedirs(self.file_path)
+@@ -449,8 +454,15 @@
+     def _get_component_key(self, key: str, component_name: Optional[str] = None) -> str:
+         if component_name is None or component_name in ("__default__", PoolName.KV):
+             return self._get_suffixed_key(key)
+-        return self._get_suffixed_key(f"{key}.{component_name}")
++        return self._get_suffixed_key(
++            f"{key}.{component_name}{self._sidecar_rank_tag(component_name)}"
++        )
+ 
++    def _sidecar_rank_tag(self, component_name) -> str:
++        if component_name == PoolName.MAMBA:
++            return getattr(self, "_sharded_sidecar_tag", "")
++        return ""
++
+     def _get_component_path(
+         self, key: str, component_name: Optional[str] = None
+     ) -> str:
+@@ -661,7 +673,9 @@
+         return PoolTransferResult(final_pages, hit_count)
+ 
+     def _log_key(self, pool_name: str, key: str) -> str:
+-        return key if pool_name == PoolName.KV else f"{key}.{pool_name}"
++        if pool_name == PoolName.KV:
++            return key
++        return f"{key}.{pool_name}{self._sidecar_rank_tag(pool_name)}"
+ 
+     def _read_page(self, pool_name: str, key: str, host_pool, page_offset: int) -> bool:
+         """Read one page from storage into host_pool at page_offset."""
+diff -ru -x _ v6/python/sglang/srt/mem_cache/startup_ram_budget.py ported/python/sglang/srt/mem_cache/startup_ram_budget.py
+--- v6/python/sglang/srt/mem_cache/startup_ram_budget.py	2026-10-06 18:18:47
++++ ported/python/sglang/srt/mem_cache/startup_ram_budget.py	2026-10-06 18:32:39
+@@ -16,6 +16,7 @@
+ from pathlib import Path, PurePosixPath
+ 
+ ENV = "SGLANG_HICACHE_RAM_BUDGET"
++STORE_ENV = "SGLANG_HICACHE_SHARED_STORE_BUDGET"
+ RESERVE_BYTES = 10 * 1024**3
+ logger = logging.getLogger(__name__)
+ _active: ContextVar[RankBudget | None] = ContextVar("hicache_ram_budget", default=None)
+@@ -35,6 +36,43 @@
+     return re.sub(r"\\([0-7]{3})", lambda m: chr(int(m[1], 8)), value)
+ 
+ 
++def shared_store_growth_reserve(backend: str) -> tuple[int, int, int]:
++    """(store_budget, bytes_in_store, reserve) for an in-CVM shared `file` store.
++
++    Replicas in one CVM share the store directory; each replica's LRU evictor must be capped
++    (SGLANG_HICACHE_FILE_BACKEND_MAX_SIZE) so that together they stay within the store budget.
++    """
++    if backend != "file":
++        raise ValueError("RAM budget supports only the in-CVM `file` storage backend")
++    raw = os.environ.get(STORE_ENV)
++    store_dir = os.environ.get("SGLANG_HICACHE_FILE_BACKEND_STORAGE_DIR")
++    cap_raw = os.environ.get("SGLANG_HICACHE_FILE_BACKEND_MAX_SIZE")
++    if not raw or not store_dir or not cap_raw:
++        raise ValueError(
++            f"{ENV} with a storage backend needs {STORE_ENV}, "
++            "SGLANG_HICACHE_FILE_BACKEND_STORAGE_DIR and SGLANG_HICACHE_FILE_BACKEND_MAX_SIZE"
++        )
++    unit, amount = parse_budget(raw)
++    if unit == "%":
++        raise ValueError(f"{STORE_ENV} must be GB or GiB, not a percentage")
++    budget = int(amount * (1024**3 if unit == "GiB" else 10**9))
++    from sglang.srt.mem_cache.storage.file.lru_file_evictor import _parse_size_to_bytes
++
++    cap = _parse_size_to_bytes(cap_raw)
++    if cap <= 0 or cap > budget:
++        raise ValueError(
++            "SGLANG_HICACHE_FILE_BACKEND_MAX_SIZE must be a size the file backend accepts "
++            f"(e.g. 200Gi or 200G) and at most {STORE_ENV}"
++        )
++    used = 0
++    if os.path.isdir(store_dir):
++        with os.scandir(store_dir) as entries:
++            for entry in entries:
++                if entry.is_file(follow_symlinks=False):
++                    used += entry.stat(follow_symlinks=False).st_size
++    return budget, used, max(0, budget - used)
++
++
+ def cgroup_headrooms(proc: Path = Path("/proc")) -> list[int]:
+     """Read hard memory headroom at every visible ancestor, v2 or v1.
+ 
+@@ -202,9 +240,17 @@
+             raise ValueError("RAM budget does not support PP, DP or DCP")
+         if get_memory().hicache_size > 0:
+             raise ValueError(f"Use {ENV} OR --hicache-size, not both")
+-        if get_memory().hicache_storage_backend is not None:
+-            raise ValueError("RAM budget currently supports in-CVM host RAM only")
+-        record["available_bytes"] = available_ram_bytes()
++        backend = get_memory().hicache_storage_backend
++        store_reserve = 0
++        if backend is not None:
++            store_budget, store_used, store_reserve = shared_store_growth_reserve(backend)
++            logger.info(
++                "HiCache shared store reserve: budget_bytes=%d used_bytes=%d reserved_bytes=%d",
++                store_budget,
++                store_used,
++                store_reserve,
++            )
++        record["available_bytes"] = max(0, available_ram_bytes() - store_reserve)
+     except Exception as exc:
+         record["error"] = str(exc)
+     records = [None] * world.world_size
+diff -ru -x _ v6/python/sglang/srt/mem_cache/storage/file/lru_file_evictor.py ported/python/sglang/srt/mem_cache/storage/file/lru_file_evictor.py
+--- v6/python/sglang/srt/mem_cache/storage/file/lru_file_evictor.py	2026-09-04 21:54:40
++++ ported/python/sglang/srt/mem_cache/storage/file/lru_file_evictor.py	2026-10-06 18:32:39
+@@ -91,11 +91,18 @@
+         self._load_config(extra_config or {})
+ 
+         self._eviction_configured = self.max_size_bytes > 0 or self.min_free_bytes > 0
+-        self._eviction_enabled = self._eviction_configured and self._is_storage_owner
++        # Every rank bounds what it writes. Non-owner MLA ranks write only rank-sharded sidecars
++        # (e.g. mamba state); they track and evict only their own files, never scan shared ones.
++        self._eviction_enabled = self._eviction_configured
+         if self._eviction_configured and not self._is_storage_owner:
++            fraction = float(os.environ.get("SGLANG_HICACHE_FILE_BACKEND_SIDECAR_MAX_FRACTION", "0.25"))
++            if not 0.0 < fraction <= 1.0:
++                raise ValueError("SGLANG_HICACHE_FILE_BACKEND_SIDECAR_MAX_FRACTION must be in (0, 1]")
++            if self.max_size_bytes > 0:
++                self.max_size_bytes = int(self.max_size_bytes * fraction)
+             logger.info(
+-                f"HiCacheFile rank {self._tp_rank} (MLA): eviction handled by rank 0; "
+-                f"this rank skips LRU bookkeeping and will not create new files."
++                f"HiCacheFile rank {self._tp_rank} (MLA): shared files are evicted by rank 0; "
++                f"this rank bounds only its own sidecar files, cap={self.max_size_bytes} B."
+             )
+ 
+         if not self._eviction_enabled:
+@@ -112,7 +119,8 @@
+                 )
+                 self.max_size_bytes = safe_max
+ 
+-        self._scan_existing_files()
++        if self._is_storage_owner:
++            self._scan_existing_files()
+         with self._lock:
+             if self.max_size_bytes > 0 and self._total_bytes > self.max_size_bytes:
+                 self._evict_locked(0)
+@@ -175,12 +183,6 @@
+         """
+         if not self._eviction_configured:
+             return True  # unbounded storage: nothing to enforce
+-        if not self._is_storage_owner:
+-            logger.warning(
+-                f"HiCacheFile rank {self._tp_rank} is not the MLA storage owner; "
+-                f"not caching new key {key} because file eviction is enabled."
+-            )
+-            return False
+         if self.max_size_bytes > 0 and value_bytes > self.max_size_bytes:
+             logger.warning(
+                 f"HiCacheFile: value {value_bytes} B exceeds cap "
+@@ -246,6 +248,10 @@
+             if suffixed_key in self._lru:
+                 self._lru.move_to_end(suffixed_key, last=True)
+                 return
++        if not self._is_storage_owner:
++            # A non-owner reads shared KV/indexer pages it did not write; adopting them would let
++            # it evict files rank 0 owns. It tracks only the sidecars it reserved itself.
++            return
+         # Untracked file: stat without holding the lock.
+         try:
+             size = os.path.getsize(tensor_path)
+diff -ru -x _ v6/python/sglang/srt/mem_cache/unified_cache/unified_tree_core.py ported/python/sglang/srt/mem_cache/unified_cache/unified_tree_core.py
+--- v6/python/sglang/srt/mem_cache/unified_cache/unified_tree_core.py	2026-10-06 18:18:47
++++ ported/python/sglang/srt/mem_cache/unified_cache/unified_tree_core.py	2026-10-06 18:32:39
+@@ -409,6 +409,9 @@
+         components: dict[ComponentType, TreeComponent],
+     ):
+         self.page_size = params.page_size
++        # Storage hash-chain granularity. Equals the tree page except for
++        # compressed DSA, where the owning cache sets it to the transfer page.
++        self.hash_page_size = params.page_size
+         self.is_eagle = params.is_eagle and ComponentType.MAMBA not in components
+         self.enable_hicache = False
+         self.enable_storage = False
+@@ -601,7 +604,7 @@
+             node = stack.pop()
+             # The root anchors every chain and is seeded with an empty hash list.
+             if node is not self.root_node and node.hash_value is None:
+-                node.hash_value = compute_node_hash_values(node, self.page_size)
++                node.hash_value = compute_node_hash_values(node, self.hash_page_size)
+                 filled += 1
+             stack.extend(node.children.values())
+         return filled
+@@ -1199,7 +1202,7 @@
+         child.parent = new_node
+         child.key = child.key[split_len:]
+         new_node.hash_value, child.hash_value = split_node_hash_value(
+-            child.hash_value, split_len, self.page_size
++            child.hash_value, split_len, self.hash_page_size
+         )
+         new_node.event_hash_value, child.event_hash_value = split_node_hash_value(
+             child.event_hash_value, split_len, self.page_size
+@@ -1249,7 +1252,7 @@
+         parent.children[key.child_key(self.page_size)] = new_node
+         self.component_evictable_size_[BASE_COMPONENT_TYPE] += len(value)
+         if self.enable_storage or self.enable_external_cache_linker:
+-            new_node.hash_value = compute_node_hash_values(new_node, self.page_size)
++            new_node.hash_value = compute_node_hash_values(new_node, self.hash_page_size)
+ 
+         self._update_evictable_leaf_sets(new_node)
+         self._update_evictable_leaf_sets(parent)
+@@ -1944,7 +1947,7 @@
+ 
+             key = key[prefix_len:]
+             host_value = host_value[prefix_len:]
+-            hash_value = hash_value[prefix_len // self.page_size :]
++            hash_value = hash_value[prefix_len // self.hash_page_size :]
+             matched_length += prefix_len
+ 
+             if prefix_len < len(node.key):
+diff -ru -x _ v6/python/sglang/srt/mem_cache/unified_radix_cache.py ported/python/sglang/srt/mem_cache/unified_radix_cache.py
+--- v6/python/sglang/srt/mem_cache/unified_radix_cache.py	2026-10-06 18:18:47
++++ ported/python/sglang/srt/mem_cache/unified_radix_cache.py	2026-10-06 18:32:39
+@@ -221,6 +221,8 @@
+             params=params,
+             components=self.components,
+         )
++        if hasattr(self.tree_core, "hash_page_size"):
++            self.tree_core.hash_page_size = self._transfer_page_size
+         # Components execute boundary actions through the tree core.
+         for component in self.components.values():
+             component.tree_core = self.tree_core
+@@ -433,11 +435,22 @@
+ 
+         # Parse storage config once, share with assembler and tree
+         storage_backend = get_memory().hicache_storage_backend
+-        if storage_backend is not None and self.page_size != params.page_size:
++        if (
++            storage_backend is not None
++            and self.page_size != params.page_size
++            and self.host_memory_mode != "cache"
++        ):
+             raise ValueError(
+-                "Compressed DSA currently supports L2 HiCache only; "
+-                "storage hashes and transfers require matching page sizes."
++                "Compressed DSA storage supports --hicache-host-memory-mode cache only."
+             )
++        if (
++            storage_backend is not None
++            and self.page_size != params.page_size
++            and self._tree_core_backend != "python"
++        ):
++            raise ValueError(
++                "Compressed DSA storage needs SGLANG_UNIFIED_RADIX_TREE_CORE_BACKEND=python."
++            )
+         storage_extra_config = None
+         storage_prefetch_threshold = 256
+         prefetch_timeout_base = 1.0
+@@ -2041,7 +2054,7 @@
+             last_host_node_id,
+             fetched_key,
+             host_indices[:completed_tokens],
+-            hash_value[: completed_tokens // self.page_size],
++            hash_value[: completed_tokens // self._transfer_page_size],
+         )
+ 
+         # Apply the host-insert walk's actions before the transfer commit.
+@@ -2144,7 +2157,7 @@
+         # Hybrid cache state is all-or-nothing: every extra pool (SWA / Mamba / ...)
+         # must cover the same fetched prefix. If any pool falls short the whole
+         # prefetch result is unusable, so discard it and release everything.
+-        expected_tokens = len(hash_value) * self.page_size
++        expected_tokens = len(hash_value) * self._transfer_page_size
+         all_succeeded = completed_tokens == expected_tokens and all(
+             transfer.keys is not None and count == len(transfer.keys)
+             for transfer, count in zip(pool_transfers, pool_hit_pages)
+@@ -2153,7 +2166,7 @@
+             # Drop the KV beliefs from the first page any pool failed to serve;
+             # the next insert then re-writes that span through one FULL check,
+             # restoring the missing aux pages.
+-            keep_pages = completed_tokens // self.page_size
++            keep_pages = completed_tokens // self._transfer_page_size
+             for transfer, count in zip(pool_transfers, pool_hit_pages):
+                 if transfer.keys is None:
+                     keep_pages = 0
+@@ -2514,6 +2527,18 @@
+                     )
+                     self.revoke_pending_prefetch(req_id)
+                     return True
++            if not buffer_mode:
++                # Storage hits end on a transfer page; the tree inserts whole tree pages.
++                tree_aligned = hit_tokens - hit_tokens % self.page_size
++                if tree_aligned != hit_tokens:
++                    self._resolve_storage_prefetch_tokens(
++                        req_id, hit_tokens - tree_aligned, reason="tree_page_align"
++                    )
++                    hit_tokens = tree_aligned
++                    operation.storage_hit_count = hit_tokens
++                    operation.hash_value = operation.hash_value[
++                        : hit_tokens // self._transfer_page_size
++                    ]
+             alloc_len = hit_tokens
+             host_indices = cc.mem_pool_host.alloc(alloc_len)
+             if host_indices is None:
+@@ -2542,7 +2567,9 @@
+                 req_id, hit_tokens - alloc_len, reason="host_capacity"
+             )
+             operation.storage_hit_count = alloc_len
+-            operation.hash_value = operation.hash_value[: alloc_len // self.page_size]
++            operation.hash_value = operation.hash_value[
++                : alloc_len // self._transfer_page_size
++            ]
+             operation.host_indices = host_indices
+             self.ongoing_prefetch[req_id] = info._replace(host_indices=host_indices)
+             if buffer_mode:

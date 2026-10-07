@@ -33,7 +33,7 @@ EXPECTED = {
     "mem_cache/unified_radix_cache.py": ("98f175f529614ebb33618a27c54248105eff3bf80c1365ffd3716bd346add278",
         "88263caaca4967d542a9f9e20af7230114d5c8ddcb5dfcd2d9c9cec1fee42c2d"),
     "mem_cache/hicache_storage.py": ("40d892d038557bbce41f3b35369c8a1bf2feeed56b907f709492f7e0f113d313",
-        "a60fbd40055966ed3706192983ced53d47495c2987e1a268b0e25dbd7194452f"),
+        "8c6dfd39eb9ab53ba1ed4c5c65b24e848956f77e754ba06514d6f45e95c2b52c"),
 }
 staged = {}
 def sha(text):
@@ -288,6 +288,124 @@ sub(H, '''        return key if pool_name == PoolName.KV else f"{key}.{pool_name
             return key
         return f"{key}.{pool_name}{self._sidecar_rank_tag(pool_name)}"
 ''', "file backend page key rank tag")
+
+# --- 5) hicache_storage.py: shared-tier attribution metrics for the prod A/B (port addition) ---
+# sglang:kvshare_storage_hit_tokens_total{source}: Full-KV tokens loaded from the file tier, split by
+# whether THIS process wrote the page (self) or another replica / a previous run did (peer).
+# sglang:kvshare_storage_written_tokens_total: Full-KV tokens this process wrote (pages a peer had
+# already written are skipped by set() and not counted). TP rank 0 only; SGLANG_KVSHARE_METRICS=0
+# turns them off. The written-key set is bounded (SGLANG_KVSHARE_WRITTEN_KEYS, default 1,000,000).
+sub(H, """        self._sharded_sidecar_tag = (
+            f"_tp{tp_rank}_{tp_size}" if is_mla_model and tp_size > 1 else ""
+        )
+""", """        self._sharded_sidecar_tag = (
+            f"_tp{tp_rank}_{tp_size}" if is_mla_model and tp_size > 1 else ""
+        )
+        self._kvshare_rank0 = tp_rank == 0
+        self._kvshare_last_write = None
+""", "file backend kvshare rank")
+sub(H, """    def _sidecar_rank_tag(self, component_name) -> str:
+        if component_name == PoolName.MAMBA:
+            return getattr(self, "_sharded_sidecar_tag", "")
+        return ""
+""", """    def _sidecar_rank_tag(self, component_name) -> str:
+        if component_name == PoolName.MAMBA:
+            return getattr(self, "_sharded_sidecar_tag", "")
+        return ""
+
+    def _kvshare_metrics(self):
+        m = getattr(self, "_kvshare_m", None)
+        if m is not None:
+            return m
+        m = False
+        self._kvshare_written = OrderedDict()
+        self._kvshare_written_max = int(os.environ.get("SGLANG_KVSHARE_WRITTEN_KEYS", "1000000"))
+        if getattr(self, "_kvshare_rank0", False) and os.environ.get("SGLANG_KVSHARE_METRICS", "1") == "1":
+            try:
+                m = _kvshare_counters()
+            except Exception:
+                logger.exception("kvshare metrics disabled")
+                m = False
+        self._kvshare_m = m
+        return m
+
+    def _kvshare_note_write(self, suffixed: str) -> None:
+        if self._kvshare_metrics() is False:
+            return
+        self._kvshare_last_write = suffixed
+        self._kvshare_written[suffixed] = None
+        if len(self._kvshare_written) > self._kvshare_written_max:
+            self._kvshare_written.popitem(last=False)
+""", "file backend kvshare helpers")
+sub(H, """            os.replace(tmp_path, tensor_path)
+            self._evictor.commit(suffixed)
+""", """            os.replace(tmp_path, tensor_path)
+            self._evictor.commit(suffixed)
+            self._kvshare_note_write(suffixed)
+""", "file backend kvshare note write")
+sub(H, """        storage_key = self._log_key(pool_name, key)
+        data_page = self.get(storage_key, host_pool.get_dummy_flat_data_page())
+        if data_page is None:
+            return False
+        host_pool.set_from_flat_data_page(page_offset, data_page)
+        return True
+""", """        storage_key = self._log_key(pool_name, key)
+        data_page = self.get(storage_key, host_pool.get_dummy_flat_data_page())
+        if data_page is None:
+            return False
+        host_pool.set_from_flat_data_page(page_offset, data_page)
+        m = self._kvshare_metrics() if pool_name == PoolName.KV else False
+        if m:
+            source = "self" if self._get_suffixed_key(storage_key) in self._kvshare_written else "peer"
+            m[0].labels(source=source).inc(getattr(host_pool, "page_size", 1) or 1)
+        return True
+""", "file backend kvshare count hit")
+sub(H, """        storage_key = self._log_key(pool_name, key)
+        data_page = host_pool.get_data_page(page_offset, flat=True)
+        return self.set(storage_key, data_page)
+""", """        storage_key = self._log_key(pool_name, key)
+        data_page = host_pool.get_data_page(page_offset, flat=True)
+        self._kvshare_last_write = None
+        ok = self.set(storage_key, data_page)
+        m = self._kvshare_metrics() if pool_name == PoolName.KV else False
+        if ok and m and self._kvshare_last_write is not None:
+            m[1].inc(getattr(host_pool, "page_size", 1) or 1)
+        return ok
+""", "file backend kvshare count write")
+sub(H, """class HiCacheFile(HiCacheStorage):
+""", """_KVSHARE_COUNTERS = None
+
+
+def _kvshare_counters():
+    # One registration per process (prometheus rejects duplicate names).
+    global _KVSHARE_COUNTERS
+    if _KVSHARE_COUNTERS is None:
+        from prometheus_client import Counter
+
+        _KVSHARE_COUNTERS = (
+            Counter(
+                "sglang:kvshare_storage_hit_tokens_total",
+                "Full-KV tokens loaded from the shared L3 file tier, by writer: self = this "
+                "process wrote the page, peer = another replica (or a previous run) did.",
+                ["source"],
+            ),
+            Counter(
+                "sglang:kvshare_storage_written_tokens_total",
+                "Full-KV tokens this process wrote to the shared L3 file tier.",
+            ),
+        )
+    return _KVSHARE_COUNTERS
+
+
+class HiCacheFile(HiCacheStorage):
+""", "file backend kvshare counters")
+
+sub(H, """import os
+import threading
+""", """import os
+import threading
+from collections import OrderedDict
+""", "file backend kvshare import")
 
 # --- verify every file, then write ---
 for rel, (before, after) in EXPECTED.items():
