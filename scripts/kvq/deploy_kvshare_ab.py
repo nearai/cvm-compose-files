@@ -94,7 +94,8 @@ def dry_run_ok(iid, body, svc, allow_empty=False):
     touched = [x.replace("Container ", "") for x in plan.get("recreate", []) + plan.get("create", []) if x.startswith("Container ")]
     removed = plan.get("remove", []) or []
     print(f"dry-run: create={plan.get('create')} recreate={plan.get('recreate')} remove={removed}")
-    bad_touch = [t for t in touched if t != svc]
+    # An interrupted recreate can leave the service running as `<12 hex>_<service>`.
+    bad_touch = [t for t in touched if t != svc and not re.fullmatch(r"[0-9a-f]{12}_" + re.escape(svc), t)]
     bad_remove = [r for r in removed if not r.replace("Container ", "").endswith(svc)]
     if bad_touch or bad_remove or (not touched and not removed and not allow_empty):
         sys.exit(f"ABORT: plan must only (re)create {svc} (and remove leftovers of it); got touched={touched} remove={removed}")
