@@ -361,6 +361,7 @@ services:
       KVQ_LONG_REPEAT: ${{KVQ_LONG_REPEAT:-1}}
       KVQ_METRICS_URLS: ${{KVQ_METRICS_URLS:-}}
       KVQ_METRICS_GREP: ${{KVQ_METRICS_GREP:-}}
+      KVQ_TURN_GAP_S: ${{KVQ_TURN_GAP_S:-0}}
     restart: "no"
     logging: *logging-conf
 {log_label("kvq-driver")}

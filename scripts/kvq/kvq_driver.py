@@ -121,6 +121,9 @@ def longturn(name="longturn", salt=None):
         res.update(turn1_ttft_s=round(ttft1 or tot1, 2), turn1_prompt_tokens=(u1 or {}).get("prompt_tokens"),
                    turn1_cached=((u1 or {}).get("prompt_tokens_details") or {}).get("cached_tokens"))
         m2 = m1 + [{"role": "assistant", "content": text1 or "ready"}]
+        # The shared L3 tier is written asynchronously after turn 1; give it time before turn 2
+        # lands on the other replica.
+        time.sleep(float(os.environ.get("KVQ_TURN_GAP_S", "0")))
     else:
         m2 = m1 + [{"role": "assistant", "content": "ready"}]
     m2 = m2 + [{"role": "user", "content": "What is the vault access code? Reply with the code only."}]
