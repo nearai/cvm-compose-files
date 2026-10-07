@@ -142,6 +142,10 @@ services:
     runtime: runc
     entrypoint: ["python3", "-m", "sglang_router.launch_router"]
     command: ["--pd-disaggregation", "--prefill", "http://kvq-pf:8000", "8998", "--decode", "http://kvq-dc:8000", "--prefill-policy", "round_robin", "--decode-policy", "round_robin", "--host", "0.0.0.0", "--port", "8000", "--prometheus-port", "29040", "--request-timeout-secs", "3600"]
+    # The router loads the tokenizer from --model-path; without the model volume it treats the
+    # local path as a HuggingFace id, 404s, and never registers the prefill worker.
+    volumes:
+      - huggingface_cache:/root/.cache/huggingface:ro
     restart: "no"
     logging: *logging-conf
     labels:
