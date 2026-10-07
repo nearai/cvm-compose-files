@@ -124,12 +124,13 @@ def longturn(name="longturn", salt=None):
     else:
         m2 = m1 + [{"role": "assistant", "content": "ready"}]
     m2 = m2 + [{"role": "user", "content": "What is the vault access code? Reply with the code only."}]
-    ttft2, tot2, text2, u2 = chat(b, m2, 32, thinking=False)
+    # 512: GLM often reasons a few dozen tokens before the code even with thinking off; 32 cut it off.
+    ttft2, tot2, text2, u2 = chat(b, m2, int(os.environ.get("KVQ_TURN2_MAX_TOKENS", "512")), thinking=False)
     res.update(turn2_ttft_s=round(ttft2 or tot2, 2), turn2_total_s=round(tot2, 2),
                turn2_prompt_tokens=(u2 or {}).get("prompt_tokens"),
                turn2_cached=((u2 or {}).get("prompt_tokens_details") or {}).get("cached_tokens"),
                recalled=code in ((text2 or "") + "".join(LAST_REASONING)), answer=(text2 or "")[:80],
-               reasoning="".join(LAST_REASONING)[:160], code=code)
+               reasoning="".join(LAST_REASONING)[-200:], code=code)
     out(name, **res)
 
 
