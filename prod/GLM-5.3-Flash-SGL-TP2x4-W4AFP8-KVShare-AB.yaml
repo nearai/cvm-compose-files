@@ -1126,8 +1126,10 @@ configs:
               "d9992a542941f6cf03af9459ef32e15d546f06a05ddd7ac2c58cd9317a285a50"),
           "mem_cache/unified_radix_cache.py": ("98f175f529614ebb33618a27c54248105eff3bf80c1365ffd3716bd346add278",
               "88263caaca4967d542a9f9e20af7230114d5c8ddcb5dfcd2d9c9cec1fee42c2d"),
+          "managers/cache_controller.py": ("ffb53c980497d0a94f4ffea7c54efa86b3e97077a08d8b8a3282ccbf2531c779",
+              "5a7c6a25d39de57be74ad094ff38e72de29c8b7a1629ba19892e77196dbbed60"),
           "mem_cache/hicache_storage.py": ("40d892d038557bbce41f3b35369c8a1bf2feeed56b907f709492f7e0f113d313",
-              "1f3ab1e990c400477da73f9d63b7e950ea1843cbc228bfc89a8d57519eafd637"),
+              "7a370995a68a6fcabc96a840563deea077d4fd1a222881d6126c00090116fffc"),
       }
       staged = {}
       def sha(text):
@@ -1423,13 +1425,66 @@ configs:
               self._kvshare_m = m
               return m
 
+          def _kvshare_page_tokens(self) -> int:
+              pool = getattr(self, "registered_pools", {}).get(PoolName.KV)
+              size = getattr(pool, "page_size", None)
+              return int(size or os.environ.get("SGLANG_KVSHARE_PAGE_TOKENS", "64"))
+
           def _kvshare_note_write(self, suffixed: str) -> None:
-              if self._kvshare_metrics() is False:
+              m = self._kvshare_metrics()
+              if m is False:
                   return
               self._kvshare_last_write = suffixed
               self._kvshare_written[suffixed] = None
               if len(self._kvshare_written) > self._kvshare_written_max:
                   self._kvshare_written.popitem(last=False)
+              if "." not in suffixed[: len(suffixed) - len(self.config_suffix)]:
+                  # Full-KV page (sidecar keys carry a ".<pool>" component).
+                  m[1].inc(self._kvshare_page_tokens())
+
+          def kvshare_read_into_host(self, operation, hash_values, host_indices, host_pool, page_size) -> int:
+              # Restore Full-KV pages from the file tier into host_pool for the controller's v1 path.
+              # Same contract as HiCacheController._generic_page_get (count of the contiguous prefix
+              # of pages restored, stop at the first miss or on termination), but each worker thread
+              # reuses one scratch page instead of allocating a pinned page per page, and pages are
+              # read in parallel (SGLANG_KVSHARE_READ_THREADS, default 8). Counts self/peer hits.
+              if operation.is_terminated():
+                  return 0
+              offsets = [host_indices[i * page_size] for i in range(len(hash_values))]
+              m = self._kvshare_metrics()
+
+              def one(item):
+                  key, off = item
+                  data = self.get(key, self._scratch_page(host_pool))
+                  if data is None:
+                      return None
+                  host_pool.set_from_flat_data_page(off, data)
+                  return "self" if self._get_suffixed_key(key) in self._kvshare_written else "peer"
+
+              workers = int(os.environ.get("SGLANG_KVSHARE_READ_THREADS", "8"))
+              items = list(zip(hash_values, offsets))
+              if workers > 1 and len(items) > 1:
+                  pool = getattr(self, "_kvshare_read_pool", None)
+                  if pool is None:
+                      from concurrent.futures import ThreadPoolExecutor
+
+                      pool = self._kvshare_read_pool = ThreadPoolExecutor(
+                          max_workers=workers, thread_name_prefix="hicache-file-read"
+                      )
+                  sources = list(pool.map(one, items))
+              else:
+                  sources = [one(item) for item in items]
+              count = 0
+              for i, source in enumerate(sources):
+                  if source is None:
+                      logger.warning(
+                          f"Prefetch operation {operation.request_id} failed to retrieve page {hash_values[i]}."
+                      )
+                      break
+                  if m:
+                      m[0].labels(source=source).inc(page_size)
+                  count += 1
+              return count
       """, "file backend kvshare helpers")
       sub(H, """            os.replace(tmp_path, tensor_path)
                   self._evictor.commit(suffixed)
@@ -1459,12 +1514,7 @@ configs:
               return self.set(storage_key, data_page)
       """, """        storage_key = self._log_key(pool_name, key)
               data_page = host_pool.get_data_page(page_offset, flat=True)
-              self._kvshare_last_write = None
-              ok = self.set(storage_key, data_page)
-              m = self._kvshare_metrics() if pool_name == PoolName.KV else False
-              if ok and m and self._kvshare_last_write is not None:
-                  m[1].inc(getattr(host_pool, "page_size", 1) or 1)
-              return ok
+              return self.set(storage_key, data_page)
       """, "file backend kvshare count write")
       sub(H, """class HiCacheFile(HiCacheStorage):
       """, """_KVSHARE_COUNTERS = None
@@ -1557,6 +1607,25 @@ configs:
                       ]
               return results
       """, "file backend threaded batch reads")
+
+      # --- 7) cache_controller.py: route v1 KV restores through the backend's fast reader ---
+      # The controller's v1 path allocated a new pinned host page for every page of a prefetch, then
+      # read sequentially; HiCacheFile.kvshare_read_into_host (section 5) keeps the same contract.
+      C = "managers/cache_controller.py"
+      sub(C, """    def _generic_page_get(
+              self, operation, hash_values, host_indices, extra_info=None
+          ) -> int:
+              dummy_page_dst = [
+      """, """    def _generic_page_get(
+              self, operation, hash_values, host_indices, extra_info=None
+          ) -> int:
+              fast = getattr(self.storage_backend, "kvshare_read_into_host", None)
+              if fast is not None:
+                  return fast(
+                      operation, hash_values, host_indices, self.storage_host_pool, self.page_size
+                  )
+              dummy_page_dst = [
+      """, "controller v1 get uses the backend fast reader")
 
       # --- verify every file, then write ---
       for rel, (before, after) in EXPECTED.items():

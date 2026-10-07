@@ -18,13 +18,29 @@ whenever the base file changes. The generator fails if its anchors move.
   - Both total 650 GiB.
 - **The proxy is unchanged.** Same conversation affinity and `MAX_IMBALANCE` 8, so both arms receive the same routing.
 - **The engine image is unchanged** (v6, `9c6ddd43…`).
-  - At start, `scripts/kvq/glm53_shared_kv_startup_patch.py` applies cvm-compose-files PR #304, ported to v6, to five `mem_cache` files.
+  - At start, `scripts/kvq/glm53_shared_kv_startup_patch.py` applies cvm-compose-files PR #304, ported to v6, to six files (five in `mem_cache`, plus `managers/cache_controller.py`).
   - It checks each file's v6 sha256 before patching and the expected patched sha256 after.
   - Any mismatch stops the replica before it serves; it never runs unpatched.
 - **The patch adds two fixes over #304:**
   - Mamba state keys carry the TP rank. In #304 they collided across ranks, so all ranks restored one rank's shard.
   - A non-owner TP rank never adopts, and so never evicts, a shared KV file it only read.
 - **The patch adds the attribution counters the A/B needs.**
+
+## How the base tier's write policy limits sharing
+
+The base tier runs `--hicache-write-policy write_through_selective`. Under it, a radix node is copied to L2, and so to the shared L3 tier, only on its second cache hit (`write_through_threshold = 2`). The first computation and one reuse are not enough.
+
+- **gpu13, 2026-10-07:** after one repeat of turn 1 on r1, r1 had written nothing to L2 or L3, and turn 2 on r2 recomputed.
+- **What becomes shareable:** a conversation's prefix becomes shareable after about three turns on its home replica. Those long-lived conversations are the ones where a later move to the partner replica is worth catching.
+- **What doesn't:** one- or two-turn conversations are not shared.
+- The A/B measures this policy as deployed. Switching the treatment to `write_through` would share sooner, but it confounds the arms (#311 chose selective for the base tier), so it's a separate follow-up.
+
+## Restore speed under CC (patch v3)
+
+- **v1 (gpu13, write_through):** a 218K-token cross-replica restore had a TTFT of 17.8–19.3 s, against 28.6 s cold.
+  - About 11 s of that was L3 → L2. The controller's v1 path allocated a fresh pinned page for every page and read sequentially.
+  - About 7 s was L2 → GPU plus a 256-token tail prefill. That L2 → GPU cost applies to prod's own L2 hits today.
+- **Patch v3** routes the v1 restore through `HiCacheFile.kvshare_read_into_host`: per-thread scratch pages, 8 reader threads, and the same contiguous-prefix contract.
 
 ## Why the expected effect is small, and what the A/B is really for
 
