@@ -235,7 +235,7 @@ services:
     command:
       - |
         if [ "$${KVQ_SHARED:-1}" = "1" ]; then python3 /etc/kvq/shared_kv_patch.py || exit 1; EXTRA="--hicache-host-memory-mode cache --hicache-storage-backend file --hicache-storage-prefetch-policy wait_complete"; else EXTRA=""; fi
-        exec sglang serve --model-path /root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/snapshots/99f1fa70408c52b007d4fd69e02e5a522422e755 --served-model-name z-ai/glm-5.3-flash --tp-size 2 --ep-size 2 --mem-fraction-static 0.86 --max-running-requests 12 --max-queued-requests 4 --enable-priority-scheduling --disable-priority-preemption --chunked-prefill-size 8192 --max-prefill-tokens 32768 --prefill-decode-interval 2 --cuda-graph-max-bs-decode 12 --dsa-prefill-backend tilelang --dsa-decode-backend tilelang --kv-cache-dtype bfloat16 --speculative-algorithm EAGLE --speculative-num-steps 4 --speculative-eagle-topk 1 --speculative-num-draft-tokens 5 --reasoning-parser glm45 --enable-strict-thinking --grammar-backend xgrammar --tool-call-parser glm47 --chat-template /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/3f1971b7b5f7a528c9c4ef6212c8785298a8c24a/chat_template.jinja --context-length 1048576 --watchdog-timeout 1800 --host 0.0.0.0 --port 8000 --enable-metrics --enable-cache-report --log-requests-level 0 --disable-fast-image-processor --limit-mm-data-per-request '{"image": 64}' --enable-hierarchical-cache --hicache-write-policy write_through --hicache-io-backend direct --hicache-mem-layout page_first_direct --max-mamba-cache-size 330 --mamba-ssm-dtype bfloat16 --base-gpu-id 0 --dist-init-addr 127.0.0.1:29550 $$EXTRA
+        exec sglang serve --model-path /root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/snapshots/99f1fa70408c52b007d4fd69e02e5a522422e755 --served-model-name z-ai/glm-5.3-flash --tp-size 2 --ep-size 2 --mem-fraction-static 0.86 --max-running-requests 48 --max-queued-requests 8 --enable-priority-scheduling --disable-priority-preemption --chunked-prefill-size 8192 --max-prefill-tokens 32768 --prefill-decode-interval 2 --cuda-graph-max-bs-decode 48 --dsa-prefill-backend tilelang --dsa-decode-backend tilelang --kv-cache-dtype bfloat16 --speculative-algorithm EAGLE --speculative-num-steps 4 --speculative-eagle-topk 1 --speculative-num-draft-tokens 5 --reasoning-parser glm45 --enable-strict-thinking --grammar-backend xgrammar --tool-call-parser glm47 --chat-template /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/3f1971b7b5f7a528c9c4ef6212c8785298a8c24a/chat_template.jinja --context-length 1048576 --watchdog-timeout 1800 --host 0.0.0.0 --port 8000 --enable-metrics --enable-cache-report --log-requests-level 0 --disable-fast-image-processor --limit-mm-data-per-request '{"image": 64}' --enable-hierarchical-cache --hicache-write-policy write_through_selective --hicache-io-backend direct --hicache-mem-layout page_first_direct --max-mamba-cache-size 330 --mamba-ssm-dtype bfloat16 --base-gpu-id 0 --dist-init-addr 127.0.0.1:29550 $$EXTRA
     configs:
       - source: kvq_shared_kv_patch_py_78c48cf6
         target: /etc/kvq/shared_kv_patch.py
@@ -250,7 +250,11 @@ services:
       KVQ_SHARED: ${KVQ_SHARED:-1}
       # Prod value; Test A needs no CUDA IPC.
       PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
-      SGLANG_HICACHE_RAM_BUDGET: ${KVQ_RAM_BUDGET:-100GiB}
+      SGLANG_HICACHE_RAM_BUDGET: ${KVQ_RAM_BUDGET:-250GiB}
+      # Base-tier env parity (admission reserve v10 rides in the v6 image).
+      SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE: "4096"
+      SGLANG_ADMISSION_RESERVE_MAX_FRACTION: "0.75"
+      SGLANG_KVSHARE_METRICS: "1"
       SGLANG_HICACHE_CUDA_HOST_MEMORY: "1"
       SGLANG_HICACHE_POOLED_TRANSFERS: "1"
       SGLANG_HICACHE_STAGING_PAGES: "64"
@@ -267,7 +271,7 @@ services:
     restart: "no"
     stop_grace_period: 2m
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","deployment:glm53-flash-sgl-kvshare-qual","config_variant:kvq-shared-v6-tp2-file-tier","engine_image:9c6ddd4319c4","env:${ENV}","host:${CVM_HOST}","instance:kvq-r1"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","deployment:glm53-flash-sgl-kvshare-qual","config_variant:kvq-shared-v6-basecand-selective-file-tier","engine_image:9c6ddd4319c4","env:${ENV}","host:${CVM_HOST}","instance:kvq-r1"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -278,7 +282,7 @@ services:
       nearai.otel.model: "z-ai/glm-5.3-flash"
       nearai.otel.served_model: "z-ai/glm-5.3-flash"
       nearai.otel.deployment: "glm53-flash-sgl-kvshare-qual"
-      nearai.otel.config_variant: "kvq-shared-v6-tp2-file-tier"
+      nearai.otel.config_variant: "kvq-shared-v6-basecand-selective-file-tier"
       nearai.otel.engine_image: "9c6ddd4319c4"
       nearai.otel.instance: "kvq-r1"
       nearai.otel.env: "${ENV}"
@@ -293,7 +297,7 @@ services:
     command:
       - |
         if [ "$${KVQ_SHARED:-1}" = "1" ]; then python3 /etc/kvq/shared_kv_patch.py || exit 1; EXTRA="--hicache-host-memory-mode cache --hicache-storage-backend file --hicache-storage-prefetch-policy wait_complete"; else EXTRA=""; fi
-        exec sglang serve --model-path /root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/snapshots/99f1fa70408c52b007d4fd69e02e5a522422e755 --served-model-name z-ai/glm-5.3-flash --tp-size 2 --ep-size 2 --mem-fraction-static 0.86 --max-running-requests 12 --max-queued-requests 4 --enable-priority-scheduling --disable-priority-preemption --chunked-prefill-size 8192 --max-prefill-tokens 32768 --prefill-decode-interval 2 --cuda-graph-max-bs-decode 12 --dsa-prefill-backend tilelang --dsa-decode-backend tilelang --kv-cache-dtype bfloat16 --speculative-algorithm EAGLE --speculative-num-steps 4 --speculative-eagle-topk 1 --speculative-num-draft-tokens 5 --reasoning-parser glm45 --enable-strict-thinking --grammar-backend xgrammar --tool-call-parser glm47 --chat-template /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/3f1971b7b5f7a528c9c4ef6212c8785298a8c24a/chat_template.jinja --context-length 1048576 --watchdog-timeout 1800 --host 0.0.0.0 --port 8000 --enable-metrics --enable-cache-report --log-requests-level 0 --disable-fast-image-processor --limit-mm-data-per-request '{"image": 64}' --enable-hierarchical-cache --hicache-write-policy write_through --hicache-io-backend direct --hicache-mem-layout page_first_direct --max-mamba-cache-size 330 --mamba-ssm-dtype bfloat16 --base-gpu-id 2 --dist-init-addr 127.0.0.1:29551 $$EXTRA
+        exec sglang serve --model-path /root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/snapshots/99f1fa70408c52b007d4fd69e02e5a522422e755 --served-model-name z-ai/glm-5.3-flash --tp-size 2 --ep-size 2 --mem-fraction-static 0.86 --max-running-requests 48 --max-queued-requests 8 --enable-priority-scheduling --disable-priority-preemption --chunked-prefill-size 8192 --max-prefill-tokens 32768 --prefill-decode-interval 2 --cuda-graph-max-bs-decode 48 --dsa-prefill-backend tilelang --dsa-decode-backend tilelang --kv-cache-dtype bfloat16 --speculative-algorithm EAGLE --speculative-num-steps 4 --speculative-eagle-topk 1 --speculative-num-draft-tokens 5 --reasoning-parser glm45 --enable-strict-thinking --grammar-backend xgrammar --tool-call-parser glm47 --chat-template /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/3f1971b7b5f7a528c9c4ef6212c8785298a8c24a/chat_template.jinja --context-length 1048576 --watchdog-timeout 1800 --host 0.0.0.0 --port 8000 --enable-metrics --enable-cache-report --log-requests-level 0 --disable-fast-image-processor --limit-mm-data-per-request '{"image": 64}' --enable-hierarchical-cache --hicache-write-policy write_through_selective --hicache-io-backend direct --hicache-mem-layout page_first_direct --max-mamba-cache-size 330 --mamba-ssm-dtype bfloat16 --base-gpu-id 2 --dist-init-addr 127.0.0.1:29551 $$EXTRA
     configs:
       - source: kvq_shared_kv_patch_py_78c48cf6
         target: /etc/kvq/shared_kv_patch.py
@@ -308,7 +312,11 @@ services:
       KVQ_SHARED: ${KVQ_SHARED:-1}
       # Prod value; Test A needs no CUDA IPC.
       PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
-      SGLANG_HICACHE_RAM_BUDGET: ${KVQ_RAM_BUDGET:-100GiB}
+      SGLANG_HICACHE_RAM_BUDGET: ${KVQ_RAM_BUDGET:-250GiB}
+      # Base-tier env parity (admission reserve v10 rides in the v6 image).
+      SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE: "4096"
+      SGLANG_ADMISSION_RESERVE_MAX_FRACTION: "0.75"
+      SGLANG_KVSHARE_METRICS: "1"
       SGLANG_HICACHE_CUDA_HOST_MEMORY: "1"
       SGLANG_HICACHE_POOLED_TRANSFERS: "1"
       SGLANG_HICACHE_STAGING_PAGES: "64"
@@ -325,7 +333,7 @@ services:
     restart: "no"
     stop_grace_period: 2m
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","deployment:glm53-flash-sgl-kvshare-qual","config_variant:kvq-shared-v6-tp2-file-tier","engine_image:9c6ddd4319c4","env:${ENV}","host:${CVM_HOST}","instance:kvq-r2"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","deployment:glm53-flash-sgl-kvshare-qual","config_variant:kvq-shared-v6-basecand-selective-file-tier","engine_image:9c6ddd4319c4","env:${ENV}","host:${CVM_HOST}","instance:kvq-r2"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -336,7 +344,7 @@ services:
       nearai.otel.model: "z-ai/glm-5.3-flash"
       nearai.otel.served_model: "z-ai/glm-5.3-flash"
       nearai.otel.deployment: "glm53-flash-sgl-kvshare-qual"
-      nearai.otel.config_variant: "kvq-shared-v6-tp2-file-tier"
+      nearai.otel.config_variant: "kvq-shared-v6-basecand-selective-file-tier"
       nearai.otel.engine_image: "9c6ddd4319c4"
       nearai.otel.instance: "kvq-r2"
       nearai.otel.env: "${ENV}"

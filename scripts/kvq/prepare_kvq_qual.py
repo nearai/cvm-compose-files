@@ -99,18 +99,10 @@ def cfg(name, text):
 
 # Test A: the gpu13 prod argv (prod/small-models.yaml r1a/r1b, v6 image) plus the L3 file tier on a
 # tmpfs store both replicas mount. Lower max-running than prod is not needed: same shape.
-V6_ARGS = (
-    f"--model-path {SNAP} --served-model-name z-ai/glm-5.3-flash --tp-size 2 --ep-size 2 --mem-fraction-static 0.86 "
-    "--max-running-requests 12 --max-queued-requests 4 --enable-priority-scheduling --disable-priority-preemption "
-    "--chunked-prefill-size 8192 --max-prefill-tokens 32768 --prefill-decode-interval 2 --cuda-graph-max-bs-decode 12 "
-    "--dsa-prefill-backend tilelang --dsa-decode-backend tilelang --kv-cache-dtype bfloat16 --speculative-algorithm EAGLE "
-    "--speculative-num-steps 4 --speculative-eagle-topk 1 --speculative-num-draft-tokens 5 --reasoning-parser glm45 "
-    f"--enable-strict-thinking --grammar-backend xgrammar --tool-call-parser glm47 --chat-template {TEMPLATE} "
-    "--context-length 1048576 --watchdog-timeout 1800 --host 0.0.0.0 --port 8000 --enable-metrics --enable-cache-report "
-    "--log-requests-level 0 --disable-fast-image-processor --limit-mm-data-per-request '{\"image\": 64}' "
-    "--enable-hierarchical-cache --hicache-write-policy write_through --hicache-io-backend direct "
-    "--hicache-mem-layout page_first_direct --max-mamba-cache-size 330 --mamba-ssm-dtype bfloat16"
-)
+# Test A = the prod A/B treatment engine: the base tier's candidate argv at origin/main 9bbcef0
+# (prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8.yaml x-sg-glm53-flash-candidate, write_through_selective,
+# mr48, 330 mamba slots), so the CC qualification covers exactly what the A/B deploys.
+V6_ARGS = "--model-path /root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/snapshots/99f1fa70408c52b007d4fd69e02e5a522422e755 --served-model-name z-ai/glm-5.3-flash --tp-size 2 --ep-size 2 --mem-fraction-static 0.86 --max-running-requests 48 --max-queued-requests 8 --enable-priority-scheduling --disable-priority-preemption --chunked-prefill-size 8192 --max-prefill-tokens 32768 --prefill-decode-interval 2 --cuda-graph-max-bs-decode 48 --dsa-prefill-backend tilelang --dsa-decode-backend tilelang --kv-cache-dtype bfloat16 --speculative-algorithm EAGLE --speculative-num-steps 4 --speculative-eagle-topk 1 --speculative-num-draft-tokens 5 --reasoning-parser glm45 --enable-strict-thinking --grammar-backend xgrammar --tool-call-parser glm47 --chat-template /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/3f1971b7b5f7a528c9c4ef6212c8785298a8c24a/chat_template.jinja --context-length 1048576 --watchdog-timeout 1800 --host 0.0.0.0 --port 8000 --enable-metrics --enable-cache-report --log-requests-level 0 --disable-fast-image-processor --limit-mm-data-per-request '{IMG}' --enable-hierarchical-cache --hicache-write-policy write_through_selective --hicache-io-backend direct --hicache-mem-layout page_first_direct --max-mamba-cache-size 330 --mamba-ssm-dtype bfloat16".replace("{IMG}", '{"image": 64}')
 # Shared tier (only when KVQ_SHARED=1; KVQ_SHARED=0 gives the private-cache control arm P).
 SHARED_ARGS = ("--hicache-host-memory-mode cache --hicache-storage-backend file "
                "--hicache-storage-prefetch-policy wait_complete")
@@ -140,7 +132,11 @@ def shared_engine(name, base_gpu, port, replica):
       KVQ_SHARED: ${{KVQ_SHARED:-1}}
       # Prod value; Test A needs no CUDA IPC.
       PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
-      SGLANG_HICACHE_RAM_BUDGET: ${{KVQ_RAM_BUDGET:-100GiB}}
+      SGLANG_HICACHE_RAM_BUDGET: ${{KVQ_RAM_BUDGET:-250GiB}}
+      # Base-tier env parity (admission reserve v10 rides in the v6 image).
+      SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE: "4096"
+      SGLANG_ADMISSION_RESERVE_MAX_FRACTION: "0.75"
+      SGLANG_KVSHARE_METRICS: "1"
       SGLANG_HICACHE_CUDA_HOST_MEMORY: "1"
       SGLANG_HICACHE_POOLED_TRANSFERS: "1"
       SGLANG_HICACHE_STAGING_PAGES: "64"
@@ -156,7 +152,7 @@ def shared_engine(name, base_gpu, port, replica):
       SGLANG_KV_TIER_METRICS: "1"
     restart: "no"
     stop_grace_period: 2m
-{{labels(name, "kvq-shared-v6-tp2-file-tier", "9c6ddd4319c4", replica)}}"""
+{{labels(name, "kvq-shared-v6-basecand-selective-file-tier", "9c6ddd4319c4", replica)}}"""
 
 
 def render():
@@ -190,8 +186,8 @@ def render():
       UCX_PROTO_INFO: "y"
     restart: "no"
 {log_label("kvq-nixl-" + role)}"""
-    sh1 = shared_engine("kvq-r1", 0, 29550, "kvq-r1").replace("{c_shared}", c_shared).replace("{labels(name, \"kvq-shared-v6-tp2-file-tier\", \"9c6ddd4319c4\", replica)}", labels("kvq-r1", "kvq-shared-v6-tp2-file-tier", "9c6ddd4319c4", "kvq-r1"))
-    sh2 = shared_engine("kvq-r2", 2, 29551, "kvq-r2").replace("{c_shared}", c_shared).replace("{labels(name, \"kvq-shared-v6-tp2-file-tier\", \"9c6ddd4319c4\", replica)}", labels("kvq-r2", "kvq-shared-v6-tp2-file-tier", "9c6ddd4319c4", "kvq-r2"))
+    sh1 = shared_engine("kvq-r1", 0, 29550, "kvq-r1").replace("{c_shared}", c_shared).replace("{labels(name, \"kvq-shared-v6-basecand-selective-file-tier\", \"9c6ddd4319c4\", replica)}", labels("kvq-r1", "kvq-shared-v6-basecand-selective-file-tier", "9c6ddd4319c4", "kvq-r1"))
+    sh2 = shared_engine("kvq-r2", 2, 29551, "kvq-r2").replace("{c_shared}", c_shared).replace("{labels(name, \"kvq-shared-v6-basecand-selective-file-tier\", \"9c6ddd4319c4\", replica)}", labels("kvq-r2", "kvq-shared-v6-basecand-selective-file-tier", "9c6ddd4319c4", "kvq-r2"))
     return f"""# GENERATED by scripts/kvq/prepare_kvq_qual.py -- do not edit by hand.
 # In-host KV-sharing qualification under NVIDIA CC (TDX + PPCIe) on gpu13 GPUs 4-7.
 # LAB ONLY: deploy as compose project `glm53kvq` (never `work`) with a `services` subset; no
