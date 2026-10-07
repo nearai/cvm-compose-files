@@ -51,20 +51,19 @@ def chat(base, messages, max_tokens, thinking=True, stream=True):
 
 
 def health():
+    # Ready = a tiny chat succeeds end to end (a router can answer /v1/models before its
+    # engines are up); it also keeps first-request overheads out of later timings.
     for base in TARGETS:
-        t0 = time.time()
+        t0, last = time.time(), None
         while True:
             try:
-                with urllib.request.urlopen(base + "/v1/models", timeout=10) as r:
-                    if r.status == 200:
-                        break
-            except Exception:  # noqa: BLE001
-                pass
+                chat(base, [{"role": "user", "content": "Say ok."}], 8, thinking=False)
+                break
+            except Exception as e:  # noqa: BLE001
+                last = repr(e)[:200]
             if time.time() - t0 > 3600:
-                out("health", target=base, ok=False); raise SystemExit(1)
-            time.sleep(10)
-        # one tiny warm-up request so later timings exclude first-request overheads
-        chat(base, [{"role": "user", "content": "Say ok."}], 8, thinking=False)
+                out("health", target=base, ok=False, last_error=last); raise SystemExit(1)
+            time.sleep(15)
         out("health", target=base, ok=True, wait_s=round(time.time() - t0))
 
 
