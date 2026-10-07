@@ -35,7 +35,7 @@ EXPECTED = {
     "managers/cache_controller.py": ("ffb53c980497d0a94f4ffea7c54efa86b3e97077a08d8b8a3282ccbf2531c779",
         "5a7c6a25d39de57be74ad094ff38e72de29c8b7a1629ba19892e77196dbbed60"),
     "mem_cache/hicache_storage.py": ("40d892d038557bbce41f3b35369c8a1bf2feeed56b907f709492f7e0f113d313",
-        "7a370995a68a6fcabc96a840563deea077d4fd1a222881d6126c00090116fffc"),
+        "0443a2c81d5ffd10c33d0f4e2eb9af09901729660bc76506b1b904673d495193"),
 }
 staged = {}
 def sha(text):
@@ -356,6 +356,7 @@ sub(H, """    def _sidecar_rank_tag(self, component_name) -> str:
         # read in parallel (SGLANG_KVSHARE_READ_THREADS, default 8). Counts self/peer hits.
         if operation.is_terminated():
             return 0
+        t_start = time.perf_counter()
         offsets = [host_indices[i * page_size] for i in range(len(hash_values))]
         m = self._kvshare_metrics()
 
@@ -390,6 +391,14 @@ sub(H, """    def _sidecar_rank_tag(self, component_name) -> str:
             if m:
                 m[0].labels(source=source).inc(page_size)
             count += 1
+        if os.environ.get("SGLANG_KVSHARE_LOG_READS", "0") == "1":
+            dt = time.perf_counter() - t_start
+            page_bytes = self._scratch_page(host_pool).numel() * self._scratch_page(host_pool).element_size()
+            logger.info(
+                "kvshare read: req=%s pages=%d restored=%d MB=%.1f s=%.3f MBps=%.0f",
+                operation.request_id, len(hash_values), count, count * page_bytes / 1e6, dt,
+                count * page_bytes / 1e6 / max(dt, 1e-9),
+            )
         return count
 """, "file backend kvshare helpers")
 sub(H, """            os.replace(tmp_path, tensor_path)

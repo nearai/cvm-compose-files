@@ -144,6 +144,8 @@ def shared_engine(name, base_gpu, port, replica):
       SGLANG_HICACHE_FILE_BACKEND_STORAGE_DIR: /kvshared
       # Without it every existence check scans the whole shared store directory per batch.
       SGLANG_HICACHE_FILE_BACKEND_ENABLE_METADATA_CACHE: ${{KVQ_FILE_METADATA_CACHE:-1}}
+      SGLANG_KVSHARE_LOG_READS: ${{KVQ_LOG_READS:-1}}
+      SGLANG_KVSHARE_READ_THREADS: ${{KVQ_READ_THREADS:-8}}
       SGLANG_HICACHE_FILE_BACKEND_MAX_SIZE: ${{KVQ_FILE_MAX:-60Gi}}
       SGLANG_HICACHE_SHARED_STORE_BUDGET: ${{KVQ_STORE_BUDGET:-150GiB}}
       SGLANG_GHOST_CACHE: "1"
