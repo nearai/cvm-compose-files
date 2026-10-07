@@ -17,6 +17,8 @@ GM = "https://gpu-manager.infra.near.ai"
 AB_FILE = "prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8-KVShare-AB.yaml"
 BASE_FILE = "prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8.yaml"
 VARIANT_SUFFIX = "-kvshare-l3file-v1"
+KV4_FILE = "prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8-KVShare4.yaml"
+KV4_SUFFIX = "-kvshare4-l3file-v1"
 
 
 def token():
@@ -110,7 +112,8 @@ def done_success(out):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--host", required=True)
-    ap.add_argument("--replica", required=True, choices=["r3", "r4"])
+    ap.add_argument("--replica", required=True, choices=["r1", "r2", "r3", "r4"])
+    ap.add_argument("--four", action="store_true", help="host-level treatment: all four replicas share (KVShare4 file)")
     ap.add_argument("--tag", default=None, help="commit SHA to deploy (default: this checkout's HEAD)")
     ap.add_argument("--rollback", action="store_true")
     ap.add_argument("--apply", action="store_true")
@@ -123,7 +126,7 @@ def main():
     iid, env = inst["id"], inst["env_vars"]
     work = json.loads(api(f"instances/{iid}/version")).get("projects", {}).get("work", {}).get("current", {})
     print(f"{a.host}: work tag={work.get('tag')} file={work.get('file')}")
-    if work.get("file") not in (BASE_FILE, AB_FILE):
+    if work.get("file") not in (BASE_FILE, AB_FILE, KV4_FILE):
         sys.exit("host is not on the base-tier file; refusing")
     svc = f"model-sg-glm53-w4afp8-tp2-{a.replica}"
     if a.rollback:
@@ -134,12 +137,16 @@ def main():
             tag = a.tag
     else:
         tag = a.tag or subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
-        file = AB_FILE
+        file = KV4_FILE if a.four else AB_FILE
+        if not a.four and a.replica in ("r1", "r2"):
+            sys.exit("r1/r2 are the control in the 2-way file; use --four for host-level sharing")
     want_treatment = not a.rollback
+    suffix = KV4_SUFFIX if a.four else VARIANT_SUFFIX
 
     def is_target(c):
-        return (c["state"] == "running" and c["variant"].endswith(VARIANT_SUFFIX) == want_treatment
-                and c["file"].endswith(file))
+        treated = c["variant"].endswith(KV4_SUFFIX) or c["variant"].endswith(VARIANT_SUFFIX)
+        ok_variant = c["variant"].endswith(suffix) if want_treatment else not treated
+        return c["state"] == "running" and ok_variant and c["file"].endswith(file)
 
     body = {"tag": tag, "file": file, "services": [svc], "env": env, "force_recreate": False}
     print(f"{file} @ {tag[:12]}")
