@@ -11,7 +11,7 @@ CUDA error 801.
 
 Base `sha256:3eccc307…` (HiCache + admission reserve v10) plus two correctness patches, both
 byte-identical copies of the reviewed originals, one opt-in performance patch, two patches that move
-blocking work off the HTTP event loop, one diagnostic, and two opt-in measurements:
+blocking work off the HTTP event loop, one diagnostic, two opt-in measurements and an opt-in self-profiler:
 
 | patch | origin | scope |
 | --- | --- | --- |
@@ -23,6 +23,7 @@ blocking work off the HTTP event loop, one diagnostic, and two opt-in measuremen
 | `event-loop-stall-dump.diff` | new here (diagnostic, on by default at 30 s) | new `utils/event_loop_stall_dump.py` plus a hook in the HTTP server lifespan |
 | `ghost-prefix-cache.diff` | new here (opt-in, `SGLANG_GHOST_CACHE=1`) | new `observability/ghost_cache.py` plus one call at the top of `mem_cache/common.py` `release_kv_cache` |
 | `kv-tier-metrics.diff` | new here (opt-in, `SGLANG_KV_TIER_METRICS=1`) | new `observability/kv_tier_metrics.py` plus recorder hooks in `mem_cache/unified_cache/unified_tree_core.py` eviction and load-back paths |
+| `near-self-profile.diff` | new here (opt-in, `NEAR_SELF_PROFILE=1`) | new `utils/near_self_profile.py` plus a creation call in `Scheduler.init_profiler`, a `tick` call in `Scheduler.run_batch` and one barrier guard in `SchedulerProfilerManager._stop_profile` |
 
 ## DSA indexer query split (opt-in)
 
@@ -292,6 +293,72 @@ VRAM evictions and load-backs. It deselects three tests that replace the tree's 
 Mock, which the strict-mode gauge walk cannot iterate (outside strict mode the error is logged and
 they pass); on the unpatched file the same run passes 492.
 
+## Self-profiling hook (opt-in)
+
+Inside a TEE (NVIDIA CC, PPCIe) nobody can shell in or fetch files, but engine stdout reaches Loki.
+With `NEAR_SELF_PROFILE=1` the engine profiles a few scheduler steps once, prints a compact summary of
+where decode time goes (host syncs, D2H copies, launches, GPU idle) prefixed `NEAR_PROFILE `, and
+deletes the trace. It exists to target the host-overhead work: on the production base tier the GPU is
+only about half busy in the TEE and the scheduler spends most of its time inside `run_batch` (lab
+measurements, see the PR that added this), and a profile taken in the TEE says which calls that is.
+
+**Inert unless `NEAR_SELF_PROFILE=1`.** Unset, `0` or anything else: `maybe_create` returns `None`,
+`Scheduler.near_self_profile` is `None`, the `run_batch` call is skipped and the barrier guard is
+true. The hook runs on tp_rank 0 only; other ranks never create it.
+
+| var | default | meaning |
+| --- | --- | --- |
+| `NEAR_SELF_PROFILE` | unset | `1` enables the hook |
+| `NEAR_SELF_PROFILE_AFTER_S` | 600 | seconds after scheduler init before the first eligible decode batch |
+| `NEAR_SELF_PROFILE_STEPS` | 50 | scheduler steps to record |
+| `NEAR_SELF_PROFILE_ACTIVITIES` | unset | `cpu` forces the CPU-only profile (the fallback path) |
+
+Behaviour:
+
+- Once per process, at the first decode batch after `NEAR_SELF_PROFILE_AFTER_S`. It drives the
+  scheduler's existing `SchedulerProfilerManager` (CPU+CUDA, `with_stack=True`, output
+  `/tmp/near_selfprof`) for `NEAR_SELF_PROFILE_STEPS` steps. No new tracer.
+- If starting with CUDA activity raises, or the trace has no kernel events (CUPTI restricted), it
+  retries once CPU-only. CPU-only still shows time blocked inside `item()`, `synchronize()` and copies
+  by code path. `SGLANG_PROFILE_V2` is not supported; the hook then disables itself.
+- The trace is parsed by a niced child process (stdlib only, runs `near_self_profile.py` directly), so
+  the scheduler's GIL is not held by the parse. The child prints at most about 30 lines and removes the
+  trace dir.
+- Any error prints one `NEAR_PROFILE error ...` line and disables the hook.
+- `_stop_profile` skips its all-rank `torch.distributed.barrier` only while the hook's own profile runs
+  (`near_selfprof` is set at start and cleared as soon as the profile stops or the hook errors);
+  otherwise rank 0 would wait for ranks that never profile. Profiles started through the HTTP profiler
+  API keep the barrier, before and after the hook has run.
+- The hook does not start while another profile is in progress; it disables itself instead of touching
+  it. It profiles tp_rank 0 only, so use it with PP=1 and attention-DP layouts (the production ones).
+- The parse child sets `oom_score_adj` 1000 so the kernel kills it rather than the engine, and the
+  hook removes `/tmp/near_selfprof` if the child dies.
+
+Summary lines: `mode`, steps captured, per-iteration wall time (from `Scheduler.run_batch` spans), GPU
+busy and idle % with an idle-gap histogram, kernel count, graph vs eager launches, blocking calls
+(`cudaStreamSynchronize`, `cudaEventSynchronize`, `item()` ...) with count and blocked ms, the top 8
+sglang code paths that block (`file:line` is the function definition line), memcpy counts and bytes by
+direction, and the top 5 GPU idle gaps with the CPU frame running at that moment.
+
+Cost when on, once per process: the torch profiler's overhead for 50 steps, then a synchronous trace
+export in the scheduler thread, which stalls that replica for a few seconds and up to about 20 s. The
+parse child needs a few GB of RAM for a 50-step trace with stacks; lower `NEAR_SELF_PROFILE_STEPS` if
+the container is tight. Enable it on one replica, not a fleet.
+
+**Open risk: CUPTI under CC.** Whether CUDA activity tracing works on a confidential-computing GPU has
+not been tested; the lab runs had CC off. The CPU-only fallback is the mitigation, and
+`NEAR_SELF_PROFILE_ACTIVITIES=cpu` forces it. It covers CUPTI failing with an exception or returning no
+kernel events, not a CUPTI fault that crashes or hangs the process, so enable it on one replica that
+can be restarted. The first TEE run answers this.
+
+**Rollback:** unset `NEAR_SELF_PROFILE` (the hook is then inert), or redeploy the v6 digest; v7 changes
+no v6 patch. The hook is per process and persists nothing, so a restart clears it.
+
+The patch is applied last. `scheduler.py` and `profiler_manager.py` are touched by no other patch here
+and are pinned to the base image's bytes (`scheduler.py` `6ffd1584…`, `profiler_manager.py`
+`8e4a2992…`). Validated CPU-only by `test_self_profile.py` (step 10 of `test-cpu.sh`): inert by default,
+summariser on synthetic traces, hook state machine against a stub profiler manager, hook sites present.
+
 ## Why the composition is safe
 
 The HiCache patches touch `mem_cache/*`, `disaggregation/*` and `schedule_batch.py`. None of the
@@ -315,7 +382,7 @@ other patch in this recipe touches it:
 e2f1884ddd55721786cb9b7365b5d0a619a9d9a6ebf88c9c09b690ee39b45b94  mem_cache/unified_cache/unified_tree_core.py
 ```
 
-That disjointness was verified against the real base image, not assumed — all three patch targets
+That disjointness was verified against the real base image, not assumed — all three patch targets (base bytes, before the self-profiling patch)
 hash identically in `3eccc307…` and in `e9d29a1c…`:
 
 ```
@@ -343,8 +410,9 @@ producing a silently different image.
 
 Added here: the DSA indexer query split is opt-in (`SGLANG_DSA_INDEXER_QSPLIT=1`), the two
 event-loop patches have no switch, and the stall dump is on at 30 s
-(`SGLANG_EVENT_LOOP_STALL_DUMP_SECS=0` turns it off), and the ghost prefix cache
-(`SGLANG_GHOST_CACHE=1`) and the KV tier metrics (`SGLANG_KV_TIER_METRICS=1`) are opt-in. Inherited
+(`SGLANG_EVENT_LOOP_STALL_DUMP_SECS=0` turns it off). The ghost prefix cache (`SGLANG_GHOST_CACHE=1`),
+the KV tier metrics (`SGLANG_KV_TIER_METRICS=1`) and the self-profiler (`NEAR_SELF_PROFILE=1`) are
+opt-in. Inherited
 opt-ins:
 
 - admission reserve — `SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE`
@@ -388,6 +456,15 @@ measured at 406 GiB, 650 GiB and with HiCache off on the same replay (gpu31 HiCa
 a CPU-only container on gpu31 (2026-10-05, tag `glm53-hicache-w4afp8:v5-obs`). On GPU the lab
 bind-mounted the same module and patched tree core over the v4 lab image for the HiCache policy A/B
 (gpu31, 2026-09-30); this build has not run on GPU.
+
+**v7** adds the self-profiling hook on top of v6, with no change to any v6 patch. `scheduler.py` is
+the only source file that was pinned unchanged (before = after) and now has a new after-hash. The hook
+patch was applied to the base image's real `scheduler.py` and `profiler_manager.py` bytes and
+reproduces the manifest hashes; `test-cpu.sh` step 10 was run against the patched sources outside the
+image. A GPU run of the hook on gpu32 (TP4, CC off) completed in the lab, but its output was not
+retained, so no GPU result is claimed, and that run predates the review fixes to the hook (no start
+while another profile runs, barrier-skip flag cleared after the hook's profile, parse-child cleanup and
+OOM priority), which are covered by `test_self_profile.py` only. Nothing has run in a TEE.
 
 ## Security remediation
 

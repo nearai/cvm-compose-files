@@ -3,7 +3,7 @@ FROM docker.io/nearaidev/sglang@sha256:3eccc30709f5719c81084d1264f03ca5354b3059e
 
 ARG BUILD_SOURCE_REVISION
 LABEL org.opencontainers.image.title="GLM-5.3 Flash HiCache W4AFP8 engine"
-LABEL org.opencontainers.image.description="HCC-safe HiCache engine with admission reserve v10, the W4AFP8 loader fix, the unconditional chunked-prefill pool clamp, the opt-in DSA indexer query split, request preprocessing and the multimodal shared-memory copy moved off the HTTP event loop, an event-loop stall dump, an opt-in ghost prefix cache that measures would-be KV hits from keyed page hashes, and opt-in rank-0 KV tier (VRAM/DRAM) eviction metrics"
+LABEL org.opencontainers.image.description="HCC-safe HiCache engine with admission reserve v10, the W4AFP8 loader fix, the unconditional chunked-prefill pool clamp, the opt-in DSA indexer query split, request preprocessing and the multimodal shared-memory copy moved off the HTTP event loop, an event-loop stall dump, an opt-in ghost prefix cache that measures would-be KV hits from keyed page hashes, opt-in rank-0 KV tier (VRAM/DRAM) eviction metrics, and an opt-in one-shot self-profiler that prints a compact NEAR_PROFILE decode-step summary to stdout"
 LABEL org.opencontainers.image.source="https://github.com/nearai/cvm-compose-files"
 LABEL org.opencontainers.image.revision="${BUILD_SOURCE_REVISION}"
 LABEL org.opencontainers.image.base.name="docker.io/nearaidev/sglang"
@@ -26,6 +26,7 @@ LABEL nearai.sglang.mm_shm_wrap_off_loop="v1"
 LABEL nearai.sglang.event_loop_stall_dump="v1-on-30s"
 LABEL nearai.sglang.ghost_prefix_cache="v1-opt-in"
 LABEL nearai.sglang.kv_tier_metrics="v1-opt-in"
+LABEL nearai.sglang.self_profile="v1-opt-in"
 LABEL nearai.security_remediation="CVE-2026-102268:pyjwt-2.14.0"
 
 COPY Dockerfile \
@@ -39,6 +40,7 @@ COPY Dockerfile \
      ghost-prefix-cache.diff \
      kv-tier-metrics.diff \
      modules-to-not-convert.diff \
+     near-self-profile.diff \
      sglang-pr30771.diff \
      shm-off-loop.diff \
      source-manifest.json \
@@ -46,6 +48,7 @@ COPY Dockerfile \
      test_stall_dump.py \
      test_ghost_cache.py \
      test_kv_tier_metrics.py \
+     test_self_profile.py \
      kvtm_check_plugin.py \
      security-requirements.txt \
      /usr/share/nearai/glm53-hicache-w4afp8/
@@ -78,6 +81,13 @@ RUN /opt/sglang/bin/python3 -m pip install --no-cache-dir --no-deps --require-ha
 # VRAM evictions (demoted to DRAM vs deleted), DRAM evictions (duplicate of VRAM vs the only copy),
 # DRAM->VRAM load-backs and their idle-time buckets, and at most every SGLANG_KV_TIER_METRICS_RESYNC_S
 # (default 30) walks the tree for the sglang:kv_tier_* VRAM / DRAM-duplicate / DRAM-only gauges.
+# The self-profiler is inert unless NEAR_SELF_PROFILE=1: then TP rank 0 profiles
+# NEAR_SELF_PROFILE_STEPS (default 50) scheduler steps once per process, starting at the first decode
+# batch after NEAR_SELF_PROFILE_AFTER_S (default 600) seconds, through the scheduler's existing
+# SchedulerProfilerManager. A niced child process parses the trace, prints at most about 30 stdout
+# lines prefixed "NEAR_PROFILE " and deletes /tmp/near_selfprof. NEAR_SELF_PROFILE_ACTIVITIES=cpu
+# forces the CPU-only profile that is also the automatic fallback when CUPTI yields no kernel events
+# (a CUPTI crash or hang is not caught: enable it on one restartable replica). Rollback: unset it.
 # Everything inherited from the base stays opt-in: admission reserve v10 via
 # SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE, and HiCache via --enable-hierarchical-cache plus
 # SGLANG_HICACHE_*. On an HCC/PPCIe (TEE) host SGLANG_HICACHE_CUDA_HOST_MEMORY must stay 1; 0 selects

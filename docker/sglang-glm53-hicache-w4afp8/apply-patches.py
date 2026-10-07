@@ -1,6 +1,6 @@
 """Apply the reviewed W4AFP8 loader, pool-clamp, DSA indexer query-split, event-loop offload,
-event-loop stall-dump, ghost prefix cache and KV tier metrics patches to exact production source
-bytes."""
+event-loop stall-dump, ghost prefix cache, KV tier metrics and self-profiling hook patches to exact
+production source bytes."""
 
 import ast
 import hashlib
@@ -21,6 +21,9 @@ PATCHES: Final = {
     "event-loop-stall-dump.diff": "367dbcdec432586ae4c8ab984c08caafb2f148d62cebf257d12e89c4c32f72ab",
     "ghost-prefix-cache.diff": "1423d2dbec36830d7b8cee22d838fc49425e0f787a0ffc911584d8276c7ee209",
     "kv-tier-metrics.diff": "d2ef5d48bbb28e59debb139f2fcd789f8b4952fbcc2c2c6821c0a4e5cf11f243",
+    # Last: it edits managers/scheduler.py and managers/scheduler_components/profiler_manager.py,
+    # which no earlier patch touches (scheduler.py keeps its base bytes until this one).
+    "near-self-profile.diff": "b489ba390bd75575a83d77f90d8ab92ebb4b4da9a1b442f84c095be21db7d891",
 }
 MANIFEST: Final = json.loads((CONTEXT / "source-manifest.json").read_text())
 

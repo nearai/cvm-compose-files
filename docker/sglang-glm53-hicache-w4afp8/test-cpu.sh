@@ -369,4 +369,34 @@ PYTHONPATH="$RECIPE_DIR${PYTHONPATH:+:$PYTHONPATH}" \
   test/registered/unit/mem_cache/test_unified_radix_cache_unittest.py
 echo "step 9 OK: the KV tier metrics are exact, hooked into the tree core, off by default, and hold under the upstream cache tests in strict mode"
 
+# 10. The self-profiling hook is inert by default. The first block checks the installed modules: the
+# hook module is importable, creates nothing without NEAR_SELF_PROFILE=1 (or off tp_rank 0), and
+# Scheduler has it wired in. test_self_profile.py then runs the summariser on synthetic traces (blocking
+# calls, code paths, memcpy direction, trace dir deleted, NO_KERNELS exit code), the hook state machine
+# against a stub profiler manager (waits for a decode batch, one CUDA+CPU profile, one CPU-only retry,
+# then disabled for good) and checks the hook sites in scheduler.py and profiler_manager.py. No GPU, no
+# real profiler: whether CUPTI works under CC is the open risk the first TEE run settles.
+python3 - <<'EOF'
+import inspect
+import os
+import types
+
+import sglang.srt.managers.scheduler as scheduler
+from sglang.srt.managers.scheduler_components.profiler_manager import SchedulerProfilerManager
+from sglang.srt.utils import near_self_profile as nsp
+
+assert os.environ.get("NEAR_SELF_PROFILE") is None
+assert scheduler.maybe_create_self_profile is nsp.maybe_create
+rank0 = types.SimpleNamespace(ps=types.SimpleNamespace(tp_rank=0))
+assert nsp.maybe_create(rank0) is None
+assert not os.path.exists(nsp.OUT_DIR)
+assert "near_selfprof" in inspect.getsource(SchedulerProfilerManager._stop_profile)
+EOF
+python3 "$RECIPE_DIR/test_self_profile.py" \
+  --module "$PWD/python/sglang/srt/utils/near_self_profile.py" \
+  --scheduler "$PWD/python/sglang/srt/managers/scheduler.py" \
+  --profiler-manager "$PWD/python/sglang/srt/managers/scheduler_components/profiler_manager.py" \
+  | tail -n 1
+echo "step 10 OK: the self-profiling hook is off by default, its summariser and state machine behave on synthetic traces, and its hook sites are in place"
+
 echo "GLM-5.3 W4AFP8 combined-image CPU checks passed"
