@@ -111,13 +111,16 @@ The base tier runs `--hicache-write-policy write_through_selective`. Under it, a
 
 Arms: `container_name=~".*-r[12]"` is control; `container_name=~".*-r[34]"` is treatment.
 
+- **Label gotchas (seen in prod 2026-10-07):** the collector adds `source="sglang"`, so the patch's `source` label (`self`/`peer`) arrives as **`exported_source`**. The Prometheus `config_variant` label comes from the scrape config and does **not** carry the `-kvshare-l3file-v1` suffix; split arms by `container_name` (the container's own label and Loki do carry the suffix).
+- **Pre-change baseline (24 h to 2026-10-07 19:20 UTC, gpu04):** cached fraction r1 0.590, r2 0.576, r3 0.635, r4 0.620; TTFT p90 3.82 / 3.86 / 3.90 / 3.78 s; ITL p90 0.122 / 0.119 / 0.125 / 0.123 s. r3/r4 already led on hit rate, so compare each arm's change against its own baseline (difference-in-differences), not raw arm values.
+
 ```promql
 # Prefix-cache hit fraction per arm (headline)
 sum by (arm) (label_replace(rate(sglang_cached_tokens_total{host_machine="H"}[1h]), "arm", "$1", "container_name", ".*-(r[1234])"))
   / sum by (arm) (label_replace(rate(sglang_prompt_tokens_total{host_machine="H"}[1h]), "arm", "$1", "container_name", ".*-(r[1234])"))
 
 # Peer vs self hits from the shared tier (treatment only), tokens/s
-sum by (container_name, source) (rate(sglang_kvshare_storage_hit_tokens_total{host_machine="H"}[1h]))
+sum by (container_name, exported_source) (rate(sglang_kvshare_storage_hit_tokens_total{host_machine="H"}[1h]))
 # Tokens written to the shared tier
 sum by (container_name) (rate(sglang_kvshare_storage_written_tokens_total{host_machine="H"}[1h]))
 
