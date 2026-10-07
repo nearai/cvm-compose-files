@@ -42,6 +42,8 @@ def chat(base, messages, max_tokens, thinking=True, stream=True):
             if not line.startswith("data:") or line.endswith("[DONE]"):
                 continue
             ev = json.loads(line[5:])
+            if ev.get("error"):  # e.g. queue-full rejections arrive inside a 200 stream
+                raise RuntimeError(f"stream error: {str(ev['error'])[:200]}")
             if ev.get("usage"):
                 usage = ev["usage"]
             for ch in ev.get("choices") or []:

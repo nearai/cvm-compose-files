@@ -379,7 +379,7 @@ services:
     runtime: runc
     entrypoint: ["python3", "/etc/kvq/driver.py"]
     configs:
-      - source: kvq_driver_py_f7edd3ef
+      - source: kvq_driver_py_4307ff57
         target: /etc/kvq/driver.py
         mode: 0444
     environment:
@@ -792,7 +792,7 @@ configs:
           finally:
               print("KVQ_DONE", flush=True)
 
-  kvq_driver_py_f7edd3ef:
+  kvq_driver_py_4307ff57:
     content: |
       #!/usr/bin/env python3
       """In-CVM load driver for the KV-sharing qualification (stdlib only, no ports exposed).
@@ -838,6 +838,8 @@ configs:
                   if not line.startswith("data:") or line.endswith("[DONE]"):
                       continue
                   ev = json.loads(line[5:])
+                  if ev.get("error"):  # e.g. queue-full rejections arrive inside a 200 stream
+                      raise RuntimeError(f"stream error: {str(ev['error'])[:200]}")
                   if ev.get("usage"):
                       usage = ev["usage"]
                   for ch in ev.get("choices") or []:
