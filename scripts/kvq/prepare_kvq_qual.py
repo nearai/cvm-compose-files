@@ -364,6 +364,7 @@ services:
       KVQ_TURN_GAP_S: ${{KVQ_TURN_GAP_S:-0}}
       KVQ_TURN1_REPEAT: ${{KVQ_TURN1_REPEAT:-1}}
       KVQ_CONVO_TURNS_A: ${{KVQ_CONVO_TURNS_A:-3}}
+      KVQ_CONVO_A_MAX_TOKENS: ${{KVQ_CONVO_A_MAX_TOKENS:-256}}
     restart: "no"
     logging: *logging-conf
 {log_label("kvq-driver")}

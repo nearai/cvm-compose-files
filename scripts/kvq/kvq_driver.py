@@ -185,7 +185,7 @@ def convo(salt):
     msgs = [{"role": "user", "content": f"[session {salt}]\n{doc}\n\nRead the log above. Reply with just 'ready'."}]
     res = {"seed": salt, "turns_on_a": [], "target_a": a, "target_b": b}
     for t in range(int(os.environ.get("KVQ_CONVO_TURNS_A", "3"))):
-        ttft, _, text, u = chat(a, msgs, 16, thinking=False)
+        ttft, _, text, u = chat(a, msgs, int(os.environ.get("KVQ_CONVO_A_MAX_TOKENS", "256")), thinking=False)
         res["turns_on_a"].append({"ttft_s": round(ttft or 0, 2), "prompt": (u or {}).get("prompt_tokens"),
                                   "cached": ((u or {}).get("prompt_tokens_details") or {}).get("cached_tokens")})
         msgs = msgs + [{"role": "assistant", "content": text or "ready"},
