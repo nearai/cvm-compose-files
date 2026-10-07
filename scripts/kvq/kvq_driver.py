@@ -188,8 +188,11 @@ def convo(salt):
         ttft, _, text, u = chat(a, msgs, int(os.environ.get("KVQ_CONVO_A_MAX_TOKENS", "256")), thinking=False)
         res["turns_on_a"].append({"ttft_s": round(ttft or 0, 2), "prompt": (u or {}).get("prompt_tokens"),
                                   "cached": ((u or {}).get("prompt_tokens_details") or {}).get("cached_tokens")})
+        pad_tokens = int(os.environ.get("KVQ_CONVO_TURN_PAD_TOKENS", "1000"))
+        pad = long_doc(pad_tokens, salt * 100 + t)[0] if pad_tokens > 0 else ""
+        # Each follow-up adds new material (like a tool result), as agent turns do.
         msgs = msgs + [{"role": "assistant", "content": text or "ready"},
-                       {"role": "user", "content": f"Noted {t}. Reply with just 'ok'."}]
+                       {"role": "user", "content": f"Tool output {t}:\n{pad}\nNoted {t}. Reply with just 'ok'."}]
     time.sleep(float(os.environ.get("KVQ_TURN_GAP_S", "0")))
     msgs[-1] = {"role": "user", "content": "What is the vault access code? Reply with the code only."}
     ttft, tot, text, u = chat(b, msgs, int(os.environ.get("KVQ_TURN2_MAX_TOKENS", "512")), thinking=False)
