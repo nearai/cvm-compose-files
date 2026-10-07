@@ -257,6 +257,9 @@ x-sg-glm53-flash-common: &sg-glm53-flash-common
     - SGLANG_HICACHE_SHARED_STORE_BUDGET=${GLM53_KVSHARE_STORE_BUDGET:-300GiB}
     # sglang:kvshare_storage_* self/peer attribution (TP rank 0).
     - SGLANG_KVSHARE_METRICS=1
+    # One INFO line per storage restore (pages, MB, s, MB/s), to compare prod restore
+    # cost with the gpu13 qualification (13.3-14.2 s at ~220K tokens).
+    - SGLANG_KVSHARE_LOG_READS=1
   restart: unless-stopped
   stop_grace_period: 5m
   logging: *logging-conf
@@ -649,6 +652,9 @@ services:
       - SGLANG_HICACHE_SHARED_STORE_BUDGET=${GLM53_KVSHARE_STORE_BUDGET:-300GiB}
       # sglang:kvshare_storage_* self/peer attribution (TP rank 0).
       - SGLANG_KVSHARE_METRICS=1
+      # One INFO line per storage restore (pages, MB, s, MB/s), to compare prod restore
+      # cost with the gpu13 qualification (13.3-14.2 s at ~220K tokens).
+      - SGLANG_KVSHARE_LOG_READS=1
     depends_on:
       model-downloader:
         condition: service_completed_successfully
@@ -763,6 +769,9 @@ services:
       - SGLANG_HICACHE_SHARED_STORE_BUDGET=${GLM53_KVSHARE_STORE_BUDGET:-300GiB}
       # sglang:kvshare_storage_* self/peer attribution (TP rank 0).
       - SGLANG_KVSHARE_METRICS=1
+      # One INFO line per storage restore (pages, MB, s, MB/s), to compare prod restore
+      # cost with the gpu13 qualification (13.3-14.2 s at ~220K tokens).
+      - SGLANG_KVSHARE_LOG_READS=1
     depends_on:
       model-downloader:
         condition: service_completed_successfully
@@ -877,6 +886,9 @@ services:
       - SGLANG_HICACHE_SHARED_STORE_BUDGET=${GLM53_KVSHARE_STORE_BUDGET:-300GiB}
       # sglang:kvshare_storage_* self/peer attribution (TP rank 0).
       - SGLANG_KVSHARE_METRICS=1
+      # One INFO line per storage restore (pages, MB, s, MB/s), to compare prod restore
+      # cost with the gpu13 qualification (13.3-14.2 s at ~220K tokens).
+      - SGLANG_KVSHARE_LOG_READS=1
     depends_on:
       model-downloader:
         condition: service_completed_successfully

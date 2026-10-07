@@ -125,6 +125,12 @@ def render(four=False):
                  f"SGLANG_HICACHE_SHARED_STORE_BUDGET=${{GLM53_KVSHARE_STORE_BUDGET:-{store}}}",
                  "# sglang:kvshare_storage_* self/peer attribution (TP rank 0).",
                  "SGLANG_KVSHARE_METRICS=1"]
+        if four:
+            # One INFO line per storage restore (pages, MB, seconds, MB/s): the prod measure of
+            # restore cost against the gpu13 qualification (13.3-14.2 s at ~220K tokens).
+            lines += ["# One INFO line per storage restore (pages, MB, s, MB/s), to compare prod restore",
+                      "# cost with the gpu13 qualification (13.3-14.2 s at ~220K tokens).",
+                      "SGLANG_KVSHARE_LOG_READS=1"]
         res = ""
         for l in lines:
             for sub in l.split("\n"):
