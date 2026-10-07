@@ -35,7 +35,7 @@ EXPECTED = {
     "managers/cache_controller.py": ("ffb53c980497d0a94f4ffea7c54efa86b3e97077a08d8b8a3282ccbf2531c779",
         "5a7c6a25d39de57be74ad094ff38e72de29c8b7a1629ba19892e77196dbbed60"),
     "mem_cache/hicache_storage.py": ("40d892d038557bbce41f3b35369c8a1bf2feeed56b907f709492f7e0f113d313",
-        "7a370995a68a6fcabc96a840563deea077d4fd1a222881d6126c00090116fffc"),
+        "2b2cea371dee79a320e129e7f89e367f3ff693b246be527d8f3fbd5a11331ff1"),
 }
 staged = {}
 def sha(text):
@@ -356,15 +356,40 @@ sub(H, """    def _sidecar_rank_tag(self, component_name) -> str:
         # read in parallel (SGLANG_KVSHARE_READ_THREADS, default 8). Counts self/peer hits.
         if operation.is_terminated():
             return 0
+        t_start = time.perf_counter()
         offsets = [host_indices[i * page_size] for i in range(len(hash_values))]
         m = self._kvshare_metrics()
 
+        direct = os.environ.get("SGLANG_KVSHARE_DIRECT_READ", "1") == "1"
+        stage = [0.0, 0.0]  # seconds in get() (open/read/touch) and in the host-slot copy, summed over threads
+
+        scratch_bytes = self._scratch_page(host_pool).numel() * self._scratch_page(host_pool).element_size()
+
+        def direct_slot(off):
+            # page_first_direct host pools hold each page as one contiguous kv_buffer[i] whose bytes
+            # are exactly the stored page (get_data_page flattens the same view): read into it.
+            if getattr(host_pool, "layout", None) != "page_first_direct":
+                return None
+            buf = getattr(host_pool, "kv_buffer", None)
+            if not isinstance(buf, torch.Tensor) or buf.dim() < 2:
+                return None
+            slot = buf[int(off) // host_pool.page_size]
+            if not slot.is_contiguous() or slot.numel() * slot.element_size() != scratch_bytes:
+                return None
+            return slot.view(-1)
+
         def one(item):
             key, off = item
-            data = self.get(key, self._scratch_page(host_pool))
+            t0 = time.perf_counter()
+            dst = direct_slot(off) if direct else None
+            data = self.get(key, dst if dst is not None else self._scratch_page(host_pool))
+            t1 = time.perf_counter()
             if data is None:
                 return None
-            host_pool.set_from_flat_data_page(off, data)
+            if dst is None:
+                host_pool.set_from_flat_data_page(off, data)
+            stage[0] += t1 - t0
+            stage[1] += time.perf_counter() - t1
             return "self" if self._get_suffixed_key(key) in self._kvshare_written else "peer"
 
         workers = int(os.environ.get("SGLANG_KVSHARE_READ_THREADS", "8"))
@@ -390,6 +415,14 @@ sub(H, """    def _sidecar_rank_tag(self, component_name) -> str:
             if m:
                 m[0].labels(source=source).inc(page_size)
             count += 1
+        if os.environ.get("SGLANG_KVSHARE_LOG_READS", "0") == "1":
+            dt = time.perf_counter() - t_start
+            page_bytes = self._scratch_page(host_pool).numel() * self._scratch_page(host_pool).element_size()
+            logger.info(
+                "kvshare read: req=%s pages=%d restored=%d MB=%.1f s=%.3f MBps=%.0f get_s=%.3f copy_s=%.3f threads=%d",
+                operation.request_id, len(hash_values), count, count * page_bytes / 1e6, dt,
+                count * page_bytes / 1e6 / max(dt, 1e-9), stage[0], stage[1], workers,
+            )
         return count
 """, "file backend kvshare helpers")
 sub(H, """            os.replace(tmp_path, tensor_path)

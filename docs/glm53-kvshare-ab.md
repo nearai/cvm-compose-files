@@ -129,6 +129,14 @@ Report:
 - the peer-hit tokens/s, as a share of treatment prompt tokens and of the ghost other-replica-only prize;
 - the self hits (the capacity effect of L3).
 
+## Returning gpu13 after the lab
+
+`python3 scripts/kvq/restore_gpu13.py` runs in plan-only mode by default; add `--apply` to execute it.
+- It tears down the lab project `glm53kvq` (scoped), then reads gpu13's current `work` tag and file from compose-manager.
+- It dry-runs a scoped `compose/up` of `model-sg-glm53-w4afp8-tp2-r1a`, `-r1b` and `glm53-ghost-aggregator`, with the host's full dashboard env, and aborts if the plan touches anything else.
+- Then it applies and waits for fresh running containers.
+- Afterwards, check Loki for "ready to roll" from both engines and the gateway's "Backend recovered" for gpu13:8444.
+
 ## Rollback
 
 `compose/up` the base file `prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8.yaml` at the host's current tag, with the full env and `services: [r3, r4]`. The `kvshare` volume becomes unused; remove it with a scoped `compose/down` of nothing else, or leave it, since an unused tmpfs holds no memory.

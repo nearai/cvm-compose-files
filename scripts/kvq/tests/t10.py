@@ -37,7 +37,7 @@ for be, src in ((B, "peer"), (A, "self")):
     got = be.kvshare_read_into_host(op, keys, idx, pool, PAGE)
     assert got == 30, got
     assert all(int(pool.slots[i][0]) == i % 251 for i in range(30))
-    assert pool.allocs <= 8, pool.allocs
+    assert pool.allocs <= 9, pool.allocs  # 8 reader threads + the caller sizing the page
     assert val("sglang:kvshare_storage_hit_tokens_total", source=src) == 30 * PAGE, src
 term = SimpleNamespace(is_terminated=lambda: True, request_id="r")
 assert A.kvshare_read_into_host(term, keys, idx, Pool(), PAGE) == 0
