@@ -1,0 +1,113 @@
+diff --git a/python/sglang/srt/entrypoints/openai/serving_chat.py b/python/sglang/srt/entrypoints/openai/serving_chat.py
+index ea0226f..8c38534 100644
+--- a/python/sglang/srt/entrypoints/openai/serving_chat.py
++++ b/python/sglang/srt/entrypoints/openai/serving_chat.py
+@@ -97,6 +97,7 @@ from sglang.srt.parser.reasoning_parser import ReasoningParser
+ from sglang.srt.sampling.sampling_params import (
+     set_request_reasoning_end_token_ids,
+ )
++from sglang.srt.utils.tool_schema_guard import check_tool_schema_size
+ from sglang.srt.utils.weight_versions import build_endpoint_weight_version_metadata
+ 
+ if TYPE_CHECKING:
+@@ -970,9 +971,15 @@ class OpenAIServingChat(OpenAIServingBase):
+                 return "Tool names must be unique across request and message tools."
+ 
+         # Validate tool definitions
++        schema_nodes_used = [0]
+         for i, tool in enumerate(effective_tools):
+             if tool.function.parameters is None:
+                 continue
++            # Opt-in size cap (SGLANG_TOOL_SCHEMA_MAX_DEPTH / _MAX_NODES): check_schema below runs
++            # on the event loop and its cost grows with what the client sends.
++            too_big = check_tool_schema_size(tool.function.parameters, used=schema_nodes_used)
++            if too_big:
++                return f"Tool {i} function 'parameters' schema is too large: {too_big}."
+             try:
+                 # Rewrite DB/ORM-style aliases (e.g. "varchar", "enum", "int")
+                 # to standard JSON Schema types before validation. RecursionError
+diff --git a/python/sglang/srt/utils/tool_schema_guard.py b/python/sglang/srt/utils/tool_schema_guard.py
+new file mode 100644
+index 0000000..b9d13d5
+--- /dev/null
++++ b/python/sglang/srt/utils/tool_schema_guard.py
+@@ -0,0 +1,79 @@
++"""Size pre-check for tool parameter schemas, run before jsonschema's check_schema.
++
++Why: OpenAIServingChat._validate_request runs Draft202012Validator.check_schema on every tool's
++`parameters` on the HTTP event loop. Its cost is linear in the number of schema nodes (about
++50 us per node, measured with jsonschema 4.26), but a client controls the node count: a tree of
++nested anyOf branches doubles in size with every level, so a few hundred KB of JSON freezes the
++loop for seconds and a few hundred MB for minutes (inference-proxy #287 RCA, section 8).
++
++Opt-in, both limits default to 0 (off, the check is skipped entirely):
++  SGLANG_TOOL_SCHEMA_MAX_DEPTH  maximum nesting of JSON objects/arrays inside one tool's schema
++  SGLANG_TOOL_SCHEMA_MAX_NODES  maximum number of JSON values (containers and scalars) summed over all
++                                tool schemas of one request
++A request over either limit is rejected with HTTP 400 before check_schema. The walk is iterative
++(no recursion) and stops at the first violation, so its own cost is bounded by the limits.
++"""
++
++import logging
++import os
++from typing import Any, Optional
++
++logger = logging.getLogger(__name__)
++
++
++def _env_limit(name: str) -> int:
++    raw = os.environ.get(name, "0").strip() or "0"
++    try:
++        return max(int(raw), 0)
++    except ValueError:
++        logger.warning("ignoring invalid %s=%r; limit stays off", name, raw)
++        return 0
++
++
++MAX_DEPTH = _env_limit("SGLANG_TOOL_SCHEMA_MAX_DEPTH")
++MAX_NODES = _env_limit("SGLANG_TOOL_SCHEMA_MAX_NODES")
++
++
++def check_tool_schema_size(
++    schema: Any,
++    max_depth: Optional[int] = None,
++    max_nodes: Optional[int] = None,
++    used: Optional[list] = None,
++) -> Optional[str]:
++    """Return a reason string when `schema` exceeds a limit, else None.
++
++    Depth counts containers: a flat {"type": "object"} has depth 1, and every dict or list inside
++    it adds one. Nodes count every container plus every value inside one, scalars included
++    (`{"properties": {k: true}}` costs check_schema as much per key as `{k: {}}`). `max_depth` /
++    `max_nodes` default to the env-derived module limits; 0 disables. `used` is an optional
++    one-element list holding the nodes already spent by earlier tools of the same request, so the
++    node limit is a per-request budget; it is updated in place.
++    """
++    max_depth = MAX_DEPTH if max_depth is None else max_depth
++    max_nodes = MAX_NODES if max_nodes is None else max_nodes
++    if max_depth <= 0 and max_nodes <= 0:
++        return None
++    nodes = used[0] if used else 0
++    stack = [(schema, 1)]
++    reason = None
++    while stack:
++        node, depth = stack.pop()
++        if isinstance(node, dict):
++            children = node.values()
++        elif isinstance(node, list):
++            children = node
++        else:
++            continue
++        nodes += 1 + len(children)
++        if max_depth > 0 and depth > max_depth:
++            reason = f"nesting depth exceeds {max_depth} (SGLANG_TOOL_SCHEMA_MAX_DEPTH)"
++            break
++        if max_nodes > 0 and nodes > max_nodes:
++            reason = f"more than {max_nodes} values per request (SGLANG_TOOL_SCHEMA_MAX_NODES)"
++            break
++        for child in children:
++            if isinstance(child, (dict, list)):
++                stack.append((child, depth + 1))
++    if used:
++        used[0] = nodes
++    return reason

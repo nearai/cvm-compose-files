@@ -1,6 +1,7 @@
 """Apply the reviewed W4AFP8 loader, pool-clamp, DSA indexer query-split, event-loop offload,
-event-loop stall-dump, ghost prefix cache, KV tier metrics and self-profiling hook patches to exact
-production source bytes."""
+event-loop stall-dump, ghost prefix cache, KV tier metrics, self-profiling hook, FP8 KV for NoPE DSA,
+opt-in preprocess process pool and opt-in tool-schema size cap patches to exact production source
+bytes."""
 
 import ast
 import hashlib
@@ -24,6 +25,12 @@ PATCHES: Final = {
     # Last: it edits managers/scheduler.py and managers/scheduler_components/profiler_manager.py,
     # which no earlier patch touches (scheduler.py keeps its base bytes until this one).
     "near-self-profile.diff": "b489ba390bd75575a83d77f90d8ab92ebb4b4da9a1b442f84c095be21db7d891",
+    # The next three touch files no earlier patch touches, except preprocess-pool.diff, which edits
+    # http_server.py and serving_base.py as left by sglang-pr30771.diff and shm-off-loop.diff: it must
+    # stay after them. fp8kv-flashmla.diff and tool-schema-depth-cap.diff are independent of the rest.
+    "fp8kv-flashmla.diff": "9e0fc16b835d37061b6a8523cf1c71e129523e93f0554657d0af2ae5d1e3072b",
+    "preprocess-pool.diff": "5cd330b7e998f78c84acda8cd8c63a59c15479e4f3ca085b6f8523144880d9d0",
+    "tool-schema-depth-cap.diff": "795e541d91369f3f119a427a854bf9661b433a931381eba0ebb4a145ac8b0262",
 }
 MANIFEST: Final = json.loads((CONTEXT / "source-manifest.json").read_text())
 

@@ -3,7 +3,7 @@ FROM docker.io/nearaidev/sglang@sha256:3eccc30709f5719c81084d1264f03ca5354b3059e
 
 ARG BUILD_SOURCE_REVISION
 LABEL org.opencontainers.image.title="GLM-5.3 Flash HiCache W4AFP8 engine"
-LABEL org.opencontainers.image.description="HCC-safe HiCache engine with admission reserve v10, the W4AFP8 loader fix, the unconditional chunked-prefill pool clamp, the opt-in DSA indexer query split, request preprocessing and the multimodal shared-memory copy moved off the HTTP event loop, an event-loop stall dump, an opt-in ghost prefix cache that measures would-be KV hits from keyed page hashes, opt-in rank-0 KV tier (VRAM/DRAM) eviction metrics, and an opt-in one-shot self-profiler that prints a compact NEAR_PROFILE decode-step summary to stdout"
+LABEL org.opencontainers.image.description="HCC-safe HiCache engine with admission reserve v10, the W4AFP8 loader fix, the unconditional chunked-prefill pool clamp, the opt-in DSA indexer query split, request preprocessing and the multimodal shared-memory copy moved off the HTTP event loop, an event-loop stall dump, an opt-in ghost prefix cache that measures would-be KV hits from keyed page hashes, opt-in rank-0 KV tier (VRAM/DRAM) eviction metrics, an opt-in one-shot self-profiler that prints a compact NEAR_PROFILE decode-step summary to stdout, FP8 KV cache support for GLM's NoPE DSA (active only with --kv-cache-dtype fp8_e4m3 on flashmla_kv), an opt-in process pool with a per-request deadline for chat preprocessing, and an opt-in tool-schema size cap"
 LABEL org.opencontainers.image.source="https://github.com/nearai/cvm-compose-files"
 LABEL org.opencontainers.image.revision="${BUILD_SOURCE_REVISION}"
 LABEL org.opencontainers.image.base.name="docker.io/nearaidev/sglang"
@@ -27,6 +27,9 @@ LABEL nearai.sglang.event_loop_stall_dump="v1-on-30s"
 LABEL nearai.sglang.ghost_prefix_cache="v1-opt-in"
 LABEL nearai.sglang.kv_tier_metrics="v1-opt-in"
 LABEL nearai.sglang.self_profile="v1-opt-in"
+LABEL nearai.sglang.fp8_kv_nope_dsa="v1"
+LABEL nearai.sglang.preprocess_pool="v1-opt-in"
+LABEL nearai.sglang.tool_schema_depth_cap="v1-opt-in"
 LABEL nearai.security_remediation="CVE-2026-102268:pyjwt-2.14.0"
 
 COPY Dockerfile \
@@ -37,18 +40,23 @@ COPY Dockerfile \
      chunked-prefill-pool-clamp.diff \
      dsa-indexer-qsplit.diff \
      event-loop-stall-dump.diff \
+     fp8kv-flashmla.diff \
      ghost-prefix-cache.diff \
      kv-tier-metrics.diff \
      modules-to-not-convert.diff \
      near-self-profile.diff \
+     preprocess-pool.diff \
      sglang-pr30771.diff \
      shm-off-loop.diff \
      source-manifest.json \
+     tool-schema-depth-cap.diff \
      test-cpu.sh \
      test_stall_dump.py \
      test_ghost_cache.py \
      test_kv_tier_metrics.py \
      test_self_profile.py \
+     test_preprocess_pool.py \
+     test_tool_schema_guard.py \
      kvtm_check_plugin.py \
      security-requirements.txt \
      /usr/share/nearai/glm53-hicache-w4afp8/
@@ -88,6 +96,18 @@ RUN /opt/sglang/bin/python3 -m pip install --no-cache-dir --no-deps --require-ha
 # lines prefixed "NEAR_PROFILE " and deletes /tmp/near_selfprof. NEAR_SELF_PROFILE_ACTIVITIES=cpu
 # forces the CPU-only profile that is also the automatic fallback when CUPTI yields no kernel events
 # (a CUPTI crash or hang is not caught: enable it on one restartable replica). Rollback: unset it.
+# FP8 KV cache for GLM's NoPE DSA (fp8kv-flashmla.diff) is active only with --kv-cache-dtype fp8_e4m3
+# and the flashmla_kv DSA backends: the pool row becomes 656 B (512 fp8 + 16 B scales + 128 B zero
+# rope slots) instead of 1024 B, q is zero-padded 512 -> 576 and the kpool index table is padded
+# with -1 to a multiple of 128. With the default bf16 KV cache every hunk is unreachable or
+# arithmetically identical (see README "FP8 KV cache").
+# The preprocess pool is inert unless SGLANG_PREPROCESS_WORKERS=N with N > 0: then N forked worker
+# processes run chat template rendering and tokenization, and a request over
+# SGLANG_PREPROCESS_TIMEOUT_S (default 60) fails alone with HTTP 422 while its worker is killed and
+# replaced. Unset or 0 forks nothing and keeps the single request-preprocessor thread.
+# The tool-schema cap is inert unless SGLANG_TOOL_SCHEMA_MAX_DEPTH and/or SGLANG_TOOL_SCHEMA_MAX_NODES
+# is a positive integer: a tool whose parameters schema exceeds it is rejected with HTTP 400 before
+# jsonschema's check_schema runs on the event loop.
 # Everything inherited from the base stays opt-in: admission reserve v10 via
 # SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE, and HiCache via --enable-hierarchical-cache plus
 # SGLANG_HICACHE_*. On an HCC/PPCIe (TEE) host SGLANG_HICACHE_CUDA_HOST_MEMORY must stay 1; 0 selects
