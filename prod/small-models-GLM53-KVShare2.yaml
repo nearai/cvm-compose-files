@@ -1982,7 +1982,7 @@ configs:
       # rel -> (v6 sha256, patched sha256)
       EXPECTED = {
           "mem_cache/startup_ram_budget.py": ("565ecfa113f46c5f1b7cfdf8e6799d3604eb1d86aae80505dcfbc7252ef79c5c",
-              "d9f92e59e3ea5b75a573e97f7250b03eeba2f168754ceb2e87ade8a59fad281a"),
+              "ac0f3a3abf97b29d79c6fbcfb77f0c49d9d1d0a3f119cdab30303b9a819f8d18"),
           "mem_cache/storage/file/lru_file_evictor.py": ("9e590e144c1169d463102e9aa147432cf5fa9108f1f8936de1184903c79a1330",
               "606894fcea4a5570180fc603d55c6dfbd8da6c1fc2c5358868057036e9ff1c05"),
           "mem_cache/unified_cache/unified_tree_core.py": ("0bbb0bb1a9581dc543dc4cc40cfe0b6f888e3b124c4739eac9635b86b176c168",
@@ -2057,8 +2057,13 @@ configs:
           if os.path.isdir(store_dir):
               with os.scandir(store_dir) as entries:
                   for entry in entries:
-                      if entry.is_file(follow_symlinks=False):
-                          used += entry.stat(follow_symlinks=False).st_size
+                      # Peers write and rename files while this replica starts, so a file can vanish
+                      # between the listing and the stat (gpu04 r4, 2026-10-07): skip it.
+                      try:
+                          if entry.is_file(follow_symlinks=False):
+                              used += entry.stat(follow_symlinks=False).st_size
+                      except FileNotFoundError:
+                          continue
           return budget, used, max(0, budget - used)
 
 
