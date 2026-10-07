@@ -731,6 +731,9 @@ services:
       # replicas mount; each replica's evictor is capped at MAX_SIZE (non-owner TP ranks at
       # 0.25x for their own mamba shards), and 2 x 1.25 x 60Gi = 150Gi = the store budget.
       - SGLANG_HICACHE_FILE_BACKEND_STORAGE_DIR=/kvshared
+      # Positive-lookup cache (5 s TTL; misses fall back to a stat, so pages a peer
+      # just wrote are found). Without it every existence check scans the whole store.
+      - SGLANG_HICACHE_FILE_BACKEND_ENABLE_METADATA_CACHE=1
       - SGLANG_HICACHE_FILE_BACKEND_MAX_SIZE=${GLM53_KVSHARE_FILE_MAX:-60Gi}
       - SGLANG_HICACHE_SHARED_STORE_BUDGET=${GLM53_KVSHARE_STORE_BUDGET:-150GiB}
       # sglang:kvshare_storage_* self/peer attribution (TP rank 0).
@@ -842,6 +845,9 @@ services:
       # replicas mount; each replica's evictor is capped at MAX_SIZE (non-owner TP ranks at
       # 0.25x for their own mamba shards), and 2 x 1.25 x 60Gi = 150Gi = the store budget.
       - SGLANG_HICACHE_FILE_BACKEND_STORAGE_DIR=/kvshared
+      # Positive-lookup cache (5 s TTL; misses fall back to a stat, so pages a peer
+      # just wrote are found). Without it every existence check scans the whole store.
+      - SGLANG_HICACHE_FILE_BACKEND_ENABLE_METADATA_CACHE=1
       - SGLANG_HICACHE_FILE_BACKEND_MAX_SIZE=${GLM53_KVSHARE_FILE_MAX:-60Gi}
       - SGLANG_HICACHE_SHARED_STORE_BUDGET=${GLM53_KVSHARE_STORE_BUDGET:-150GiB}
       # sglang:kvshare_storage_* self/peer attribution (TP rank 0).
