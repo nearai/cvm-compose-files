@@ -23,7 +23,8 @@ PD_PATCH = Path("scripts/glm53_pd_startup_patch.py")
 PROBE = Path("scripts/kvq/kvq_probe.py")
 DRIVER = Path("scripts/kvq/kvq_driver.py")
 SHARED_PATCH = Path("scripts/kvq/glm53_shared_kv_startup_patch.py")
-NIXL_BENCH = Path("scripts/kvq/nixl_bench.py")  # lab bench from gpu31 pd-v0521-20261003, unchanged
+NIXL_BENCH = Path("scripts/kvq/nixl_bench.py")
+READBENCH = Path("scripts/kvq/kvq_readbench.py")  # lab bench from gpu31 pd-v0521-20261003, unchanged
 
 V0521 = "docker.io/lmsysorg/sglang@sha256:b1259f3ea3275f66237c498ea388919729018bc9f01c3d638391e06e2cf3f469"
 V6 = "docker.io/nearaidev/sglang@sha256:9c6ddd4319c4ab00e351d8650459e68b8830e36ffcc029d67fa5e19d0ac3ed17"
@@ -218,6 +219,8 @@ def render():
     shared = (ROOT / SHARED_PATCH).read_text()
     c_pd, c_probe, c_driver = cfg("glm53_pd_startup_patch", pd_patch), cfg("kvq_probe_py", probe), cfg("kvq_driver_py", driver)
     c_shared = cfg("kvq_shared_kv_patch_py", shared)
+    readbench = (ROOT / READBENCH).read_text()
+    c_rb = cfg("kvq_readbench_py", readbench)
     nixl_bench = (ROOT / NIXL_BENCH).read_text()
     c_nixl = cfg("kvq_nixl_bench_py", nixl_bench)
     def nixl(role, gpu):
@@ -335,6 +338,23 @@ services:
   # --- Step 2 (Test B): 1P:1D GPU->GPU KV move over NIXL. Prefill on GPUs 4-5, decode on 6-7 ---
 {engine("kvq-pf", PF_ARGS, "kvq-pd-prefill-v0521-gpu45-nixl-ipc", "kvq-pf")}
 {engine("kvq-dc", DC_ARGS, "kvq-pd-decode-v0521-gpu67-nixl-ipc", "kvq-dc")}
+  # One-shot read-path microbench over the live shared store (read-only mount), GPUs 4-7 for pinned memory.
+  kvq-readbench:
+    <<: *kvq-gpu
+    image: {V6}
+    container_name: kvq-readbench
+    entrypoint: ["python3", "/etc/kvq/readbench.py"]
+    configs:
+      - source: {c_rb}
+        target: /etc/kvq/readbench.py
+        mode: 0444
+    volumes:
+      - kvq_shared:/kvshared:ro
+    environment:
+      <<: *kvq-env
+      KVQ_RB_FILES: ${{KVQ_RB_FILES:-1024}}
+    restart: "no"
+{log_label("kvq-readbench")}
   # One-shot NIXL VRAM->VRAM microbench between two containers: initiator cuda:0 (GPU 4) -> target
   # cuda:2 (GPU 6). KVQ_NIXL_RUN names the run dir, KVQ_NIXL_TLS sets UCX_TLS.
 {nixl("target", 2)}
@@ -527,6 +547,10 @@ configs:
   {c_shared}:
     content: |
 {block(shared, 6)}
+
+  {c_rb}:
+    content: |
+{block(readbench, 6)}
 
   {c_nixl}:
     content: |
