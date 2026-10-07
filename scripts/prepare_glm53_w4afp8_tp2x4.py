@@ -52,6 +52,17 @@ REPLICAS: Final = (1, 2, 3, 4)
 CANDIDATE_REPLICAS: Final = (1, 2, 3, 4)
 CANDIDATE_PDI: Final = "2"
 CANDIDATE_VARIANT: Final = f"hicache-w4afp8-qsplit-selective325-mamba330-bf16state-memopt086-mr48-c8192-admission-reserve-v10-pdi{CANDIDATE_PDI}-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192" + obs.VARIANT_SUFFIX
+# gpu04-only overlap-scheduler A/B (docs/gpu04-glm53-overlap-off-ab.md): r3/r4 run the same candidate
+# argv with one extra, interpolated token, empty unless a host's compose-manager env map sets it, and
+# a config_variant suffix that is empty unless the same map sets it. gpu03 never sets either, so it
+# renders byte-for-byte the all-candidate argv. r1/r2 never see either variable.
+AB_REPLICAS: Final = (3, 4)
+AB_ARGS_ENV: Final = "GLM53_R34_SCHED_ARGS"
+AB_VARIANT_ENV: Final = "GLM53_R34_VARIANT_SUFFIX"
+AB_ARGS_EXPRESSION: Final = "${" + AB_ARGS_ENV + ":-}"
+AB_VARIANT_EXPRESSION: Final = "${" + AB_VARIANT_ENV + ":-}"
+AB_VARIANT: Final = CANDIDATE_VARIANT + AB_VARIANT_EXPRESSION
+AB_ANCHOR: Final = "sg-glm53-flash-ab-arm"
 # Token-for-token edits of the control argv. Each old token must occur exactly once.
 CANDIDATE_EDITS: Final = (
     ("--mem-fraction-static 0.80", "--mem-fraction-static 0.86"),
@@ -117,6 +128,12 @@ HEADER: Final = (
     "# candidate argv (mem 0.86, EAGLE fixed 4/1/5, 330 mamba slots, 48 running, pdi 2; tee-bench exp\n"
     "# 25/25b/25c), promoted from the r3/r4 canary after the gpu03 same-host bake on 2026-10-06. On\n"
     "# gpu32 bare metal under overload it served +16% (1.75 conv/s) / +25% (2.5 conv/s) more requests.\n"
+    "#\n"
+    "# OVERLAP-SCHEDULER A/B (docs/gpu04-glm53-overlap-off-ab.md, gpu04 only): r3/r4 append\n"
+    f"# {AB_ARGS_EXPRESSION} to the candidate argv and {AB_VARIANT_EXPRESSION} to their\n"
+    "# config_variant (log tag, metric label, scrape job). Both are empty unless the host's compose-manager\n"
+    "# env map sets them; only gpu04's does (--disable-overlap-schedule / -overlap-off). r1/r2 are the\n"
+    "# same-host control and never read them. gpu03 must never set either.\n"
     "#\n"
     "# GATES before any deploy (docs/glm53-tp2x4-base-canary.md): (1) quality with BF16 mamba\n"
     "# state at parity - PASSED 2026-10-02 (GSM8K 97.8% vs 97.4% FP32 state, perception 7/7); (2) a prod-CVM\n"
@@ -284,6 +301,18 @@ def candidate_anchor(arguments: list[str]) -> str:
     )
 
 
+def ab_anchor(arguments: list[str]) -> str:
+    return (
+        f"x-{AB_ANCHOR}: &{AB_ANCHOR}\n"
+        "  # r3/r4 only: the candidate argv plus one interpolated token. It is empty unless the host's\n"
+        f"  # compose-manager env map sets {AB_ARGS_ENV} (gpu04: --disable-overlap-schedule, for the\n"
+        "  # same-host overlap-scheduler A/B against r1/r2; gpu03 and rollback leave it unset). The\n"
+        "  # command is a string that compose splits like a shell, so an empty value adds no argv element.\n"
+        "  <<: *sg-glm53-flash-candidate\n"
+        "  command: >\n" + "".join(f"      {argument}\n" for argument in arguments) + f"      {AB_ARGS_EXPRESSION}\n\n"
+    )
+
+
 def render_replica(template: str, replica: int, anchor_environment: str) -> str:
     """Render one engine service from the source r1 service block.
 
@@ -299,8 +328,9 @@ def render_replica(template: str, replica: int, anchor_environment: str) -> str:
     )
     block = replace_exact(block, f"{SOURCE_SERVICE_PREFIX}1", f"{SERVICE_PREFIX}{replica}", 3, "replica name")
     if replica in CANDIDATE_REPLICAS:
-        block = replace_exact(block, "    <<: *sg-glm53-flash-common\n", "    <<: *sg-glm53-flash-candidate\n", 1, "candidate anchor")
-        block = replace_exact(block, VARIANT, CANDIDATE_VARIANT, 2, "candidate config_variant")
+        arm_anchor = AB_ANCHOR if replica in AB_REPLICAS else "sg-glm53-flash-candidate"
+        block = replace_exact(block, "    <<: *sg-glm53-flash-common\n", f"    <<: *{arm_anchor}\n", 1, "candidate anchor")
+        block = replace_exact(block, VARIANT, AB_VARIANT if replica in AB_REPLICAS else CANDIDATE_VARIANT, 2, "candidate config_variant")
     devices = ",".join(f'"{device}"' for device in DEVICE_IDS[replica])
     block = replace_exact(block, 'device_ids: ["0","1","2","3"]', f"device_ids: [{devices}]", 1, "replica devices")
     block = replace_exact(block, '"instance:1"', f'"instance:{replica}"', 1, "log instance")
@@ -316,7 +346,7 @@ def render_replica(template: str, replica: int, anchor_environment: str) -> str:
 def render_scrape_job(template: str, replica: int) -> str:
     job = replace_exact(template, f"{SOURCE_SERVICE_PREFIX}1", f"{SERVICE_PREFIX}{replica}", 3, "scrape job name")
     if replica in CANDIDATE_REPLICAS:
-        job = replace_exact(job, VARIANT, CANDIDATE_VARIANT, 1, "candidate scrape config_variant")
+        job = replace_exact(job, VARIANT, AB_VARIANT if replica in AB_REPLICAS else CANDIDATE_VARIANT, 1, "candidate scrape config_variant")
     return replace_exact(job, '                      instance: "1"\n', f'                      instance: "{replica}"\n', 1, "scrape instance")
 
 
@@ -343,7 +373,8 @@ def generate(source: str) -> str:
     command_start, command_end, command = section(anchor, "  command: >\n", "  volumes:\n", "anchor command")
     arguments = engine_arguments([line.strip() for line in command.splitlines()[1:] if line.strip()])
     anchor = anchor[:command_start] + "  command: >\n" + "".join(f"      {argument}\n" for argument in arguments) + anchor[command_end:]
-    candidate = candidate_anchor(candidate_arguments(arguments))
+    candidate_argv = candidate_arguments(arguments)
+    candidate = candidate_anchor(candidate_argv) + ab_anchor(candidate_argv)
     for required in ("    - SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE=4096\n", "    - SGLANG_ADMISSION_RESERVE_MAX_FRACTION=0.75\n"):
         if anchor.count(required) != 1:
             raise GenerationError(f"source engine environment changed: {required.strip()}")

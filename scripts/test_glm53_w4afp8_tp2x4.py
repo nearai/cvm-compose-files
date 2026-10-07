@@ -6,7 +6,11 @@
 # How to run: python3 -m unittest scripts.test_glm53_w4afp8_tp2x4 (needs ruby for the validator cases)
 """The generated 4x TP2 base-tier canary file, its generator and its validator contract."""
 
+import argparse
+import contextlib
+import io
 import re
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -21,6 +25,22 @@ VALIDATOR = Path("scripts/validate_glm53_prod_config.rb")
 DCGM_VALIDATOR = Path("scripts/validate_glm53_dcgm_metrics.rb")
 CANONICAL = Path("prod/GLM-5.3-Flash-SGL-TP4.yaml")
 NAMES = [f"model-sg-glm53-w4afp8-tp2-r{replica}" for replica in (1, 2, 3, 4)]
+
+
+AB_ARGS_TOKEN = "${GLM53_R34_SCHED_ARGS:-}"
+AB_VARIANT_EXPRESSION = "${GLM53_R34_VARIANT_SUFFIX:-}"
+OVERLAP_FLAG = "--disable-overlap-schedule"
+AB_NAMES = NAMES[2:]
+CONTROL_NAMES = NAMES[:2]
+
+
+def _interpolate(value: str, env: dict[str, str]) -> str:
+    """Compose's ${NAME:-default}: the default when NAME is unset or empty."""
+
+    def resolve(match: re.Match[str]) -> str:
+        return env.get(match.group(1)) or match.group(2)
+
+    return re.sub(r"\$\{([A-Z0-9_]+):-([^}]*)\}", resolve, value)
 
 
 def replace_nth(text: str, needle: str, index: int, replacement: str) -> str:
@@ -81,7 +101,7 @@ class GeneratedFileTest(unittest.TestCase):
 
     def test_candidate_argv_is_the_control_argv_with_exactly_the_exp25_edits(self) -> None:
         control = [line.strip() for line in generator.section(self.target, "x-sg-glm53-flash-common:", "\nx-sg-glm53-flash-candidate", "c")[2].split("command: >\n")[1].split("  volumes:")[0].splitlines() if line.strip()]
-        candidate = [line.strip() for line in generator.section(self.target, "x-sg-glm53-flash-candidate:", "\nx-dcgm-common", "c")[2].split("command: >\n")[1].splitlines() if line.strip()]
+        candidate = [line.strip() for line in generator.section(self.target, "x-sg-glm53-flash-candidate:", "\nx-sg-glm53-flash-ab-arm", "c")[2].split("command: >\n")[1].splitlines() if line.strip()]
         removed = sorted(set(control) - set(candidate))
         added = sorted(set(candidate) - set(control))
         self.assertEqual(
@@ -109,17 +129,23 @@ class GeneratedFileTest(unittest.TestCase):
                 self.assertEqual(environment.count(f"\n      - SGLANG_GHOST_CACHE_REPLICA={replica}\n"), 1, name)
                 text = text[:start] + text[end:]
             return text
-        first_block = block(NAMES[0]).replace(NAMES[0], "NAME").replace('["0","1"]', "DEV")
-        self.assertIn("    <<: *sg-glm53-flash-candidate\n", first_block)
-        for name, devices in zip(NAMES[1:], ('["2","3"]', '["4","5"]', '["6","7"]')):
-            self.assertEqual(block(name).replace(name, "NAME").replace(devices, "DEV"), first_block)
+        def normalized(name: str, devices: str) -> str:
+            return block(name).replace(name, "NAME").replace(devices, "DEV")
+        control = normalized(NAMES[0], '["0","1"]')
+        arm = normalized(NAMES[2], '["4","5"]')
+        self.assertIn("    <<: *sg-glm53-flash-candidate\n", control)
+        self.assertEqual(normalized(NAMES[1], '["2","3"]'), control)
+        # r3/r4 differ from r1/r2 only in their anchor and the config_variant suffix (the A/B arm).
+        self.assertEqual(normalized(NAMES[3], '["6","7"]'), arm)
+        self.assertEqual(arm.replace("    <<: *sg-glm53-flash-ab-arm\n", "    <<: *sg-glm53-flash-candidate\n").replace(AB_VARIANT_EXPRESSION, ""), control)
         self.assertEqual(self.target.count("    <<: *sg-glm53-flash-common\n"), 0)
         self.assertEqual(self.target.count(generator.CANDIDATE_VARIANT), 12)
+        self.assertEqual(self.target.count(generator.CANDIDATE_VARIANT + AB_VARIANT_EXPRESSION), 6)
         self.assertEqual(self.target.count(generator.VARIANT), 0)
 
     def test_candidate_flag_values_are_pinned_literally(self) -> None:
         # Independent of the generator's edit list: a shared typo in the generator and validator must still fail here.
-        _, _, anchor = generator.section(self.target, "x-sg-glm53-flash-candidate:", "\nx-dcgm-common", "candidate")
+        _, _, anchor = generator.section(self.target, "x-sg-glm53-flash-candidate:", "\nx-sg-glm53-flash-ab-arm", "candidate")
         for flag in ("--mem-fraction-static 0.86", "--max-running-requests 48", "--cuda-graph-max-bs-decode 48", "--speculative-num-steps 4",
                      "--speculative-eagle-topk 1", "--speculative-num-draft-tokens 5", "--max-mamba-cache-size 330", "--max-queued-requests 8",
                      "--chunked-prefill-size 8192", "--hicache-write-policy write_through_selective", "--context-length 1048576"):
@@ -150,6 +176,120 @@ class GeneratedFileTest(unittest.TestCase):
                                                    "\n    - SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE=1\n    - SGLANG_HICACHE_POOLED_TRANSFERS=1\n"))
 
 
+def _anchor_command(text: str, anchor: str) -> str:
+    """The folded `command: >` of a top-level anchor, as compose sees it (lines joined by spaces)."""
+    _, _, block = generator.section(text, f"{anchor}: &", "\nx-", anchor)
+    lines = block.split("command: >\n")[1].splitlines()
+    return " ".join(line.strip() for line in lines if line.strip())
+
+
+def _replica_block(text: str, name: str) -> str:
+    start = text.index(f"  {name}:\n")
+    ends = [text.find(marker, start + 10) for marker in ("\n  # ---", "\n  # Explicit operator-only", "\n  glm53-ghost-aggregator:")]
+    return text[start:min(end for end in ends if end != -1)]
+
+
+class OverrideRenderTest(unittest.TestCase):
+    """What each replica's argv and telemetry resolve to under each host's env map (compose interpolation)."""
+
+    def setUp(self) -> None:
+        self.text = TARGET.read_text()
+        self.anchor_of = {}
+        for name in NAMES:
+            match = re.search(r"^    <<: \*(sg-glm53-flash-[a-z0-9-]+)$", _replica_block(self.text, name), re.MULTILINE)
+            self.assertIsNotNone(match, name)
+            self.anchor_of[name] = f"x-{match.group(1)}"
+        self.envs = {
+            "gpu03 (variables unset)": {},
+            "variables empty": {"GLM53_R34_SCHED_ARGS": "", "GLM53_R34_VARIANT_SUFFIX": ""},
+            "gpu04 (A/B on)": {"GLM53_R34_SCHED_ARGS": OVERLAP_FLAG, "GLM53_R34_VARIANT_SUFFIX": "-overlap-off"},
+        }
+
+    def argv(self, name: str, env: dict[str, str]) -> list[str]:
+        return shlex.split(_interpolate(_anchor_command(self.text, self.anchor_of[name]), env))
+
+    def variants(self, name: str, env: dict[str, str]) -> list[str]:
+        """Every config_variant the replica reports: OTel label, log tag and scrape job."""
+        block = _replica_block(self.text, name)
+        found = re.findall(r'nearai\.otel\.config_variant: "([^"]*)"', block) + re.findall(r'"config_variant:([^"]+)"', block)
+        job = generator.section(self.text, f"              - job_name: sglang-{name}\n", "              - job_name:", name)[2].split("\n", 1)[1]
+        found += re.findall(r'config_variant: "([^"]*)"', job)
+        self.assertEqual(len(found), 3, name)
+        return [_interpolate(value, env) for value in found]
+
+    def test_the_flag_is_never_a_literal_in_any_command_or_label(self) -> None:
+        for number, line in enumerate(self.text.splitlines(), 1):
+            if OVERLAP_FLAG in line:
+                self.assertTrue(line.lstrip().startswith("#"), f"line {number} hardcodes {OVERLAP_FLAG}: {line.strip()}")
+
+    def test_the_override_token_and_suffix_exist_only_on_r3_r4(self) -> None:
+        body = "\n".join(line for line in self.text.splitlines() if not line.lstrip().startswith("#"))
+        self.assertEqual(body.count(AB_ARGS_TOKEN), 1)  # the A/B arm anchor's command
+        self.assertEqual(body.count(AB_VARIANT_EXPRESSION), 6)
+        for name in CONTROL_NAMES:
+            self.assertNotIn("GLM53_R34_", _replica_block(self.text, name))
+            self.assertNotIn("GLM53_R34_", _anchor_command(self.text, self.anchor_of[name]))
+        self.assertEqual({self.anchor_of[name] for name in AB_NAMES}, {"x-sg-glm53-flash-ab-arm"})
+        self.assertEqual({self.anchor_of[name] for name in CONTROL_NAMES}, {"x-sg-glm53-flash-candidate"})
+        for name in AB_NAMES:
+            self.assertEqual(_replica_block(self.text, name).count(AB_VARIANT_EXPRESSION), 2)  # log tag + metric label; the scrape job is counted above
+
+    def test_flag_appears_exactly_once_on_r3_r4_only_when_set(self) -> None:
+        for label, env in self.envs.items():
+            for name in NAMES:
+                with self.subTest(env=label, replica=name):
+                    argv = self.argv(name, env)
+                    expected = 1 if env.get("GLM53_R34_SCHED_ARGS") and name in AB_NAMES else 0
+                    self.assertEqual(argv.count(OVERLAP_FLAG), expected)
+
+    def test_rendered_argv_has_no_empty_element_and_unset_equals_the_all_candidate_argv(self) -> None:
+        candidate = shlex.split(_interpolate(_anchor_command(self.text, "x-sg-glm53-flash-candidate"), {}))
+        for label, env in self.envs.items():
+            for name in NAMES:
+                with self.subTest(env=label, replica=name):
+                    argv = self.argv(name, env)
+                    self.assertNotIn("", argv)
+                    self.assertTrue(all(token.strip() == token and token for token in argv))
+                    extra = [OVERLAP_FLAG] if env.get("GLM53_R34_SCHED_ARGS") and name in AB_NAMES else []
+                    self.assertEqual(argv, candidate + extra)
+
+    def test_empty_interpolation_parses_like_the_flagless_argv(self) -> None:
+        # SGLang's CLI is argparse; a stand-in with the same flag shapes (value flags, a bool flag, a JSON
+        # value) shows that the rendered argv parses and what an empty argv element would do instead.
+        parser = argparse.ArgumentParser(add_help=False)
+        parser.add_argument("words", nargs=2)
+        parser.add_argument(OVERLAP_FLAG, action="store_true")
+        for token in sorted({t for t in self.argv(NAMES[2], {}) if t.startswith("--") and t != OVERLAP_FLAG}):
+            parser.add_argument(token, nargs="?", default=None, const=True)
+        for label, env in self.envs.items():
+            with self.subTest(env=label):
+                parsed = parser.parse_args(self.argv(NAMES[2], env))
+                self.assertEqual(parsed.words, ["sglang", "serve"])
+                self.assertEqual(parsed.disable_overlap_schedule, bool(env.get("GLM53_R34_SCHED_ARGS")))
+                self.assertEqual(parsed.tp_size, "2")
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            # What a form that left an empty element would do (a list-form command rendering "").
+            parser.parse_args([*self.argv(NAMES[2], {}), ""])
+
+    def test_variant_suffix_is_applied_to_all_three_telemetry_places_of_r3_r4_only(self) -> None:
+        for label, env in self.envs.items():
+            suffix = env.get("GLM53_R34_VARIANT_SUFFIX", "")
+            for name in NAMES:
+                with self.subTest(env=label, replica=name):
+                    expected = generator.CANDIDATE_VARIANT + (suffix if name in AB_NAMES else "")
+                    self.assertEqual(self.variants(name, env), [expected] * 3)
+        on = self.variants(NAMES[2], self.envs["gpu04 (A/B on)"])[0]
+        self.assertTrue(on.endswith("-obs-v1-overlap-off"))
+        self.assertEqual(self.variants(NAMES[0], self.envs["gpu04 (A/B on)"])[0], generator.CANDIDATE_VARIANT)
+
+    def test_flag_and_variant_marker_move_together(self) -> None:
+        # The ds4f precedent (#330): the flag may not be on while the telemetry says otherwise. Here both
+        # come from separate variables, so the runbook sets them as a pair; the file gives both one default.
+        self.assertEqual(generator.AB_ARGS_EXPRESSION, AB_ARGS_TOKEN)
+        self.assertEqual(generator.AB_VARIANT_EXPRESSION, AB_VARIANT_EXPRESSION)
+        self.assertTrue(AB_ARGS_TOKEN.endswith(":-}") and AB_VARIANT_EXPRESSION.endswith(":-}"))
+
+
 class RunbookTest(unittest.TestCase):
     """The canary runbook must carry the exact variant, flags and scoped services the file implements."""
 
@@ -172,8 +312,45 @@ class RunbookTest(unittest.TestCase):
             self.assertIn(value, self.runbook)
 
     def test_only_candidate_replicas_use_the_candidate_anchor(self) -> None:
-        self.assertEqual(self.target.count("<<: *sg-glm53-flash-candidate"), len(generator.CANDIDATE_REPLICAS))
+        # r1/r2 merge the candidate anchor; r3/r4 merge the A/B arm, which itself merges the candidate.
+        self.assertEqual(self.target.count("    <<: *sg-glm53-flash-candidate\n"), 2)
+        self.assertEqual(self.target.count("  <<: *sg-glm53-flash-candidate\n"), 3)
+        self.assertEqual(self.target.count("    <<: *sg-glm53-flash-ab-arm\n"), len(generator.AB_REPLICAS))
         self.assertEqual(self.target.count("    <<: *sg-glm53-flash-common"), len(generator.REPLICAS) - len(generator.CANDIDATE_REPLICAS))
+
+
+class OverlapOffRunbookTest(unittest.TestCase):
+    """The A/B runbook must carry the exact variables, values, scoped services and pre-registered numbers."""
+
+    def setUp(self) -> None:
+        self.runbook = (ROOT / "docs/gpu04-glm53-overlap-off-ab.md").read_text()
+
+    def test_runbook_names_both_variables_with_their_gpu04_values_and_gpu03_never(self) -> None:
+        self.assertIn(f"`{generator.AB_ARGS_ENV}` | `{OVERLAP_FLAG}` | **never set**", self.runbook)
+        self.assertIn(f"`{generator.AB_VARIANT_ENV}` | `-overlap-off` | **never set**", self.runbook)
+        self.assertIn(AB_ARGS_TOKEN, self.runbook)
+
+    def test_runbook_scopes_every_deploy_call_to_one_replica_or_the_collector(self) -> None:
+        for name in AB_NAMES:
+            self.assertIn(f'services: ["{name}"]', self.runbook)
+        self.assertIn('services: ["otelcol-contrib"]', self.runbook)
+        self.assertNotIn("services: []", self.runbook)
+        for name in CONTROL_NAMES:
+            self.assertNotIn(f'services: ["{name}"]', self.runbook)
+
+    def test_runbook_pins_the_startup_log_check_and_the_abort_numbers(self) -> None:
+        self.assertIn("disable_overlap_schedule=True", self.runbook)
+        self.assertIn("disable_overlap_schedule=False", self.runbook)
+        self.assertIn("more than **20% worse**", self.runbook)
+        self.assertIn("**3 busy hours**", self.runbook)
+        self.assertIn("Xid", self.runbook)
+        self.assertIn("matched `num_running_reqs` bins", self.runbook)
+
+    def test_runbook_does_not_overclaim(self) -> None:
+        for claim in ("+54% capacity at SLO", "-8.6%", "Inconclusive", "Kimi-Linear"):
+            self.assertIn(claim, self.runbook)
+        # The proxy result is evidence about a different model, never a prediction for GLM-5.3.
+        self.assertIn("is not a prediction for GLM-5.3", self.runbook)
 
 
 class ValidatorContractTest(unittest.TestCase):
@@ -388,7 +565,9 @@ class ValidatorContractTest(unittest.TestCase):
             (f"config_variant:{candidate_variant}", f"config_variant:{generator.VARIANT}", 0, "log metadata must carry exactly config_variant:"),
             (f'                      config_variant: "{candidate_variant}"', f'                      config_variant: "{generator.VARIANT}"', 1,
              "scrape label config_variant must be"),
-            (f'nearai.otel.config_variant: "{candidate_variant}"', 'nearai.otel.config_variant: "incorrect-variant"', 3,
+            (f'nearai.otel.config_variant: "{candidate_variant}"', 'nearai.otel.config_variant: "incorrect-variant"', 1,
+             "nearai.otel.config_variant must be"),
+            (f'nearai.otel.config_variant: "{candidate_variant}{AB_VARIANT_EXPRESSION}"', 'nearai.otel.config_variant: "incorrect-variant"', 1,
              "nearai.otel.config_variant must be"),
             (f"config_variant:{candidate_variant}", "config_variant:incorrect-variant", 3, "log metadata must carry exactly config_variant:"),
             ('      nearai.otel.engine_image: "9c6ddd4319c4"\n', '      nearai.otel.engine_image: "8bce6a7cc872"\n', 1, "nearai.otel.engine_image must be"),
@@ -403,6 +582,42 @@ class ValidatorContractTest(unittest.TestCase):
         for needle, replacement, index, message in cases:
             with self.subTest(mutation=message):
                 self.assert_fails(replace_nth(self.valid, needle, index, replacement), message)
+
+    def test_rejects_overlap_override_drift(self) -> None:
+        cv = generator.CANDIDATE_VARIANT
+        ab_anchor = "x-sg-glm53-flash-ab-arm"
+        r1_merge = f"    <<: *sg-glm53-flash-candidate\n    container_name: {NAMES[0]}\n"
+        cases = (
+            # The flag hardcoded: on the A/B arm, on r1/r2, on the control anchor, or on one service.
+            (self.replace_in_anchor(ab_anchor, f"      {AB_ARGS_TOKEN}\n", f"      {OVERLAP_FLAG}\n"), "must not hardcode --disable-overlap-schedule"),
+            (self.replace_in_anchor("x-sg-glm53-flash-candidate", "      --mamba-ssm-dtype bfloat16\n", f"      --mamba-ssm-dtype bfloat16\n      {OVERLAP_FLAG}\n"),
+             "must not hardcode --disable-overlap-schedule"),
+            (self.replace_in_anchor("x-sg-glm53-flash-common", "      --mamba-ssm-dtype bfloat16\n", f"      --mamba-ssm-dtype bfloat16\n      {OVERLAP_FLAG}\n"),
+             "must not carry the override variables"),
+            (self.replace_once(f"    container_name: {NAMES[3]}\n", f"    container_name: {NAMES[3]}\n    command: sglang serve {OVERLAP_FLAG}\n"),
+             f"{NAMES[3]} must not hardcode --disable-overlap-schedule"),
+            # The override variables on r1/r2, or anywhere outside the r3/r4 A/B arm.
+            (self.replace_once(r1_merge, r1_merge.replace("candidate", "ab-arm")), "must not reference GLM53_R34_SCHED_ARGS (only the r3/r4 A/B arm does)"),
+            (replace_nth(self.valid, f'nearai.otel.config_variant: "{cv}"', 1, f'nearai.otel.config_variant: "{cv}{AB_VARIANT_EXPRESSION}"'),
+             "must not reference GLM53_R34_VARIANT_SUFFIX (only the r3/r4 A/B arm does)"),
+            (self.replace_once("      - VLLM_BACKEND_CONVERSATION_AFFINITY=1\n", "      - VLLM_BACKEND_CONVERSATION_AFFINITY=1\n      - GLM53_R34_SCHED_ARGS=x\n"),
+             "must not reference GLM53_R34_SCHED_ARGS or GLM53_R34_VARIANT_SUFFIX"),
+            # The override token dropped from the arm, or its default no longer empty.
+            (self.replace_in_anchor(ab_anchor, f"      {AB_ARGS_TOKEN}\n", ""), "memory-optimized candidate argv plus the ${GLM53_R34_SCHED_ARGS:-} override token"),
+            (self.replace_in_anchor(ab_anchor, AB_ARGS_TOKEN, "${GLM53_R34_SCHED_ARGS:---disable-overlap-schedule}"), "GLM53_R34_SCHED_ARGS must default to empty"),
+            (self.replace_in_anchor(ab_anchor, AB_ARGS_TOKEN, "${GLM53_R34_SCHED_ARGS}"), "GLM53_R34_SCHED_ARGS must default to empty"),
+            (self.replace_in_anchor(ab_anchor, AB_ARGS_TOKEN, "${GLM53_R34_SCHED_ARGS:-nothing}"), "GLM53_R34_SCHED_ARGS must default to empty"),
+            (self.valid.replace(AB_VARIANT_EXPRESSION, "${GLM53_R34_VARIANT_SUFFIX:--overlap-off}"), "scrape label config_variant must be"),
+            # A variant-suffix mismatch between the flag arm's three telemetry places.
+            (replace_nth(self.valid, f'config_variant:{cv}{AB_VARIANT_EXPRESSION}"', 0, f'config_variant:{cv}"'), "log metadata must carry exactly config_variant:"),
+            (replace_nth(self.valid, f'                      config_variant: "{cv}{AB_VARIANT_EXPRESSION}"', 1, f'                      config_variant: "{cv}"'),
+             "scrape label config_variant must be"),
+            (replace_nth(self.valid, f'nearai.otel.config_variant: "{cv}{AB_VARIANT_EXPRESSION}"', 0,
+                         f'nearai.otel.config_variant: "{cv}${{GLM53_R3_VARIANT_SUFFIX:-}}"'), "nearai.otel.config_variant must be"),
+        )
+        for mutated, message in cases:
+            with self.subTest(expect=message, mutation=hash(mutated) % 10000):
+                self.assert_fails(mutated, message)
 
     def test_rejects_a_surviving_tp4_reference(self) -> None:
         mutated = replace_nth(self.valid, "    # Local snapshot path; nothing is fetched at engine start.\n", 0,

@@ -678,12 +678,23 @@ W4AFP8_TP2X4_PREFIX = "model-sg-glm53-w4afp8-tp2-r"
 W4AFP8_TP2X4_REPLICAS = {
   "#{W4AFP8_TP2X4_PREFIX}1" => { "devices" => %w[0 1], "instance" => "1", "soak_port" => "8008", "role" => "candidate", "ghost_replica" => "r1" },
   "#{W4AFP8_TP2X4_PREFIX}2" => { "devices" => %w[2 3], "instance" => "2", "soak_port" => "8009", "role" => "candidate", "ghost_replica" => "r2" },
-  "#{W4AFP8_TP2X4_PREFIX}3" => { "devices" => %w[4 5], "instance" => "3", "soak_port" => "8010", "role" => "candidate", "ghost_replica" => "r3" },
-  "#{W4AFP8_TP2X4_PREFIX}4" => { "devices" => %w[6 7], "instance" => "4", "soak_port" => "8011", "role" => "candidate", "ghost_replica" => "r4" },
+  "#{W4AFP8_TP2X4_PREFIX}3" => { "devices" => %w[4 5], "instance" => "3", "soak_port" => "8010", "role" => "ab-arm", "ghost_replica" => "r3" },
+  "#{W4AFP8_TP2X4_PREFIX}4" => { "devices" => %w[6 7], "instance" => "4", "soak_port" => "8011", "role" => "ab-arm", "ghost_replica" => "r4" },
 }.freeze
 W4AFP8_TP2X4_CANDIDATE_ANCHOR = "x-sg-glm53-flash-candidate"
+W4AFP8_TP2X4_AB_ANCHOR = "x-sg-glm53-flash-ab-arm"
 W4AFP8_TP2X4_CANDIDATE_PDI = "2"
 W4AFP8_TP2X4_CANDIDATE_VARIANT = "hicache-w4afp8-qsplit-selective325-mamba330-bf16state-memopt086-mr48-c8192-admission-reserve-v10-pdi#{W4AFP8_TP2X4_CANDIDATE_PDI}-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192#{OBSERVABILITY_VARIANT_SUFFIX}"
+# gpu04-only overlap-scheduler A/B (docs/gpu04-glm53-overlap-off-ab.md). r3/r4 ("ab-arm") run the
+# candidate argv plus one interpolated token and carry an interpolated config_variant suffix; both
+# are empty unless the host's compose-manager env map sets them (only gpu04 does). r1/r2 stay the
+# plain candidate and never reference either variable. The scheduler flag itself must never be a
+# literal anywhere in the file: it may only arrive through the override variable.
+W4AFP8_TP2X4_AB_ARGS_ENV = "GLM53_R34_SCHED_ARGS"
+W4AFP8_TP2X4_AB_VARIANT_ENV = "GLM53_R34_VARIANT_SUFFIX"
+W4AFP8_TP2X4_AB_ARGS_TOKEN = "${#{W4AFP8_TP2X4_AB_ARGS_ENV}:-}"
+W4AFP8_TP2X4_AB_VARIANT_EXPRESSION = "${#{W4AFP8_TP2X4_AB_VARIANT_ENV}:-}"
+W4AFP8_TP2X4_OVERLAP_FLAG = "--disable-overlap-schedule"
 W4AFP8_TP2X4_ARGV = Shellwords.split(<<~'ARGV').freeze
   sglang serve
   --model-path /root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/snapshots/99f1fa70408c52b007d4fd69e02e5a522422e755
@@ -721,6 +732,7 @@ W4AFP8_TP2X4_CANDIDATE_ARGV = begin
   argv.delete("--speculative-adaptive")
   argv.freeze
 end
+W4AFP8_TP2X4_AB_ARGV = (W4AFP8_TP2X4_CANDIDATE_ARGV + [W4AFP8_TP2X4_AB_ARGS_TOKEN]).freeze
 # Every running request needs 5 mamba state slots (prod: 165 slots for 32 running; candidate: 330 for 48).
 W4AFP8_TP2X4_MAMBA_SLOTS_PER_REQUEST = 5
 W4AFP8_TP2X4_EXTRA_ENV = HICACHE_ENV.merge(
@@ -735,6 +747,7 @@ def w4afp8_tp2x4_view(errors, file_label, compose, replica_names)
   view = Marshal.load(Marshal.dump(compose))
   view.delete("x-sg-glm53-flash-common")
   view.delete(W4AFP8_TP2X4_CANDIDATE_ANCHOR)
+  view.delete(W4AFP8_TP2X4_AB_ANCHOR)
   services = view.fetch("services", {})
   replica_names.each { |name| services.delete(name) }
   services["glm53-perception-check"]&.delete("command")
@@ -803,12 +816,23 @@ def validate_w4afp8_tp2x4(errors, compose, base, raw)
       errors << "#{label} #{name} command cannot be parsed: #{error.message}"
       []
     end
-    candidate = spec["role"] == "candidate"
-    expected_argv = candidate ? W4AFP8_TP2X4_CANDIDATE_ARGV : W4AFP8_TP2X4_ARGV
-    expected_variant = candidate ? W4AFP8_TP2X4_CANDIDATE_VARIANT : W4AFP8_TP2X4_VARIANT
+    ab_arm = spec["role"] == "ab-arm"
+    candidate = spec["role"] == "candidate" || ab_arm
+    expected_argv = ab_arm ? W4AFP8_TP2X4_AB_ARGV : (candidate ? W4AFP8_TP2X4_CANDIDATE_ARGV : W4AFP8_TP2X4_ARGV)
+    expected_variant = ab_arm ? W4AFP8_TP2X4_CANDIDATE_VARIANT + W4AFP8_TP2X4_AB_VARIANT_EXPRESSION : (candidate ? W4AFP8_TP2X4_CANDIDATE_VARIANT : W4AFP8_TP2X4_VARIANT)
     unless actual_argv == expected_argv
       drift = ((actual_argv - expected_argv) + (expected_argv - actual_argv)).uniq
-      errors << "#{label} #{name} argv must be the #{candidate ? 'memory-optimized candidate' : 'lab-qualified TP2 control'} argv exactly; differing tokens: #{drift.first(8).join(' ')}"
+      errors << "#{label} #{name} argv must be the #{ab_arm ? 'memory-optimized candidate argv plus the ' + W4AFP8_TP2X4_AB_ARGS_TOKEN + ' override token' : (candidate ? 'memory-optimized candidate' : 'lab-qualified TP2 control')} argv exactly; differing tokens: #{drift.first(8).join(' ')}"
+    end
+    # The override variables belong to the A/B arm alone (never r1/r2), and the arm's variable
+    # must default to nothing: a non-empty default would put the flag on gpu03 too.
+    own_text = JSON.generate(service)
+    [W4AFP8_TP2X4_AB_ARGS_ENV, W4AFP8_TP2X4_AB_VARIANT_ENV].each do |variable|
+      errors << "#{label} #{name} must not reference #{variable} (only the r3/r4 A/B arm does)" if !ab_arm && own_text.include?(variable)
+    end
+    if ab_arm
+      defaults = actual_argv.grep(/\$\{#{W4AFP8_TP2X4_AB_ARGS_ENV}[:?+-]/)
+      errors << "#{label} #{name} #{W4AFP8_TP2X4_AB_ARGS_ENV} must default to empty (#{W4AFP8_TP2X4_AB_ARGS_TOKEN}), got #{defaults.inspect}" unless defaults == [W4AFP8_TP2X4_AB_ARGS_TOKEN]
     end
     # Capacity invariants, asserted on what the file says rather than on the expected argv.
     flag_value = lambda do |flag|
@@ -864,6 +888,27 @@ def validate_w4afp8_tp2x4(errors, compose, base, raw)
       errors << "#{label} sglang-#{name} scrape label #{key} must be #{value.inspect}, got #{scrape_labels[key].inspect}" if scrape && scrape_labels[key] != value
     end
   end
+
+  # The overlap-scheduler flag may only arrive through the host override variable: never as a
+  # literal in any service command (comments are not parsed), and the override variables never
+  # appear outside the r3/r4 services and their scrape jobs.
+  services.each do |service_name, service|
+    errors << "#{label} #{service_name} must not hardcode #{W4AFP8_TP2X4_OVERLAP_FLAG}; it may only arrive through #{W4AFP8_TP2X4_AB_ARGS_TOKEN} on r3/r4" if command_text(service).include?(W4AFP8_TP2X4_OVERLAP_FLAG)
+    next if W4AFP8_TP2X4_REPLICAS.key?(service_name)
+
+    errors << "#{label} #{service_name} must not reference #{W4AFP8_TP2X4_AB_ARGS_ENV} or #{W4AFP8_TP2X4_AB_VARIANT_ENV}" if JSON.generate(service).match?(/GLM53_R34_/)
+  end
+  errors << "#{label} x-sg-glm53-flash-common and x-sg-glm53-flash-candidate must not carry the override variables or #{W4AFP8_TP2X4_OVERLAP_FLAG}" if [W4AFP8_TP2X4_CANDIDATE_ANCHOR, "x-sg-glm53-flash-common"].any? { |anchor| JSON.generate(compose[anchor] || {}).match?(/GLM53_R34_|#{Regexp.escape(W4AFP8_TP2X4_OVERLAP_FLAG)}/) }
+  ab_anchor_argv = begin
+    Shellwords.split(command_text(compose[W4AFP8_TP2X4_AB_ANCHOR] || {}))
+  rescue ArgumentError
+    []
+  end
+  errors << "#{label} #{W4AFP8_TP2X4_AB_ANCHOR} command must be the candidate argv plus #{W4AFP8_TP2X4_AB_ARGS_TOKEN}" unless ab_anchor_argv == W4AFP8_TP2X4_AB_ARGV
+  # Every OTel scrape job's config_variant: only r3/r4 may carry the suffix expression.
+  # 2 replicas x (log tag + metric label + scrape job); comment lines are not telemetry.
+  suffix_count = raw.lines.reject { |line| line.lstrip.start_with?("#") }.join.scan(W4AFP8_TP2X4_AB_VARIANT_EXPRESSION).length
+  errors << "#{label} #{W4AFP8_TP2X4_AB_VARIANT_EXPRESSION} must appear exactly 6 times (log tag, label and scrape job of r3 and r4), found #{suffix_count}" unless suffix_count == 6
 
   if replicas.length == W4AFP8_TP2X4_REPLICAS.length
     # The argv is checked exactly per role and the environment in full per replica above (it
