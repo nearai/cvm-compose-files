@@ -53,6 +53,19 @@ The base tier runs `--hicache-write-policy write_through_selective`. Under it, a
   - the restore latency.
 - **Follow-up:** relax affinity within the treatment pair (inference-proxy sharing groups; see "Routing" below).
 
+## Qualification status (gpu13 under CC, 2026-10-07, this exact treatment shape + patch v3 + metadata cache)
+
+| Gate | Result |
+|---|---|
+| Startup patch verifies (6 files) on the v6 image under CC | PASS (r1, r2) |
+| Correctness: GSM8K(100) on the treatment argv | PASS, 98-99% |
+| Correctness: cross-replica restore with hidden-code recall at 218K | PASS (all recalled) |
+| Attribution counters | PASS: r1 `kvshare_storage_written_tokens_total` 218,112; r2 `kvshare_storage_hit_tokens_total{source="peer"}` 218,112 |
+| Restore faster than recompute at 218K | **FAIL**: 29.7-30.5 s restored vs 24.0-27.7 s cold. The L3->L2 read takes ~25-28 s; L2->GPU ~2 s |
+| Prefix shareable after a 20 s gap | PARTIAL: 3 of 4 multi-turn conversations were restored; one prefix had not reached L3 in time |
+
+**Verdict: safe and correct, and the metrics are in place, but no latency win yet. Do not deploy the prod A/B until the L3 restore beats recompute under CC.** Next: make TP rank 0 alone read the replicated MLA KV files and broadcast them (both ranks currently read every file), then re-measure at 32K, 64K and 218K.
+
 ## Before deploying
 
 1. **gpu13 qualification under CC** passed for this exact engine shape (project `glm53kvq`, `prod/GLM-5.3-Flash-SGL-KVShare-Qual.yaml`, services `kvq-r1`/`kvq-r2`). Pass criteria:
