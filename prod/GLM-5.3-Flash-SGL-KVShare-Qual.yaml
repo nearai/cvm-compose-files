@@ -58,7 +58,7 @@ x-kvq-pd-engine: &kvq-pd-engine
   image: docker.io/lmsysorg/sglang@sha256:b1259f3ea3275f66237c498ea388919729018bc9f01c3d638391e06e2cf3f469
   entrypoint: ["bash", "-c"]
   configs:
-    - source: glm53_pd_startup_patch
+    - source: glm53_pd_startup_patch_a72482f0
       target: /etc/glm53/pd_startup_patch.py
       mode: 0444
   environment:
@@ -74,7 +74,7 @@ services:
     container_name: kvq-probe
     entrypoint: ["python3", "/etc/kvq/probe.py"]
     configs:
-      - source: kvq_probe_py
+      - source: kvq_probe_py_40b671c4
         target: /etc/kvq/probe.py
         mode: 0444
     environment:
@@ -154,7 +154,7 @@ services:
     runtime: runc
     entrypoint: ["python3", "/etc/kvq/driver.py"]
     configs:
-      - source: kvq_driver_py
+      - source: kvq_driver_py_67967c97
         target: /etc/kvq/driver.py
         mode: 0444
     environment:
@@ -181,7 +181,7 @@ volumes:
   kvq_kernel_cache:
 
 configs:
-  glm53_pd_startup_patch:
+  glm53_pd_startup_patch_a72482f0:
     content: |
       # Start-up patches for stock SGLang v0.5.21 (lmsysorg/sglang:v0.5.21-cu130) serving GLM-5.3-Flash W4AFP8.
       # 1) W4AFP8 loader: from_config drops modules_to_not_convert, so narrow layers get FP8 block-quant and
@@ -329,7 +329,7 @@ configs:
                   return [by_rid.get(dr.req.rid, KVPoll.Transferring) for dr in self.queue]
               pollers = (""", "decode TP-rank divergence guard")
 
-  kvq_probe_py:
+  kvq_probe_py_40b671c4:
     content: |
       #!/usr/bin/env python3
       """In-host KV sharing primitives under NVIDIA CC (gpu13 GPUs 4-7 visible as cuda:0-3).
@@ -544,7 +544,7 @@ configs:
           finally:
               print("KVQ_DONE", flush=True)
 
-  kvq_driver_py:
+  kvq_driver_py_67967c97:
     content: |
       #!/usr/bin/env python3
       """In-CVM load driver for the KV-sharing qualification (stdlib only, no ports exposed).
