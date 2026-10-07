@@ -379,7 +379,7 @@ services:
     runtime: runc
     entrypoint: ["python3", "/etc/kvq/driver.py"]
     configs:
-      - source: kvq_driver_py_99619412
+      - source: kvq_driver_py_64a0e77e
         target: /etc/kvq/driver.py
         mode: 0444
     environment:
@@ -397,6 +397,7 @@ services:
       KVQ_METRICS_GREP: ${KVQ_METRICS_GREP:-}
       KVQ_TURN_GAP_S: ${KVQ_TURN_GAP_S:-0}
       KVQ_TURN1_REPEAT: ${KVQ_TURN1_REPEAT:-1}
+      KVQ_CONVO_TURNS_A: ${KVQ_CONVO_TURNS_A:-3}
     restart: "no"
     logging: *logging-conf
     labels:
@@ -797,7 +798,7 @@ configs:
           finally:
               print("KVQ_DONE", flush=True)
 
-  kvq_driver_py_99619412:
+  kvq_driver_py_64a0e77e:
     content: |
       #!/usr/bin/env python3
       """In-CVM load driver for the KV-sharing qualification (stdlib only, no ports exposed).
@@ -975,6 +976,31 @@ configs:
               out("metrics", url=url, values=agg)
 
 
+      def convo(salt):
+          """A growing multi-turn conversation: KVQ_CONVO_TURNS_A turns on target A (each turn appends the
+          reply and a short new question, as agent traffic does), then the next turn on target B. Under
+          write_through_selective a prefix reaches L2/L3 once its nodes are hit twice, which growing
+          turns do; B's turn then measures the cross-replica restore. Recall checks KV correctness."""
+          tokens = int(os.environ.get("KVQ_LONG_TOKENS", "189000"))
+          doc, code = long_doc(tokens, salt)
+          a, b = TARGETS[0], TARGETS[-1]
+          msgs = [{"role": "user", "content": f"[session {salt}]\n{doc}\n\nRead the log above. Reply with just 'ready'."}]
+          res = {"seed": salt, "turns_on_a": [], "target_a": a, "target_b": b}
+          for t in range(int(os.environ.get("KVQ_CONVO_TURNS_A", "3"))):
+              ttft, _, text, u = chat(a, msgs, 16, thinking=False)
+              res["turns_on_a"].append({"ttft_s": round(ttft or 0, 2), "prompt": (u or {}).get("prompt_tokens"),
+                                        "cached": ((u or {}).get("prompt_tokens_details") or {}).get("cached_tokens")})
+              msgs = msgs + [{"role": "assistant", "content": text or "ready"},
+                             {"role": "user", "content": f"Noted {t}. Reply with just 'ok'."}]
+          time.sleep(float(os.environ.get("KVQ_TURN_GAP_S", "0")))
+          msgs[-1] = {"role": "user", "content": "What is the vault access code? Reply with the code only."}
+          ttft, tot, text, u = chat(b, msgs, int(os.environ.get("KVQ_TURN2_MAX_TOKENS", "512")), thinking=False)
+          res.update(b_ttft_s=round(ttft or tot, 2), b_prompt=(u or {}).get("prompt_tokens"),
+                     b_cached=((u or {}).get("prompt_tokens_details") or {}).get("cached_tokens"),
+                     recalled=code in ((text or "") + "".join(LAST_REASONING)), code=code)
+          out("convo", **res)
+
+
       def main():
           for t in TESTS:
               t = t.strip()
@@ -982,6 +1008,10 @@ configs:
                   if t == "hold":  # log-path check: print, then stay up so `docker ps`/logs can see it
                       out("hold", targets=TARGETS, tests=TESTS); time.sleep(int(os.environ.get("KVQ_HOLD_S", "600")))
                   elif t == "health": health()
+                  elif t == "convo":
+                      base = int(os.environ.get("KVQ_LONG_SEED", "7"))
+                      for i in range(int(os.environ.get("KVQ_LONG_REPEAT", "1"))):
+                          convo(base + i)
                   elif t == "gsm8k": gsm8k()
                   elif t == "metrics": metrics()
                   elif t == "longturn":

@@ -363,6 +363,7 @@ services:
       KVQ_METRICS_GREP: ${{KVQ_METRICS_GREP:-}}
       KVQ_TURN_GAP_S: ${{KVQ_TURN_GAP_S:-0}}
       KVQ_TURN1_REPEAT: ${{KVQ_TURN1_REPEAT:-1}}
+      KVQ_CONVO_TURNS_A: ${{KVQ_CONVO_TURNS_A:-3}}
     restart: "no"
     logging: *logging-conf
 {log_label("kvq-driver")}
