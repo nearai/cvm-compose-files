@@ -52,16 +52,23 @@ def block(text, indent):
     return "\n".join((pad + l) if l.strip() else "" for l in text.replace("$", "$$").rstrip("\n").split("\n"))
 
 
+def raw_block(text, indent):
+    """Like block() but without $-escaping: the collector config is compose-interpolated (${ENV}...)
+    and already carries its own $$ escapes."""
+    pad = " " * indent
+    return "\n".join((pad + l) if l.strip() else "" for l in text.rstrip("\n").split("\n"))
+
+
 def log_label(service):
     """Without this label the gpu13 log collector skips the container (results are read from Loki)."""
     return f"""    labels:
-      com.datadoghq.ad.logs: '[{{"source":"{service}","service":"{service}","tags":["deployment:{DEPLOYMENT}","env:${{ENV}}","host:${{CVM_HOST}}"]}}]'
+      com.datadoghq.ad.logs: '[{{"source":"{service}","service":"{service}","tags":["model:z-ai/glm-5.3-flash","deployment:{DEPLOYMENT}","env:${{ENV}}","host:${{CVM_HOST}}","ip:${{HOST_IP}}"]}}]'
 """
 
 
 def labels(name, variant, image_short, instance):
     return f"""    labels:
-      com.datadoghq.ad.logs: '[{{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","deployment:{DEPLOYMENT}","config_variant:{variant}","engine_image:{image_short}","env:${{ENV}}","host:${{CVM_HOST}}","instance:{instance}"]}}]'
+      com.datadoghq.ad.logs: '[{{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","deployment:{DEPLOYMENT}","config_variant:{variant}","engine_image:{image_short}","env:${{ENV}}","host:${{CVM_HOST}}","ip:${{HOST_IP}}","port:8000","instance:{instance}"]}}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -78,7 +85,52 @@ def labels(name, variant, image_short, instance):
       nearai.otel.env: "${{ENV}}"
       nearai.otel.host: "${{CVM_HOST}}"
       nearai.otel.host_machine: "${{CVM_HOST}}"
+      nearai.otel.cvm_name: "${{CVM_NAME}}"
+      nearai.otel.ip: "${{HOST_IP}}"
 """
+
+
+# Scraped lab services (name, port, service/source label, instance tag) -> collector jobs.
+SCRAPED = [("kvq-pf", "8000", "sglang", "kvq-pf"), ("kvq-dc", "8000", "sglang", "kvq-dc"),
+           ("kvq-r1", "8000", "sglang", "kvq-r1"), ("kvq-r2", "8000", "sglang", "kvq-r2"),
+           ("kvq-ghost-aggregator", "9464", "sglang-ghost-aggregator", None)]
+
+
+def collector_config():
+    """The P/D qualification file's app-collector config with its scrape jobs replaced by this
+    file's scraped services (labels must match each service's nearai.otel.* labels exactly)."""
+    pd = (ROOT / "prod/GLM-5.3-Flash-SGL-PD-W4AFP8.yaml").read_text()
+    i = pd.index("  otelcol_app_config:\n    content: |\n") + len("  otelcol_app_config:\n    content: |\n")
+    j = pd.index("\n  dcgm_h200_metrics:", i) if "\n  dcgm_h200_metrics:" in pd[i:] else len(pd)
+    cfg = "\n".join(l[6:] if l.startswith("      ") else l for l in pd[i:j].rstrip("\n").split("\n"))
+    a = cfg.index("    scrape_configs:\n") + len("    scrape_configs:\n")
+    b = a
+    lines = cfg[a:].split("\n")
+    k = 0
+    while k < len(lines) and (lines[k].startswith("        ") or not lines[k].strip()):
+        k += 1
+    b = a + len("\n".join(lines[:k])) + 1
+    jobs = []
+    for name, port, svc, inst in SCRAPED:
+        extra = f'\n                instance: "{inst}"' if inst else ""
+        jobs.append(f"""        - job_name: {svc}-{name}
+          scrape_interval: 15s
+          metrics_path: /metrics
+          static_configs:
+            - targets: ['{name}:{port}']
+              labels:
+                service: "{svc}"
+                source: "{svc}"
+                container_name: "{name}"
+                model: "z-ai/glm-5.3-flash"
+                deployment: "{DEPLOYMENT}"
+                env: "${{ENV}}"
+                host: "${{CVM_HOST}}"
+                host_machine: "${{CVM_HOST}}"
+                cvm_name: "${{CVM_NAME}}"
+                ip: "${{HOST_IP}}"
+                port: "{port}"{extra}""")
+    return cfg[:a] + "\n".join(jobs) + "\n" + cfg[b:]
 
 
 def engine(name, args, variant, instance):
@@ -341,7 +393,22 @@ services:
       - kvq_ghost:/ghost
     restart: "no"
     logging: *logging-conf
-{log_label("kvq-ghost-aggregator")}
+    labels:
+      com.datadoghq.ad.logs: '[{{"source":"sglang-ghost-aggregator","service":"sglang-ghost-aggregator","tags":["model:z-ai/glm-5.3-flash","deployment:{DEPLOYMENT}","env:${{ENV}}","host:${{CVM_HOST}}","ip:${{HOST_IP}}","port:9464"]}}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "ghost-aggregator"
+      nearai.otel.service: "sglang-ghost-aggregator"
+      nearai.otel.source: "sglang-ghost-aggregator"
+      nearai.otel.container_name: "kvq-ghost-aggregator"
+      nearai.otel.port: "9464"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "z-ai/glm-5.3-flash"
+      nearai.otel.deployment: "{DEPLOYMENT}"
+      nearai.otel.env: "${{ENV}}"
+      nearai.otel.host: "${{CVM_HOST}}"
+      nearai.otel.host_machine: "${{CVM_HOST}}"
+      nearai.otel.cvm_name: "${{CVM_NAME}}"
+      nearai.otel.ip: "${{HOST_IP}}"
   # --- Load driver (one-shot, stdlib only). KVQ_TESTS/KVQ_TARGETS come from the deploy env. ---
   kvq-driver:
     image: {V0521}
@@ -372,12 +439,48 @@ services:
     restart: "no"
     logging: *logging-conf
 {log_label("kvq-driver")}
+  # App collector (repo contract: every prod/ file carries one). Never part of a lab deploy's
+  # service list on a shared host: gpu13's own collector already ships logs. Start it only on a
+  # host with no collector to get these lab engines into Grafana.
+  otelcol-contrib:
+    image: otel/opentelemetry-collector-contrib@sha256:85ac41c2db88d0df9bd6145e608a3cb023f5d8443868adbfbbf66efb51087917
+    container_name: kvq-otelcol-contrib
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    user: "0:0"
+    mem_limit: "768m"
+    environment:
+      - MONITORING_INGEST_TOKEN=${{MONITORING_INGEST_TOKEN:-}}
+      - CVM_NAME=${{CVM_NAME:-unknown}}
+      - CVM_HOST=${{CVM_HOST:-unknown}}
+      - DD_HOSTNAME=${{DD_HOSTNAME:-unknown}}
+      - ENV=${{ENV:-unknown}}
+      - HOST_IP=${{HOST_IP:-unknown}}
+    expose:
+      - "4317"
+      - "4318"
+    volumes:
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - otelcol_app_storage:/var/lib/otelcol-contrib
+    configs:
+      - source: otelcol_app_config
+        target: /etc/otelcol-contrib/config.yaml
+        mode: 0444
+    restart: "no"
+    logging:
+      driver: "local"
+      options:
+        max-size: "20m"
+        max-file: "3"
+    labels:
+      com.datadoghq.ad.logs: '[{{"source":"otelcol-contrib","service":"otelcol-contrib","tags":["deployment:{DEPLOYMENT}","env:${{ENV}}","host:${{CVM_HOST}}","ip:${{HOST_IP}}"]}}]'
+
 networks:
   default:
     external: true
     name: dstack_default
 
 volumes:
+  otelcol_app_storage:
   # Model weights already on gpu13 (the `work` project's volume); mounted for reading.
   huggingface_cache:
     external: true
@@ -404,6 +507,10 @@ volumes:
       o: "size=1m,mode=0700"
 
 configs:
+  otelcol_app_config:
+    content: |
+{raw_block(collector_config(), 6)}
+
   {c_pd}:
     content: |
 {block(pd_patch, 6)}

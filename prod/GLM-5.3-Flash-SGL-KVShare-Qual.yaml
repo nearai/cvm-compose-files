@@ -86,7 +86,7 @@ services:
       <<: *kvq-env
     restart: "no"
     labels:
-      com.datadoghq.ad.logs: '[{"source":"kvq-probe","service":"kvq-probe","tags":["deployment:glm53-flash-sgl-kvshare-qual","env:${ENV}","host:${CVM_HOST}"]}]'
+      com.datadoghq.ad.logs: '[{"source":"kvq-probe","service":"kvq-probe","tags":["model:z-ai/glm-5.3-flash","deployment:glm53-flash-sgl-kvshare-qual","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
 
   # --- Step 2 (Test B): 1P:1D GPU->GPU KV move over NIXL. Prefill on GPUs 4-5, decode on 6-7 ---
   kvq-pf:
@@ -97,7 +97,7 @@ services:
         python3 /etc/glm53/pd_startup_patch.py
         exec sglang serve --model-path /root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/snapshots/99f1fa70408c52b007d4fd69e02e5a522422e755 --served-model-name z-ai/glm-5.3-flash --tp-size 2 --ep-size 2 --max-running-requests 32 --max-queued-requests 8 --enable-priority-scheduling --disable-priority-preemption --prefill-decode-interval 1 --cuda-graph-max-bs-decode 32 --dsa-prefill-backend tilelang --dsa-decode-backend tilelang --kv-cache-dtype bfloat16 --speculative-algorithm EAGLE --speculative-num-steps 3 --speculative-eagle-topk 1 --speculative-num-draft-tokens 4 --reasoning-parser glm45 --enable-strict-thinking --grammar-backend xgrammar --tool-call-parser glm47 --chat-template /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/3f1971b7b5f7a528c9c4ef6212c8785298a8c24a/chat_template.jinja --context-length 1048576 --watchdog-timeout 1800 --host 0.0.0.0 --port 8000 --enable-metrics --enable-cache-report --log-requests-level 0 --disable-fast-image-processor --limit-mm-data-per-request '{"image": 64}' --max-mamba-cache-size 165 --mamba-ssm-dtype bfloat16 --disaggregation-transfer-backend nixl --mem-fraction-static 0.80 --chunked-prefill-size 32768 --max-prefill-tokens 65536 --base-gpu-id 0 --dist-init-addr 127.0.0.1:29540 --disaggregation-mode prefill --disaggregation-bootstrap-port 8998
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","deployment:glm53-flash-sgl-kvshare-qual","config_variant:kvq-pd-prefill-v0521-gpu45-nixl-ipc","engine_image:b1259f3ea327","env:${ENV}","host:${CVM_HOST}","instance:kvq-pf"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","deployment:glm53-flash-sgl-kvshare-qual","config_variant:kvq-pd-prefill-v0521-gpu45-nixl-ipc","engine_image:b1259f3ea327","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:kvq-pf"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -114,6 +114,8 @@ services:
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
       nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
 
   kvq-dc:
     <<: *kvq-pd-engine
@@ -123,7 +125,7 @@ services:
         python3 /etc/glm53/pd_startup_patch.py
         exec sglang serve --model-path /root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/snapshots/99f1fa70408c52b007d4fd69e02e5a522422e755 --served-model-name z-ai/glm-5.3-flash --tp-size 2 --ep-size 2 --max-running-requests 32 --max-queued-requests 8 --enable-priority-scheduling --disable-priority-preemption --prefill-decode-interval 1 --cuda-graph-max-bs-decode 32 --dsa-prefill-backend tilelang --dsa-decode-backend tilelang --kv-cache-dtype bfloat16 --speculative-algorithm EAGLE --speculative-num-steps 3 --speculative-eagle-topk 1 --speculative-num-draft-tokens 4 --reasoning-parser glm45 --enable-strict-thinking --grammar-backend xgrammar --tool-call-parser glm47 --chat-template /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/3f1971b7b5f7a528c9c4ef6212c8785298a8c24a/chat_template.jinja --context-length 1048576 --watchdog-timeout 1800 --host 0.0.0.0 --port 8000 --enable-metrics --enable-cache-report --log-requests-level 0 --disable-fast-image-processor --limit-mm-data-per-request '{"image": 64}' --max-mamba-cache-size 165 --mamba-ssm-dtype bfloat16 --disaggregation-transfer-backend nixl --mem-fraction-static 0.84 --chunked-prefill-size 8192 --max-prefill-tokens 32768 --base-gpu-id 2 --dist-init-addr 127.0.0.1:29545 --disaggregation-mode decode
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","deployment:glm53-flash-sgl-kvshare-qual","config_variant:kvq-pd-decode-v0521-gpu67-nixl-ipc","engine_image:b1259f3ea327","env:${ENV}","host:${CVM_HOST}","instance:kvq-dc"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","deployment:glm53-flash-sgl-kvshare-qual","config_variant:kvq-pd-decode-v0521-gpu67-nixl-ipc","engine_image:b1259f3ea327","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:kvq-dc"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -140,6 +142,8 @@ services:
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
       nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
 
   # One-shot NIXL VRAM->VRAM microbench between two containers: initiator cuda:0 (GPU 4) -> target
   # cuda:2 (GPU 6). KVQ_NIXL_RUN names the run dir, KVQ_NIXL_TLS sets UCX_TLS.
@@ -164,7 +168,7 @@ services:
       UCX_PROTO_INFO: "y"
     restart: "no"
     labels:
-      com.datadoghq.ad.logs: '[{"source":"kvq-nixl-target","service":"kvq-nixl-target","tags":["deployment:glm53-flash-sgl-kvshare-qual","env:${ENV}","host:${CVM_HOST}"]}]'
+      com.datadoghq.ad.logs: '[{"source":"kvq-nixl-target","service":"kvq-nixl-target","tags":["model:z-ai/glm-5.3-flash","deployment:glm53-flash-sgl-kvshare-qual","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
 
   kvq-nixl-initiator:
     <<: *kvq-gpu
@@ -187,7 +191,7 @@ services:
       UCX_PROTO_INFO: "y"
     restart: "no"
     labels:
-      com.datadoghq.ad.logs: '[{"source":"kvq-nixl-initiator","service":"kvq-nixl-initiator","tags":["deployment:glm53-flash-sgl-kvshare-qual","env:${ENV}","host:${CVM_HOST}"]}]'
+      com.datadoghq.ad.logs: '[{"source":"kvq-nixl-initiator","service":"kvq-nixl-initiator","tags":["model:z-ai/glm-5.3-flash","deployment:glm53-flash-sgl-kvshare-qual","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
 
   # One-shot: which UCX transports (cuda_ipc? cuda_copy?) the NIXL engines' UCX sees, same GPU set.
   kvq-ucxinfo:
@@ -208,7 +212,7 @@ services:
       <<: *kvq-env
     restart: "no"
     labels:
-      com.datadoghq.ad.logs: '[{"source":"kvq-ucxinfo","service":"kvq-ucxinfo","tags":["deployment:glm53-flash-sgl-kvshare-qual","env:${ENV}","host:${CVM_HOST}"]}]'
+      com.datadoghq.ad.logs: '[{"source":"kvq-ucxinfo","service":"kvq-ucxinfo","tags":["model:z-ai/glm-5.3-flash","deployment:glm53-flash-sgl-kvshare-qual","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
 
   kvq-router:
     image: docker.io/lmsysorg/sglang@sha256:b1259f3ea3275f66237c498ea388919729018bc9f01c3d638391e06e2cf3f469
@@ -223,7 +227,7 @@ services:
     restart: "no"
     logging: *logging-conf
     labels:
-      com.datadoghq.ad.logs: '[{"source":"kvq-router","service":"kvq-router","tags":["deployment:glm53-flash-sgl-kvshare-qual","env:${ENV}","host:${CVM_HOST}"]}]'
+      com.datadoghq.ad.logs: '[{"source":"kvq-router","service":"kvq-router","tags":["model:z-ai/glm-5.3-flash","deployment:glm53-flash-sgl-kvshare-qual","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
 
   # --- Step 3 (Test A): two prod-shaped v6 replicas sharing an L3 file tier on tmpfs. GPUs 4-5 / 6-7.
   # Never run together with kvq-pf/kvq-dc (same GPUs). KVQ_SHARED=0 is the private-cache control. ---
@@ -275,7 +279,7 @@ services:
     restart: "no"
     stop_grace_period: 2m
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","deployment:glm53-flash-sgl-kvshare-qual","config_variant:kvq-shared-v6-basecand-selective-file-tier","engine_image:9c6ddd4319c4","env:${ENV}","host:${CVM_HOST}","instance:kvq-r1"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","deployment:glm53-flash-sgl-kvshare-qual","config_variant:kvq-shared-v6-basecand-selective-file-tier","engine_image:9c6ddd4319c4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:kvq-r1"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -292,6 +296,8 @@ services:
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
       nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
 
   kvq-r2:
     <<: *kvq-gpu
@@ -341,7 +347,7 @@ services:
     restart: "no"
     stop_grace_period: 2m
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","deployment:glm53-flash-sgl-kvshare-qual","config_variant:kvq-shared-v6-basecand-selective-file-tier","engine_image:9c6ddd4319c4","env:${ENV}","host:${CVM_HOST}","instance:kvq-r2"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","deployment:glm53-flash-sgl-kvshare-qual","config_variant:kvq-shared-v6-basecand-selective-file-tier","engine_image:9c6ddd4319c4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:kvq-r2"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -358,6 +364,8 @@ services:
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
       nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
 
   kvq-ghost-aggregator:
     image: docker.io/nearaidev/sglang@sha256:9c6ddd4319c4ab00e351d8650459e68b8830e36ffcc029d67fa5e19d0ac3ed17
@@ -378,8 +386,21 @@ services:
     restart: "no"
     logging: *logging-conf
     labels:
-      com.datadoghq.ad.logs: '[{"source":"kvq-ghost-aggregator","service":"kvq-ghost-aggregator","tags":["deployment:glm53-flash-sgl-kvshare-qual","env:${ENV}","host:${CVM_HOST}"]}]'
-
+      com.datadoghq.ad.logs: '[{"source":"sglang-ghost-aggregator","service":"sglang-ghost-aggregator","tags":["model:z-ai/glm-5.3-flash","deployment:glm53-flash-sgl-kvshare-qual","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:9464"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "ghost-aggregator"
+      nearai.otel.service: "sglang-ghost-aggregator"
+      nearai.otel.source: "sglang-ghost-aggregator"
+      nearai.otel.container_name: "kvq-ghost-aggregator"
+      nearai.otel.port: "9464"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "z-ai/glm-5.3-flash"
+      nearai.otel.deployment: "glm53-flash-sgl-kvshare-qual"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
   # --- Load driver (one-shot, stdlib only). KVQ_TESTS/KVQ_TARGETS come from the deploy env. ---
   kvq-driver:
     image: docker.io/lmsysorg/sglang@sha256:b1259f3ea3275f66237c498ea388919729018bc9f01c3d638391e06e2cf3f469
@@ -410,7 +431,42 @@ services:
     restart: "no"
     logging: *logging-conf
     labels:
-      com.datadoghq.ad.logs: '[{"source":"kvq-driver","service":"kvq-driver","tags":["deployment:glm53-flash-sgl-kvshare-qual","env:${ENV}","host:${CVM_HOST}"]}]'
+      com.datadoghq.ad.logs: '[{"source":"kvq-driver","service":"kvq-driver","tags":["model:z-ai/glm-5.3-flash","deployment:glm53-flash-sgl-kvshare-qual","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+
+  # App collector (repo contract: every prod/ file carries one). Never part of a lab deploy's
+  # service list on a shared host: gpu13's own collector already ships logs. Start it only on a
+  # host with no collector to get these lab engines into Grafana.
+  otelcol-contrib:
+    image: otel/opentelemetry-collector-contrib@sha256:85ac41c2db88d0df9bd6145e608a3cb023f5d8443868adbfbbf66efb51087917
+    container_name: kvq-otelcol-contrib
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    user: "0:0"
+    mem_limit: "768m"
+    environment:
+      - MONITORING_INGEST_TOKEN=${MONITORING_INGEST_TOKEN:-}
+      - CVM_NAME=${CVM_NAME:-unknown}
+      - CVM_HOST=${CVM_HOST:-unknown}
+      - DD_HOSTNAME=${DD_HOSTNAME:-unknown}
+      - ENV=${ENV:-unknown}
+      - HOST_IP=${HOST_IP:-unknown}
+    expose:
+      - "4317"
+      - "4318"
+    volumes:
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - otelcol_app_storage:/var/lib/otelcol-contrib
+    configs:
+      - source: otelcol_app_config
+        target: /etc/otelcol-contrib/config.yaml
+        mode: 0444
+    restart: "no"
+    logging:
+      driver: "local"
+      options:
+        max-size: "20m"
+        max-file: "3"
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"otelcol-contrib","service":"otelcol-contrib","tags":["deployment:glm53-flash-sgl-kvshare-qual","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
 
 networks:
   default:
@@ -418,6 +474,7 @@ networks:
     name: dstack_default
 
 volumes:
+  otelcol_app_storage:
   # Model weights already on gpu13 (the `work` project's volume); mounted for reading.
   huggingface_cache:
     external: true
@@ -444,6 +501,309 @@ volumes:
       o: "size=1m,mode=0700"
 
 configs:
+  otelcol_app_config:
+    content: |
+      receivers:
+        otlp:
+          protocols:
+            grpc:
+              endpoint: 0.0.0.0:4317
+            http:
+              endpoint: 0.0.0.0:4318
+
+        filelog/docker_containers:
+          include: [/var/lib/docker/containers/*/*-json.log]
+          start_at: end
+          storage: file_storage
+          include_file_path: true
+          operators:
+            - type: json_parser
+              parse_from: body
+              parse_to: attributes
+              timestamp:
+                parse_from: attributes.time
+                layout_type: gotime
+                layout: '2006-01-02T15:04:05.999999999Z07:00'
+              on_error: send_quiet
+            - type: move
+              from: attributes.log
+              to: body
+              if: 'attributes.log != nil'
+            - type: move
+              from: attributes.stream
+              to: attributes["log.iostream"]
+              if: 'attributes.stream != nil'
+            - type: remove
+              field: attributes.time
+              if: 'attributes.time != nil'
+            - type: regex_parser
+              parse_from: attributes["log.file.path"]
+              regex: '/var/lib/docker/containers/(?P<container_id>[a-f0-9]{12})[a-f0-9]*/'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'model:(?P<model>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'served_model:(?P<served_model>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'model_path:(?P<model_path>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'precision:(?P<precision>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'deployment:(?P<deployment>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'ip:(?P<ip>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'port:(?P<port>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'env:(?P<env>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'host:(?P<host>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'instance:(?P<instance>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'replica:(?P<replica>[^",\]]+)'
+              on_error: send_quiet
+            - type: add
+              field: attributes["service.name"]
+              value: cvm-docker
+
+        prometheus/apps:
+          config:
+            scrape_configs:
+              - job_name: sglang-kvq-pf
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['kvq-pf:8000']
+                    labels:
+                      service: "sglang"
+                      source: "sglang"
+                      container_name: "kvq-pf"
+                      model: "z-ai/glm-5.3-flash"
+                      deployment: "glm53-flash-sgl-kvshare-qual"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      port: "8000"
+                      instance: "kvq-pf"
+              - job_name: sglang-kvq-dc
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['kvq-dc:8000']
+                    labels:
+                      service: "sglang"
+                      source: "sglang"
+                      container_name: "kvq-dc"
+                      model: "z-ai/glm-5.3-flash"
+                      deployment: "glm53-flash-sgl-kvshare-qual"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      port: "8000"
+                      instance: "kvq-dc"
+              - job_name: sglang-kvq-r1
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['kvq-r1:8000']
+                    labels:
+                      service: "sglang"
+                      source: "sglang"
+                      container_name: "kvq-r1"
+                      model: "z-ai/glm-5.3-flash"
+                      deployment: "glm53-flash-sgl-kvshare-qual"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      port: "8000"
+                      instance: "kvq-r1"
+              - job_name: sglang-kvq-r2
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['kvq-r2:8000']
+                    labels:
+                      service: "sglang"
+                      source: "sglang"
+                      container_name: "kvq-r2"
+                      model: "z-ai/glm-5.3-flash"
+                      deployment: "glm53-flash-sgl-kvshare-qual"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      port: "8000"
+                      instance: "kvq-r2"
+              - job_name: sglang-ghost-aggregator-kvq-ghost-aggregator
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['kvq-ghost-aggregator:9464']
+                    labels:
+                      service: "sglang-ghost-aggregator"
+                      source: "sglang-ghost-aggregator"
+                      container_name: "kvq-ghost-aggregator"
+                      model: "z-ai/glm-5.3-flash"
+                      deployment: "glm53-flash-sgl-kvshare-qual"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      port: "9464"
+        prometheus/self:
+          config:
+            scrape_configs:
+              - job_name: otelcol-app
+                scrape_interval: 30s
+                static_configs:
+                  - targets: ['localhost:8888']
+
+      processors:
+        memory_limiter:
+          check_interval: 1s
+          limit_mib: 512
+          spike_limit_mib: 128
+
+        resource:
+          attributes:
+            - key: host.name
+              value: $${env:DD_HOSTNAME}
+              action: upsert
+            - key: cvm.name
+              value: $${env:CVM_NAME}
+              action: upsert
+            - key: host.machine
+              value: $${env:CVM_HOST}
+              action: insert
+            - key: deployment.environment
+              value: $${env:ENV}
+              action: upsert
+            - key: service.namespace
+              value: near-ai
+              action: insert
+
+        transform/docker_metadata:
+          error_mode: ignore
+          log_statements:
+            - context: log
+              statements:
+                - set(attributes["service.name"], attributes["attrs"]["com.docker.compose.service"]) where attributes["attrs"] != nil and attributes["attrs"]["com.docker.compose.service"] != nil
+                - set(attributes["service.name"], ParseJSON(attributes["attrs"]["com.datadoghq.ad.logs"])[0]["service"]) where attributes["attrs"] != nil and attributes["attrs"]["com.datadoghq.ad.logs"] != nil
+                - set(attributes["log.source"], ParseJSON(attributes["attrs"]["com.datadoghq.ad.logs"])[0]["source"]) where attributes["attrs"] != nil and attributes["attrs"]["com.datadoghq.ad.logs"] != nil
+                - set(attributes["service"], attributes["service.name"]) where attributes["attrs"] != nil and attributes["attrs"]["com.datadoghq.ad.logs"] != nil and attributes["service.name"] != nil
+                - set(attributes["source"], attributes["log.source"]) where attributes["attrs"] != nil and attributes["attrs"]["com.datadoghq.ad.logs"] != nil and attributes["log.source"] != nil
+                - set(attributes["container.name"], attributes["attrs"]["com.docker.compose.service"]) where attributes["attrs"] != nil and attributes["attrs"]["com.docker.compose.service"] != nil
+
+        filter/app_logs:
+          error_mode: ignore
+          logs:
+            log_record:
+              - 'attributes["model"] == nil and attributes["deployment"] == nil'
+              - 'attributes["service.name"] == "compose-manager"'
+              - 'attributes["service.name"] == "compose-manager-launcher"'
+              - 'attributes["service.name"] == "otelcol-management"'
+              - 'attributes["service.name"] == "otelcol-contrib"'
+              - 'attributes["service.name"] == "datadog-agent"'
+
+        groupbyattrs/docker_service:
+          keys:
+            - service.name
+            - service
+            - container.name
+            - log.source
+            - source
+            - log.iostream
+            - model
+            - served_model
+            - model_path
+            - precision
+            - deployment
+            - env
+            - host
+            - ip
+            - port
+            - instance
+            - replica
+
+        batch:
+          send_batch_size: 1024
+          send_batch_max_size: 2048
+          timeout: 5s
+
+      exporters:
+        otlphttp/gateway:
+          endpoint: https://telemetry.infra.near.ai
+          headers:
+            Authorization: "Bearer $${env:MONITORING_INGEST_TOKEN}"
+          sending_queue:
+            num_consumers: 1
+            queue_size: 128
+            storage: file_storage
+
+      extensions:
+        file_storage:
+          directory: /var/lib/otelcol-contrib/storage
+          create_directory: true
+
+      service:
+        extensions: [file_storage]
+        pipelines:
+          logs/app:
+            receivers: [filelog/docker_containers]
+            processors: [memory_limiter, resource, transform/docker_metadata, filter/app_logs, groupbyattrs/docker_service, batch]
+            exporters: [otlphttp/gateway]
+          metrics/app:
+            receivers: [prometheus/apps]
+            processors: [memory_limiter, resource, batch]
+            exporters: [otlphttp/gateway]
+          metrics/otlp:
+            receivers: [otlp]
+            processors: [memory_limiter, resource, batch]
+            exporters: [otlphttp/gateway]
+          metrics/self:
+            receivers: [prometheus/self]
+            processors: [memory_limiter, resource, batch]
+            exporters: [otlphttp/gateway]
+          traces:
+            receivers: [otlp]
+            processors: [memory_limiter, resource, batch]
+            exporters: [otlphttp/gateway]
+        telemetry:
+          metrics:
+            address: localhost:8888
+          logs:
+            level: info
+
   glm53_pd_startup_patch_a72482f0:
     content: |
       # Start-up patches for stock SGLang v0.5.21 (lmsysorg/sglang:v0.5.21-cu130) serving GLM-5.3-Flash W4AFP8.
