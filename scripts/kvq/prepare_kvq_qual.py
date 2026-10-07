@@ -352,6 +352,10 @@ services:
       KVQ_TARGETS: ${{KVQ_TARGETS:-http://kvq-router:8000}}
       KVQ_TESTS: ${{KVQ_TESTS:-health,gsm8k,longturn,cold}}
       KVQ_GSM8K_N: ${{KVQ_GSM8K_N:-150}}
+      # Keep <= the target's max-running + max-queued (prod GLM argv: 12+4 long tier, 48+8 base).
+      KVQ_GSM8K_CONC: ${{KVQ_GSM8K_CONC:-8}}
+      KVQ_GSM8K_SAMPLES: ${{KVQ_GSM8K_SAMPLES:-3}}
+      KVQ_TURN2_MAX_TOKENS: ${{KVQ_TURN2_MAX_TOKENS:-512}}
       KVQ_LONG_TOKENS: ${{KVQ_LONG_TOKENS:-189000}}
       KVQ_LONG_SEED: ${{KVQ_LONG_SEED:-7}}
       KVQ_LONG_REPEAT: ${{KVQ_LONG_REPEAT:-1}}
