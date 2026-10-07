@@ -23,7 +23,7 @@ PATCHES: Final = {
     "kv-tier-metrics.diff": "d2ef5d48bbb28e59debb139f2fcd789f8b4952fbcc2c2c6821c0a4e5cf11f243",
     # Last: it edits managers/scheduler.py and managers/scheduler_components/profiler_manager.py,
     # which no earlier patch touches (scheduler.py keeps its base bytes until this one).
-    "near-self-profile.diff": "b489ba390bd75575a83d77f90d8ab92ebb4b4da9a1b442f84c095be21db7d891",
+    "near-self-profile.diff": "e08162c5237bfc9ede65828851de0b94e1e681ba02521be0aaa425277ad4d284",
 }
 MANIFEST: Final = json.loads((CONTEXT / "source-manifest.json").read_text())
 
