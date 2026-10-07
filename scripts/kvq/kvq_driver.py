@@ -127,6 +127,13 @@ def longturn(name="longturn", salt=None):
         ttft1, tot1, text1, u1 = chat(a, m1, 16, thinking=False)
         res.update(turn1_ttft_s=round(ttft1 or tot1, 2), turn1_prompt_tokens=(u1 or {}).get("prompt_tokens"),
                    turn1_cached=((u1 or {}).get("prompt_tokens_details") or {}).get("cached_tokens"))
+        # write_through_selective (the base tier's policy) backs a node up to L2/L3 only on its
+        # second hit, so repeat turn 1 on A to make the prefix shareable, as a multi-turn
+        # conversation does on its home replica.
+        for _ in range(int(os.environ.get("KVQ_TURN1_REPEAT", "1")) - 1):
+            r_ttft, _, _, r_u = chat(a, m1, 16, thinking=False)
+            res.setdefault("turn1_repeat_ttft_s", []).append(round(r_ttft or 0, 2))
+            res.setdefault("turn1_repeat_cached", []).append(((r_u or {}).get("prompt_tokens_details") or {}).get("cached_tokens"))
         m2 = m1 + [{"role": "assistant", "content": text1 or "ready"}]
         # The shared L3 tier is written asynchronously after turn 1; give it time before turn 2
         # lands on the other replica.
