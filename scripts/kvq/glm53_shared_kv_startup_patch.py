@@ -35,7 +35,7 @@ EXPECTED = {
     "managers/cache_controller.py": ("ffb53c980497d0a94f4ffea7c54efa86b3e97077a08d8b8a3282ccbf2531c779",
         "5a7c6a25d39de57be74ad094ff38e72de29c8b7a1629ba19892e77196dbbed60"),
     "mem_cache/hicache_storage.py": ("40d892d038557bbce41f3b35369c8a1bf2feeed56b907f709492f7e0f113d313",
-        "0443a2c81d5ffd10c33d0f4e2eb9af09901729660bc76506b1b904673d495193"),
+        "e1c088ed5277dc630c0ad36c281aee3386e2c97aed5b8037d97787aa24761035"),
 }
 staged = {}
 def sha(text):
@@ -360,12 +360,18 @@ sub(H, """    def _sidecar_rank_tag(self, component_name) -> str:
         offsets = [host_indices[i * page_size] for i in range(len(hash_values))]
         m = self._kvshare_metrics()
 
+        stage = [0.0, 0.0]  # seconds in get() (open/read/touch) and in the host-slot copy, summed over threads
+
         def one(item):
             key, off = item
+            t0 = time.perf_counter()
             data = self.get(key, self._scratch_page(host_pool))
+            t1 = time.perf_counter()
             if data is None:
                 return None
             host_pool.set_from_flat_data_page(off, data)
+            stage[0] += t1 - t0
+            stage[1] += time.perf_counter() - t1
             return "self" if self._get_suffixed_key(key) in self._kvshare_written else "peer"
 
         workers = int(os.environ.get("SGLANG_KVSHARE_READ_THREADS", "8"))
@@ -395,9 +401,9 @@ sub(H, """    def _sidecar_rank_tag(self, component_name) -> str:
             dt = time.perf_counter() - t_start
             page_bytes = self._scratch_page(host_pool).numel() * self._scratch_page(host_pool).element_size()
             logger.info(
-                "kvshare read: req=%s pages=%d restored=%d MB=%.1f s=%.3f MBps=%.0f",
+                "kvshare read: req=%s pages=%d restored=%d MB=%.1f s=%.3f MBps=%.0f get_s=%.3f copy_s=%.3f threads=%d",
                 operation.request_id, len(hash_values), count, count * page_bytes / 1e6, dt,
-                count * page_bytes / 1e6 / max(dt, 1e-9),
+                count * page_bytes / 1e6 / max(dt, 1e-9), stage[0], stage[1], workers,
             )
         return count
 """, "file backend kvshare helpers")
