@@ -463,7 +463,9 @@ Risks and how they are bounded:
   grows toward a full copy as refcounts touch pages. Size the CVM for N extra tokenizer copies in the
   worst case; start with `SGLANG_PREPROCESS_WORKERS=4` on one replica and watch RSS. The server runs
   under granian: with `tokenizer_worker_num > 1` every granian worker runs its own lifespan, so you
-  would get N workers per server worker. The canary uses a single worker process.
+  would get N workers per server worker. Do not combine `SGLANG_PREPROCESS_WORKERS > 0` with
+  `--tokenizer-worker-num > 1`, and watch tokenizer RSS when enabling the pool. The canary uses a
+  single worker process.
 - The zygote and workers inherit the server's open descriptors (listening socket, ZMQ ipc). They hold
   no state on them, but they keep them open until they exit. `pickle` of the request and result runs
   on the event loop (0.2 s for a 5M-id result).
@@ -629,7 +631,7 @@ and `serving_base.py` change their after-hashes), `tool-schema-depth-cap.diff`. 
 `serving_chat.py` are pinned to the base image's bytes. All twelve patches were applied in order to the
 real base image sources (registry layers of `3eccc307`) with `apply-patches.py`, which verified every
 before and after hash, and the manifest hashes of the FP8 files equal the ones validated in exp 27.
-`test-cpu.sh` steps 11-13 cover the new patches; steps 1-10 were not re-run end to end here (they need
+`test-cpu.sh` steps 11-13 cover the new patches (step 11 also runs `test_fp8kv_paths.py`, which executes the changed FP8 functions on stubs with the gate on and off); steps 1-10 were not re-run end to end here (they need
 the full image). The FP8 and pool GPU numbers are bare metal with CC off from lab images (v6 + FP8,
 and + pool at 4 workers); nothing has run in a TEE.
 

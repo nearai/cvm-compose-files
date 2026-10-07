@@ -435,6 +435,9 @@ for kpool, want in ((1, 2048), (4, 2176), (129, 2176), (130, 2304)):
     assert padded == want and padded % 128 == 0, (kpool, padded)
 print("step 11 OK: FP8 KV patch (NoPE DSA, 656 B row, padded kpool index table) is in place and parses")
 EOF
+# test_fp8kv_paths.py extracts the changed functions by ast and runs them on stubs with the gate on and
+# off (row width, q pad, kpool topk padding, tail-backend check, hybrid-backend and k_pe selection).
+python3 "$RECIPE_DIR/test_fp8kv_paths.py" --root "$PWD/python/sglang/srt" | tail -n 1
 
 # 12. The preprocess process pool is opt-in. Unset, 0, a negative count and garbage leave install()
 # returning None without forking, and the HTTP server calls it after the chat serving object exists.

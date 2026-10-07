@@ -57,6 +57,7 @@ COPY Dockerfile \
      test_self_profile.py \
      test_preprocess_pool.py \
      test_tool_schema_guard.py \
+     test_fp8kv_paths.py \
      kvtm_check_plugin.py \
      security-requirements.txt \
      /usr/share/nearai/glm53-hicache-w4afp8/
