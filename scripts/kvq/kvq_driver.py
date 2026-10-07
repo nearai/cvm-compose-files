@@ -8,6 +8,7 @@ KVQ_TESTS (comma list, run in order):
             turn 2 (same prefix + question) on target B (A again if one target). Reports TTFT of
             both turns, cached_tokens and whether turn 2 recalls the code (KV correctness).
             With two targets this is the cross-replica restore test (shared tier / GPU fetch).
+  hold      print one line and sleep KVQ_HOLD_S (log-path check)
   cold      the same turn-2 prompt with a fresh salt on target B: the recompute baseline.
 Results are printed as `KVQ {json}` lines; `KVQ_DONE` at the end.
 """
@@ -133,7 +134,9 @@ def main():
     for t in TESTS:
         t = t.strip()
         try:
-            if t == "health": health()
+            if t == "hold":  # log-path check: print, then stay up so `docker ps`/logs can see it
+                out("hold", targets=TARGETS, tests=TESTS); time.sleep(int(os.environ.get("KVQ_HOLD_S", "600")))
+            elif t == "health": health()
             elif t == "gsm8k": gsm8k()
             elif t == "longturn": longturn()
             elif t == "cold": longturn("cold", salt=random.randint(10**6, 10**7))
