@@ -12,10 +12,11 @@ import torch
 
 D = os.environ.get("KVQ_RB_DIR", "/kvshared")
 N = int(os.environ.get("KVQ_RB_FILES", "1024"))
-files = sorted((e.path for e in os.scandir(D) if e.is_file() and e.name.endswith(".bin") and "." not in e.name[:-4]),
-               key=lambda p: os.path.getsize(p), reverse=True)[:N]
-size = os.path.getsize(files[0]) if files else 0
-files = [f for f in files if os.path.getsize(f) == size]
+from collections import Counter
+entries = [(e.path, e.stat().st_size) for e in os.scandir(D) if e.is_file() and e.name.endswith(".bin")]
+# Full-KV pages are the most common file size in the store (indexer/mamba sidecars differ).
+size = Counter(sz for _, sz in entries).most_common(1)[0][0] if entries else 0
+files = [p for p, sz in entries if sz == size][:N]
 print("KVQ " + json.dumps({"kind": "readbench_setup", "files": len(files), "page_bytes": size}), flush=True)
 big = torch.empty(len(files) * size, dtype=torch.uint8, pin_memory=True)
 big_np = big.numpy()
