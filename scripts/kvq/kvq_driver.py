@@ -17,7 +17,8 @@ import concurrent.futures as cf, json, os, random, re, time, urllib.request
 
 TARGETS = [t.strip() for t in os.environ.get("KVQ_TARGETS", "http://kvq-router:8000").split(",") if t.strip()]
 MODEL = os.environ.get("KVQ_MODEL", "z-ai/glm-5.3-flash")
-LAST_REASONING = []  # reasoning_content of the last chat() call
+LAST_REASONING = []  # reasoning_content of the last chat() call (not thread-safe: diagnostics only)
+WRONG = []  # sample wrong GSM8K answers
 TESTS = os.environ.get("KVQ_TESTS", "health,gsm8k,longturn,cold").split(",")
 
 
@@ -85,16 +86,20 @@ def gsm8k():
         m = re.findall(r"####\s*\x24?(-?[\d,]*\.?\d+)", text) or re.findall(r"(-?[\d,]*\.?\d+)", text)
         pred = m[-1].replace(",", "").rstrip(".") if m else ""
         try:
-            return abs(float(pred) - float(gold)) < 1e-6, None
+            ok = abs(float(pred) - float(gold)) < 1e-6
         except ValueError:
-            return False, None
+            ok = False
+        if not ok and len(WRONG) < int(os.environ.get("KVQ_GSM8K_SAMPLES", "3")):
+            WRONG.append({"gold": gold, "pred": pred, "content_head": text[:200], "content_tail": text[-200:],
+                          "reasoning_tail": "".join(LAST_REASONING)[-200:], "content_len": len(text)})
+        return ok, None
 
     t0 = time.time()
     with cf.ThreadPoolExecutor(int(os.environ.get("KVQ_GSM8K_CONC", "32"))) as ex:
         res = list(ex.map(one, rows))
     errs = [e for _, e in res if e]
-    out("gsm8k", n=len(rows), accuracy=round(sum(ok for ok, _ in res) / len(rows), 4), errors=len(errs),
-        first_error=errs[0] if errs else None, wall_s=round(time.time() - t0))
+    out("gsm8k", target=TARGETS[0], n=len(rows), accuracy=round(sum(ok for ok, _ in res) / len(rows), 4), errors=len(errs),
+        first_error=errs[0] if errs else None, wall_s=round(time.time() - t0), wrong_samples=WRONG)
 
 
 def long_doc(tokens, seed):

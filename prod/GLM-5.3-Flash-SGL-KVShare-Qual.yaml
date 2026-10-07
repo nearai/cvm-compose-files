@@ -237,7 +237,7 @@ services:
         if [ "$${KVQ_SHARED:-1}" = "1" ]; then python3 /etc/kvq/shared_kv_patch.py || exit 1; EXTRA="--hicache-host-memory-mode cache --hicache-storage-backend file --hicache-storage-prefetch-policy wait_complete"; else EXTRA=""; fi
         exec sglang serve --model-path /root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/snapshots/99f1fa70408c52b007d4fd69e02e5a522422e755 --served-model-name z-ai/glm-5.3-flash --tp-size 2 --ep-size 2 --mem-fraction-static 0.86 --max-running-requests 48 --max-queued-requests 8 --enable-priority-scheduling --disable-priority-preemption --chunked-prefill-size 8192 --max-prefill-tokens 32768 --prefill-decode-interval 2 --cuda-graph-max-bs-decode 48 --dsa-prefill-backend tilelang --dsa-decode-backend tilelang --kv-cache-dtype bfloat16 --speculative-algorithm EAGLE --speculative-num-steps 4 --speculative-eagle-topk 1 --speculative-num-draft-tokens 5 --reasoning-parser glm45 --enable-strict-thinking --grammar-backend xgrammar --tool-call-parser glm47 --chat-template /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/3f1971b7b5f7a528c9c4ef6212c8785298a8c24a/chat_template.jinja --context-length 1048576 --watchdog-timeout 1800 --host 0.0.0.0 --port 8000 --enable-metrics --enable-cache-report --log-requests-level 0 --disable-fast-image-processor --limit-mm-data-per-request '{"image": 64}' --enable-hierarchical-cache --hicache-write-policy write_through_selective --hicache-io-backend direct --hicache-mem-layout page_first_direct --max-mamba-cache-size 330 --mamba-ssm-dtype bfloat16 --base-gpu-id 0 --dist-init-addr 127.0.0.1:29550 $$EXTRA
     configs:
-      - source: kvq_shared_kv_patch_py_78c48cf6
+      - source: kvq_shared_kv_patch_py_115542b4
         target: /etc/kvq/shared_kv_patch.py
         mode: 0444
     volumes:
@@ -299,7 +299,7 @@ services:
         if [ "$${KVQ_SHARED:-1}" = "1" ]; then python3 /etc/kvq/shared_kv_patch.py || exit 1; EXTRA="--hicache-host-memory-mode cache --hicache-storage-backend file --hicache-storage-prefetch-policy wait_complete"; else EXTRA=""; fi
         exec sglang serve --model-path /root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/snapshots/99f1fa70408c52b007d4fd69e02e5a522422e755 --served-model-name z-ai/glm-5.3-flash --tp-size 2 --ep-size 2 --mem-fraction-static 0.86 --max-running-requests 48 --max-queued-requests 8 --enable-priority-scheduling --disable-priority-preemption --chunked-prefill-size 8192 --max-prefill-tokens 32768 --prefill-decode-interval 2 --cuda-graph-max-bs-decode 48 --dsa-prefill-backend tilelang --dsa-decode-backend tilelang --kv-cache-dtype bfloat16 --speculative-algorithm EAGLE --speculative-num-steps 4 --speculative-eagle-topk 1 --speculative-num-draft-tokens 5 --reasoning-parser glm45 --enable-strict-thinking --grammar-backend xgrammar --tool-call-parser glm47 --chat-template /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/3f1971b7b5f7a528c9c4ef6212c8785298a8c24a/chat_template.jinja --context-length 1048576 --watchdog-timeout 1800 --host 0.0.0.0 --port 8000 --enable-metrics --enable-cache-report --log-requests-level 0 --disable-fast-image-processor --limit-mm-data-per-request '{"image": 64}' --enable-hierarchical-cache --hicache-write-policy write_through_selective --hicache-io-backend direct --hicache-mem-layout page_first_direct --max-mamba-cache-size 330 --mamba-ssm-dtype bfloat16 --base-gpu-id 2 --dist-init-addr 127.0.0.1:29551 $$EXTRA
     configs:
-      - source: kvq_shared_kv_patch_py_78c48cf6
+      - source: kvq_shared_kv_patch_py_115542b4
         target: /etc/kvq/shared_kv_patch.py
         mode: 0444
     volumes:
@@ -379,7 +379,7 @@ services:
     runtime: runc
     entrypoint: ["python3", "/etc/kvq/driver.py"]
     configs:
-      - source: kvq_driver_py_f9569e67
+      - source: kvq_driver_py_f7edd3ef
         target: /etc/kvq/driver.py
         mode: 0444
     environment:
@@ -792,7 +792,7 @@ configs:
           finally:
               print("KVQ_DONE", flush=True)
 
-  kvq_driver_py_f9569e67:
+  kvq_driver_py_f7edd3ef:
     content: |
       #!/usr/bin/env python3
       """In-CVM load driver for the KV-sharing qualification (stdlib only, no ports exposed).
@@ -813,7 +813,8 @@ configs:
 
       TARGETS = [t.strip() for t in os.environ.get("KVQ_TARGETS", "http://kvq-router:8000").split(",") if t.strip()]
       MODEL = os.environ.get("KVQ_MODEL", "z-ai/glm-5.3-flash")
-      LAST_REASONING = []  # reasoning_content of the last chat() call
+      LAST_REASONING = []  # reasoning_content of the last chat() call (not thread-safe: diagnostics only)
+      WRONG = []  # sample wrong GSM8K answers
       TESTS = os.environ.get("KVQ_TESTS", "health,gsm8k,longturn,cold").split(",")
 
 
@@ -881,16 +882,20 @@ configs:
               m = re.findall(r"####\s*\x24?(-?[\d,]*\.?\d+)", text) or re.findall(r"(-?[\d,]*\.?\d+)", text)
               pred = m[-1].replace(",", "").rstrip(".") if m else ""
               try:
-                  return abs(float(pred) - float(gold)) < 1e-6, None
+                  ok = abs(float(pred) - float(gold)) < 1e-6
               except ValueError:
-                  return False, None
+                  ok = False
+              if not ok and len(WRONG) < int(os.environ.get("KVQ_GSM8K_SAMPLES", "3")):
+                  WRONG.append({"gold": gold, "pred": pred, "content_head": text[:200], "content_tail": text[-200:],
+                                "reasoning_tail": "".join(LAST_REASONING)[-200:], "content_len": len(text)})
+              return ok, None
 
           t0 = time.time()
           with cf.ThreadPoolExecutor(int(os.environ.get("KVQ_GSM8K_CONC", "32"))) as ex:
               res = list(ex.map(one, rows))
           errs = [e for _, e in res if e]
-          out("gsm8k", n=len(rows), accuracy=round(sum(ok for ok, _ in res) / len(rows), 4), errors=len(errs),
-              first_error=errs[0] if errs else None, wall_s=round(time.time() - t0))
+          out("gsm8k", target=TARGETS[0], n=len(rows), accuracy=round(sum(ok for ok, _ in res) / len(rows), 4), errors=len(errs),
+              first_error=errs[0] if errs else None, wall_s=round(time.time() - t0), wrong_samples=WRONG)
 
 
       def long_doc(tokens, seed):
@@ -982,7 +987,7 @@ configs:
           finally:
               print("KVQ_DONE", flush=True)
 
-  kvq_shared_kv_patch_py_78c48cf6:
+  kvq_shared_kv_patch_py_115542b4:
     content: |
       # Start-up patch: in-CVM shared KV host tier (cvm-compose-files PR #304, recipe
       # docker/sglang-glm53-v0520-shared-kv/shared-kv.diff) ported onto the production GLM-5.3 image v6
@@ -1019,7 +1024,7 @@ configs:
           "mem_cache/unified_radix_cache.py": ("98f175f529614ebb33618a27c54248105eff3bf80c1365ffd3716bd346add278",
               "88263caaca4967d542a9f9e20af7230114d5c8ddcb5dfcd2d9c9cec1fee42c2d"),
           "mem_cache/hicache_storage.py": ("40d892d038557bbce41f3b35369c8a1bf2feeed56b907f709492f7e0f113d313",
-              "8c6dfd39eb9ab53ba1ed4c5c65b24e848956f77e754ba06514d6f45e95c2b52c"),
+              "1f3ab1e990c400477da73f9d63b7e950ea1843cbc228bfc89a8d57519eafd637"),
       }
       staged = {}
       def sha(text):
@@ -1392,6 +1397,63 @@ configs:
       import threading
       from collections import OrderedDict
       """, "file backend kvshare import")
+
+      # --- 6) hicache_storage.py: faster shared-tier restores (port addition, gpu13 CC 2026-10-07) ---
+      # A 218K-token cross-replica restore spent ~11 s in L3->L2 reads: one Python read per 64-token page
+      # per pool, sequential, each into a freshly allocated, zeroed, pinned (cudaHostAlloc) scratch page.
+      # Reuse one scratch page per pool per thread, and read the pages of a batch with a small thread pool
+      # (file reads release the GIL; each page lands in a distinct host slot; the evictor and metadata
+      # cache are already lock-protected). SGLANG_KVSHARE_READ_THREADS=1 restores the sequential path.
+      sub(H, """    def _read_page(self, pool_name: str, key: str, host_pool, page_offset: int) -> bool:
+              \"\"\"Read one page from storage into host_pool at page_offset.\"\"\"
+              storage_key = self._log_key(pool_name, key)
+              data_page = self.get(storage_key, host_pool.get_dummy_flat_data_page())
+      """, """    def _scratch_page(self, host_pool):
+              local = getattr(self, "_kvshare_tls", None)
+              if local is None:
+                  local = self._kvshare_tls = threading.local()
+              pages = getattr(local, "pages", None)
+              if pages is None:
+                  pages = local.pages = {}
+              page = pages.get(id(host_pool))
+              if page is None:
+                  page = pages[id(host_pool)] = host_pool.get_dummy_flat_data_page()
+              return page
+
+          def _read_page(self, pool_name: str, key: str, host_pool, page_offset: int) -> bool:
+              \"\"\"Read one page from storage into host_pool at page_offset.\"\"\"
+              storage_key = self._log_key(pool_name, key)
+              data_page = self.get(storage_key, self._scratch_page(host_pool))
+      """, "file backend reuse scratch page")
+      sub(H, """            results[transfer.name] = [
+                      op_fn(transfer.name, key, host_pool, host_indices[i * page_size].item())
+                      for i, key in enumerate(keys)
+                  ]
+              return results
+      """, """            offsets = host_indices[::page_size].tolist()
+                  workers = int(os.environ.get("SGLANG_KVSHARE_READ_THREADS", "8"))
+                  if op_fn == self._read_page and workers > 1 and len(keys) > 1:
+                      pool = getattr(self, "_kvshare_read_pool", None)
+                      if pool is None:
+                          from concurrent.futures import ThreadPoolExecutor
+
+                          pool = self._kvshare_read_pool = ThreadPoolExecutor(
+                              max_workers=workers, thread_name_prefix="hicache-file-read"
+                          )
+                      name = transfer.name
+                      results[transfer.name] = list(
+                          pool.map(
+                              lambda item: op_fn(name, item[0], host_pool, item[1]),
+                              zip(keys, offsets),
+                          )
+                      )
+                  else:
+                      results[transfer.name] = [
+                          op_fn(transfer.name, key, host_pool, offsets[i])
+                          for i, key in enumerate(keys)
+                      ]
+              return results
+      """, "file backend threaded batch reads")
 
       # --- verify every file, then write ---
       for rel, (before, after) in EXPECTED.items():
