@@ -260,7 +260,7 @@ services:
         if [ "$${KVQ_SHARED:-1}" = "1" ]; then python3 /etc/kvq/shared_kv_patch.py || exit 1; EXTRA="--hicache-host-memory-mode cache --hicache-storage-backend file --hicache-storage-prefetch-policy wait_complete"; else EXTRA=""; fi
         exec sglang serve --model-path /root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/snapshots/99f1fa70408c52b007d4fd69e02e5a522422e755 --served-model-name z-ai/glm-5.3-flash --tp-size 2 --ep-size 2 --mem-fraction-static 0.86 --max-running-requests 48 --max-queued-requests 8 --enable-priority-scheduling --disable-priority-preemption --chunked-prefill-size 8192 --max-prefill-tokens 32768 --prefill-decode-interval 2 --cuda-graph-max-bs-decode 48 --dsa-prefill-backend tilelang --dsa-decode-backend tilelang --kv-cache-dtype bfloat16 --speculative-algorithm EAGLE --speculative-num-steps 4 --speculative-eagle-topk 1 --speculative-num-draft-tokens 5 --reasoning-parser glm45 --enable-strict-thinking --grammar-backend xgrammar --tool-call-parser glm47 --chat-template /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/3f1971b7b5f7a528c9c4ef6212c8785298a8c24a/chat_template.jinja --context-length 1048576 --watchdog-timeout 1800 --host 0.0.0.0 --port 8000 --enable-metrics --enable-cache-report --log-requests-level 0 --disable-fast-image-processor --limit-mm-data-per-request '{"image": 64}' --enable-hierarchical-cache --hicache-write-policy write_through_selective --hicache-io-backend direct --hicache-mem-layout page_first_direct --max-mamba-cache-size 330 --mamba-ssm-dtype bfloat16 --base-gpu-id 0 --dist-init-addr 127.0.0.1:29550 $$EXTRA
     configs:
-      - source: kvq_shared_kv_patch_py_f7ea9f5d
+      - source: kvq_shared_kv_patch_py_75685b44
         target: /etc/kvq/shared_kv_patch.py
         mode: 0444
     volumes:
@@ -286,7 +286,7 @@ services:
       # Without it every existence check scans the whole shared store directory per batch.
       SGLANG_HICACHE_FILE_BACKEND_ENABLE_METADATA_CACHE: ${KVQ_FILE_METADATA_CACHE:-1}
       SGLANG_KVSHARE_LOG_READS: ${KVQ_LOG_READS:-1}
-      SGLANG_KVSHARE_READ_THREADS: ${KVQ_READ_THREADS:-8}
+      SGLANG_KVSHARE_READ_THREADS: ${KVQ_READ_THREADS:-2}
       SGLANG_HICACHE_FILE_BACKEND_MAX_SIZE: ${KVQ_FILE_MAX:-60Gi}
       SGLANG_HICACHE_SHARED_STORE_BUDGET: ${KVQ_STORE_BUDGET:-150GiB}
       SGLANG_GHOST_CACHE: "1"
@@ -328,7 +328,7 @@ services:
         if [ "$${KVQ_SHARED:-1}" = "1" ]; then python3 /etc/kvq/shared_kv_patch.py || exit 1; EXTRA="--hicache-host-memory-mode cache --hicache-storage-backend file --hicache-storage-prefetch-policy wait_complete"; else EXTRA=""; fi
         exec sglang serve --model-path /root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/snapshots/99f1fa70408c52b007d4fd69e02e5a522422e755 --served-model-name z-ai/glm-5.3-flash --tp-size 2 --ep-size 2 --mem-fraction-static 0.86 --max-running-requests 48 --max-queued-requests 8 --enable-priority-scheduling --disable-priority-preemption --chunked-prefill-size 8192 --max-prefill-tokens 32768 --prefill-decode-interval 2 --cuda-graph-max-bs-decode 48 --dsa-prefill-backend tilelang --dsa-decode-backend tilelang --kv-cache-dtype bfloat16 --speculative-algorithm EAGLE --speculative-num-steps 4 --speculative-eagle-topk 1 --speculative-num-draft-tokens 5 --reasoning-parser glm45 --enable-strict-thinking --grammar-backend xgrammar --tool-call-parser glm47 --chat-template /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/3f1971b7b5f7a528c9c4ef6212c8785298a8c24a/chat_template.jinja --context-length 1048576 --watchdog-timeout 1800 --host 0.0.0.0 --port 8000 --enable-metrics --enable-cache-report --log-requests-level 0 --disable-fast-image-processor --limit-mm-data-per-request '{"image": 64}' --enable-hierarchical-cache --hicache-write-policy write_through_selective --hicache-io-backend direct --hicache-mem-layout page_first_direct --max-mamba-cache-size 330 --mamba-ssm-dtype bfloat16 --base-gpu-id 2 --dist-init-addr 127.0.0.1:29551 $$EXTRA
     configs:
-      - source: kvq_shared_kv_patch_py_f7ea9f5d
+      - source: kvq_shared_kv_patch_py_75685b44
         target: /etc/kvq/shared_kv_patch.py
         mode: 0444
     volumes:
@@ -354,7 +354,7 @@ services:
       # Without it every existence check scans the whole shared store directory per batch.
       SGLANG_HICACHE_FILE_BACKEND_ENABLE_METADATA_CACHE: ${KVQ_FILE_METADATA_CACHE:-1}
       SGLANG_KVSHARE_LOG_READS: ${KVQ_LOG_READS:-1}
-      SGLANG_KVSHARE_READ_THREADS: ${KVQ_READ_THREADS:-8}
+      SGLANG_KVSHARE_READ_THREADS: ${KVQ_READ_THREADS:-2}
       SGLANG_HICACHE_FILE_BACKEND_MAX_SIZE: ${KVQ_FILE_MAX:-60Gi}
       SGLANG_HICACHE_SHARED_STORE_BUDGET: ${KVQ_STORE_BUDGET:-150GiB}
       SGLANG_GHOST_CACHE: "1"
@@ -1423,7 +1423,7 @@ configs:
           finally:
               print("KVQ_DONE", flush=True)
 
-  kvq_shared_kv_patch_py_f7ea9f5d:
+  kvq_shared_kv_patch_py_75685b44:
     content: |
       # Start-up patch: in-CVM shared KV host tier (cvm-compose-files PR #304, recipe
       # docker/sglang-glm53-v0520-shared-kv/shared-kv.diff) ported onto the production GLM-5.3 image v6
@@ -1462,7 +1462,7 @@ configs:
           "managers/cache_controller.py": ("ffb53c980497d0a94f4ffea7c54efa86b3e97077a08d8b8a3282ccbf2531c779",
               "5a7c6a25d39de57be74ad094ff38e72de29c8b7a1629ba19892e77196dbbed60"),
           "mem_cache/hicache_storage.py": ("40d892d038557bbce41f3b35369c8a1bf2feeed56b907f709492f7e0f113d313",
-              "2b2cea371dee79a320e129e7f89e367f3ff693b246be527d8f3fbd5a11331ff1"),
+              "77d798100f48a56a946d35bc95beb6e0f1a96e39e1b85c441051b1ac89dfbf6b"),
       }
       staged = {}
       def sha(text):
@@ -1780,7 +1780,7 @@ configs:
               # Same contract as HiCacheController._generic_page_get (count of the contiguous prefix
               # of pages restored, stop at the first miss or on termination), but each worker thread
               # reuses one scratch page instead of allocating a pinned page per page, and pages are
-              # read in parallel (SGLANG_KVSHARE_READ_THREADS, default 8). Counts self/peer hits.
+              # read in parallel (SGLANG_KVSHARE_READ_THREADS, default 2: tmpfs reads in a TDX guest contend, 8 threads ran ~4x slower than 1-2). Counts self/peer hits.
               if operation.is_terminated():
                   return 0
               t_start = time.perf_counter()
@@ -1819,7 +1819,7 @@ configs:
                   stage[1] += time.perf_counter() - t1
                   return "self" if self._get_suffixed_key(key) in self._kvshare_written else "peer"
 
-              workers = int(os.environ.get("SGLANG_KVSHARE_READ_THREADS", "8"))
+              workers = int(os.environ.get("SGLANG_KVSHARE_READ_THREADS", "2"))
               items = list(zip(hash_values, offsets))
               if workers > 1 and len(items) > 1:
                   pool = getattr(self, "_kvshare_read_pool", None)
@@ -1950,7 +1950,7 @@ configs:
                   ]
               return results
       """, """            offsets = host_indices[::page_size].tolist()
-                  workers = int(os.environ.get("SGLANG_KVSHARE_READ_THREADS", "8"))
+                  workers = int(os.environ.get("SGLANG_KVSHARE_READ_THREADS", "2"))
                   if op_fn == self._read_page and workers > 1 and len(keys) > 1:
                       pool = getattr(self, "_kvshare_read_pool", None)
                       if pool is None:
