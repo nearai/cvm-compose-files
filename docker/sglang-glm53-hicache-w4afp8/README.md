@@ -355,7 +355,7 @@ not been tested; the lab runs had CC off. The CPU-only fallback is the mitigatio
 kernel events, not a CUPTI fault that crashes or hangs the process, so enable it on one replica that
 can be restarted. The first TEE run answers this.
 
-**Rollback:** unset `NEAR_SELF_PROFILE` (the hook is then inert), or redeploy the v6 digest; v7 changes
+**Rollback:** unset `NEAR_SELF_PROFILE` (the hook is then inert), or redeploy the v6 digest; the hook changes
 no v6 patch. The hook is per process and persists nothing, so a restart clears it.
 
 The patch is applied last. `scheduler.py` and `profiler_manager.py` are touched by no other patch here
@@ -363,7 +363,7 @@ and are pinned to the base image's bytes (`scheduler.py` `6ffd1584…`, `profile
 `8e4a2992…`). Validated CPU-only by `test_self_profile.py` (step 10 of `test-cpu.sh`): inert by default,
 summariser on synthetic traces, hook state machine against a stub profiler manager, hook sites present.
 
-## FP8 KV cache for GLM's NoPE DSA (flag-gated, v8)
+## FP8 KV cache for GLM's NoPE DSA (flag-gated, v7)
 
 `fp8kv-flashmla.diff` lets GLM-5.3 Flash (NoPE MLA: `qk_rope_head_dim == 0`) run
 `--kv-cache-dtype fp8_e4m3` on Hopper. On the stock v6 image that flag does not boot with any DSA
@@ -416,7 +416,7 @@ Rollout is a flag on a canary replica, plus the DSA backend flags, not an image 
 `--kv-cache-dtype fp8_e4m3` and nothing in the image changes. The 4 files' bytes are pinned to the base
 image's (`source-manifest.json`), and the patch is byte-identical to the one validated in exp 27.
 
-## Preprocess process pool with a per-request deadline (opt-in, v8)
+## Preprocess process pool with a per-request deadline (opt-in, v7)
 
 Root cause of inference-proxy #287 (tee-bench `evidence/long-tp2-wedge-rca`): patch 4 (PR #30771)
 renders the chat template and tokenizes in `ThreadPoolExecutor(max_workers=1)`. One request that keeps
@@ -480,7 +480,7 @@ routing key) at 13 to 3003 messages and up to 640K tokens, IPC overhead not meas
 blocking requests at W2 3.0 caused no stall, TTFT stayed 0.6 / 1.6 s. Bare metal only. CPU tests:
 `test_preprocess_pool.py` (step 12).
 
-## Tool-schema size cap (opt-in, v8)
+## Tool-schema size cap (opt-in, v7)
 
 `OpenAIServingChat._validate_request` runs `jsonschema` `Draft202012Validator.check_schema` on every
 tool's `parameters` on the HTTP event loop, before the request reaches the preprocessor. A client
@@ -493,7 +493,7 @@ function 'parameters' schema is too large: ...") before `check_schema` runs.
 | `SGLANG_TOOL_SCHEMA_MAX_DEPTH` | 0 (off) | max nesting of JSON objects/arrays inside one tool's `parameters` |
 | `SGLANG_TOOL_SCHEMA_MAX_NODES` | 0 (off) | max number of JSON values (objects, arrays and every value inside them, scalars included) summed over all tools of one request |
 
-Both default to off (the call returns immediately), so the image behaves as v7 until a replica sets
+Both default to off (the call returns immediately), so request handling is unchanged until a replica sets
 them. Suggested canary values: depth 32, nodes 25000. A schema level costs two containers (the schema
 object and its `properties` / `anyOf` / `items` container), so depth 32 is about 16 schema levels, far
 beyond real tool definitions. The RCA saw requests with 40 to 160 tools, so the node budget is shared by
@@ -615,25 +615,28 @@ a CPU-only container on gpu31 (2026-10-05, tag `glm53-hicache-w4afp8:v5-obs`). O
 bind-mounted the same module and patched tree core over the v4 lab image for the HiCache policy A/B
 (gpu31, 2026-09-30); this build has not run on GPU.
 
-**v7** adds the self-profiling hook on top of v6, with no change to any v6 patch. `scheduler.py` is
-the only source file that was pinned unchanged (before = after) and now has a new after-hash. The hook
-patch was applied to the base image's real `scheduler.py` and `profiler_manager.py` bytes and
-reproduces the manifest hashes; `test-cpu.sh` step 10 was run against the patched sources outside the
-image. A GPU run of the hook on gpu32 (TP4, CC off) completed in the lab, but its output was not
-retained, so no GPU result is claimed, and that run predates the review fixes to the hook (no start
-while another profile runs, barrier-skip flag cleared after the hook's profile, parse-child cleanup and
-OOM priority), which are covered by `test_self_profile.py` only. Nothing has run in a TEE.
+**v7** adds the self-profiling hook, FP8 KV cache support, the opt-in preprocess pool and the opt-in
+tool-schema cap on top of v6, with no change to any v6 patch (no image was published between v6 and this
+build, so they are one release). Applied in this order after `kv-tier-metrics.diff`:
+`near-self-profile.diff`, `fp8kv-flashmla.diff`, `preprocess-pool.diff` (stacked on the two event-loop
+patches: `http_server.py` and `serving_base.py` change their after-hashes), `tool-schema-depth-cap.diff`.
 
-**v8** adds FP8 KV cache support, the opt-in preprocess pool and the opt-in tool-schema cap on top of
-v7, with no change to any v6 or v7 patch. Applied in this order after `near-self-profile.diff`:
-`fp8kv-flashmla.diff`, `preprocess-pool.diff` (stacked on the two event-loop patches: `http_server.py`
-and `serving_base.py` change their after-hashes), `tool-schema-depth-cap.diff`. The four FP8 files and
-`serving_chat.py` are pinned to the base image's bytes. All twelve patches were applied in order to the
-real base image sources (registry layers of `3eccc307`) with `apply-patches.py`, which verified every
-before and after hash, and the manifest hashes of the FP8 files equal the ones validated in exp 27.
-`test-cpu.sh` steps 11-13 cover the new patches (step 11 also runs `test_fp8kv_paths.py`, which executes the changed FP8 functions on stubs with the gate on and off); steps 1-10 were not re-run end to end here (they need
-the full image). The FP8 and pool GPU numbers are bare metal with CC off from lab images (v6 + FP8,
-and + pool at 4 workers); nothing has run in a TEE.
+Self-profiling hook: `scheduler.py` is the only source file that was pinned unchanged (before = after)
+and now has a new after-hash. The hook patch was applied to the base image's real `scheduler.py` and
+`profiler_manager.py` bytes and reproduces the manifest hashes; `test-cpu.sh` step 10 was run against
+the patched sources outside the image. A GPU run of the hook on gpu32 (TP4, CC off) completed in the
+lab, but its output was not retained, so no GPU result is claimed, and that run predates the review
+fixes to the hook (no start while another profile runs, barrier-skip flag cleared after the hook's
+profile, parse-child cleanup and OOM priority), which are covered by `test_self_profile.py` only.
+
+FP8 KV, preprocess pool and tool-schema cap: the four FP8 files and `serving_chat.py` are pinned to the
+base image's bytes. All twelve patches were applied in order to the real base image sources (registry
+layers of `3eccc307`) with `apply-patches.py`, which verified every before and after hash, and the
+manifest hashes of the FP8 files equal the ones validated in exp 27. `test-cpu.sh` steps 11-13 cover
+the new patches (step 11 also runs `test_fp8kv_paths.py`, which executes the changed FP8 functions on
+stubs with the gate on and off); steps 1-10 were not re-run end to end here (they need the full image).
+The FP8 and pool GPU numbers are bare metal with CC off from lab images (v6 + FP8, and + pool at 4
+workers). Nothing has run in a TEE.
 
 ## Security remediation
 
