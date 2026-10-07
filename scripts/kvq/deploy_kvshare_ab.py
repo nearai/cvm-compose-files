@@ -82,8 +82,11 @@ def plan_of(out):
     return None
 
 
-def dry_run_ok(iid, body, svc):
-    """Dry-run `body`; the plan may only create/recreate `svc` and remove leftovers of `svc`."""
+def dry_run_ok(iid, body, svc, allow_empty=False):
+    """Dry-run `body`; the plan may only create/recreate `svc` and remove leftovers of `svc`.
+    allow_empty: on a re-send, an empty plan means compose already created the container but
+    died before starting it (gpu-manager docker/ps does not list Created containers, even with
+    ?all=true); the real up then just starts it."""
     out = api(f"instances/{iid}/compose/up", dict(body, dry_run=True))
     plan = plan_of(out)
     if plan is None:
@@ -93,7 +96,7 @@ def dry_run_ok(iid, body, svc):
     print(f"dry-run: create={plan.get('create')} recreate={plan.get('recreate')} remove={removed}")
     bad_touch = [t for t in touched if t != svc]
     bad_remove = [r for r in removed if not r.replace("Container ", "").endswith(svc)]
-    if bad_touch or bad_remove or (not touched and not removed):
+    if bad_touch or bad_remove or (not touched and not removed and not allow_empty):
         sys.exit(f"ABORT: plan must only (re)create {svc} (and remove leftovers of it); got touched={touched} remove={removed}")
     return touched
 
@@ -184,7 +187,7 @@ def main():
             if resends >= 3:
                 sys.exit(f"{svc} still not running after {resends} re-sends: {cs}")
             print(f"  {svc} not running ({ {k[:12]: (c['name'], c['state']) for k, c in cs.items()} }); re-sending up")
-            dry_run_ok(iid, body, svc)
+            dry_run_ok(iid, body, svc, allow_empty=True)
             ok, out = api(f"instances/{iid}/compose/up", dict(body, dry_run=False), check=False)
             print(f"  re-send stream: {'complete' if ok else 'DROPPED'}; done.success={done_success(out)}")
             resends, last_send = resends + 1, time.time()
