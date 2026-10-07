@@ -54,7 +54,7 @@ index 0000000..da15195
 +"""
 +import bisect, collections, gzip, json, os, re, shutil, subprocess, sys, time
 +
-+OUT_DIR = "/tmp/near_selfprof"
++OUT_DIR = f"/tmp/near_selfprof.{os.getpid()}"  # per scheduler process: attention-DP runs several tp_rank-0 schedulers per container
 +_FRAME = re.compile(r"(srt/[\w/]+\.py)\((\d+)\): (\w+)")
 +_LAUNCH = ("cudaLaunchKernel", "cuLaunchKernel", "cuLaunchKernelEx", "cudaLaunchKernelExC")
 +NO_KERNELS = 3  # summariser exit code: CUDA mode requested but the trace has no kernel events
