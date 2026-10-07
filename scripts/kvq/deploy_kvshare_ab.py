@@ -16,6 +16,7 @@ import argparse, json, os, re, subprocess, sys, time
 GM = "https://gpu-manager.infra.near.ai"
 AB_FILE = "prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8-KVShare-AB.yaml"
 BASE_FILE = "prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8.yaml"
+VARIANT_SUFFIX = "-kvshare-l3file-v1"
 
 
 def token():
@@ -29,24 +30,42 @@ def token():
 TOKEN = token()
 
 
-def api(path, body=None, timeout=1800):
+def api(path, body=None, timeout=1800, check=True):
+    """GET (body None) or POST JSON. Returns stdout. With check=False a curl failure (for example a
+    dropped compose stream) returns (False, partial_stdout) instead of exiting."""
     cmd = ["curl", "-sS", "-N", "--max-time", str(timeout), "-H", f"Authorization: Bearer {TOKEN}"]
     if body is not None:
         cmd += ["-X", "POST", "-H", "Content-Type: application/json", "--data-binary", "@-"]
     cmd.append(f"{GM}/api/{path}")
     r = subprocess.run(cmd, input=json.dumps(body) if body is not None else None, capture_output=True, text=True)
+    if not check:
+        return r.returncode == 0, r.stdout
     if r.returncode != 0:
         sys.exit(f"curl failed for {path}: {r.stderr.strip()[:300]}")
     return r.stdout
 
 
-def containers(inst):
-    d = json.loads(api(f"instances/{inst}/docker/ps"))
+def label(labels, key):
+    m = re.search(re.escape(key) + r"=([^,]*)", labels)
+    return m.group(1) if m else ""
+
+
+def service_containers(inst, svc):
+    """Every container of compose service `svc` in project work, keyed by id. Matches on the compose
+    service label, not the name: an interrupted recreate leaves the new container named
+    `<12 hex>_<service>`, and that container can end up being the one that runs."""
+    d = json.loads(api(f"instances/{inst}/docker/ps?all=true"))
     rows = {}
     for line in d.get("output", "").splitlines():
-        if line.strip():
-            c = json.loads(line)
-            rows[c["Names"]] = {"state": c["State"], "status": c["Status"], "id": c["ID"]}
+        if not line.strip():
+            continue
+        c = json.loads(line)
+        labels = c.get("Labels", "")
+        if label(labels, "com.docker.compose.service") != svc or label(labels, "com.docker.compose.project") != "work":
+            continue
+        rows[c["ID"]] = {"name": c["Names"], "state": c["State"], "status": c["Status"],
+                         "variant": label(labels, "nearai.otel.config_variant"),
+                         "file": label(labels, "com.docker.compose.project.config_files")}
     return rows
 
 
@@ -59,6 +78,33 @@ def plan_of(out):
         if e.get("event") == "plan":
             return e.get("plan")
     return None
+
+
+def dry_run_ok(iid, body, svc):
+    """Dry-run `body`; the plan may only create/recreate `svc` and remove leftovers of `svc`."""
+    out = api(f"instances/{iid}/compose/up", dict(body, dry_run=True))
+    plan = plan_of(out)
+    if plan is None:
+        sys.exit(f"dry-run gave no plan: {out[-600:]}")
+    touched = [x.replace("Container ", "") for x in plan.get("recreate", []) + plan.get("create", []) if x.startswith("Container ")]
+    removed = plan.get("remove", []) or []
+    print(f"dry-run: create={plan.get('create')} recreate={plan.get('recreate')} remove={removed}")
+    bad_touch = [t for t in touched if t != svc]
+    bad_remove = [r for r in removed if not r.replace("Container ", "").endswith(svc)]
+    if bad_touch or bad_remove or (not touched and not removed):
+        sys.exit(f"ABORT: plan must only (re)create {svc} (and remove leftovers of it); got touched={touched} remove={removed}")
+    return touched
+
+
+def done_success(out):
+    for line in out.splitlines():
+        try:
+            e = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if e.get("event") == "done":
+            return bool(e.get("success"))
+    return None  # stream ended without a terminal event (client side dropped)
 
 
 def main():
@@ -89,35 +135,54 @@ def main():
     else:
         tag = a.tag or subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
         file = AB_FILE
-    body = {"tag": tag, "file": file, "services": [svc], "env": env, "force_recreate": False, "dry_run": True}
-    out = api(f"instances/{iid}/compose/up", body)
-    plan = plan_of(out)
-    if plan is None:
-        sys.exit(f"dry-run gave no plan: {out[-600:]}")
-    rec = [x.replace("Container ", "") for x in plan.get("recreate", []) + plan.get("create", []) if x.startswith("Container ")]
-    print(f"dry-run ({file} @ {tag[:12]}): create={plan.get('create')} recreate={plan.get('recreate')} remove={plan.get('remove')}")
-    if rec != [svc] or plan.get("remove"):
-        sys.exit(f"ABORT: plan must recreate exactly {svc}; got {rec}, remove={plan.get('remove')}")
+    want_treatment = not a.rollback
+
+    def is_target(c):
+        return (c["state"] == "running" and c["variant"].endswith(VARIANT_SUFFIX) == want_treatment
+                and c["file"].endswith(file))
+
+    body = {"tag": tag, "file": file, "services": [svc], "env": env, "force_recreate": False}
+    print(f"{file} @ {tag[:12]}")
+    dry_run_ok(iid, body, svc)
+    before = service_containers(iid, svc)
+    print("now:", {k[:12]: (v["name"], v["state"], v["variant"][-20:]) for k, v in before.items()})
     if not a.apply:
         print("plan only; re-run with --apply")
         return
-    old = containers(iid).get(svc, {}).get("id")
-    body["dry_run"] = False
-    out = api(f"instances/{iid}/compose/up", body)
-    if '"success":true' not in out.replace(" ", ""):
+    old_ids = set(before)
+
+    # The real up. A dropped stream is "outcome unknown", never failure or success: compose-manager
+    # (aa9de34) kills compose via SIGPIPE when its client goes away, which can leave the new
+    # container Created and never started. So: poll, and re-send once the old container is gone.
+    ok, out = api(f"instances/{iid}/compose/up", dict(body, dry_run=False), check=False)
+    res = done_success(out)
+    print(f"compose/up stream: {'complete' if ok else 'DROPPED'}; done.success={res}")
+    if res is False:
         sys.exit(f"compose/up failed: {out[-800:]}")
-    print(f"applied; waiting for a new {svc} container (old stop has a 5 min grace)")
-    deadline, resent = time.time() + 1200, False
+    deadline, resends, last_send = time.time() + 1800, 0, time.time()
     while time.time() < deadline:
-        c = containers(iid).get(svc)
-        if c and c["state"] == "running" and c["id"] != old:
-            print(f"{svc} running: id={c['id']} {c['status']}")
-            print(f'next: Loki {{host="{a.host}", container_name="{svc}"}} |~ "shared-kv-patch|ready to roll|Traceback"')
+        cs = service_containers(iid, svc)
+        tgt = [(k, c) for k, c in cs.items() if is_target(c) and k not in old_ids]
+        if tgt:
+            k, c = tgt[0]
+            print(f"{svc} running as {c['name']} id={k[:12]} {c['status']} variant=...{c['variant'][-24:]}")
+            print(f'next: Loki {{host="{a.host}", container_name=~".*{svc}"}} |~ "shared-kv-patch|ready to roll|Traceback"')
             return
-        if not resent and time.time() > deadline - 600:
-            api(f"instances/{iid}/compose/up", body); resent = True
+        old_running = [k for k, c in cs.items() if k in old_ids and c["state"] == "running"]
+        if old_running:
+            print(f"  old {svc} still running (graceful drain, up to 5 min)"); time.sleep(20); continue
+        # Old one is gone and no new one runs: compose died between create and start, or is still
+        # starting. Give a live compose 90 s, then re-send (fast now: nothing left to drain).
+        if time.time() - last_send > 90:
+            if resends >= 3:
+                sys.exit(f"{svc} still not running after {resends} re-sends: {cs}")
+            print(f"  {svc} not running ({ {k[:12]: (c['name'], c['state']) for k, c in cs.items()} }); re-sending up")
+            dry_run_ok(iid, body, svc)
+            ok, out = api(f"instances/{iid}/compose/up", dict(body, dry_run=False), check=False)
+            print(f"  re-send stream: {'complete' if ok else 'DROPPED'}; done.success={done_success(out)}")
+            resends, last_send = resends + 1, time.time()
         time.sleep(20)
-    sys.exit(f"{svc} did not come up as a new container in 20 min")
+    sys.exit(f"{svc} did not come up as a new container in 30 min")
 
 
 if __name__ == "__main__":
