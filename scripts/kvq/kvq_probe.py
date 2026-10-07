@@ -10,8 +10,11 @@ Prints one `KVQ {json}` line per result, then `KVQ_DONE`. Checks:
   host       pinned (cudaMallocHost) H2D/D2H, tmpfs file -> pinned -> GPU (the shared-tier
              restore path) with 1 and 2 concurrent processes, and cudaHostRegister (801 expected)
 """
-import json, os, subprocess, sys, time, mmap, ctypes
-import torch
+import faulthandler, json, os, subprocess, sys, time, mmap, ctypes
+
+faulthandler.enable()  # a native crash in CUDA init still leaves a stack in the log
+print("KVQ " + json.dumps({"kind": "start", "pid": os.getpid()}), flush=True)
+import torch  # noqa: E402
 import torch.multiprocessing as mp
 
 PAGE = 64 * 1024
@@ -180,6 +183,7 @@ def host():
 
 
 def main():
+    print(sh("nvidia-smi -L; nvidia-smi conf-compute -f; nvidia-smi conf-compute -mgm"), flush=True)
     out("env", cuda_visible=os.environ.get("NVIDIA_VISIBLE_DEVICES"), devices=torch.cuda.device_count(),
         names=[torch.cuda.get_device_name(i) for i in range(torch.cuda.device_count())],
         torch=torch.__version__, cuda=torch.version.cuda,
