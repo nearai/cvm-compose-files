@@ -684,8 +684,9 @@ W4AFP8_TP2X4_VARIANT = "hicache-w4afp8-qsplit-selective325-mamba165-bf16state-c8
 W4AFP8_TP2X4_DEPLOYMENT = "glm53-flash-sgl-tp2x4"
 W4AFP8_BASE_DEPLOYMENT = "glm53-flash-sgl-tp4"
 W4AFP8_TP2X4_PREFIX = "model-sg-glm53-w4afp8-tp2-r"
-# All four replicas run the v7 fleet argv (the memory-optimized argv of tee-bench exp 25/25b/25c with the v7 edits below). The "control"
-# role (the previous prod argv, W4AFP8_TP2X4_ARGV) stays pinned as the argv the candidate edits derive from.
+# All four replicas run the v7 fleet argv (the memory-optimized argv of tee-bench exp 25/25b/25c with the v7 edits below), written out in
+# full as W4AFP8_TP2X4_CANDIDATE_ARGV. The "control" role keeps the previous prod argv (W4AFP8_TP2X4_ARGV, also the shared anchor's argv)
+# so a replica set back to "control" validates against v6; the v7-only checks (FP8 pairing, HiCache off, overlap off) apply to candidates.
 W4AFP8_TP2X4_REPLICAS = {
   "#{W4AFP8_TP2X4_PREFIX}1" => { "devices" => %w[0 1], "instance" => "1", "soak_port" => "8008", "role" => "candidate", "ghost_replica" => "r1" },
   "#{W4AFP8_TP2X4_PREFIX}2" => { "devices" => %w[2 3], "instance" => "2", "soak_port" => "8009", "role" => "candidate", "ghost_replica" => "r2" },
@@ -864,9 +865,11 @@ def validate_w4afp8_tp2x4(errors, compose, base, raw)
       errors << "#{label} #{name} --max-mamba-cache-size #{slots} cannot hold #{running} running requests (needs >= #{W4AFP8_TP2X4_MAMBA_SLOTS_PER_REQUEST} slots each)"
     end
     errors << "#{label} #{name} --cuda-graph-max-bs-decode must equal --max-running-requests (#{running})" unless flag_value.call("--cuda-graph-max-bs-decode") == running
-    validate_fp8_kv_pairing(errors, "#{label} #{name}", actual_argv)
-    validate_hicache_off(errors, "#{label} #{name}", actual_argv)
-    errors << "#{label} #{name} must set --disable-overlap-schedule exactly once" unless actual_argv.count("--disable-overlap-schedule") == 1
+    if candidate
+      validate_fp8_kv_pairing(errors, "#{label} #{name}", actual_argv)
+      validate_hicache_off(errors, "#{label} #{name}", actual_argv)
+      errors << "#{label} #{name} must set --disable-overlap-schedule exactly once" unless actual_argv.count("--disable-overlap-schedule") == 1
+    end
     env = environment_map(service)
     expected_env = base_env.merge(observability_env(spec["ghost_replica"]))
     REQUIRED_ENV.each do |key, value|

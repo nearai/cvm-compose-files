@@ -127,7 +127,7 @@ end
 # gpu13's GLM is two memory-optimized TP2/EP2 replicas (GPUs 4,5 and 6,7) with the same
 # per-replica argv as the long-context file's tp2-r2a/r2b (W4AFP8 + HiCache, campaign-2 L2 base):
 # prod/GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext.yaml, docs/long-context-glm53-2xtp2-rollout.md.
-# The #330 overlap-off canary ended when the TP4 replica was replaced; overlap stays ON.
+# The #330 overlap-off canary ended when the TP4 replica was replaced; the v7 fleet config runs overlap OFF again (asserted below).
 gpu13_variant = 'fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host325g-memopt-fp8kv-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-gpu13-h200-tp2-ep2-eagle-fixed-4-1-5-mr16q4-strict-budget8192-obs-v1-v7'
 gpu13_ports = {}
 gpu13_glm.each_key do |name|
