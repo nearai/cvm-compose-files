@@ -455,7 +455,7 @@ def render_peerkv():
             f"- SGLANG_PEERKV_SELF={name}",
             f"- SGLANG_PEERKV_PEER={sib}",
             "- SGLANG_PEERKV_DIR=/peerkv",
-            "- SGLANG_PEERKV_MIN_TOKENS=4096"])
+            "- SGLANG_PEERKV_MIN_TOKENS=${GLM53_PEERKV_MIN_TOKENS:-16384}"])
 
     for r in ("r1", "r2", "r3", "r4"):
         name = f"model-sg-glm53-w4afp8-tp2-{r}"
