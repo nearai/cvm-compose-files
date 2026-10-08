@@ -11,7 +11,8 @@ CUDA error 801.
 
 Base `sha256:3eccc307…` (HiCache + admission reserve v10) plus two correctness patches, both
 byte-identical copies of the reviewed originals, one opt-in performance patch, two patches that move
-blocking work off the HTTP event loop, one diagnostic, and two opt-in measurements:
+blocking work off the HTTP event loop, one diagnostic, two opt-in measurements, an opt-in self-profiler, FP8 KV cache support for GLM's NoPE DSA (active only
+with `--kv-cache-dtype fp8_e4m3`), an opt-in preprocess process pool and an opt-in tool-schema size cap:
 
 | patch | origin | scope |
 | --- | --- | --- |
@@ -23,6 +24,10 @@ blocking work off the HTTP event loop, one diagnostic, and two opt-in measuremen
 | `event-loop-stall-dump.diff` | new here (diagnostic, on by default at 30 s) | new `utils/event_loop_stall_dump.py` plus a hook in the HTTP server lifespan |
 | `ghost-prefix-cache.diff` | new here (opt-in, `SGLANG_GHOST_CACHE=1`) | new `observability/ghost_cache.py` plus one call at the top of `mem_cache/common.py` `release_kv_cache` |
 | `kv-tier-metrics.diff` | new here (opt-in, `SGLANG_KV_TIER_METRICS=1`) | new `observability/kv_tier_metrics.py` plus recorder hooks in `mem_cache/unified_cache/unified_tree_core.py` eviction and load-back paths |
+| `near-self-profile.diff` | new here (opt-in, `NEAR_SELF_PROFILE=1`) | new `utils/near_self_profile.py` plus a creation call in `Scheduler.init_profiler`, a `tick` call in `Scheduler.run_batch` and one barrier guard in `SchedulerProfilerManager._stop_profile` |
+| `fp8kv-flashmla.diff` | new here (flag-gated: `--kv-cache-dtype fp8_e4m3` with `flashmla_kv`) | 656 B fp8 row in `kv_cache_configurator.py`, q pad and kpool index pad in `dsa_backend.py`, `flashmla_kv` allowed for `index_kpool > 1` in `dsa_backend_kpool.py`, `k_pe=None` and hybrid-wrapper metadata in `forward_mha.py` |
+| `preprocess-pool.diff` | new here (opt-in, `SGLANG_PREPROCESS_WORKERS=N`), applied after `sglang-pr30771.diff` and `shm-off-loop.diff` | new `managers/preprocess_pool.py`, a call in the HTTP lifespan and a pool attempt in `OpenAIServingBase.handle_request` |
+| `tool-schema-depth-cap.diff` | new here (opt-in, `SGLANG_TOOL_SCHEMA_MAX_DEPTH` / `_MAX_NODES`) | new `utils/tool_schema_guard.py` plus one call in `OpenAIServingChat._validate_request` |
 
 ## DSA indexer query split (opt-in)
 
@@ -292,6 +297,224 @@ VRAM evictions and load-backs. It deselects three tests that replace the tree's 
 Mock, which the strict-mode gauge walk cannot iterate (outside strict mode the error is logged and
 they pass); on the unpatched file the same run passes 492.
 
+## Self-profiling hook (opt-in)
+
+Inside a TEE (NVIDIA CC, PPCIe) nobody can shell in or fetch files, but engine stdout reaches Loki.
+With `NEAR_SELF_PROFILE=1` the engine profiles a few scheduler steps once, prints a compact summary of
+where decode time goes (host syncs, D2H copies, launches, GPU idle) prefixed `NEAR_PROFILE `, and
+deletes the trace. It exists to target the host-overhead work: on the production base tier the GPU is
+only about half busy in the TEE and the scheduler spends most of its time inside `run_batch` (lab
+measurements, see the PR that added this), and a profile taken in the TEE says which calls that is.
+
+**Inert unless `NEAR_SELF_PROFILE=1`.** Unset, `0` or anything else: `maybe_create` returns `None`,
+`Scheduler.near_self_profile` is `None`, the `run_batch` call is skipped and the barrier guard is
+true. The hook runs on tp_rank 0 only; other ranks never create it.
+
+| var | default | meaning |
+| --- | --- | --- |
+| `NEAR_SELF_PROFILE` | unset | `1` enables the hook |
+| `NEAR_SELF_PROFILE_AFTER_S` | 600 | seconds after scheduler init before the first eligible decode batch |
+| `NEAR_SELF_PROFILE_STEPS` | 50 | scheduler steps to record |
+| `NEAR_SELF_PROFILE_ACTIVITIES` | unset | `cpu` forces the CPU-only profile (the fallback path) |
+
+Behaviour:
+
+- Once per process, at the first decode batch after `NEAR_SELF_PROFILE_AFTER_S`. It drives the
+  scheduler's existing `SchedulerProfilerManager` (CPU+CUDA, `with_stack=True`, output
+  `/tmp/near_selfprof`) for `NEAR_SELF_PROFILE_STEPS` steps. No new tracer.
+- If starting with CUDA activity raises, or the trace has no kernel events (CUPTI restricted), it
+  retries once CPU-only. CPU-only still shows time blocked inside `item()`, `synchronize()` and copies
+  by code path. `SGLANG_PROFILE_V2` is not supported; the hook then disables itself.
+- The trace is parsed by a niced child process (stdlib only, runs `near_self_profile.py` directly), so
+  the scheduler's GIL is not held by the parse. The child prints at most about 30 lines and removes the
+  trace dir.
+- Any error prints one `NEAR_PROFILE error ...` line and disables the hook.
+- `_stop_profile` skips its all-rank `torch.distributed.barrier` only while the hook's own profile runs
+  (`near_selfprof` is set at start and cleared as soon as the profile stops or the hook errors);
+  otherwise rank 0 would wait for ranks that never profile. Profiles started through the HTTP profiler
+  API keep the barrier, before and after the hook has run.
+- The hook does not start while another profile is in progress; it disables itself instead of touching
+  it. It profiles tp_rank 0 only, so use it with PP=1 and attention-DP layouts (the production ones).
+- The parse child sets `oom_score_adj` 1000 so the kernel kills it rather than the engine, and the
+  hook removes `/tmp/near_selfprof` if the child dies.
+
+Summary lines: `mode`, steps captured, per-iteration wall time (from `Scheduler.run_batch` spans), GPU
+busy and idle % with an idle-gap histogram, kernel count, graph vs eager launches, blocking calls
+(`cudaStreamSynchronize`, `cudaEventSynchronize`, `item()` ...) with count and blocked ms, the top 8
+sglang code paths that block (`file:line` is the function definition line), memcpy counts and bytes by
+direction, and the top 5 GPU idle gaps with the CPU frame running at that moment.
+
+Cost when on, once per process: the torch profiler's overhead for 50 steps, then a synchronous trace
+export in the scheduler thread, which stalls that replica for a few seconds and up to about 20 s. The
+parse child needs a few GB of RAM for a 50-step trace with stacks; lower `NEAR_SELF_PROFILE_STEPS` if
+the container is tight. Enable it on one replica, not a fleet.
+
+**Open risk: CUPTI under CC.** Whether CUDA activity tracing works on a confidential-computing GPU has
+not been tested; the lab runs had CC off. The CPU-only fallback is the mitigation, and
+`NEAR_SELF_PROFILE_ACTIVITIES=cpu` forces it. It covers CUPTI failing with an exception or returning no
+kernel events, not a CUPTI fault that crashes or hangs the process, so enable it on one replica that
+can be restarted. The first TEE run answers this.
+
+**Rollback:** unset `NEAR_SELF_PROFILE` (the hook is then inert), or redeploy the v6 digest; the hook changes
+no v6 patch. The hook is per process and persists nothing, so a restart clears it.
+
+The patch is applied last. `scheduler.py` and `profiler_manager.py` are touched by no other patch here
+and are pinned to the base image's bytes (`scheduler.py` `6ffd1584…`, `profiler_manager.py`
+`8e4a2992…`). Validated CPU-only by `test_self_profile.py` (step 10 of `test-cpu.sh`): inert by default,
+summariser on synthetic traces, hook state machine against a stub profiler manager, hook sites present.
+
+## FP8 KV cache for GLM's NoPE DSA (flag-gated, v7)
+
+`fp8kv-flashmla.diff` lets GLM-5.3 Flash (NoPE MLA: `qk_rope_head_dim == 0`) run
+`--kv-cache-dtype fp8_e4m3` on Hopper. On the stock v6 image that flag does not boot with any DSA
+backend combination (tilelang fp8 KV is ROCm-only on CUDA; `fa3` cannot read the packed fp8 pool;
+`flashmla_kv` rejects `index_kpool > 1`; tee-bench exp 26). The patch routes fp8 lanes through
+`flashmla_kv` for prefill and decode, using the DeepSeek-V3.2 packed row that kernel hard-asserts:
+
+- `mem_cache/kv_cache_configurator.py`: with a rope-less model and `flashmla_kv` selected, the fp8 pool
+  row is 656 B (512 fp8 + 16 B of fp32 tile scales + 64 never-written zero bf16 rope slots) instead of
+  1024 B for bf16. This sizes the pool and the cell-size estimate.
+- `layers/attention/dsa_backend.py`: `_forward_flashmla_kv` zero-pads q from 512 to 576 so the kernel
+  sees `d_qk == 576`, pads the `index_topk + index_kpool - 1`-wide (2051) index table with `-1` to a
+  multiple of 128 (2176), and sizes the tile-scheduler metadata with the padded width.
+- `layers/attention/dsa/dsa_backend_kpool.py`: `flashmla_kv` joins the backends allowed for
+  `index_kpool > 1`.
+- `models/deepseek_common/attention_forward_methods/forward_mha.py`: after the one-shot fp8 prefix
+  dequant, `k_pe = None` for rope-less models, and the hybrid linear-attention wrapper's
+  `full_attn_backend` is resolved before `forward_metadata` is read (the run-1 crash under load).
+
+**It is active only with `--kv-cache-dtype fp8_e4m3` and the `flashmla_kv` DSA backends**
+(`--dsa-prefill-backend flashmla_kv --dsa-decode-backend flashmla_kv`). With the default bf16 KV cache
+(tilelang) the new q-pad width is 0, the padded topk equals `index_topk`, the pool row code is not
+reached, the fp8 dequant helper is not called, and the `index_kpool > 1` whitelist only relaxes a check
+that previously raised for `flashmla_kv`. Note that `flashmla_kv` with a bf16 cache is not meaningful
+(it requantises the whole cache per call); fp8 KV needs both flags together.
+
+Evidence (bare metal, CC off, lab image = v6 + this patch; never run in a TEE):
+
+- Boot: KV pool x1.467 (base 1,062,848 -> 1,559,168 tokens per rank; long 1,557,952 -> 2,285,568). The
+  row ratio is 1.56x; mamba state, scratch and the indexer cache are fixed costs. A 528 B row (1.94x)
+  needs a new kernel and is not in this patch. (exp 27, `evidence/gpu32-fp8-kv-fix`)
+- Quality: GSM8K n=100 0.99 fp8 vs 0.97 bf16 (base) and 0.979 vs 0.979 (long, answered); passkey 32K
+  and 128K 3/3 both; greedy 20-prompt compare 16/20 (base) and 11/20 (long) identical, mean abs
+  logprob delta about 0.010 (ordinary fp8 drift, no garbage). (exp 27)
+- Latency: single-prompt TTFT equal or better (2K 0.24 vs 0.26 s, 128K 9.96 vs 10.32 s). (exp 27)
+- Throughput, long tier at 12/4 caps: +17% tok/s with fp8. Base tier with fp8 + max-running 64 + 380
+  mamba slots: +14-17% tok/s over prod bf16 at W2 3.0 / 4.0, two rotated rounds. That figure includes
+  the max-running 64 effect (+8-13% alone, exp 26), so it is not fp8 alone. (exp 28)
+- A cold prefill of about 1M tokens works on TP2: 88 s with fp8 vs 94 s with bf16, peak 129.8 GB.
+  (exp 28)
+- Negative result to keep in mind: at W2 2.0 on a cold fp8 lane, exp 27 saw -13% tok/s in one run
+  (JIT-cold, not seen at 3.0 or in the long tier, unresolved by a single run). HiCache with 656 B rows
+  ran in the lanes but its hit and transfer behaviour was not separately validated.
+
+FP8 needs `flashmla_kv` for both prefill and decode (a mixed config would size a 656 B pool for a
+backend that does not expect it, and `flashmla_kv` with a bf16 cache and `index_kpool > 1` is now
+accepted but meaningless); the patch does not assert this, the canary flags must.
+
+Rollout is a flag on a canary replica, plus the DSA backend flags, not an image switch: do not pass
+`--kv-cache-dtype fp8_e4m3` and nothing in the image changes. The 4 files' bytes are pinned to the base
+image's (`source-manifest.json`), and the patch is byte-identical to the one validated in exp 27.
+
+## Preprocess process pool with a per-request deadline (opt-in, v7)
+
+Root cause of inference-proxy #287 (tee-bench `evidence/long-tp2-wedge-rca`): patch 4 (PR #30771)
+renders the chat template and tokenizes in `ThreadPoolExecutor(max_workers=1)`. One request that keeps
+that thread busy for minutes parks every other request of the replica behind it, while the scheduler
+idles, KV is empty and `/health` stays 200. A thread cannot be killed, so there was no deadline.
+
+`preprocess-pool.diff` adds `managers/preprocess_pool.py`: N worker processes forked from a zygote
+taken at HTTP-lifespan start (the zygote is one fork of the threaded server, made once before traffic
+from the event-loop thread; replacing a worker later forks only the zygote), one request per worker at
+a time, results pickled back. Every first worker must answer a ping at startup, otherwise (a child
+that inherited a held lock) the pool is disabled and the thread path is used. A request that exceeds
+`SGLANG_PREPROCESS_TIMEOUT_S` fails alone with **HTTP 422** `RequestPreprocessingTimeout` (the cause is
+the payload; a 5xx makes gateways retry the same body, which turned one request into hours), its
+worker is SIGKILLed and replaced; the write, the wait and the read all sit under that deadline. A
+worker that dies while running a request (OOM kill, crash) fails that request with HTTP 422
+`RequestPreprocessingWorkerDied` and is replaced; the request is not retried on the unguarded thread
+path, since it may be what killed the worker. Multimodal `/dev/shm` hand-off and the `_tokenize_texts`
+closures stay on the thread path; if the pool itself fails (not started, spawn failure, request not
+picklable) the request falls back to the thread path, and a pool that breaks wakes the requests queued
+for a worker.
+
+**Default OFF.** `SGLANG_PREPROCESS_WORKERS` unset, `0`, negative or not an integer: `install()`
+returns before forking anything, no attribute is set, and `handle_request` takes the patch-4 thread
+path unchanged. The lab image defaulted to 4; here it is opt-in per replica, like every other
+behaviour change in this recipe, because a pool forks processes that hold a copy-on-write tokenizer
+inside a memory-constrained CVM and has not run in one.
+
+| var | default | meaning |
+| --- | --- | --- |
+| `SGLANG_PREPROCESS_WORKERS` | 0 (off) | number of worker processes; the canary uses 4 |
+| `SGLANG_PREPROCESS_TIMEOUT_S` | 60 | per-request deadline, then 422 for that request only |
+| `SGLANG_PREPROCESS_LOG_SLOW_S` | 5 | INFO line (rid, message and tool counts, chars, images, seconds) when a worker takes longer |
+| `SGLANG_PREPROCESS_TEST_HOOK` | unset | test only: `__PP_SLOW_<s>__` / `__PP_CRASH__` markers in a message |
+
+Risks and how they are bounded:
+
+- Fork safety: the one fork of the threaded server happens at lifespan start (the startup ping above
+  catches a child stuck on an inherited lock); workers are forked from the single-threaded zygote.
+  The zygote and workers drop the parent's `set_wakeup_fd` and restore default SIGTERM/SIGQUIT, so a
+  signal delivered to a child cannot be reported to the parent's asyncio loop (tested).
+- Lifetime: workers exit on EOF of their socket (the other end belongs to the server) and the zygote on
+  EOF of its control socket, so a dead server leaves no orphans. Nothing calls `shutdown()` explicitly.
+- Memory: each worker is a copy-on-write copy of the tokenizer manager at lifespan start and its RSS
+  grows toward a full copy as refcounts touch pages. Size the CVM for N extra tokenizer copies in the
+  worst case; start with `SGLANG_PREPROCESS_WORKERS=4` on one replica and watch RSS. The server runs
+  under granian: with `tokenizer_worker_num > 1` every granian worker runs its own lifespan, so you
+  would get N workers per server worker. Do not combine `SGLANG_PREPROCESS_WORKERS > 0` with
+  `--tokenizer-worker-num > 1`, and watch tokenizer RSS when enabling the pool. The canary uses a
+  single worker process.
+- The zygote and workers inherit the server's open descriptors (listening socket, ZMQ ipc). They hold
+  no state on them, but they keep them open until they exit. `pickle` of the request and result runs
+  on the event loop (0.2 s for a 5M-id result).
+- A client disconnect does not interrupt a running worker; a shielded task returns the worker to the
+  pool or kills it at the deadline.
+- The 60 s default deadline is far above the measured cost of any normal request (a 640K-token
+  agent trace preprocesses in about 2 s). Raise it for known huge prompts.
+
+Evidence: output through the pool is identical to the in-process path (prompt ids, sampling params,
+routing key) at 13 to 3003 messages and up to 640K tokens, IPC overhead not measurable (RCA section 9,
+`tests/real_equiv.py`). GPU (exp 28, lab image with the pool at 4 workers): three injected 120 s
+blocking requests at W2 3.0 caused no stall, TTFT stayed 0.6 / 1.6 s. Bare metal only. CPU tests:
+`test_preprocess_pool.py` (step 12).
+
+## Tool-schema size cap (opt-in, v7)
+
+`OpenAIServingChat._validate_request` runs `jsonschema` `Draft202012Validator.check_schema` on every
+tool's `parameters` on the HTTP event loop, before the request reaches the preprocessor. A client
+controls the size of that schema. `tool-schema-depth-cap.diff` adds `utils/tool_schema_guard.py` and one
+call in `_validate_request`: a tool whose schema is over a limit gets the usual **HTTP 400** ("Tool N
+function 'parameters' schema is too large: ...") before `check_schema` runs.
+
+| var | default | meaning |
+| --- | --- | --- |
+| `SGLANG_TOOL_SCHEMA_MAX_DEPTH` | 0 (off) | max nesting of JSON objects/arrays inside one tool's `parameters` |
+| `SGLANG_TOOL_SCHEMA_MAX_NODES` | 0 (off) | max number of JSON values (objects, arrays and every value inside them, scalars included) summed over all tools of one request |
+
+Both default to off (the call returns immediately), so request handling is unchanged until a replica sets
+them. Suggested canary values: depth 32, nodes 25000. A schema level costs two containers (the schema
+object and its `properties` / `anyOf` / `items` container), so depth 32 is about 16 schema levels, far
+beyond real tool definitions. The RCA saw requests with 40 to 160 tools, so the node budget is shared by
+the whole request and set high enough not to reject those (25000 values is about 1.3 s of `check_schema`
+in the worst case); tighten it from the first week of canary logs (a rejection names the tool index
+and the variable).
+
+Why two limits, and a correction to the RCA's premise: the RCA measured nested `anyOf` at x2 per level
+(depth 12 = 2.9 s) and extrapolated "depth 20 = 12 min". Measured again with `jsonschema` 4.26.0 (the
+version in the base image), `check_schema` is **linear in the number of nodes**, about 50 us per node:
+a chain of any shape up to depth 80 takes under 15 ms (no exponential in depth), scalar entries cost
+the same as containers (`properties` mapped to `true`, a long `type` list: about 65 us per entry, so
+they are counted too), and the doubling per
+level in the RCA is the schema tree itself doubling when each `anyOf` level has two recursive branches
+(depth 12 = 12288 nodes, 135 KB, 0.65 s here; depth 14 = 540 KB, 2.7 s). The cost is therefore bounded
+by the body size, not by depth: a depth cap alone would not stop a wide bomb, so the node cap is the
+one that bounds the stall, and the depth cap (requested) bounds recursion and pathological chains.
+The walk is iterative and stops at the first violation. `test_tool_schema_guard.py` (step 13) covers
+the boundaries, a 200k-deep and a cyclic structure, bad env values, and runs the shipped
+`_validate_request` on stubs.
+
 ## Why the composition is safe
 
 The HiCache patches touch `mem_cache/*`, `disaggregation/*` and `schedule_batch.py`. None of the
@@ -315,7 +538,7 @@ other patch in this recipe touches it:
 e2f1884ddd55721786cb9b7365b5d0a619a9d9a6ebf88c9c09b690ee39b45b94  mem_cache/unified_cache/unified_tree_core.py
 ```
 
-That disjointness was verified against the real base image, not assumed — all three patch targets
+That disjointness was verified against the real base image, not assumed — all three patch targets (base bytes, before the self-profiling patch)
 hash identically in `3eccc307…` and in `e9d29a1c…`:
 
 ```
@@ -343,8 +566,11 @@ producing a silently different image.
 
 Added here: the DSA indexer query split is opt-in (`SGLANG_DSA_INDEXER_QSPLIT=1`), the two
 event-loop patches have no switch, and the stall dump is on at 30 s
-(`SGLANG_EVENT_LOOP_STALL_DUMP_SECS=0` turns it off), and the ghost prefix cache
-(`SGLANG_GHOST_CACHE=1`) and the KV tier metrics (`SGLANG_KV_TIER_METRICS=1`) are opt-in. Inherited
+(`SGLANG_EVENT_LOOP_STALL_DUMP_SECS=0` turns it off). The ghost prefix cache (`SGLANG_GHOST_CACHE=1`),
+the KV tier metrics (`SGLANG_KV_TIER_METRICS=1`) and the self-profiler (`NEAR_SELF_PROFILE=1`) are
+opt-in, FP8 KV needs `--kv-cache-dtype fp8_e4m3` with the `flashmla_kv` DSA backends, the preprocess pool
+needs `SGLANG_PREPROCESS_WORKERS=N` and the tool-schema cap needs `SGLANG_TOOL_SCHEMA_MAX_DEPTH` /
+`SGLANG_TOOL_SCHEMA_MAX_NODES`. Inherited
 opt-ins:
 
 - admission reserve — `SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE`
@@ -388,6 +614,29 @@ measured at 406 GiB, 650 GiB and with HiCache off on the same replay (gpu31 HiCa
 a CPU-only container on gpu31 (2026-10-05, tag `glm53-hicache-w4afp8:v5-obs`). On GPU the lab
 bind-mounted the same module and patched tree core over the v4 lab image for the HiCache policy A/B
 (gpu31, 2026-09-30); this build has not run on GPU.
+
+**v7** adds the self-profiling hook, FP8 KV cache support, the opt-in preprocess pool and the opt-in
+tool-schema cap on top of v6, with no change to any v6 patch (no image was published between v6 and this
+build, so they are one release). Applied in this order after `kv-tier-metrics.diff`:
+`near-self-profile.diff`, `fp8kv-flashmla.diff`, `preprocess-pool.diff` (stacked on the two event-loop
+patches: `http_server.py` and `serving_base.py` change their after-hashes), `tool-schema-depth-cap.diff`.
+
+Self-profiling hook: `scheduler.py` is the only source file that was pinned unchanged (before = after)
+and now has a new after-hash. The hook patch was applied to the base image's real `scheduler.py` and
+`profiler_manager.py` bytes and reproduces the manifest hashes; `test-cpu.sh` step 10 was run against
+the patched sources outside the image. A GPU run of the hook on gpu32 (TP4, CC off) completed in the
+lab, but its output was not retained, so no GPU result is claimed, and that run predates the review
+fixes to the hook (no start while another profile runs, barrier-skip flag cleared after the hook's
+profile, parse-child cleanup and OOM priority), which are covered by `test_self_profile.py` only.
+
+FP8 KV, preprocess pool and tool-schema cap: the four FP8 files and `serving_chat.py` are pinned to the
+base image's bytes. All twelve patches were applied in order to the real base image sources (registry
+layers of `3eccc307`) with `apply-patches.py`, which verified every before and after hash, and the
+manifest hashes of the FP8 files equal the ones validated in exp 27. `test-cpu.sh` steps 11-13 cover
+the new patches (step 11 also runs `test_fp8kv_paths.py`, which executes the changed FP8 functions on
+stubs with the gate on and off); steps 1-10 were not re-run end to end here (they need the full image).
+The FP8 and pool GPU numbers are bare metal with CC off from lab images (v6 + FP8, and + pool at 4
+workers). Nothing has run in a TEE.
 
 ## Security remediation
 
