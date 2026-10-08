@@ -97,10 +97,18 @@ def handles_path(replica: str, rank: int) -> str:
 # --------------------------------------------------------------------------------------------
 # CUDA IPC (driver API via ctypes; no torch shared-file ref counting across containers)
 # --------------------------------------------------------------------------------------------
+class _IpcHandle(ctypes.Structure):
+    """cudaIpcMemHandle_t: a 64-byte struct passed BY VALUE to cudaIpcOpenMemHandle."""
+    _fields_ = [("reserved", ctypes.c_char * 64)]
+
+
 class _Cuda:
     def __init__(self):
         self.rt = ctypes.CDLL("libcudart.so") if _have("libcudart.so") else _find_cudart()
         self.drv = ctypes.CDLL("libcuda.so.1")
+        self.rt.cudaIpcGetMemHandle.argtypes = [ctypes.POINTER(_IpcHandle), ctypes.c_void_p]
+        self.rt.cudaIpcOpenMemHandle.argtypes = [ctypes.POINTER(ctypes.c_void_p), _IpcHandle, ctypes.c_uint]
+        self.opened: Dict[bytes, int] = {}  # one mapping per peer allocation (many tensors share one)
 
     def mem_base(self, ptr: int):
         base, size = ctypes.c_uint64(), ctypes.c_size_t()
@@ -110,19 +118,22 @@ class _Cuda:
         return base.value, size.value
 
     def ipc_handle(self, base: int) -> bytes:
-        h = (ctypes.c_byte * 64)()
+        h = _IpcHandle()
         r = self.rt.cudaIpcGetMemHandle(ctypes.byref(h), ctypes.c_void_p(base))
         if r != 0:
             raise RuntimeError(f"cudaIpcGetMemHandle failed: {r} (expandable_segments must be False)")
-        return bytes(bytearray(h))
+        return ctypes.string_at(ctypes.addressof(h), 64)
 
     def ipc_open(self, handle: bytes) -> int:
-        h = (ctypes.c_byte * 64).from_buffer_copy(handle)
+        if handle in self.opened:
+            return self.opened[handle]
+        h = _IpcHandle.from_buffer_copy(handle)
         ptr = ctypes.c_void_p()
         # cudaIpcMemLazyEnablePeerAccess = 1
         r = self.rt.cudaIpcOpenMemHandle(ctypes.byref(ptr), h, ctypes.c_uint(1))
         if r != 0:
             raise RuntimeError(f"cudaIpcOpenMemHandle failed: {r}")
+        self.opened[handle] = ptr.value
         return ptr.value
 
 
