@@ -26,7 +26,7 @@ INSTANCE = "b760c105-40c3-4f8c-8fd4-5691c3bf470c"  # gpu13
 LAB_PROJECT = "glm53kvq"
 LAB_FILE = "prod/GLM-5.3-Flash-SGL-KVShare-Qual.yaml"
 LAB_SERVICES = ["kvq-driver", "kvq-router", "kvq-pf", "kvq-dc", "kvq-r1", "kvq-r2", "kvq-ghost-aggregator",
-                "kvq-probe", "kvq-ucxinfo", "kvq-nixl-target", "kvq-nixl-initiator"]
+                "kvq-probe", "kvq-ucxinfo", "kvq-nixl-target", "kvq-nixl-initiator", "kvq-pa", "kvq-pb"]
 GLM_SERVICES = ["model-sg-glm53-w4afp8-tp2-r1a", "model-sg-glm53-w4afp8-tp2-r1b"]
 OPTIONAL_SERVICES = ["glm53-ghost-aggregator"]
 ALLOWED_PLAN = set(GLM_SERVICES + OPTIONAL_SERVICES + ["model-downloader"])
@@ -80,11 +80,16 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--apply", action="store_true", help="tear down the lab and restore (default: plan only)")
     ap.add_argument("--keep-lab", action="store_true", help="skip the lab teardown")
+    ap.add_argument("--tag", help="restore this work tag instead of the current one (with --file)")
+    ap.add_argument("--file", default="prod/small-models.yaml")
     a = ap.parse_args()
 
     ver = json.loads(api(f"instances/{INSTANCE}/version"))
     work = ver.get("projects", {}).get("work", {}).get("current") or {}
     tag, file = work.get("tag"), work.get("file")
+    if a.tag:
+        print(f"current work deployment: {work.get('tag')} {work.get('file')} -> restoring {a.tag} {a.file}")
+        tag, file = a.tag, a.file
     if not tag or file != "prod/small-models.yaml":
         sys.exit(f"unexpected gpu13 work deployment {work!r}; restore by hand")
     lab = ver.get("projects", {}).get(LAB_PROJECT, {}).get("current") or {}
