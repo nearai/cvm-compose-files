@@ -29,6 +29,7 @@ import pickle
 import queue
 import socket
 import struct
+import sys
 import threading
 import time
 from dataclasses import dataclass, field
@@ -141,6 +142,16 @@ class _Cuda:
         self.opened[handle] = ptr.value
         return ptr.value
 
+    def close_all(self) -> int:
+        """Unmap every peer allocation. Required when the peer dies: while a mapping is open the
+        driver keeps the dead peer's memory allocated, and its restart then finds no free VRAM."""
+        n = 0
+        for _h, ptr in list(self.opened.items()):
+            if self.rt.cudaIpcCloseMemHandle(ctypes.c_void_p(ptr)) == 0:
+                n += 1
+        self.opened.clear()
+        return n
+
 
 def _have(name: str) -> bool:
     try:
@@ -235,6 +246,8 @@ class _State:
     peer_epoch: Optional[str] = None
     peer_tensors: Optional[List[torch.Tensor]] = None
     seq: int = 0
+    peer_gbps: float = 0.0
+    map_lock: threading.Lock = field(default_factory=threading.Lock)
     stats: Dict[str, float] = field(default_factory=lambda: {
         "fetch_tries": 0, "fetch_hits": 0, "hit_tokens": 0, "fetch_s": 0.0, "fallback": 0,
         "lend_granted": 0, "lend_declined": 0, "lend_expired": 0})
@@ -276,8 +289,12 @@ def _impl():
             spec = importlib.util.spec_from_file_location("peerkv_engine_hot", __file__)
             mod = importlib.util.module_from_spec(spec)
             mod._HOT_CHILD = True
+            sys.modules["peerkv_engine_hot"] = mod  # dataclasses resolve their module via sys.modules
             spec.loader.exec_module(mod)
             mod._HOT_CHILD = True
+            # In-band messages are pickled across TP ranks, which may reload an iteration apart:
+            # keep the original class so every rank can unpickle them.
+            mod.PeerKVMsg = PeerKVMsg
             mod._S, mod._M = _S, _M
             if _S is not None:
                 opened = getattr(_S.cuda, "opened", {})
@@ -315,8 +332,14 @@ def peerkv_init(scheduler) -> None:
         rank = getattr(scheduler, "tp_rank", 0)
     tensors = collect_tensors(scheduler)
     page = int(getattr(scheduler.tree_cache, "page_size", 64))
-    _S = _State(scheduler=scheduler, rank=rank, tp_size=scheduler.ps.tp_size, page_size=page, tensors=tensors,
-                epoch=f"{SELF}-{os.getpid()}-{int(time.time())}")
+    # One epoch per replica instance, identical on every TP rank (each rank is its own process, so
+    # a per-process value would never match the holder rank-0 epoch carried in a grant).
+    epoch = f"{SELF}-{os.getpid()}-{int(time.time())}"
+    tp_size = scheduler.ps.tp_size
+    if tp_size > 1:
+        from sglang.srt.utils.common import broadcast_pyobj
+        epoch = broadcast_pyobj([epoch], scheduler.tp_group.rank, scheduler.tp_cpu_group, src=scheduler.tp_group.ranks[0])[0]
+    _S = _State(scheduler=scheduler, rank=rank, tp_size=tp_size, page_size=page, tensors=tensors, epoch=epoch)
     _S.cuda = _Cuda()
     os.makedirs(DIR, exist_ok=True)
     recs = []
@@ -406,6 +429,8 @@ def inject(recv_reqs):
 
 def consume(scheduler, recv_reqs):
     """Every rank, same iteration: handle and drop PeerKVMsg items."""
+    if _S is not None and not _HOT_CHILD:
+        _ensure_prewarm()  # once per process; the hot-reload parent owns the thread
     if _S is None or not recv_reqs:
         return recv_reqs
     h = _impl()
@@ -437,6 +462,8 @@ def _handle_msg(scheduler, m: PeerKVMsg):
             if m.op == "expire":
                 _S.stats["lend_expired"] += 1
                 _m("lend", "expired")
+        if LOG_FETCHES and _S.rank == 0:
+            logger.info(f"{TAG} {m.op} {m.lease} (held={lease is not None}); open leases={len(_S.leases)}")
         return
     # lend
     res = tree.match_prefix(MatchPrefixParams(key=RadixKey(token_ids=m.tokens, extra_key=m.extra_key, limit=m.limit)))
@@ -460,6 +487,8 @@ def _handle_msg(scheduler, m: PeerKVMsg):
             reply = {"ok": True, "L": L, "p_b": m.p_b, "epoch": _S.epoch,
                      "kv_idx": res.device_indices[m.p_b:L].to("cpu", dtype=torch.int64),
                      "mamba_slot": int(mv.view(-1)[0].item())}
+    if not reply["ok"]:
+        _S.lease_t0.pop(m.lease, None)  # nothing pinned, nothing to expire
     _S.stats["lend_granted" if reply["ok"] else "lend_declined"] += 1
     _m("lend", "granted" if reply["ok"] else reply["why"])
     if _S.rank == 0:
@@ -488,6 +517,115 @@ def _layout_key(name, kind, shape, dtype):
     return (name, kind, tuple(shape[:axis]) + tuple(shape[axis + 1:]), dtype)
 
 
+PREWARM_POLL_S = float(os.environ.get("SGLANG_PEERKV_PREWARM_POLL_S", "5"))
+# A fetch copies inside the scheduler loop, so it stalls this replica for its duration. Skip any
+# fetch whose copy is estimated to take longer than this (estimate = bytes / measured GB/s).
+MAX_COPY_S = float(os.environ.get("SGLANG_PEERKV_MAX_COPY_S", "0.5"))
+_PREWARM = {"thread": None}
+
+
+def _peer_file_epoch() -> Optional[str]:
+    try:
+        with open(handles_path(PEER, _S.rank), "rb") as f:
+            return pickle.load(f)["epoch"]
+    except Exception:
+        return None
+
+
+def _prewarm_loop():
+    """Map the peer's pools (and run one tiny copy) off the request path; re-map on peer restart.
+    A first mapping costs seconds (CUDA context on the peer GPU, lazy peer access); doing it in a
+    fetch would stall this replica's scheduler."""
+    torch.cuda.set_device(_S.tensors[0]["tensor"].device)  # threads start on cuda:0
+    failed = None
+    while True:
+        try:
+            ep = _peer_file_epoch()
+            if _S.peer_epoch is not None and (ep != _S.peer_epoch or not _epoch_alive(_S.peer_epoch)):
+                _unmap_peer(f"peer epoch {_S.peer_epoch} gone (file now {ep})")
+            if ep is not None and ep != _S.peer_epoch and ep != failed and _epoch_alive(ep):
+                t0 = time.monotonic()
+                with _S.map_lock:
+                    peer = _open_peer(ep)
+                    for d, p in zip(_S.tensors, peer):  # touch every mapping once (lazy peer enable, kernels)
+                        t = d["tensor"]
+                        _ = (p[:, :1] if d["kind"] == "slot" else p[:1]).to(t.device)
+                    torch.cuda.synchronize()
+                    gbps = _bench_copy(peer)
+                logger.info(f"{TAG} rank {_S.rank}: peer {PEER} epoch {ep} mapped in {time.monotonic() - t0:.2f}s; "
+                            f"copy {gbps:.1f} GB/s, {_bytes_per_token() / 1e3:.1f} KB/token, "
+                            f"max fetch {int(MAX_COPY_S * gbps * 1e9 / max(1, _bytes_per_token()))} tokens")
+        except Exception as e:
+            # Usually a stale handle file from a dead or still-starting peer; retry once its file
+            # changes, or after 60 s, and log once per epoch.
+            if failed != ep:
+                logger.warning(f"{TAG} rank {_S.rank}: peer epoch {ep} not mappable yet: {e!r}")
+            failed = ep
+        if failed is not None and int(time.monotonic()) % 60 < PREWARM_POLL_S:
+            failed = None
+        time.sleep(PREWARM_POLL_S)
+
+
+def _bytes_per_token() -> int:
+    n = 0
+    for d in _S.tensors:
+        t = d["tensor"]
+        if d["kind"] == "token":
+            n += t[0].numel() * t.element_size()
+        elif d["kind"] == "page":
+            n += t[0].numel() * t.element_size() // 64
+    return n
+
+
+def _bench_copy(peer) -> float:
+    """Measured peer->local GB/s with the real gather path (one token tensor, ~32K rows)."""
+    i = next(k for k, d in enumerate(_S.tensors) if d["kind"] == "token")
+    t, p = _S.tensors[i]["tensor"], peer[i]
+    rows = min(32768, p.shape[0] - 64, t.shape[0] - 64)
+    src = torch.arange(64, 64 + rows, dtype=torch.int64)
+    scratch = torch.empty((rows,) + tuple(t.shape[1:]), dtype=t.dtype, device=t.device)
+    best = 0.0
+    for _ in range(3):
+        torch.cuda.synchronize()
+        t0 = time.monotonic()
+        with torch.cuda.device(p.device):
+            g = p.index_select(0, src.to(p.device))
+        scratch.copy_(g.to(t.device))
+        torch.cuda.synchronize()
+        best = max(best, scratch.numel() * scratch.element_size() / 1e9 / max(time.monotonic() - t0, 1e-6))
+    _S.peer_gbps = best
+    return best
+
+
+def _epoch_alive(epoch: str) -> bool:
+    """Epoch = <replica>-<rank0 pid>-<time>; with pid: host the sibling's pids are visible."""
+    try:
+        pid = int(epoch.rsplit("-", 2)[1])
+    except Exception:
+        return True
+    return os.path.exists(f"/proc/{pid}")
+
+
+def _unmap_peer(why: str):
+    with _S.map_lock:
+        devs = {t.device for t in (_S.peer_tensors or [])}
+        _S.peer_epoch, _S.peer_tensors = None, None
+        torch.cuda.synchronize()
+        n = _S.cuda.close_all()
+        for d in devs:  # gather buffers this process cached on the peer's GPUs
+            with torch.cuda.device(d):
+                torch.cuda.synchronize()
+                torch.cuda.empty_cache()
+    logger.info(f"{TAG} rank {_S.rank}: unmapped {n} peer allocations: {why}")
+
+
+def _ensure_prewarm():
+    if _PREWARM["thread"] is None and _S is not None and PEER:
+        th = threading.Thread(target=_prewarm_loop, daemon=True, name="peerkv-prewarm")
+        _PREWARM["thread"] = th
+        th.start()
+
+
 def _open_peer(epoch: str):
     """Map the peer rank's tensors (same rank index) once per peer epoch."""
     if _S.peer_epoch == epoch and _S.peer_tensors is not None:
@@ -507,7 +645,8 @@ def _open_peer(epoch: str):
         with torch.cuda.device(r["device"]):
             base = _S.cuda.ipc_open(r["handle"])
         out.append(_wrap(base + r["offset"], r["nbytes"], getattr(torch, r["dtype"]), r["shape"], r["device"]))
-    _S.peer_epoch, _S.peer_tensors = epoch, out
+    _S.peer_tensors = out  # tensors before epoch: a reader that sees the new epoch sees its tensors
+    _S.peer_epoch = epoch
     return out
 
 
@@ -536,6 +675,29 @@ def _copy_all(peer: List[torch.Tensor], kv_src_cpu: torch.Tensor, kv_dst: torch.
         else:  # slot: [L, size+1, ...]
             t[:, slot_dst].copy_(p[:, slot_src].to(t.device))
     torch.cuda.current_stream().synchronize()
+    if VERIFY:
+        _verify_copy(peer, kv_src_cpu, kv_dst, slot_src, slot_dst, pg_src, pg_dst)
+
+
+VERIFY = os.environ.get("SGLANG_PEERKV_VERIFY", "0") == "1" or os.path.exists("/etc/glm53/peerkv.verify")  # lab only
+
+
+def _verify_copy(peer, kv_src_cpu, kv_dst, slot_src, slot_dst, pg_src, pg_dst):
+    bad = []
+    for d, p in zip(_S.tensors, peer):
+        t = d["tensor"]
+        if d["kind"] == "token":
+            a, b = t.index_select(0, kv_dst), p.index_select(0, kv_src_cpu.to(p.device)).to(t.device)
+        elif d["kind"] == "page":
+            a, b = t.index_select(0, pg_dst.to(t.device)), p.index_select(0, pg_src.to(p.device)).to(t.device)
+        else:
+            a, b = t[:, slot_dst], p[:, slot_src].to(t.device)
+        if not torch.equal(a.contiguous().view(torch.uint8), b.contiguous().view(torch.uint8)):
+            bad.append(d["name"])
+    logger.info(f"{TAG} rank {_S.rank}: verify {'OK' if not bad else 'MISMATCH ' + ','.join(bad[:6])} "
+                f"({len(_S.tensors)} tensors, {kv_dst.numel()} tokens)")
+    if bad:
+        raise RuntimeError(f"verify mismatch: {bad[:6]}")
 
 
 def maybe_fetch(scheduler, req) -> None:
@@ -545,6 +707,14 @@ def maybe_fetch(scheduler, req) -> None:
     h = _impl()
     if h is not None:
         return h.maybe_fetch(scheduler, req)
+    try:
+        _maybe_fetch(scheduler, req)
+    except Exception as e:  # the request then prefills normally
+        logger.warning(f"{TAG} rank {_S.rank}: fetch error, falling back to prefill: {e!r}")
+        _m("req", f"error:{type(e).__name__}")
+
+
+def _maybe_fetch(scheduler, req) -> None:
     if getattr(req, "cache_salt", None) or getattr(req, "positional_embed_overrides", None) is not None:
         return
     from sglang.srt.mem_cache.base_prefix_cache import EvictParams, InsertParams, MatchPrefixParams
@@ -567,7 +737,12 @@ def maybe_fetch(scheduler, req) -> None:
     _S.seq += 1
     lease = f"{SELF}:{_S.epoch}:{_S.seq}"
     grant = None
-    if _S.rank == 0:
+    # Rank 0 decides for every rank (its answer is broadcast): skip without asking the peer when
+    # the peer is unmapped here or the copy would stall the scheduler longer than MAX_COPY_S.
+    est_s = (limit - p_b) * _bytes_per_token() / max(_S.peer_gbps, 1e-3) / 1e9
+    if _S.rank == 0 and (_S.peer_tensors is None or est_s > MAX_COPY_S):
+        grant = {"ok": False, "why": "unmapped" if _S.peer_tensors is None else "too_slow"}
+    elif _S.rank == 0:
         try:
             grant = _rpc(PEER, PeerKVMsg(op="lend", lease=lease, tokens=tokens, extra_key=req.extra_key, limit=limit, p_b=p_b),
                          RPC_TIMEOUT_S + 0.5)
@@ -615,9 +790,12 @@ def _fetch_insert(scheduler, req, tree, tokens, local, p_b, L, n, kv_src, grant,
         logger.warning(f"{TAG} rank {_S.rank}: no space for {n} tokens (kv={kv_dst is not None} slot={slot is not None})")
     if ok:
         try:
-            peer = _open_peer(grant["epoch"])
-            t_open = time.monotonic()
-            _copy_all(peer, kv_src, kv_dst.to(torch.int64), int(grant["mamba_slot"]), int(slot.view(-1)[0].item()))
+            with _S.map_lock:
+                if _S.peer_epoch != grant["epoch"] or _S.peer_tensors is None:
+                    raise RuntimeError(f"peer not mapped yet (have {_S.peer_epoch}, grant {grant['epoch']})")
+                peer = _S.peer_tensors
+                t_open = time.monotonic()
+                _copy_all(peer, kv_src, kv_dst.to(torch.int64), int(grant["mamba_slot"]), int(slot.view(-1)[0].item()))
         except Exception as e:
             ok, why = False, f"copy:{type(e).__name__}"
             logger.warning(f"{TAG} rank {_S.rank}: copy failed: {e!r}")
