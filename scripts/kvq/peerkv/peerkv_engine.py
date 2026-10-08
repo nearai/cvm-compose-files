@@ -44,7 +44,9 @@ ENABLED = os.environ.get("SGLANG_PEERKV", "0") == "1"
 SELF = os.environ.get("SGLANG_PEERKV_SELF", "")
 PEER = os.environ.get("SGLANG_PEERKV_PEER", "")
 DIR = os.environ.get("SGLANG_PEERKV_DIR", "/peerkv")
-MIN_TOKENS = int(os.environ.get("SGLANG_PEERKV_MIN_TOKENS", "4096"))
+# Each lend RPC stalls this scheduler for about one holder iteration (~60 ms on gpu04), hit or
+# not, so only ask when the missing span is long enough that a hit clearly beats prefilling it.
+MIN_TOKENS = int(os.environ.get("SGLANG_PEERKV_MIN_TOKENS", "16384"))
 RPC_TIMEOUT_S = float(os.environ.get("SGLANG_PEERKV_RPC_TIMEOUT_S", "2"))
 LEASE_TTL_S = float(os.environ.get("SGLANG_PEERKV_LEASE_TTL_S", "30"))
 GATHER_CHUNK = int(os.environ.get("SGLANG_PEERKV_GATHER_CHUNK_ROWS", "32768"))
@@ -521,6 +523,7 @@ PREWARM_POLL_S = float(os.environ.get("SGLANG_PEERKV_PREWARM_POLL_S", "5"))
 # A fetch copies inside the scheduler loop, so it stalls this replica for its duration. Skip any
 # fetch whose copy is estimated to take longer than this (estimate = bytes / measured GB/s).
 MAX_COPY_S = float(os.environ.get("SGLANG_PEERKV_MAX_COPY_S", "0.5"))
+REBENCH_S = float(os.environ.get("SGLANG_PEERKV_REBENCH_S", "300"))
 _PREWARM = {"thread": None}
 
 
@@ -538,9 +541,18 @@ def _prewarm_loop():
     fetch would stall this replica's scheduler."""
     torch.cuda.set_device(_S.tensors[0]["tensor"].device)  # threads start on cuda:0
     failed = None
+    last_bench = time.monotonic()
     while True:
         try:
             ep = _peer_file_epoch()
+            # Re-measure now and then: one sample taken under load can read far too low; keep the best.
+            if _S.peer_tensors is not None and time.monotonic() - last_bench > REBENCH_S:
+                last_bench = time.monotonic()
+                prev = _S.peer_gbps
+                with _S.map_lock:
+                    if _S.peer_tensors is not None:
+                        _bench_copy(_S.peer_tensors)
+                _S.peer_gbps = max(prev, _S.peer_gbps)
             if _S.peer_epoch is not None and (ep != _S.peer_epoch or not _epoch_alive(_S.peer_epoch)):
                 _unmap_peer(f"peer epoch {_S.peer_epoch} gone (file now {ep})")
             if ep is not None and ep != _S.peer_epoch and ep != failed and _epoch_alive(ep):
