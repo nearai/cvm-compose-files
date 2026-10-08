@@ -21,7 +21,7 @@ Runbook: docs/glm53-kvshare-ab.md. Rollback: deploy the base file at the current
 same scoped service list (r3, r4); the base file defines no `kvshare` volume, so the tmpfs store
 goes with it.
 """
-import argparse, difflib, re, sys
+import argparse, difflib, hashlib, re, sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -405,6 +405,150 @@ def render_v7_hicache_off(target="r3", source_replica="r4", source=V7_SOURCE, he
     return hdr + out
 
 
+PEERKV_TARGET = Path("prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8-V7-HiCacheOff-PeerKV.yaml")
+PEERKV_PATCH = Path("scripts/kvq/peerkv/glm53_peerkv_startup_patch.py")
+PEERKV_ENGINE = Path("scripts/kvq/peerkv/peerkv_engine.py")
+PEERKV_PAIR = ("r1", "r2")
+PEERKV_SUFFIX, PEERKV_CTRL_SUFFIX = "-hicacheoff-peerkv-v1", "-hicacheoff-v1"  # appended to the v7 "...-v7"
+# Each replica's own identity on the base file (the 4 TP2 islands of gpu04).
+PEERKV_IDENTITY = {"r1": ('["0","1"]', "1"), "r2": ('["2","3"]', "2"), "r3": ('["4","5"]', "3"), "r4": ('["6","7"]', "4")}
+
+
+def cfg(name, text):
+    """Content-addressed config name: compose reuses a config whose name is unchanged, so a changed
+    engine or patch gets a new name (and the replica is recreated) instead of a stale mount."""
+    return f"{name}_{hashlib.sha256(text.encode()).hexdigest()[:8]}"
+
+
+def render_peerkv():
+    """gpu04 A/B: every replica is the v7 canary replica (V7Canary r4) without HiCache and with
+    expandable_segments:False. Treatment r1+r2 additionally run GPU-to-GPU peer prefix fetch
+    (peerkv: startup patch + engine, both see GPUs 0-3 in PCI order, host IPC/PID namespaces, a
+    shared tmpfs for the IPC handle files). Control r3+r4 do not. Identity fields (name, GPUs,
+    ghost replica, instance labels) stay each replica's own."""
+    base = (ROOT / SOURCE).read_text()
+    v7 = (ROOT / V7_SOURCE).read_text()
+    patch, engine = (ROOT / PEERKV_PATCH).read_text(), (ROOT / PEERKV_ENGINE).read_text()
+    c_patch, c_engine = cfg("glm53_peerkv_patch_py", patch), cfg("glm53_peerkv_engine_py", engine)
+    # The canary file must be the base file with only r4 changed (so cloning its r4 is "base + v7").
+    s0, s1 = service_block(v7, "model-sg-glm53-w4afp8-tp2-r4")
+    b0, b1 = service_block(base, "model-sg-glm53-w4afp8-tp2-r4")
+    def r4_job(text):
+        j0 = text.index("- job_name: sglang-model-sg-glm53-w4afp8-tp2-r4\n")
+        return j0, text.index("- job_name:", j0 + 10)
+    recon = base[:b0] + v7[s0:s1] + base[b1:]
+    (k0, k1), (v0, v1) = r4_job(recon), r4_job(v7)
+    recon = recon[:k0] + v7[v0:v1] + recon[k1:]
+    assert v7.endswith(recon), "V7Canary is not the base file with only r4 changed (regenerate the canary first)"
+    src = v7[s0:s1]
+    assert "fa730e6e62b2" in src, "V7Canary r4 is not the v7 image"
+    lines = src.split("\n")
+    kept = [l for l in lines if not l.strip().startswith(HICACHE_FLAGS)]
+    assert len(lines) - len(kept) == len(HICACHE_FLAGS), "expected the 4 HiCache flags in the v7 argv"
+    src = "\n".join(kept)
+    src = one(src, "    # v7 bundle canary: the candidate argv with FP8 KV (both flashmla_kv DSA backends), 64 running / 64 graphs / 380 mamba\n"
+              "    # slots, the overlap scheduler off, and the v7 image. Every other replica keeps the candidate anchor and the v6 image.\n",
+              "    # gpu04 A/B: the v7 canary argv (FP8 KV, flashmla_kv DSA backends, 64 running / 64 graphs / 380 mamba slots,\n"
+              "    # overlap scheduler off, v7 image) WITHOUT HiCache (" + ", ".join(HICACHE_FLAGS) + "), on every replica.\n",
+              "v7 comment")
+    old_alloc = "      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True\n"
+    src = one(src, old_alloc,
+              "      # A/B (both arms): False so the only arm difference is peerkv. Expandable segments put\n"
+              "      # allocations in CUDA VMM memory, which legacy cudaIpc (peerkv) cannot export.\n"
+              "      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:False\n", "alloc conf")
+    c0 = src.index("    command: >\n      sglang serve\n")
+    c1 = src.index("\n    depends_on:\n", c0)
+    argv = " ".join(l.strip() for l in src[c0:c1].split("\n")[1:])
+    assert argv.startswith("sglang serve --model-path") and "$" not in argv, argv[:80]
+    v7_variant = re.search(r'nearai\.otel\.config_variant: "([^"]+)"', src).group(1)
+    assert v7_variant.endswith("-v7"), v7_variant
+
+    out = base
+    for r in ("r1", "r2", "r3", "r4"):
+        name = f"model-sg-glm53-w4afp8-tp2-{r}"
+        dev, inst = PEERKV_IDENTITY[r]
+        t0, t1 = service_block(out, name)
+        tblk = out[t0:t1]
+        # The table must agree with the base file's own identity for this replica.
+        assert f"device_ids: {dev}" in tblk and f'nearai.otel.instance: "{inst}"' in tblk and f"container_name: {name}\n" in tblk, r
+        assert ("SGLANG_GHOST_CACHE_REPLICA" not in tblk) if r == "r1" else (f"SGLANG_GHOST_CACHE_REPLICA={r}\n" in tblk), r
+        blk = src
+        # Whole-match substitutions only (a bare "4" would hit W4AFP8, fp8_e4m3, ...).
+        for old, new in [("  model-sg-glm53-w4afp8-tp2-r4:\n", f"  {name}:\n"),
+                         ("    container_name: model-sg-glm53-w4afp8-tp2-r4\n", f"    container_name: {name}\n"),
+                         ("      - SGLANG_GHOST_CACHE_REPLICA=r4\n", f"      - SGLANG_GHOST_CACHE_REPLICA={r}\n"),
+                         ('nearai.otel.container_name: "model-sg-glm53-w4afp8-tp2-r4"', f'nearai.otel.container_name: "{name}"'),
+                         ('nearai.otel.instance: "4"', f'nearai.otel.instance: "{inst}"'),
+                         ('"instance:4"', f'"instance:{inst}"')]:
+            blk = one(blk, old, new, f"{r} identity {old.strip()[:40]}")
+        peer = r in PEERKV_PAIR
+        suffix = PEERKV_SUFFIX if peer else PEERKV_CTRL_SUFFIX
+        blk = one(blk, "              device_ids: [\"6\",\"7\"]\n",
+                  ('              # peerkv: both treatment replicas see GPUs 0-3 in the same (PCI) order, so a\n'
+                   '              # peer pool is addressable over CUDA IPC; --base-gpu-id picks the own pair.\n'
+                   '              device_ids: ["0","1","2","3"]\n') if peer else f"              device_ids: {dev}\n", f"{r} gpus")
+        blk, nv = re.subn(r'("config_variant:[^",]+)"', lambda m: m.group(1) + suffix + '"', blk)
+        blk, nv2 = re.subn(r'(nearai\.otel\.config_variant: "[^"]+)"', lambda m: m.group(1) + suffix + '"', blk)
+        assert (nv, nv2) == (1, 1), (r, nv, nv2)
+        if peer:
+            sib = f"model-sg-glm53-w4afp8-tp2-{PEERKV_PAIR[1 - PEERKV_PAIR.index(r)]}"
+            gpu = 2 * (int(r[1]) - 1)
+            blk = one(blk, f"      - SGLANG_GHOST_CACHE_REPLICA={r}\n      - SGLANG_KV_TIER_METRICS=1\n",
+                      f"      - SGLANG_GHOST_CACHE_REPLICA={r}\n      - SGLANG_KV_TIER_METRICS=1\n"
+                      "      # peerkv (treatment): fetch a long cached prefix from the sibling's VRAM over CUDA IPC\n"
+                      "      # instead of re-prefilling it. GLM53_PEERKV=0 is the kill switch (no patch, inert).\n"
+                      "      - CUDA_DEVICE_ORDER=PCI_BUS_ID\n"
+                      "      - SGLANG_PEERKV=${GLM53_PEERKV:-1}\n"
+                      f"      - SGLANG_PEERKV_SELF={name}\n"
+                      f"      - SGLANG_PEERKV_PEER={sib}\n"
+                      "      - SGLANG_PEERKV_DIR=/peerkv\n"
+                      "      - SGLANG_PEERKV_MIN_TOKENS=4096\n", f"{r} peerkv env")
+            c0 = blk.index("    command: >\n      sglang serve\n")
+            c1 = blk.index("\n    depends_on:\n", c0)
+            blk = blk[:c0] + (
+                "    # peerkv startup patch (fail closed: a mismatch exits before serving), then the v7 argv.\n"
+                "    entrypoint: [\"bash\", \"-c\"]\n"
+                "    command:\n"
+                "      - |\n"
+                "        if [ \"$${SGLANG_PEERKV:-0}\" = \"1\" ]; then python3 /etc/glm53/glm53_peerkv_startup_patch.py || exit 1; fi\n"
+                f"        exec {argv} --base-gpu-id {gpu}\n"
+                "    # CUDA IPC across containers needs the host IPC and PID namespaces.\n"
+                "    ipc: host\n"
+                "    pid: host\n"
+                "    configs:\n"
+                f"      - source: {c_patch}\n        target: /etc/glm53/glm53_peerkv_startup_patch.py\n        mode: 0444\n"
+                f"      - source: {c_engine}\n        target: /etc/glm53/peerkv_engine.py\n        mode: 0444\n"
+                "    volumes:\n"
+                "      - kernel_cache:/root/.cache\n"
+                "      - huggingface_cache:/root/.cache/huggingface\n"
+                "      - ghost:/ghost\n"
+                "      - peerkv:/peerkv") + blk[c1:]
+        out = out[:t0] + blk + out[t1:]
+        # Collector scrape labels for this replica describe the engine it now runs.
+        j0 = out.index(f"- job_name: sglang-{name}\n")
+        j1 = out.index("- job_name:", j0 + 10)
+        jt = out[j0:j1]
+        for k, v in (("precision", "int4-weights-fp8-activations-fp8-kv"), ("config_variant", v7_variant + suffix),
+                     ("engine_image", "fa730e6e62b2")):
+            jt, n = re.subn(rf'(\n\s+{k}: ")[^"]+(")', lambda m: m.group(1) + v + m.group(2), jt)
+            assert n == 1, (r, k, n)
+        out = out[:j0] + jt + out[j1:]
+    assert "SGLANG_PEERKV_HOTRELOAD" not in out
+    ghost_vol = '  ghost:\n    driver: local\n    driver_opts:\n      type: tmpfs\n      device: tmpfs\n      o: "size=1m,mode=0700"\n'
+    out = one(out, ghost_vol, ghost_vol +
+              "  # peerkv (r1+r2 only): per-rank CUDA IPC handle files and the lend sockets (tiny).\n"
+              '  peerkv:\n    driver: local\n    driver_opts:\n      type: tmpfs\n      device: tmpfs\n      o: "size=64m,mode=0700"\n',
+              "peerkv volume")
+    out = one(out, "\nconfigs:\n", f"\nconfigs:\n  {c_patch}:\n    content: |\n" + block(patch, 6) + "\n\n"
+              f"  {c_engine}:\n    content: |\n" + block(engine, 6) + "\n\n", "configs block")
+    hdr = ("# GENERATED by scripts/kvq/prepare_glm53_kvshare_ab.py --peerkv from " + str(SOURCE) + " + " + str(V7_SOURCE)
+           + " (r4) -- do not edit by hand.\n"
+           "# gpu04 A/B: all four replicas = v7 canary without HiCache, expandable_segments:False.\n"
+           "#   treatment r1+r2: + peerkv (GPU-to-GPU KV prefix fetch between r1 and r2; GLM53_PEERKV=0 disables)\n"
+           "#   control   r3+r4: no peerkv. Engine/patch embedded from scripts/kvq/peerkv/ at generation time.\n")
+    return hdr + out
+
+
 def main():
     ap = argparse.ArgumentParser()
     g = ap.add_mutually_exclusive_group(required=True)
@@ -415,9 +559,12 @@ def main():
     ap.add_argument("--gpu13", action="store_true", help="arm D: gpu13 r1a+r1b share one store (small-models.yaml)")
     ap.add_argument("--v7-hicache-off-long", action="store_true", help="long arm: gpu02 r2b = v7 canary r2a without HiCache")
     ap.add_argument("--gpu13-pool", action="store_true", help="arm D': gpu13 r1a+r1b pool host cache (64 GiB L2 each + 520 GiB store)")
+    ap.add_argument("--peerkv", action="store_true", help="gpu04 A/B: all v7 + HiCache off; r1+r2 + peerkv")
     ap.add_argument("--v7-hicache-off", default=None, help="arm B': replica (r3) = v7 canary r4 without HiCache")
     a = ap.parse_args()
-    if a.v7_hicache_off_long:
+    if a.peerkv:
+        new, path = render_peerkv(), ROOT / PEERKV_TARGET
+    elif a.v7_hicache_off_long:
         new = render_v7_hicache_off("r2b", "r2a", Path("prod/GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext-V7Canary.yaml"), "L-B'")
         path = ROOT / Path("prod/GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext-V7-HiCacheOff-r2b.yaml")
     elif a.gpu13_pool:
