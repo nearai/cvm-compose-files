@@ -830,15 +830,12 @@ def _fetch_insert(scheduler, req, tree, tokens, local, p_b, L, n, kv_src, grant,
                                    chunked=True, priority=getattr(req, "priority", 0) or 0, track_adopted_ranges=True))
     if res.mamba_exist:
         mamba_alloc.free(slot.view(-1)[:1])
-    adopted = (res.adopted_ranges or {}).get(ComponentType.FULL, [])
-    keep = torch.zeros(n, dtype=torch.bool)
-    for s, e in adopted:
-        s, e = max(s, p_b), min(e, L)
-        if s < e:
-            keep[s - p_b:e - p_b] = True
-    drop = kv_dst[~keep.to(kv_dst.device)]
-    if drop.numel():
-        alloc.free(drop)
+    # Do NOT free non-adopted pages here: for [prev_prefix_len, L) slices that overlap nodes the
+    # tree already holds (e.g. KV present but no mamba state at that depth, so the local match
+    # stopped short), insert itself emits FreeDeviceKV for the duplicate slice. Freeing them again
+    # double-frees (caught by the strict idle mem check on gpu04 r2, 2026-10-08 19:09Z).
+    adopted = sum(e - s for s, e in (res.adopted_ranges or {}).get(ComponentType.FULL, []) if e > p_b)
+    keep = torch.tensor([min(adopted, n)])
     dt = time.monotonic() - t0
     _S.stats["fetch_hits"] += 1
     _S.stats["hit_tokens"] += n
