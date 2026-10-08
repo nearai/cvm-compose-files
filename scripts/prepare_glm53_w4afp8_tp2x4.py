@@ -32,9 +32,13 @@ TARGET = Path("prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8.yaml")
 
 SOURCE_IMAGE: Final = "docker.io/nearaidev/sglang@sha256:8bce6a7cc872a80faded3bd1ef0a64873a1d7abae34c94e5358775ca21f133cc"
 SOURCE_ENGINE_IMAGE_LABEL: Final = "8bce6a7cc872"
-# The image both gpu02 long-tier replicas run (prod/GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext.yaml).
-IMAGE: Final = "docker.io/nearaidev/sglang@sha256:9c6ddd4319c4ab00e351d8650459e68b8830e36ffcc029d67fa5e19d0ac3ed17"
+# v7 fleet image: docker/sglang-glm53-hicache-w4afp8 glm53-hicache-w4afp8-v7 (#345, publish run 37693106399, main 29a7db9).
+IMAGE: Final = "docker.io/nearaidev/sglang@sha256:fa730e6e62b2ae8058114ce540487ade33ab93bc42b1179ae78edc92bd563fc5"
 ENGINE_IMAGE_LABEL: Final = IMAGE.split(":")[-1][:12]
+# Rollback image (glm53-hicache-w4afp8-v6): what main deployed before the fleet rollout.
+V6_IMAGE: Final = "docker.io/nearaidev/sglang@sha256:9c6ddd4319c4ab00e351d8650459e68b8830e36ffcc029d67fa5e19d0ac3ed17"
+SOURCE_PRECISION: Final = "int4-weights-fp8-activations-bf16-kv"
+PRECISION: Final = "int4-weights-fp8-activations-fp8-kv"
 SOURCE_SERVICE_PREFIX: Final = "model-sg-glm53-w4afp8-tp4-r"
 SERVICE_PREFIX: Final = "model-sg-glm53-w4afp8-tp2-r"
 SOURCE_DEPLOYMENT: Final = "glm53-flash-sgl-tp4"
@@ -45,23 +49,48 @@ VARIANT: Final = (
     + obs.VARIANT_SUFFIX
 )
 REPLICAS: Final = (1, 2, 3, 4)
-# Base-tier memory-optimized config (tee-bench exp 25/25b/25c), promoted from the r3/r4 canary
-# (#339) to all four replicas after the gpu03 30 min same-host bake (2026-10-06). Every replica
-# runs the candidate argv below; the shared engine anchor keeps the previous prod argv only as
-# the base the candidate edits are derived from.
+# v7 fleet config of the base tier (tee-bench exp 26/27/29/32): every replica runs the candidate argv
+# below, which is the memory-optimized argv of #339 (exp 25/25b/25c) with FP8 KV (flashmla_kv prefill
+# and decode), 64 running requests / 380 mamba slots, the overlap scheduler off and HiCache OFF. The
+# HiCache-off form is the one gpu03 r3 runs (arm B'): the four HiCache flags are removed from the argv
+# and nothing else about HiCache moves (its environment stays and is unread without the flag). The
+# shared engine anchor keeps the previous prod argv only as the base the candidate edits are derived from.
 CANDIDATE_REPLICAS: Final = (1, 2, 3, 4)
 CANDIDATE_PDI: Final = "2"
-CANDIDATE_VARIANT: Final = f"hicache-w4afp8-qsplit-selective325-mamba330-bf16state-memopt086-mr48-c8192-admission-reserve-v10-pdi{CANDIDATE_PDI}-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192" + obs.VARIANT_SUFFIX
+CANDIDATE_VARIANT: Final = (
+    f"w4afp8-qsplit-hicacheoff-mamba380-fp8kv-memopt086-mr64-c8192-admission-reserve-v10-pdi{CANDIDATE_PDI}-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192"
+    + obs.VARIANT_SUFFIX
+    + "-v7"
+)
 # Token-for-token edits of the control argv. Each old token must occur exactly once.
 CANDIDATE_EDITS: Final = (
     ("--mem-fraction-static 0.80", "--mem-fraction-static 0.86"),
-    ("--max-running-requests 32", "--max-running-requests 48"),
+    ("--max-running-requests 32", "--max-running-requests 64"),
     ("--prefill-decode-interval 1", f"--prefill-decode-interval {CANDIDATE_PDI}"),
-    ("--cuda-graph-max-bs-decode 32", "--cuda-graph-max-bs-decode 48"),
+    ("--cuda-graph-max-bs-decode 32", "--cuda-graph-max-bs-decode 64"),
     ("--speculative-num-steps 5", "--speculative-num-steps 4"),
     ("--speculative-num-draft-tokens 6", "--speculative-num-draft-tokens 5"),
     ("--speculative-adaptive", None),
-    ("--max-mamba-cache-size 165", "--max-mamba-cache-size 330"),
+    ("--max-mamba-cache-size 165", "--max-mamba-cache-size 380"),
+    # v7: FP8 KV needs the dtype AND both flashmla_kv DSA backends (the image does not assert the pairing).
+    ("--kv-cache-dtype bfloat16", "--kv-cache-dtype fp8_e4m3"),
+    ("--dsa-prefill-backend tilelang", "--dsa-prefill-backend flashmla_kv"),
+    ("--dsa-decode-backend tilelang", "--dsa-decode-backend flashmla_kv"),
+    # HiCache OFF, exactly as gpu03 r3 (arm B') runs it: these four flags removed, no other HiCache change.
+    ("--enable-hierarchical-cache", None),
+    ("--hicache-write-policy write_through_selective", None),
+    ("--hicache-io-backend direct", None),
+    ("--hicache-mem-layout page_first_direct", None),
+)
+# Appended last, after --mamba-ssm-dtype (the order gpu03 r3 runs).
+CANDIDATE_APPENDED: Final = ("--disable-overlap-schedule",)
+# v7 features, all opt-in in the image: the preprocess pool and the tool-schema caps. The self-profile variables are deliberately absent.
+V7_ENVIRONMENT: Final = (
+    ("SGLANG_PREPROCESS_WORKERS", "4"),
+    ("SGLANG_PREPROCESS_TIMEOUT_S", "60"),
+    ("SGLANG_PREPROCESS_LOG_SLOW_S", "5"),
+    ("SGLANG_TOOL_SCHEMA_MAX_DEPTH", "32"),
+    ("SGLANG_TOOL_SCHEMA_MAX_NODES", "25000"),
 )
 # Each pair sits inside one four-GPU NVLink island.
 DEVICE_IDS: Final = {1: ("0", "1"), 2: ("2", "3"), 3: ("4", "5"), 4: ("6", "7")}
@@ -81,17 +110,26 @@ MAMBA_FLAGS: Final = (
 )
 
 HEADER: Final = (
-    "# GLM-5.3 Flash base-tier 4x TP2 CANARY (one 8x H200 host: gpu03 or gpu04), generated from\n"
+    "# GLM-5.3 Flash BASE TIER, v7 FLEET CONFIG (gpu03 and gpu04): the one base config every host of the tier deploys.\n"
+    "# All four replicas r1-r4 run the glm53-hicache-w4afp8-v7 image (#345) with FP8 KV (flashmla_kv prefill and decode),\n"
+    "# 64 running requests / 64 decode graphs / 380 mamba slots, the overlap scheduler off, HiCache OFF (the form gpu03 r3\n"
+    "# runs: the four HiCache flags are removed, nothing else about HiCache changes), the preprocess pool and the\n"
+    "# tool-schema caps, and no profiling (no NEAR_SELF_PROFILE*). Runbook and evidence: docs/glm53-v7-fleet-rollout.md.\n"
+    "# ROLLBACK (v7): redeploy the previous tag's copy of this file for the same services; it is the v6 image\n"
+    f"# ({V6_IMAGE}) with bf16 KV, 48 running and HiCache on.\n"
+    "#\n"
+    "# Everything below this block describes the 4x TP2 layout and the history of its config; the engine argv, image and\n"
+    "# telemetry labels are the v7 ones above wherever the older text names bf16, 48 running, 330 slots or HiCache.\n"
+    "#\n"
+    "# GLM-5.3 Flash base-tier 4x TP2 file (one 8x H200 host: gpu03 or gpu04), generated from\n"
     "# prod/GLM-5.3-Flash-SGL-TP4-W4AFP8.yaml by scripts/prepare_glm53_w4afp8_tp2x4.py.\n"
     "# Four independent TP2/EP2 replicas, one per NVLink GPU pair (0-1, 2-3, 4-5, 6-7), replace\n"
     "# the two TP4/EP4 replicas. Same checkpoint (graphistry/GLM-5.3-Flash-W4AFP8@99f1fa7) and\n"
     "# the same admission reserve (4096, max fraction 0.75), plus 8192-token prefill chunks\n"
-    "# (the lab-qualified TP2 argv), HiCache with a write_through_selective 325 GiB host tier\n"
-    "# per replica (4 x 325 GiB = 1,300 GiB) and the DSA indexer split. All four pin the\n"
-    "# HiCache + W4AFP8 image the long tier runs:\n"
+    "# (the lab-qualified TP2 argv), a HiCache write_through_selective 325 GiB host tier per replica\n"
+    "# (4 x 325 GiB; OFF in the v7 fleet config) and the DSA indexer split. All four pin the v7 image:\n"
     f"#   {IMAGE}\n"
-    "# (docker/sglang-glm53-hicache-w4afp8 glm53-hicache-w4afp8-v6; source\n"
-    "# 678a6b5ee3e4e7b83340f810c76530958eecc499; workflow 37505271073 SUCCESS).\n"
+    "# (docker/sglang-glm53-hicache-w4afp8 glm53-hicache-w4afp8-v7; #345, publish run 37693106399, main 29a7db9).\n"
     "#\n"
     "# EVIDENCE (lab, gpu31/gpu32, CC off, 2026-10-01; 1,300 GiB DRAM per 8 GPUs in both arms;\n"
     "# base-tier synth traffic from the 2026-09-17 prod snapshot, least-conn + affinity router):\n"
@@ -200,6 +238,8 @@ TEXT_REPLACEMENTS: Final = (
 ANCHOR_ENV_OLD: Final = "    - SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE=1\n"
 ANCHOR_ENV_NEW: Final = (
     "    - SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE=1\n"
+    "    # v7 fleet: HiCache is OFF (no --enable-hierarchical-cache in the argv), so the HiCache variables below are\n"
+    "    # unread, exactly as gpu03 r3 runs. They stay so re-enabling is an argv-only change.\n"
     "    # HiCache host tier: a fixed 325 GiB per replica across its two TP ranks, 1,300 GiB for\n"
     "    # the four replicas (the lab arm's DRAM total per 8 GPUs; ~5.87M tokens per replica). A\n"
     "    # percentage would resolve against MemAvailable at each start, so the replicas started\n"
@@ -219,6 +259,9 @@ ANCHOR_ENV_NEW: Final = (
     "    # (defined, unused, at dsa_indexer_kpool.py:862) and chunking against free memory.\n"
     "    - SGLANG_DSA_INDEXER_QSPLIT=1\n"
     + obs.engine_environment("r1", 4)
+    + "    # v7 (opt-in in the image): the preprocess pool (SGLANG_PREPROCESS_WORKERS=0 is the old single-thread path)\n"
+    "    # and the tool-schema caps (0 = off). Profiling is off (no self-profile variables).\n"
+    + "".join(f"    - {name}={value}\n" for name, value in V7_ENVIRONMENT)
 )
 ANCHOR_VOLUMES: Final = "  volumes:\n    - kernel_cache:/root/.cache\n    - huggingface_cache:/root/.cache/huggingface\n"
 
@@ -270,15 +313,17 @@ def candidate_arguments(control: list[str]) -> list[str]:
         raise GenerationError(f"control engine command changed, cannot derive the candidate argv: {missing}")
     edits = dict(CANDIDATE_EDITS)
     candidate = [edits[argument] if argument in edits else argument for argument in control]
-    return [argument for argument in candidate if argument is not None]
+    return [argument for argument in candidate if argument is not None] + list(CANDIDATE_APPENDED)
 
 
 def candidate_anchor(arguments: list[str]) -> str:
     return (
         "x-sg-glm53-flash-candidate: &sg-glm53-flash-candidate\n"
-        "  # Memory-optimized argv for every replica (tee-bench exp 25/25b/25c): the previous argv with\n"
-        "  # mem 0.86, EAGLE fixed 4/1/5 (no adaptive), 330 mamba slots, 48 running / graph batch 48.\n"
-        "  # Everything else, including the environment, is inherited from the common anchor.\n"
+        "  # v7 fleet argv for every replica (tee-bench exp 25-32): the previous argv with mem 0.86, EAGLE fixed\n"
+        "  # 4/1/5 (no adaptive), FP8 KV with both DSA backends flashmla_kv, 64 running / graph batch 64, 380 mamba\n"
+        "  # slots (5 per running request), the overlap scheduler off, and HiCache OFF (the four HiCache flags are\n"
+        "  # removed, as gpu03 r3 runs it; the HiCache environment stays and is unread). Everything else, including\n"
+        "  # the environment and the v7 image, is inherited from the common anchor.\n"
         "  <<: *sg-glm53-flash-common\n"
         "  command: >\n" + "".join(f"      {argument}\n" for argument in arguments) + "\n"
     )
@@ -357,6 +402,8 @@ def generate(source: str) -> str:
     # Telemetry identity shared by every replica, before the per-replica fan-out.
     for old, new, count, label in (
         (SOURCE_VARIANT, VARIANT, 6, "config_variant"),
+        (f'"precision:{SOURCE_PRECISION}"', f'"precision:{PRECISION}"', 2, "log precision"),
+        (f'precision: "{SOURCE_PRECISION}"\n', f'precision: "{PRECISION}"\n', 2, "metric precision"),
         (f'"engine_image:{SOURCE_ENGINE_IMAGE_LABEL}"', f'"engine_image:{ENGINE_IMAGE_LABEL}"', 2, "log engine_image"),
         (f'engine_image: "{SOURCE_ENGINE_IMAGE_LABEL}"\n', f'engine_image: "{ENGINE_IMAGE_LABEL}"\n', 4, "metric engine_image"),
         (f'deployment:{SOURCE_DEPLOYMENT}"', f'deployment:{DEPLOYMENT}"', 10, "log deployment"),

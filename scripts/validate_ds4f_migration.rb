@@ -127,25 +127,27 @@ end
 # gpu13's GLM is two memory-optimized TP2/EP2 replicas (GPUs 4,5 and 6,7) with the same
 # per-replica argv as the long-context file's tp2-r2a/r2b (W4AFP8 + HiCache, campaign-2 L2 base):
 # prod/GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext.yaml, docs/long-context-glm53-2xtp2-rollout.md.
-# The #330 overlap-off canary ended when the TP4 replica was replaced; overlap stays ON.
-gpu13_variant = 'fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host325g-memopt-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-gpu13-h200-tp2-ep2-eagle-fixed-4-1-5-mr12q4-strict-budget8192-obs-v1'
+# The #330 overlap-off canary ended when the TP4 replica was replaced; the v7 fleet config runs overlap OFF again (asserted below).
+gpu13_variant = 'fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host325g-memopt-fp8kv-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-gpu13-h200-tp2-ep2-eagle-fixed-4-1-5-mr16q4-strict-budget8192-obs-v1-v7'
 gpu13_ports = {}
 gpu13_glm.each_key do |name|
   engine = small_services.fetch(name)
-  assert.call(engine['image'] == 'docker.io/nearaidev/sglang@sha256:9c6ddd4319c4ab00e351d8650459e68b8830e36ffcc029d67fa5e19d0ac3ed17', "Qualified gpu13 GLM image changed: #{name}")
+  assert.call(engine['image'] == 'docker.io/nearaidev/sglang@sha256:fa730e6e62b2ae8058114ce540487ade33ab93bc42b1179ae78edc92bd563fc5', "v7 gpu13 GLM image changed: #{name}")
   command = engine.fetch('command').to_s.split.each_slice(1).to_a.flatten.join(' ')
   assert.call(command.include?('--model-path /root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/snapshots/99f1fa70408c52b007d4fd69e02e5a522422e755'), "gpu13 GLM must serve the qualified W4AFP8 snapshot: #{name}")
   {
     '--tp-size' => '2', '--ep-size' => '2', '--mem-fraction-static' => '0.86',
-    '--max-running-requests' => '12', '--max-queued-requests' => '4',
+    '--max-running-requests' => '16', '--max-queued-requests' => '4',
     '--chunked-prefill-size' => '8192', '--max-prefill-tokens' => '32768', '--prefill-decode-interval' => '2',
-    '--cuda-graph-max-bs-decode' => '12', '--speculative-num-steps' => '4', '--speculative-eagle-topk' => '1',
-    '--speculative-num-draft-tokens' => '5', '--max-mamba-cache-size' => '330', '--mamba-ssm-dtype' => 'bfloat16'
+    '--cuda-graph-max-bs-decode' => '16', '--speculative-num-steps' => '4', '--speculative-eagle-topk' => '1',
+    '--speculative-num-draft-tokens' => '5', '--max-mamba-cache-size' => '330', '--mamba-ssm-dtype' => 'bfloat16',
+    '--kv-cache-dtype' => 'fp8_e4m3', '--dsa-prefill-backend' => 'flashmla_kv', '--dsa-decode-backend' => 'flashmla_kv'
   }.each do |flag, value|
     assert.call(command.match?(/(^| )#{Regexp.escape(flag)} #{Regexp.escape(value)}( |$)/), "gpu13 GLM runtime flag changed on #{name}: #{flag} #{value}")
   end
-  # Overlap scheduling is ON and EAGLE is the fixed 4/1/5 arm: neither flag may return.
-  assert.call(!command.include?('--disable-overlap-schedule'), "gpu13 GLM #{name} must not disable the overlap scheduler (the #330 canary ended)")
+  # v7 fleet config: overlap scheduling is OFF (exactly once) and EAGLE is the fixed 4/1/5 arm: adaptive may not return.
+  assert.call(command.scan('--disable-overlap-schedule').length == 1, "gpu13 GLM #{name} must set --disable-overlap-schedule exactly once (v7 fleet config)")
+  assert.call(command.scan('--kv-cache-dtype').length == 1 && command.scan('--dsa-prefill-backend').length == 1 && command.scan('--dsa-decode-backend').length == 1, "gpu13 GLM #{name} must set the FP8 KV flags exactly once")
   assert.call(!command.include?('--speculative-adaptive'), "gpu13 GLM #{name} must use fixed EAGLE 4/1/5, not adaptive")
   assert.call(command.scan('--chunked-prefill-size').length == 1, "gpu13 GLM #{name} must set the chunk exactly once")
   [
@@ -156,6 +158,10 @@ gpu13_glm.each_key do |name|
   assert.call(port && !gpu13_ports.key?(port), "gpu13 GLM #{name} needs a unique --dist-init-addr, got #{port.inspect}")
   gpu13_ports[port] = name
   env = engine.fetch('environment')
+  %w[SGLANG_PREPROCESS_WORKERS=4 SGLANG_PREPROCESS_TIMEOUT_S=60 SGLANG_PREPROCESS_LOG_SLOW_S=5 SGLANG_TOOL_SCHEMA_MAX_DEPTH=32 SGLANG_TOOL_SCHEMA_MAX_NODES=25000].each do |entry|
+    assert.call(env.count(entry) == 1, "gpu13 GLM #{name} must set #{entry} exactly once (v7 fleet config)")
+  end
+  assert.call(env.none? { |entry| entry.to_s.start_with?('NEAR_SELF_PROFILE', 'NEAR_PROFILE') }, "gpu13 GLM #{name} must not enable profiling")
   assert.call(env.count('SGLANG_DSA_INDEXER_QSPLIT=1') == 1, "gpu13 GLM #{name} must enable DSA indexer query split exactly once")
   [
     "SGLANG_HICACHE_RAM_BUDGET=${GLM53_#{name.end_with?('a') ? 'R1A' : 'R1B'}_HICACHE_RAM_BUDGET:-325GiB}",
@@ -257,7 +263,7 @@ assert.call(ghost_jobs.length == 1 && ghost_jobs.first.dig('static_configs', 0, 
   assert.call(variants.length == 3 && variants.all? { |variant| variant == gpu13_variant }, "gpu13 #{name} config_variant must be the TP2 variant on the label, scrape job and log tag, got #{variants.inspect}")
   assert.call(labels['nearai.otel.instance'] == instance && scrape_labels['instance'] == instance && log_tags.include?("instance:#{instance}"), "gpu13 #{name} instance must be #{instance}")
   assert.call(labels['nearai.otel.gpu_pair'] == pair && scrape_labels['gpu_pair'] == pair && log_tags.include?("gpu_pair:#{pair}"), "gpu13 #{name} gpu_pair must be #{pair}")
-  assert.call(labels['nearai.otel.max_running_requests'] == '12' && scrape_labels['max_running_requests'] == '12' && labels['nearai.otel.max_queued_requests'] == '4' && scrape_labels['max_queued_requests'] == '4', "gpu13 #{name} max_running/max_queued labels must be 12/4")
+  assert.call(labels['nearai.otel.max_running_requests'] == '16' && scrape_labels['max_running_requests'] == '16' && labels['nearai.otel.max_queued_requests'] == '4' && scrape_labels['max_queued_requests'] == '4', "gpu13 #{name} max_running/max_queued labels must be 16/4")
 end
 %w[proxy-glm53 dcgm-glm53].each do |name|
   assert.call(small_services.fetch(name).fetch('labels')['nearai.otel.config_variant'] == gpu13_variant, "gpu13 #{name} config_variant must match the TP2 engines")
