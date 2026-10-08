@@ -25,7 +25,12 @@ KV2_SUFFIX = "-kvshare2-l3file-v1"
 OFF_FILES = {"r3": "prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8-HiCacheOff-34.yaml", "r4": "prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8-HiCacheOff-34.yaml",
              "r1": "prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8-HiCacheOff-12.yaml", "r2": "prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8-HiCacheOff-12.yaml"}
 OFF_SUFFIX = "-hicacheoff-v1"
-TREATED = (VARIANT_SUFFIX, KV4_SUFFIX, KV2_SUFFIX, OFF_SUFFIX)
+V7_CANARY_FILE = "prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8-V7Canary.yaml"   # gpu03 base since v0.0.479
+V7_OFF_FILE = "prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8-V7-HiCacheOff-r3.yaml"
+V7_OFF_SUFFIX = "-v7-hicacheoff-v1"
+POOL_FILE = "prod/small-models-GLM53-KVSharePool.yaml"
+POOL_SUFFIX = "-kvsharepool-v1"
+TREATED = (VARIANT_SUFFIX, KV4_SUFFIX, KV2_SUFFIX, OFF_SUFFIX, V7_OFF_SUFFIX, POOL_SUFFIX)
 
 
 def token():
@@ -127,6 +132,9 @@ def main():
     ap.add_argument("--four", action="store_true", help="host-level treatment: all four replicas share (KVShare4 file)")
     ap.add_argument("--hicache-off", action="store_true", help="arm B: this replica without HiCache (HiCacheOff-12/34 file)")
     ap.add_argument("--gpu13", action="store_true", help="arm D: gpu13 r1a/r1b share one store (small-models KVShare2 file)")
+    ap.add_argument("--gpu13-pool", action="store_true", help="arm D': gpu13 r1a/r1b pool host cache (KVSharePool file)")
+    ap.add_argument("--v7-hicache-off", action="store_true", help="arm B': gpu03 r3 = v7 canary without HiCache")
+    ap.add_argument("--rollback-file", default=None, help="prod file to roll back to (default: the host's base file)")
     ap.add_argument("--tag", default=None, help="commit SHA to deploy (default: this checkout's HEAD)")
     ap.add_argument("--rollback", action="store_true")
     ap.add_argument("--apply", action="store_true")
@@ -139,13 +147,13 @@ def main():
     iid, env = inst["id"], inst["env_vars"]
     work = json.loads(api(f"instances/{iid}/version")).get("projects", {}).get("work", {}).get("current", {})
     print(f"{a.host}: work tag={work.get('tag')} file={work.get('file')}")
-    if work.get("file") not in (BASE_FILE, AB_FILE, KV4_FILE, SMALL_FILE, KV2_FILE, *OFF_FILES.values()):
+    if work.get("file") not in (BASE_FILE, AB_FILE, KV4_FILE, SMALL_FILE, KV2_FILE, V7_CANARY_FILE, V7_OFF_FILE, POOL_FILE, *OFF_FILES.values()):
         sys.exit("host is not on the base-tier file; refusing")
     svc = f"model-sg-glm53-w4afp8-tp2-{a.replica}"
     gpu13 = a.replica in ("r1a", "r1b")
-    if gpu13 != a.gpu13 and not a.rollback:
+    if gpu13 != (a.gpu13 or a.gpu13_pool) and not a.rollback:
         sys.exit("r1a/r1b are gpu13's replicas: use --gpu13 (and only for them)")
-    base_file = SMALL_FILE if gpu13 else BASE_FILE
+    base_file = a.rollback_file or (SMALL_FILE if gpu13 else BASE_FILE)
     if a.rollback:
         # Back to the host's prod file. A tag is needed when the host's current deployment is a
         # test file (its tag is then a branch SHA, not the prod release).
@@ -157,7 +165,13 @@ def main():
         suffix = None
     else:
         tag = a.tag or subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
-        if a.gpu13:
+        if a.gpu13_pool:
+            file, suffix = POOL_FILE, POOL_SUFFIX
+        elif a.v7_hicache_off:
+            if a.replica != "r3":
+                sys.exit("--v7-hicache-off is built for r3 only")
+            file, suffix = V7_OFF_FILE, V7_OFF_SUFFIX
+        elif a.gpu13:
             file, suffix = KV2_FILE, KV2_SUFFIX
         elif a.hicache_off:
             file, suffix = OFF_FILES[a.replica], OFF_SUFFIX
