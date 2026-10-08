@@ -15,6 +15,9 @@ from pathlib import Path
 
 from scripts import prepare_glm53_w4afp8_tp2x4 as generator
 
+from scripts.test_glm53_v7_canary import CanaryFilesTest, V7ReleaseGateTest  # noqa: F401
+from scripts.test_glm53_v7_canary import RunbookTest as V7RunbookTest, ValidatorContractTest as V7ValidatorContractTest  # noqa: F401
+
 ROOT = Path(__file__).resolve().parents[1]
 TARGET = ROOT / generator.TARGET
 VALIDATOR = Path("scripts/validate_glm53_prod_config.rb")
