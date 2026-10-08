@@ -1,37 +1,28 @@
 # STATUS: EXPERIMENT — bare-metal (non-TEE) OpenRouter capacity on gpu32; not deployable through compose-manager/KMS.
 #
-# 4x gpt-oss-120b (GPUs 0-3) + 3x Qwen3.8-27B (GPUs 4-6), one TP1 replica per GPU, on the gpu32 lab host
-# (180.94.16.206, CC off). GPU 7 runs the Levanto Sage dev CVM (levanto-sage-dev-vmm) and is never referenced here.
-# OpenRouter traffic only, through the OpenRouter gateway: Pierre (2026-10-07): "for gpt oss 120b, it can run in non
-# TEE. as it will be only for OpenRouter users".
+# 7x Qwen3.8-27B, one TP1 replica per GPU (GPUs 0-6), on the gpu32 lab host (CC off). GPU 7 belongs to another
+# workload and is never referenced here. OpenRouter traffic only, through the OpenRouter gateway.
+# Until 2026-10-08 GPUs 0-3 ran 4x gpt-oss-120b; those replicas, their proxy and their exporter were removed
+# (the x-gptoss-engine block and the downloader's gpt-oss line are kept so they can come back).
 #
 # Layout follows the prod packs (prod/qwen36-qwen38.yaml): model-downloader, one engine per GPU pinned by device_ids,
-# ONE inference-proxy per model pooling its replicas (VLLM_BACKEND_URLS + conversation affinity), nginx with one plain
-# HTTP port per model (the gateway's probe/backend port: gpt-oss :8002, Qwen3.8 :8006, as on gpu02), dcgm per model and
-# otelcol-contrib. Differences, all because this is a non-TEE bare-metal host:
-#   - No model-proxy-registrar, on purpose (same as gpu13's OpenRouter-only GLM, a13313f): registering would put a
-#     non-TEE backend into cloud-api's private-inference rotation for these model domains. The OpenRouter gateway lists
-#     this host directly (vars/openrouter_gateway*.yaml backend + probe URLs).
-#   - Proxies run with DEV / GPU_NO_HW_MODE / NON_TEE_DEPLOYMENT (no dstack socket, no attestation, not privileged)
-#     and accept only the gateway's trusted bearer (TOKEN = fleet PROXY_TOKEN); the gateway bills, so no
-#     CLOUD_API_USAGE_TOKEN here.
-#   - TLS like gpu13 (https://gpu13.hosts.near.ai:8444): the gateway's backend URLs are https://gpu32.hosts.near.ai:8003
-#     (gpt-oss) and :8007 (Qwen3.8); the plain ports 8002/8006 stay as the gateway's probe URLs, as on every OpenRouter host.
-#     The cert is for gpu32.hosts.near.ai only (never *.completions.near.ai on a non-TEE box). It is issued by `certbot`
-#     with HTTP-01 (no Cloudflare credentials on this host): it retries every 5 min until the DNS record exists (created
-#     by cvm-ansible-playbooks' deploy_openrouter_gateway dns step), then renews every 12 h; `nginx-tls` waits for the
-#     cert and reloads when it changes. ufw: 8002/8003/8006/8007 only from the openrouter-gateway hosts (cpu01/02/03);
-#     80/tcp from anywhere for ACME HTTP-01 (only certbot listens there, during issuance/renewal).
-#   - nginx uses network_mode: host (so ufw applies; Docker-published ports would bypass it on this host) and reaches the
-#     proxies on loopback-only published ports 127.0.0.1:18002 / :18006.
-#   - Plain `docker compose` with a hand-kept .env (0600): PROXY_TOKEN, HUGGING_FACE_HUB_TOKEN, MONITORING_INGEST_TOKEN
-#     (fleet values), ENV, HOST_IP=180.94.16.206, CVM_HOST=gpu32, CVM_NAME=none, HF_DIR.
+# ONE inference-proxy for the model pooling its replicas (VLLM_BACKEND_URLS + conversation affinity), nginx with one
+# plain HTTP port (8006, the gateway's backend and probe port), one dcgm exporter and otelcol-contrib.
+# Differences, all because this is a non-TEE bare-metal host:
+#   - No model-proxy-registrar, on purpose: registering would put a non-TEE backend into cloud-api's
+#     private-inference rotation for this model domain. The OpenRouter gateway lists this host directly.
+#   - The proxy runs with DEV / GPU_NO_HW_MODE / NON_TEE_DEPLOYMENT (no dstack socket, no attestation, not privileged)
+#     and accepts only the gateway's trusted bearer (TOKEN); the gateway bills, so no CLOUD_API_USAGE_TOKEN here.
+#   - The gateway reaches port 8006 over a WireGuard tunnel (nearai/cvm-ansible-playbooks,
+#     docs/openrouter-gateway-wireguard.md); the host firewall admits it on the tunnel interface only. The certbot and
+#     nginx-tls services below predate the tunnel and are unused (no certificate was ever issued).
+#   - nginx uses network_mode: host (so the host firewall applies; Docker-published ports would bypass it on this host)
+#     and reaches the proxy on a loopback-only published port, 127.0.0.1:18006.
+#   - Plain `docker compose` with a hand-kept .env (0600): PROXY_TOKEN, HUGGING_FACE_HUB_TOKEN, MONITORING_INGEST_TOKEN,
+#     ENV, HOST_IP, CVM_HOST=gpu32, CVM_NAME=none, HF_DIR.
 #
-# Engine configs = winners of tee-bench exp 31 (gpu31, bare, input+output tok/s at plateau, A/A within ~1.5%):
-#   gpt-oss-120b: vLLM 0.26 + FP8 KV + 32K batched tokens (prod-like 22.9K tok/s, chat ~28K; GSM8K-200 0.965-0.975).
-#   Qwen3.8-27B:  vLLM v0.31, BF16 KV (11.1K tok/s, +~20% over the SGLang prod digest; GSM8K-200 0.975).
-# Validation + 30-min soak of the same engines (exp 31b, gpu31): 0 failures. Runbook / gateway hand-off:
-# nearai/tee-bench plans/gpu31-openrouter-gptoss-qwen38/ (host moved to gpu32 on 2026-10-08).
+# Engine config: vLLM v0.31, BF16 KV (11.1K tok/s per replica in tee-bench exp 31; GSM8K-200 0.975).
+# Usage reports cached prompt tokens (--enable-prompt-tokens-details), so cache reads can be billed at the cache price.
 #
 #   cd /data/gpu32-openrouter && sudo docker compose --env-file .env -f compose.yaml -p openrouter up -d
 
@@ -94,6 +85,8 @@ x-gptoss-engine: &gptoss-engine
     - --gpu-memory-utilization=0.93
     - --max-num-seqs=1024
     - --max-num-batched-tokens=32768
+    # Report cached prompt tokens in usage (prompt_tokens_details.cached_tokens), so cache reads are billed at the cache price.
+    - --enable-prompt-tokens-details
     - --enable-auto-tool-choice
     - --tool-call-parser=openai
     - --host=0.0.0.0
@@ -119,6 +112,8 @@ x-qwen38-engine: &qwen38-engine
     - --gpu-memory-utilization=0.90
     - --max-num-seqs=256
     - --max-num-batched-tokens=16384
+    # Report cached prompt tokens in usage (prompt_tokens_details.cached_tokens), so cache reads are billed at the cache price.
+    - --enable-prompt-tokens-details
     - --reasoning-parser=qwen3
     - --enable-auto-tool-choice
     - --tool-call-parser=qwen3_coder
@@ -179,144 +174,11 @@ services:
     labels:
       com.datadoghq.ad.logs: '[{"source":"model-downloader","service":"model-downloader","tags":["model:multi","deployment:gptoss-qwen38-openrouter-gpu32","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
 
-  proxy-gptoss-120b:
-    <<: *vllm-proxy-common
-    container_name: proxy-gptoss-120b
-    ports: ["127.0.0.1:18002:8000"]
-    environment: {<<: *proxy-env, MODEL_NAME: openai/gpt-oss-120b, VLLM_BACKEND_URLS: "http://model-vllm-gptoss-120b-mxfp4-tp1-r1:8000,http://model-vllm-gptoss-120b-mxfp4-tp1-r2:8000,http://model-vllm-gptoss-120b-mxfp4-tp1-r3:8000,http://model-vllm-gptoss-120b-mxfp4-tp1-r4:8000"}
-    labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:openai/gpt-oss-120b","deployment:gptoss-qwen38-openrouter-gpu32","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
-      nearai.otel.scrape: "true"
-      nearai.otel.job: "inference-proxy"
-      nearai.otel.service: "vllm-proxy"
-      nearai.otel.source: "vllm-proxy"
-      nearai.otel.container_name: "proxy-gptoss-120b"
-      nearai.otel.port: "8000"
-      nearai.otel.path: "/metrics"
-      nearai.otel.model: "openai/gpt-oss-120b"
-      nearai.otel.deployment: "gptoss-qwen38-openrouter-gpu32"
-      nearai.otel.env: "${ENV}"
-      nearai.otel.host: "${CVM_HOST}"
-      nearai.otel.host_machine: "${CVM_HOST}"
-      nearai.otel.cvm_name: "${CVM_NAME}"
-      nearai.otel.ip: "${HOST_IP}"
-      nearai.otel.public_port: "8002"
-
-  model-vllm-gptoss-120b-mxfp4-tp1-r1:
-    <<: *gptoss-engine
-    container_name: model-vllm-gptoss-120b-mxfp4-tp1-r1
-    deploy: {resources: {reservations: {devices: [{driver: nvidia, device_ids: ["0"], capabilities: [gpu]}]}}}
-    labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:openai/gpt-oss-120b","deployment:gptoss-qwen38-openrouter-gpu32","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
-      nearai.otel.scrape: "true"
-      nearai.otel.job: "vllm"
-      nearai.otel.service: "vllm"
-      nearai.otel.source: "vllm"
-      nearai.otel.container_name: "model-vllm-gptoss-120b-mxfp4-tp1-r1"
-      nearai.otel.port: "8000"
-      nearai.otel.path: "/metrics"
-      nearai.otel.model: "openai/gpt-oss-120b"
-      nearai.otel.deployment: "gptoss-qwen38-openrouter-gpu32"
-      nearai.otel.env: "${ENV}"
-      nearai.otel.host: "${CVM_HOST}"
-      nearai.otel.host_machine: "${CVM_HOST}"
-      nearai.otel.cvm_name: "${CVM_NAME}"
-      nearai.otel.ip: "${HOST_IP}"
-      nearai.otel.gpu: "0"
-
-  model-vllm-gptoss-120b-mxfp4-tp1-r2:
-    <<: *gptoss-engine
-    container_name: model-vllm-gptoss-120b-mxfp4-tp1-r2
-    deploy: {resources: {reservations: {devices: [{driver: nvidia, device_ids: ["1"], capabilities: [gpu]}]}}}
-    labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:openai/gpt-oss-120b","deployment:gptoss-qwen38-openrouter-gpu32","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
-      nearai.otel.scrape: "true"
-      nearai.otel.job: "vllm"
-      nearai.otel.service: "vllm"
-      nearai.otel.source: "vllm"
-      nearai.otel.container_name: "model-vllm-gptoss-120b-mxfp4-tp1-r2"
-      nearai.otel.port: "8000"
-      nearai.otel.path: "/metrics"
-      nearai.otel.model: "openai/gpt-oss-120b"
-      nearai.otel.deployment: "gptoss-qwen38-openrouter-gpu32"
-      nearai.otel.env: "${ENV}"
-      nearai.otel.host: "${CVM_HOST}"
-      nearai.otel.host_machine: "${CVM_HOST}"
-      nearai.otel.cvm_name: "${CVM_NAME}"
-      nearai.otel.ip: "${HOST_IP}"
-      nearai.otel.gpu: "1"
-
-  model-vllm-gptoss-120b-mxfp4-tp1-r3:
-    <<: *gptoss-engine
-    container_name: model-vllm-gptoss-120b-mxfp4-tp1-r3
-    deploy: {resources: {reservations: {devices: [{driver: nvidia, device_ids: ["2"], capabilities: [gpu]}]}}}
-    labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:openai/gpt-oss-120b","deployment:gptoss-qwen38-openrouter-gpu32","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
-      nearai.otel.scrape: "true"
-      nearai.otel.job: "vllm"
-      nearai.otel.service: "vllm"
-      nearai.otel.source: "vllm"
-      nearai.otel.container_name: "model-vllm-gptoss-120b-mxfp4-tp1-r3"
-      nearai.otel.port: "8000"
-      nearai.otel.path: "/metrics"
-      nearai.otel.model: "openai/gpt-oss-120b"
-      nearai.otel.deployment: "gptoss-qwen38-openrouter-gpu32"
-      nearai.otel.env: "${ENV}"
-      nearai.otel.host: "${CVM_HOST}"
-      nearai.otel.host_machine: "${CVM_HOST}"
-      nearai.otel.cvm_name: "${CVM_NAME}"
-      nearai.otel.ip: "${HOST_IP}"
-      nearai.otel.gpu: "2"
-
-  model-vllm-gptoss-120b-mxfp4-tp1-r4:
-    <<: *gptoss-engine
-    container_name: model-vllm-gptoss-120b-mxfp4-tp1-r4
-    deploy: {resources: {reservations: {devices: [{driver: nvidia, device_ids: ["3"], capabilities: [gpu]}]}}}
-    labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:openai/gpt-oss-120b","deployment:gptoss-qwen38-openrouter-gpu32","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
-      nearai.otel.scrape: "true"
-      nearai.otel.job: "vllm"
-      nearai.otel.service: "vllm"
-      nearai.otel.source: "vllm"
-      nearai.otel.container_name: "model-vllm-gptoss-120b-mxfp4-tp1-r4"
-      nearai.otel.port: "8000"
-      nearai.otel.path: "/metrics"
-      nearai.otel.model: "openai/gpt-oss-120b"
-      nearai.otel.deployment: "gptoss-qwen38-openrouter-gpu32"
-      nearai.otel.env: "${ENV}"
-      nearai.otel.host: "${CVM_HOST}"
-      nearai.otel.host_machine: "${CVM_HOST}"
-      nearai.otel.cvm_name: "${CVM_NAME}"
-      nearai.otel.ip: "${HOST_IP}"
-      nearai.otel.gpu: "3"
-
-  dcgm-gptoss-120b:
-    <<: *dcgm-common
-    container_name: dcgm-gptoss-120b
-    deploy: {resources: {reservations: {devices: [{driver: nvidia, device_ids: ["0", "1", "2", "3"], capabilities: [gpu]}]}}}
-    labels:
-      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:openai/gpt-oss-120b","deployment:gptoss-qwen38-openrouter-gpu32","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
-      nearai.otel.scrape: "true"
-      nearai.otel.job: "dcgm"
-      nearai.otel.service: "dcgm-exporter"
-      nearai.otel.source: "dcgm-exporter"
-      nearai.otel.container_name: "dcgm-gptoss-120b"
-      nearai.otel.port: "9400"
-      nearai.otel.path: "/metrics"
-      nearai.otel.model: "openai/gpt-oss-120b"
-      nearai.otel.deployment: "gptoss-qwen38-openrouter-gpu32"
-      nearai.otel.env: "${ENV}"
-      nearai.otel.host: "${CVM_HOST}"
-      nearai.otel.host_machine: "${CVM_HOST}"
-      nearai.otel.cvm_name: "${CVM_NAME}"
-      nearai.otel.ip: "${HOST_IP}"
-      nearai.otel.gpus: "0-3"
-
   proxy-qwen38-27b:
     <<: *vllm-proxy-common
     container_name: proxy-qwen38-27b
     ports: ["127.0.0.1:18006:8000"]
-    environment: {<<: *proxy-env, MODEL_NAME: Qwen/Qwen3.8-27B, VLLM_BACKEND_URLS: "http://model-vllm-qwen38-27b-fp8-tp1-r1:8000,http://model-vllm-qwen38-27b-fp8-tp1-r2:8000,http://model-vllm-qwen38-27b-fp8-tp1-r3:8000"}
+    environment: {<<: *proxy-env, MODEL_NAME: Qwen/Qwen3.8-27B, VLLM_BACKEND_URLS: "http://model-vllm-qwen38-27b-fp8-tp1-r1:8000,http://model-vllm-qwen38-27b-fp8-tp1-r2:8000,http://model-vllm-qwen38-27b-fp8-tp1-r3:8000,http://model-vllm-qwen38-27b-fp8-tp1-r4:8000,http://model-vllm-qwen38-27b-fp8-tp1-r5:8000,http://model-vllm-qwen38-27b-fp8-tp1-r6:8000,http://model-vllm-qwen38-27b-fp8-tp1-r7:8000"}
     labels:
       com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:Qwen/Qwen3.8-27B","deployment:gptoss-qwen38-openrouter-gpu32","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
       nearai.otel.scrape: "true"
@@ -401,10 +263,98 @@ services:
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.gpu: "6"
 
+  model-vllm-qwen38-27b-fp8-tp1-r4:
+    <<: *qwen38-engine
+    container_name: model-vllm-qwen38-27b-fp8-tp1-r4
+    deploy: {resources: {reservations: {devices: [{driver: nvidia, device_ids: ["0"], capabilities: [gpu]}]}}}
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:Qwen/Qwen3.8-27B","deployment:gptoss-qwen38-openrouter-gpu32","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "vllm"
+      nearai.otel.service: "vllm"
+      nearai.otel.source: "vllm"
+      nearai.otel.container_name: "model-vllm-qwen38-27b-fp8-tp1-r4"
+      nearai.otel.port: "8000"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "Qwen/Qwen3.8-27B-FP8"
+      nearai.otel.deployment: "gptoss-qwen38-openrouter-gpu32"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
+      nearai.otel.gpu: "0"
+
+  model-vllm-qwen38-27b-fp8-tp1-r5:
+    <<: *qwen38-engine
+    container_name: model-vllm-qwen38-27b-fp8-tp1-r5
+    deploy: {resources: {reservations: {devices: [{driver: nvidia, device_ids: ["1"], capabilities: [gpu]}]}}}
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:Qwen/Qwen3.8-27B","deployment:gptoss-qwen38-openrouter-gpu32","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "vllm"
+      nearai.otel.service: "vllm"
+      nearai.otel.source: "vllm"
+      nearai.otel.container_name: "model-vllm-qwen38-27b-fp8-tp1-r5"
+      nearai.otel.port: "8000"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "Qwen/Qwen3.8-27B-FP8"
+      nearai.otel.deployment: "gptoss-qwen38-openrouter-gpu32"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
+      nearai.otel.gpu: "1"
+
+  model-vllm-qwen38-27b-fp8-tp1-r6:
+    <<: *qwen38-engine
+    container_name: model-vllm-qwen38-27b-fp8-tp1-r6
+    deploy: {resources: {reservations: {devices: [{driver: nvidia, device_ids: ["2"], capabilities: [gpu]}]}}}
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:Qwen/Qwen3.8-27B","deployment:gptoss-qwen38-openrouter-gpu32","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "vllm"
+      nearai.otel.service: "vllm"
+      nearai.otel.source: "vllm"
+      nearai.otel.container_name: "model-vllm-qwen38-27b-fp8-tp1-r6"
+      nearai.otel.port: "8000"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "Qwen/Qwen3.8-27B-FP8"
+      nearai.otel.deployment: "gptoss-qwen38-openrouter-gpu32"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
+      nearai.otel.gpu: "2"
+
+  model-vllm-qwen38-27b-fp8-tp1-r7:
+    <<: *qwen38-engine
+    container_name: model-vllm-qwen38-27b-fp8-tp1-r7
+    deploy: {resources: {reservations: {devices: [{driver: nvidia, device_ids: ["3"], capabilities: [gpu]}]}}}
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:Qwen/Qwen3.8-27B","deployment:gptoss-qwen38-openrouter-gpu32","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "vllm"
+      nearai.otel.service: "vllm"
+      nearai.otel.source: "vllm"
+      nearai.otel.container_name: "model-vllm-qwen38-27b-fp8-tp1-r7"
+      nearai.otel.port: "8000"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "Qwen/Qwen3.8-27B-FP8"
+      nearai.otel.deployment: "gptoss-qwen38-openrouter-gpu32"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
+      nearai.otel.gpu: "3"
+
   dcgm-qwen38-27b:
     <<: *dcgm-common
     container_name: dcgm-qwen38-27b
-    deploy: {resources: {reservations: {devices: [{driver: nvidia, device_ids: ["4", "5", "6"], capabilities: [gpu]}]}}}
+    deploy: {resources: {reservations: {devices: [{driver: nvidia, device_ids: ["0", "1", "2", "3", "4", "5", "6"], capabilities: [gpu]}]}}}
     labels:
       com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:Qwen/Qwen3.8-27B-FP8","deployment:gptoss-qwen38-openrouter-gpu32","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
       nearai.otel.scrape: "true"
@@ -421,13 +371,12 @@ services:
       nearai.otel.host_machine: "${CVM_HOST}"
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
-      nearai.otel.gpus: "4-6"
+      nearai.otel.gpus: "0-6"
 
   nginx:
     image: nginx@sha256:1d13701a5f9f3fb01aaa88cef2344d65b6b5bf6b7d9fa4cf0dca557a8d7702ba
     container_name: nginx
     depends_on:
-      - proxy-gptoss-120b
       - proxy-qwen38-27b
     # Host network so ufw (INPUT) governs 8002/8006: Docker-published ports bypass ufw on this host
     # (empty DOCKER-USER chain). ufw admits them only from the openrouter-gateway hosts.
@@ -479,7 +428,6 @@ services:
     image: nginx@sha256:1d13701a5f9f3fb01aaa88cef2344d65b6b5bf6b7d9fa4cf0dca557a8d7702ba
     container_name: nginx-tls
     depends_on:
-      - proxy-gptoss-120b
       - proxy-qwen38-27b
     # Host network for the same ufw reason as nginx. Waits for the cert, then serves TLS; reloads when it changes.
     network_mode: host
@@ -651,116 +599,6 @@ configs:
         prometheus/apps:
           config:
             scrape_configs:
-              - job_name: inference-proxy-proxy-gptoss-120b
-                scrape_interval: 15s
-                metrics_path: /metrics
-                static_configs:
-                  - targets: ['proxy-gptoss-120b:8000']
-                    labels:
-                      service: "vllm-proxy"
-                      source: "vllm-proxy"
-                      container_name: "proxy-gptoss-120b"
-                      model: "openai/gpt-oss-120b"
-                      deployment: "gptoss-qwen38-openrouter-gpu32"
-                      env: "${ENV}"
-                      host: "${CVM_HOST}"
-                      host_machine: "${CVM_HOST}"
-                      cvm_name: "${CVM_NAME}"
-                      ip: "${HOST_IP}"
-                      port: "8000"
-              - job_name: vllm-model-vllm-gptoss-120b-mxfp4-tp1-r1
-                scrape_interval: 15s
-                metrics_path: /metrics
-                static_configs:
-                  - targets: ['model-vllm-gptoss-120b-mxfp4-tp1-r1:8000']
-                    labels:
-                      service: "vllm"
-                      source: "vllm"
-                      container_name: "model-vllm-gptoss-120b-mxfp4-tp1-r1"
-                      model: "openai/gpt-oss-120b"
-                      deployment: "gptoss-qwen38-openrouter-gpu32"
-                      env: "${ENV}"
-                      host: "${CVM_HOST}"
-                      host_machine: "${CVM_HOST}"
-                      cvm_name: "${CVM_NAME}"
-                      ip: "${HOST_IP}"
-                      port: "8000"
-                      served_model: "openai/gpt-oss-120b"
-                      gpu: "0"
-              - job_name: vllm-model-vllm-gptoss-120b-mxfp4-tp1-r2
-                scrape_interval: 15s
-                metrics_path: /metrics
-                static_configs:
-                  - targets: ['model-vllm-gptoss-120b-mxfp4-tp1-r2:8000']
-                    labels:
-                      service: "vllm"
-                      source: "vllm"
-                      container_name: "model-vllm-gptoss-120b-mxfp4-tp1-r2"
-                      model: "openai/gpt-oss-120b"
-                      deployment: "gptoss-qwen38-openrouter-gpu32"
-                      env: "${ENV}"
-                      host: "${CVM_HOST}"
-                      host_machine: "${CVM_HOST}"
-                      cvm_name: "${CVM_NAME}"
-                      ip: "${HOST_IP}"
-                      port: "8000"
-                      served_model: "openai/gpt-oss-120b"
-                      gpu: "1"
-              - job_name: vllm-model-vllm-gptoss-120b-mxfp4-tp1-r3
-                scrape_interval: 15s
-                metrics_path: /metrics
-                static_configs:
-                  - targets: ['model-vllm-gptoss-120b-mxfp4-tp1-r3:8000']
-                    labels:
-                      service: "vllm"
-                      source: "vllm"
-                      container_name: "model-vllm-gptoss-120b-mxfp4-tp1-r3"
-                      model: "openai/gpt-oss-120b"
-                      deployment: "gptoss-qwen38-openrouter-gpu32"
-                      env: "${ENV}"
-                      host: "${CVM_HOST}"
-                      host_machine: "${CVM_HOST}"
-                      cvm_name: "${CVM_NAME}"
-                      ip: "${HOST_IP}"
-                      port: "8000"
-                      served_model: "openai/gpt-oss-120b"
-                      gpu: "2"
-              - job_name: vllm-model-vllm-gptoss-120b-mxfp4-tp1-r4
-                scrape_interval: 15s
-                metrics_path: /metrics
-                static_configs:
-                  - targets: ['model-vllm-gptoss-120b-mxfp4-tp1-r4:8000']
-                    labels:
-                      service: "vllm"
-                      source: "vllm"
-                      container_name: "model-vllm-gptoss-120b-mxfp4-tp1-r4"
-                      model: "openai/gpt-oss-120b"
-                      deployment: "gptoss-qwen38-openrouter-gpu32"
-                      env: "${ENV}"
-                      host: "${CVM_HOST}"
-                      host_machine: "${CVM_HOST}"
-                      cvm_name: "${CVM_NAME}"
-                      ip: "${HOST_IP}"
-                      port: "8000"
-                      served_model: "openai/gpt-oss-120b"
-                      gpu: "3"
-              - job_name: dcgm-dcgm-gptoss-120b
-                scrape_interval: 15s
-                metrics_path: /metrics
-                static_configs:
-                  - targets: ['dcgm-gptoss-120b:9400']
-                    labels:
-                      service: "dcgm-exporter"
-                      source: "dcgm-exporter"
-                      container_name: "dcgm-gptoss-120b"
-                      model: "openai/gpt-oss-120b"
-                      deployment: "gptoss-qwen38-openrouter-gpu32"
-                      env: "${ENV}"
-                      host: "${CVM_HOST}"
-                      host_machine: "${CVM_HOST}"
-                      cvm_name: "${CVM_NAME}"
-                      ip: "${HOST_IP}"
-                      port: "9400"
               - job_name: inference-proxy-proxy-qwen38-27b
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -835,6 +673,82 @@ configs:
                       port: "8000"
                       served_model: "Qwen/Qwen3.8-27B"
                       gpu: "6"
+              - job_name: vllm-model-vllm-qwen38-27b-fp8-tp1-r4
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['model-vllm-qwen38-27b-fp8-tp1-r4:8000']
+                    labels:
+                      service: "vllm"
+                      source: "vllm"
+                      container_name: "model-vllm-qwen38-27b-fp8-tp1-r4"
+                      model: "Qwen/Qwen3.8-27B-FP8"
+                      deployment: "gptoss-qwen38-openrouter-gpu32"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      port: "8000"
+                      served_model: "Qwen/Qwen3.8-27B"
+                      gpu: "0"
+              - job_name: vllm-model-vllm-qwen38-27b-fp8-tp1-r5
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['model-vllm-qwen38-27b-fp8-tp1-r5:8000']
+                    labels:
+                      service: "vllm"
+                      source: "vllm"
+                      container_name: "model-vllm-qwen38-27b-fp8-tp1-r5"
+                      model: "Qwen/Qwen3.8-27B-FP8"
+                      deployment: "gptoss-qwen38-openrouter-gpu32"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      port: "8000"
+                      served_model: "Qwen/Qwen3.8-27B"
+                      gpu: "1"
+              - job_name: vllm-model-vllm-qwen38-27b-fp8-tp1-r6
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['model-vllm-qwen38-27b-fp8-tp1-r6:8000']
+                    labels:
+                      service: "vllm"
+                      source: "vllm"
+                      container_name: "model-vllm-qwen38-27b-fp8-tp1-r6"
+                      model: "Qwen/Qwen3.8-27B-FP8"
+                      deployment: "gptoss-qwen38-openrouter-gpu32"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      port: "8000"
+                      served_model: "Qwen/Qwen3.8-27B"
+                      gpu: "2"
+              - job_name: vllm-model-vllm-qwen38-27b-fp8-tp1-r7
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['model-vllm-qwen38-27b-fp8-tp1-r7:8000']
+                    labels:
+                      service: "vllm"
+                      source: "vllm"
+                      container_name: "model-vllm-qwen38-27b-fp8-tp1-r7"
+                      model: "Qwen/Qwen3.8-27B-FP8"
+                      deployment: "gptoss-qwen38-openrouter-gpu32"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      port: "8000"
+                      served_model: "Qwen/Qwen3.8-27B"
+                      gpu: "3"
               - job_name: dcgm-dcgm-qwen38-27b
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -1013,11 +927,6 @@ configs:
       client_body_buffer_size 1m;
 
       server {
-        listen 8002;
-        location / { proxy_pass http://127.0.0.1:18002; }
-      }
-
-      server {
         listen 8006;
         location / { proxy_pass http://127.0.0.1:18006; }
       }
@@ -1051,20 +960,6 @@ configs:
       proxy_read_timeout 3600s;
       client_max_body_size 100m;
       client_body_buffer_size 1m;
-
-      server {
-        listen 8003 ssl http2;
-        server_name gpu32.hosts.near.ai;
-        ssl_certificate /etc/letsencrypt/live/gpu32.hosts.near.ai/fullchain.pem;
-        ssl_certificate_key /etc/letsencrypt/live/gpu32.hosts.near.ai/privkey.pem;
-        ssl_protocols TLSv1.2 TLSv1.3;
-        # Same as the prod TLS vhosts: long-lived H2 connections from the gateway.
-        keepalive_timeout 1h;
-        keepalive_requests 1000000;
-        location ^~ /metrics { return 404; }
-        location ^~ /v1/metrics { return 404; }
-        location / { proxy_pass http://127.0.0.1:18002; }
-      }
 
       server {
         listen 8007 ssl http2;
