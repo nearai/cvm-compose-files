@@ -246,6 +246,7 @@ class _State:
     peer_epoch: Optional[str] = None
     peer_tensors: Optional[List[torch.Tensor]] = None
     seq: int = 0
+    peer_gbps: float = 0.0
     map_lock: threading.Lock = field(default_factory=threading.Lock)
     stats: Dict[str, float] = field(default_factory=lambda: {
         "fetch_tries": 0, "fetch_hits": 0, "hit_tokens": 0, "fetch_s": 0.0, "fallback": 0,
@@ -461,6 +462,8 @@ def _handle_msg(scheduler, m: PeerKVMsg):
             if m.op == "expire":
                 _S.stats["lend_expired"] += 1
                 _m("lend", "expired")
+        if LOG_FETCHES and _S.rank == 0:
+            logger.info(f"{TAG} {m.op} {m.lease} (held={lease is not None}); open leases={len(_S.leases)}")
         return
     # lend
     res = tree.match_prefix(MatchPrefixParams(key=RadixKey(token_ids=m.tokens, extra_key=m.extra_key, limit=m.limit)))
@@ -484,6 +487,8 @@ def _handle_msg(scheduler, m: PeerKVMsg):
             reply = {"ok": True, "L": L, "p_b": m.p_b, "epoch": _S.epoch,
                      "kv_idx": res.device_indices[m.p_b:L].to("cpu", dtype=torch.int64),
                      "mamba_slot": int(mv.view(-1)[0].item())}
+    if not reply["ok"]:
+        _S.lease_t0.pop(m.lease, None)  # nothing pinned, nothing to expire
     _S.stats["lend_granted" if reply["ok"] else "lend_declined"] += 1
     _m("lend", "granted" if reply["ok"] else reply["why"])
     if _S.rank == 0:
@@ -513,6 +518,9 @@ def _layout_key(name, kind, shape, dtype):
 
 
 PREWARM_POLL_S = float(os.environ.get("SGLANG_PEERKV_PREWARM_POLL_S", "5"))
+# A fetch copies inside the scheduler loop, so it stalls this replica for its duration. Skip any
+# fetch whose copy is estimated to take longer than this (estimate = bytes / measured GB/s).
+MAX_COPY_S = float(os.environ.get("SGLANG_PEERKV_MAX_COPY_S", "0.5"))
 _PREWARM = {"thread": None}
 
 
@@ -539,14 +547,14 @@ def _prewarm_loop():
                 t0 = time.monotonic()
                 with _S.map_lock:
                     peer = _open_peer(ep)
-                for d, p in zip(_S.tensors, peer):  # touch every mapping once (lazy peer enable, kernels)
-                    t = d["tensor"]
-                    if d["kind"] == "slot":
-                        _ = p[:, :1].to(t.device)
-                    else:
-                        _ = p[:1].to(t.device)
-                torch.cuda.synchronize()
-                logger.info(f"{TAG} rank {_S.rank}: peer {PEER} epoch {ep} mapped in {time.monotonic() - t0:.2f}s")
+                    for d, p in zip(_S.tensors, peer):  # touch every mapping once (lazy peer enable, kernels)
+                        t = d["tensor"]
+                        _ = (p[:, :1] if d["kind"] == "slot" else p[:1]).to(t.device)
+                    torch.cuda.synchronize()
+                    gbps = _bench_copy(peer)
+                logger.info(f"{TAG} rank {_S.rank}: peer {PEER} epoch {ep} mapped in {time.monotonic() - t0:.2f}s; "
+                            f"copy {gbps:.1f} GB/s, {_bytes_per_token() / 1e3:.1f} KB/token, "
+                            f"max fetch {int(MAX_COPY_S * gbps * 1e9 / max(1, _bytes_per_token()))} tokens")
         except Exception as e:
             # Usually a stale handle file from a dead or still-starting peer; retry once its file
             # changes, or after 60 s, and log once per epoch.
@@ -556,6 +564,37 @@ def _prewarm_loop():
         if failed is not None and int(time.monotonic()) % 60 < PREWARM_POLL_S:
             failed = None
         time.sleep(PREWARM_POLL_S)
+
+
+def _bytes_per_token() -> int:
+    n = 0
+    for d in _S.tensors:
+        t = d["tensor"]
+        if d["kind"] == "token":
+            n += t[0].numel() * t.element_size()
+        elif d["kind"] == "page":
+            n += t[0].numel() * t.element_size() // 64
+    return n
+
+
+def _bench_copy(peer) -> float:
+    """Measured peer->local GB/s with the real gather path (one token tensor, ~32K rows)."""
+    i = next(k for k, d in enumerate(_S.tensors) if d["kind"] == "token")
+    t, p = _S.tensors[i]["tensor"], peer[i]
+    rows = min(32768, p.shape[0] - 64, t.shape[0] - 64)
+    src = torch.arange(64, 64 + rows, dtype=torch.int64)
+    scratch = torch.empty((rows,) + tuple(t.shape[1:]), dtype=t.dtype, device=t.device)
+    best = 0.0
+    for _ in range(3):
+        torch.cuda.synchronize()
+        t0 = time.monotonic()
+        with torch.cuda.device(p.device):
+            g = p.index_select(0, src.to(p.device))
+        scratch.copy_(g.to(t.device))
+        torch.cuda.synchronize()
+        best = max(best, scratch.numel() * scratch.element_size() / 1e9 / max(time.monotonic() - t0, 1e-6))
+    _S.peer_gbps = best
+    return best
 
 
 def _epoch_alive(epoch: str) -> bool:
@@ -668,6 +707,14 @@ def maybe_fetch(scheduler, req) -> None:
     h = _impl()
     if h is not None:
         return h.maybe_fetch(scheduler, req)
+    try:
+        _maybe_fetch(scheduler, req)
+    except Exception as e:  # the request then prefills normally
+        logger.warning(f"{TAG} rank {_S.rank}: fetch error, falling back to prefill: {e!r}")
+        _m("req", f"error:{type(e).__name__}")
+
+
+def _maybe_fetch(scheduler, req) -> None:
     if getattr(req, "cache_salt", None) or getattr(req, "positional_embed_overrides", None) is not None:
         return
     from sglang.srt.mem_cache.base_prefix_cache import EvictParams, InsertParams, MatchPrefixParams
@@ -690,7 +737,12 @@ def maybe_fetch(scheduler, req) -> None:
     _S.seq += 1
     lease = f"{SELF}:{_S.epoch}:{_S.seq}"
     grant = None
-    if _S.rank == 0:
+    # Rank 0 decides for every rank (its answer is broadcast): skip without asking the peer when
+    # the peer is unmapped here or the copy would stall the scheduler longer than MAX_COPY_S.
+    est_s = (limit - p_b) * _bytes_per_token() / max(_S.peer_gbps, 1e-3) / 1e9
+    if _S.rank == 0 and (_S.peer_tensors is None or est_s > MAX_COPY_S):
+        grant = {"ok": False, "why": "unmapped" if _S.peer_tensors is None else "too_slow"}
+    elif _S.rank == 0:
         try:
             grant = _rpc(PEER, PeerKVMsg(op="lend", lease=lease, tokens=tokens, extra_key=req.extra_key, limit=limit, p_b=p_b),
                          RPC_TIMEOUT_S + 0.5)
