@@ -24,10 +24,13 @@ PROBE = Path("scripts/kvq/kvq_probe.py")
 DRIVER = Path("scripts/kvq/kvq_driver.py")
 SHARED_PATCH = Path("scripts/kvq/glm53_shared_kv_startup_patch.py")
 NIXL_BENCH = Path("scripts/kvq/nixl_bench.py")
-READBENCH = Path("scripts/kvq/kvq_readbench.py")  # lab bench from gpu31 pd-v0521-20261003, unchanged
+READBENCH = Path("scripts/kvq/kvq_readbench.py")
+PEERKV_PATCH = Path("scripts/kvq/peerkv/glm53_peerkv_startup_patch.py")
+PEERKV_ENGINE = Path("scripts/kvq/peerkv/peerkv_engine.py")  # lab bench from gpu31 pd-v0521-20261003, unchanged
 
 V0521 = "docker.io/lmsysorg/sglang@sha256:b1259f3ea3275f66237c498ea388919729018bc9f01c3d638391e06e2cf3f469"
 V6 = "docker.io/nearaidev/sglang@sha256:9c6ddd4319c4ab00e351d8650459e68b8830e36ffcc029d67fa5e19d0ac3ed17"
+V7 = "docker.io/nearaidev/sglang@sha256:fa730e6e62b2ae8058114ce540487ade33ab93bc42b1179ae78edc92bd563fc5"
 SNAP = "/root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/snapshots/99f1fa70408c52b007d4fd69e02e5a522422e755"
 TEMPLATE = "/root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/3f1971b7b5f7a528c9c4ef6212c8785298a8c24a/chat_template.jinja"
 GPUS = '["4","5","6","7"]'
@@ -93,6 +96,7 @@ def labels(name, variant, image_short, instance):
 
 # Scraped lab services (name, port, service/source label, instance tag) -> collector jobs.
 SCRAPED = [("kvq-pf", "8000", "sglang", "kvq-pf"), ("kvq-dc", "8000", "sglang", "kvq-dc"),
+           ("kvq-pa", "8000", "sglang", "kvq-pa"), ("kvq-pb", "8000", "sglang", "kvq-pb"),
            ("kvq-r1", "8000", "sglang", "kvq-r1"), ("kvq-r2", "8000", "sglang", "kvq-r2"),
            ("kvq-ghost-aggregator", "9464", "sglang-ghost-aggregator", None)]
 
@@ -212,6 +216,69 @@ def shared_engine(name, base_gpu, port, replica):
 {{labels(name, "kvq-shared-v6-basecand-selective-file-tier", "9c6ddd4319c4", replica)}}"""
 
 
+# GPU-to-GPU peer prefix fetch (peerkv) on v7: the base-tier v7 canary argv (gpu03 r4, #346)
+# without HiCache, i.e. exactly the prod control arm "v7 + HiCache off", plus the peerkv startup
+# patch. Each replica sees GPUs 4-7 (shared order) so it can map its sibling's pools over CUDA IPC.
+V7_OFF_ARGS = ("--model-path " + SNAP + " --served-model-name z-ai/glm-5.3-flash --tp-size 2 --ep-size 2 "
+               "--mem-fraction-static 0.86 --max-running-requests 64 --max-queued-requests 8 --enable-priority-scheduling "
+               "--disable-priority-preemption --chunked-prefill-size 8192 --max-prefill-tokens 32768 --prefill-decode-interval 2 "
+               "--cuda-graph-max-bs-decode 64 --dsa-prefill-backend flashmla_kv --dsa-decode-backend flashmla_kv "
+               "--kv-cache-dtype fp8_e4m3 --speculative-algorithm EAGLE --speculative-num-steps 4 --speculative-eagle-topk 1 "
+               "--speculative-num-draft-tokens 5 --reasoning-parser glm45 --enable-strict-thinking --grammar-backend xgrammar "
+               "--tool-call-parser glm47 --chat-template " + TEMPLATE + " --context-length 1048576 --watchdog-timeout 1800 "
+               "--host 0.0.0.0 --port 8000 --enable-metrics --enable-cache-report --log-requests-level 0 "
+               "--disable-fast-image-processor --limit-mm-data-per-request '{\"image\": 64}' --max-mamba-cache-size 380 "
+               "--mamba-ssm-dtype bfloat16 --disable-overlap-schedule")
+
+
+def peer_engine(name, base_gpu, port, peer, c_patch, c_engine):
+    return f"""  {name}:
+    <<: *kvq-gpu
+    image: {V7}
+    container_name: {name}
+    entrypoint: ["bash", "-c"]
+    command:
+      - |
+        if [ "$${{KVQ_PEERKV:-1}}" = "1" ]; then python3 /etc/glm53/glm53_peerkv_startup_patch.py || exit 1; fi
+        exec sglang serve {V7_OFF_ARGS} --base-gpu-id {base_gpu} --dist-init-addr 127.0.0.1:{port}
+    configs:
+      - source: {c_patch}
+        target: /etc/glm53/glm53_peerkv_startup_patch.py
+        mode: 0444
+      - source: {c_engine}
+        target: /etc/glm53/peerkv_engine.py
+        mode: 0444
+    volumes:
+      - kvq_kernel_cache:/root/.cache
+      - huggingface_cache:/root/.cache/huggingface
+      - kvq_peerkv:/peerkv
+      - kvq_ghost:/ghost
+    environment:
+      <<: *kvq-env
+      SGLANG_PEERKV: ${{KVQ_PEERKV:-1}}
+      SGLANG_PEERKV_SELF: {name}
+      SGLANG_PEERKV_PEER: {peer}
+      SGLANG_PEERKV_DIR: /peerkv
+      SGLANG_PEERKV_MIN_TOKENS: ${{KVQ_PEERKV_MIN_TOKENS:-4096}}
+      SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE: "4096"
+      SGLANG_ADMISSION_RESERVE_MAX_FRACTION: "0.75"
+      SGLANG_DSA_INDEXER_QSPLIT: "1"
+      SGLANG_PREPROCESS_WORKERS: "4"
+      SGLANG_PREPROCESS_TIMEOUT_S: "60"
+      SGLANG_PREPROCESS_LOG_SLOW_S: "5"
+      SGLANG_TOOL_SCHEMA_MAX_DEPTH: "32"
+      SGLANG_TOOL_SCHEMA_MAX_NODES: "25000"
+      SGLANG_GHOST_CACHE: "1"
+      SGLANG_GHOST_CACHE_SAMPLE: "16"
+      SGLANG_GHOST_CACHE_KEY_FILE: /ghost/key
+      SGLANG_GHOST_CACHE_SOCKET: /ghost/aggregator.sock
+      SGLANG_GHOST_CACHE_REPLICA: {name}
+      SGLANG_KV_TIER_METRICS: "1"
+    restart: "no"
+    stop_grace_period: 2m
+{labels(name, "kvq-peerkv-v7-hicacheoff", "fa730e6e62b2", name)}"""
+
+
 def render():
     pd_patch = (ROOT / PD_PATCH).read_text()
     probe = (ROOT / PROBE).read_text()
@@ -223,6 +290,11 @@ def render():
     c_rb = cfg("kvq_readbench_py", readbench)
     nixl_bench = (ROOT / NIXL_BENCH).read_text()
     c_nixl = cfg("kvq_nixl_bench_py", nixl_bench)
+    peer_patch = (ROOT / PEERKV_PATCH).read_text()
+    peer_engine_src = (ROOT / PEERKV_ENGINE).read_text()
+    c_ppatch, c_pengine = cfg("kvq_peerkv_patch_py", peer_patch), cfg("kvq_peerkv_engine_py", peer_engine_src)
+    pa = peer_engine("kvq-pa", 0, 29560, "kvq-pb", c_ppatch, c_pengine)
+    pb = peer_engine("kvq-pb", 2, 29561, "kvq-pa", c_ppatch, c_pengine)
     def nixl(role, gpu):
         return f"""  kvq-nixl-{role}:
     <<: *kvq-gpu
@@ -395,6 +467,8 @@ services:
   # Never run together with kvq-pf/kvq-dc (same GPUs). KVQ_SHARED=0 is the private-cache control. ---
 {sh1}
 {sh2}
+{pa}
+{pb}
   kvq-ghost-aggregator:
     image: {V6}
     container_name: kvq-ghost-aggregator
@@ -514,6 +588,13 @@ volumes:
       type: tmpfs
       device: tmpfs
       o: "size=${{KVQ_TMPFS_SIZE:-170g}},mode=0700"
+  # peerkv: per-rank CUDA IPC handle files and the lend sockets (tiny).
+  kvq_peerkv:
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: "size=64m,mode=0700"
   kvq_xfer:
     driver: local
     driver_opts:
@@ -555,6 +636,14 @@ configs:
   {c_nixl}:
     content: |
 {block(nixl_bench, 6)}
+
+  {c_ppatch}:
+    content: |
+{block(peer_patch, 6)}
+
+  {c_pengine}:
+    content: |
+{block(peer_engine_src, 6)}
 """
 
 
