@@ -32,7 +32,7 @@ POOL_FILE = "prod/small-models-GLM53-KVSharePool.yaml"
 LONG_V7_CANARY_FILE = "prod/GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext-V7Canary.yaml"   # gpu02 base since v0.0.479
 LONG_V7_OFF_FILE = "prod/GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext-V7-HiCacheOff-r2b.yaml"
 POOL_SUFFIX = "-kvsharepool-v1"
-TREATED = (VARIANT_SUFFIX, KV4_SUFFIX, KV2_SUFFIX, OFF_SUFFIX, V7_OFF_SUFFIX, POOL_SUFFIX)
+TREATED = (VARIANT_SUFFIX, KV4_SUFFIX, KV2_SUFFIX, OFF_SUFFIX, V7_OFF_SUFFIX, POOL_SUFFIX, "-hicacheoff-v1")
 
 
 def token():
@@ -171,7 +171,8 @@ def main():
         if a.v7_hicache_off_long:
             if (a.host, a.replica) != ("gpu02", "r2b"):
                 sys.exit("--v7-hicache-off-long is built for gpu02 r2b only")
-            file, suffix = LONG_V7_OFF_FILE, V7_OFF_SUFFIX
+            # The long-tier v7 variant ends "-v7-mr16q4", so the arm suffix is "-hicacheoff-v1" there.
+            file, suffix = LONG_V7_OFF_FILE, "-hicacheoff-v1"
         elif a.gpu13_pool:
             file, suffix = POOL_FILE, POOL_SUFFIX
         elif a.v7_hicache_off:
