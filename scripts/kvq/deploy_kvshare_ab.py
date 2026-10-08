@@ -33,8 +33,11 @@ LONG_V7_CANARY_FILE = "prod/GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext-V7Canary.ya
 LONG_V7_OFF_FILE = "prod/GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext-V7-HiCacheOff-r2b.yaml"
 POOL_SUFFIX = "-kvsharepool-v1"
 PEERKV_FILE = "prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8-V7-HiCacheOff-PeerKV.yaml"  # gpu04: r1+r2 peerkv, r3+r4 control
-PEERKV_SUFFIX = "-v7-hicacheoff-peerkv-v1"
-TREATED = (VARIANT_SUFFIX, KV4_SUFFIX, KV2_SUFFIX, OFF_SUFFIX, V7_OFF_SUFFIX, POOL_SUFFIX, PEERKV_SUFFIX, "-hicacheoff-v1")
+# Appended to the v7 fleet variant (v0.0.480): r1/r2 peerkv (+ expandable_segments:False), r3/r4 only
+# expandable_segments:False.
+PEERKV_SUFFIX = "-peerkv-v1"
+EXPFALSE_SUFFIX = "-expfalse-v1"
+TREATED = (VARIANT_SUFFIX, KV4_SUFFIX, KV2_SUFFIX, OFF_SUFFIX, V7_OFF_SUFFIX, POOL_SUFFIX, PEERKV_SUFFIX, EXPFALSE_SUFFIX, "-hicacheoff-v1")
 
 
 def token():
@@ -139,7 +142,7 @@ def main():
     ap.add_argument("--gpu13-pool", action="store_true", help="arm D': gpu13 r1a/r1b pool host cache (KVSharePool file)")
     ap.add_argument("--v7-hicache-off-long", action="store_true", help="long arm: gpu02 r2b = v7 canary r2a without HiCache")
     ap.add_argument("--v7-hicache-off", action="store_true", help="arm B': gpu03 r3 = v7 canary without HiCache")
-    ap.add_argument("--peerkv", action="store_true", help="gpu04 peerkv A/B: r1/r2 = v7 + HiCache off + GPU peer KV, r3/r4 = v7 + HiCache off")
+    ap.add_argument("--peerkv", action="store_true", help="gpu04 peerkv A/B on the v7 fleet file: r1/r2 = + GPU peer KV + expandable_segments:False, r3/r4 = + expandable_segments:False")
     ap.add_argument("--rollback-file", default=None, help="prod file to roll back to (default: the host's base file)")
     ap.add_argument("--tag", default=None, help="commit SHA to deploy (default: this checkout's HEAD)")
     ap.add_argument("--rollback", action="store_true")
@@ -175,7 +178,7 @@ def main():
             if a.host != "gpu04" or a.replica not in ("r1", "r2", "r3", "r4"):
                 sys.exit("--peerkv is built for gpu04 r1-r4")
             file = PEERKV_FILE
-            suffix = PEERKV_SUFFIX if a.replica in ("r1", "r2") else V7_OFF_SUFFIX
+            suffix = PEERKV_SUFFIX if a.replica in ("r1", "r2") else EXPFALSE_SUFFIX
         elif a.v7_hicache_off_long:
             if (a.host, a.replica) != ("gpu02", "r2b"):
                 sys.exit("--v7-hicache-off-long is built for gpu02 r2b only")
