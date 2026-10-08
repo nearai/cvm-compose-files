@@ -34,12 +34,13 @@ FLEET_ENV = [
     "SGLANG_TOOL_SCHEMA_MAX_DEPTH=32",
     "SGLANG_TOOL_SCHEMA_MAX_NODES=25000",
 ]
-# gpu03 r3 (arm B', prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8-V7-HiCacheOff-r3.yaml on pranavraja99/glm53-kvshare-ab), live argv.
+# gpu03 r3 (arm B', prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8-V7-HiCacheOff-r3.yaml on pranavraja99/glm53-kvshare-ab), live argv,
+# except --max-queued-requests: the fleet base tier raises it from the live 8 to 32 (queue-full 503s; see the runbook's queue section).
 R3_ARGV = shlex.split("""
     sglang serve
     --model-path /root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/snapshots/99f1fa70408c52b007d4fd69e02e5a522422e755
     --served-model-name z-ai/glm-5.3-flash --tp-size 2 --ep-size 2 --mem-fraction-static 0.86
-    --max-running-requests 64 --max-queued-requests 8 --enable-priority-scheduling --disable-priority-preemption
+    --max-running-requests 64 --max-queued-requests 32 --enable-priority-scheduling --disable-priority-preemption
     --chunked-prefill-size 8192 --max-prefill-tokens 32768 --prefill-decode-interval 2 --cuda-graph-max-bs-decode 64
     --dsa-prefill-backend flashmla_kv --dsa-decode-backend flashmla_kv --kv-cache-dtype fp8_e4m3
     --speculative-algorithm EAGLE --speculative-num-steps 4 --speculative-eagle-topk 1 --speculative-num-draft-tokens 5
