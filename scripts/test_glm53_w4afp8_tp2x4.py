@@ -4,7 +4,7 @@
 # dependencies = []
 # ///
 # How to run: python3 -m unittest scripts.test_glm53_w4afp8_tp2x4 (needs ruby for the validator cases)
-"""The generated 4x TP2 base-tier canary file, its generator and its validator contract."""
+"""The generated v7 fleet base-tier file (4x TP2), its generator and its validator contract."""
 
 import re
 import shutil
@@ -15,8 +15,7 @@ from pathlib import Path
 
 from scripts import prepare_glm53_w4afp8_tp2x4 as generator
 
-from scripts.test_glm53_v7_canary import CanaryFilesTest, V7ReleaseGateTest  # noqa: F401
-from scripts.test_glm53_v7_canary import RunbookTest as V7RunbookTest, ValidatorContractTest as V7ValidatorContractTest  # noqa: F401
+from scripts.test_glm53_v7_fleet import FleetFilesTest, FleetRunbookTest, FleetValidatorContractTest, Gpu13FleetTest  # noqa: F401
 
 ROOT = Path(__file__).resolve().parents[1]
 TARGET = ROOT / generator.TARGET
@@ -82,7 +81,7 @@ class GeneratedFileTest(unittest.TestCase):
         source_registrar = generator.section(self.source, "  registrar_script:\n", "  nginx_conf:\n", "registrar")[2]
         self.assertEqual(registrar.replace("(4x TP2/EP2)", "(2x TP4/EP4)"), source_registrar)
 
-    def test_candidate_argv_is_the_control_argv_with_exactly_the_exp25_edits(self) -> None:
+    def test_candidate_argv_is_the_control_argv_with_exactly_the_v7_fleet_edits(self) -> None:
         control = [line.strip() for line in generator.section(self.target, "x-sg-glm53-flash-common:", "\nx-sg-glm53-flash-candidate", "c")[2].split("command: >\n")[1].split("  volumes:")[0].splitlines() if line.strip()]
         candidate = [line.strip() for line in generator.section(self.target, "x-sg-glm53-flash-candidate:", "\nx-dcgm-common", "c")[2].split("command: >\n")[1].splitlines() if line.strip()]
         removed = sorted(set(control) - set(candidate))
@@ -90,14 +89,21 @@ class GeneratedFileTest(unittest.TestCase):
         self.assertEqual(
             removed,
             sorted(["--mem-fraction-static 0.80", "--max-running-requests 32", "--cuda-graph-max-bs-decode 32", "--speculative-num-steps 5",
-                    "--speculative-num-draft-tokens 6", "--speculative-adaptive", "--max-mamba-cache-size 165", "--prefill-decode-interval 1"]),
+                    "--speculative-num-draft-tokens 6", "--speculative-adaptive", "--max-mamba-cache-size 165", "--prefill-decode-interval 1",
+                    "--dsa-prefill-backend tilelang", "--dsa-decode-backend tilelang", "--kv-cache-dtype bfloat16",
+                    "--enable-hierarchical-cache", "--hicache-write-policy write_through_selective", "--hicache-io-backend direct",
+                    "--hicache-mem-layout page_first_direct"]),
         )
         self.assertEqual(
             added,
-            sorted(["--mem-fraction-static 0.86", "--max-running-requests 48", "--cuda-graph-max-bs-decode 48", "--speculative-num-steps 4",
-                    "--speculative-num-draft-tokens 5", "--max-mamba-cache-size 330", "--prefill-decode-interval 2"]),
+            sorted(["--mem-fraction-static 0.86", "--max-running-requests 64", "--cuda-graph-max-bs-decode 64", "--speculative-num-steps 4",
+                    "--speculative-num-draft-tokens 5", "--max-mamba-cache-size 380", "--prefill-decode-interval 2",
+                    "--dsa-prefill-backend flashmla_kv", "--dsa-decode-backend flashmla_kv", "--kv-cache-dtype fp8_e4m3",
+                    "--disable-overlap-schedule"]),
         )
-        self.assertEqual(len(control) - 1, len(candidate))
+        # -1 adaptive, -4 HiCache flags, +1 overlap-off.
+        self.assertEqual(len(control) - 4, len(candidate))
+        self.assertEqual(candidate[-2:], ["--mamba-ssm-dtype bfloat16", "--disable-overlap-schedule"])
 
     def test_all_replicas_run_the_candidate_and_differ_only_in_identity(self) -> None:
         def block(name: str) -> str:
@@ -123,11 +129,15 @@ class GeneratedFileTest(unittest.TestCase):
     def test_candidate_flag_values_are_pinned_literally(self) -> None:
         # Independent of the generator's edit list: a shared typo in the generator and validator must still fail here.
         _, _, anchor = generator.section(self.target, "x-sg-glm53-flash-candidate:", "\nx-dcgm-common", "candidate")
-        for flag in ("--mem-fraction-static 0.86", "--max-running-requests 48", "--cuda-graph-max-bs-decode 48", "--speculative-num-steps 4",
-                     "--speculative-eagle-topk 1", "--speculative-num-draft-tokens 5", "--max-mamba-cache-size 330", "--max-queued-requests 8",
-                     "--chunked-prefill-size 8192", "--hicache-write-policy write_through_selective", "--context-length 1048576"):
+        for flag in ("--mem-fraction-static 0.86", "--max-running-requests 64", "--cuda-graph-max-bs-decode 64", "--speculative-num-steps 4",
+                     "--speculative-eagle-topk 1", "--speculative-num-draft-tokens 5", "--max-mamba-cache-size 380", "--max-queued-requests 8",
+                     "--chunked-prefill-size 8192", "--context-length 1048576", "--kv-cache-dtype fp8_e4m3", "--dsa-prefill-backend flashmla_kv",
+                     "--dsa-decode-backend flashmla_kv", "--disable-overlap-schedule", "--mamba-ssm-dtype bfloat16"):
             self.assertEqual(anchor.count(f"      {flag}\n"), 1, flag)
         self.assertNotIn("--speculative-adaptive", anchor)
+        # HiCache OFF exactly as gpu03 r3 runs it: no HiCache flag in the argv.
+        self.assertFalse([t for t in anchor.split() if t.startswith("--hicache")])
+        self.assertNotIn("--enable-hierarchical-cache", anchor)
         self.assertEqual(anchor.count("      --prefill-decode-interval 2\n"), 1)
 
     def test_candidate_derivation_refuses_a_drifted_control_argv(self) -> None:
@@ -153,30 +163,13 @@ class GeneratedFileTest(unittest.TestCase):
                                                    "\n    - SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE=1\n    - SGLANG_HICACHE_POOLED_TRANSFERS=1\n"))
 
 
-class RunbookTest(unittest.TestCase):
-    """The canary runbook must carry the exact variant, flags and scoped services the file implements."""
-
-    def setUp(self) -> None:
-        self.runbook = (ROOT / "docs/glm53-base-tier-memopt-canary.md").read_text()
-        self.target = TARGET.read_text()
-
-    def test_runbook_names_the_variant_and_the_scoped_services(self) -> None:
-        self.assertIn(generator.CANDIDATE_VARIANT, self.runbook)
-        for name in NAMES[2:]:
-            self.assertIn(f'services: ["{name}"]', self.runbook)
-        self.assertNotIn('services: []', self.runbook)
-
-    def test_runbook_flag_table_matches_the_generator_edits(self) -> None:
-        for old, new in generator.CANDIDATE_EDITS:
-            if new is None or new == old:
-                continue
-            flag, value = new.rsplit(" ", 1)
-            self.assertIn(f"`{flag}`", self.runbook)
-            self.assertIn(value, self.runbook)
+class AnchorUsageTest(unittest.TestCase):
+    """The runbook for this file is docs/glm53-v7-fleet-rollout.md (tested in scripts/test_glm53_v7_fleet.py)."""
 
     def test_only_candidate_replicas_use_the_candidate_anchor(self) -> None:
-        self.assertEqual(self.target.count("<<: *sg-glm53-flash-candidate"), len(generator.CANDIDATE_REPLICAS))
-        self.assertEqual(self.target.count("    <<: *sg-glm53-flash-common"), len(generator.REPLICAS) - len(generator.CANDIDATE_REPLICAS))
+        target = TARGET.read_text()
+        self.assertEqual(target.count("<<: *sg-glm53-flash-candidate"), len(generator.CANDIDATE_REPLICAS))
+        self.assertEqual(target.count("    <<: *sg-glm53-flash-common"), len(generator.REPLICAS) - len(generator.CANDIDATE_REPLICAS))
 
 
 class ValidatorContractTest(unittest.TestCase):
@@ -247,18 +240,23 @@ class ValidatorContractTest(unittest.TestCase):
                 self.assert_fails(self.replace_in_anchor(control, before, after), argv)
 
     def test_rejects_candidate_argv_drift(self) -> None:
-        argv = "argv must be the memory-optimized candidate argv exactly"
+        argv = "argv must be the v7 fleet argv exactly"
         candidate = "x-sg-glm53-flash-candidate"
         cases = (
             ("\n      --mem-fraction-static 0.86\n", "\n      --mem-fraction-static 0.80\n"),
             ("\n      --mem-fraction-static 0.86\n", "\n      --mem-fraction-static 0.88\n"),
-            ("\n      --max-running-requests 48\n", "\n      --max-running-requests 32\n"),
+            ("\n      --max-running-requests 64\n", "\n      --max-running-requests 48\n"),
             ("\n      --prefill-decode-interval 2\n", "\n      --prefill-decode-interval 1\n"),
             ("\n      --speculative-num-steps 4\n", "\n      --speculative-num-steps 5\n"),
             ("\n      --speculative-num-draft-tokens 5\n", "\n      --speculative-num-draft-tokens 6\n"),
             ("\n      --speculative-eagle-topk 1\n", "\n      --speculative-eagle-topk 1\n      --speculative-adaptive\n"),
             ("\n      --chunked-prefill-size 8192\n", "\n      --chunked-prefill-size 16384\n"),
-            ("\n      --hicache-write-policy write_through_selective\n", "\n      --hicache-write-policy write_through\n"),
+            # HiCache must stay OFF, FP8 KV needs its pairing, and the overlap scheduler stays off.
+            ("\n      --mamba-ssm-dtype bfloat16\n", "\n      --mamba-ssm-dtype bfloat16\n      --enable-hierarchical-cache\n"),
+            ("\n      --kv-cache-dtype fp8_e4m3\n", "\n      --kv-cache-dtype bfloat16\n"),
+            ("\n      --dsa-decode-backend flashmla_kv\n", "\n      --dsa-decode-backend tilelang\n"),
+            ("\n      --dsa-prefill-backend flashmla_kv\n", "\n      --dsa-prefill-backend tilelang\n"),
+            ("\n      --disable-overlap-schedule\n", "\n"),
             ("\n      --max-queued-requests 8\n", "\n      --max-queued-requests 16\n"),
             ("\n      --context-length 1048576\n", "\n      --context-length 524288\n"),
         )
@@ -270,17 +268,17 @@ class ValidatorContractTest(unittest.TestCase):
         candidate = "x-sg-glm53-flash-candidate"
         # Too few mamba slots for the running cap (5 per request) and a stale decode graph size.
         self.assert_fails(
-            self.replace_in_anchor(candidate, "\n      --max-mamba-cache-size 330\n", "\n      --max-mamba-cache-size 165\n"),
-            "cannot hold 48 running requests",
+            self.replace_in_anchor(candidate, "\n      --max-mamba-cache-size 380\n", "\n      --max-mamba-cache-size 165\n"),
+            "cannot hold 64 running requests",
         )
         self.assert_fails(
-            self.replace_in_anchor(candidate, "\n      --cuda-graph-max-bs-decode 48\n", "\n      --cuda-graph-max-bs-decode 32\n"),
-            "--cuda-graph-max-bs-decode must equal --max-running-requests (48)",
+            self.replace_in_anchor(candidate, "\n      --cuda-graph-max-bs-decode 64\n", "\n      --cuda-graph-max-bs-decode 32\n"),
+            "--cuda-graph-max-bs-decode must equal --max-running-requests (64)",
         )
 
     def test_rejects_a_missing_capacity_flag(self) -> None:
         self.assert_fails(
-            self.replace_in_anchor("x-sg-glm53-flash-candidate", "\n      --max-mamba-cache-size 330\n", "\n"),
+            self.replace_in_anchor("x-sg-glm53-flash-candidate", "\n      --max-mamba-cache-size 380\n", "\n"),
             "must set --max-mamba-cache-size",
         )
 
@@ -303,7 +301,7 @@ class ValidatorContractTest(unittest.TestCase):
             self.replace_once(
                 f"  {NAMES[1]}:\n    <<: *sg-glm53-flash-candidate\n", f"  {NAMES[1]}:\n    <<: *sg-glm53-flash-common\n"
             ),
-            "argv must be the memory-optimized candidate argv exactly",
+            "argv must be the v7 fleet argv exactly",
         )
 
     def test_rejects_engine_image_and_environment_drift(self) -> None:
@@ -350,7 +348,7 @@ class ValidatorContractTest(unittest.TestCase):
             ("['glm53-ghost-aggregator:9464']", "['glm53-ghost-aggregator:9465']", 0, "must scrape glm53-ghost-aggregator:9464"),
             ("              - job_name: ghost-aggregator-glm53-ghost-aggregator\n", "              - job_name: ghost-aggregator\n", 0,
              "missing ghost-aggregator-glm53-ghost-aggregator scrape job"),
-            (f'nearai.otel.config_variant: "{generator.CANDIDATE_VARIANT}"', f'nearai.otel.config_variant: "{generator.CANDIDATE_VARIANT.removesuffix("-obs-v1")}"', 0,
+            (f'nearai.otel.config_variant: "{generator.CANDIDATE_VARIANT}"', f'nearai.otel.config_variant: "{generator.CANDIDATE_VARIANT.replace("-obs-v1-v7", "-v7")}"', 0,
              "nearai.otel.config_variant must be"),
         )
         for before, after, index, message in cases:
@@ -394,10 +392,13 @@ class ValidatorContractTest(unittest.TestCase):
             (f'nearai.otel.config_variant: "{candidate_variant}"', 'nearai.otel.config_variant: "incorrect-variant"', 3,
              "nearai.otel.config_variant must be"),
             (f"config_variant:{candidate_variant}", "config_variant:incorrect-variant", 3, "log metadata must carry exactly config_variant:"),
-            ('      nearai.otel.engine_image: "9c6ddd4319c4"\n', '      nearai.otel.engine_image: "8bce6a7cc872"\n', 1, "nearai.otel.engine_image must be"),
+            (f'      nearai.otel.engine_image: "{generator.ENGINE_IMAGE_LABEL}"\n', '      nearai.otel.engine_image: "8bce6a7cc872"\n', 1, "nearai.otel.engine_image must be"),
+            (f'      nearai.otel.engine_image: "{generator.ENGINE_IMAGE_LABEL}"\n', f'      nearai.otel.engine_image: "{generator.V6_IMAGE.split(":")[-1][:12]}"\n', 2, "nearai.otel.engine_image must be"),
+            ('"precision:int4-weights-fp8-activations-fp8-kv"', '"precision:int4-weights-fp8-activations-bf16-kv"', 1, "log metadata must carry precision:int4-weights-fp8-activations-fp8-kv"),
+            ('                      precision: "int4-weights-fp8-activations-fp8-kv"\n', '                      precision: "int4-weights-fp8-activations-bf16-kv"\n', 2, "scrape label precision must be"),
             ('      nearai.otel.instance: "4"\n', '      nearai.otel.instance: "2"\n', 0, "nearai.otel.instance must be"),
             ('                      instance: "3"\n', '                      instance: "1"\n', 0, "scrape label instance"),
-            ('                      engine_image: "9c6ddd4319c4"\n', '                      engine_image: "8bce6a7cc872"\n', 3, "scrape label engine_image"),
+            (f'                      engine_image: "{generator.ENGINE_IMAGE_LABEL}"\n', '                      engine_image: "8bce6a7cc872"\n', 3, "scrape label engine_image"),
             ('nearai.otel.deployment: "glm53-flash-sgl-tp2x4"', 'nearai.otel.deployment: "glm53-flash-sgl-tp4"', 2,
              "must not carry the glm53-flash-sgl-tp4 deployment label"),
             ('"deployment:glm53-flash-sgl-tp2x4"', '"deployment:glm53-flash-sgl-tp4"', 1,
