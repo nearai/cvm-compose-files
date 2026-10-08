@@ -2004,6 +2004,13 @@ configs:
           if rel not in staged:
               staged[rel] = read(rel)
           return staged[rel]
+      # A restarted container keeps its patched files (`restart: unless-stopped` reuses the container
+      # filesystem). Re-running the edits then fails: later edits rewrite regions that earlier edits
+      # produced, so neither the anchor nor the replacement is present verbatim (gpu32 lab, 2026-10-08).
+      # If every file already has its exact patched sha256, the tree is verified; nothing to do.
+      if all(sha(read(rel)) == after for rel, (_before, after) in EXPECTED.items()):
+          print(f"{TAG} OK: shared KV host tier patch already applied and verified on {len(EXPECTED)} files", flush=True)
+          sys.exit(0)
       def sub(rel, old, new, label):
           s = load(rel)
           if new in s:
