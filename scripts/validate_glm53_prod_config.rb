@@ -661,20 +661,31 @@ def validate_w4afp8_base(errors, compose, canonical)
   errors << "#{label} file must match the canonical file outside the two engines and their telemetry (first difference: #{difference})"
 end
 
-# 4x TP2 base-tier canary (generated from the W4AFP8 base file): four TP2/EP2 replicas, one
-# per NVLink GPU pair, on the HiCache + W4AFP8 image the long tier runs, with exactly the
-# lab-qualified TP2 argv, the base engine environment plus a 325 GiB HiCache host tier and the
-# DSA indexer split. Outside the engines, their telemetry, the four-way fan-out (proxy pool,
-# perception loop, soak relay) and the deployment label it must equal the W4AFP8 base file.
+# 4x TP2 base tier, v7 FLEET CONFIG (generated from the W4AFP8 base file; gpu03 and gpu04): four TP2/EP2 replicas, one
+# per NVLink GPU pair, on the glm53-hicache-w4afp8-v7 image, every one with exactly the v7 fleet argv (FP8 KV, flashmla_kv
+# backends, 64 running / 380 mamba slots, overlap off, HiCache OFF as gpu03 r3 runs it), the base engine environment plus the
+# HiCache variables (unread while HiCache is off), the DSA indexer split and the five v7 variables, and NO profiling. Outside
+# the engines, their telemetry, the four-way fan-out (proxy pool, perception loop, soak relay) and the deployment label it
+# must equal the W4AFP8 base file. docs/glm53-v7-fleet-rollout.md.
 W4AFP8_TP2X4_FILE = File.join(ROOT, "prod", "GLM-5.3-Flash-SGL-TP2x4-W4AFP8.yaml")
-W4AFP8_TP2X4_IMAGE = "docker.io/nearaidev/sglang@sha256:9c6ddd4319c4ab00e351d8650459e68b8830e36ffcc029d67fa5e19d0ac3ed17"
+W4AFP8_TP2X4_IMAGE = "docker.io/nearaidev/sglang@sha256:fa730e6e62b2ae8058114ce540487ade33ab93bc42b1179ae78edc92bd563fc5"
+W4AFP8_FLEET_PRECISION = "int4-weights-fp8-activations-fp8-kv"
+# v7 features (opt-in in the image) every fleet engine sets; profiling (NEAR_SELF_PROFILE*) must appear nowhere in a fleet file.
+V7_FLEET_ENV = {
+  "SGLANG_PREPROCESS_WORKERS" => "4", "SGLANG_PREPROCESS_TIMEOUT_S" => "60", "SGLANG_PREPROCESS_LOG_SLOW_S" => "5",
+  "SGLANG_TOOL_SCHEMA_MAX_DEPTH" => "32", "SGLANG_TOOL_SCHEMA_MAX_NODES" => "25000",
+}.freeze
+FORBIDDEN_PROFILING_PATTERN = /NEAR_SELF_PROFILE|NEAR_PROFILE/
+# Comments may name the variables (they say profiling is off); anything else mentioning them enables or logs profiling.
+def profiling_enabled?(raw)
+  raw.lines.reject { |line| line.lstrip.start_with?("#") }.join.match?(FORBIDDEN_PROFILING_PATTERN)
+end
 W4AFP8_TP2X4_VARIANT = "hicache-w4afp8-qsplit-selective325-mamba165-bf16state-c8192-admission-reserve-v10-pdi1-h200-tp2-ep2-eagle-adaptive-5-1-6-strict-budget8192#{OBSERVABILITY_VARIANT_SUFFIX}"
 W4AFP8_TP2X4_DEPLOYMENT = "glm53-flash-sgl-tp2x4"
 W4AFP8_BASE_DEPLOYMENT = "glm53-flash-sgl-tp4"
 W4AFP8_TP2X4_PREFIX = "model-sg-glm53-w4afp8-tp2-r"
-# All four replicas run the memory-optimized argv (tee-bench exp 25/25b/25c), promoted from the
-# r3/r4 canary after the gpu03 same-host bake (2026-10-06). The "control" role (the previous prod
-# argv, W4AFP8_TP2X4_ARGV) is kept for reverting a replica and is what the candidate edits derive from.
+# All four replicas run the v7 fleet argv (the memory-optimized argv of tee-bench exp 25/25b/25c with the v7 edits below). The "control"
+# role (the previous prod argv, W4AFP8_TP2X4_ARGV) stays pinned as the argv the candidate edits derive from.
 W4AFP8_TP2X4_REPLICAS = {
   "#{W4AFP8_TP2X4_PREFIX}1" => { "devices" => %w[0 1], "instance" => "1", "soak_port" => "8008", "role" => "candidate", "ghost_replica" => "r1" },
   "#{W4AFP8_TP2X4_PREFIX}2" => { "devices" => %w[2 3], "instance" => "2", "soak_port" => "8009", "role" => "candidate", "ghost_replica" => "r2" },
@@ -683,7 +694,7 @@ W4AFP8_TP2X4_REPLICAS = {
 }.freeze
 W4AFP8_TP2X4_CANDIDATE_ANCHOR = "x-sg-glm53-flash-candidate"
 W4AFP8_TP2X4_CANDIDATE_PDI = "2"
-W4AFP8_TP2X4_CANDIDATE_VARIANT = "hicache-w4afp8-qsplit-selective325-mamba330-bf16state-memopt086-mr48-c8192-admission-reserve-v10-pdi#{W4AFP8_TP2X4_CANDIDATE_PDI}-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192#{OBSERVABILITY_VARIANT_SUFFIX}"
+W4AFP8_TP2X4_CANDIDATE_VARIANT = "w4afp8-qsplit-hicacheoff-mamba380-fp8kv-memopt086-mr64-c8192-admission-reserve-v10-pdi#{W4AFP8_TP2X4_CANDIDATE_PDI}-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192#{OBSERVABILITY_VARIANT_SUFFIX}-v7"
 W4AFP8_TP2X4_ARGV = Shellwords.split(<<~'ARGV').freeze
   sglang serve
   --model-path /root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/snapshots/99f1fa70408c52b007d4fd69e02e5a522422e755
@@ -709,24 +720,54 @@ W4AFP8_TP2X4_ARGV = Shellwords.split(<<~'ARGV').freeze
   --hicache-io-backend direct --hicache-mem-layout page_first_direct
   --max-mamba-cache-size 165 --mamba-ssm-dtype bfloat16
 ARGV
-# The candidate argv is the control argv with exactly these token edits, minus --speculative-adaptive.
-W4AFP8_TP2X4_CANDIDATE_EDITS = [
-  ["--mem-fraction-static", "0.86"], ["--max-running-requests", "48"], ["--prefill-decode-interval", W4AFP8_TP2X4_CANDIDATE_PDI],
-  ["--cuda-graph-max-bs-decode", "48"], ["--speculative-num-steps", "4"], ["--speculative-num-draft-tokens", "5"],
-  ["--max-mamba-cache-size", "330"],
-].freeze
-W4AFP8_TP2X4_CANDIDATE_ARGV = begin
-  argv = W4AFP8_TP2X4_ARGV.dup
-  W4AFP8_TP2X4_CANDIDATE_EDITS.each { |flag, value| argv[argv.index(flag) + 1] = value }
-  argv.delete("--speculative-adaptive")
-  argv.freeze
-end
-# Every running request needs 5 mamba state slots (prod: 165 slots for 32 running; candidate: 330 for 48).
+# The v7 fleet argv, written out in full (not derived), so a shared typo in the generator and a derivation here cannot agree. It is
+# the argv gpu03 r3 (arm B', HiCache off) runs live. Against the control argv above: mem 0.86, 64 running, pdi 2, graphs 64, EAGLE
+# fixed 4/1/5 (no --speculative-adaptive), 380 mamba slots, FP8 KV with BOTH DSA backends flashmla_kv, the four HiCache flags removed,
+# and --disable-overlap-schedule appended.
+W4AFP8_TP2X4_CANDIDATE_ARGV = Shellwords.split(<<~'ARGV').freeze
+  sglang serve
+  --model-path /root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/snapshots/99f1fa70408c52b007d4fd69e02e5a522422e755
+  --served-model-name z-ai/glm-5.3-flash
+  --tp-size 2 --ep-size 2
+  --mem-fraction-static 0.86
+  --max-running-requests 64 --max-queued-requests 8
+  --enable-priority-scheduling --disable-priority-preemption
+  --chunked-prefill-size 8192 --max-prefill-tokens 32768 --prefill-decode-interval 2
+  --cuda-graph-max-bs-decode 64
+  --dsa-prefill-backend flashmla_kv --dsa-decode-backend flashmla_kv
+  --kv-cache-dtype fp8_e4m3
+  --speculative-algorithm EAGLE --speculative-num-steps 4 --speculative-eagle-topk 1
+  --speculative-num-draft-tokens 5
+  --reasoning-parser glm45 --enable-strict-thinking --grammar-backend xgrammar --tool-call-parser glm47
+  --chat-template /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/3f1971b7b5f7a528c9c4ef6212c8785298a8c24a/chat_template.jinja
+  --context-length 1048576
+  --dist-init-addr 127.0.0.1:29510
+  --watchdog-timeout 1800 --host 0.0.0.0 --port 8000
+  --enable-metrics --enable-cache-report --log-requests-level 0
+  --disable-fast-image-processor --limit-mm-data-per-request '{"image": 64}'
+  --max-mamba-cache-size 380 --mamba-ssm-dtype bfloat16
+  --disable-overlap-schedule
+ARGV
+# Every running request needs 5 mamba state slots (fleet: 380 slots for 64 running).
 W4AFP8_TP2X4_MAMBA_SLOTS_PER_REQUEST = 5
 W4AFP8_TP2X4_EXTRA_ENV = HICACHE_ENV.merge(
   "SGLANG_HICACHE_RAM_BUDGET" => "${GLM53_HICACHE_RAM_BUDGET:-325GiB}",
   "SGLANG_DSA_INDEXER_QSPLIT" => "1",
-).freeze
+).merge(V7_FLEET_ENV).freeze
+
+# FP8 KV needs --kv-cache-dtype fp8_e4m3 AND both DSA backends flashmla_kv; the image does not assert the pairing, so the file must.
+def validate_fp8_kv_pairing(errors, who, argv)
+  value = lambda { |flag| argv.each_cons(2).find { |token, _| token == flag }&.last }
+  { "--kv-cache-dtype" => "fp8_e4m3", "--dsa-prefill-backend" => "flashmla_kv", "--dsa-decode-backend" => "flashmla_kv" }.each do |flag, want|
+    errors << "#{who} must set #{flag} #{want} exactly once (FP8 KV needs the dtype and both flashmla_kv backends), got #{value.call(flag).inspect} x#{argv.count(flag)}" unless value.call(flag) == want && argv.count(flag) == 1
+  end
+end
+
+# HiCache OFF is implemented as gpu03 r3 runs it: none of the HiCache flags in the argv (the HiCache environment may stay, unread).
+def validate_hicache_off(errors, who, argv)
+  present = argv.select { |token| token.start_with?("--hicache", "--enable-hierarchical-cache") }
+  errors << "#{who} must run with HiCache off: remove #{present.join(', ')}" unless present.empty?
+end
 
 # The W4AFP8 base file and the 4x TP2 file, reduced to what must be identical: engines, the
 # engine anchor, the replicas' scrape jobs, the proxy pool, the perception command and the
@@ -771,6 +812,7 @@ def validate_w4afp8_tp2x4(errors, compose, base, raw)
   errors << "#{label} has unexpected services: #{extra.join(', ')}" unless extra.empty?
   errors << "#{label} file must not reference any TP4 engine (tp4-r)" if raw.include?("tp4-r")
   errors << "#{label} file must not carry the #{W4AFP8_BASE_DEPLOYMENT} deployment label" if raw.include?("#{W4AFP8_BASE_DEPLOYMENT}\"")
+  errors << "#{label} file must not enable profiling anywhere (no NEAR_SELF_PROFILE*)" if profiling_enabled?(raw)
 
   # No replica merges the common anchor directly any more, but it is the previous prod argv a
   # replica is reverted to and the base the candidate edits derive from, so it stays pinned.
@@ -808,7 +850,7 @@ def validate_w4afp8_tp2x4(errors, compose, base, raw)
     expected_variant = candidate ? W4AFP8_TP2X4_CANDIDATE_VARIANT : W4AFP8_TP2X4_VARIANT
     unless actual_argv == expected_argv
       drift = ((actual_argv - expected_argv) + (expected_argv - actual_argv)).uniq
-      errors << "#{label} #{name} argv must be the #{candidate ? 'memory-optimized candidate' : 'lab-qualified TP2 control'} argv exactly; differing tokens: #{drift.first(8).join(' ')}"
+      errors << "#{label} #{name} argv must be the #{candidate ? 'v7 fleet' : 'lab-qualified TP2 control'} argv exactly; differing tokens: #{drift.first(8).join(' ')}"
     end
     # Capacity invariants, asserted on what the file says rather than on the expected argv.
     flag_value = lambda do |flag|
@@ -822,6 +864,9 @@ def validate_w4afp8_tp2x4(errors, compose, base, raw)
       errors << "#{label} #{name} --max-mamba-cache-size #{slots} cannot hold #{running} running requests (needs >= #{W4AFP8_TP2X4_MAMBA_SLOTS_PER_REQUEST} slots each)"
     end
     errors << "#{label} #{name} --cuda-graph-max-bs-decode must equal --max-running-requests (#{running})" unless flag_value.call("--cuda-graph-max-bs-decode") == running
+    validate_fp8_kv_pairing(errors, "#{label} #{name}", actual_argv)
+    validate_hicache_off(errors, "#{label} #{name}", actual_argv)
+    errors << "#{label} #{name} must set --disable-overlap-schedule exactly once" unless actual_argv.count("--disable-overlap-schedule") == 1
     env = environment_map(service)
     expected_env = base_env.merge(observability_env(spec["ghost_replica"]))
     REQUIRED_ENV.each do |key, value|
@@ -850,7 +895,7 @@ def validate_w4afp8_tp2x4(errors, compose, base, raw)
     rescue JSON::ParserError
       []
     end
-    ["model_path:#{W4AFP8_CHECKPOINT}", "precision:#{W4AFP8_PRECISION}", "engine_image:#{engine_image_label}", "instance:#{spec['instance']}", "deployment:#{W4AFP8_TP2X4_DEPLOYMENT}"].each do |tag|
+    ["model_path:#{W4AFP8_CHECKPOINT}", "precision:#{W4AFP8_FLEET_PRECISION}", "engine_image:#{engine_image_label}", "instance:#{spec['instance']}", "deployment:#{W4AFP8_TP2X4_DEPLOYMENT}"].each do |tag|
       errors << "#{label} #{name} log metadata must carry #{tag}" unless tags.include?(tag)
     end
     check_variant(errors, label, service, name, collector, expected_variant)
@@ -858,7 +903,7 @@ def validate_w4afp8_tp2x4(errors, compose, base, raw)
     scrape_labels = scrape&.dig("static_configs", 0, "labels") || {}
     errors << "#{label} sglang-#{name} must scrape #{name}:8000" if scrape && scrape.dig("static_configs", 0, "targets") != ["#{name}:8000"]
     {
-      "container_name" => name, "model_path" => W4AFP8_CHECKPOINT, "precision" => W4AFP8_PRECISION, "engine_image" => engine_image_label,
+      "container_name" => name, "model_path" => W4AFP8_CHECKPOINT, "precision" => W4AFP8_FLEET_PRECISION, "engine_image" => engine_image_label,
       "instance" => spec["instance"], "deployment" => W4AFP8_TP2X4_DEPLOYMENT,
     }.each do |key, value|
       errors << "#{label} sglang-#{name} scrape label #{key} must be #{value.inspect}, got #{scrape_labels[key].inspect}" if scrape && scrape_labels[key] != value
@@ -1001,7 +1046,9 @@ W4AFP8_LONG_CONTEXT_V3_IMAGE = "docker.io/nearaidev/sglang@sha256:47aff791090003
 # glm53-hicache-w4afp8-v6 (#340): the v3 recipe plus the opt-in ghost prefix cache and KV tier
 # metrics (#336) and the PyJWT CVE fix; published, signed and attested by workflow run 37505271073.
 W4AFP8_LONG_CONTEXT_V6_IMAGE = "docker.io/nearaidev/sglang@sha256:9c6ddd4319c4ab00e351d8650459e68b8830e36ffcc029d67fa5e19d0ac3ed17"
-W4AFP8_QSPLIT_CAPABLE_IMAGES = [W4AFP8_LONG_CONTEXT_V2_IMAGE, W4AFP8_LONG_CONTEXT_V3_IMAGE, W4AFP8_LONG_CONTEXT_V6_IMAGE].freeze
+# glm53-hicache-w4afp8-v7 (#345, publish run 37693106399): v6 + FP8 KV for NoPE DSA + opt-in preprocess pool and tool-schema caps. The fleet's TP2 replicas run it.
+W4AFP8_LONG_CONTEXT_V7_IMAGE = "docker.io/nearaidev/sglang@sha256:fa730e6e62b2ae8058114ce540487ade33ab93bc42b1179ae78edc92bd563fc5"
+W4AFP8_QSPLIT_CAPABLE_IMAGES = [W4AFP8_LONG_CONTEXT_V2_IMAGE, W4AFP8_LONG_CONTEXT_V3_IMAGE, W4AFP8_LONG_CONTEXT_V6_IMAGE, W4AFP8_LONG_CONTEXT_V7_IMAGE].freeze
 W4AFP8_LONG_CONTEXT_VARIANT = "fc91d24-long-context-w4afp8-cCHUNK-QSPLITOFFLOOPhicache-cuda-host-pooled-v1-HOSTadmission-reserve-disabled-pool-clamp-pdiPDI-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192#{OBSERVABILITY_VARIANT_SUFFIX}"
 W4AFP8_QSPLIT_ENV = "SGLANG_DSA_INDEXER_QSPLIT"
 # c16384 is only memory-safe WITH the split: without it a concurrent long burst left 0.04-0.65 GB
@@ -1046,11 +1093,11 @@ W4AFP8_LONG_CONTEXT_ARGV = Shellwords.split(<<~'ARGV').freeze
 ARGV
 W4AFP8_LONG_CONTEXT_HICACHE_ENV = HICACHE_ENV.merge("SGLANG_HICACHE_RAM_BUDGET" => "${GLM53_HICACHE_RAM_BUDGET:-406GiB}").freeze
 
-# 2xTP2 memory-optimized replicas. The file is shared by gpu02 and gpu23, so the TP4 r1/r2
-# above stay defined (a host not yet converted keeps deploying them) and these TP2 services are ADDED
-# to start in their place (same GPUs, so a TP4 replica and its pair are never up together). Lab-validated
-# (tee-bench exp 19): mem 0.86, 330 mamba slots, fixed EAGLE 4/1/5. Caps are 12 running / 4 queued with decode
-# graphs capped at 12 (user decision, prod KV-bound evidence in docs/long-context-glm53-2xtp2-rollout.md; the lab ran 24/8).
+# 2xTP2 replicas, v7 FLEET CONFIG. The file is shared by gpu02 and gpu23, so the TP4 r1/r2 above stay defined (v6; a host not
+# yet converted keeps deploying them) and these four TP2 services start in their place (same GPUs, so a TP4 replica and its pair
+# are never up together). Lab-validated (tee-bench exp 19/29): mem 0.86, 330 mamba slots, fixed EAGLE 4/1/5; v7 adds FP8 KV
+# (flashmla_kv prefill and decode), 16 running / 4 queued with decode graphs 16, the overlap scheduler off, HiCache ON (write_through,
+# the long tier is at 84% of its infinite-cache ceiling), the preprocess pool and tool-schema caps, and NO profiling.
 W4AFP8_TP2_CANARY_REPLICAS = {
   "model-sg-glm53-w4afp8-tp2-r2a" => { "devices" => %w[4 5], "dist_init" => "127.0.0.1:29512", "instance" => "2a", "gpu_pair" => "4-5",
                                        "budget" => "${GLM53_R2A_HICACHE_RAM_BUDGET:-325GiB}", "ghost_replica" => "r2a" },
@@ -1067,19 +1114,19 @@ W4AFP8_TP2_PARENT = {
   "model-sg-glm53-w4afp8-tp2-r1a" => "model-sg-glm53-w4afp8-tp4-r1", "model-sg-glm53-w4afp8-tp2-r1b" => "model-sg-glm53-w4afp8-tp4-r1",
   "model-sg-glm53-w4afp8-tp2-r2a" => "model-sg-glm53-w4afp8-tp4-r2", "model-sg-glm53-w4afp8-tp2-r2b" => "model-sg-glm53-w4afp8-tp4-r2",
 }.freeze
-W4AFP8_TP2_CANARY_VARIANT = "fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host325g-memopt-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-mr12q4-strict-budget8192#{OBSERVABILITY_VARIANT_SUFFIX}"
+W4AFP8_TP2_CANARY_VARIANT = "fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host325g-memopt-fp8kv-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-mr16q4-strict-budget8192#{OBSERVABILITY_VARIANT_SUFFIX}-v7"
 W4AFP8_TP2_CANARY_ARGV = Shellwords.split(<<~'ARGV').freeze
   sglang serve
   --model-path /root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/snapshots/99f1fa70408c52b007d4fd69e02e5a522422e755
   --served-model-name z-ai/glm-5.3-flash
   --tp-size 2 --ep-size 2
   --mem-fraction-static 0.86
-  --max-running-requests 12 --max-queued-requests 4
+  --max-running-requests 16 --max-queued-requests 4
   --enable-priority-scheduling --disable-priority-preemption
   --chunked-prefill-size 8192 --max-prefill-tokens 32768 --prefill-decode-interval 2
-  --cuda-graph-max-bs-decode 12
-  --dsa-prefill-backend tilelang --dsa-decode-backend tilelang
-  --kv-cache-dtype bfloat16
+  --cuda-graph-max-bs-decode 16
+  --dsa-prefill-backend flashmla_kv --dsa-decode-backend flashmla_kv
+  --kv-cache-dtype fp8_e4m3
   --speculative-algorithm EAGLE --speculative-num-steps 4 --speculative-eagle-topk 1
   --speculative-num-draft-tokens 5
   --reasoning-parser glm45 --enable-strict-thinking --grammar-backend xgrammar --tool-call-parser glm47
@@ -1092,10 +1139,11 @@ W4AFP8_TP2_CANARY_ARGV = Shellwords.split(<<~'ARGV').freeze
   --enable-hierarchical-cache --hicache-write-policy write_through
   --hicache-io-backend direct --hicache-mem-layout page_first_direct
   --max-mamba-cache-size 330 --mamba-ssm-dtype bfloat16
+  --disable-overlap-schedule
 ARGV
-# Flags that must never appear on a TP2 canary replica: 32K chunks conflict with 0.86 at TP2,
-# adaptive EAGLE is replaced by the fixed 4/1/5 arm, and gpu13 is the separate overlap-off canary.
-W4AFP8_TP2_CANARY_FORBIDDEN_FLAGS = %w[--disable-overlap-schedule --speculative-adaptive].freeze
+# Flags that must never appear on a TP2 fleet replica: adaptive EAGLE is replaced by the fixed 4/1/5 arm (the overlap scheduler is
+# OFF on the fleet, so --disable-overlap-schedule is part of the argv above and checked exactly once).
+W4AFP8_TP2_CANARY_FORBIDDEN_FLAGS = %w[--speculative-adaptive].freeze
 # The proxy pool is host-overridable; its default MUST stay r1 + r2 so a host that has not
 # converted (and never sets GLM53_BACKEND_URLS) keeps its exact current backend list.
 W4AFP8_PROXY_BACKENDS_DEFAULT = "http://model-sg-glm53-w4afp8-tp4-r1:8000,http://model-sg-glm53-w4afp8-tp4-r2:8000"
@@ -1225,8 +1273,9 @@ def validate_w4afp8_long_context(errors, compose, reference)
   errors << "#{label} replicas must share one image for the #{GHOST_SERVICE} sidecar to follow" unless images.length == 1
   # Every GLM engine in the file: TP4 r1/r2 (gpu23, gpu02 r1) and the gpu02 TP2 pair r2a/r2b.
   ghost_replicas = W4AFP8_LONG_CONTEXT_REPLICAS.merge(W4AFP8_TP2_CANARY_REPLICAS).transform_values { |spec| spec["ghost_replica"] }
+  # The sidecar follows the fleet's TP2 replicas (v7); the TP4 r1/r2 stay on v6 and are not deployed by the fleet.
   validate_observability(errors, label, compose, collector, ghost_replicas,
-                         images.first, W4AFP8_BASE_DEPLOYMENT)
+                         W4AFP8_LONG_CONTEXT_V7_IMAGE, W4AFP8_BASE_DEPLOYMENT)
 
   dcgm_labels = services.dig("dcgm-glm53", "labels") || {}
   errors << "#{label} dcgm-glm53 nearai.otel.model_path must be #{W4AFP8_CHECKPOINT}" unless dcgm_labels["nearai.otel.model_path"] == W4AFP8_CHECKPOINT
@@ -1263,8 +1312,8 @@ def validate_w4afp8_tp2_canary(errors, label, services, collector, replicas)
     next errors << "#{label} missing services.#{name}" if service.nil?
 
     tp2_services[name] = service
-    engine_image_label = W4AFP8_LONG_CONTEXT_V6_IMAGE.split(":").last[0, 12]
-    errors << "#{label} #{name} image must be #{W4AFP8_LONG_CONTEXT_V6_IMAGE}" unless service["image"] == W4AFP8_LONG_CONTEXT_V6_IMAGE
+    engine_image_label = W4AFP8_LONG_CONTEXT_V7_IMAGE.split(":").last[0, 12]
+    errors << "#{label} #{name} image must be #{W4AFP8_LONG_CONTEXT_V7_IMAGE}" unless service["image"] == W4AFP8_LONG_CONTEXT_V7_IMAGE
     errors << "#{label} #{name} must use the prebuilt signed image, not a host-local build" if service.key?("build")
     expected_argv = W4AFP8_TP2_CANARY_ARGV.map { |token| token == "DIST_INIT" ? spec["dist_init"] : token }
     actual_argv = begin
@@ -1275,8 +1324,15 @@ def validate_w4afp8_tp2_canary(errors, label, services, collector, replicas)
     end
     unless actual_argv == expected_argv
       drift = ((actual_argv - expected_argv) + (expected_argv - actual_argv)).uniq
-      errors << "#{label} #{name} argv must be the memory-optimized TP2 argv exactly (tp2/ep2, 0.86, 330 mamba slots, bf16 state, fixed EAGLE 4/1/5, 12 running/4 queued, graphs 12, chunk 8192, write_through, --dist-init-addr #{spec['dist_init']}); differing tokens: #{drift.first(8).join(' ')}"
+      errors << "#{label} #{name} argv must be the v7 fleet TP2 argv exactly (tp2/ep2, 0.86, 330 mamba slots, bf16 state, fixed EAGLE 4/1/5, FP8 KV with flashmla_kv backends, 16 running/4 queued, graphs 16, overlap off, chunk 8192, write_through, --dist-init-addr #{spec['dist_init']}); differing tokens: #{drift.first(8).join(' ')}"
     end
+    validate_fp8_kv_pairing(errors, "#{label} #{name}", actual_argv)
+    errors << "#{label} #{name} must set --disable-overlap-schedule exactly once" unless actual_argv.count("--disable-overlap-schedule") == 1
+    errors << "#{label} #{name} must keep HiCache ON (write_through)" unless actual_argv.include?("--enable-hierarchical-cache") && actual_argv.each_cons(2).include?(["--hicache-write-policy", "write_through"])
+    run_cap = actual_argv.each_cons(2).find { |flag, _| flag == "--max-running-requests" }&.last.to_i
+    slots = actual_argv.each_cons(2).find { |flag, _| flag == "--max-mamba-cache-size" }&.last.to_i
+    errors << "#{label} #{name} --max-mamba-cache-size #{slots} cannot hold #{run_cap} running requests (needs >= 5 slots each)" if slots < 5 * run_cap
+    errors << "#{label} #{name} --cuda-graph-max-bs-decode must equal --max-running-requests (#{run_cap})" unless actual_argv.each_cons(2).find { |flag, _| flag == "--cuda-graph-max-bs-decode" }&.last.to_i == run_cap
     (actual_argv & W4AFP8_TP2_CANARY_FORBIDDEN_FLAGS).each { |flag| errors << "#{label} #{name} must not set #{flag}" }
     actual_argv.each_cons(2) do |flag, value|
       errors << "#{label} #{name} must not enable 32K prefill chunks (conflicts with 0.86 at TP2)" if flag == "--chunked-prefill-size" && value.to_i > 8192
@@ -1286,12 +1342,13 @@ def validate_w4afp8_tp2_canary(errors, label, services, collector, replicas)
     expected_env = reference_env.merge(W4AFP8_LONG_CONTEXT_HICACHE_ENV)
                                 .merge("SGLANG_HICACHE_RAM_BUDGET" => spec["budget"], W4AFP8_QSPLIT_ENV => "1")
                                 .merge(observability_env(spec["ghost_replica"]))
+                                .merge(V7_FLEET_ENV)
     reserve = env.keys & ADMISSION_RESERVE_ENV
     errors << "#{label} #{name} must not set admission-reserve environment: #{reserve.join(', ')}" unless reserve.empty?
     (env.keys & FORBIDDEN_ENV).each { |key| errors << "#{label} #{name} must not set #{key}" }
     unless env == expected_env
       diff = (env.to_a - expected_env.to_a) + (expected_env.to_a - env.to_a)
-      errors << "#{label} #{name} environment must be the long-context environment plus per-replica SGLANG_HICACHE_RAM_BUDGET=#{spec['budget']}, #{W4AFP8_QSPLIT_ENV}=1 and the observability environment; differing: #{diff.map { |key, value| "#{key}=#{value}" }.uniq.join(' ')}"
+      errors << "#{label} #{name} environment must be the long-context environment plus per-replica SGLANG_HICACHE_RAM_BUDGET=#{spec['budget']}, #{W4AFP8_QSPLIT_ENV}=1, the observability environment and #{V7_FLEET_ENV.map { |key, value| "#{key}=#{value}" }.join(' ')} (no profiling); differing: #{diff.map { |key, value| "#{key}=#{value}" }.uniq.join(' ')}"
     end
 
     device_ids = Array(service.dig("deploy", "resources", "reservations", "devices", 0, "device_ids")).map(&:to_s)
@@ -1308,7 +1365,7 @@ def validate_w4afp8_tp2_canary(errors, label, services, collector, replicas)
     rescue JSON::ParserError
       []
     end
-    ["model_path:#{W4AFP8_CHECKPOINT}", "precision:#{W4AFP8_PRECISION}", "engine_image:#{engine_image_label}", "instance:#{spec['instance']}", "gpu_pair:#{spec['gpu_pair']}"].each do |tag|
+    ["model_path:#{W4AFP8_CHECKPOINT}", "precision:#{W4AFP8_FLEET_PRECISION}", "engine_image:#{engine_image_label}", "instance:#{spec['instance']}", "gpu_pair:#{spec['gpu_pair']}"].each do |tag|
       errors << "#{label} #{name} log metadata must carry #{tag}" unless tags.include?(tag)
     end
     check_variant(errors, label, service, name, collector, W4AFP8_TP2_CANARY_VARIANT)
@@ -1317,7 +1374,7 @@ def validate_w4afp8_tp2_canary(errors, label, services, collector, replicas)
       targets = scrape.dig("static_configs", 0, "targets")
       errors << "#{label} sglang-#{name} must scrape #{name}:8000, got #{targets.inspect}" unless targets == ["#{name}:8000"]
       scrape_labels = scrape.dig("static_configs", 0, "labels") || {}
-      { "container_name" => name, "model_path" => W4AFP8_CHECKPOINT, "precision" => W4AFP8_PRECISION, "engine_image" => engine_image_label,
+      { "container_name" => name, "model_path" => W4AFP8_CHECKPOINT, "precision" => W4AFP8_FLEET_PRECISION, "engine_image" => engine_image_label,
         "instance" => spec["instance"], "gpu_pair" => spec["gpu_pair"], "deployment" => labels["nearai.otel.deployment"] }.each do |key, value|
         errors << "#{label} sglang-#{name} scrape label #{key} must be #{value.inspect}, got #{scrape_labels[key].inspect}" unless scrape_labels[key] == value
       end
@@ -1482,135 +1539,13 @@ if w4afp8_long_context_present
   w4afp8_long_context_compose = load_compose_file(errors, "W4AFP8 long-context file", W4AFP8_LONG_CONTEXT_FILE)
   if w4afp8_long_context_compose && long_context_compose
     validate_w4afp8_long_context(errors, w4afp8_long_context_compose, long_context_compose)
+    errors << "W4AFP8 long-context file must not enable profiling anywhere (no NEAR_SELF_PROFILE*)" if profiling_enabled?(File.read(W4AFP8_LONG_CONTEXT_FILE))
     validate_model_cache(errors, "W4AFP8 long-context", w4afp8_long_context_compose.fetch("services", {}))
   elsif w4afp8_long_context_compose
     errors << "W4AFP8 long-context file requires the long-context file it is generated from"
   end
 end
 
-
-# v7 bundle canary files (docs/glm53-v7-canary.md): full copies of a host's file with ONLY the canary replica changed, generated by
-# scripts/prepare_glm53_v7_canary.py. Everything else, including the `deployment` label and every scrape job the prod Grafana dashboard
-# selects on, must equal the source file; the canary changes image, a few flags, the bundle environment and three telemetry labels.
-V7_IMAGE = "docker.io/nearaidev/sglang@sha256:fa730e6e62b2ae8058114ce540487ade33ab93bc42b1179ae78edc92bd563fc5"
-V7_LABEL = "fa730e6e62b2"
-V7_PRECISION = "int4-weights-fp8-activations-fp8-kv"
-V7_ENV = {
-  "SGLANG_PREPROCESS_WORKERS" => "4", "SGLANG_PREPROCESS_TIMEOUT_S" => "60", "SGLANG_PREPROCESS_LOG_SLOW_S" => "5",
-  "SGLANG_TOOL_SCHEMA_MAX_DEPTH" => "32", "SGLANG_TOOL_SCHEMA_MAX_NODES" => "25000",
-  "NEAR_SELF_PROFILE" => "1", "NEAR_SELF_PROFILE_AFTER_S" => "900", "NEAR_SELF_PROFILE_STEPS" => "50",
-}.freeze
-V7_FP8_FLAGS = { "--kv-cache-dtype" => "fp8_e4m3", "--dsa-prefill-backend" => "flashmla_kv", "--dsa-decode-backend" => "flashmla_kv" }.freeze
-V7_CANARIES = [
-  { "label" => "v7 base canary", "file" => File.join(ROOT, "prod", "GLM-5.3-Flash-SGL-TP2x4-W4AFP8-V7Canary.yaml"), "source" => W4AFP8_TP2X4_FILE,
-    "service" => "model-sg-glm53-w4afp8-tp2-r4", "suffix" => "-v7",
-    "flags" => V7_FP8_FLAGS.merge("--max-running-requests" => "64", "--cuda-graph-max-bs-decode" => "64", "--max-mamba-cache-size" => "380") },
-  { "label" => "v7 long-context canary", "file" => File.join(ROOT, "prod", "GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext-V7Canary.yaml"), "source" => W4AFP8_LONG_CONTEXT_FILE,
-    "service" => "model-sg-glm53-w4afp8-tp2-r2a", "suffix" => "-v7-mr16q4",
-    "flags" => V7_FP8_FLAGS.merge("--max-running-requests" => "16", "--max-queued-requests" => "4", "--cuda-graph-max-bs-decode" => "16") },
-].freeze
-
-def v7_replace_flags(argv, flags)
-  out = argv.dup
-  flags.each do |flag, value|
-    index = out.index(flag)
-    return nil if index.nil? || out.count(flag) != 1
-
-    out[index + 1] = value
-  end
-  out
-end
-
-def validate_v7_canary(errors, spec)
-  label = spec["label"]
-  raw = File.read(spec["file"])
-  compose = load_compose_file(errors, label, spec["file"])
-  source = load_compose_file(errors, "#{label} source", spec["source"])
-  return if compose.nil? || source.nil?
-
-  name = spec["service"]
-  errors << "#{label} must not contain GLM53_V7_ variables or placeholders (the canary is hardcoded)" if raw.match?(/GLM53_V[0-9]+_|REPLACE_WITH|<tbd>/)
-  errors << "#{label} V7 image digest must be a real sha256" unless V7_IMAGE.match?(/@sha256:[0-9a-f]{64}\z/)
-  services = compose.fetch("services", {})
-  errors << "#{label} must define exactly the source file's services" unless services.keys == source.fetch("services", {}).keys
-  services.each do |service_name, service|
-    next if service_name == name
-
-    errors << "#{label} #{service_name} must be identical to the source file (only #{name} may change)" unless service == source.dig("services", service_name)
-  end
-  (compose.keys | source.keys).each do |key|
-    next if %w[services configs].include?(key)
-
-    errors << "#{label} top-level #{key} must be identical to the source file" unless compose[key] == source[key]
-  end
-  canary = services[name] || {}
-  original = source.dig("services", name) || {}
-  errors << "#{label} #{name} image must be #{V7_IMAGE}" unless canary["image"] == V7_IMAGE
-  expected_argv = v7_replace_flags(Shellwords.split(command_text(original)), spec["flags"])
-  actual_argv = Shellwords.split(command_text(canary))
-  if expected_argv.nil?
-    errors << "#{label} source #{name} argv no longer carries the flags the canary changes"
-  else
-    expected_argv += ["--disable-overlap-schedule"]
-    errors << "#{label} #{name} argv must be the source argv with exactly #{spec['flags'].map { |k, v| "#{k} #{v}" }.join(', ')} and --disable-overlap-schedule once; differing tokens: #{((actual_argv - expected_argv) + (expected_argv - actual_argv)).uniq.first(8).join(' ')}" unless actual_argv == expected_argv
-    mamba = actual_argv.each_cons(2).find { |f, _| f == "--max-mamba-cache-size" }&.last
-    running = actual_argv.each_cons(2).find { |f, _| f == "--max-running-requests" }&.last
-    if mamba.nil? || running.nil?
-      errors << "#{label} #{name} argv must carry --max-mamba-cache-size and --max-running-requests with values"
-    elsif mamba.to_i < 5 * running.to_i
-      errors << "#{label} #{name} --max-mamba-cache-size must hold 5 slots per running request"
-    end
-  end
-  errors << "#{label} #{name} environment must be the source environment plus #{V7_ENV.map { |k, v| "#{k}=#{v}" }.join(' ')}" unless environment_map(canary) == environment_map(original).merge(V7_ENV)
-  labels = canary["labels"] || {}
-  source_labels = original["labels"] || {}
-  changed = (labels.keys | source_labels.keys).reject { |k| labels[k] == source_labels[k] }
-  errors << "#{label} #{name} may change only the telemetry labels (com.datadoghq.ad.logs, nearai.otel.config_variant, nearai.otel.engine_image); changed: #{changed.join(', ')}" unless (changed - %w[com.datadoghq.ad.logs nearai.otel.config_variant nearai.otel.engine_image]).empty?
-  errors << "#{label} #{name} nearai.otel.engine_image must be #{V7_LABEL}" unless labels["nearai.otel.engine_image"] == V7_LABEL
-  errors << "#{label} #{name} nearai.otel.deployment must stay #{source_labels['nearai.otel.deployment']}" unless labels["nearai.otel.deployment"] == source_labels["nearai.otel.deployment"]
-  variant = source_labels["nearai.otel.config_variant"].to_s + spec["suffix"]
-  errors << "#{label} #{name} nearai.otel.config_variant must be #{variant}" unless labels["nearai.otel.config_variant"] == variant
-  tags = (JSON.parse(labels["com.datadoghq.ad.logs"].to_s).first || {})["tags"] || []
-  source_tags = (JSON.parse(source_labels["com.datadoghq.ad.logs"].to_s).first || {})["tags"] || []
-  expected_tags = source_tags.map do |tag|
-    if tag.start_with?("precision:") then "precision:#{V7_PRECISION}"
-    elsif tag.start_with?("engine_image:") then "engine_image:#{V7_LABEL}"
-    elsif tag.start_with?("config_variant:") then "#{tag}#{spec['suffix']}"
-    else tag
-    end
-  end
-  errors << "#{label} #{name} log tags must be the source tags with only precision, engine_image and config_variant changed" unless tags == expected_tags
-
-  collector = load_embedded_yaml(errors, "#{label} otelcol_app_config", compose.dig("configs", "otelcol_app_config", "content"))
-  source_collector = load_embedded_yaml(errors, "#{label} source otelcol_app_config", source.dig("configs", "otelcol_app_config", "content"))
-  (compose.fetch("configs", {}).keys | source.fetch("configs", {}).keys).each do |key|
-    next if key == "otelcol_app_config"
-
-    errors << "#{label} configs.#{key} must be identical to the source file" unless compose.dig("configs", key) == source.dig("configs", key)
-  end
-  return unless collector && source_collector
-
-  jobs = Array(collector.dig("receivers", "prometheus/apps", "config", "scrape_configs"))
-  source_jobs = Array(source_collector.dig("receivers", "prometheus/apps", "config", "scrape_configs"))
-  errors << "#{label} must carry the source file's scrape jobs in the same order" unless jobs.map { |j| j["job_name"] } == source_jobs.map { |j| j["job_name"] }
-  jobs.zip(source_jobs).each do |job, original_job|
-    next if original_job.nil?
-
-    if job["job_name"] == "sglang-#{name}"
-      got = job.dig("static_configs", 0, "labels") || {}
-      want = original_job.dig("static_configs", 0, "labels") || {}
-      expected = want.merge("precision" => V7_PRECISION, "engine_image" => V7_LABEL, "config_variant" => want["config_variant"].to_s + spec["suffix"])
-      errors << "#{label} scrape job #{job['job_name']} labels must equal the source's except precision, engine_image and config_variant (deployment, host_machine, model, service, instance stay identical)" unless got == expected && job.reject { |k, _| k == "static_configs" } == original_job.reject { |k, _| k == "static_configs" } && job.dig("static_configs", 0, "targets") == original_job.dig("static_configs", 0, "targets")
-    else
-      errors << "#{label} scrape job #{job['job_name']} must be identical to the source file's" unless job == original_job
-    end
-  end
-  other = collector.reject { |k, _| k == "receivers" }
-  errors << "#{label} collector pipelines, processors and exporters must be identical to the source file's" unless other == source_collector.reject { |k, _| k == "receivers" }
-end
-
-v7_canary_files = V7_CANARIES.select { |spec| File.exist?(spec["file"]) }
-v7_canary_files.each { |spec| validate_v7_canary(errors, spec) }
 
 if errors.any?
   warn "GLM-5.3 production contract failed:"
@@ -1624,4 +1559,3 @@ puts "GLM-5.3 production contract OK (prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8.yaml)"
 puts "GLM-5.3 production contract OK (prod/GLM-5.3-Flash-SGL-TP4-HiCache.yaml)" if hicache_present
 puts "GLM-5.3 production contract OK (prod/GLM-5.3-Flash-SGL-TP4-LongContext.yaml)" if long_context_present
 puts "GLM-5.3 production contract OK (prod/GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext.yaml)" if w4afp8_long_context_present
-v7_canary_files.each { |spec| puts "GLM-5.3 production contract OK (#{spec['file'].sub(ROOT + '/', '')})" }

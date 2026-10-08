@@ -38,6 +38,9 @@ SOURCE_HICACHE_IMAGE: Final = "docker.io/nearaidev/sglang@sha256:3eccc30709f5719
 IMAGE: Final = "docker.io/nearaidev/sglang@sha256:9c6ddd4319c4ab00e351d8650459e68b8830e36ffcc029d67fa5e19d0ac3ed17"
 ENGINE_IMAGE_LABEL: Final = IMAGE.split(":")[-1][:12]
 R2_IMAGE: Final = IMAGE
+# v7 fleet caps of the four TP2 replicas (16 running / 4 queued, decode graphs 16; tee-bench exp 29/32). Change here and run --write.
+TP2_MAX_RUNNING: Final = 16
+TP2_MAX_QUEUED: Final = 4
 R2_ENGINE_IMAGE_LABEL: Final = ENGINE_IMAGE_LABEL
 REPLICA_IMAGE: Final = {1: IMAGE, 2: R2_IMAGE}
 REPLICA_IMAGE_LABEL: Final = {1: ENGINE_IMAGE_LABEL, 2: R2_ENGINE_IMAGE_LABEL}
@@ -100,6 +103,15 @@ MODEL_PATH: Final = (
 )
 
 HEADER: Final = (
+    "# GLM-5.3 Flash LONG-CONTEXT TIER, v7 FLEET CONFIG (gpu02 and gpu23): the one long config every host of the tier deploys.\n"
+    "# The four TP2 replicas r1a/r1b/r2a/r2b run the glm53-hicache-w4afp8-v7 image (#345) with FP8 KV (flashmla_kv prefill and\n"
+    f"# decode), {TP2_MAX_RUNNING} running / {TP2_MAX_QUEUED} queued requests with {TP2_MAX_RUNNING} decode graphs, the overlap scheduler off, HiCache ON (write_through, 325 GiB\n"
+    "# per replica: the long tier is at 84% of its infinite-cache ceiling, so the cache stays), the preprocess pool and the\n"
+    "# tool-schema caps, and no profiling (no NEAR_SELF_PROFILE*). Runbook and evidence: docs/glm53-v7-fleet-rollout.md.\n"
+    f"# The TP4 r1/r2 services below are kept unchanged on the v6 image ({IMAGE.split(':')[-1][:12]}) for hosts not yet on TP2; none is\n"
+    "# deployed by the fleet. ROLLBACK (v7): redeploy the previous tag's copy of this file for the same services (v6, 12 running).\n"
+    "# The older text below that names bf16 KV, 12 running or the v6 image describes the TP4 services and the history.\n"
+    "#\n"
     "# GLM-5.3 Flash dedicated long-context tier (gpu02) on W4AFP8 + HiCache, generated from\n"
     "# prod/GLM-5.3-Flash-SGL-TP4-LongContext.yaml by scripts/prepare_glm53_w4afp8_long_context.py.\n"
     "# Both replicas run the W4AFP8 checkpoint graphistry/GLM-5.3-Flash-W4AFP8@99f1fa7 with\n"
@@ -294,20 +306,39 @@ TP2_REPLICAS: Final = {
     "1b": {"devices": ("2", "3"), "gpu_pair": "2-3", "dist_init": "127.0.0.1:29515", "budget_var": "GLM53_R1B_HICACHE_RAM_BUDGET"},
 }
 # Half of r2's 650 GiB budget each, so the two replicas together take what r2 took.
+# v7 fleet image for the four TP2 replicas (glm53-hicache-w4afp8-v7, #345, publish run 37693106399, main 29a7db9). The TP4 r1/r2
+# services above keep v6: no host runs them any more and v7 FP8 KV has not been qualified at TP4. The rollback image is v6 (IMAGE).
+TP2_IMAGE: Final = "docker.io/nearaidev/sglang@sha256:fa730e6e62b2ae8058114ce540487ade33ab93bc42b1179ae78edc92bd563fc5"
+TP2_ENGINE_IMAGE_LABEL: Final = TP2_IMAGE.split(":")[-1][:12]
+TP2_PRECISION: Final = "int4-weights-fp8-activations-fp8-kv"
+# Opt-in v7 features of the image (SGLANG_PREPROCESS_WORKERS=0 is the old single-thread path, the caps at 0 are off). No profiling.
+V7_ENVIRONMENT: Final = (
+    ("SGLANG_PREPROCESS_WORKERS", "4"),
+    ("SGLANG_PREPROCESS_TIMEOUT_S", "60"),
+    ("SGLANG_PREPROCESS_LOG_SLOW_S", "5"),
+    ("SGLANG_TOOL_SCHEMA_MAX_DEPTH", "32"),
+    ("SGLANG_TOOL_SCHEMA_MAX_NODES", "25000"),
+)
 TP2_HICACHE_BUDGET: Final = "325GiB"
 TP2_MAMBA_CACHE: Final = "330"
 TP2_VARIANT: Final = (
     "fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host325g"
-    "-memopt-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-mr12q4-strict-budget8192"
+    "-memopt-fp8kv-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-"
+    f"mr{TP2_MAX_RUNNING}q{TP2_MAX_QUEUED}-strict-budget8192"
     + obs.VARIANT_SUFFIX
+    + "-v7"
 )
 TP2_FLAG_CHANGES: Final = {
     "--tp-size 4": "--tp-size 2",
     "--ep-size 4": "--ep-size 2",
     "--mem-fraction-static 0.80": "--mem-fraction-static 0.86",
-    "--max-running-requests 32": "--max-running-requests 12",
-    "--max-queued-requests 8": "--max-queued-requests 4",
-    "--cuda-graph-max-bs-decode 32": "--cuda-graph-max-bs-decode 12",
+    "--max-running-requests 32": f"--max-running-requests {TP2_MAX_RUNNING}",
+    "--max-queued-requests 8": f"--max-queued-requests {TP2_MAX_QUEUED}",
+    "--cuda-graph-max-bs-decode 32": f"--cuda-graph-max-bs-decode {TP2_MAX_RUNNING}",
+    # v7: FP8 KV needs the dtype AND both flashmla_kv DSA backends (the image does not assert the pairing).
+    "--kv-cache-dtype bfloat16": "--kv-cache-dtype fp8_e4m3",
+    "--dsa-prefill-backend tilelang": "--dsa-prefill-backend flashmla_kv",
+    "--dsa-decode-backend tilelang": "--dsa-decode-backend flashmla_kv",
     "--speculative-num-steps 5": "--speculative-num-steps 4",
     "--speculative-num-draft-tokens 6": "--speculative-num-draft-tokens 5",
     "--speculative-adaptive": None,
@@ -471,7 +502,9 @@ def tp2_service(r2: str, suffix: str) -> str:
     for argument in TP2_FLAG_CHANGES:
         if arguments.count(argument) != 1:
             raise GenerationError(f"tp2 canary: r2 argv must carry {argument!r} exactly once")
-    rewritten.extend((f"--max-mamba-cache-size {TP2_MAMBA_CACHE}", "--mamba-ssm-dtype bfloat16"))
+    if int(TP2_MAMBA_CACHE) < 5 * TP2_MAX_RUNNING:
+        raise GenerationError(f"{TP2_MAMBA_CACHE} mamba slots cannot hold {TP2_MAX_RUNNING} running requests")
+    rewritten.extend((f"--max-mamba-cache-size {TP2_MAMBA_CACHE}", "--mamba-ssm-dtype bfloat16", "--disable-overlap-schedule"))
 
     env_end = r2.index("    depends_on:\n")
     environment = r2[env_start:env_end]
@@ -488,6 +521,10 @@ def tp2_service(r2: str, suffix: str) -> str:
         + f"      - SGLANG_HICACHE_RAM_BUDGET=${{{spec['budget_var']}:-{TP2_HICACHE_BUDGET}}}\n"
         + environment[comment_end:]
     )
+    environment += (
+        "      # v7 (opt-in in the image): the preprocess pool and the tool-schema caps. Profiling is off (no self-profile variables).\n"
+        + "".join(f"      - {name}={value}\n" for name, value in V7_ENVIRONMENT)
+    )
     # Each TP2 replica reports to the CVM's ghost aggregator under its own name.
     environment = replace_exact(
         environment, obs.replica_line("r2"), obs.replica_line(f"r{suffix}"), 1, f"tp2 {suffix} ghost replica"
@@ -495,8 +532,8 @@ def tp2_service(r2: str, suffix: str) -> str:
     devices = ",".join(f'"{device}"' for device in spec["devices"])
     log_tags = (
         '"model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash",'
-        f'"precision:{PRECISION}","deployment:glm53-flash-sgl-tp4","config_variant:{TP2_VARIANT}",'
-        f'"request_logging:disabled","engine_image:{R2_ENGINE_IMAGE_LABEL}","env:${{ENV}}","host:${{CVM_HOST}}",'
+        f'"precision:{TP2_PRECISION}","deployment:glm53-flash-sgl-tp4","config_variant:{TP2_VARIANT}",'
+        f'"request_logging:disabled","engine_image:{TP2_ENGINE_IMAGE_LABEL}","env:${{ENV}}","host:${{CVM_HOST}}",'
         f'"ip:${{HOST_IP}}","port:8000","instance:{suffix}","gpu_pair:{spec["gpu_pair"]}"'
     )
     return (
@@ -505,7 +542,7 @@ def tp2_service(r2: str, suffix: str) -> str:
         f"  {name}:\n"
         "    <<: *sg-glm53-flash-common\n"
         f"    container_name: {name}\n"
-        f"    image: {R2_IMAGE}\n"
+        f"    image: {TP2_IMAGE}\n"
         + render_command(rewritten, 4)
         + environment
         + "    depends_on:\n      model-downloader:\n        condition: service_completed_successfully\n"
@@ -524,7 +561,7 @@ def tp2_service(r2: str, suffix: str) -> str:
         f'      nearai.otel.config_variant: "{TP2_VARIANT}"\n'
         '      nearai.otel.thinking_budget_policy: "default8192-public-to-native"\n'
         '      nearai.otel.request_logging: "disabled"\n'
-        f'      nearai.otel.engine_image: "{R2_ENGINE_IMAGE_LABEL}"\n'
+        f'      nearai.otel.engine_image: "{TP2_ENGINE_IMAGE_LABEL}"\n'
         f'      nearai.otel.instance: "{suffix}"\n'
         f'      nearai.otel.gpu_pair: "{spec["gpu_pair"]}"\n'
         '      nearai.otel.env: "${ENV}"\n      nearai.otel.host: "${CVM_HOST}"\n'
@@ -549,7 +586,7 @@ def tp2_scrape_job(suffix: str) -> str:
         '                      model: "z-ai/glm-5.3-flash"\n'
         f'                      model_path: "{CHECKPOINT}"\n'
         '                      served_model: "z-ai/glm-5.3-flash"\n'
-        f'                      precision: "{PRECISION}"\n'
+        f'                      precision: "{TP2_PRECISION}"\n'
         '                      deployment: "glm53-flash-sgl-tp4"\n'
         '                      env: "${ENV}"\n'
         '                      host: "${CVM_HOST}"\n'
@@ -562,7 +599,7 @@ def tp2_scrape_job(suffix: str) -> str:
         f'                      config_variant: "{TP2_VARIANT}"\n'
         '                      thinking_budget_policy: "default8192-public-to-native"\n'
         '                      request_logging: "disabled"\n'
-        f'                      engine_image: "{R2_ENGINE_IMAGE_LABEL}"\n'
+        f'                      engine_image: "{TP2_ENGINE_IMAGE_LABEL}"\n'
     )
 
 
@@ -658,7 +695,7 @@ def generate(source: str) -> str:
     # Observability: the per-CVM ghost aggregator, its in-memory volume and its scrape job.
     engines = "The engines"
     for old, new, label in (
-        ("  # --- Full-host GPU telemetry ---\n", obs.sidecar_service(IMAGE, DEPLOYMENT, engines) + "  # --- Full-host GPU telemetry ---\n", "ghost sidecar"),
+        ("  # --- Full-host GPU telemetry ---\n", obs.sidecar_service(TP2_IMAGE, DEPLOYMENT, engines) + "  # --- Full-host GPU telemetry ---\n", "ghost sidecar"),
         ("\n  kernel_cache:\n", f"\n  kernel_cache:\n{obs.volume_declaration()}", "ghost volume"),
         ("              - job_name: dcgm-dcgm-glm53\n", obs.scrape_job(DEPLOYMENT) + "              - job_name: dcgm-dcgm-glm53\n", "ghost scrape job"),
     ):

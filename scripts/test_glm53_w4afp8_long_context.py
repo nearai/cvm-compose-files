@@ -20,7 +20,7 @@ from scripts import prepare_glm53_w4afp8_long_context as generator
 # without a separate workflow step.
 from scripts.test_gpu13_glm53_tp2 import Gpu13Tp2Test  # noqa: F401
 
-from scripts.test_glm53_v7_canary import CanaryFilesTest, V7ReleaseGateTest  # noqa: F401
+from scripts.test_glm53_v7_fleet import FleetFilesTest, FleetRunbookTest, FleetValidatorContractTest, Gpu13FleetTest  # noqa: F401
 
 ROOT = Path(__file__).resolve().parents[1]
 TARGET = ROOT / generator.TARGET
@@ -172,12 +172,14 @@ class GeneratedFileTest(unittest.TestCase):
             begin, finish = tp2_bounds(rendered, f"{generator.TP2_SERVICE_PREFIX}{suffix}")
             service = rendered[begin:finish]
             with self.subTest(replica=suffix):
-                for flag in ("--tp-size 2", "--ep-size 2", "--mem-fraction-static 0.86", "--max-mamba-cache-size 330", "--max-running-requests 12", "--cuda-graph-max-bs-decode 12",
+                for flag in ("--tp-size 2", "--ep-size 2", "--mem-fraction-static 0.86", "--max-mamba-cache-size 330", "--max-running-requests 16", "--cuda-graph-max-bs-decode 16",
+                             "--kv-cache-dtype fp8_e4m3", "--dsa-prefill-backend flashmla_kv", "--dsa-decode-backend flashmla_kv", "--disable-overlap-schedule",
+                             "--enable-hierarchical-cache",
                              "--max-queued-requests 4", "--speculative-num-steps 4", "--speculative-eagle-topk 1", "--speculative-num-draft-tokens 5",
                              "--mamba-ssm-dtype bfloat16", "--chunked-prefill-size 8192", "--hicache-write-policy write_through",
                              f"--dist-init-addr {spec['dist_init']}"):
                     self.assertIn(f"\n        {flag}\n", service)
-                for forbidden in ("--speculative-adaptive", "--disable-overlap-schedule", "ADMISSION_RESERVE"):
+                for forbidden in ("--speculative-adaptive", "ADMISSION_RESERVE", "NEAR_SELF_PROFILE", "--kv-cache-dtype bfloat16", "--dsa-prefill-backend tilelang"):
                     self.assertNotIn(forbidden, service)
                 self.assertIn(f"${{{spec['budget_var']}:-325GiB}}", service)
                 self.assertEqual(2 * 325, 650)  # r2 default is 650 GiB
@@ -203,8 +205,8 @@ class GeneratedFileTest(unittest.TestCase):
         self.assertIn("\n    - ghost:/ghost\n", blocks["r1"][0])
         self.assertEqual(rendered.count("\n  glm53-ghost-aggregator:\n"), 1)
         self.assertEqual(rendered.count("- job_name: ghost-aggregator-glm53-ghost-aggregator\n"), 1)
-        self.assertIn(f"    image: {generator.IMAGE}\n    container_name: glm53-ghost-aggregator\n", rendered)
-        self.assertTrue(generator.TP2_VARIANT.endswith("-obs-v1"))
+        self.assertIn(f"    image: {generator.TP2_IMAGE}\n    container_name: glm53-ghost-aggregator\n", rendered)
+        self.assertTrue(generator.TP2_VARIANT.endswith("-obs-v1-v7"))
 
 
 class ValidatorContractTest(unittest.TestCase):
@@ -408,27 +410,33 @@ class ValidatorContractTest(unittest.TestCase):
                 self.assert_fails(replace_nth(self.valid, needle, index, replacement), message)
 
     def test_tp2_canary_rejects_flag_and_memory_drift(self) -> None:
-        argv = "argv must be the memory-optimized TP2 argv exactly"
+        argv = "argv must be the v7 fleet TP2 argv exactly"
         for name in ALL_TP2:
             start, end = tp2_bounds(self.valid, name)
             block = self.valid[start:end]
             cases = (
                 ("--mem-fraction-static 0.86", "--mem-fraction-static 0.80", argv),
                 ("--max-mamba-cache-size 330", "--max-mamba-cache-size 165", argv),
-                ("--max-running-requests 12", "--max-running-requests 32", argv),
-                ("--max-running-requests 12", "--max-running-requests 24", argv),
-                ("--max-running-requests 12", "--max-running-requests 16", argv),
+                ("--max-running-requests 16", "--max-running-requests 32", argv),
+                ("--max-running-requests 16", "--max-running-requests 24", argv),
+                ("--max-running-requests 16", "--max-running-requests 12", argv),
                 ("--max-queued-requests 4", "--max-queued-requests 8", argv),
                 ("--max-queued-requests 4", "--max-queued-requests 16", argv),
-                ("--cuda-graph-max-bs-decode 12", "--cuda-graph-max-bs-decode 32", argv),
-                ("--cuda-graph-max-bs-decode 12", "--cuda-graph-max-bs-decode 16", argv),
+                ("--cuda-graph-max-bs-decode 16", "--cuda-graph-max-bs-decode 32", argv),
+                ("--cuda-graph-max-bs-decode 16", "--cuda-graph-max-bs-decode 12", argv),
+                # FP8 KV needs the dtype and both backends; the overlap scheduler stays off; HiCache stays on.
+                ("--kv-cache-dtype fp8_e4m3", "--kv-cache-dtype bfloat16", argv),
+                ("--dsa-prefill-backend flashmla_kv", "--dsa-prefill-backend tilelang", argv),
+                ("--dsa-decode-backend flashmla_kv", "--dsa-decode-backend tilelang", argv),
+                ("        --disable-overlap-schedule\n", "", argv),
+                ("        --enable-hierarchical-cache\n", "", argv),
                 ("--speculative-num-steps 4", "--speculative-num-steps 5", argv),
                 ("--speculative-num-draft-tokens 5", "--speculative-num-draft-tokens 6", argv),
                 ("--tp-size 2", "--tp-size 4", argv),
                 ("--hicache-write-policy write_through", "--hicache-write-policy write_through_selective", argv),
                 ("--chunked-prefill-size 8192", "--chunked-prefill-size 32768", "must not enable 32K prefill chunks"),
                 ("--mamba-ssm-dtype bfloat16\n", "--mamba-ssm-dtype bfloat16\n        --speculative-adaptive\n", "must not set --speculative-adaptive"),
-                ("--mamba-ssm-dtype bfloat16\n", "--mamba-ssm-dtype bfloat16\n        --disable-overlap-schedule\n", "must not set --disable-overlap-schedule"),
+                ("--mamba-ssm-dtype bfloat16\n", "--mamba-ssm-dtype bfloat16\n        --disable-overlap-schedule\n", "must set --disable-overlap-schedule exactly once"),
             )
             for before, after, message in cases:
                 with self.subTest(replica=name, mutation=after.strip()[:50]):
@@ -453,7 +461,7 @@ class ValidatorContractTest(unittest.TestCase):
                 ("nearai.otel.gpu_pair:", "nearai.otel.gpu_pairx:", "nearai.otel.gpu_pair must be"),
                 (f'nearai.otel.config_variant: "{TP2_VARIANT}"', 'nearai.otel.config_variant: "x"', "nearai.otel.config_variant must be"),
                 ('nearai.otel.deployment: "glm53-flash-sgl-tp4"', 'nearai.otel.deployment: "other"', "nearai.otel.deployment"),
-                (f"image: {RELEASED_V6_IMAGE}\n", f"image: {PREVIOUS_R1_V2_IMAGE}\n", "image must be"),
+                (f"image: {generator.TP2_IMAGE}\n", f"image: {RELEASED_V6_IMAGE}\n", "image must be"),
                 ("    container_name: " + name + "\n", "    container_name: " + name + '\n    restart: "no"\n', "must share one runtime configuration outside command and environment"),
             )
             for before, after, message in cases:
@@ -528,11 +536,11 @@ class ValidatorContractTest(unittest.TestCase):
             # The gpu02 TP2 pair: r2b loses the ghost cache, r2a reuses r2b's name.
             ("\n      - SGLANG_GHOST_CACHE=1\n", "\n", 2, f"{R2B} must set SGLANG_GHOST_CACHE=1 {required}"),
             ("SGLANG_GHOST_CACHE_REPLICA=r2a\n", "SGLANG_GHOST_CACHE_REPLICA=r2b\n", 0, "must use distinct SGLANG_GHOST_CACHE_REPLICA names"),
-            (f'nearai.otel.config_variant: "{TP2_VARIANT}"', f'nearai.otel.config_variant: "{TP2_VARIANT.removesuffix("-obs-v1")}"', 1,
+            (f'nearai.otel.config_variant: "{TP2_VARIANT}"', f'nearai.otel.config_variant: "{TP2_VARIANT.replace("-obs-v1-v7", "-v7")}"', 1,
              "nearai.otel.config_variant must be"),
             ("\n    - ghost:/ghost\n", "\n", 0, "must mount ghost:/ghost"),
             ('"--port", "9464"', '"--port", "9465"', 0, "glm53-ghost-aggregator must run python3 -m"),
-            (f"    image: {generator.IMAGE}\n    container_name: glm53-ghost-aggregator\n",
+            (f"    image: {generator.TP2_IMAGE}\n    container_name: glm53-ghost-aggregator\n",
              f"    image: {UNKNOWN_IMAGE}\n    container_name: glm53-ghost-aggregator\n", 0, "glm53-ghost-aggregator image must be the engines' image"),
             ("      type: tmpfs\n", "      type: none\n", 0, "must declare the ghost volume as tmpfs"),
             ("['glm53-ghost-aggregator:9464']", "['glm53-ghost-aggregator:9465']", 0, "must scrape glm53-ghost-aggregator:9464"),

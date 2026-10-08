@@ -244,12 +244,11 @@ x-downloader-common: &downloader-common
 x-sg-glm53-flash-common: &sg-glm53-flash-common
   <<: *nvidia
   init: true
-  image: docker.io/nearaidev/sglang@sha256:fa730e6e62b2ae8058114ce540487ade33ab93bc42b1179ae78edc92bd563fc5
-  # v7 FLEET CONFIG (docs/glm53-v7-fleet-rollout.md): FP8 KV with flashmla_kv prefill and decode, 16 running / 4 queued with graphs 16, overlap
-  # scheduler off, v7 image, preprocess pool and tool-schema caps, no profiling: the same argv as the long-context file's TP2 replicas.
+  image: docker.io/nearaidev/sglang@sha256:9c6ddd4319c4ab00e351d8650459e68b8830e36ffcc029d67fa5e19d0ac3ed17
   # gpu13 GLM is two memory-optimized TP2/EP2 replicas (GPUs 4,5 and 6,7), the same per-replica
   # argv as the long-context file's tp2-r2a/r2b (docs/long-context-glm53-2xtp2-rollout.md). The
-  # overlap scheduler is now OFF fleet-wide (v7). Rollback is the previous tag with
+  # overlap scheduler is ON: the #330 overlap-off canary ended by user decision when this change
+  # replaced the TP4 replica, and its read stays inconclusive. Rollback is the previous tag with
   # the TP4 service model-sg-glm53-fp8-tp4 (scoped down of both TP2 services first).
   command: >
       sglang serve
@@ -258,17 +257,17 @@ x-sg-glm53-flash-common: &sg-glm53-flash-common
       --tp-size 2
       --ep-size 2
       --mem-fraction-static 0.86
-      --max-running-requests 16
+      --max-running-requests 12
       --max-queued-requests 4
       --enable-priority-scheduling
       --disable-priority-preemption
       --chunked-prefill-size 8192
       --max-prefill-tokens 32768
       --prefill-decode-interval 2
-      --cuda-graph-max-bs-decode 16
-      --dsa-prefill-backend flashmla_kv
-      --dsa-decode-backend flashmla_kv
-      --kv-cache-dtype fp8_e4m3
+      --cuda-graph-max-bs-decode 12
+      --dsa-prefill-backend tilelang
+      --dsa-decode-backend tilelang
+      --kv-cache-dtype bfloat16
       --speculative-algorithm EAGLE
       --speculative-num-steps 4
       --speculative-eagle-topk 1
@@ -294,7 +293,6 @@ x-sg-glm53-flash-common: &sg-glm53-flash-common
       --hicache-mem-layout page_first_direct
       --max-mamba-cache-size 330
       --mamba-ssm-dtype bfloat16
-      --disable-overlap-schedule
   volumes:
     - kernel_cache:/root/.cache
     - hugginface_cache:/root/.cache/huggingface
@@ -350,12 +348,6 @@ x-sg-glm53-flash-common: &sg-glm53-flash-common
     - SGLANG_GHOST_CACHE_SOCKET=/ghost/aggregator.sock
     - SGLANG_GHOST_CACHE_REPLICA=r1a
     - SGLANG_KV_TIER_METRICS=1
-    # v7 (opt-in in the image): the preprocess pool and the tool-schema caps. Profiling is off (no self-profile variables).
-    - SGLANG_PREPROCESS_WORKERS=4
-    - SGLANG_PREPROCESS_TIMEOUT_S=60
-    - SGLANG_PREPROCESS_LOG_SLOW_S=5
-    - SGLANG_TOOL_SCHEMA_MAX_DEPTH=32
-    - SGLANG_TOOL_SCHEMA_MAX_NODES=25000
   restart: unless-stopped
   stop_grace_period: 5m
   logging: *logging-conf
@@ -1084,7 +1076,7 @@ services:
       - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
       - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:z-ai/glm-5.3-flash","deployment:glm53-flash-sgl-tp4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8009","gpu_pair:4-7","ppcie:true","config_variant:fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host325g-memopt-fp8kv-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-gpu13-h200-tp2-ep2-eagle-fixed-4-1-5-mr16q4-strict-budget8192-obs-v1-v7"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:z-ai/glm-5.3-flash","deployment:glm53-flash-sgl-tp4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8009","gpu_pair:4-7","ppcie:true","config_variant:fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host325g-memopt-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-gpu13-h200-tp2-ep2-eagle-fixed-4-1-5-mr12q4-strict-budget8192-obs-v1"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "inference-proxy"
       nearai.otel.service: "vllm-proxy"
@@ -1101,7 +1093,7 @@ services:
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.gpu_pair: "4-7"
       nearai.otel.ppcie: "true"
-      nearai.otel.config_variant: "fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host325g-memopt-fp8kv-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-gpu13-h200-tp2-ep2-eagle-fixed-4-1-5-mr16q4-strict-budget8192-obs-v1-v7"
+      nearai.otel.config_variant: "fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host325g-memopt-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-gpu13-h200-tp2-ep2-eagle-fixed-4-1-5-mr12q4-strict-budget8192-obs-v1"
 
   model-sg-glm53-w4afp8-tp2-r1a:
     <<: *sg-glm53-flash-common
@@ -1117,7 +1109,7 @@ services:
               device_ids: ["4","5"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-fp8-kv","deployment:glm53-flash-sgl-tp4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8009","instance:1a","gpu_pair:4-5","ppcie:true","config_variant:fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host325g-memopt-fp8kv-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-gpu13-h200-tp2-ep2-eagle-fixed-4-1-5-mr16q4-strict-budget8192-obs-v1-v7","request_logging:disabled","thinking_budget_policy:default8192-public-to-native","max_running_requests:12","max_queued_requests:4","engine_image:fa730e6e62b2"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-bf16-kv","deployment:glm53-flash-sgl-tp4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8009","instance:1a","gpu_pair:4-5","ppcie:true","config_variant:fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host325g-memopt-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-gpu13-h200-tp2-ep2-eagle-fixed-4-1-5-mr12q4-strict-budget8192-obs-v1","request_logging:disabled","thinking_budget_policy:default8192-public-to-native","max_running_requests:12","max_queued_requests:4","engine_image:9c6ddd4319c4"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -1137,13 +1129,13 @@ services:
       nearai.otel.instance: "1a"
       nearai.otel.gpu_pair: "4-5"
       nearai.otel.ppcie: "true"
-      nearai.otel.config_variant: "fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host325g-memopt-fp8kv-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-gpu13-h200-tp2-ep2-eagle-fixed-4-1-5-mr16q4-strict-budget8192-obs-v1-v7"
+      nearai.otel.config_variant: "fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host325g-memopt-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-gpu13-h200-tp2-ep2-eagle-fixed-4-1-5-mr12q4-strict-budget8192-obs-v1"
       nearai.otel.thinking_budget_policy: "default8192-public-to-native"
       nearai.otel.request_logging: "disabled"
       nearai.otel.watchdog_timeout: "1800"
-      nearai.otel.max_running_requests: "16"
+      nearai.otel.max_running_requests: "12"
       nearai.otel.max_queued_requests: "4"
-      nearai.otel.engine_image: "fa730e6e62b2"
+      nearai.otel.engine_image: "9c6ddd4319c4"
 
   model-sg-glm53-w4afp8-tp2-r1b:
     <<: *sg-glm53-flash-common
@@ -1158,17 +1150,17 @@ services:
         --tp-size 2
         --ep-size 2
         --mem-fraction-static 0.86
-        --max-running-requests 16
+        --max-running-requests 12
         --max-queued-requests 4
         --enable-priority-scheduling
         --disable-priority-preemption
         --chunked-prefill-size 8192
         --max-prefill-tokens 32768
         --prefill-decode-interval 2
-        --cuda-graph-max-bs-decode 16
-        --dsa-prefill-backend flashmla_kv
-        --dsa-decode-backend flashmla_kv
-        --kv-cache-dtype fp8_e4m3
+        --cuda-graph-max-bs-decode 12
+        --dsa-prefill-backend tilelang
+        --dsa-decode-backend tilelang
+        --kv-cache-dtype bfloat16
         --speculative-algorithm EAGLE
         --speculative-num-steps 4
         --speculative-eagle-topk 1
@@ -1194,7 +1186,6 @@ services:
         --hicache-mem-layout page_first_direct
         --max-mamba-cache-size 330
         --mamba-ssm-dtype bfloat16
-        --disable-overlap-schedule
     environment:
       - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
       - HF_HUB_OFFLINE=1
@@ -1245,12 +1236,6 @@ services:
       - SGLANG_GHOST_CACHE_SOCKET=/ghost/aggregator.sock
       - SGLANG_GHOST_CACHE_REPLICA=r1b
       - SGLANG_KV_TIER_METRICS=1
-      # v7 (opt-in in the image): the preprocess pool and the tool-schema caps. Profiling is off (no self-profile variables).
-      - SGLANG_PREPROCESS_WORKERS=4
-      - SGLANG_PREPROCESS_TIMEOUT_S=60
-      - SGLANG_PREPROCESS_LOG_SLOW_S=5
-      - SGLANG_TOOL_SCHEMA_MAX_DEPTH=32
-      - SGLANG_TOOL_SCHEMA_MAX_NODES=25000
     deploy:
       resources:
         reservations:
@@ -1259,7 +1244,7 @@ services:
               device_ids: ["6","7"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-fp8-kv","deployment:glm53-flash-sgl-tp4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8009","instance:1b","gpu_pair:6-7","ppcie:true","config_variant:fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host325g-memopt-fp8kv-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-gpu13-h200-tp2-ep2-eagle-fixed-4-1-5-mr16q4-strict-budget8192-obs-v1-v7","request_logging:disabled","thinking_budget_policy:default8192-public-to-native","max_running_requests:12","max_queued_requests:4","engine_image:fa730e6e62b2"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-bf16-kv","deployment:glm53-flash-sgl-tp4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8009","instance:1b","gpu_pair:6-7","ppcie:true","config_variant:fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host325g-memopt-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-gpu13-h200-tp2-ep2-eagle-fixed-4-1-5-mr12q4-strict-budget8192-obs-v1","request_logging:disabled","thinking_budget_policy:default8192-public-to-native","max_running_requests:12","max_queued_requests:4","engine_image:9c6ddd4319c4"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -1279,13 +1264,13 @@ services:
       nearai.otel.instance: "1b"
       nearai.otel.gpu_pair: "6-7"
       nearai.otel.ppcie: "true"
-      nearai.otel.config_variant: "fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host325g-memopt-fp8kv-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-gpu13-h200-tp2-ep2-eagle-fixed-4-1-5-mr16q4-strict-budget8192-obs-v1-v7"
+      nearai.otel.config_variant: "fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host325g-memopt-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-gpu13-h200-tp2-ep2-eagle-fixed-4-1-5-mr12q4-strict-budget8192-obs-v1"
       nearai.otel.thinking_budget_policy: "default8192-public-to-native"
       nearai.otel.request_logging: "disabled"
       nearai.otel.watchdog_timeout: "1800"
-      nearai.otel.max_running_requests: "16"
+      nearai.otel.max_running_requests: "12"
       nearai.otel.max_queued_requests: "4"
-      nearai.otel.engine_image: "fa730e6e62b2"
+      nearai.otel.engine_image: "9c6ddd4319c4"
 
   # --- Ghost prefix cache aggregator: one per CVM, CPU only ---
   # Both GLM engines (r1a, r1b) in this CVM send their sampled page digests (keyed hashes, never tokens)
@@ -1295,7 +1280,7 @@ services:
   # both move together. Serving never depends on it: the engines do not wait for it, and an
   # image without ghost-prefix-cache.diff makes only this container exit and restart.
   glm53-ghost-aggregator:
-    image: docker.io/nearaidev/sglang@sha256:fa730e6e62b2ae8058114ce540487ade33ab93bc42b1179ae78edc92bd563fc5
+    image: docker.io/nearaidev/sglang@sha256:9c6ddd4319c4ab00e351d8650459e68b8830e36ffcc029d67fa5e19d0ac3ed17
     container_name: glm53-ghost-aggregator
     runtime: runc
     init: true
@@ -1841,7 +1826,7 @@ services:
               device_ids: ["4","5","6","7"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:z-ai/glm-5.3-flash","deployment:glm53-flash-sgl-tp4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","gpu_pair:4-7","ppcie:true","config_variant:fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host325g-memopt-fp8kv-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-gpu13-h200-tp2-ep2-eagle-fixed-4-1-5-mr16q4-strict-budget8192-obs-v1-v7"]}]'
+      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:z-ai/glm-5.3-flash","deployment:glm53-flash-sgl-tp4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","gpu_pair:4-7","ppcie:true","config_variant:fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host325g-memopt-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-gpu13-h200-tp2-ep2-eagle-fixed-4-1-5-mr12q4-strict-budget8192-obs-v1"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "dcgm"
       nearai.otel.service: "dcgm-exporter"
@@ -1858,7 +1843,7 @@ services:
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.gpu_pair: "4-7"
       nearai.otel.ppcie: "true"
-      nearai.otel.config_variant: "fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host325g-memopt-fp8kv-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-gpu13-h200-tp2-ep2-eagle-fixed-4-1-5-mr16q4-strict-budget8192-obs-v1-v7"
+      nearai.otel.config_variant: "fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host325g-memopt-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-gpu13-h200-tp2-ep2-eagle-fixed-4-1-5-mr12q4-strict-budget8192-obs-v1"
 
   # GPU 3 is shared across FLUX, Qwen3-VL, embedding, reranker, whisper — DCGM
   # metrics here cannot be attributed to one model, so
@@ -2065,7 +2050,7 @@ configs:
                       model: "z-ai/glm-5.3-flash"
                       model_path: "graphistry/GLM-5.3-Flash-W4AFP8"
                       served_model: "z-ai/glm-5.3-flash"
-                      precision: "int4-weights-fp8-activations-fp8-kv"
+                      precision: "int4-weights-fp8-activations-bf16-kv"
                       deployment: "glm53-flash-sgl-tp4"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
@@ -2076,13 +2061,13 @@ configs:
                       instance: "1a"
                       gpu_pair: "4-5"
                       ppcie: "true"
-                      config_variant: "fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host325g-memopt-fp8kv-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-gpu13-h200-tp2-ep2-eagle-fixed-4-1-5-mr16q4-strict-budget8192-obs-v1-v7"
+                      config_variant: "fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host325g-memopt-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-gpu13-h200-tp2-ep2-eagle-fixed-4-1-5-mr12q4-strict-budget8192-obs-v1"
                       thinking_budget_policy: "default8192-public-to-native"
                       request_logging: "disabled"
                       watchdog_timeout: "1800"
-                      max_running_requests: "16"
+                      max_running_requests: "12"
                       max_queued_requests: "4"
-                      engine_image: "fa730e6e62b2"
+                      engine_image: "9c6ddd4319c4"
               - job_name: sglang-model-sg-glm53-w4afp8-tp2-r1b
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -2095,7 +2080,7 @@ configs:
                       model: "z-ai/glm-5.3-flash"
                       model_path: "graphistry/GLM-5.3-Flash-W4AFP8"
                       served_model: "z-ai/glm-5.3-flash"
-                      precision: "int4-weights-fp8-activations-fp8-kv"
+                      precision: "int4-weights-fp8-activations-bf16-kv"
                       deployment: "glm53-flash-sgl-tp4"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
@@ -2106,13 +2091,13 @@ configs:
                       instance: "1b"
                       gpu_pair: "6-7"
                       ppcie: "true"
-                      config_variant: "fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host325g-memopt-fp8kv-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-gpu13-h200-tp2-ep2-eagle-fixed-4-1-5-mr16q4-strict-budget8192-obs-v1-v7"
+                      config_variant: "fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host325g-memopt-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-gpu13-h200-tp2-ep2-eagle-fixed-4-1-5-mr12q4-strict-budget8192-obs-v1"
                       thinking_budget_policy: "default8192-public-to-native"
                       request_logging: "disabled"
                       watchdog_timeout: "1800"
-                      max_running_requests: "16"
+                      max_running_requests: "12"
                       max_queued_requests: "4"
-                      engine_image: "fa730e6e62b2"
+                      engine_image: "9c6ddd4319c4"
               - job_name: ghost-aggregator-glm53-ghost-aggregator
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -2287,7 +2272,7 @@ configs:
                       port: "9400"
                       gpu_pair: "4-7"
                       ppcie: "true"
-                      config_variant: "fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host325g-memopt-fp8kv-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-gpu13-h200-tp2-ep2-eagle-fixed-4-1-5-mr16q4-strict-budget8192-obs-v1-v7"
+                      config_variant: "fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host325g-memopt-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-gpu13-h200-tp2-ep2-eagle-fixed-4-1-5-mr12q4-strict-budget8192-obs-v1"
               - job_name: dcgm-dcgm-shared-gpu3
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -2424,7 +2409,7 @@ configs:
                       port: "8009"
                       gpu_pair: "4-7"
                       ppcie: "true"
-                      config_variant: "fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host325g-memopt-fp8kv-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-gpu13-h200-tp2-ep2-eagle-fixed-4-1-5-mr16q4-strict-budget8192-obs-v1-v7"
+                      config_variant: "fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host325g-memopt-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-gpu13-h200-tp2-ep2-eagle-fixed-4-1-5-mr12q4-strict-budget8192-obs-v1"
               - job_name: inference-proxy-proxy-flux2-klein-4b
                 scrape_interval: 15s
                 metrics_path: /metrics
