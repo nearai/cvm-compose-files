@@ -1461,7 +1461,7 @@ configs:
                       model: "z-ai/glm-5.3-flash"
                       model_path: "graphistry/GLM-5.3-Flash-W4AFP8"
                       served_model: "z-ai/glm-5.3-flash"
-                      precision: "int4-weights-fp8-activations-bf16-kv"
+                      precision: "int4-weights-fp8-activations-fp8-kv"
                       deployment: "glm53-flash-sgl-tp2x4"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
@@ -1470,10 +1470,10 @@ configs:
                       ip: "${HOST_IP}"
                       port: "8000"
                       instance: "3"
-                      config_variant: "hicache-w4afp8-qsplit-selective325-mamba330-bf16state-memopt086-mr48-c8192-admission-reserve-v10-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192-obs-v1"
+                      config_variant: "hicache-w4afp8-qsplit-selective325-mamba330-bf16state-memopt086-mr48-c8192-admission-reserve-v10-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192-obs-v1-v7-hicacheoff-v1"
                       thinking_budget_policy: "default8192-public-to-native"
                       request_logging: "disabled"
-                      engine_image: "9c6ddd4319c4"
+                      engine_image: "fa730e6e62b2"
               - job_name: sglang-model-sg-glm53-w4afp8-tp2-r4
                 scrape_interval: 15s
                 metrics_path: /metrics
