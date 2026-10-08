@@ -399,7 +399,7 @@ services:
       - source: kvq_peerkv_patch_py_bb0d11ca
         target: /etc/glm53/glm53_peerkv_startup_patch.py
         mode: 0444
-      - source: kvq_peerkv_engine_py_9d929ac2
+      - source: kvq_peerkv_engine_py_3546619f
         target: /etc/glm53/peerkv_engine.py
         mode: 0444
     volumes:
@@ -464,7 +464,7 @@ services:
       - source: kvq_peerkv_patch_py_bb0d11ca
         target: /etc/glm53/glm53_peerkv_startup_patch.py
         mode: 0444
-      - source: kvq_peerkv_engine_py_9d929ac2
+      - source: kvq_peerkv_engine_py_3546619f
         target: /etc/glm53/peerkv_engine.py
         mode: 0444
     volumes:
@@ -2484,7 +2484,7 @@ configs:
       if __name__ == "__main__":
           main()
 
-  kvq_peerkv_engine_py_9d929ac2:
+  kvq_peerkv_engine_py_3546619f:
     content: |
       """In-host GPU-to-GPU KV prefix sharing between two GLM-5.3 TP2 replicas (HiCache off).
 
@@ -2914,6 +2914,12 @@ configs:
               s.close()
 
 
+      def _layout_key(name, kind, shape, dtype):
+          """Layout identity without the pool-length axis (rows for token/page tensors, slots for state)."""
+          axis = 1 if kind == "slot" else 0
+          return (name, kind, tuple(shape[:axis]) + tuple(shape[axis + 1:]), dtype)
+
+
       def _open_peer(epoch: str):
           """Map the peer rank's tensors (same rank index) once per peer epoch."""
           if _S.peer_epoch == epoch and _S.peer_tensors is not None:
@@ -2922,10 +2928,12 @@ configs:
               meta = pickle.load(f)
           if meta["epoch"] != epoch:
               raise RuntimeError(f"peer handles epoch {meta['epoch']} != grant epoch {epoch}")
-          mine = describe(_S.tensors)
-          theirs = [(r["name"], r["kind"], tuple(r["shape"]), "torch." + r["dtype"]) for r in meta["tensors"]]
+          # Pool lengths follow each replica's free memory, so they may differ; everything else must match.
+          mine = [_layout_key(n, k, s, d) for n, k, s, d in describe(_S.tensors)]
+          theirs = [_layout_key(r["name"], r["kind"], tuple(r["shape"]), "torch." + r["dtype"]) for r in meta["tensors"]]
           if mine != theirs:
-              raise RuntimeError("peer tensor layout differs (argv/image mismatch)")
+              diff = next(((a, b) for a, b in zip(mine, theirs) if a != b), (len(mine), len(theirs)))
+              raise RuntimeError(f"peer tensor layout differs (argv/image mismatch): {diff}")
           out = []
           for r in meta["tensors"]:
               with torch.cuda.device(r["device"]):
@@ -3002,6 +3010,21 @@ configs:
 
           L, kv_src = grant["L"], grant["kv_idx"]
           n = L - p_b
+          # Pin the local prefix so the eviction below cannot free pages that become part of `value`.
+          local_node = local.last_device_node
+          tree.inc_lock_ref(local_node)
+          try:
+              _fetch_insert(scheduler, req, tree, tokens, local, p_b, L, n, kv_src, grant, lease, t0)
+          finally:
+              tree.dec_lock_ref(local_node)
+
+
+      def _fetch_insert(scheduler, req, tree, tokens, local, p_b, L, n, kv_src, grant, lease, t0) -> None:
+          from sglang.srt.mem_cache.base_prefix_cache import EvictParams, InsertParams
+          from sglang.srt.mem_cache.radix_cache import RadixKey
+          from sglang.srt.mem_cache.unified_cache.component_type import ComponentType
+          import torch.distributed as dist
+
           alloc = scheduler.token_to_kv_pool_allocator
           mamba_alloc = scheduler.req_to_token_pool.mamba_allocator
           kv_dst = alloc.alloc(n)
