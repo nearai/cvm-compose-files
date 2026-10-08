@@ -33,39 +33,55 @@ The **v7 image** is `docker.io/nearaidev/sglang@sha256:fa730e6e62b2ae8058114ce54
 
 ## Deploy (compose-manager only, no KMS step, no env-map changes)
 
-Every step is `POST http://<host>:8080/compose/up` with `tag` = the merged tag `T` (past `MIN_TAG_AGE_HOURS`), `file` (with the `prod/` prefix), an **explicit `services` list** (never empty), the host's existing full `env` map, `force_recreate: false`, **`dry_run: true` first**. The plan must show exactly the listed services recreated and nothing else (no `model-downloader`, proxy, nginx, registrar, other engine, no `--remove-orphans` removals); if it shows more, stop. Then repeat with `dry_run: false`. Cold start is about 22 minutes under CC. Pre-check before each step: `docker/ps` and `/backends/list` healthy on the host, and the dump of the host's env map kept as the rollback reference.
+**Pace: one replica per lane per step, two lanes in parallel, each step followed by a 5-minute bake.** At most one base replica and one long replica are being recreated at any time (the base lane and the long lane may run concurrently: one base plus one long in flight). After a replica is recreated and ready, bake it for 5 minutes against the checklist below; only a pass releases the next replica of that lane. The lanes do not wait for each other.
+
+Every step is `POST http://<host>:8080/compose/up` with `tag` = the merged tag `T` (past `MIN_TAG_AGE_HOURS`), `file` (with the `prod/` prefix), an **explicit `services` list holding exactly that one replica** (never empty, never two replicas), the host's existing full `env` map, `force_recreate: false`, **`dry_run: true` first**. The plan must show exactly that one service recreated and nothing else (no `model-downloader`, proxy, nginx, registrar, other engine, no `--remove-orphans` removals); if it shows more, stop. Then repeat with `dry_run: false`: exactly one recreate. Cold start is about 22 minutes under CC; the 5-minute bake starts when the replica is ready (`/health` 200), not when the call is sent. Pre-check before each step: `docker/ps` and `/backends/list` healthy on the host, every other replica of the tier up, and the dump of the host's env map kept as the rollback reference.
 
 ### Limits (user rules)
 
-- **Long-context hosts one at a time:** finish a long host (back serving and healthy, verified) before touching the next.
-- **Never more than 2 base replicas down fleet-wide:** one base pair at a time across gpu03 and gpu04; the next pair starts only after the previous pair is back and healthy. Before each step check `docker/ps` and `/backends/list` on both hosts; start only when every other base replica is up.
-- **`compose/down` takes effect immediately, ignores `dry_run` and cannot be recalled.** This runbook never needs one (`compose/up` of the service recreates it). If one is ever sent, scope it to one service and verify the logged services list in the host's compose-manager action log.
+- **Never more than one long replica down at a time** (this is why the long lane is strictly serial, replica by replica, and finishes a host before the next host starts).
+- **At most one base replica down fleet-wide** (tighter than the earlier "2 base replicas down"): the base lane is strictly serial across gpu04 and gpu03.
+- **One base replica and one long replica may be in flight together**, never two of the same tier.
+- **`compose/down` is never used.** It takes effect immediately, ignores `dry_run` and cannot be recalled; `compose/up` of the one service recreates it. If one is ever sent anyway, scope it to one service and verify the logged services list in the host's compose-manager action log.
+- Explicit services list on every call; no KMS step; no env-map changes (including `GLM53_BACKEND_URLS`).
 
-### Order
+### Order: two lanes
 
-Base tier (services `model-sg-glm53-w4afp8-tp2-r1`, `model-sg-glm53-w4afp8-tp2-r2`, `model-sg-glm53-w4afp8-tp2-r3`, `model-sg-glm53-w4afp8-tp2-r4`; below, `r1` etc. abbreviate these):
+Service names: base `model-sg-glm53-w4afp8-tp2-r1`, `model-sg-glm53-w4afp8-tp2-r2`, `model-sg-glm53-w4afp8-tp2-r3`, `model-sg-glm53-w4afp8-tp2-r4` (below `r1`..`r4`); long `model-sg-glm53-w4afp8-tp2-r1a`, `-r1b`, `-r2a`, `-r2b`.
 
-1. gpu04: `r1`, `r2` (one call, two services). Verify. Then gpu04 `r3`, `r4`. Verify.
-2. gpu03: `r1`, `r2`. Verify. Then gpu03 `r3`, `r4` (they are already v7-like, r3 HiCache off and r4 with profiling; redeploy them to the fleet file so labels, environment and profiling match). Verify.
-3. Per base host after its four replicas: `services: ["glm53-ghost-aggregator"]` (image now v7), then `services: ["otelcol-contrib"]` with `force_recreate: true` (dry run first; plan: collector only). Verify `config_variant` ends `-v7` for all four.
+**Base lane** (`file: prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8.yaml`), one replica, then bake, then the next:
 
-Long tier (services `model-sg-glm53-w4afp8-tp2-r1a`, `-r1b`, `-r2a`, `-r2b`), `file: prod/GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext.yaml`:
+`gpu04 r1 -> gpu04 r2 -> gpu04 r3 -> gpu04 r4 -> gpu03 r1 -> gpu03 r2 -> gpu03 r3 -> gpu03 r4`
 
-4. gpu23: `r1a`, `r1b`; verify; then `r2a`, `r2b`; verify. Then `glm53-ghost-aggregator`, then `otelcol-contrib` (`force_recreate: true`).
-5. gpu02 (starts only after gpu23 is verified): `r1a`, `r1b`; verify; then `r2a`, `r2b` (r2a currently runs the canary); verify. Then `glm53-ghost-aggregator`, `otelcol-contrib`.
-6. gpu13 (`file: prod/small-models.yaml`; starts only after gpu02 is verified): **this ends Pranav's shared-KV experiment on gpu13, and its owner must be told before this step.** gpu13's other models (Qwen, FLUX, Qwen3-VL, whisper and the rest) must stay up, so the services list contains only the GLM engines: `r1a`, verify, then `r1b`, verify (one replica at a time: the host has only two), then `glm53-ghost-aggregator`, then `otelcol-contrib` with `force_recreate: true`. Never send a list that names another model, `nginx` or `model-downloader`. Note: `proxy-glm53` and `dcgm-glm53` carry the new `config_variant` in their container labels; they are deliberately not recreated (cosmetic until their next natural recreate; the collector's scrape jobs carry the new value).
-7. **Raise gateway caps (cvm-ansible-playbooks #817 or a follow-up), only after every host above is on v7.** Until then base replicas are bounded by the current base host bound (about 40 in flight per replica, 160 per host) and long hosts by 48 per host, so the throughput gain is partly capped. Recommended values are in "Gateway caps".
+(gpu03 r3 and r4 are already v7-like, r3 HiCache off and r4 with profiling; they are redeployed to the fleet file so labels, environment and profiling match, and are baked like the others.)
 
-## Verify after every step
+**Long lane** (`file: prod/GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext.yaml`, except gpu13), one replica, then bake, then the next:
 
-- Dashboard **GLM-5.3 Flash production** (`glm53-flash-prod`) shows the replica under its host and `server_address` within 5 minutes, with the sglang, DCGM and proxy panels populated. If missing, a label changed: stop and diff against the previous tag's file.
-- Engine logs (Loki `{host="<host>", container_name="<service>"}`): `preprocess pool started: workers=4 timeout=60s`; `kv_cache_dtype=fp8_e4m3` and both `flashmla_kv` backends; `enable_hierarchical_cache=False` (base) / `True` (long and gpu13); `disable_overlap_schedule=True`; `max_running_requests` 64 (base) / 16 (long); **no `NEAR_PROFILE` lines**.
-- `docker inspect` image is the v7 digest; `/backends/list` healthy; one real completion with a cache-hit follow-up on long; a tool-call request with a very deep schema is rejected cleanly (no pool crash); no CUDA 801, NCCL, Xid or OOM; free GPU memory at ready not under 10 GiB.
-- Neighbours were not recreated (container IDs and uptime unchanged for every service not in the list).
+`gpu23 r1a -> gpu23 r1b -> gpu23 r2a -> gpu23 r2b -> gpu02 r1a -> gpu02 r1b -> gpu02 r2a -> gpu02 r2b -> gpu13 r1a -> gpu13 r1b`
+
+(gpu02 r2a currently runs the canary and is redeployed to the fleet file.) gpu13 uses `file: prod/small-models.yaml` and the services list contains **only that one GLM engine**, so its other models (Qwen, FLUX, Qwen3-VL, whisper and the rest) stay up; never send a list that names another model, `nginx` or `model-downloader`. **gpu13 ends Pranav's shared-KV experiment; its owner must be told before gpu13 r1a.** `proxy-glm53` and `dcgm-glm53` carry the new `config_variant` in their container labels; they are deliberately not recreated (cosmetic until their next natural recreate).
+
+**Per-host collector and aggregator, once per host after its last replica has baked green:** `services: ["glm53-ghost-aggregator"]` (image now v7), then `services: ["otelcol-contrib"]` with `force_recreate: true` (dry run first; plan: that service only). In the long lane these run between the host's last replica and the next host's first; in the base lane after gpu04 r4 and after gpu03 r4. They are not replicas and do not count as a lane step, but they never overlap another recreate on the same host. **Before this recreate the metrics are already visible:** the dashboard labels are unchanged (see above), so the running collector keeps scraping each recreated replica by its `server_address` and the sglang, DCGM and proxy panels populate during the bake; only the `precision`, `engine_image` and `config_variant` label values (and the ghost aggregator's series) stay on their old values until the collector and aggregator are recreated. Do not wait for them to bake a replica, and verify `config_variant` ends `-v7` for the host's replicas after the recreate.
+
+**Gateway caps (see "Gateway caps") are raised only after both lanes have finished.** Until then base replicas are bounded by the current base host bound (about 40 in flight per replica, 160 per host) and long hosts by 48 per host, so the throughput gain is partly capped.
+
+## 5-minute bake (after every replica; copy-pasteable where possible)
+
+Run on the replica `<svc>` of host `<host>` with `<addr>` = its scrape target (`server_address`, `<host-ip>:<port>`). Baseline = the same tier's **not-yet-migrated** replicas over the same 5 minutes (canary-era replicas gpu03 r3/r4 and gpu02 r2a do not count as baseline); for the last replica of a tier, where no unmigrated peer remains, use the tier's pre-rollout figures captured over the hour before the first step. Check the metric names against the `glm53-flash-prod` panel queries if they differ.
+
+1. **Ready and routed.** `curl -s -o /dev/null -w '%{http_code}\n' http://<addr>/health` is `200`; `/backends/list` on the host shows `<svc>` ready (the proxy marked it ready); `docker ps --filter name=<svc> --format '{{.Image}} {{.Status}}'` shows the v7 digest and an uptime growing through the bake (no restart loop: `docker inspect -f '{{.RestartCount}}' <svc>` stays 0 and `Status` never resets).
+2. **Dashboard.** Grafana `glm53-flash-prod` shows `<svc>` under its `host` and `server_address` within the bake, with the sglang, dcgm and proxy panels populated. Missing means a label changed: stop and diff against the previous tag's file.
+3. **Engine startup lines** (Loki `{host="<host>", container_name="<svc>"}`, or `docker logs <svc> 2>&1 | grep -E '...'`): `preprocess pool started: workers=4 timeout=60s`; `kv_cache_dtype=fp8_e4m3` with both `flashmla_kv` backends; `enable_hierarchical_cache=False` for base / `True` for long and gpu13; `disable_overlap_schedule=True`; `max_running_requests` 64 (base) / 16 (long); no `NEAR_PROFILE` lines: `docker logs <svc> 2>&1 | grep -c NEAR_PROFILE` is `0`.
+4. **It serves production traffic.** Over the 5 minutes, with `sel='server_address="<addr>"'`: `increase(sglang_num_requests_total{$sel}[5m]) > 0` and requests complete (`increase(sglang_e2e_request_latency_seconds_count{$sel}[5m]) > 0`); `max_over_time(sglang_num_running_reqs{$sel}[5m]) > 0` at some point; `increase(sglang_generation_tokens_total{$sel}[5m]) > 0` and prompt tokens increasing too.
+5. **Latency vs peers.** TTFT p95 and ITL p95 not more than 20% worse than the baseline: `histogram_quantile(0.95, sum by (le) (rate(sglang_time_to_first_token_seconds_bucket{$sel}[5m])))` against the same expression over the unmigrated replicas of the tier (`server_address=~"<peer1>|<peer2>|..."`), and the same with `sglang_inter_token_latency_seconds_bucket`. Fail at more than 1.2 x baseline.
+6. **Clean logs.** `docker logs --since 5m <svc> 2>&1 | grep -Ei 'Xid|CUDA error|CUDA 801|NCCL|out of memory|Traceback|preprocess.*timeout|worker died'` prints nothing; free GPU memory at ready is not under 10 GiB.
+7. **Neighbours untouched.** Container IDs and uptime are unchanged for every service not in the list; on long, one real completion with a cache-hit follow-up, and a tool-call request with a very deep schema is rejected cleanly (no pool crash).
+
+**Pass -> next replica of that lane. Fail -> roll that one replica back** (`compose/up` of that service from the previous tag, `dry_run` first; see below) **and stop the lane**; the other lane may continue unless the cause is shared (image, gateway, collector), in which case stop both and escalate.
 
 ## Abort and rollback
 
-Abort a step on any engine exit, Xid, OOM, free memory under 2 GiB for 5 minutes, a preprocess-pool timeout storm, or TTFT p95 / ITL p95 clearly worse than the untouched same-tier hosts (the pre-registered criteria of the canary, tee-bench exp 32 `evidence/v7-canary-prod`, apply: any engine exit, Xid or OOM; TTFT or ITL p95 more than 20% worse than the untouched hosts). **Rollback = redeploy the previous tag's copy of the same file for the same services** (`compose/up`, `dry_run` first, the v6 digest and the previous argv), then `otelcol-contrib` with `force_recreate: true`. Gateway caps: revert the three variables. Do not roll back faster than the cold start allows; the 2-base-replicas-down and one-long-host-at-a-time limits apply to rollbacks too.
+Abort a step on any bake-checklist failure, and immediately on an engine exit, Xid, OOM, free memory under 2 GiB for 5 minutes, or a preprocess-pool timeout storm. TTFT p95 / ITL p95 more than 20% worse than the unmigrated same-tier replicas is the same pre-registered criterion as the canary (tee-bench exp 32 `evidence/v7-canary-prod`). **Rollback = redeploy the previous tag's copy of the same file for that one service** (`compose/up`, `dry_run` first, the v6 digest and the previous argv), then, if the host's collector was already recreated, `otelcol-contrib` with `force_recreate: true` again. Gateway caps: revert the three variables. Do not roll back faster than the cold start allows; the one-long-replica and one-base-replica limits apply to rollbacks too.
 
 ## Gateway caps (recommendation; not applied here)
 
@@ -77,11 +93,11 @@ File: `vars/openrouter_gateway.yaml` in `nearai/cvm-ansible-playbooks`. Topology
 | `VLLM_PROXY_ADMISSION_LONG_MAX_INFLIGHT_PER_HOST` | 48 (52 in #817) | **64** | 4 replicas x 16 running on gpu02 and gpu23; one ceiling for every long host (gpu13's two replicas hold 32 and stay below it) |
 | `VLLM_PROXY_ADMISSION_LONG_RESERVED_INFLIGHT` | 128 | **160** | what the long engines hold: gpu02 64 + gpu23 64 + gpu13 32; below the tier's combined bound 3 x 64 = 192, so it is usable |
 
-The base host bound then derives to `(672 - 160) / 2 = 256` = 4 replicas x 64 running. The gateway's RPM (500) is advertised only and unchanged. These need the lane's three hosts healthy; the saturation steering (`VLLM_PROXY_ADMISSION_QUEUE_SATURATED_AT=4`) still applies. If a long host leaves, lower the reserve by 64 (gpu13: 32).
+The base host bound then derives to `(672 - 160) / 2 = 256` = 4 replicas x 64 running. The gateway's RPM (500) is advertised only and unchanged. These need all five hosts healthy; the saturation steering (`VLLM_PROXY_ADMISSION_QUEUE_SATURATED_AT=4`) still applies. If a long host leaves, lower the reserve by 64 (gpu13: 32).
 
 ## Open decisions for a human
 
-- **gpu13 (owner decision)** is outside "1 long config" because its GLM replicas live in `prod/small-models.yaml` beside other models. This PR gives its two GLM replicas exactly the long file's v7 argv/env (tested), HiCache on, with gpu13's own 325 GiB budgets, ports and GPU ids. It ends the shared-KV arm there: its owner (Pranav) must agree before step 6.
+- **gpu13 (owner decision)** is outside "1 long config" because its GLM replicas live in `prod/small-models.yaml` beside other models. This PR gives its two GLM replicas exactly the long file's v7 argv/env (tested), HiCache on, with gpu13's own 325 GiB budgets, ports and GPU ids. It ends the shared-KV arm there: its owner (Pranav) must agree before gpu13 r1a.
 - The gateway budget change (448 to 672, reserve 160, ceiling 64) is a capacity decision for the gateway owner.
 
 ## Evidence (nearai/tee-bench)
@@ -94,7 +110,7 @@ The base host bound then derives to `(672 - 160) / 2 = 256` = 4 replicas x 64 ru
 
 ## What this replaces
 
-This PR deletes the v7 canary machinery (the two `prod/*V7Canary.yaml` files, their generator and tests, `docs/glm53-v7-canary.md` and the validator rules); the fleet files supersede it. The canary record lives in tee-bench exp 32 (`evidence/v7-canary-prod`). Deleting files does not touch running containers, but note what runs from where today, because each one's next deploy uses the fleet files (redeploy them as part of the rollout, as the order above does):
+This PR deletes the v7 canary machinery (the two `prod/*V7Canary.yaml` files, their generator and tests, `docs/glm53-v7-canary.md` and the validator rules); the fleet files supersede it. The canary record lives in tee-bench exp 32 (`evidence/v7-canary-prod`). Deleting files does not touch running containers, but note what runs from where today, because each one's next deploy uses the fleet files (redeploy them as part of the rollout, as the lanes above do):
 
 - gpu03 `r4` and gpu02 `r2a` run from the deleted canary files.
 - gpu03 `r3` (HiCache off) and gpu13 `r1a`/`r1b` (shared-KV arm) run from files on Pranav's `pranavraja99/glm53-kvshare-ab` branch, which the fleet files also replace.

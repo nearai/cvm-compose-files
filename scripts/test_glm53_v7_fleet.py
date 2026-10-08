@@ -340,6 +340,13 @@ class Gpu13FleetTest(unittest.TestCase):
             self.assertIn('precision: "int4-weights-fp8-activations-fp8-kv"', job)
             self.assertIn('engine_image: "fa730e6e62b2"', job)
             self.assertIn('max_running_requests: "16"', job)
+            # The log tag (com.datadoghq.ad.logs) must advertise the same cap as the engine argv, the OTel label and the scrape job.
+            argv, _, _ = self.gpu13(name)
+            cap = argv[argv.index("--max-running-requests") + 1]
+            self.assertEqual(cap, "16")
+            self.assertIn(f'"max_running_requests:{cap}"', block)
+            self.assertNotIn('"max_running_requests:12"', block)
+            self.assertIn(f'nearai.otel.max_running_requests: "{cap}"', block)
             self.assertIn("-fp8kv-", block)
             self.assertIn("mr16q4", block)
         self.assertEqual(service_block(self.small, "glm53-ghost-aggregator").count(f"image: {V7_IMAGE}"), 1)
@@ -406,8 +413,33 @@ class FleetRunbookTest(unittest.TestCase):
         self.assertNotIn("services: []", self.runbook)
 
     def test_it_carries_the_user_rules_and_checks(self) -> None:
-        for text in ("one at a time", "never more than 2 base replicas", "cannot be recalled", "glm53-flash-prod", "preprocess pool started: workers=4 timeout=60s",
-                     "kv_cache_dtype", "fp8_e4m3", "enable_hierarchical_cache", "NEAR_PROFILE", "rollback", "no kms", "env map"):
+        for text in ("never more than one long replica down at a time", "at most one base replica down fleet-wide", "cannot be recalled", "glm53-flash-prod",
+                     "preprocess pool started: workers=4 timeout=60s", "kv_cache_dtype", "fp8_e4m3", "enable_hierarchical_cache", "NEAR_PROFILE", "rollback",
+                     "no kms", "env map"):
+            self.assertIn(text.lower(), self.lowered)
+
+    def test_it_paces_one_replica_per_lane_with_a_five_minute_bake(self) -> None:
+        for text in ("one replica per lane per step", "5-minute bake", "exactly one recreate", "compose/down` is never used", "explicit `services` list"):
+            self.assertIn(text.lower(), self.lowered)
+        # The old pair-wise pacing must be gone.
+        for text in ("one base pair at a time", "(one call, two services)", "`r1`, `r2` (one call"):
+            self.assertNotIn(text, self.runbook)
+        # Both lanes, in order, one replica per step.
+        base = " -> ".join(f"gpu0{h} r{n}" for h in (4, 3) for n in (1, 2, 3, 4))
+        long = " -> ".join(f"{h} r{n}" for h, ns in (("gpu23", ("1a", "1b", "2a", "2b")), ("gpu02", ("1a", "1b", "2a", "2b")), ("gpu13", ("1a", "1b"))) for n in ns)
+        self.assertIn(base, self.runbook)
+        self.assertIn(long, self.runbook)
+        # gpu13 lists only its GLM engine; the per-host collector/aggregator recreate and the metrics-visible-before note are kept.
+        for text in ("only that one glm engine", "once per host after its last replica", "before this recreate the metrics are already visible",
+                     "glm53-ghost-aggregator", "otelcol-contrib", "pranav"):
+            self.assertIn(text.lower(), self.lowered)
+        # The bake checklist items.
+        for text in ("/health", "/backends/list", "restartcount", "server_address", "sglang_num_requests_total", "sglang_num_running_reqs", "sglang_generation_tokens_total",
+                     "ttft p95", "itl p95", "20%", "xid", "cuda error", "traceback", "preprocess", "worker died", "not-yet-migrated", "restart loop",
+                     "roll that one replica back", "stop the lane", "enable_hierarchical_cache=false", "grep -c near_profile"):
+            self.assertIn(text.lower(), self.lowered)
+        # Gateway caps stay a post-rollout step with the computed values.
+        for text in ("672", "160", "64", "256", "only after both lanes have finished"):
             self.assertIn(text.lower(), self.lowered)
 
     def test_it_carries_the_evidence_gateway_values_and_the_gpu13_flag(self) -> None:
