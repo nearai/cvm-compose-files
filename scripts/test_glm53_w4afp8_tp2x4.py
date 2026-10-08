@@ -92,14 +92,14 @@ class GeneratedFileTest(unittest.TestCase):
                     "--speculative-num-draft-tokens 6", "--speculative-adaptive", "--max-mamba-cache-size 165", "--prefill-decode-interval 1",
                     "--dsa-prefill-backend tilelang", "--dsa-decode-backend tilelang", "--kv-cache-dtype bfloat16",
                     "--enable-hierarchical-cache", "--hicache-write-policy write_through_selective", "--hicache-io-backend direct",
-                    "--hicache-mem-layout page_first_direct"]),
+                    "--hicache-mem-layout page_first_direct", "--max-queued-requests 8"]),
         )
         self.assertEqual(
             added,
             sorted(["--mem-fraction-static 0.86", "--max-running-requests 64", "--cuda-graph-max-bs-decode 64", "--speculative-num-steps 4",
                     "--speculative-num-draft-tokens 5", "--max-mamba-cache-size 380", "--prefill-decode-interval 2",
                     "--dsa-prefill-backend flashmla_kv", "--dsa-decode-backend flashmla_kv", "--kv-cache-dtype fp8_e4m3",
-                    "--disable-overlap-schedule"]),
+                    "--disable-overlap-schedule", "--max-queued-requests 32"]),
         )
         # -1 adaptive, -4 HiCache flags, +1 overlap-off.
         self.assertEqual(len(control) - 4, len(candidate))
@@ -130,7 +130,7 @@ class GeneratedFileTest(unittest.TestCase):
         # Independent of the generator's edit list: a shared typo in the generator and validator must still fail here.
         _, _, anchor = generator.section(self.target, "x-sg-glm53-flash-candidate:", "\nx-dcgm-common", "candidate")
         for flag in ("--mem-fraction-static 0.86", "--max-running-requests 64", "--cuda-graph-max-bs-decode 64", "--speculative-num-steps 4",
-                     "--speculative-eagle-topk 1", "--speculative-num-draft-tokens 5", "--max-mamba-cache-size 380", "--max-queued-requests 8",
+                     "--speculative-eagle-topk 1", "--speculative-num-draft-tokens 5", "--max-mamba-cache-size 380", "--max-queued-requests 32",
                      "--chunked-prefill-size 8192", "--context-length 1048576", "--kv-cache-dtype fp8_e4m3", "--dsa-prefill-backend flashmla_kv",
                      "--dsa-decode-backend flashmla_kv", "--disable-overlap-schedule", "--mamba-ssm-dtype bfloat16"):
             self.assertEqual(anchor.count(f"      {flag}\n"), 1, flag)
@@ -257,7 +257,7 @@ class ValidatorContractTest(unittest.TestCase):
             ("\n      --dsa-decode-backend flashmla_kv\n", "\n      --dsa-decode-backend tilelang\n"),
             ("\n      --dsa-prefill-backend flashmla_kv\n", "\n      --dsa-prefill-backend tilelang\n"),
             ("\n      --disable-overlap-schedule\n", "\n"),
-            ("\n      --max-queued-requests 8\n", "\n      --max-queued-requests 16\n"),
+            ("\n      --max-queued-requests 32\n", "\n      --max-queued-requests 16\n"),
             ("\n      --context-length 1048576\n", "\n      --context-length 524288\n"),
         )
         for before, after in cases:

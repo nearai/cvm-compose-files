@@ -16,7 +16,7 @@ The **v7 image** is `docker.io/nearaidev/sglang@sha256:fa730e6e62b2ae8058114ce54
 |---|---|---|
 | image | v7 | v7 |
 | KV / DSA backends | `--kv-cache-dtype fp8_e4m3`, `--dsa-prefill-backend flashmla_kv`, `--dsa-decode-backend flashmla_kv` | same |
-| running / queued / decode graphs | 64 / 8 / 64 | 16 / 4 / 16 |
+| running / queued / decode graphs | 64 / 32 / 64 | 16 / 4 / 16 |
 | mamba slots | 380 (5 per running request) | 330 |
 | overlap scheduler | off (`--disable-overlap-schedule`) | off |
 | HiCache | **OFF**: the four flags `--enable-hierarchical-cache --hicache-write-policy --hicache-io-backend --hicache-mem-layout` are not in the argv | **ON** (`write_through`, 325 GiB per replica as today) |
@@ -82,6 +82,12 @@ Run on the replica `<svc>` of host `<host>` with `<addr>` = its scrape target (`
 ## Abort and rollback
 
 Abort a step on any bake-checklist failure, and immediately on an engine exit, Xid, OOM, free memory under 2 GiB for 5 minutes, or a preprocess-pool timeout storm. TTFT p95 / ITL p95 more than 20% worse than the unmigrated same-tier replicas is the same pre-registered criterion as the canary (tee-bench exp 32 `evidence/v7-canary-prod`). **Rollback = redeploy the previous tag's copy of the same file for that one service** (`compose/up`, `dry_run` first, the v6 digest and the previous argv), then, if the host's collector was already recreated, `otelcol-contrib` with `force_recreate: true` again. Gateway caps: revert the three variables. Do not roll back faster than the cold start allows; the one-long-replica and one-base-replica limits apply to rollbacks too.
+
+## Base queue cap 8 -> 32 (follow-up change)
+
+The base replicas (r1-r4 of `prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8.yaml`) now run `--max-queued-requests 32` instead of 8; every other flag, the image and the long tier (16 running / 4 queued) are unchanged. Reason: with a queue of 8, SGLang answered "The request queue is full." (503 sent inside an HTTP 200 SSE stream) on 4-10% of base requests while engines ran only ~20-26 of 64 slots, and the gateway's first-event peek turned each into a 503 and marked the host backpressured for 10 s. 32 is half the 64 running slots; queued requests hold no KV until scheduled.
+
+Rollout: compose-manager `compose/up` with the merged tag, one base replica at a time with the same 5-minute bake (`dry_run` first, `services` list of one replica). Rollback is the previous tag. No KMS step and no env-map change. Watch TTFT p95 against the +20% abort line above and expect queue-full rejections and `backend_queue` gateway rejections to drop. The gateway's `VLLM_PROXY_ADMISSION_QUEUE_SATURATED_AT=8` (cvm-ansible-playbooks) is untouched: with a 32-deep queue it now marks a base host only when the queue is a quarter full.
 
 ## Gateway caps (recommendation; not applied here)
 

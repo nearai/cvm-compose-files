@@ -66,6 +66,8 @@ CANDIDATE_VARIANT: Final = (
 CANDIDATE_EDITS: Final = (
     ("--mem-fraction-static 0.80", "--mem-fraction-static 0.86"),
     ("--max-running-requests 32", "--max-running-requests 64"),
+    # Base queue cap 8 -> 32 (half the 64 running slots): queue-full 503s were bouncing work while engines sat at ~20-26 running.
+    ("--max-queued-requests 8", "--max-queued-requests 32"),
     ("--prefill-decode-interval 1", f"--prefill-decode-interval {CANDIDATE_PDI}"),
     ("--cuda-graph-max-bs-decode 32", "--cuda-graph-max-bs-decode 64"),
     ("--speculative-num-steps 5", "--speculative-num-steps 4"),

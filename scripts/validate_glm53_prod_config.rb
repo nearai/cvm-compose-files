@@ -731,7 +731,7 @@ W4AFP8_TP2X4_CANDIDATE_ARGV = Shellwords.split(<<~'ARGV').freeze
   --served-model-name z-ai/glm-5.3-flash
   --tp-size 2 --ep-size 2
   --mem-fraction-static 0.86
-  --max-running-requests 64 --max-queued-requests 8
+  --max-running-requests 64 --max-queued-requests 32
   --enable-priority-scheduling --disable-priority-preemption
   --chunked-prefill-size 8192 --max-prefill-tokens 32768 --prefill-decode-interval 2
   --cuda-graph-max-bs-decode 64
