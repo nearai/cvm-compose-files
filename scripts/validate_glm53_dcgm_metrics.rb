@@ -177,6 +177,10 @@ else
   puts "GLM-5.3 DCGM telemetry contract skipped (prod/GLM-5.3-Flash-SGL-TP4-HiCache.yaml not present)"
 end
 files << W4AFP8_LONG_CONTEXT_FILE if File.exist?(W4AFP8_LONG_CONTEXT_FILE)
+%w[GLM-5.3-Flash-SGL-TP2x4-W4AFP8-V7Canary.yaml GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext-V7Canary.yaml].each do |name|
+  path = File.join(ROOT, "prod", name)
+  files << path if File.exist?(path)
+end
 
 failed = false
 files.each do |path|

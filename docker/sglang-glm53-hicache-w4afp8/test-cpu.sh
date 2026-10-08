@@ -369,4 +369,123 @@ PYTHONPATH="$RECIPE_DIR${PYTHONPATH:+:$PYTHONPATH}" \
   test/registered/unit/mem_cache/test_unified_radix_cache_unittest.py
 echo "step 9 OK: the KV tier metrics are exact, hooked into the tree core, off by default, and hold under the upstream cache tests in strict mode"
 
+# 10. The self-profiling hook is inert by default. The first block checks the installed modules: the
+# hook module is importable, creates nothing without NEAR_SELF_PROFILE=1 (or off tp_rank 0), and
+# Scheduler has it wired in. test_self_profile.py then runs the summariser on synthetic traces (blocking
+# calls, code paths, memcpy direction, trace dir deleted, NO_KERNELS exit code), the hook state machine
+# against a stub profiler manager (waits for a decode batch, one CUDA+CPU profile, one CPU-only retry,
+# then disabled for good) and checks the hook sites in scheduler.py and profiler_manager.py. No GPU, no
+# real profiler: whether CUPTI works under CC is the open risk the first TEE run settles.
+python3 - <<'EOF'
+import inspect
+import os
+import types
+
+import sglang.srt.managers.scheduler as scheduler
+from sglang.srt.managers.scheduler_components.profiler_manager import SchedulerProfilerManager
+from sglang.srt.utils import near_self_profile as nsp
+
+assert os.environ.get("NEAR_SELF_PROFILE") is None
+assert scheduler.maybe_create_self_profile is nsp.maybe_create
+rank0 = types.SimpleNamespace(ps=types.SimpleNamespace(tp_rank=0))
+assert nsp.maybe_create(rank0) is None
+assert not os.path.exists(nsp.OUT_DIR)
+assert "near_selfprof" in inspect.getsource(SchedulerProfilerManager._stop_profile)
+EOF
+python3 "$RECIPE_DIR/test_self_profile.py" \
+  --module "$PWD/python/sglang/srt/utils/near_self_profile.py" \
+  --scheduler "$PWD/python/sglang/srt/managers/scheduler.py" \
+  --profiler-manager "$PWD/python/sglang/srt/managers/scheduler_components/profiler_manager.py" \
+  | tail -n 1
+echo "step 10 OK: the self-profiling hook is off by default, its summariser and state machine behave on synthetic traces, and its hook sites are in place"
+
+# 11. FP8 KV cache for GLM's NoPE DSA (fp8kv-flashmla.diff) is in place. The kernels need a GPU and
+# libcuda (sgl_kernel does not import on a CPU build host), so this step checks what a CPU can: the
+# four patched modules parse, carry the patch markers, and the two pieces of arithmetic are
+# right. The pool row is 512 fp8 + 16 B of scales + 64 zero bf16 rope slots = 656 B against 1024 B
+# for bf16 (1.56x), and the kpool index table (2048 + kpool - 1 wide) is padded to a multiple of 128.
+# Everything is gated on --kv-cache-dtype fp8_e4m3 with flashmla_kv, so the bf16/tilelang path is
+# unchanged; the GPU evidence is in the README.
+python3 - <<'EOF'
+import ast
+import pathlib
+
+root = pathlib.Path("python/sglang/srt")
+marks = {
+    "layers/attention/dsa_backend.py": ["flashmla_kv_pad_rope_dim", "flashmla_kv_topk", "value=-1"],
+    "layers/attention/dsa/dsa_backend_kpool.py": ['"tilelang", "trtllm", "flashmla_kv")'],
+    "mem_cache/kv_cache_configurator.py": ["rope_slots = 64", "rope_slots * rope_storage_dtype.itemsize"],
+    "models/deepseek_common/attention_forward_methods/forward_mha.py": [
+        "full_attn_backend",
+        "if self.qk_rope_head_dim == 0:",
+    ],
+}
+for name, needles in marks.items():
+    text = (root / name).read_text()
+    ast.parse(text, filename=name)
+    assert all(needle in text for needle in needles), (name, needles)
+
+kv_lora_rank, quant_block, rope_slots, rope_bytes = 512, 128, 64, 2
+row = kv_lora_rank + kv_lora_rank // quant_block * 4 + rope_slots * rope_bytes
+assert row == 656, row
+assert round(1024 / row, 2) == 1.56
+for kpool, want in ((1, 2048), (4, 2176), (129, 2176), (130, 2304)):
+    cols = 2048 + kpool - 1
+    padded = 2048 if kpool == 1 else -(-cols // 128) * 128
+    assert padded == want and padded % 128 == 0, (kpool, padded)
+print("step 11 OK: FP8 KV patch (NoPE DSA, 656 B row, padded kpool index table) is in place and parses")
+EOF
+# test_fp8kv_paths.py extracts the changed functions by ast and runs them on stubs with the gate on and
+# off (row width, q pad, kpool topk padding, tail-backend check, hybrid-backend and k_pe selection).
+python3 "$RECIPE_DIR/test_fp8kv_paths.py" --root "$PWD/python/sglang/srt" | tail -n 1
+
+# 12. The preprocess process pool is opt-in. Unset, 0, a negative count and garbage leave install()
+# returning None without forking, and the HTTP server calls it after the chat serving object exists.
+# test_preprocess_pool.py then runs the real module with forked workers: a request over the deadline
+# fails alone (PreprocessTimeout) while twenty others finish at once, the worker is killed and replaced,
+# a crashed or SIGTERMed worker is replaced (the request it ran fails alone) and never signals the
+# parent, a broken pool wakes queued requests, a cancelled request does not
+# leak a worker, a 5M-id result round-trips, and the zygote exits when the pool shuts down.
+python3 - <<'EOF'
+import inspect
+import os
+
+assert os.environ.get("SGLANG_PREPROCESS_WORKERS") is None
+from sglang.test.test_utils import maybe_stub_sgl_kernel
+
+maybe_stub_sgl_kernel()
+import sglang.srt.entrypoints.http_server as hs  # noqa: E402
+import sglang.srt.managers.preprocess_pool as pp  # noqa: E402
+from sglang.srt.entrypoints.openai.serving_base import OpenAIServingBase  # noqa: E402
+
+lifespan = inspect.getsource(hs.lifespan)
+assert lifespan.index("openai_serving_chat = (") < lifespan.index("install_preprocess_pool(") < lifespan.index("yield")
+base = inspect.getsource(OpenAIServingBase.handle_request)
+assert "_preprocess_pool" in base and "run_in_request_preprocessor" in base
+assert pp.maybe_hooked(print) is print, "the test hook must be off unless SGLANG_PREPROCESS_TEST_HOOK=1"
+EOF
+python3 "$RECIPE_DIR/test_preprocess_pool.py" "$PWD/python/sglang/srt/managers/preprocess_pool.py"
+echo "step 12 OK: the preprocess pool is off by default and, when on, isolates a slow request, replaces its worker and leaves the parent's signals alone"
+
+# 13. The tool-schema size cap is opt-in. The installed module has both limits at 0 without the env
+# vars; test_tool_schema_guard.py checks the boundaries, the iterative walk (a 200k-deep schema and a
+# cyclic one), bad env values, and runs the shipped OpenAIServingChat._validate_request (extracted from
+# serving_chat.py by ast) to prove an oversized tool is rejected before jsonschema's check_schema runs.
+python3 - <<'EOF'
+import os
+
+assert os.environ.get("SGLANG_TOOL_SCHEMA_MAX_DEPTH") is None and os.environ.get("SGLANG_TOOL_SCHEMA_MAX_NODES") is None
+from sglang.srt.utils import tool_schema_guard as guard
+
+assert guard.MAX_DEPTH == 0 and guard.MAX_NODES == 0
+deep = {}
+for _ in range(1000):
+    deep = {"anyOf": [deep]}
+assert guard.check_tool_schema_size(deep) is None
+EOF
+python3 "$RECIPE_DIR/test_tool_schema_guard.py" \
+  --module "$PWD/python/sglang/srt/utils/tool_schema_guard.py" \
+  --serving-chat "$PWD/python/sglang/srt/entrypoints/openai/serving_chat.py"
+echo "step 13 OK: the tool-schema size cap is off by default and rejects oversized tool schemas before check_schema"
+
 echo "GLM-5.3 W4AFP8 combined-image CPU checks passed"
