@@ -296,7 +296,9 @@ def peerkv_init(scheduler) -> None:
     if rank == 0:
         _M = _metrics_init()
         threading.Thread(target=_serve, daemon=True, name="peerkv-lend").start()
-    logger.info(f"{TAG} rank {rank}: {len(tensors)} tensors exported for {SELF} (peer {PEER}); page={page}")
+    dev = torch.cuda.current_device()
+    p2p = {j: torch.cuda.can_device_access_peer(dev, j) for j in range(torch.cuda.device_count()) if j != dev}
+    logger.info(f"{TAG} rank {rank}: {len(tensors)} tensors exported for {SELF} (peer {PEER}); page={page} dev={dev} p2p={p2p}")
 
 
 # --------------------------------------------------------------------------------------------
@@ -543,6 +545,7 @@ def maybe_fetch(scheduler, req) -> None:
 
 
 def _fetch_insert(scheduler, req, tree, tokens, local, p_b, L, n, kv_src, grant, lease, t0) -> None:
+    t_lend = time.monotonic()
     from sglang.srt.mem_cache.base_prefix_cache import EvictParams, InsertParams
     from sglang.srt.mem_cache.radix_cache import RadixKey
     from sglang.srt.mem_cache.unified_cache.component_type import ComponentType
@@ -559,19 +562,29 @@ def _fetch_insert(scheduler, req, tree, tokens, local, p_b, L, n, kv_src, grant,
         tree.evict(EvictParams(num_tokens=0, mamba_num=1))
         slot = mamba_alloc.alloc(1)
     ok = kv_dst is not None and slot is not None
-    why = "no_space"
+    why = "no_space" if not ok else "ok"
+    t_alloc = time.monotonic()
+    t_open = t_alloc
+    if not ok:
+        logger.warning(f"{TAG} rank {_S.rank}: no space for {n} tokens (kv={kv_dst is not None} slot={slot is not None})")
     if ok:
         try:
             peer = _open_peer(grant["epoch"])
+            t_open = time.monotonic()
             _copy_all(peer, kv_src, kv_dst.to(torch.int64), int(grant["mamba_slot"]), int(slot.view(-1)[0].item()))
         except Exception as e:
             ok, why = False, f"copy:{type(e).__name__}"
-            if _S.rank == 0:
-                logger.warning(f"{TAG} copy failed: {e!r}")
+            logger.warning(f"{TAG} rank {_S.rank}: copy failed: {e!r}")
+    t_copy = time.monotonic()
     if _S.tp_size > 1:
         flag = torch.tensor([1 if ok else 0], dtype=torch.int32)
         dist.all_reduce(flag, op=dist.ReduceOp.MIN, group=scheduler.tp_cpu_group)
+        if ok and not flag.item():
+            why = "peer_rank_failed"
         ok = bool(flag.item())
+    if LOG_FETCHES:
+        logger.info(f"{TAG} rank {_S.rank}: fetch n={n} {why} ok={ok} lend={t_lend - t0:.3f}s alloc={t_alloc - t_lend:.3f}s "
+                    f"open={t_open - t_alloc:.3f}s copy={t_copy - t_open:.3f}s")
     # Release the lease (in-band on the holder) whatever happened.
     if _S.rank == 0:
         try:
