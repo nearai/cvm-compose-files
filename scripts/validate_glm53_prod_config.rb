@@ -1553,7 +1553,13 @@ def validate_v7_canary(errors, spec)
   else
     expected_argv += ["--disable-overlap-schedule"]
     errors << "#{label} #{name} argv must be the source argv with exactly #{spec['flags'].map { |k, v| "#{k} #{v}" }.join(', ')} and --disable-overlap-schedule once; differing tokens: #{((actual_argv - expected_argv) + (expected_argv - actual_argv)).uniq.first(8).join(' ')}" unless actual_argv == expected_argv
-    errors << "#{label} #{name} --max-mamba-cache-size must hold 5 slots per running request" if actual_argv.each_cons(2).find { |f, _| f == "--max-mamba-cache-size" }.last.to_i < 5 * actual_argv.each_cons(2).find { |f, _| f == "--max-running-requests" }.last.to_i
+    mamba = actual_argv.each_cons(2).find { |f, _| f == "--max-mamba-cache-size" }&.last
+    running = actual_argv.each_cons(2).find { |f, _| f == "--max-running-requests" }&.last
+    if mamba.nil? || running.nil?
+      errors << "#{label} #{name} argv must carry --max-mamba-cache-size and --max-running-requests with values"
+    elsif mamba.to_i < 5 * running.to_i
+      errors << "#{label} #{name} --max-mamba-cache-size must hold 5 slots per running request"
+    end
   end
   errors << "#{label} #{name} environment must be the source environment plus #{V7_ENV.map { |k, v| "#{k}=#{v}" }.join(' ')}" unless environment_map(canary) == environment_map(original).merge(V7_ENV)
   labels = canary["labels"] || {}

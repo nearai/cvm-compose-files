@@ -243,11 +243,11 @@ class ValidatorContractTest(unittest.TestCase):
     def run_ruby(self, script: Path = VALIDATOR) -> subprocess.CompletedProcess[str]:
         return subprocess.run(["ruby", str(self.root / script)], capture_output=True, text=True, check=False)
 
-    def assert_fails(self, kind: str, mutated: str, message: str) -> None:
+    def assert_fails(self, kind: str, mutated: str, message: str, script: Path = VALIDATOR) -> None:
         self.assertNotEqual(mutated, self.valid[kind])
         self.files[kind].write_text(mutated)
         try:
-            result = self.run_ruby()
+            result = self.run_ruby(script)
             output = result.stdout + result.stderr
             self.assertEqual(result.returncode, 1, output)
             self.assertIn(message, output)
@@ -297,6 +297,28 @@ class ValidatorContractTest(unittest.TestCase):
                     continue
                 with self.subTest(kind=kind, expect=message, mutation=hash(mutated) % 10000):
                     self.assert_fails(kind, mutated, message)
+
+    def test_a_missing_cap_flag_is_reported_not_a_crash(self) -> None:
+        # Dropping either flag the mamba-slot rule reads must produce a validation error, not a Ruby NoMethodError
+        # (assert_fails also rejects any "<file>.rb:<line>:in" stack frame in the output).
+        for kind, spec in generator.KINDS.items():
+            valid = self.valid[kind]
+            canary_block = block(valid, spec["service"])
+            for flag in ("--max-mamba-cache-size", "--max-running-requests"):
+                lines = [line for line in canary_block.splitlines(keepends=True) if line.strip().startswith(flag + " ")]
+                self.assertEqual(len(lines), 1, f"{kind} {flag}")
+                with self.subTest(kind=kind, flag=flag):
+                    self.assert_fails(kind, valid.replace(canary_block, canary_block.replace(lines[0], "", 1)),
+                                      "argv must carry --max-mamba-cache-size and --max-running-requests")
+
+    def test_dcgm_validator_rejects_a_dcgm_exporter_change_in_each_canary_file(self) -> None:
+        dcgm_image = "nvcr.io/nvidia/k8s/dcgm-exporter@sha256:613ab03c11d442fd960ff515f547e9921537454a712d08160bc8f677f89f1c35"
+        for kind, spec in generator.KINDS.items():
+            valid = self.valid[kind]
+            self.assertEqual(valid.count(dcgm_image), 1, kind)
+            with self.subTest(kind=kind):
+                self.assert_fails(kind, valid.replace(dcgm_image, dcgm_image[:-1] + "0", 1),
+                                  f"GLM-5.3 DCGM telemetry contract failed ({spec['target']})", script=DCGM_VALIDATOR)
 
     def test_rejects_an_unrelated_scrape_job_or_dcgm_drift(self) -> None:
         for kind, spec in generator.KINDS.items():
