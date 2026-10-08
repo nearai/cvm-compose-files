@@ -32,7 +32,9 @@ POOL_FILE = "prod/small-models-GLM53-KVSharePool.yaml"
 LONG_V7_CANARY_FILE = "prod/GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext-V7Canary.yaml"   # gpu02 base since v0.0.479
 LONG_V7_OFF_FILE = "prod/GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext-V7-HiCacheOff-r2b.yaml"
 POOL_SUFFIX = "-kvsharepool-v1"
-TREATED = (VARIANT_SUFFIX, KV4_SUFFIX, KV2_SUFFIX, OFF_SUFFIX, V7_OFF_SUFFIX, POOL_SUFFIX, "-hicacheoff-v1")
+PEERKV_FILE = "prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8-V7-HiCacheOff-PeerKV.yaml"  # gpu04: r1+r2 peerkv, r3+r4 control
+PEERKV_SUFFIX = "-v7-hicacheoff-peerkv-v1"
+TREATED = (VARIANT_SUFFIX, KV4_SUFFIX, KV2_SUFFIX, OFF_SUFFIX, V7_OFF_SUFFIX, POOL_SUFFIX, PEERKV_SUFFIX, "-hicacheoff-v1")
 
 
 def token():
@@ -137,6 +139,7 @@ def main():
     ap.add_argument("--gpu13-pool", action="store_true", help="arm D': gpu13 r1a/r1b pool host cache (KVSharePool file)")
     ap.add_argument("--v7-hicache-off-long", action="store_true", help="long arm: gpu02 r2b = v7 canary r2a without HiCache")
     ap.add_argument("--v7-hicache-off", action="store_true", help="arm B': gpu03 r3 = v7 canary without HiCache")
+    ap.add_argument("--peerkv", action="store_true", help="gpu04 peerkv A/B: r1/r2 = v7 + HiCache off + GPU peer KV, r3/r4 = v7 + HiCache off")
     ap.add_argument("--rollback-file", default=None, help="prod file to roll back to (default: the host's base file)")
     ap.add_argument("--tag", default=None, help="commit SHA to deploy (default: this checkout's HEAD)")
     ap.add_argument("--rollback", action="store_true")
@@ -150,7 +153,7 @@ def main():
     iid, env = inst["id"], inst["env_vars"]
     work = json.loads(api(f"instances/{iid}/version")).get("projects", {}).get("work", {}).get("current", {})
     print(f"{a.host}: work tag={work.get('tag')} file={work.get('file')}")
-    if work.get("file") not in (BASE_FILE, AB_FILE, KV4_FILE, SMALL_FILE, KV2_FILE, V7_CANARY_FILE, V7_OFF_FILE, POOL_FILE, LONG_V7_CANARY_FILE, LONG_V7_OFF_FILE, *OFF_FILES.values()):
+    if work.get("file") not in (BASE_FILE, AB_FILE, KV4_FILE, SMALL_FILE, KV2_FILE, V7_CANARY_FILE, V7_OFF_FILE, POOL_FILE, LONG_V7_CANARY_FILE, LONG_V7_OFF_FILE, PEERKV_FILE, *OFF_FILES.values()):
         sys.exit("host is not on the base-tier file; refusing")
     svc = f"model-sg-glm53-w4afp8-tp2-{a.replica}"
     gpu13 = a.replica in ("r1a", "r1b") and a.host == "gpu13"
@@ -168,7 +171,12 @@ def main():
         suffix = None
     else:
         tag = a.tag or subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
-        if a.v7_hicache_off_long:
+        if a.peerkv:
+            if a.host != "gpu04" or a.replica not in ("r1", "r2", "r3", "r4"):
+                sys.exit("--peerkv is built for gpu04 r1-r4")
+            file = PEERKV_FILE
+            suffix = PEERKV_SUFFIX if a.replica in ("r1", "r2") else V7_OFF_SUFFIX
+        elif a.v7_hicache_off_long:
             if (a.host, a.replica) != ("gpu02", "r2b"):
                 sys.exit("--v7-hicache-off-long is built for gpu02 r2b only")
             # The long-tier v7 variant ends "-v7-mr16q4", so the arm suffix is "-hicacheoff-v1" there.
