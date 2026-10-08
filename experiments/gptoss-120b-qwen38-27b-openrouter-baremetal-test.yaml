@@ -114,6 +114,9 @@ x-qwen38-engine: &qwen38-engine
     - --max-num-batched-tokens=16384
     # Report cached prompt tokens in usage (prompt_tokens_details.cached_tokens), so cache reads are billed at the cache price.
     - --enable-prompt-tokens-details
+    # With tool_choice "none" the tools are left out of the prompt, so the model answers in text. Without this it
+    # still writes a tool call, the parser drops it, and the caller gets an empty message.
+    - --exclude-tools-when-tool-choice-none
     - --reasoning-parser=qwen3
     - --enable-auto-tool-choice
     - --tool-call-parser=qwen3_coder
