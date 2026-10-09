@@ -38,9 +38,9 @@ SOURCE_HICACHE_IMAGE: Final = "docker.io/nearaidev/sglang@sha256:3eccc30709f5719
 IMAGE: Final = "docker.io/nearaidev/sglang@sha256:9c6ddd4319c4ab00e351d8650459e68b8830e36ffcc029d67fa5e19d0ac3ed17"
 ENGINE_IMAGE_LABEL: Final = IMAGE.split(":")[-1][:12]
 R2_IMAGE: Final = IMAGE
-# v7 fleet caps of the four TP2 replicas (16 running / 4 queued, decode graphs 16; tee-bench exp 29/32). Change here and run --write.
+# v7 fleet caps of the four TP2 replicas (16 running / 8 queued, decode graphs 16; tee-bench exp 29/32). Change here and run --write.
 TP2_MAX_RUNNING: Final = 16
-TP2_MAX_QUEUED: Final = 4
+TP2_MAX_QUEUED: Final = 8
 R2_ENGINE_IMAGE_LABEL: Final = ENGINE_IMAGE_LABEL
 REPLICA_IMAGE: Final = {1: IMAGE, 2: R2_IMAGE}
 REPLICA_IMAGE_LABEL: Final = {1: ENGINE_IMAGE_LABEL, 2: R2_ENGINE_IMAGE_LABEL}

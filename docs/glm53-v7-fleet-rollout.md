@@ -16,14 +16,14 @@ The **v7 image** is `docker.io/nearaidev/sglang@sha256:fa730e6e62b2ae8058114ce54
 |---|---|---|
 | image | v7 | v7 |
 | KV / DSA backends | `--kv-cache-dtype fp8_e4m3`, `--dsa-prefill-backend flashmla_kv`, `--dsa-decode-backend flashmla_kv` | same |
-| running / queued / decode graphs | 64 / 32 / 64 | 16 / 4 / 16 |
+| running / queued / decode graphs | 64 / 32 / 64 | 16 / 8 / 16 |
 | mamba slots | 380 (5 per running request) | 330 |
 | overlap scheduler | off (`--disable-overlap-schedule`) | off |
 | HiCache | **OFF**: the four flags `--enable-hierarchical-cache --hicache-write-policy --hicache-io-backend --hicache-mem-layout` are not in the argv | **ON** (`write_through`, 325 GiB per replica as today) |
 | environment | `SGLANG_PREPROCESS_WORKERS=4`, `SGLANG_PREPROCESS_TIMEOUT_S=60`, `SGLANG_PREPROCESS_LOG_SLOW_S=5`, `SGLANG_TOOL_SCHEMA_MAX_DEPTH=32`, `SGLANG_TOOL_SCHEMA_MAX_NODES=25000` | same |
 | profiling | **off**: no `NEAR_SELF_PROFILE*` anywhere | off |
 | `precision` / `engine_image` | `int4-weights-fp8-activations-fp8-kv` / `fa730e6e62b2` | same |
-| `config_variant` | `w4afp8-qsplit-hicacheoff-mamba380-fp8kv-memopt086-mr64-...-obs-v1-v7` | `...-memopt-fp8kv-mamba330-...-mr16q4-strict-budget8192-obs-v1-v7` |
+| `config_variant` | `w4afp8-qsplit-hicacheoff-mamba380-fp8kv-memopt086-mr64-...-obs-v1-v7` | `...-memopt-fp8kv-mamba330-...-mr16q8-strict-budget8192-obs-v1-v7` |
 
 **How HiCache is off on the base tier (copied from gpu03 r3, arm B' of the 2026-10-08 online test, `pranavraja99/glm53-kvshare-ab`):** only the four HiCache flags are removed from the replica argv. Nothing else moves: the HiCache environment (`SGLANG_HICACHE_RAM_BUDGET`, `..._CUDA_HOST_MEMORY`, `..._POOLED_TRANSFERS`, `..._STAGING_PAGES`) stays and is unread without `--enable-hierarchical-cache`; mem fraction, mamba slots and labels are the v7 base values above. The generated base argv is asserted equal to r3's live argv in `scripts/test_glm53_v7_fleet.py`.
 
@@ -85,9 +85,15 @@ Abort a step on any bake-checklist failure, and immediately on an engine exit, X
 
 ## Base queue cap 8 -> 32 (follow-up change)
 
-The base replicas (r1-r4 of `prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8.yaml`) now run `--max-queued-requests 32` instead of 8; every other flag, the image and the long tier (16 running / 4 queued) are unchanged. Reason: with a queue of 8, SGLang answered "The request queue is full." (503 sent inside an HTTP 200 SSE stream) on 4-10% of base requests while engines ran only ~20-26 of 64 slots, and the gateway's first-event peek turned each into a 503 and marked the host backpressured for 10 s. 32 is half the 64 running slots; queued requests hold no KV until scheduled.
+The base replicas (r1-r4 of `prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8.yaml`) now run `--max-queued-requests 32` instead of 8; every other flag, the image and the long tier (16 running; its queue cap is changed in the next section) are unchanged. Reason: with a queue of 8, SGLang answered "The request queue is full." (503 sent inside an HTTP 200 SSE stream) on 4-10% of base requests while engines ran only ~20-26 of 64 slots, and the gateway's first-event peek turned each into a 503 and marked the host backpressured for 10 s. 32 is half the 64 running slots; queued requests hold no KV until scheduled.
 
 Rollout: compose-manager `compose/up` with the merged tag, one base replica at a time with the same 5-minute bake (`dry_run` first, `services` list of one replica). Rollback is the previous tag. No KMS step and no env-map change. Watch TTFT p95 against the +20% abort line above and expect queue-full rejections and `backend_queue` gateway rejections to drop. The gateway's `VLLM_PROXY_ADMISSION_QUEUE_SATURATED_AT=8` (cvm-ansible-playbooks) is untouched: with a 32-deep queue it now marks a base host only when the queue is a quarter full.
+
+## Long queue cap 4 -> 8 (follow-up change)
+
+The four long TP2 replicas (r1a, r1b, r2a, r2b of `prod/GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext.yaml`, gpu02 and gpu23) and gpu13's two GLM replicas (`model-sg-glm53-w4afp8-tp2-r1a/r1b` in `prod/small-models.yaml`) now run `--max-queued-requests 8` instead of 4; running stays 16 and every other flag, the image and the TP4 r1/r2 services are unchanged. The `mr16q4` component of the long `config_variant` and gpu13's `max_queued_requests` labels become `mr16q8` / `8`; the dashboard selector labels are unchanged. Reason: the gateway logged 808 long-tier "The request queue is full." rejections in 5 h (gpu13 352, gpu23 230, gpu02 226; about 5% of long requests) while replicas were not out of slots (running p90 5.7, max 13 of 16; KV p90 35%): the queue holds requests waiting behind 8K-token chunked prefill, and per-host conversation affinity concentrates bursts on one replica.
+
+Rollout: compose-manager `compose/up` with the merged tag, one long replica at a time with the same 5-minute bake (`dry_run` first): gpu23 r1a, r1b, r2a, r2b, then gpu02, then gpu13 r1a, r1b (`services` = that one GLM replica, so gpu13's other models stay up). Rollback is the previous tag. No KMS step and no env-map change. Watch long TTFT p95 against the same hour on the previous day (+20% line) and long queue-full errors; expect the rejections to fall to near zero and the queue-time / TTFT tail to rise somewhat (lab: about 18-21% TTFT p95 at saturation; less expected with spare long capacity). The gateway's `VLLM_PROXY_ADMISSION_QUEUE_SATURATED_AT=8` (cvm-ansible-playbooks) is untouched: at queue 8 it can now mark a long host saturated when its sampled replica's queue is full, which never fired for long while the cap was 4.
 
 ## Gateway caps (recommendation; not applied here)
 

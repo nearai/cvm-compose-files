@@ -175,7 +175,7 @@ class GeneratedFileTest(unittest.TestCase):
                 for flag in ("--tp-size 2", "--ep-size 2", "--mem-fraction-static 0.86", "--max-mamba-cache-size 330", "--max-running-requests 16", "--cuda-graph-max-bs-decode 16",
                              "--kv-cache-dtype fp8_e4m3", "--dsa-prefill-backend flashmla_kv", "--dsa-decode-backend flashmla_kv", "--disable-overlap-schedule",
                              "--enable-hierarchical-cache",
-                             "--max-queued-requests 4", "--speculative-num-steps 4", "--speculative-eagle-topk 1", "--speculative-num-draft-tokens 5",
+                             "--max-queued-requests 8", "--speculative-num-steps 4", "--speculative-eagle-topk 1", "--speculative-num-draft-tokens 5",
                              "--mamba-ssm-dtype bfloat16", "--chunked-prefill-size 8192", "--hicache-write-policy write_through",
                              f"--dist-init-addr {spec['dist_init']}"):
                     self.assertIn(f"\n        {flag}\n", service)
@@ -420,8 +420,8 @@ class ValidatorContractTest(unittest.TestCase):
                 ("--max-running-requests 16", "--max-running-requests 32", argv),
                 ("--max-running-requests 16", "--max-running-requests 24", argv),
                 ("--max-running-requests 16", "--max-running-requests 12", argv),
-                ("--max-queued-requests 4", "--max-queued-requests 8", argv),
-                ("--max-queued-requests 4", "--max-queued-requests 16", argv),
+                ("--max-queued-requests 8", "--max-queued-requests 4", argv),
+                ("--max-queued-requests 8", "--max-queued-requests 16", argv),
                 ("--cuda-graph-max-bs-decode 16", "--cuda-graph-max-bs-decode 32", argv),
                 ("--cuda-graph-max-bs-decode 16", "--cuda-graph-max-bs-decode 12", argv),
                 # FP8 KV needs the dtype and both backends; the overlap scheduler stays off; HiCache stays on.

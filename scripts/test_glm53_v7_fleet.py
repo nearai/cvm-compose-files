@@ -54,7 +54,7 @@ LONG_ARGV = """
     sglang serve
     --model-path /root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/snapshots/99f1fa70408c52b007d4fd69e02e5a522422e755
     --served-model-name z-ai/glm-5.3-flash --tp-size 2 --ep-size 2 --mem-fraction-static 0.86
-    --max-running-requests 16 --max-queued-requests 4 --enable-priority-scheduling --disable-priority-preemption
+    --max-running-requests 16 --max-queued-requests 8 --enable-priority-scheduling --disable-priority-preemption
     --chunked-prefill-size 8192 --max-prefill-tokens 32768 --prefill-decode-interval 2 --cuda-graph-max-bs-decode 16
     --dsa-prefill-backend flashmla_kv --dsa-decode-backend flashmla_kv --kv-cache-dtype fp8_e4m3
     --speculative-algorithm EAGLE --speculative-num-steps 4 --speculative-eagle-topk 1 --speculative-num-draft-tokens 5
@@ -172,7 +172,7 @@ class FleetFilesTest(unittest.TestCase):
                 self.assertIn(f"    image: {V7_IMAGE}\n", block)
                 value = lambda flag: argv[argv.index(flag) + 1]
                 self.assertEqual((value("--kv-cache-dtype"), value("--dsa-prefill-backend"), value("--dsa-decode-backend")), ("fp8_e4m3", "flashmla_kv", "flashmla_kv"))
-                self.assertEqual((value("--max-running-requests"), value("--max-queued-requests"), value("--cuda-graph-max-bs-decode")), ("16", "4", "16"))
+                self.assertEqual((value("--max-running-requests"), value("--max-queued-requests"), value("--cuda-graph-max-bs-decode")), ("16", "8", "16"))
                 self.assertEqual(argv.count("--disable-overlap-schedule"), 1)
                 self.assertIn("--enable-hierarchical-cache", argv)
                 self.assertEqual(value("--hicache-write-policy"), "write_through")
@@ -200,7 +200,7 @@ class FleetFilesTest(unittest.TestCase):
         for token in ("hicacheoff", "mamba380", "fp8kv", "mr64", "-v7"):
             self.assertIn(token, base_generator.CANDIDATE_VARIANT)
         self.assertEqual(self.long.count(long_generator.TP2_VARIANT), 12)
-        for token in ("fp8kv", "mr16q4", "-v7"):
+        for token in ("fp8kv", "mr16q8", "-v7"):
             self.assertIn(token, long_generator.TP2_VARIANT)
 
     def test_the_dashboard_labels_are_untouched_for_every_service_and_scrape_job(self) -> None:
@@ -324,13 +324,13 @@ class Gpu13FleetTest(unittest.TestCase):
 
     def test_dashboard_labels_are_unchanged_on_gpu13(self) -> None:
         def selectors(text: str) -> list[str]:
-            return [l for l in selector_lines(text) if "max_running_requests" not in l]
+            return [l for l in selector_lines(text) if "max_running_requests" not in l and "max_queued_requests" not in l]
         self.assertEqual(selectors(self.small), selectors(self.old))
         old_jobs, new_jobs = jobs_of(self.old), jobs_of(self.small)
         for key in old_jobs:
             self.assertEqual(
-                "\n".join(l for l in scrub(new_jobs[key]).splitlines() if "max_running_requests" not in l),
-                "\n".join(l for l in scrub(old_jobs[key]).splitlines() if "max_running_requests" not in l), key)
+                "\n".join(l for l in scrub(new_jobs[key]).splitlines() if "max_running_requests" not in l and "max_queued_requests" not in l),
+                "\n".join(l for l in scrub(old_jobs[key]).splitlines() if "max_running_requests" not in l and "max_queued_requests" not in l), key)
 
     def test_gpu13_fleet_telemetry_values(self) -> None:
         for name in ("model-sg-glm53-w4afp8-tp2-r1a", "model-sg-glm53-w4afp8-tp2-r1b"):
@@ -341,6 +341,8 @@ class Gpu13FleetTest(unittest.TestCase):
             self.assertIn('precision: "int4-weights-fp8-activations-fp8-kv"', job)
             self.assertIn('engine_image: "fa730e6e62b2"', job)
             self.assertIn('max_running_requests: "16"', job)
+            self.assertIn('max_queued_requests: "8"', job)
+            self.assertIn('nearai.otel.max_queued_requests: "8"', block)
             # The log tag (com.datadoghq.ad.logs) must advertise the same cap as the engine argv, the OTel label and the scrape job.
             argv, _, _ = self.gpu13(name)
             cap = argv[argv.index("--max-running-requests") + 1]
@@ -349,7 +351,7 @@ class Gpu13FleetTest(unittest.TestCase):
             self.assertNotIn('"max_running_requests:12"', block)
             self.assertIn(f'nearai.otel.max_running_requests: "{cap}"', block)
             self.assertIn("-fp8kv-", block)
-            self.assertIn("mr16q4", block)
+            self.assertIn("mr16q8", block)
         self.assertEqual(service_block(self.small, "glm53-ghost-aggregator").count(f"image: {V7_IMAGE}"), 1)
 
 
