@@ -67,7 +67,7 @@ class Gpu13Tp2Test(unittest.TestCase):
             (self.valid.replace("--mem-fraction-static 0.86", "--mem-fraction-static 0.80", 1), "runtime flag changed"),
             (self.valid.replace("--max-running-requests 16\n", "--max-running-requests 24\n", 1), "runtime flag changed"),
             (self.valid.replace("--max-running-requests 16\n", "--max-running-requests 12\n", 1), "runtime flag changed"),
-            (self.valid.replace("--max-queued-requests 4", "--max-queued-requests 8", 1), "runtime flag changed"),
+            (self.valid.replace("--max-queued-requests 8", "--max-queued-requests 4", 1), "runtime flag changed"),
             (self.valid.replace("--cuda-graph-max-bs-decode 16", "--cuda-graph-max-bs-decode 32", 1), "runtime flag changed"),
             (self.valid.replace("--cuda-graph-max-bs-decode 16", "--cuda-graph-max-bs-decode 12", 1), "runtime flag changed"),
             (self.valid.replace("--max-mamba-cache-size 330", "--max-mamba-cache-size 165", 1), "runtime flag changed"),
@@ -87,7 +87,7 @@ class Gpu13Tp2Test(unittest.TestCase):
             (self.valid.replace("\n    - ghost:/ghost\n", "\n", 1), f"{A} must mount ghost:/ghost"),
             (self.valid.replace('"--socket", "/ghost/aggregator.sock"', '"--socket", "/tmp/x.sock"', 1), "glm53-ghost-aggregator argv changed"),
             (self.valid.replace("job_name: ghost-aggregator-glm53-ghost-aggregator", "job_name: ghost-x", 1), "gpu13 OTel scrape missing: ghost-aggregator-glm53-ghost-aggregator"),
-            (self.valid.replace("-mr16q4-strict-budget8192-obs-v1-v7", "-mr16q4-strict-budget8192"), "config_variant"),
+            (self.valid.replace("-mr16q8-strict-budget8192-obs-v1-v7", "-mr16q8-strict-budget8192"), "config_variant"),
         )
         for index, (mutated, message) in enumerate(cases):
             with self.subTest(index=index, message=message):
