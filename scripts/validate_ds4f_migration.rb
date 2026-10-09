@@ -263,7 +263,7 @@ assert.call(ghost_jobs.length == 1 && ghost_jobs.first.dig('static_configs', 0, 
   assert.call(variants.length == 3 && variants.all? { |variant| variant == gpu13_variant }, "gpu13 #{name} config_variant must be the TP2 variant on the label, scrape job and log tag, got #{variants.inspect}")
   assert.call(labels['nearai.otel.instance'] == instance && scrape_labels['instance'] == instance && log_tags.include?("instance:#{instance}"), "gpu13 #{name} instance must be #{instance}")
   assert.call(labels['nearai.otel.gpu_pair'] == pair && scrape_labels['gpu_pair'] == pair && log_tags.include?("gpu_pair:#{pair}"), "gpu13 #{name} gpu_pair must be #{pair}")
-  assert.call(labels['nearai.otel.max_running_requests'] == '16' && scrape_labels['max_running_requests'] == '16' && labels['nearai.otel.max_queued_requests'] == '8' && scrape_labels['max_queued_requests'] == '8', "gpu13 #{name} max_running/max_queued labels must be 16/8")
+  assert.call(labels['nearai.otel.max_running_requests'] == '16' && scrape_labels['max_running_requests'] == '16' && log_tags.include?('max_running_requests:16') && labels['nearai.otel.max_queued_requests'] == '8' && scrape_labels['max_queued_requests'] == '8' && log_tags.include?('max_queued_requests:8'), "gpu13 #{name} max_running/max_queued must be 16/8 on the OTel labels, scrape job and log tags")
 end
 %w[proxy-glm53 dcgm-glm53].each do |name|
   assert.call(small_services.fetch(name).fetch('labels')['nearai.otel.config_variant'] == gpu13_variant, "gpu13 #{name} config_variant must match the TP2 engines")
