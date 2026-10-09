@@ -343,7 +343,9 @@ end
 # its Prometheus scrape job's config_variant label) all carry
 # `expected_variant`. A missing labels hash, a missing scrape job, or a
 # missing variant anywhere is an explicit error, never a silent skip.
-def check_variant(errors, file_label, service, service_name, collector, expected_variant)
+# With `scraped: false` the service must have NO scrape job (the stopped TP4 fallback in the
+# long-context file); an unexpected job is an error, and the scrape label check is skipped.
+def check_variant(errors, file_label, service, service_name, collector, expected_variant, scraped: true)
   labels = service["labels"]
   if labels.is_a?(Hash)
     metric_variant = labels["nearai.otel.config_variant"]
@@ -359,6 +361,12 @@ def check_variant(errors, file_label, service, service_name, collector, expected
   end
 
   job_name = "sglang-#{service_name}"
+  unless scraped
+    present = Array(collector&.dig("receivers", "prometheus/apps", "config", "scrape_configs")).any? { |entry| entry.is_a?(Hash) && entry["job_name"] == job_name }
+    errors << "#{file_label} #{job_name} scrape job must be absent from the collector config (stopped TP4 fallback; a scrape of it fires dd-16940099)" if present
+    return
+  end
+
   scrape = scrape_job(errors, file_label, collector, job_name)
   return unless scrape
 
@@ -1257,12 +1265,8 @@ def validate_w4afp8_long_context(errors, compose, reference)
                        .sub("OFFLOOP", spec["offloop"] ? "#{spec['offloop']}-" : "")
                        .sub("pdiPDI", "pdi#{spec['pdi']}")
                        .sub("HOST", spec["host_variant"])
-    check_variant(errors, label, service, name, collector, expected_variant)
-    scrape = scrape_job(errors, label, collector, "sglang-#{name}")
-    scrape_labels = scrape&.dig("static_configs", 0, "labels") || {}
-    { "model_path" => W4AFP8_CHECKPOINT, "precision" => W4AFP8_PRECISION, "engine_image" => engine_image_label, "instance" => spec["instance"] }.each do |key, value|
-      errors << "#{label} sglang-#{name} scrape label #{key} must be #{value.inspect}, got #{scrape_labels[key].inspect}" if scrape && scrape_labels[key] != value
-    end
+    # The TP4 r1/r2 services are a stopped fallback in this file: their scrape jobs must be absent.
+    check_variant(errors, label, service, name, collector, expected_variant, scraped: false)
   end
 
   if replicas.length == 2

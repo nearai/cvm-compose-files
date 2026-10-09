@@ -123,8 +123,9 @@ class GeneratedFileTest(unittest.TestCase):
 
     def test_offloop_v3_marker_is_truthful_on_both_replicas(self) -> None:
         rendered, _, _ = rendered_engine_sections()
-        self.assertEqual(rendered.count(R1_VARIANT), 3)
-        self.assertEqual(rendered.count(R2_VARIANT), 3)
+        # Two consumers each (log tag, container label): the stopped TP4 r1/r2 have no scrape job.
+        self.assertEqual(rendered.count(R1_VARIANT), 2)
+        self.assertEqual(rendered.count(R2_VARIANT), 2)
         self.assertNotIn(R1_WITHOUT_OFFLOOP_VARIANT, rendered)
         self.assertNotIn(R2_WITHOUT_OFFLOOP_VARIANT, rendered)
 
@@ -279,7 +280,7 @@ class ValidatorContractTest(unittest.TestCase):
     def test_rejects_untruthful_offloop_marker_in_each_consumer(self) -> None:
         candidate = self.selected_candidate()
         for variant in (R1_VARIANT, R2_VARIANT):
-            for index in range(3):
+            for index in range(2):  # log tag and container label; the TP4 scrape jobs are gone
                 with self.subTest(variant=variant, consumer=index):
                     mutated = replace_nth(candidate, variant, index, variant.replace("-offloop-v3", ""))
                     self.valid = candidate
@@ -401,8 +402,6 @@ class ValidatorContractTest(unittest.TestCase):
             (f'      nearai.otel.engine_image: "{generator.ENGINE_IMAGE_LABEL}"\n', '      nearai.otel.engine_image: "e9d29a1cb1cd"\n', 0, "nearai.otel.engine_image must be"),
             (f'      nearai.otel.engine_image: "{generator.R2_ENGINE_IMAGE_LABEL}"\n', '      nearai.otel.engine_image: "e9d29a1cb1cd"\n', 1, "nearai.otel.engine_image must be"),
             ('"precision:int4-weights-fp8-activations-bf16-kv"', '"precision:fp8-weights-bf16-kv"', 0, "log metadata must carry precision:"),
-            (f'                      engine_image: "{generator.ENGINE_IMAGE_LABEL}"\n', '                      engine_image: "e9d29a1cb1cd"\n', 0, "scrape label engine_image"),
-            (f'                      engine_image: "{generator.R2_ENGINE_IMAGE_LABEL}"\n', '                      engine_image: "e9d29a1cb1cd"\n', 1, "scrape label engine_image"),
             ('      nearai.otel.model_path: "graphistry/GLM-5.3-Flash-W4AFP8"\n', '      nearai.otel.model_path: "zai-org/GLM-5.3-Flash"\n', 6, "dcgm-glm53 nearai.otel.model_path"),
         )
         for needle, replacement, index, message in cases:
@@ -490,6 +489,30 @@ class ValidatorContractTest(unittest.TestCase):
             with self.subTest(mutation=after.strip()[:60], message=message):
                 self.assert_fails(self.replace_once(before, after), message)
 
+    def test_stopped_tp4_fallback_is_not_scraped_but_everything_else_is(self) -> None:
+        # dd-16940099: scraping the stopped TP4 r1/r2 pins up == 0 and fires "Inference container disappeared".
+        text = TARGET.read_text()
+        jobs = re.findall(r"^              - job_name: (\S+)$", text, flags=re.MULTILINE)
+        for tp4 in ("model-sg-glm53-w4afp8-tp4-r1", "model-sg-glm53-w4afp8-tp4-r2"):
+            self.assertNotIn(f"sglang-{tp4}", jobs)
+            self.assertNotIn(f"'{tp4}:8000'", text)
+            # The services, their container labels and their nginx routes stay as the documented fallback.
+            self.assertIn(f"\n  {tp4}:\n", text)
+            self.assertIn(f'nearai.otel.container_name: "{tp4}"', text)
+            self.assertIn(f"set $$backend http://{tp4}:8000;", text)
+        self.assertEqual(
+            jobs,
+            [f"sglang-{generator.TP2_SERVICE_PREFIX}{suffix}" for suffix in ("2a", "2b", "1a", "1b")]
+            + ["ghost-aggregator-glm53-ghost-aggregator", "dcgm-dcgm-glm53", "inference-proxy-proxy-glm53", "otelcol-app"],
+        )
+
+    def test_validators_reject_a_scrape_job_for_a_stopped_tp4_fallback(self) -> None:
+        for tp4 in ("model-sg-glm53-w4afp8-tp4-r1", "model-sg-glm53-w4afp8-tp4-r2"):
+            job = generator.tp2_scrape_job("2a").replace(f"{generator.TP2_SERVICE_PREFIX}2a", tp4)
+            marker = "              - job_name: dcgm-dcgm-glm53\n"
+            with self.subTest(service=tp4):
+                self.assert_fails(self.valid.replace(marker, job + marker, 1), f"sglang-{tp4} scrape job must be absent")
+
     def test_tp4_engine_ports_and_scrape_instances_are_unique_and_unchanged(self) -> None:
         text = TARGET.read_text()
         for port in ("127.0.0.1:29510", "127.0.0.1:29511"):
@@ -498,7 +521,8 @@ class ValidatorContractTest(unittest.TestCase):
         self.assertEqual(len(ports), len(set(ports)))
         self.assertEqual(len(ports), 6)
         instances = re.findall(r"^                      instance: \"([0-9a-z]+)\"$", text, flags=re.MULTILINE)
-        self.assertEqual(sorted(instances), sorted(["1", "2", "1a", "1b", "2a", "2b"]))
+        # Scrape jobs only: the stopped TP4 r1/r2 are no longer scraped, so just the TP2 instances remain.
+        self.assertEqual(sorted(instances), sorted(["1a", "1b", "2a", "2b"]))
 
     def test_tp2_rollout_services_are_required(self) -> None:
         for name in (R1A, R1B):

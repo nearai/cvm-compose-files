@@ -108,6 +108,9 @@ def env_of(block: str) -> list[str]:
     return [line.strip()[2:] for line in env.splitlines() if line.strip().startswith("- ")]
 
 
+LONG_UNSCRAPED_TP4_JOBS = ("sglang-model-sg-glm53-w4afp8-tp4-r1", "sglang-model-sg-glm53-w4afp8-tp4-r2")
+
+
 def scrub(text: str) -> str:
     """Drop the three telemetry values the rollout is allowed to change, everywhere they appear."""
     lines = []
@@ -183,6 +186,16 @@ class FleetFilesTest(unittest.TestCase):
             self.assertNotIn("SGLANG_PREPROCESS", block)
             self.assertNotIn("fa730e6e62b2", block)
 
+    def test_long_file_does_not_scrape_the_stopped_tp4_fallback(self) -> None:
+        jobs = jobs_of(self.long)
+        for job in LONG_UNSCRAPED_TP4_JOBS:
+            self.assertNotIn(job, jobs)
+            self.assertIn(job, jobs_of(LONG_FIXTURE.read_text()))  # it was scraped before; only the scrape goes
+        self.assertEqual(
+            list(jobs),
+            [f"sglang-model-sg-glm53-w4afp8-tp2-r{n}" for n in ("2a", "2b", "1a", "1b")] + ["ghost-aggregator-glm53-ghost-aggregator", "dcgm-dcgm-glm53", "inference-proxy-proxy-glm53", "otelcol-app"],
+        )
+
     def test_fleet_telemetry_values(self) -> None:
         engine = "fa730e6e62b2"
         self.assertEqual(engine, "fa730e6e62b2")
@@ -211,6 +224,11 @@ class FleetFilesTest(unittest.TestCase):
             old = fixture.read_text()
             self.assertEqual(selector_lines(new), selector_lines(old))
             new_jobs, old_jobs = jobs_of(new), jobs_of(old)
+            if fixture == LONG_FIXTURE:
+                # The long file stopped scraping the stopped TP4 r1/r2 fallback services (Grafana alert dd-16940099):
+                # exactly these two jobs may be missing from the pre-v7 job list, in every other respect it is unchanged.
+                self.assertEqual([key for key in old_jobs if key not in new_jobs], list(LONG_UNSCRAPED_TP4_JOBS))
+                old_jobs = {key: job for key, job in old_jobs.items() if key in new_jobs}
             self.assertEqual(list(new_jobs), list(old_jobs))
             for key in old_jobs:
                 self.assertEqual(scrub(new_jobs[key]), scrub(old_jobs[key]), key)
@@ -238,7 +256,8 @@ class FleetFilesTest(unittest.TestCase):
                 text = text.replace(anchor_block(text, anchor), "")
             for key in list(jobs_of(text)):
                 if key.startswith("sglang-model-sg-glm53"):
-                    text = text.replace(jobs_of(text)[key], "")
+                    # Take the 14-space indent with the job so a file without the TP4 jobs compares equal to one with them.
+                    text = text.replace(" " * 14 + jobs_of(text)[key], "")
             text = text.replace(V7_IMAGE, "IMAGE").replace(V6_IMAGE, "IMAGE")
             return text
         base_names = BASE_ENGINES

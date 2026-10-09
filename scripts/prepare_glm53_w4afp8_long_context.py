@@ -616,6 +616,24 @@ def add_tp2_canary(text: str) -> str:
     return replace_exact(text, job_marker, jobs + job_marker, 1, "tp2 scrape jobs")
 
 
+def drop_tp4_scrape_jobs(text: str) -> str:
+    """Remove the scrape jobs of the stopped TP4 r1/r2 fallback services.
+
+    The TP4 services stay defined (with their nginx routes and container labels) as a documented
+    fallback, but every host runs the TP2 replicas and the TP4 containers are stopped. Scraping
+    them leaves up == 0 forever and fires the Grafana alert "Inference container disappeared"
+    (rule dd-16940099), so only their jobs go. Each block runs to the next job_name line.
+    """
+    job = "              - job_name: "
+    for replica in (1, 2):
+        marker = f"{job}sglang-{SERVICE_PREFIX}{replica}\n"
+        if text.count(marker) != 1:
+            raise GenerationError(f"tp4 r{replica} scrape job: expected exactly 1 match, found {text.count(marker)}")
+        start, end, _ = section(text, marker, job, f"tp4 r{replica} scrape job")
+        text = text[:start] + text[end:]
+    return text
+
+
 def generate(source: str) -> str:
     if SERVICE_PREFIX in source or f"models--{CHECKPOINT.replace('/', '--')}/" in source:
         raise GenerationError("source compose already contains W4AFP8 engines")
@@ -700,6 +718,8 @@ def generate(source: str) -> str:
         ("              - job_name: dcgm-dcgm-glm53\n", obs.scrape_job(DEPLOYMENT) + "              - job_name: dcgm-dcgm-glm53\n", "ghost scrape job"),
     ):
         updated = replace_exact(updated, old, new, 1, label)
+    # Last, so the telemetry replacements above keep their exact counts over the TP4 jobs.
+    updated = drop_tp4_scrape_jobs(updated)
     return HEADER + updated
 
 

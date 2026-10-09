@@ -1708,56 +1708,6 @@ configs:
         prometheus/apps:
           config:
             scrape_configs:
-              - job_name: sglang-model-sg-glm53-w4afp8-tp4-r1
-                scrape_interval: 15s
-                metrics_path: /metrics
-                static_configs:
-                  - targets: ['model-sg-glm53-w4afp8-tp4-r1:8000']
-                    labels:
-                      service: "sglang"
-                      source: "sglang"
-                      container_name: "model-sg-glm53-w4afp8-tp4-r1"
-                      model: "z-ai/glm-5.3-flash"
-                      model_path: "graphistry/GLM-5.3-Flash-W4AFP8"
-                      served_model: "z-ai/glm-5.3-flash"
-                      precision: "int4-weights-fp8-activations-bf16-kv"
-                      deployment: "glm53-flash-sgl-tp4"
-                      env: "${ENV}"
-                      host: "${CVM_HOST}"
-                      host_machine: "${CVM_HOST}"
-                      cvm_name: "${CVM_NAME}"
-                      ip: "${HOST_IP}"
-                      port: "8000"
-                      instance: "1"
-                      config_variant: "fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-admission-reserve-disabled-pool-clamp-pdi1-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192-obs-v1"
-                      thinking_budget_policy: "default8192-public-to-native"
-                      request_logging: "disabled"
-                      engine_image: "9c6ddd4319c4"
-              - job_name: sglang-model-sg-glm53-w4afp8-tp4-r2
-                scrape_interval: 15s
-                metrics_path: /metrics
-                static_configs:
-                  - targets: ['model-sg-glm53-w4afp8-tp4-r2:8000']
-                    labels:
-                      service: "sglang"
-                      source: "sglang"
-                      container_name: "model-sg-glm53-w4afp8-tp4-r2"
-                      model: "z-ai/glm-5.3-flash"
-                      model_path: "graphistry/GLM-5.3-Flash-W4AFP8"
-                      served_model: "z-ai/glm-5.3-flash"
-                      precision: "int4-weights-fp8-activations-bf16-kv"
-                      deployment: "glm53-flash-sgl-tp4"
-                      env: "${ENV}"
-                      host: "${CVM_HOST}"
-                      host_machine: "${CVM_HOST}"
-                      cvm_name: "${CVM_NAME}"
-                      ip: "${HOST_IP}"
-                      port: "8000"
-                      instance: "2"
-                      config_variant: "fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host650g-admission-reserve-disabled-pool-clamp-pdi2-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192-obs-v1"
-                      thinking_budget_policy: "default8192-public-to-native"
-                      request_logging: "disabled"
-                      engine_image: "9c6ddd4319c4"
               - job_name: sglang-model-sg-glm53-w4afp8-tp2-r2a
                 scrape_interval: 15s
                 metrics_path: /metrics

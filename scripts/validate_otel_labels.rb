@@ -38,6 +38,13 @@ REQUIRED_OTEL_SCRAPE_LABELS = %w[
   nearai.otel.port
   nearai.otel.path
 ].freeze
+# Services that keep their nearai.otel.scrape labels but are a STOPPED fallback and must NOT be
+# scraped: a scrape job for a container that is not running sits at up == 0 forever and fires the
+# "Inference container disappeared" alert (Grafana rule dd-16940099). Keyed by file basename;
+# the scrape target must be absent from that file's collector config.
+UNSCRAPED_FALLBACK_SERVICES = {
+  "GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext.yaml" => %w[model-sg-glm53-w4afp8-tp4-r1 model-sg-glm53-w4afp8-tp4-r2],
+}.freeze
 OPTIONAL_SCRAPE_TAGS = %w[model_path precision instance replica].freeze
 
 def add_error(errors, file, path, message)
@@ -215,6 +222,10 @@ def validate_scrape_contract(file, compose, log_tags_by_service, errors)
     end
 
     target = targets[service_name]
+    if Array(UNSCRAPED_FALLBACK_SERVICES[File.basename(file)]).include?(service_name)
+      add_error(errors, file, "configs.otelcol_app_config", "stopped fallback #{service_name} must not have a scrape target (dd-16940099)") if target
+      next
+    end
     unless target
       add_error(errors, file, "configs.otelcol_app_config", "missing scrape target for #{service_name}")
       next
