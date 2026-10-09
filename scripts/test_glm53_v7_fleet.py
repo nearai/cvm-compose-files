@@ -349,6 +349,10 @@ class Gpu13FleetTest(unittest.TestCase):
             self.assertEqual(cap, "16")
             self.assertIn(f'"max_running_requests:{cap}"', block)
             self.assertNotIn('"max_running_requests:12"', block)
+            queued = argv[argv.index("--max-queued-requests") + 1]
+            self.assertEqual(queued, "8")
+            self.assertIn(f'"max_queued_requests:{queued}"', block)
+            self.assertNotIn('"max_queued_requests:4"', block)
             self.assertIn(f'nearai.otel.max_running_requests: "{cap}"', block)
             self.assertIn("-fp8kv-", block)
             self.assertIn("mr16q8", block)
