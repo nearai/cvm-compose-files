@@ -3,7 +3,7 @@ FROM docker.io/nearaidev/sglang@sha256:3eccc30709f5719c81084d1264f03ca5354b3059e
 
 ARG BUILD_SOURCE_REVISION
 LABEL org.opencontainers.image.title="GLM-5.3 Flash HiCache W4AFP8 engine"
-LABEL org.opencontainers.image.description="HCC-safe HiCache engine with admission reserve v10, the W4AFP8 loader fix, the unconditional chunked-prefill pool clamp, the opt-in DSA indexer query split, request preprocessing and the multimodal shared-memory copy moved off the HTTP event loop, an event-loop stall dump, an opt-in ghost prefix cache that measures would-be KV hits from keyed page hashes, opt-in rank-0 KV tier (VRAM/DRAM) eviction metrics, an opt-in one-shot self-profiler that prints a compact NEAR_PROFILE decode-step summary to stdout, FP8 KV cache support for GLM's NoPE DSA (active only with --kv-cache-dtype fp8_e4m3 on flashmla_kv), an opt-in process pool with a per-request deadline for chat preprocessing, and an opt-in tool-schema size cap"
+LABEL org.opencontainers.image.description="HCC-safe HiCache engine with admission reserve v10, the W4AFP8 loader fix, the unconditional chunked-prefill pool clamp, the opt-in DSA indexer query split, request preprocessing and the multimodal shared-memory copy moved off the HTTP event loop, an event-loop stall dump, an opt-in ghost prefix cache that measures would-be KV hits from keyed page hashes, opt-in rank-0 KV tier (VRAM/DRAM) eviction metrics, an opt-in one-shot self-profiler that prints a compact NEAR_PROFILE decode-step summary to stdout, FP8 KV cache support for GLM's NoPE DSA (active only with --kv-cache-dtype fp8_e4m3 on flashmla_kv), an opt-in process pool with a per-request deadline for chat preprocessing, an opt-in tool-schema size cap, and the KDA prefill token count read from host metadata instead of a per-layer GPU-to-CPU sync"
 LABEL org.opencontainers.image.source="https://github.com/nearai/cvm-compose-files"
 LABEL org.opencontainers.image.revision="${BUILD_SOURCE_REVISION}"
 LABEL org.opencontainers.image.base.name="docker.io/nearaidev/sglang"
@@ -30,6 +30,7 @@ LABEL nearai.sglang.self_profile="v1-opt-in"
 LABEL nearai.sglang.fp8_kv_nope_dsa="v1"
 LABEL nearai.sglang.preprocess_pool="v1-opt-in"
 LABEL nearai.sglang.tool_schema_depth_cap="v1-opt-in"
+LABEL nearai.sglang.kda_zero_sync="v1"
 LABEL nearai.security_remediation="CVE-2026-102268:pyjwt-2.14.0"
 
 COPY Dockerfile \
@@ -50,6 +51,7 @@ COPY Dockerfile \
      shm-off-loop.diff \
      source-manifest.json \
      tool-schema-depth-cap.diff \
+     kda-zero-sync.diff \
      test-cpu.sh \
      test_stall_dump.py \
      test_ghost_cache.py \

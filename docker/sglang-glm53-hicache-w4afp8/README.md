@@ -515,6 +515,25 @@ The walk is iterative and stops at the first violation. `test_tool_schema_guard.
 the boundaries, a 200k-deep and a cyclic structure, bad env values, and runs the shipped
 `_validate_request` on stubs.
 
+## Zero-sync KDA token count (unconditional, v7.1)
+
+`KDABackend.forward_extend` read the prefill token count with `int(query_start_loc[-1])`, a GPU-to-CPU
+sync in each of GLM-5.3's 34 KDA layers on every prefill chunk. Each sync drains the GPU queue, so the
+next layer's kernels launch into an idle GPU, and under TDX + PPCIe a launch costs about 3x more.
+`kda-zero-sync.diff` takes the same value from `forward_batch.extend_seq_lens_cpu`, which is already on
+the host (`query_start_loc[bs] = extend_start_loc[-1] + extend_seq_lens[-1]`). It falls back to the
+device read when the host list is missing or the mode is draft-extend-v2.
+
+| var | default | meaning |
+| --- | --- | --- |
+| `SGLANG_KDA_HOST_COUNT_CHECK` | unset | `1` re-reads the device value and raises on mismatch. Debug only: it re-adds the sync. |
+
+Evidence (tee-bench exp 37, TEE lab, two slot-swapped rounds): prefill steps 4-10% faster, ITL p95
+-8 to -10%, TTFT p95 -5 to -15%, rejections -4 to -17%. Total throughput moved -2% / +15%, inside the
+control spread, so capacity is not established. The host-vs-device check never fired. On bare metal the
+change is noise. The diff is a byte-identical copy of tee-bench `patches/kda-zero-sync`. Rollback:
+redeploy the v7 digest.
+
 ## Why the composition is safe
 
 The HiCache patches touch `mem_cache/*`, `disaggregation/*` and `schedule_batch.py`. None of the
@@ -637,6 +656,11 @@ the new patches (step 11 also runs `test_fp8kv_paths.py`, which executes the cha
 stubs with the gate on and off); steps 1-10 were not re-run end to end here (they need the full image).
 The FP8 and pool GPU numbers are bare metal with CC off from lab images (v6 + FP8, and + pool at 4
 workers). Nothing has run in a TEE.
+
+**v7.1** is v7 plus `kda-zero-sync.diff` (patch 13, `kda_backend.py`, which no other patch touches). The
+patch reproduces the manifest after-hash on the fork `fc91d24` source (the base image's bytes), and
+`test-cpu.sh` step 14 checks it. On GPU it has run only in the tee-bench TEE lab, as a bind-mounted
+source file over the v7 lab image.
 
 ## Security remediation
 

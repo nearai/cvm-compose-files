@@ -488,4 +488,21 @@ python3 "$RECIPE_DIR/test_tool_schema_guard.py" \
   --serving-chat "$PWD/python/sglang/srt/entrypoints/openai/serving_chat.py"
 echo "step 13 OK: the tool-schema size cap is off by default and rejects oversized tool schemas before check_schema"
 
+# 14. Zero-sync KDA token count (v7.1). forward_extend takes the token count from
+# forward_batch.extend_seq_lens_cpu and keeps the device read only as the fallback and in the opt-in
+# SGLANG_KDA_HOST_COUNT_CHECK debug path.
+python3 - <<'EOF'
+import inspect
+
+import sglang.srt.layers.attention.linear.kda_backend as kda
+
+src = inspect.getsource(kda.KDABackend.forward_extend)
+assert 'getattr(forward_batch, "extend_seq_lens_cpu", None)' in src
+assert "logical_num_tokens = int(sum(seq_cpu))" in src
+assert "is_draft_extend_v2()" in src
+assert src.count("int(query_start_loc[-1])") == 2, "device read only in the check and the fallback"
+assert 'os.environ.get("SGLANG_KDA_HOST_COUNT_CHECK") == "1"' in src
+EOF
+echo "step 14 OK: the KDA prefill token count comes from host metadata, with the device read only as fallback and debug check"
+
 echo "GLM-5.3 W4AFP8 combined-image CPU checks passed"
