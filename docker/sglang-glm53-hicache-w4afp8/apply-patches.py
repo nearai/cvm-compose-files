@@ -1,7 +1,7 @@
 """Apply the reviewed W4AFP8 loader, pool-clamp, DSA indexer query-split, event-loop offload,
 event-loop stall-dump, ghost prefix cache, KV tier metrics, self-profiling hook, FP8 KV for NoPE DSA,
-opt-in preprocess process pool and opt-in tool-schema size cap patches to exact production source
-bytes."""
+opt-in preprocess process pool, opt-in tool-schema size cap and zero-sync KDA token count patches to
+exact production source bytes."""
 
 import ast
 import hashlib
@@ -31,6 +31,8 @@ PATCHES: Final = {
     "fp8kv-flashmla.diff": "9e0fc16b835d37061b6a8523cf1c71e129523e93f0554657d0af2ae5d1e3072b",
     "preprocess-pool.diff": "5cd330b7e998f78c84acda8cd8c63a59c15479e4f3ca085b6f8523144880d9d0",
     "tool-schema-depth-cap.diff": "795e541d91369f3f119a427a854bf9661b433a931381eba0ebb4a145ac8b0262",
+    # v7.1: layers/attention/linear/kda_backend.py, which no earlier patch touches.
+    "kda-zero-sync.diff": "a0fdffe4d806cfc539273f34fe9ab430366488358a5e57c05e2fc203a11584e3",
 }
 MANIFEST: Final = json.loads((CONTEXT / "source-manifest.json").read_text())
 
