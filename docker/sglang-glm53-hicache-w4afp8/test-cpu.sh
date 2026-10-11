@@ -488,4 +488,11 @@ python3 "$RECIPE_DIR/test_tool_schema_guard.py" \
   --serving-chat "$PWD/python/sglang/srt/entrypoints/openai/serving_chat.py"
 echo "step 13 OK: the tool-schema size cap is off by default and rejects oversized tool schemas before check_schema"
 
+# 14. KDA prefill takes its logical token count from host metadata (kda-zero-sync.diff).
+# test_kda_zero_sync.py extracts the token-count block of KDAAttnBackend.forward_extend by ast and runs
+# it on stubs: no device read on the host path, the old read on the two fallbacks, and the
+# SGLANG_KDA_HOST_COUNT_CHECK=1 debug mode raising on a mismatch. It fails on the unpatched source.
+python3 "$RECIPE_DIR/test_kda_zero_sync.py" "$PWD/python/sglang/srt/layers/attention/linear/kda_backend.py"
+echo "step 14 OK: KDA prefill reads its token count from the host and keeps the device read only as a fallback"
+
 echo "GLM-5.3 W4AFP8 combined-image CPU checks passed"

@@ -3,7 +3,7 @@ FROM docker.io/nearaidev/sglang@sha256:3eccc30709f5719c81084d1264f03ca5354b3059e
 
 ARG BUILD_SOURCE_REVISION
 LABEL org.opencontainers.image.title="GLM-5.3 Flash HiCache W4AFP8 engine"
-LABEL org.opencontainers.image.description="HCC-safe HiCache engine with admission reserve v10, the W4AFP8 loader fix, the unconditional chunked-prefill pool clamp, the opt-in DSA indexer query split, request preprocessing and the multimodal shared-memory copy moved off the HTTP event loop, an event-loop stall dump, an opt-in ghost prefix cache that measures would-be KV hits from keyed page hashes, opt-in rank-0 KV tier (VRAM/DRAM) eviction metrics, an opt-in one-shot self-profiler that prints a compact NEAR_PROFILE decode-step summary to stdout, FP8 KV cache support for GLM's NoPE DSA (active only with --kv-cache-dtype fp8_e4m3 on flashmla_kv), an opt-in process pool with a per-request deadline for chat preprocessing, and an opt-in tool-schema size cap"
+LABEL org.opencontainers.image.description="HCC-safe HiCache engine with admission reserve v10, the W4AFP8 loader fix, the unconditional chunked-prefill pool clamp, the opt-in DSA indexer query split, request preprocessing and the multimodal shared-memory copy moved off the HTTP event loop, an event-loop stall dump, an opt-in ghost prefix cache that measures would-be KV hits from keyed page hashes, opt-in rank-0 KV tier (VRAM/DRAM) eviction metrics, an opt-in one-shot self-profiler that prints a compact NEAR_PROFILE decode-step summary to stdout, FP8 KV cache support for GLM's NoPE DSA (active only with --kv-cache-dtype fp8_e4m3 on flashmla_kv), an opt-in process pool with a per-request deadline for chat preprocessing, an opt-in tool-schema size cap, and a host-side KDA prefill token count (no per-layer GPU-to-CPU sync)"
 LABEL org.opencontainers.image.source="https://github.com/nearai/cvm-compose-files"
 LABEL org.opencontainers.image.revision="${BUILD_SOURCE_REVISION}"
 LABEL org.opencontainers.image.base.name="docker.io/nearaidev/sglang"
@@ -30,6 +30,7 @@ LABEL nearai.sglang.self_profile="v1-opt-in"
 LABEL nearai.sglang.fp8_kv_nope_dsa="v1"
 LABEL nearai.sglang.preprocess_pool="v1-opt-in"
 LABEL nearai.sglang.tool_schema_depth_cap="v1-opt-in"
+LABEL nearai.sglang.kda_host_token_count="v1"
 LABEL nearai.security_remediation="CVE-2026-102268:pyjwt-2.14.0"
 
 COPY Dockerfile \
@@ -42,6 +43,7 @@ COPY Dockerfile \
      event-loop-stall-dump.diff \
      fp8kv-flashmla.diff \
      ghost-prefix-cache.diff \
+     kda-zero-sync.diff \
      kv-tier-metrics.diff \
      modules-to-not-convert.diff \
      near-self-profile.diff \
@@ -58,6 +60,7 @@ COPY Dockerfile \
      test_preprocess_pool.py \
      test_tool_schema_guard.py \
      test_fp8kv_paths.py \
+     test_kda_zero_sync.py \
      kvtm_check_plugin.py \
      security-requirements.txt \
      /usr/share/nearai/glm53-hicache-w4afp8/
@@ -109,6 +112,11 @@ RUN /opt/sglang/bin/python3 -m pip install --no-cache-dir --no-deps --require-ha
 # The tool-schema cap is inert unless SGLANG_TOOL_SCHEMA_MAX_DEPTH and/or SGLANG_TOOL_SCHEMA_MAX_NODES
 # is a positive integer: a tool whose parameters schema exceeds it is rejected with HTTP 400 before
 # jsonschema's check_schema runs on the event loop.
+# The host-side KDA token count (kda-zero-sync.diff) is unconditional: KDA prefill takes its logical
+# token count from forward_batch.extend_seq_lens_cpu instead of int(query_start_loc[-1]), which was a
+# GPU-to-CPU sync in each of the 34 KDA layers per prefill chunk. Draft-extend-v2 and batches without
+# the host list keep the old read. SGLANG_KDA_HOST_COUNT_CHECK=1 re-adds the read and raises on a
+# mismatch (debug only; it brings the sync back).
 # Everything inherited from the base stays opt-in: admission reserve v10 via
 # SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE, and HiCache via --enable-hierarchical-cache plus
 # SGLANG_HICACHE_*. On an HCC/PPCIe (TEE) host SGLANG_HICACHE_CUDA_HOST_MEMORY must stay 1; 0 selects
