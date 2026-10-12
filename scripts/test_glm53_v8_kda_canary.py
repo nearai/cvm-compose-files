@@ -56,6 +56,11 @@ class V8KdaCanaryTest(unittest.TestCase):
         for line in removed + added:
             self.assertNotRegex(line, r"^\s+--|^\s+- [A-Z_]+=", line)
 
+    def test_missing_label_is_a_generation_error(self):
+        broken = SOURCE.replace('nearai.otel.config_variant: "', 'nearai.otel.config_variant_x: "')
+        with self.assertRaises(gen.GenerationError):
+            gen.generate(broken)
+
     def test_dashboard_selectors_unchanged(self):
         for key in ("deployment", "host_machine", "server_address", "container_name", "instance", "service"):
             self.assertEqual(

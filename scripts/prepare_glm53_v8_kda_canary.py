@@ -74,7 +74,10 @@ def generate(source: str) -> str:
         1,
         "image",
     )
-    variant = re.search(r'nearai\.otel\.config_variant: "([^"]+)"', block).group(1)
+    found = re.search(r'nearai\.otel\.config_variant: "([^"]+)"', block)
+    if found is None:
+        raise GenerationError(f"service {SERVICE}: nearai.otel.config_variant label not found")
+    variant = found.group(1)
     block = replace_exact(block, f'"engine_image:{V7_LABEL}"', f'"engine_image:{V8_LABEL}"', 1, "log engine_image")
     block = replace_exact(block, f'nearai.otel.engine_image: "{V7_LABEL}"', f'nearai.otel.engine_image: "{V8_LABEL}"', 1, "otel engine_image")
     block = replace_exact(block, f'{variant}"', f'{variant}{SUFFIX}"', 2, "service config_variant")
@@ -102,7 +105,11 @@ def main() -> int:
     args = parser.parse_args()
     if args.write == args.check:
         parser.error("pass exactly one of --write / --check")
-    expected = generate((ROOT / SOURCE).read_text())
+    try:
+        expected = generate((ROOT / SOURCE).read_text())
+    except (GenerationError, OSError) as exc:
+        print(f"prepare_glm53_v8_kda_canary: {exc}", file=sys.stderr)
+        return 2
     target = ROOT / TARGET
     if args.write:
         _ = target.write_text(expected)
