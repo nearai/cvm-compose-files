@@ -1,0 +1,30 @@
+--- a/python/sglang/srt/layers/attention/linear/kda_backend.py
++++ b/python/sglang/srt/layers/attention/linear/kda_backend.py
+@@ -1,4 +1,5 @@
+ import importlib.util
++import os
+ from typing import Optional, Tuple, Union
+ 
+ import torch
+@@ -817,7 +818,20 @@
+         has_initial_state = forward_batch.extend_prefix_lens > 0
+ 
+         physical_num_tokens = mixed_qkv.shape[0]
+-        logical_num_tokens = int(query_start_loc[-1])
++        # Token count from host metadata: query_start_loc[-1] == sum(extend_seq_lens), and reading it
++        # back with int() is a GPU->CPU sync in each of the 34 KDA layers per prefill chunk. Under
++        # TDX+PPCIe each sync drains the queue and re-exposes ~3x launch cost (tee-bench exp 37).
++        seq_cpu = getattr(forward_batch, "extend_seq_lens_cpu", None)
++        if seq_cpu is not None and not forward_batch.forward_mode.is_draft_extend_v2():
++            logical_num_tokens = int(sum(seq_cpu))
++            if os.environ.get("SGLANG_KDA_HOST_COUNT_CHECK") == "1":  # debug only: re-adds the sync
++                dev_n = int(query_start_loc[-1])
++                if dev_n != logical_num_tokens:
++                    raise RuntimeError(
++                        f"KDA host token count {logical_num_tokens} != device {dev_n}"
++                    )
++        else:
++            logical_num_tokens = int(query_start_loc[-1])
+         if logical_num_tokens < physical_num_tokens:
+             mixed_qkv = mixed_qkv[:logical_num_tokens]
+             a = a[:, :logical_num_tokens]

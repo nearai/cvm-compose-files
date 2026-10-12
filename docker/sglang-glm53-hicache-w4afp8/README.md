@@ -12,7 +12,8 @@ CUDA error 801.
 Base `sha256:3eccc307…` (HiCache + admission reserve v10) plus two correctness patches, both
 byte-identical copies of the reviewed originals, one opt-in performance patch, two patches that move
 blocking work off the HTTP event loop, one diagnostic, two opt-in measurements, an opt-in self-profiler, FP8 KV cache support for GLM's NoPE DSA (active only
-with `--kv-cache-dtype fp8_e4m3`), an opt-in preprocess process pool and an opt-in tool-schema size cap:
+with `--kv-cache-dtype fp8_e4m3`), an opt-in preprocess process pool, an opt-in tool-schema size cap and a host-side KDA prefill
+token count (v8):
 
 | patch | origin | scope |
 | --- | --- | --- |
@@ -28,6 +29,7 @@ with `--kv-cache-dtype fp8_e4m3`), an opt-in preprocess process pool and an opt-
 | `fp8kv-flashmla.diff` | new here (flag-gated: `--kv-cache-dtype fp8_e4m3` with `flashmla_kv`) | 656 B fp8 row in `kv_cache_configurator.py`, q pad and kpool index pad in `dsa_backend.py`, `flashmla_kv` allowed for `index_kpool > 1` in `dsa_backend_kpool.py`, `k_pe=None` and hybrid-wrapper metadata in `forward_mha.py` |
 | `preprocess-pool.diff` | new here (opt-in, `SGLANG_PREPROCESS_WORKERS=N`), applied after `sglang-pr30771.diff` and `shm-off-loop.diff` | new `managers/preprocess_pool.py`, a call in the HTTP lifespan and a pool attempt in `OpenAIServingBase.handle_request` |
 | `tool-schema-depth-cap.diff` | new here (opt-in, `SGLANG_TOOL_SCHEMA_MAX_DEPTH` / `_MAX_NODES`) | new `utils/tool_schema_guard.py` plus one call in `OpenAIServingChat._validate_request` |
+| `kda-zero-sync.diff` | new here (v8, unconditional; tee-bench exp 37) | the logical token count in `KDAAttnBackend.forward_extend` (`layers/attention/linear/kda_backend.py`) only |
 
 ## DSA indexer query split (opt-in)
 
@@ -515,6 +517,39 @@ The walk is iterative and stops at the first violation. `test_tool_schema_guard.
 the boundaries, a 200k-deep and a cyclic structure, bad env values, and runs the shipped
 `_validate_request` on stubs.
 
+## Host-side KDA prefill token count (v8)
+
+`KDAAttnBackend.forward_extend` read its logical token count with `int(query_start_loc[-1])`. That is
+a GPU-to-CPU sync, and it ran in each of GLM-5.3's 34 KDA layers on every prefill chunk. Each sync
+drains the GPU queue, so the next layer's kernels launch into an idle GPU. On bare metal that costs
+little. Under TDX + PPCIe a launch costs about 3x more and copies are synchronous, so every drain
+exposes the launch tax again.
+
+`kda-zero-sync.diff` takes the same number from `forward_batch.extend_seq_lens_cpu`, which is already
+on the host: `query_start_loc[bs] = extend_start_loc[-1] + extend_seq_lens[-1]`, so the sum of the host
+list equals the device value. The same function already passes `extend_seq_lens_cpu` to the kernels
+further down. The old read stays as the fallback when the host list is missing or the batch is
+draft-extend-v2. There is no flag. `SGLANG_KDA_HOST_COUNT_CHECK=1` is a debug mode that re-reads the
+device value and raises on a mismatch; it brings the sync back, so keep it off in serving.
+
+Evidence (tee-bench exp 37, `evidence/gpu31-tee-cvm`): GLM-5.3 v7 TP2 in a dstack TDX CVM with the
+GPUs in PPCIe mode on gpu31 (prod-like topology), the file bind-mounted over the v7 image, W2 replay
+from the tee-bench suite, two slot-swapped rounds against a v7 control in the same CVM:
+
+| | zero-sync vs control |
+| --- | --- |
+| prefill (extend) step time | -4% to -10% |
+| ITL p95 | -8% to -10% |
+| TTFT p95 | -5% to -15% |
+| rejections | -4% to -17% |
+| total input+output tok/s | -2% / +15% (inside the control spread: capacity not established) |
+
+The host-vs-device check (`SGLANG_KDA_HOST_COUNT_CHECK=1`) never fired, and GSM8K-50 scored 0.98. On
+bare metal the effect is noise (exp 12 sync-once variant: TTFT -1% to -5%; exp 35: no throughput
+change). `test_kda_zero_sync.py` (`test-cpu.sh` step 14) runs the changed block on stubs.
+
+**Rollback:** redeploy the v7 digest `sha256:fa730e6e…`; this patch changes no other file.
+
 ## Why the composition is safe
 
 The HiCache patches touch `mem_cache/*`, `disaggregation/*` and `schedule_batch.py`. None of the
@@ -570,7 +605,7 @@ event-loop patches have no switch, and the stall dump is on at 30 s
 the KV tier metrics (`SGLANG_KV_TIER_METRICS=1`) and the self-profiler (`NEAR_SELF_PROFILE=1`) are
 opt-in, FP8 KV needs `--kv-cache-dtype fp8_e4m3` with the `flashmla_kv` DSA backends, the preprocess pool
 needs `SGLANG_PREPROCESS_WORKERS=N` and the tool-schema cap needs `SGLANG_TOOL_SCHEMA_MAX_DEPTH` /
-`SGLANG_TOOL_SCHEMA_MAX_NODES`. Inherited
+`SGLANG_TOOL_SCHEMA_MAX_NODES`. The host-side KDA token count (v8) has no switch. Inherited
 opt-ins:
 
 - admission reserve — `SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE`
@@ -637,6 +672,13 @@ the new patches (step 11 also runs `test_fp8kv_paths.py`, which executes the cha
 stubs with the gate on and off); steps 1-10 were not re-run end to end here (they need the full image).
 The FP8 and pool GPU numbers are bare metal with CC off from lab images (v6 + FP8, and + pool at 4
 workers). Nothing has run in a TEE.
+
+**v8** adds `kda-zero-sync.diff` after `tool-schema-depth-cap.diff`, with no change to any v7 patch.
+It touches only `layers/attention/linear/kda_backend.py`, which no other patch touches; its before-hash
+`e29e98e8…` is the file in the v7 image and in the copy the TEE lab ran against, and applying the diff
+reproduces the after-hash `761c9e6c…` that exp 37 ran in the TEE. `test_kda_zero_sync.py` passes on the
+patched file and fails on the unpatched one. Unlike the v7 additions, this patch was measured in a TEE
+(gpu31 TDX + PPCIe CVM) before the image was built; the built image itself has not run on GPU.
 
 ## Security remediation
 
