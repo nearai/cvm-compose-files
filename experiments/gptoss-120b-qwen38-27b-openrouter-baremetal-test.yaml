@@ -85,6 +85,14 @@ x-gptoss-engine: &gptoss-engine
     - --gpu-memory-utilization=0.93
     - --max-num-seqs=1024
     - --max-num-batched-tokens=32768
+    # EAGLE3-v3 draft, 3 tokens (NVIDIA Dynamo H200 recipe) plus 100 GiB CPU KV offload per replica. In the gpu31 shadow
+    # of this host's live Qwen traffic (tee-bench exp 44) it cut time per output token 55% at 4x live load (23 vs 51 ms)
+    # and kept ~2x prod's tok/s past saturation (offload keeps ~2/3 of prompts cached when VRAM KV is full).
+    # GSM8K-200 0.965 vs 0.970. The draft's 2.36 accepted tokens/step is what makes it pay; the older long-context
+    # draft (1.7) gave nothing at live load. Offload uses 100 GiB host RAM per replica, as the Qwen replicas do.
+    - '--speculative-config={"method":"eagle3","model":"nvidia/gpt-oss-120b-Eagle3-v3","revision":"975baaffe27cc031ba21ae370602735d8e3df052","num_speculative_tokens":3}'
+    - --kv-offloading-size=100
+    - --kv-offloading-backend=native
     # Report cached prompt tokens in usage (prompt_tokens_details.cached_tokens), so cache reads are billed at the cache price.
     - --enable-prompt-tokens-details
     - --enable-auto-tool-choice
@@ -168,6 +176,7 @@ services:
       - |
         set -e
         uvx --from 'huggingface_hub[hf_xet]' hf download openai/gpt-oss-120b --revision b5c939de8f754692c1647ca79fbf85e8c1e70f8a --exclude 'original/*' --exclude 'metal/*'
+        uvx --from 'huggingface_hub[hf_xet]' hf download nvidia/gpt-oss-120b-Eagle3-v3 --revision 975baaffe27cc031ba21ae370602735d8e3df052 --exclude 'assets/*'
         uvx --from 'huggingface_hub[hf_xet]' hf download Qwen/Qwen3.8-27B-FP8 --revision 017b9c7af6b5689d5dd426a76e0bc077eb5ca20a
         echo "Downloads complete."
     volumes:
