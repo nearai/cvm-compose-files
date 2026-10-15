@@ -108,7 +108,9 @@ x-gptoss-engine: &gptoss-engine
     - --port=8000
 
 x-vllm-proxy-common: &vllm-proxy-common
-  image: nearaidev/vllm-proxy-rs@sha256:d61357da39918a57126864a451eaf054f06a6989c03fe9a1666f7e6374ba6907
+  # inference-proxy main 30063b1 (#298): keeps the caller's JSON key order, so json_schema properties reach the
+  # engine in the order written (the older image sorted them, and gpt-oss wrote free-text fields first).
+  image: nearaidev/vllm-proxy-rs@sha256:4c4ea0628aa4d3d0d806f596040c5d5dbfccdd312549f8b30e8511c887c2980a
   # Same fd limits as the prod proxies. Without them one pooled proxy hits EMFILE at ~500 concurrent streams.
   ulimits:
     nofile:
