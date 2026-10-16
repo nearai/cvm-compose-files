@@ -71,6 +71,15 @@ x-gptoss-engine: &gptoss-engine
   # draft on, 0.26 corrupts json_schema output (xgrammar "Failed to advance FSM"; 2 of 24 valid on 2026-10-14, answers
   # start with `{"{`), and 0.31 does not (all valid).
   image: vllm/vllm-openai@sha256:c1c9f6fd5c109ba7f0546a59f5b2f15fb87f64c77782e90a27b648b42a8e67c3  # vLLM v0.31.0
+  # Harmony render hotfix, applied at container start (gptoss_harmony_render_patch below), then the image's own
+  # `vllm serve` with the command list unchanged. v0.31.0 answers 500 when a request's history holds a tool call whose
+  # name contains special-token text such as `<|channel|>`; the patch serves those as v0.30 did and turns any other
+  # Harmony render error into a 400. Non-fatal: if the file differs it logs a warning and the engine serves unpatched.
+  entrypoint: ["/bin/bash", "-c", "python3 /etc/vllm/patch_harmony_render.py; exec vllm serve \"$$@\"", "vllm-serve"]
+  configs:
+    - source: gptoss_harmony_render_patch
+      target: /etc/vllm/patch_harmony_render.py
+      mode: 0444
   volumes:
     - ${HF_DIR:-/data/gpu31-openrouter/hf}:/root/.cache/huggingface
     - vllm_cache:/root/.cache/vllm
@@ -380,6 +389,73 @@ volumes:
   vllm_cache:
 
 configs:
+  # Harmony render hotfix for vLLM v0.31.0 (see x-gptoss-engine). Upstream vllm#55128 (first in v0.31.0) re-encodes
+  # prior tool-call headers with tiktoken's default check, so a tool name in the history that contains special-token
+  # text (seen in production: `<|channel|>`) raises HarmonyError, which reaches the caller as a 500. Two edits to
+  # vllm/entrypoints/openai/parser/harmony_utils.py: encode that text as plain text, as oss-harmony does when it
+  # renders the header; and raise any HarmonyError during prompt rendering as VLLMValidationError (400). Exact anchors,
+  # idempotent across restarts. Drop it when the image moves past a vLLM release that fixes this (open as of
+  # 2026-10-16; vllm#59387 removes the rewrite).
+  gptoss_harmony_render_patch:
+    content: |
+      import pathlib
+      F = pathlib.Path("/usr/local/lib/python3.12/dist-packages/vllm/entrypoints/openai/parser/harmony_utils.py")
+      EDITS = [
+          (
+              "    HarmonyEncodingName,\n    Message,\n",
+              "    HarmonyEncodingName,\n    HarmonyError,\n    Message,\n",
+          ),
+          (
+              "    token_ids = encoding.render_conversation_for_completion(\n"
+              "        conversation,\n"
+              "        Role.ASSISTANT,\n"
+              "        config=RenderConversationConfig(auto_drop_analysis=False),\n"
+              "    )\n"
+              "    return _use_legacy_tool_call_headers(token_ids)\n",
+              "    try:\n"
+              "        token_ids = encoding.render_conversation_for_completion(\n"
+              "            conversation,\n"
+              "            Role.ASSISTANT,\n"
+              "            config=RenderConversationConfig(auto_drop_analysis=False),\n"
+              "        )\n"
+              "        return _use_legacy_tool_call_headers(token_ids)\n"
+              "    except HarmonyError as e:\n"
+              "        # Everything rendered here comes from the request, so a render\n"
+              "        # failure is a client error (400), not a server error.\n"
+              "        raise VLLMValidationError(\n"
+              "            f\"Could not render the conversation in Harmony format: {e}\",\n"
+              "            parameter=\"messages\",\n"
+              "        ) from e\n",
+          ),
+          (
+              "        legacy_header = (\n"
+              "            [start]\n"
+              "            + encoding.encode(f\"assistant to={recipient}\")\n"
+              "            + [channel_token]\n"
+              "            + encoding.encode(f\"{channel} {content_type}\")\n",
+              "        # oss-harmony renders header text with encode_ordinary, so a recipient\n"
+              "        # such as \"functions.f<|channel|>x\" is plain text here. Re-encode it\n"
+              "        # the same way: the default encode() raises on special-token text.\n"
+              "        legacy_header = (\n"
+              "            [start]\n"
+              "            + encoding.encode(f\"assistant to={recipient}\", disallowed_special=())\n"
+              "            + [channel_token]\n"
+              "            + encoding.encode(f\"{channel} {content_type}\", disallowed_special=())\n",
+          ),
+      ]
+      try:
+          s = F.read_text()
+          if all(new in s for _, new in EDITS):
+              print("[harmony-render] already applied", flush=True)
+          elif all(s.count(old) == 1 for old, _ in EDITS):
+              for old, new in EDITS:
+                  s = s.replace(old, new, 1)
+              F.write_text(s)
+              print("[harmony-render] applied: render errors -> 400, special-token text in tool names encoded as text", flush=True)
+          else:
+              print("[harmony-render] WARN: anchor not found; serving UNPATCHED (vLLM file changed?)", flush=True)
+      except Exception as e:
+          print(f"[harmony-render] WARN: patch failed ({e}); serving UNPATCHED", flush=True)
   otelcol_app_config:
     content: |
       receivers:
