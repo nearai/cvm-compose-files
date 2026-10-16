@@ -1,0 +1,135 @@
+--- a/python/sglang/srt/mem_cache/kv_cache_configurator.py
++++ b/python/sglang/srt/mem_cache/kv_cache_configurator.py
+@@ -2502,10 +2502,29 @@
+             f"kv_lora_rank {kv_lora_rank} must be multiple of quant_block_size {quant_block_size}"
+         )
+ 
++        # NoPE MLA (qk_rope_head_dim == 0, e.g. GLM-5.3) on the FlashMLA fp8
++        # sparse-decode kernels. Those kernels hard-assert the DeepSeek-V3.2
++        # packed row (d_qk == 576, stride_kv_row == 656 bytes: 512 fp8 nope +
++        # 4 fp32 tile scales + 64 bf16 rope), so a rope-less 528-byte row
++        # cannot be consumed. Reserve the 64 rope slots as a structurally
++        # zero region (never written, the pool is zero-initialised; the
++        # attention backend zero-pads q to match). Costs 656 B/token versus
++        # 1024 B/token for bf16 (1.56x pool capacity).
++        rope_slots = qk_rope_head_dim
++        if (
++            qk_rope_head_dim == 0
++            and not _is_hip
++            and "flashmla_kv"
++            in (
++                get_exec().kernel.dsa_prefill_backend,
++                get_exec().kernel.dsa_decode_backend,
++            )
++        ):
++            rope_slots = 64
+         return (
+             kv_lora_rank
+             + kv_lora_rank // quant_block_size * 4
+-            + qk_rope_head_dim * rope_storage_dtype.itemsize
++            + rope_slots * rope_storage_dtype.itemsize
+         )
+ 
+     return kv_cache_dim
+--- a/python/sglang/srt/layers/attention/dsa_backend.py
++++ b/python/sglang/srt/layers/attention/dsa_backend.py
+@@ -473,6 +473,26 @@
+         self.qk_nope_head_dim = model_runner.model_config.qk_nope_head_dim
+         self.kv_lora_rank = model_runner.model_config.kv_lora_rank
+         self.qk_rope_head_dim = model_runner.model_config.qk_rope_head_dim
++        # NoPE-MLA fp8 pool in the 656-byte FlashMLA row: q is zero-padded by
++        # this many dims so the V3.2 kernel sees d_qk == 576 (see
++        # calculate_mla_kv_cache_dim).
++        self.flashmla_kv_pad_rope_dim = (
++            64
++            if (
++                self.qk_rope_head_dim == 0
++                and self.dsa_kv_cache_store_fp8
++                and self.kv_cache_dim == 656
++            )
++            else 0
++        )
++        # FlashMLA sparse decode needs topk % 128 == 0 (head64: 2 * B_TOPK).
++        # With index_kpool > 1 the table is index_topk + kpool - 1 wide; the
++        # extra columns are -1 (masked) padding.
++        if self.dsa_index_kpool > 1:
++            _cols = self.dsa_index_topk + self.dsa_index_kpool - 1
++            self.flashmla_kv_topk = -(-_cols // 128) * 128
++        else:
++            self.flashmla_kv_topk = self.dsa_index_topk
+ 
+         assert model_runner.req_to_token_pool is not None
+         self.req_to_token_pool = model_runner.req_to_token_pool
+@@ -3558,6 +3578,8 @@
+ 
+         # TODO the 2nd dim is seq_len_q, need to be >1 when MTP
+         q_all = q_all.view(-1, 1, layer.tp_q_head_num, layer.head_dim)
++        if self.flashmla_kv_pad_rope_dim:
++            q_all = torch.nn.functional.pad(q_all, (0, self.flashmla_kv_pad_rope_dim))
+         num_q_heads = q_all.shape[2]
+         target_q_heads = self.flashmla_kv_num_q_heads
+         if target_q_heads != num_q_heads:
+@@ -3577,8 +3599,13 @@
+             kv_cache = quantize_k_cache(kv_cache)
+ 
+         indices = page_table_1.unsqueeze(1)
++        topk_pad = self.flashmla_kv_topk - indices.shape[-1]
++        assert topk_pad >= 0, (indices.shape, self.flashmla_kv_topk)
++        if topk_pad:
++            # index_kpool > 1: pad the tail-extended table with -1 (masked)
++            indices = torch.nn.functional.pad(indices, (0, topk_pad), value=-1)
+         assert (
+-            indices.shape[-1] == self.dsa_index_topk
++            indices.shape[-1] == self.flashmla_kv_topk
+         )  # requirement of FlashMLA decode kernel
+ 
+         o, _ = flash_mla_with_kvcache(
+@@ -4193,7 +4220,7 @@
+             num_heads_k=1,
+             num_heads_q=num_heads_q,
+             is_fp8_kvcache=True,
+-            topk=self.dsa_index_topk,
++            topk=self.flashmla_kv_topk,
+         )
+ 
+         return DSAFlashMLAMetadata(
+--- a/python/sglang/srt/layers/attention/dsa/dsa_backend_kpool.py
++++ b/python/sglang/srt/layers/attention/dsa/dsa_backend_kpool.py
+@@ -54,12 +54,12 @@
+         if (
+             topk_indices is None
+             or self.dsa_index_kpool <= 1
+-            or dsa_impl in ("fa3", "tilelang", "trtllm")
++            or dsa_impl in ("fa3", "tilelang", "trtllm", "flashmla_kv")
+         ):
+             return
+         raise NotImplementedError(
+             "index_kpool > 1 appends tail tokens to topk_indices and is "
+-            f"currently only supported by the FA3/TileLang/TRTLLM DSA {phase} "
++            f"currently only supported by the FA3/TileLang/TRTLLM/FlashMLA-KV DSA {phase} "
+             "backend."
+         )
+ 
+--- a/python/sglang/srt/models/deepseek_common/attention_forward_methods/forward_mha.py
++++ b/python/sglang/srt/models/deepseek_common/attention_forward_methods/forward_mha.py
+@@ -503,6 +503,9 @@
+         backend = get_attn_backend()
+         if isinstance(backend, TboAttnBackend):  # if enable tbo, get primary backend
+             backend = backend.primary
++        # Hybrid linear-attention models (GLM-5.x) wrap the DSA backend; the
++        # per-batch DSA metadata lives on the wrapped full-attention backend.
++        backend = getattr(backend, "full_attn_backend", backend)
+         kv_indices = backend.forward_metadata.page_table_1_flattened
+         assert kv_indices is not None, (
+             "page_table_1_flattened should have been generated for FP8 MHA path"
+@@ -533,6 +536,10 @@
+ 
+         kv_a = kv_latent_bf16[:, :, : self.kv_lora_rank].squeeze(1).contiguous()
+         k_pe = kv_latent_bf16[:, :, self.kv_lora_rank :]
++        if self.qk_rope_head_dim == 0:
++            # NoPE MLA: the 64 rope slots of the 656-byte row are structurally
++            # zero padding, not model data.
++            k_pe = None
+ 
+         return kv_a, k_pe
+ 

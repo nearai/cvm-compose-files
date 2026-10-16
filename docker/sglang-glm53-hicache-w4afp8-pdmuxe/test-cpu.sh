@@ -1,0 +1,593 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# Resolved before the cd: steps 7-9 run test files shipped next to this script.
+RECIPE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd /sgl-workspace/sglang
+# This pinned upstream test utility indexes the first visible-device digit.
+# Use an unavailable ordinal, with the CPU container's runtime set to runc.
+export CUDA_VISIBLE_DEVICES=9
+
+# 1. INVARIANT: add_chunked_req must never set an extend length larger than what the KV allocator
+# can actually serve. Every failure case below was observed in production or the gpu31 lab repro.
+python3 - <<'EOF'
+import sys
+import types
+
+from sglang.srt.managers.schedule_policy import PrefillAdder
+
+PAGE, CHUNK = 64, 4096
+
+
+class Range:
+    def __init__(self, a, b):
+        self.start, self.end = a, b
+
+    @property
+    def length(self):
+        return self.end - self.start
+
+
+class Req:
+    def __init__(self, total, matched):
+        self.full_untruncated_fill_ids = [0] * total
+        self.prefix_indices = [0] * matched
+        self.extend_range = Range(matched, matched)
+        self.retracted_stain = False
+        self.sampling_params = types.SimpleNamespace(max_new_tokens=4096)
+
+    def set_extend_range(self, a, b):
+        self.extend_range = Range(a, b)
+
+
+class Adder:
+    """Minimal stand-in exposing only what add_chunked_req touches."""
+
+    def __init__(self, avail, evictable, offset, waiting=1, need=256):
+        self.dllm_config = None
+        self.page_size, self.rem_chunk_tokens = PAGE, CHUNK
+        self._avail, self._evict = avail, evictable
+        self.rem_total_token_offset = offset
+        self.waiting_queue_len, self.first_waiting_req_tokens = waiting, need
+        self.is_hybrid_swa = self.is_all_swa = False
+        self.is_hybrid_ssm_cache = True
+        self.rem_swa_tokens = 10 ** 9
+        self.prefill_delayer_single_pass = None
+        self.can_run_list = []
+
+    @property
+    def _pool_available_and_evictable(self):
+        return self._avail + self._evict
+
+    @property
+    def rem_total_tokens(self):
+        return self._pool_available_and_evictable - self.rem_total_token_offset
+
+    def _update_prefill_budget(self, *a, **k):
+        pass
+
+    def _mamba_gap_budget_for_req(self, req):
+        return 0
+
+
+CASES = [
+    ("gpu02 prod crash 1", 2368, 0, 41000),
+    ("gpu02 prod crash 2", 3136, 0, 41000),
+    ("gpu02 prod crash 3", 3584, 0, 41000),
+    ("gpu02 prod crash 4", 3904, 0, 41000),
+    ("gpu31 lab repro 1", 2304, 0, 2328),
+    ("gpu31 lab repro 2", 1088, 2304, 3418),
+    ("pool completely exhausted", 32, 0, 4096),
+]
+
+failures = 0
+for label, avail, evictable, offset in CASES:
+    adder = Adder(avail, evictable, offset)
+    req = Req(total=142000, matched=40000)
+    PrefillAdder.add_chunked_req(adder, req)
+    asked, servable = req.extend_range.length, avail + evictable
+    if asked > servable:
+        print(
+            f"FAILED {label}: extend={asked} but the allocator can serve {servable} "
+            f"(available={avail} evictable={evictable}); alloc_extend would raise",
+            file=sys.stderr,
+        )
+        failures += 1
+    else:
+        how = "parked for the next pass" if asked == 0 else f"extend={asked}"
+        print(f"  ok {label}: {how} (servable {servable})")
+
+adder = Adder(3136, 900000, 60000)
+req = Req(total=142000, matched=40000)
+PrefillAdder.add_chunked_req(adder, req)
+if req.extend_range.length < CHUNK - PAGE:
+    print(
+        f"FAILED healthy path regressed: extend={req.extend_range.length}, expected about {CHUNK}",
+        file=sys.stderr,
+    )
+    failures += 1
+else:
+    print(f"  ok healthy prefix cache: extend={req.extend_range.length}")
+
+if failures:
+    print(f"step 1 FAILED: {failures} pool-clamp violation(s)", file=sys.stderr)
+    sys.exit(1)
+print("step 1 OK: add_chunked_req never exceeds what the allocator can serve")
+EOF
+
+# 2. The admission-reserve behaviour inherited from the base image is unchanged: the reserve is
+# still inert unless SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE is set.
+python3 - <<'EOF'
+import sglang.srt.managers.schedule_policy as sp
+from sglang.srt.managers.scheduler import _admission_reserve_need
+
+assert sp.CHUNKED_PREFILL_ADMISSION_RESERVE == 0, sp.CHUNKED_PREFILL_ADMISSION_RESERVE
+assert _admission_reserve_need([], 64, 4096) is None
+print("step 2 OK: the inherited admission reserve is still opt-in and inert by default")
+EOF
+
+# 3. The W4AFP8 checkpoint exclusion list must reach the actual quantization config API under all
+# supported key spellings. Stock SGLang ignores these keys and leaves ignored_layers empty.
+python3 - <<'EOF'
+from sglang.srt.layers.quantization.w4afp8 import W4AFp8Config
+
+excluded = ["model.layers.0.self_attn.b_proj"]
+for key in ("modules_to_not_convert", "ignored_layers", "ignore"):
+    config = W4AFp8Config.from_config({"quant_method": "w4afp8", key: excluded})
+    assert config.ignored_layers == excluded, (key, config.ignored_layers)
+
+default = W4AFp8Config.from_config({"quant_method": "w4afp8"})
+assert default.ignored_layers == [], default.ignored_layers
+print("step 3 OK: W4AFP8 loader propagates all supported exclusion keys into ignored_layers")
+EOF
+
+# 4. The DSA indexer query split is opt-in: inert unless SGLANG_DSA_INDEXER_QSPLIT=1, and never used
+# below the minimum row count even when enabled.
+python3 - <<'EOF'
+import importlib
+import os
+
+import sglang.srt.layers.attention.dsa.dsa_indexer_kpool as kpool
+
+assert kpool._QSPLIT is False, kpool._QSPLIT
+assert kpool._qsplit_group(1_000_000) is None
+assert hasattr(kpool.IndexerKPool, "_get_topk_ragged_kpool_plan_qsplit")
+os.environ["SGLANG_DSA_INDEXER_QSPLIT"] = "1"
+os.environ["SGLANG_DSA_INDEXER_QSPLIT_MIN_ROWS"] = "2048"
+kpool = importlib.reload(kpool)
+assert kpool._QSPLIT is True and kpool._QSPLIT_MIN_ROWS == 2048
+assert kpool._qsplit_group(2047) is None
+print("step 4 OK: the DSA indexer query split is opt-in and respects its minimum row count")
+EOF
+
+# 5. Request preprocessing runs off the event loop (upstream sglang PR #30771): chat template
+# rendering and tokenization in _convert_to_internal_request, and the regular-tokenizer path of
+# _tokenize_texts, run in the tokenizer manager's single request-preprocessor thread, so the uvicorn
+# loop keeps answering /health during multi-MB requests. The pytest files are the PR's own tests,
+# applied under test/registered/unit; on the stock files three of them fail and two are skipped.
+python3 - <<'EOF'
+import inspect
+
+from sglang.test.test_utils import maybe_stub_sgl_kernel
+
+maybe_stub_sgl_kernel()
+
+from sglang.srt.entrypoints.openai.serving_base import OpenAIServingBase  # noqa: E402
+from sglang.srt.managers.tokenizer_manager import TokenizerManager  # noqa: E402
+
+assert "run_in_request_preprocessor" in inspect.getsource(OpenAIServingBase.handle_request)
+assert "run_in_request_preprocessor" in inspect.getsource(TokenizerManager._tokenize_texts)
+assert "self.init_request_preprocessor()" in inspect.getsource(TokenizerManager.__init__)
+EOF
+python3 -m pytest -q -p no:cacheprovider \
+  test/registered/unit/entrypoints/openai/test_serving_base_event_loop.py \
+  test/registered/unit/entrypoints/test_http_server_liveness.py \
+  test/registered/unit/managers/test_tokenizer_manager_event_loop.py
+echo "step 5 OK: chat template rendering and tokenization run off the event loop (PR #30771 tests)"
+
+# 6. The dispatch-time /dev/shm copy of multimodal features (wrap_shm_features: posix_fallocate +
+# copy_, ~141 MiB per large image) runs on its own sglang-mm-shm thread while the event loop keeps
+# running, and a request cancelled during the copy still has its segments discarded afterwards.
+python3 - <<'EOF'
+import asyncio
+import inspect
+import threading
+import time
+from types import SimpleNamespace
+
+from sglang.test.test_utils import maybe_stub_sgl_kernel
+
+maybe_stub_sgl_kernel()
+
+import sglang.srt.managers.tokenizer_manager as tm  # noqa: E402
+
+send = inspect.getsource(tm.TokenizerManager._send_one_request)
+assert "await self._wrap_shm_features_off_loop(tokenized_obj)" in send, send
+assert "= wrap_shm_features(" not in send, send
+
+manager = tm.TokenizerManager.__new__(tm.TokenizerManager)
+manager.init_request_preprocessor()
+calls, release = [], threading.Event()
+
+
+def blocking_wrap(obj):
+    calls.append(("wrap", threading.current_thread().name))
+    if not release.wait(10):
+        raise TimeoutError("test did not release the copy")
+    return obj
+
+
+def recording_discard(obj):
+    calls.append(("discard", threading.current_thread().name))
+
+
+# _wrap_shm_features_off_loop resolves both names in the module at call time.
+tm.wrap_shm_features, tm.discard_shm_features = blocking_wrap, recording_discard
+
+
+async def wait_for(condition):
+    for _ in range(500):
+        if condition():
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError(f"timed out waiting; calls={calls}")
+
+
+async def copy_while_loop_ticks():
+    obj = SimpleNamespace(mm_inputs=object())
+    task = asyncio.create_task(manager._wrap_shm_features_off_loop(obj))
+    await wait_for(lambda: calls)
+    ticks, end = 0, time.monotonic() + 0.5
+    while time.monotonic() < end:
+        await asyncio.sleep(0.01)
+        ticks += 1
+    release.set()
+    assert await task is obj
+    return ticks
+
+
+ticks = asyncio.run(copy_while_loop_ticks())
+assert ticks >= 20, f"the event loop ran only {ticks} times in 0.5 s while the copy was blocked"
+assert [c[0] for c in calls] == ["wrap"] and calls[0][1].startswith("sglang-mm-shm"), calls
+
+calls.clear()
+release.clear()
+
+
+async def cancel_during_copy():
+    task = asyncio.create_task(manager._wrap_shm_features_off_loop(SimpleNamespace(mm_inputs=object())))
+    await wait_for(lambda: calls)
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    else:
+        raise AssertionError("cancellation did not reach the caller")
+    release.set()
+    await wait_for(lambda: len(calls) == 2)
+
+
+asyncio.run(cancel_during_copy())
+manager._shm_wrap_executor.shutdown(wait=True)
+manager._request_preprocessor_executor.shutdown(wait=True)
+assert [c[0] for c in calls] == ["wrap", "discard"], calls
+assert all(name.startswith("sglang-mm-shm") for _, name in calls), calls
+print("step 6 OK: the multimodal shm copy runs off the event loop and a cancelled copy is discarded")
+EOF
+
+# 7. The event-loop stall dump is armed from the HTTP server lifespan, before the warmup thread and
+# before the lifespan yields, and importing it arms nothing. test_stall_dump.py then runs each
+# scenario in its own child process: a loop blocked in time.sleep (uvloop and asyncio), a CPU spin,
+# a C call that keeps the GIL (faulthandler's dump), fork() and a fork-context process pool,
+# uvicorn + FastAPI with /health polled during a blocked request, the detector disabled with 0, and
+# an invalid value. In the image it is on by default at 30 s; SGLANG_EVENT_LOOP_STALL_DUMP_SECS=0
+# disables it.
+python3 - <<'EOF'
+import inspect
+
+import sglang.srt.entrypoints.http_server as hs
+import sglang.srt.utils.event_loop_stall_dump as stall
+
+assert list(inspect.signature(stall.install).parameters) == [
+    "loop",
+    "stall_seconds",
+    "repeat_seconds",
+    "log_prefix",
+]
+assert hs.install_stall_dump is stall.install
+lifespan = inspect.getsource(hs.lifespan)
+hook, warmup, handoff = (
+    lifespan.index(marker)
+    for marker in (
+        "install_stall_dump(asyncio.get_running_loop())",
+        "warmup_thread = threading.Thread(",
+        "yield",
+    )
+)
+assert hook < warmup < handoff, (hook, warmup, handoff)
+assert stall._detector is None, "importing the module must not arm the detector"
+EOF
+stall_report="$(mktemp)"
+if ! python3 -W ignore::DeprecationWarning "$RECIPE_DIR/test_stall_dump.py" \
+    --module "$PWD/python/sglang/srt/utils/event_loop_stall_dump.py" \
+    --out "$stall_report" > /dev/null; then
+  cat "$stall_report"
+  echo "step 7 FAILED: event-loop stall dump functional test" >&2
+  exit 1
+fi
+sed -n '/^SUMMARY/,$p' "$stall_report"
+echo "step 7 OK: the event-loop stall dump reports blocked-loop stacks and recoveries, and stays off at 0"
+
+# 8. The ghost prefix cache is hooked into release_kv_cache and inert by default. test_ghost_cache.py
+# then checks the installed modules: predicted hit tokens equal a brute-force LRU simulation at every
+# cache size with sampling off, 1/16 sampling stays within 5 points, compulsory misses equal
+# never-seen pages, only 16-byte keyed digests are retained, the tracked set is bounded, the hook
+# does nothing without SGLANG_GHOST_CACHE=1; racing replicas share one key file; the aggregator's
+# pooled counts equal a brute-force two-replica simulation with a failover; and two recorders feed a
+# running aggregator over a real unix socket whose /metrics match the direct computation.
+python3 - <<'EOF'
+import inspect
+
+import sglang.srt.mem_cache.common as common
+import sglang.srt.observability.ghost_cache as ghost
+
+release = inspect.getsource(common.release_kv_cache)
+assert release.index("observe_finished_req(req)") < release.index("assert (not req.kv.holds_kv)"), release
+assert common.observe_finished_req is ghost.observe_finished_req
+assert ghost._ENABLED is False and ghost._recorder is None
+EOF
+python3 "$RECIPE_DIR/test_ghost_cache.py" \
+  --module "$PWD/python/sglang/srt/observability/ghost_cache.py" \
+  --aggregator "$PWD/python/sglang/srt/observability/ghost_aggregator.py"
+echo "step 8 OK: the ghost prefix cache and its pooled aggregator match exact LRU, store only keyed digests, and are off by default"
+
+# 9. The KV tier metrics are inert by default and only observe. test_kv_tier_metrics.py checks the
+# installed module against a fake radix tree (evictions by outcome and kind, idle buckets, the four
+# tier gauges, all exact) and that every hook is in the installed unified_tree_core.py. Then the
+# upstream unified radix cache unit tests run on CPU with the recorder forced on (no TP group here)
+# and hook errors re-raised, so a hook that breaks on real tree operations fails here.
+# kvtm_check_plugin.py reports the tests that need a CUDA device as skipped and fails the session
+# unless the recorder ran, counted VRAM evictions and load-backs, and enough tests passed. It
+# deselects three tests that drive the tree with a Mock in place of its node arena, which the
+# strict-mode gauge walk cannot iterate; outside strict mode that error is logged and they pass.
+python3 - <<'EOF'
+import sglang.srt.mem_cache.unified_cache.unified_tree_core as utc
+import sglang.srt.observability.kv_tier_metrics as kvtm
+
+assert utc.kv_tier_metrics is kvtm
+assert kvtm._ENABLED is False and kvtm.recorder() is None
+node_cls = utc.UnifiedTreeNode
+assert isinstance(node_cls.__dict__["last_access_time"], property)
+EOF
+python3 "$RECIPE_DIR/test_kv_tier_metrics.py" \
+  --module "$PWD/python/sglang/srt/observability/kv_tier_metrics.py" \
+  --tree-core "$PWD/python/sglang/srt/mem_cache/unified_cache/unified_tree_core.py"
+SGLANG_KV_TIER_METRICS=1 SGLANG_KV_TIER_METRICS_FORCE=1 SGLANG_KV_TIER_METRICS_STRICT=1 \
+SGLANG_KV_TIER_METRICS_RESYNC_S=0 SGLANG_USE_CPU_ENGINE=1 \
+PYTHONPATH="$RECIPE_DIR${PYTHONPATH:+:$PYTHONPATH}" \
+  python3 -m pytest -q -p no:cacheprovider -p kvtm_check_plugin \
+  test/registered/unit/mem_cache/test_unified_radix_cache_unittest.py
+echo "step 9 OK: the KV tier metrics are exact, hooked into the tree core, off by default, and hold under the upstream cache tests in strict mode"
+
+# 10. The self-profiling hook is inert by default. The first block checks the installed modules: the
+# hook module is importable, creates nothing without NEAR_SELF_PROFILE=1 (or off tp_rank 0), and
+# Scheduler has it wired in. test_self_profile.py then runs the summariser on synthetic traces (blocking
+# calls, code paths, memcpy direction, trace dir deleted, NO_KERNELS exit code), the hook state machine
+# against a stub profiler manager (waits for a decode batch, one CUDA+CPU profile, one CPU-only retry,
+# then disabled for good) and checks the hook sites in scheduler.py and profiler_manager.py. No GPU, no
+# real profiler: whether CUPTI works under CC is the open risk the first TEE run settles.
+python3 - <<'EOF'
+import inspect
+import os
+import types
+
+import sglang.srt.managers.scheduler as scheduler
+from sglang.srt.managers.scheduler_components.profiler_manager import SchedulerProfilerManager
+from sglang.srt.utils import near_self_profile as nsp
+
+assert os.environ.get("NEAR_SELF_PROFILE") is None
+assert scheduler.maybe_create_self_profile is nsp.maybe_create
+rank0 = types.SimpleNamespace(ps=types.SimpleNamespace(tp_rank=0))
+assert nsp.maybe_create(rank0) is None
+assert not os.path.exists(nsp.OUT_DIR)
+assert "near_selfprof" in inspect.getsource(SchedulerProfilerManager._stop_profile)
+EOF
+python3 "$RECIPE_DIR/test_self_profile.py" \
+  --module "$PWD/python/sglang/srt/utils/near_self_profile.py" \
+  --scheduler "$PWD/python/sglang/srt/managers/scheduler.py" \
+  --profiler-manager "$PWD/python/sglang/srt/managers/scheduler_components/profiler_manager.py" \
+  | tail -n 1
+echo "step 10 OK: the self-profiling hook is off by default, its summariser and state machine behave on synthetic traces, and its hook sites are in place"
+
+# 11. FP8 KV cache for GLM's NoPE DSA (fp8kv-flashmla.diff) is in place. The kernels need a GPU and
+# libcuda (sgl_kernel does not import on a CPU build host), so this step checks what a CPU can: the
+# four patched modules parse, carry the patch markers, and the two pieces of arithmetic are
+# right. The pool row is 512 fp8 + 16 B of scales + 64 zero bf16 rope slots = 656 B against 1024 B
+# for bf16 (1.56x), and the kpool index table (2048 + kpool - 1 wide) is padded to a multiple of 128.
+# Everything is gated on --kv-cache-dtype fp8_e4m3 with flashmla_kv, so the bf16/tilelang path is
+# unchanged; the GPU evidence is in the README.
+python3 - <<'EOF'
+import ast
+import pathlib
+
+root = pathlib.Path("python/sglang/srt")
+marks = {
+    "layers/attention/dsa_backend.py": ["flashmla_kv_pad_rope_dim", "flashmla_kv_topk", "value=-1"],
+    "layers/attention/dsa/dsa_backend_kpool.py": ['"tilelang", "trtllm", "flashmla_kv")'],
+    "mem_cache/kv_cache_configurator.py": ["rope_slots = 64", "rope_slots * rope_storage_dtype.itemsize"],
+    "models/deepseek_common/attention_forward_methods/forward_mha.py": [
+        "full_attn_backend",
+        "if self.qk_rope_head_dim == 0:",
+    ],
+}
+for name, needles in marks.items():
+    text = (root / name).read_text()
+    ast.parse(text, filename=name)
+    assert all(needle in text for needle in needles), (name, needles)
+
+kv_lora_rank, quant_block, rope_slots, rope_bytes = 512, 128, 64, 2
+row = kv_lora_rank + kv_lora_rank // quant_block * 4 + rope_slots * rope_bytes
+assert row == 656, row
+assert round(1024 / row, 2) == 1.56
+for kpool, want in ((1, 2048), (4, 2176), (129, 2176), (130, 2304)):
+    cols = 2048 + kpool - 1
+    padded = 2048 if kpool == 1 else -(-cols // 128) * 128
+    assert padded == want and padded % 128 == 0, (kpool, padded)
+print("step 11 OK: FP8 KV patch (NoPE DSA, 656 B row, padded kpool index table) is in place and parses")
+EOF
+# test_fp8kv_paths.py extracts the changed functions by ast and runs them on stubs with the gate on and
+# off (row width, q pad, kpool topk padding, tail-backend check, hybrid-backend and k_pe selection).
+python3 "$RECIPE_DIR/test_fp8kv_paths.py" --root "$PWD/python/sglang/srt" | tail -n 1
+
+# 12. The preprocess process pool is opt-in. Unset, 0, a negative count and garbage leave install()
+# returning None without forking, and the HTTP server calls it after the chat serving object exists.
+# test_preprocess_pool.py then runs the real module with forked workers: a request over the deadline
+# fails alone (PreprocessTimeout) while twenty others finish at once, the worker is killed and replaced,
+# a crashed or SIGTERMed worker is replaced (the request it ran fails alone) and never signals the
+# parent, a broken pool wakes queued requests, a cancelled request does not
+# leak a worker, a 5M-id result round-trips, and the zygote exits when the pool shuts down.
+python3 - <<'EOF'
+import inspect
+import os
+
+assert os.environ.get("SGLANG_PREPROCESS_WORKERS") is None
+from sglang.test.test_utils import maybe_stub_sgl_kernel
+
+maybe_stub_sgl_kernel()
+import sglang.srt.entrypoints.http_server as hs  # noqa: E402
+import sglang.srt.managers.preprocess_pool as pp  # noqa: E402
+from sglang.srt.entrypoints.openai.serving_base import OpenAIServingBase  # noqa: E402
+
+lifespan = inspect.getsource(hs.lifespan)
+assert lifespan.index("openai_serving_chat = (") < lifespan.index("install_preprocess_pool(") < lifespan.index("yield")
+base = inspect.getsource(OpenAIServingBase.handle_request)
+assert "_preprocess_pool" in base and "run_in_request_preprocessor" in base
+assert pp.maybe_hooked(print) is print, "the test hook must be off unless SGLANG_PREPROCESS_TEST_HOOK=1"
+EOF
+python3 "$RECIPE_DIR/test_preprocess_pool.py" "$PWD/python/sglang/srt/managers/preprocess_pool.py"
+echo "step 12 OK: the preprocess pool is off by default and, when on, isolates a slow request, replaces its worker and leaves the parent's signals alone"
+
+# 13. The tool-schema size cap is opt-in. The installed module has both limits at 0 without the env
+# vars; test_tool_schema_guard.py checks the boundaries, the iterative walk (a 200k-deep schema and a
+# cyclic one), bad env values, and runs the shipped OpenAIServingChat._validate_request (extracted from
+# serving_chat.py by ast) to prove an oversized tool is rejected before jsonschema's check_schema runs.
+python3 - <<'EOF'
+import os
+
+assert os.environ.get("SGLANG_TOOL_SCHEMA_MAX_DEPTH") is None and os.environ.get("SGLANG_TOOL_SCHEMA_MAX_NODES") is None
+from sglang.srt.utils import tool_schema_guard as guard
+
+assert guard.MAX_DEPTH == 0 and guard.MAX_NODES == 0
+deep = {}
+for _ in range(1000):
+    deep = {"anyOf": [deep]}
+assert guard.check_tool_schema_size(deep) is None
+EOF
+python3 "$RECIPE_DIR/test_tool_schema_guard.py" \
+  --module "$PWD/python/sglang/srt/utils/tool_schema_guard.py" \
+  --serving-chat "$PWD/python/sglang/srt/entrypoints/openai/serving_chat.py"
+echo "step 13 OK: the tool-schema size cap is off by default and rejects oversized tool schemas before check_schema"
+
+# 14. PD-Multiplexing + EAGLE (pdmux-eagle.diff, the last patch). Needs no GPU:
+#   a. every patched source file (all 40 in source-manifest.json) compiles and the pdmux modules import;
+#   b. the baked config /etc/glm53/pdmux-ov96-l4.yaml has the reviewed content;
+#   c. check_server_args accepts the exact canary argv (pdmux-canary-argv.json, which the compose file's
+#      model-sg-glm53-w4afp8-tp2-r4 command must equal, see scripts/test_glm53_pdmux_canary.py) and
+#      still rejects the setups pdmux does not support;
+#   d. the ported pytest suite (7 files, 56 tests) runs against the installed sources.
+python3 - <<'EOF'
+import json
+import py_compile
+
+import yaml
+
+with open("/usr/share/nearai/glm53-hicache-w4afp8-pdmuxe/source-manifest.json") as f:
+    manifest = json.load(f)
+assert len(manifest) == 40, len(manifest)
+for name in manifest:
+    py_compile.compile("/sgl-workspace/sglang/" + name, cfile="/tmp/pdmux_check.pyc", doraise=True)
+
+from sglang.test.test_utils import maybe_stub_sgl_kernel
+
+maybe_stub_sgl_kernel()
+import sglang.srt.managers.scheduler  # noqa: E402,F401
+import sglang.srt.model_executor.model_runner  # noqa: E402,F401
+import sglang.srt.model_executor.runner.eager_runner  # noqa: E402,F401
+import sglang.srt.models.glm5_next  # noqa: E402,F401
+import sglang.srt.models.glm5_next_nextn  # noqa: E402,F401
+import sglang.srt.multiplex.multiplexing_mixin  # noqa: E402,F401
+import sglang.srt.speculative.eagle_worker_v2  # noqa: E402,F401
+
+with open("/etc/glm53/pdmux-ov96-l4.yaml") as f:
+    cfg = yaml.safe_load(f)
+assert cfg == {
+    "sm_group_num": 3,
+    "manual_divisions": [[96, 36, 1]],
+    "split_forward_token_budget": 65536,
+    "max_split_forward_layers": 4,
+    "overlap_decode_full_sm": True,
+}, cfg
+EOF
+python3 - <<'EOF'
+import argparse
+import dataclasses
+import json
+
+from sglang.srt.arg_groups import validation_hook as vh
+from sglang.srt.server_args import ServerArgs
+
+with open("/usr/share/nearai/glm53-hicache-w4afp8-pdmuxe/pdmux-canary-argv.json") as f:
+    argv = json.load(f)
+assert argv[-6:] == ["--disable-overlap-schedule", "--enable-pdmux", "--sm-group-num", "3",
+                     "--pdmux-config-path", "/etc/glm53/pdmux-ov96-l4.yaml"], argv[-6:]
+parser = argparse.ArgumentParser()
+ServerArgs.add_cli_args(parser)
+ns = parser.parse_args(argv)
+# __post_init__ needs the checkpoint; copy the parsed fields onto a bare instance instead.
+args = ServerArgs.__new__(ServerArgs)
+for field in dataclasses.fields(ServerArgs):
+    if hasattr(ns, field.name):
+        object.__setattr__(args, field.name, getattr(ns, field.name))
+if args.page_size is None:
+    object.__setattr__(args, "page_size", 64)
+assert args.enable_pdmux and args.sm_group_num == 3
+assert (args.speculative_algorithm, args.speculative_num_steps, args.speculative_eagle_topk,
+        args.speculative_num_draft_tokens) == ("EAGLE", 4, 1, 5)
+assert not args.enable_hierarchical_cache and args.disable_overlap_schedule
+vh.check_server_args(args)
+
+
+def rejected(**overrides):
+    bad = ServerArgs.__new__(ServerArgs)
+    for field in dataclasses.fields(ServerArgs):
+        if hasattr(args, field.name):
+            object.__setattr__(bad, field.name, getattr(args, field.name))
+    for key, value in overrides.items():
+        object.__setattr__(bad, key, value)
+    try:
+        vh.check_server_args(bad)
+    except AssertionError:
+        return True
+    return False
+
+
+assert rejected(speculative_algorithm="EAGLE3")
+assert rejected(enable_multi_layer_eagle=True)
+assert rejected(disable_overlap_schedule=False)
+assert rejected(enable_mixed_chunk=True)
+assert rejected(sm_group_num=4)
+EOF
+PDMUX_T="$(mktemp -d)"
+mkdir -p "$PDMUX_T"/test/registered/unit/{managers,models,multiplex,spec}
+ln -s /sgl-workspace/sglang/python "$PDMUX_T/python"
+cp "$RECIPE_DIR/test_pdmux_scheduler.py" "$PDMUX_T/test/registered/unit/managers/"
+cp "$RECIPE_DIR/test_glm5_next_pdmux.py" "$PDMUX_T/test/registered/unit/models/"
+cp "$RECIPE_DIR"/test_pdmux_group_alias.py "$RECIPE_DIR"/test_pdmux_hicache_events.py \
+   "$RECIPE_DIR"/test_pdmux_overlap_streams.py "$RECIPE_DIR"/test_w4afp8_pdmux_buffers.py \
+   "$PDMUX_T/test/registered/unit/multiplex/"
+cp "$RECIPE_DIR/test_eagle_pdmux.py" "$PDMUX_T/test/registered/unit/spec/"
+(cd /sgl-workspace/sglang/python && python3 -m pytest -p no:cacheprovider -q "$PDMUX_T/test/registered/unit")
+rm -rf "$PDMUX_T"
+echo "step 14 OK: the pdmux + EAGLE patch compiles, imports, accepts the canary argv, rejects unsupported setups and passes its ported tests"
+
+echo "GLM-5.3 W4AFP8 combined-image CPU checks passed"

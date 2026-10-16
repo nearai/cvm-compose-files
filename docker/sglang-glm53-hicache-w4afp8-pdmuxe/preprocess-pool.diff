@@ -1,0 +1,562 @@
+diff --git a/python/sglang/srt/entrypoints/http_server.py b/python/sglang/srt/entrypoints/http_server.py
+index 113bd17..7b3ea9d 100644
+--- a/python/sglang/srt/entrypoints/http_server.py
++++ b/python/sglang/srt/entrypoints/http_server.py
+@@ -334,6 +334,13 @@ async def lifespan(fast_api_app: FastAPI):
+         _global_state.tokenizer_manager
+     )
+ 
++    # Opt-in: with SGLANG_PREPROCESS_WORKERS=N > 0, chat preprocessing runs in N worker processes
++    # with a per-request deadline (SGLANG_PREPROCESS_TIMEOUT_S, default 60 s). Unset or 0 does
++    # nothing and keeps the single-thread preprocessor.
++    from sglang.srt.managers.preprocess_pool import install as install_preprocess_pool
++
++    await install_preprocess_pool(fast_api_app.state.openai_serving_chat)
++
+     # Initialize Ollama-compatible serving handler
+     fast_api_app.state.ollama_serving = OllamaServing(_global_state.tokenizer_manager)
+ 
+diff --git a/python/sglang/srt/entrypoints/openai/serving_base.py b/python/sglang/srt/entrypoints/openai/serving_base.py
+index 984ebc4..2173a4e 100644
+--- a/python/sglang/srt/entrypoints/openai/serving_base.py
++++ b/python/sglang/srt/entrypoints/openai/serving_base.py
+@@ -90,12 +90,50 @@ class OpenAIServingBase(ABC):
+                 request_logger.log_openai_received_request(request, request=raw_request)
+ 
+             # Chat template rendering and tokenization can block the event loop.
+-            (
+-                adapted_request,
+-                processed_request,
+-            ) = await self.tokenizer_manager.run_in_request_preprocessor(
+-                self._convert_to_internal_request, request, raw_request
+-            )
++            # Chat requests go to the process pool when it is running: a request whose
++            # preprocessing exceeds SGLANG_PREPROCESS_TIMEOUT_S fails alone instead of holding the
++            # single preprocessor thread for every other request (see preprocess_pool.py).
++            pool = getattr(self, "_preprocess_pool", None)
++            preprocessed = None
++            if pool is not None and not pool.broken:
++                from sglang.srt.managers.preprocess_pool import (
++                    PreprocessPoolError,
++                    PreprocessTimeout,
++                    PreprocessWorkerDied,
++                    request_shape,
++                )
++
++                shape = request_shape(request)
++                try:
++                    preprocessed = await pool.run(
++                        request,
++                        raw_request,
++                        label=f"rid={getattr(request, 'rid', None)} {shape}",
++                    )
++                except PreprocessTimeout as e:
++                    # 422, not 5xx: the cause is the payload, retrying cannot help, and 5xx
++                    # makes clients and gateways retry the same request.
++                    return self.create_error_response(
++                        message=str(e),
++                        err_type="RequestPreprocessingTimeout",
++                        status_code=422,
++                    )
++                except PreprocessWorkerDied as e:
++                    # Not retried on the thread path: this request may be what killed the worker.
++                    return self.create_error_response(
++                        message=str(e),
++                        err_type="RequestPreprocessingWorkerDied",
++                        status_code=422,
++                    )
++                except PreprocessPoolError as e:
++                    logger.warning("preprocess pool unavailable (%s); using thread path", e)
++            if preprocessed is None:
++                from sglang.srt.managers.preprocess_pool import maybe_hooked
++
++                preprocessed = await self.tokenizer_manager.run_in_request_preprocessor(
++                    maybe_hooked(self._convert_to_internal_request), request, raw_request
++                )
++            (adapted_request, processed_request) = preprocessed
+ 
+             if isinstance(adapted_request, (GenerateReqInput, EmbeddingReqInput)):
+                 # Only set timing fields if adapted_request supports them
+diff --git a/python/sglang/srt/managers/preprocess_pool.py b/python/sglang/srt/managers/preprocess_pool.py
+new file mode 100644
+index 0000000..8e8d9a5
+--- /dev/null
++++ b/python/sglang/srt/managers/preprocess_pool.py
+@@ -0,0 +1,477 @@
++"""Process pool with a per-request deadline for chat-request preprocessing.
++
++Why: patch 4 (sgl-project/sglang#30771) moves chat-template rendering and tokenization off
++the event loop into ThreadPoolExecutor(max_workers=1). One worker is shared by every request, so a
++single request whose preprocessing takes minutes holds every other request of the replica
++(production wedge, RCA in tee-bench/evidence/long-tp2-wedge-rca). A thread cannot be killed, so
++a deadline is impossible there. This module runs the same function in forked worker processes:
++a request that exceeds the deadline is failed alone, its process is killed and replaced, and the
++other workers keep serving.
++
++Opt-in: with SGLANG_PREPROCESS_WORKERS unset or 0 install() does nothing (no process is forked and
++requests take the patch-4 thread path unchanged). SGLANG_PREPROCESS_WORKERS=N (N > 0) starts N workers.
++
++Design:
++  * install() is called once from the HTTP server lifespan, before traffic. It forks a
++    "zygote" (a copy of the process taken at that moment, holding the already
++    built serving object). Workers are forked from the zygote, never from the threaded server
++    process, so replacing a worker at runtime never forks the multi-threaded server again. The one
++    fork of the server that creates the zygote happens once, at lifespan start, from the event-loop
++    thread of a process that has other threads; install() pings every first worker to catch a
++    child that inherited a held lock, and disables the pool if one does not answer.
++  * Control: a socketpair main<->zygote. "spawn" carries the child end of a fresh data
++    socketpair via SCM_RIGHTS; the zygote forks a worker on it and answers with the pid.
++  * Data: one data socketpair per worker, frames of an 8-byte length plus a pickle. A worker
++    handles one request at a time: (request, headers) -> (adapted_request, processed_request)
++    or an error tuple that the parent re-raises with the original class (ValueError,
++    HTTPException keep their status).
++  * Deadline: SGLANG_PREPROCESS_TIMEOUT_S (default 60) from dispatch to the worker. On timeout
++    the worker is SIGKILLed, a replacement is spawned, and PreprocessTimeout is raised for that
++    request only. A client disconnect does not interrupt a running worker: the exchange runs
++    as a shielded task that returns the worker to the pool or kills it at the deadline.
++  * Only the chat serving object is pooled. Everything else (tokenize of completions and
++    embeddings, multimodal /dev/shm hand-off) stays on the existing thread path: those closures
++    and tensors are not picklable and are not the observed failure.
++  * A failure of the pool itself (spawn error, pickling error) falls back to the thread path.
++"""
++
++import asyncio
++import logging
++import math
++import os
++import pickle
++import signal
++import socket
++import struct
++import time
++from typing import Any, Callable, List, Optional
++
++logger = logging.getLogger(__name__)
++
++_HDR = struct.Struct("!Q")
++_MAX_FRAME = 1 << 33  # 8 GiB sanity bound
++_PING = b"__pp_ping__"
++
++
++class PreprocessTimeout(Exception):
++    def __init__(self, elapsed_s: float, timeout_s: float):
++        super().__init__(
++            f"request preprocessing (chat template + tokenization) exceeded {timeout_s:g}s"
++        )
++        self.elapsed_s = elapsed_s
++        self.timeout_s = timeout_s
++
++
++class PreprocessWorkerDied(Exception):
++    """The worker died while running this request (OOM kill, crash). Per-request error: the request
++    is NOT retried on the unguarded thread path, since it may be the one that killed the worker."""
++
++
++class PreprocessPoolError(Exception):
++    """The pool itself failed (not the request); callers fall back to the thread path."""
++
++
++# ---------------------------------------------------------------------------------------------
++# framing helpers (blocking, used by the zygote and workers)
++def _recv_exact(sock: socket.socket, n: int) -> Optional[bytes]:
++    buf = bytearray()
++    while len(buf) < n:
++        chunk = sock.recv(min(n - len(buf), 1 << 20))
++        if not chunk:
++            return None if not buf else bytes(buf)
++        buf += chunk
++    return bytes(buf)
++
++
++def _send_frame(sock: socket.socket, payload: bytes) -> None:
++    sock.sendall(_HDR.pack(len(payload)))
++    sock.sendall(payload)
++
++
++def _recv_frame(sock: socket.socket) -> Optional[bytes]:
++    hdr = _recv_exact(sock, _HDR.size)
++    if hdr is None or len(hdr) < _HDR.size:
++        return None
++    (n,) = _HDR.unpack(hdr)
++    if n > _MAX_FRAME:
++        return None
++    body = _recv_exact(sock, n) if n else b""
++    return body
++
++
++# ---------------------------------------------------------------------------------------------
++# test hook (worker side): SGLANG_PREPROCESS_TEST_HOOK=1 and a marker in the request text
++#   __PP_SLOW_<seconds>__   busy-spin that long before converting (CPU-bound slow request)
++#   __PP_CRASH__            kill this worker
++def _test_hook(request) -> None:
++    if os.environ.get("SGLANG_PREPROCESS_TEST_HOOK") != "1":
++        return
++    try:
++        blob = repr(getattr(request, "messages", request))
++    except Exception:
++        return
++    i = blob.find("__PP_SLOW_")
++    if i >= 0:
++        try:
++            secs = float(blob[i + len("__PP_SLOW_") :].split("__", 1)[0])
++        except ValueError:
++            secs = 0.0
++        end = time.monotonic() + secs
++        x = 0
++        while time.monotonic() < end:
++            x += 1
++    if "__PP_CRASH__" in blob:
++        os._exit(1)
++
++
++def maybe_hooked(func):
++    """Thread-path wrapper so the test hook also works with the pool disabled (control arm)."""
++    if os.environ.get("SGLANG_PREPROCESS_TEST_HOOK") != "1":
++        return func
++
++    def hooked(request, raw_request=None):
++        _test_hook(request)
++        return func(request, raw_request)
++
++    return hooked
++
++
++class _Headers:
++    """Minimal picklable stand-in for starlette's request.headers (only .get is used)."""
++
++    def __init__(self, items):
++        self._d = {str(k).lower(): v for k, v in items}
++
++    def get(self, key, default=None):
++        return self._d.get(str(key).lower(), default)
++
++    def __iter__(self):
++        return iter(self._d)
++
++    def items(self):
++        return self._d.items()
++
++    def keys(self):
++        return self._d.keys()
++
++    def __getitem__(self, key):
++        return self._d[str(key).lower()]
++
++    def __contains__(self, key):
++        return str(key).lower() in self._d
++
++    def __len__(self):
++        return len(self._d)
++
++
++class _RawRequestStub:
++    def __init__(self, headers):
++        self.headers = headers
++
++
++# ---------------------------------------------------------------------------------------------
++def _detach_from_parent_signals() -> None:
++    """Forked children inherit the parent's asyncio signal wiring: a SIGTERM/SIGQUIT handler that
++    writes the signal number into the parent's wakeup socket. A child that caught one would make the
++    parent believe it was signalled, so drop the wakeup fd and restore default dispositions."""
++    try:
++        signal.set_wakeup_fd(-1)
++    except Exception:
++        pass
++    for sig in (signal.SIGTERM, signal.SIGQUIT):
++        try:
++            signal.signal(sig, signal.SIG_DFL)
++        except Exception:
++            pass
++    try:
++        signal.signal(signal.SIGINT, signal.SIG_IGN)
++    except Exception:
++        pass
++
++
++def _worker_main(sock: socket.socket, handler: Callable) -> None:
++    os.environ["TOKENIZERS_PARALLELISM"] = "false"
++    _detach_from_parent_signals()
++    while True:
++        frame = _recv_frame(sock)
++        if frame is None:
++            os._exit(0)
++        if frame == _PING:
++            try:
++                _send_frame(sock, pickle.dumps(("pong",), pickle.HIGHEST_PROTOCOL))
++            except OSError:
++                os._exit(0)
++            continue
++        try:
++            request, header_items = pickle.loads(frame)
++            _test_hook(request)
++            raw = _RawRequestStub(_Headers(header_items)) if header_items is not None else None
++            t0 = time.monotonic()
++            result = handler(request, raw)
++            out = pickle.dumps(("ok", result, time.monotonic() - t0), pickle.HIGHEST_PROTOCOL)
++        except BaseException as e:  # noqa: BLE001 - everything is reported to the parent
++            status = getattr(e, "status_code", None)
++            detail = getattr(e, "detail", None)
++            out = pickle.dumps(
++                ("err", type(e).__name__, str(e), status, detail), pickle.HIGHEST_PROTOCOL
++            )
++        try:
++            _send_frame(sock, out)
++        except OSError:
++            os._exit(0)
++
++
++def _zygote_main(ctl: socket.socket, handler: Callable) -> None:
++    """Single-threaded loop: fork one worker per 'spawn' message."""
++    _detach_from_parent_signals()
++    signal.signal(signal.SIGCHLD, signal.SIG_IGN)  # auto-reap killed workers
++    while True:
++        try:
++            msg, fds, _flags, _addr = socket.recv_fds(ctl, 16, 1)
++        except OSError:
++            msg, fds = b"", []
++        if not msg:  # parent closed the control socket or died
++            # Workers exit on their own: their data socket's other end belonged to the parent.
++            os._exit(0)
++        if not fds:
++            continue
++        data_sock = socket.socket(fileno=fds[0])
++        pid = os.fork()
++        if pid == 0:
++            try:
++                ctl.close()
++                _worker_main(data_sock, handler)
++            finally:
++                os._exit(1)
++        data_sock.close()
++        ctl.sendall(struct.pack("!q", pid))
++
++
++class _Worker:
++    __slots__ = ("pid", "reader", "writer", "id")
++
++    def __init__(self, wid, pid, reader, writer):
++        self.id, self.pid, self.reader, self.writer = wid, pid, reader, writer
++
++
++class PreprocessPool:
++    def __init__(self, handler: Callable, n_workers: int, timeout_s: float):
++        self.handler = handler
++        self.n = n_workers
++        self.timeout_s = timeout_s
++        try:
++            self.log_slow_s = float(os.environ.get("SGLANG_PREPROCESS_LOG_SLOW_S", "5"))
++        except ValueError:
++            self.log_slow_s = 5.0
++        self._ctl: Optional[socket.socket] = None
++        self._zygote_pid = 0
++        self._idle: "asyncio.Queue[_Worker]" = asyncio.Queue()
++        self._spawn_lock = asyncio.Lock()
++        self._next_id = 0
++        self.broken = False
++        self.stats = {"timeouts": 0, "replaced": 0, "ok": 0}
++
++    # -- startup (call from the event loop thread, before traffic) --------------------------
++    async def start(self) -> None:
++        parent, child = socket.socketpair()
++        pid = os.fork()
++        if pid == 0:
++            try:
++                parent.close()
++                _zygote_main(child, self.handler)
++            finally:
++                os._exit(1)
++        child.close()
++        self._zygote_pid = pid
++        parent.setblocking(False)
++        self._ctl = parent
++        for _ in range(self.n):
++            w = await self._spawn()
++            await self._ping(w)  # a worker wedged from birth (inherited lock) fails startup
++            self._idle.put_nowait(w)
++
++    async def _ping(self, w: "_Worker") -> None:
++        async def go():
++            w.writer.write(_HDR.pack(len(_PING)) + _PING)
++            await w.writer.drain()
++            hdr = await w.reader.readexactly(_HDR.size)
++            (n,) = _HDR.unpack(hdr)
++            await w.reader.readexactly(n)
++
++        try:
++            await asyncio.wait_for(go(), 10)
++        except Exception as e:
++            raise PreprocessPoolError(f"worker {w.id} did not answer a ping: {e!r}") from e
++
++    async def _spawn(self) -> _Worker:
++        loop = asyncio.get_running_loop()
++        async with self._spawn_lock:
++            mine, theirs = socket.socketpair()
++            try:
++                socket.send_fds(self._ctl, [b"s"], [theirs.fileno()])
++            finally:
++                theirs.close()
++            reply = await asyncio.wait_for(loop.sock_recv(self._ctl, 8), 30)
++            if len(reply) != 8:
++                raise PreprocessPoolError("zygote did not answer a spawn")
++            (pid,) = struct.unpack("!q", reply)
++        mine.setblocking(False)
++        reader, writer = await asyncio.open_connection(sock=mine)
++        self._next_id += 1
++        return _Worker(self._next_id, pid, reader, writer)
++
++    async def _replace(self, w: _Worker) -> None:
++        try:
++            os.kill(w.pid, signal.SIGKILL)
++        except OSError:
++            pass
++        try:
++            w.writer.close()
++        except Exception:
++            pass
++        self.stats["replaced"] += 1
++        try:
++            self._idle.put_nowait(await self._spawn())
++        except Exception:
++            self.broken = True
++            for _ in range(self.n + 1):  # wake every request queued on the idle list
++                self._idle.put_nowait(None)
++            logger.exception("preprocess pool: could not replace a worker; pool disabled")
++
++    # -- request path -----------------------------------------------------------------------
++    async def run(self, request, raw_request, label: str = "") -> Any:
++        if self.broken or self._ctl is None:
++            raise PreprocessPoolError("pool is not available")
++        try:
++            hdrs = getattr(raw_request, "headers", None)
++            header_items = list(hdrs.items()) if hdrs is not None else None
++            payload = pickle.dumps((request, header_items), pickle.HIGHEST_PROTOCOL)
++        except Exception as e:
++            raise PreprocessPoolError(f"request not picklable: {e!r}") from e
++        w = await self._idle.get()
++        if w is None:  # pool broke while we were queued: wake the next waiter, use the thread path
++            self._idle.put_nowait(None)
++            raise PreprocessPoolError("pool is not available")
++        task = asyncio.ensure_future(self._exchange(w, payload, label))
++        task.add_done_callback(lambda t: t.cancelled() or t.exception())
++        return await asyncio.shield(task)
++
++    async def _exchange(self, w: _Worker, payload: bytes, label: str) -> Any:
++        t0 = time.monotonic()
++        try:
++            async def read_reply():
++                w.writer.write(_HDR.pack(len(payload)) + payload)
++                await w.writer.drain()
++                hdr = await w.reader.readexactly(_HDR.size)
++                (n,) = _HDR.unpack(hdr)
++                return await w.reader.readexactly(n) if n else b""
++
++            frame = await asyncio.wait_for(read_reply(), self.timeout_s)
++        except asyncio.TimeoutError:
++            elapsed = time.monotonic() - t0
++            self.stats["timeouts"] += 1
++            logger.warning(
++                "preprocess timeout: %s elapsed=%.1fs limit=%gs worker=%d pid=%d; "
++                "killing and replacing the worker, other requests unaffected",
++                label, elapsed, self.timeout_s, w.id, w.pid,
++            )
++            await self._replace(w)
++            raise PreprocessTimeout(elapsed, self.timeout_s)
++        except (asyncio.IncompleteReadError, ConnectionError, OSError) as e:
++            logger.error(
++                "preprocess worker %d (pid %d) died: %r; replacing; %s", w.id, w.pid, e, label
++            )
++            await self._replace(w)
++            raise PreprocessWorkerDied(f"preprocessing worker died: {e!r}") from e
++        except BaseException:
++            await self._replace(w)
++            raise
++        self._idle.put_nowait(w)
++        msg = pickle.loads(frame)
++        if msg[0] == "ok":
++            self.stats["ok"] += 1
++            result, worker_s = msg[1], msg[2]
++            if worker_s > self.log_slow_s:
++                logger.info(
++                    "preprocess slow: %s worker_s=%.2f total_s=%.2f",
++                    label, worker_s, time.monotonic() - t0,
++                )
++            return result
++        _tag, name, text, status, detail = msg
++        _reraise(name, text, status, detail)
++
++    def shutdown(self) -> None:
++        try:
++            if self._ctl is not None:
++                self._ctl.close()
++        except Exception:
++            pass
++
++
++def _reraise(name: str, text: str, status, detail):
++    if name == "HTTPException":
++        from fastapi import HTTPException
++
++        raise HTTPException(status_code=status or 500, detail=detail if detail is not None else text)
++    if name == "ValueError":
++        raise ValueError(text)
++    raise RuntimeError(f"{name}: {text}")
++
++
++# ---------------------------------------------------------------------------------------------
++def request_shape(request) -> str:
++    """One-line size summary for logs (no content)."""
++    try:
++        msgs = getattr(request, "messages", None) or []
++        chars = images = 0
++        for m in msgs:
++            c = getattr(m, "content", None)
++            if isinstance(c, str):
++                chars += len(c)
++            elif isinstance(c, list):
++                for p in c:
++                    t = getattr(p, "type", None)
++                    if t == "text":
++                        chars += len(getattr(p, "text", "") or "")
++                    elif t and "image" in str(t):
++                        images += 1
++        tools = len(getattr(request, "tools", None) or [])
++        return f"msgs={len(msgs)} chars={chars} tools={tools} images={images}"
++    except Exception:
++        return "shape=unknown"
++
++
++async def install(serving_chat, loop=None) -> Optional[PreprocessPool]:
++    """Create and start the pool for `serving_chat`; sets serving_chat._preprocess_pool."""
++    raw = os.environ.get("SGLANG_PREPROCESS_WORKERS", "0").strip() or "0"
++    try:
++        n = int(raw)
++    except ValueError:
++        logger.warning("ignoring invalid SGLANG_PREPROCESS_WORKERS=%r; pool stays off", raw)
++        return None
++    n = min(n, 32)
++    if n <= 0:
++        return None  # default: inert, the patch-4 single-thread preprocessor is unchanged
++    try:
++        timeout = float(os.environ.get("SGLANG_PREPROCESS_TIMEOUT_S", "60"))
++    except ValueError:
++        timeout = 60.0
++    if not math.isfinite(timeout) or timeout <= 0:
++        timeout = 60.0
++    pool = None
++    try:
++        pool = PreprocessPool(serving_chat._convert_to_internal_request, n, timeout)
++        await pool.start()
++        serving_chat._preprocess_pool = pool
++        logger.info(
++            "preprocess pool started: workers=%d timeout=%gs zygote_pid=%d", n, timeout, pool._zygote_pid
++        )
++        return pool
++    except Exception:
++        logger.exception("preprocess pool failed to start; using the single-thread preprocessor")
++        try:
++            if pool is not None and pool._zygote_pid:
++                os.kill(pool._zygote_pid, signal.SIGKILL)
++        except Exception:
++            pass
++        return None

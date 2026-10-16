@@ -133,6 +133,12 @@ jobs:
             python:3.12-slim \
             sh -c 'python3 scripts/prepare_glm53_v8_kda_canary.py --check && python3 -m scripts.test_glm53_v8_kda_canary'
 
+      - name: Validate GLM-5.3 PD-Multiplexing + EAGLE image recipe
+        run: |
+          docker run --rm -v "$PWD:/repo:ro" -w /repo \
+            python:3.12-slim \
+            python3 -m scripts.test_glm53_pdmux_recipe
+
       - name: Validate docker compose files
         # Compose files reference env vars that are populated at deploy time
         # by compose-manager (or the operator). CI doesn't have the real

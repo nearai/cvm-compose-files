@@ -1,0 +1,281 @@
+diff --git a/python/sglang/srt/mem_cache/unified_cache/unified_tree_core.py b/python/sglang/srt/mem_cache/unified_cache/unified_tree_core.py
+index 37264a7..75b92f2 100644
+--- a/python/sglang/srt/mem_cache/unified_cache/unified_tree_core.py
++++ b/python/sglang/srt/mem_cache/unified_cache/unified_tree_core.py
+@@ -18,6 +18,7 @@ from __future__ import annotations
+ 
+ import logging
+ import sys
++import time
+ from array import array
+ from collections import defaultdict
+ from enum import Enum, auto
+@@ -44,6 +45,7 @@ from sglang.srt.mem_cache.hicache_storage import (
+     PoolTransferResult,
+ )
+ from sglang.srt.mem_cache.radix_cache import RadixKey
++from sglang.srt.observability import kv_tier_metrics
+ from sglang.srt.mem_cache.unified_cache.cache_action import (
+     BackupKV,
+     CacheAction,
+@@ -108,6 +110,17 @@ class StorageBackupSpec(NamedTuple):
+ class UnifiedTreeNode:
+     counter = 0
+ 
++    # KV tier metrics: every write of the tree's logical last_access_time also records wall-clock time,
++    # so evictions and load-backs can report how long a prefix had been idle.
++    @property
++    def last_access_time(self):
++        return self._last_access_time
++
++    @last_access_time.setter
++    def last_access_time(self, value):
++        self._last_access_time = value
++        self.last_access_wall = time.monotonic()
++
+     def __init__(self, tree_components: tuple[ComponentType, ...], priority: int = 0):
+         # Plain dict (not defaultdict): a missing-key read must raise, never
+         # silently mint an unregistered node outside the TreeCore arena.
+@@ -1470,6 +1483,9 @@ class UnifiedTreeCore(UnifiedTreeCoreInterface):
+         host_frees: dict[ComponentType, list[torch.Tensor]],
+     ) -> None:
+         """Delete a device leaf that has no host backup, freeing all layers."""
++        _kvtm = kv_tier_metrics.recorder()
++        if _kvtm is not None:
++            kv_tier_metrics.safe(_kvtm.vram_evict, self, node, "deleted")
+         self._release_all_component_layers(
+             node, StorageMedium.GPU, tracker, device_frees, host_frees
+         )
+@@ -1568,6 +1584,9 @@ class UnifiedTreeCore(UnifiedTreeCoreInterface):
+         """Free only the Full host layer; aux host slices stay under their own
+         pools' LRU (a host-only aux slice may be a sole copy)."""
+         assert self._can_reclaim_full_host_duplicate(node)
++        _kvtm = kv_tier_metrics.recorder()
++        if _kvtm is not None:
++            kv_tier_metrics.safe(_kvtm.dram_evict, self, node, "duplicate")
+         self.kv_events.record_remove(node, medium=StorageMedium.CPU)
+         self._evict_component_and_detach_lru(
+             node,
+@@ -1592,6 +1611,9 @@ class UnifiedTreeCore(UnifiedTreeCoreInterface):
+ 
+         All freed tokens are accumulated into *tracker*."""
+         assert self._is_host_leaf(node), f"node {node.id} is not an H-leaf"
++        _kvtm = kv_tier_metrics.recorder()
++        if _kvtm is not None:
++            kv_tier_metrics.safe(_kvtm.dram_evict, self, node, "dram_only")
+ 
+         self.kv_events.record_remove(node, medium=StorageMedium.CPU)
+         for comp in self.components:
+@@ -1628,6 +1650,9 @@ class UnifiedTreeCore(UnifiedTreeCoreInterface):
+         host_frees: dict[ComponentType, list[torch.Tensor]],
+     ) -> None:
+         assert not node.evicted and node.backuped
++        _kvtm = kv_tier_metrics.recorder()
++        if _kvtm is not None:
++            kv_tier_metrics.safe(_kvtm.vram_evict, self, node, "demoted")
+         trigger = self.components_by_type[BASE_COMPONENT_TYPE]
+         self._evict_component_and_detach_lru(
+             node,
+@@ -2166,6 +2191,10 @@ class UnifiedTreeCore(UnifiedTreeCoreInterface):
+                     f"{pinned.load_back_pending_id}, new anchor {node_id}"
+                 )
+                 pinned.load_back_pending_id = node_id
++        _kvtm = kv_tier_metrics.recorder()
++        if _kvtm is not None:
++            for nid in kv_xfer.nodes_to_load or ():
++                kv_tier_metrics.safe(_kvtm.load_back, self, self.node_by_id(nid))
+         kv_xfer.device_indices = device_indices
+         self.components_by_type[BASE_COMPONENT_TYPE].commit_hicache_transfer(
+             node,
+diff --git a/python/sglang/srt/observability/kv_tier_metrics.py b/python/sglang/srt/observability/kv_tier_metrics.py
+new file mode 100644
+index 0000000..b58ba22
+--- /dev/null
++++ b/python/sglang/srt/observability/kv_tier_metrics.py
+@@ -0,0 +1,186 @@
++"""KV tier metrics: what VRAM and DRAM (HiCache host tier) actually hold, and how fast each evicts.
++
++The stock cache counters (sglang:evicted_tokens_total, load_back_tokens_total, hicache_backup_tokens_total,
++hicache_dropped_tokens_total) are created on every TP rank without a rank label, so Prometheus
++multiprocess mode sums them and they read TP x the real volume. They also cannot tell a VRAM eviction
++that demotes a prefix to DRAM from one that deletes it, or a DRAM eviction that frees a duplicate of
++VRAM-resident data from one that throws away the only copy -- which is exactly what decides whether
++DRAM is being used well. This module records those events from TP rank 0 only:
++
++  sglang:kv_tier_vram_evicted_tokens_total{outcome=demoted|deleted}
++  sglang:kv_tier_dram_evicted_tokens_total{kind=duplicate|dram_only}
++  sglang:kv_tier_load_back_tokens_total                       DRAM -> VRAM restores (full-KV tokens)
++  sglang:kv_tier_*_idle_tokens_total{...,within_s=S}          same tokens, bucketed by how long the prefix had
++                                                              been unused (cumulative; within_s=inf = all)
++  sglang:kv_tier_vram_cached_tokens                           gauges from an exact walk of the radix tree:
++  sglang:kv_tier_dram_duplicate_tokens                        on DRAM AND in VRAM (write_through copies)
++  sglang:kv_tier_dram_only_tokens                             on DRAM only: the part that can produce DRAM hits
++  sglang:kv_tier_dram_only_matchable_tokens                   DRAM-only tokens with a mamba (recurrent-state)
++                                                              checkpoint at or below them, in VRAM or DRAM. A
++                                                              hybrid-model match must end at such a checkpoint, so
++                                                              DRAM-only KV without one cannot produce a hit.
++
++Idle time is wall-clock seconds since the node's last access (the tree's own last_access_time, stamped
++with time.monotonic whenever it is set). For evictions it is how long a prefix survived unused; for
++load-backs it is how long a DRAM hit had been idle, i.e. the reuse gap DRAM rescued.
++
++Enable with SGLANG_KV_TIER_METRICS=1 (default off). SGLANG_KV_TIER_METRICS_RESYNC_S (default 30) bounds
++how often rank 0 walks the tree to refresh the gauges. Test-only switches: SGLANG_KV_TIER_METRICS_FORCE=1
++records without a TP group (unit tests), SGLANG_KV_TIER_METRICS_STRICT=1 re-raises hook errors instead of
++logging them.
++"""
++
++from __future__ import annotations
++
++import logging
++import os
++import time
++from typing import Optional
++
++logger = logging.getLogger(__name__)
++
++IDLE_BUCKETS_S = (10, 30, 60, 120, 300, 600, 900, 1200, 1800, 2700, 3600, 7200)
++_ENABLED = os.environ.get("SGLANG_KV_TIER_METRICS", "0").strip() == "1"
++_FORCE = os.environ.get("SGLANG_KV_TIER_METRICS_FORCE", "0").strip() == "1"
++_STRICT = os.environ.get("SGLANG_KV_TIER_METRICS_STRICT", "0").strip() == "1"
++
++
++def _full_len(tensor) -> int:
++    return 0 if tensor is None else int(len(tensor))
++
++
++class TierMetrics:
++    def __init__(self, resync_s: float, registry=None, model_name: Optional[str] = None):
++        from prometheus_client import REGISTRY, Counter, Gauge
++
++        reg = REGISTRY if registry is None else registry
++        self.labels = {"model_name": model_name if model_name is not None else _served_model_name()}
++        names = list(self.labels)
++        self.resync_s = resync_s
++        self._last_resync = 0.0
++        self.c_vram = Counter("sglang:kv_tier_vram_evicted_tokens_total", "Full-KV tokens evicted from VRAM, by outcome (demoted to DRAM or deleted).", names + ["outcome"], registry=reg)
++        self.c_vram_idle = Counter("sglang:kv_tier_vram_evicted_idle_tokens_total", "VRAM-evicted tokens whose prefix had been unused less than within_s seconds (cumulative).", names + ["outcome", "within_s"], registry=reg)
++        self.c_dram = Counter("sglang:kv_tier_dram_evicted_tokens_total", "Full-KV tokens evicted from DRAM, by kind (duplicate of VRAM data, or the only copy).", names + ["kind"], registry=reg)
++        self.c_dram_idle = Counter("sglang:kv_tier_dram_evicted_idle_tokens_total", "DRAM-evicted tokens whose prefix had been unused less than within_s seconds (cumulative).", names + ["kind", "within_s"], registry=reg)
++        self.c_load = Counter("sglang:kv_tier_load_back_tokens_total", "Full-KV tokens restored from DRAM to VRAM.", names, registry=reg)
++        self.c_load_idle = Counter("sglang:kv_tier_load_back_idle_tokens_total", "Restored tokens whose prefix had been unused less than within_s seconds (cumulative).", names + ["within_s"], registry=reg)
++        self.g_vram = Gauge("sglang:kv_tier_vram_cached_tokens", "Full-KV tokens held in VRAM by the radix tree.", names, registry=reg, multiprocess_mode="max")
++        self.g_dup = Gauge("sglang:kv_tier_dram_duplicate_tokens", "Full-KV tokens held in DRAM that are also in VRAM.", names, registry=reg, multiprocess_mode="max")
++        self.g_only = Gauge("sglang:kv_tier_dram_only_tokens", "Full-KV tokens held only in DRAM (the part that can produce DRAM hits).", names, registry=reg, multiprocess_mode="max")
++        self.g_match = Gauge("sglang:kv_tier_dram_only_matchable_tokens", "DRAM-only Full-KV tokens with a mamba checkpoint at or below them (usable for a hybrid-model match).", names, registry=reg, multiprocess_mode="max")
++
++    def _idle(self, counter, tokens: int, node, now: float, **extra) -> None:
++        wall = getattr(node, "last_access_wall", None)
++        idle = None if wall is None else now - wall
++        for limit in IDLE_BUCKETS_S:
++            if idle is not None and idle < limit:
++                counter.labels(**self.labels, **extra, within_s=str(limit)).inc(tokens)
++        counter.labels(**self.labels, **extra, within_s="inf").inc(tokens)
++
++    def vram_evict(self, core, node, outcome: str) -> None:
++        tokens = _full_len(node.component_data[0].value)
++        if tokens:
++            now = time.monotonic()
++            self.c_vram.labels(**self.labels, outcome=outcome).inc(tokens)
++            self._idle(self.c_vram_idle, tokens, node, now, outcome=outcome)
++        self.maybe_resync(core)
++
++    def dram_evict(self, core, node, kind: str) -> None:
++        tokens = _full_len(node.component_data[0].host_value)
++        if tokens:
++            now = time.monotonic()
++            self.c_dram.labels(**self.labels, kind=kind).inc(tokens)
++            self._idle(self.c_dram_idle, tokens, node, now, kind=kind)
++        self.maybe_resync(core)
++
++    def load_back(self, core, node) -> None:
++        tokens = _full_len(node.component_data[0].host_value)
++        if tokens:
++            self.c_load.labels(**self.labels).inc(tokens)
++            self._idle(self.c_load_idle, tokens, node, time.monotonic())
++        self.maybe_resync(core)
++
++    def maybe_resync(self, core, force: bool = False) -> None:
++        now = time.monotonic()
++        if not force and now - self._last_resync < self.resync_s:
++            return
++        self._last_resync = now
++        vram = dup = only = matchable = 0
++        # post-order walk: does this node or anything below it hold a mamba checkpoint (device or host)?
++        below = {}
++        root = getattr(core, "root_node", None)
++        order, stack = [], ([root] if root is not None else [])
++        while stack:
++            n = stack.pop()
++            order.append(n)
++            stack.extend(n.children.values())
++        for n in reversed(order):
++            cds = n.component_data
++            own = len(cds) > 2 and (cds[2].value is not None or cds[2].host_value is not None)
++            below[n.id] = own or any(below.get(c.id, False) for c in n.children.values())
++        for node in core._node_arena.values():
++            if node.parent is None:
++                continue
++            cd = node.component_data[0]
++            dev, host = _full_len(cd.value), _full_len(cd.host_value)
++            vram += dev
++            if host:
++                if dev:
++                    dup += host
++                else:
++                    only += host
++                    if below.get(node.id, False):
++                        matchable += host
++        self.g_vram.labels(**self.labels).set(vram)
++        self.g_dup.labels(**self.labels).set(dup)
++        self.g_only.labels(**self.labels).set(only)
++        self.g_match.labels(**self.labels).set(matchable)
++
++
++def _served_model_name() -> str:
++    try:
++        from sglang.srt.server_args import get_global_server_args
++
++        args = get_global_server_args()
++        return str(args.served_model_name or args.model_path)
++    except Exception:
++        return "unknown"
++
++
++def _is_reporting_rank() -> bool:
++    try:
++        from sglang.srt.distributed.parallel_state import get_pp_group, get_tensor_model_parallel_rank
++
++        return get_tensor_model_parallel_rank() == 0 and get_pp_group().rank_in_group == 0
++    except Exception:
++        return False
++
++
++_recorder: Optional[TierMetrics] = None
++_checked = False
++
++
++def recorder() -> Optional[TierMetrics]:
++    """The rank-0 recorder, or None when disabled or on any other rank. Cheap after the first call."""
++    global _recorder, _checked
++    if _checked or not _ENABLED:
++        return _recorder
++    _checked = True
++    try:
++        if _FORCE or _is_reporting_rank():
++            _recorder = TierMetrics(resync_s=float(os.environ.get("SGLANG_KV_TIER_METRICS_RESYNC_S", "30")))
++            logger.info("KV tier metrics enabled on this rank (resync every %.0f s)", _recorder.resync_s)
++    except Exception:
++        logger.exception("KV tier metrics: disabled after setup failure")
++        _recorder = None
++    return _recorder
++
++
++def safe(fn, *args) -> None:
++    """Call a recorder hook without ever letting accounting break the cache."""
++    try:
++        fn(*args)
++    except Exception:
++        if _STRICT:
++            raise
++        logger.exception("KV tier metrics: hook failed")
