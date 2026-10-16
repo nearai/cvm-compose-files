@@ -194,20 +194,21 @@ services:
   model-vllm-gptoss-120b-mxfp4-tp1-r1:
     <<: *gptoss-engine
     container_name: model-vllm-gptoss-120b-mxfp4-tp1-r1
-    # Canary (one replica): + 100 GiB CPU KV offload through vLLM's simple offload connector. The two lists below are the
-    # gptoss-engine ones plus three lines (YAML merge cannot append to a list); once the canary holds, move the three lines
-    # into the anchor and drop these overrides. VLLM_USE_SIMPLE_KV_OFFLOAD=1 makes --kv-offloading-backend native load
+    # r1-r3: + 100 GiB CPU KV offload through vLLM's simple offload connector; r4 stays without it as the live control.
+    # The two lists below are the gptoss-engine ones plus three lines (YAML merge cannot append to a list); r2 and r3 reuse
+    # them through the gptoss-offload-env/-command anchors. r1 canary since 2026-10-15 05:00Z: stable, same TTFT/ITL/errors
+    # as r2-r4 at the 192 in-flight gateway budget (GPU KV under 6%, so offload rarely engages yet). VLLM_USE_SIMPLE_KV_OFFLOAD=1 makes --kv-offloading-backend native load
     # SimpleCPUOffloadConnector instead of OffloadingConnector. On 0.31 the latter answers "pending" for prefix blocks whose
     # GPU->CPU copy has not finished and the scheduler parks the request until it has ("Deferred" in the log: up to 131
     # requests at once, 3.7 s per deferral at 4x live load, which is why #356 shipped without offload); the simple
     # connector does not (at most 14, briefly, at 99% GPU KV). tee-bench exp 44 R4-R6 on gpu31 GPUs 0-3: see the PR.
-    environment:
+    environment: &gptoss-offload-env
       - HF_HUB_OFFLINE=1
       - VLLM_LOGGING_LEVEL=INFO
       - VLLM_CACHE_ROOT=/root/.cache/vllm/gptoss-120b-v031
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
       - VLLM_USE_SIMPLE_KV_OFFLOAD=1
-    command:
+    command: &gptoss-offload-command
       - openai/gpt-oss-120b
       - --revision=b5c939de8f754692c1647ca79fbf85e8c1e70f8a
       - --served-model-name=openai/gpt-oss-120b
@@ -248,6 +249,8 @@ services:
   model-vllm-gptoss-120b-mxfp4-tp1-r2:
     <<: *gptoss-engine
     container_name: model-vllm-gptoss-120b-mxfp4-tp1-r2
+    environment: *gptoss-offload-env
+    command: *gptoss-offload-command
     deploy: {resources: {reservations: {devices: [{driver: nvidia, device_ids: ["5"], capabilities: [gpu]}]}}}
     labels:
       com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:openai/gpt-oss-120b","deployment:gptoss-openrouter-gpu31","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
@@ -270,6 +273,8 @@ services:
   model-vllm-gptoss-120b-mxfp4-tp1-r3:
     <<: *gptoss-engine
     container_name: model-vllm-gptoss-120b-mxfp4-tp1-r3
+    environment: *gptoss-offload-env
+    command: *gptoss-offload-command
     deploy: {resources: {reservations: {devices: [{driver: nvidia, device_ids: ["6"], capabilities: [gpu]}]}}}
     labels:
       com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:openai/gpt-oss-120b","deployment:gptoss-openrouter-gpu31","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
