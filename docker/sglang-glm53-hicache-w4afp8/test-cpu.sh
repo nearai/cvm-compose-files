@@ -413,7 +413,8 @@ import pathlib
 root = pathlib.Path("python/sglang/srt")
 marks = {
     "layers/attention/dsa_backend.py": ["flashmla_kv_pad_rope_dim", "flashmla_kv_topk", "value=-1"],
-    "layers/attention/dsa/dsa_backend_kpool.py": ['"tilelang", "trtllm", "flashmla_kv")'],
+    # No closing paren: v9's dsa-q8-flashmla-sparse.diff appends flashmla_sparse_q8 to the same allowlist.
+    "layers/attention/dsa/dsa_backend_kpool.py": ['"tilelang", "trtllm", "flashmla_kv"'],
     "mem_cache/kv_cache_configurator.py": ["rope_slots = 64", "rope_slots * rope_storage_dtype.itemsize"],
     "models/deepseek_common/attention_forward_methods/forward_mha.py": [
         "full_attn_backend",
@@ -494,5 +495,15 @@ echo "step 13 OK: the tool-schema size cap is off by default and rejects oversiz
 # SGLANG_KDA_HOST_COUNT_CHECK=1 debug mode raising on a mismatch. It fails on the unpatched source.
 python3 "$RECIPE_DIR/test_kda_zero_sync.py" "$PWD/python/sglang/srt/layers/attention/linear/kda_backend.py"
 echo "step 14 OK: KDA prefill reads its token count from the host and keeps the device read only as a fallback"
+
+# 15. The flashmla_sparse_q8 DSA prefill backend works on the v7 FP8 NoPE KV layout (dsa-q8-flashmla-sparse.diff).
+# test_dsa_q8_flashmla_sparse.py runs the KPool top-k pad block of forward_extend on CPU tensors (2051 IDs
+# padded with -1 to 2176, aligned widths unchanged, KPool 1 untouched, an oversize width raises), checks
+# the Q8 kernel head width keeps the RoPE pad, and that KPool accepts flashmla_sparse_q8. It fails on the
+# unpatched source.
+python3 "$RECIPE_DIR/test_dsa_q8_flashmla_sparse.py" \
+  "$PWD/python/sglang/srt/layers/attention/dsa_backend.py" \
+  "$PWD/python/sglang/srt/layers/attention/dsa/dsa_backend_kpool.py"
+echo "step 15 OK: flashmla_sparse_q8 pads KPool top-k IDs, keeps the RoPE pad in its kernel width and passes the KPool check"
 
 echo "GLM-5.3 W4AFP8 combined-image CPU checks passed"

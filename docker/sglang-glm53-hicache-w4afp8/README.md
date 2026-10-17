@@ -12,8 +12,8 @@ CUDA error 801.
 Base `sha256:3eccc307…` (HiCache + admission reserve v10) plus two correctness patches, both
 byte-identical copies of the reviewed originals, one opt-in performance patch, two patches that move
 blocking work off the HTTP event loop, one diagnostic, two opt-in measurements, an opt-in self-profiler, FP8 KV cache support for GLM's NoPE DSA (active only
-with `--kv-cache-dtype fp8_e4m3`), an opt-in preprocess process pool, an opt-in tool-schema size cap and a host-side KDA prefill
-token count (v8):
+with `--kv-cache-dtype fp8_e4m3`), an opt-in preprocess process pool, an opt-in tool-schema size cap, a host-side KDA prefill
+token count (v8) and a flag-gated Q8 DSA prefill path for the FP8 NoPE KV layout (v9):
 
 | patch | origin | scope |
 | --- | --- | --- |
@@ -30,6 +30,7 @@ token count (v8):
 | `preprocess-pool.diff` | new here (opt-in, `SGLANG_PREPROCESS_WORKERS=N`), applied after `sglang-pr30771.diff` and `shm-off-loop.diff` | new `managers/preprocess_pool.py`, a call in the HTTP lifespan and a pool attempt in `OpenAIServingBase.handle_request` |
 | `tool-schema-depth-cap.diff` | new here (opt-in, `SGLANG_TOOL_SCHEMA_MAX_DEPTH` / `_MAX_NODES`) | new `utils/tool_schema_guard.py` plus one call in `OpenAIServingChat._validate_request` |
 | `kda-zero-sync.diff` | new here (v8, unconditional; tee-bench exp 37) | the logical token count in `KDAAttnBackend.forward_extend` (`layers/attention/linear/kda_backend.py`) only |
+| `dsa-q8-flashmla-sparse.diff` | tee-bench exp 33 Q8 prefill overlay (v9, flag-gated: `--dsa-prefill-backend flashmla_sparse_q8`; tee-bench exp 45b) | `forward_extend` KPool top-k pad and `_forward_flashmla_sparse_q8kv8` head width in `dsa_backend.py`, KPool allowlist in `dsa/dsa_backend_kpool.py` |
 
 ## DSA indexer query split (opt-in)
 
@@ -550,6 +551,36 @@ change). `test_kda_zero_sync.py` (`test-cpu.sh` step 14) runs the changed block 
 
 **Rollback:** redeploy the v7 digest `sha256:fa730e6e…`; this patch changes no other file.
 
+## Q8 DSA prefill on the FP8 NoPE KV layout (flag-gated, v9)
+
+`--dsa-prefill-backend flashmla_sparse_q8` runs DSA prefill attention on an FP8 (Q8) SM90 kernel instead of
+`flashmla_kv`. On the v7 layout it needed two fixes, both from the tee-bench exp 33 overlay:
+
+- **KPool top-k width.** With `index_kpool > 1` the page table carries 2048 + (kpool - 1) IDs (2051 at
+  kpool 4). The Q8 kernel needs a multiple of 128, so `forward_extend` pads with masked `-1` slots to the
+  `flashmla_kv` width (2176) and raises if the width ever exceeds it. `dsa_backend_kpool.py` allows
+  `flashmla_sparse_q8` with KPool > 1, next to `flashmla_kv`.
+- **Head width.** The 656-byte FP8 NoPE row reserves 64 zero RoPE dimensions. `_forward_flashmla_sparse_q8kv8`
+  builds Q and the gathered KV at the 576-wide kernel width (`kernel_head_dim`) while the model's query and
+  value widths stay unchanged.
+
+Nothing else changes: with `flashmla_kv` or `tilelang` prefill the patched lines never run.
+
+**Lab evidence (bare gpu31, TP2, v7 long argv; tee-bench exp 45b long block).** Long workload
+`b64_100k,b100_256k`, 0.09 conv/s, 600 s, admission reserve off as on the long fleet:
+
+| arm | cells | completed req | total tok/s | TTFT p50 / p95 | >64K TTFT p95 | e2e p95 | TPOT p95 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| v7 | 3 | 130 | 17,206 | 7.2 / 38.1 s | 40.8 s | 83.7 s | 96 ms |
+| Q8 + `--chunked-prefill-size 16384` | 2 | 186 (+43%) | 21,435 (+25%) | 2.5 / 27.5 s | 31.8 s | 83.2 s | 149 ms |
+
+Uncached prefill tok/s is equal (9.4K vs 9.0K): the gain is shorter prefill queueing, so turns complete
+sooner at the same offered load. The cost is the decode tail (TPOT p95 +55%, longest gaps ~1.06 s vs 0.63 s).
+Q8 alone: +8% uncached prefill tok/s (n=3 with exp 33). GSM8K-100 0.90-0.91 equals the long-argv v7
+baseline. `test_dsa_q8_flashmla_sparse.py` (`test-cpu.sh` step 15) runs the pad block on CPU tensors.
+
+**Rollback:** `--dsa-prefill-backend flashmla_kv` (the patch is then inert), or redeploy the v8 digest.
+
 ## Why the composition is safe
 
 The HiCache patches touch `mem_cache/*`, `disaggregation/*` and `schedule_batch.py`. None of the
@@ -605,7 +636,8 @@ event-loop patches have no switch, and the stall dump is on at 30 s
 the KV tier metrics (`SGLANG_KV_TIER_METRICS=1`) and the self-profiler (`NEAR_SELF_PROFILE=1`) are
 opt-in, FP8 KV needs `--kv-cache-dtype fp8_e4m3` with the `flashmla_kv` DSA backends, the preprocess pool
 needs `SGLANG_PREPROCESS_WORKERS=N` and the tool-schema cap needs `SGLANG_TOOL_SCHEMA_MAX_DEPTH` /
-`SGLANG_TOOL_SCHEMA_MAX_NODES`. The host-side KDA token count (v8) has no switch. Inherited
+`SGLANG_TOOL_SCHEMA_MAX_NODES`. The host-side KDA token count (v8) has no switch; the Q8 DSA prefill
+path (v9) runs only with `--dsa-prefill-backend flashmla_sparse_q8`. Inherited
 opt-ins:
 
 - admission reserve — `SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE`

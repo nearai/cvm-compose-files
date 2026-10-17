@@ -1,0 +1,234 @@
+--- a/python/sglang/srt/layers/attention/dsa_backend.py
++++ b/python/sglang/srt/layers/attention/dsa_backend.py
+@@ -2795,6 +2795,21 @@
+                 # q_all is materialized on this path. The prefix path hands over the
+                 # paged fp8 KV as-is; the non-prefix path passes the gathered bf16 KV.
+                 if dsa_impl == "flashmla_sparse_q8":
++                    # KPool appends kpool-1 valid tail IDs (2051 total for
++                    # topk=2048, kpool=4). The Q8 SM90 kernel requires a
++                    # multiple-of-128 width; preserve those IDs and append
++                    # masked -1 slots to the width used by flashmla_kv.
++                    if self.dsa_index_kpool > 1:
++                        q8_topk_pad = self.flashmla_kv_topk - page_table_1.shape[-1]
++                        if q8_topk_pad < 0:
++                            raise ValueError(
++                                f"Q8 KPool topk width {page_table_1.shape[-1]} exceeds "
++                                f"padded width {self.flashmla_kv_topk}"
++                            )
++                        if q8_topk_pad:
++                            page_table_1 = torch.nn.functional.pad(
++                                page_table_1, (0, q8_topk_pad), value=-1
++                            )
+                     if _has_prefix:
+                         page_table_1_flattened = (
+                             self.forward_metadata.page_table_1_flattened
+@@ -3351,7 +3366,16 @@
+         )
+ 
+         num_tokens, num_heads, d_nope = q_nope.shape
+-        head_dim = d_nope + q_rope.shape[-1]
++        input_head_dim = d_nope + q_rope.shape[-1]
++        kernel_head_dim = input_head_dim
++        # Flash NoPE uses the v7 656-byte cache row, whose final 64 dimensions
++        # are reserved zero RoPE padding. Match that 576-wide Q8 gather/kernel
++        # layout while keeping the model's actual query/value width unchanged.
++        if (
++            input_head_dim == self.kv_lora_rank
++            and self.flashmla_kv_pad_rope_dim
++        ):
++            kernel_head_dim += self.flashmla_kv_pad_rope_dim
+         dev = q_nope.device
+ 
+         # The SM90 kernel requires num_heads % 64 == 0; smaller head counts
+@@ -3359,11 +3383,9 @@
+         required_padding = 64
+         need_padding = num_heads % required_padding != 0
+ 
+-        # Born-fp8 fast path (SGLANG_ENABLE_DSA_Q8KV8_BORN_FP8_Q): the model's
+-        # q-prep already wrote the padded fp8 q (fused absorbed-bmm + concat +
+-        # cast); consume the stash instead of rebuilding it.  q_nope here is
+-        # the NaN sentinel (shape-only); q_rope's bf16 content is valid but
+-        # unused.
++        # Build FP8 Q. Flash NoPE has no model RoPE but the cached 656-byte
++        # row reserves 64 zero dimensions; explicitly retain that pad so the
++        # existing 576-wide grouped-scale gather and Q8 kernel stay aligned.
+         born = self._q8kv8_born_q_stash
+         if born is not None:
+             self._q8kv8_born_q_stash = None
+@@ -3376,50 +3398,72 @@
+                     f"(num_tokens={born_tokens}, layer_id={born_layer_id}) but "
+                     f"consuming (num_tokens={num_tokens}, layer_id={layer_id})."
+                 )
+-            q_fp8 = self._q8kv8_born_q_buf[:num_tokens]
++            born_q = self._q8kv8_born_q_buf[:num_tokens]
+             expected_heads = required_padding if need_padding else num_heads
+-            if q_fp8.shape[1] != expected_heads or q_fp8.shape[2] != head_dim:
++            if born_q.shape[1] != expected_heads:
++                raise RuntimeError(
++                    f"q8kv8 born-fp8 q heads {born_q.shape[1]} != {expected_heads}"
++                )
++            if born_q.shape[2] == kernel_head_dim:
++                q_fp8 = born_q
++            elif born_q.shape[2] == input_head_dim and kernel_head_dim > input_head_dim:
++                q_fp8 = torch.zeros(
++                    (num_tokens, expected_heads, kernel_head_dim),
++                    dtype=torch.float8_e4m3fn,
++                    device=dev,
++                )
++                q_fp8[:, :, :input_head_dim].copy_(born_q)
++            else:
+                 raise RuntimeError(
+-                    "q8kv8 born-fp8 q buffer shape mismatch: got "
+-                    f"{tuple(q_fp8.shape)}, expected (*, {expected_heads}, "
+-                    f"{head_dim})."
++                    f"q8kv8 born-fp8 q width {born_q.shape[2]} is incompatible "
++                    f"with input/kernel widths {input_head_dim}/{kernel_head_dim}"
+                 )
+-        # Build the fp8 q.  concat_and_cast_q_fp8_pad fuses the nope/rope
+-        # concat with the bf16->fp8 cast in one Triton kernel (bit-exact vs
+-        # concat + .to(fp8)); it requires power-of-two head/dim counts (a
+-        # tl.arange constraint), so non-power-of-two head counts fall back to
+-        # the generic concat + cast.
+         elif need_padding:
+             if required_padding % num_heads != 0:
+                 raise ValueError(
+                     f"num_heads={num_heads} cannot be padded to {required_padding}; "
+                     "this TP size is incompatible with flashmla_sparse_q8."
+                 )
+-            # Cached zero-padded fp8 q buffer: the pad rows [num_heads:64] are
+-            # zero on first alloc and only ever read by the kernel; the active
+-            # slice is overwritten each forward.  Eager-mode DSA runs layers
+-            # sequentially on one stream, so single-buffer reuse is safe.
+-            # Grown on demand.
+             buf = self._q8kv8_qpad_buf
+-            if buf is None or buf.shape[0] < num_tokens:
++            if (
++                buf is None
++                or buf.shape[0] < num_tokens
++                or buf.shape[2] != kernel_head_dim
++            ):
+                 buf = torch.zeros(
+-                    (num_tokens, required_padding, head_dim),
++                    (num_tokens, required_padding, kernel_head_dim),
+                     dtype=torch.float8_e4m3fn,
+                     device=dev,
+                 )
+                 self._q8kv8_qpad_buf = buf
+             q_fp8 = buf[:num_tokens]
+-            # head counts that divide 64 are powers of two, so the fused
+-            # concat-cast is always applicable here.
+-            concat_and_cast_q_fp8_pad(q_fp8, q_nope, q_rope, num_heads)
++            if q_rope.shape[-1] == 0:
++                q_fp8[:, :num_heads, :d_nope].copy_(q_nope)
++                q_fp8[:, :num_heads, d_nope:].zero_()
++            else:
++                concat_and_cast_q_fp8_pad(q_fp8, q_nope, q_rope, num_heads)
+         elif (num_heads & (num_heads - 1)) == 0:
+-            q_fp8 = q_nope.new_empty(
+-                (num_tokens, num_heads, head_dim), dtype=torch.float8_e4m3fn
++            q_fp8 = torch.zeros(
++                (num_tokens, num_heads, kernel_head_dim),
++                dtype=torch.float8_e4m3fn,
++                device=dev,
+             )
+-            concat_and_cast_q_fp8_pad(q_fp8, q_nope, q_rope, num_heads)
++            if q_rope.shape[-1] == 0:
++                q_fp8[:, :, :d_nope].copy_(q_nope)
++            else:
++                concat_and_cast_q_fp8_pad(q_fp8, q_nope, q_rope, num_heads)
+         else:
+-            # Generic fallback for non-power-of-two head counts.
+-            q_fp8 = concat_mla_absorb_q_general(q_nope, q_rope).to(torch.float8_e4m3fn)
++            q_source = (
++                q_nope
++                if q_rope.shape[-1] == 0
++                else concat_mla_absorb_q_general(q_nope, q_rope)
++            )
++            q_fp8 = torch.zeros(
++                (num_tokens, num_heads, kernel_head_dim),
++                dtype=torch.float8_e4m3fn,
++                device=dev,
++            )
++            q_fp8[:, :, :input_head_dim].copy_(q_source)
+ 
+         # Identity per-tensor scale, cached: creating it per call is a
+         # host->device copy that synchronizes the stream.
+@@ -3451,9 +3495,13 @@
+             num_kv_tokens = kv_bf16.shape[0]
+         total_kv_rows = num_kv_tokens + topk
+         kv_buf = self._q8kv8_kv_buf
+-        if kv_buf is None or kv_buf.shape[0] < total_kv_rows:
++        if (
++            kv_buf is None
++            or kv_buf.shape[0] < total_kv_rows
++            or kv_buf.shape[1] != kernel_head_dim
++        ):
+             kv_buf = torch.empty(
+-                (total_kv_rows, head_dim),
++                (total_kv_rows, kernel_head_dim),
+                 dtype=torch.float8_e4m3fn,
+                 device=dev,
+             )
+@@ -3464,23 +3512,38 @@
+                 page_table_1_flattened,
+                 extra_rows=topk,
+                 out=kv_buf[:total_kv_rows],
+-            ).view(-1, 1, head_dim)
++            ).view(-1, 1, kernel_head_dim)
+         elif kv_k is not None:
+-            # Fused non-prefix KV prep (SGLANG_ENABLE_DSA_Q8KV8_KV_CAT_FUSION):
+-            # cast-concat k/k_rope straight into the fp8 buffer + zero the pad
+-            # band in ONE kernel — the bf16 _cat materialization, the copy_
+-            # cast and the zero_ tail all disappear.  Same store-cast as the
+-            # gather kernel (bit-identical bytes).
+-            kv_padded = concat_cast_kv_fp8_pad(
+-                kv_buf[:total_kv_rows], kv_k, kv_k_rope, num_kv_tokens
+-            ).view(-1, 1, head_dim)
++            if kernel_head_dim == input_head_dim:
++                # Fused non-prefix path for standard 576-wide MLA.
++                kv_padded = concat_cast_kv_fp8_pad(
++                    kv_buf[:total_kv_rows], kv_k, kv_k_rope, num_kv_tokens
++                ).view(-1, 1, kernel_head_dim)
++            else:
++                # Flash NoPE K is 512-wide; materialize it in the v7 576-wide
++                # Q8 row and keep the reserved RoPE dimensions zero.
++                kv_padded = kv_buf[:total_kv_rows]
++                kv_padded[:num_kv_tokens, :d_nope].copy_(
++                    kv_k.view(num_kv_tokens, d_nope)
++                )
++                if input_head_dim > d_nope:
++                    if kv_k_rope is None:
++                        raise RuntimeError("Flash NoPE Q8 received missing RoPE K")
++                    kv_padded[:num_kv_tokens, d_nope:input_head_dim].copy_(
++                        kv_k_rope.view(num_kv_tokens, -1)
++                    )
++                kv_padded[:num_kv_tokens, input_head_dim:].zero_()
++                kv_padded[num_kv_tokens:].zero_()
++                kv_padded = kv_padded.view(-1, 1, kernel_head_dim)
+         else:
++            assert kv_bf16 is not None
+             kv_padded = kv_buf[:total_kv_rows]
+-            # bf16 -> fp8 cast copy, same op as the previous fresh-buffer
+-            # path (bit-identical bytes).
+-            kv_padded[:num_kv_tokens].copy_(kv_bf16.view(num_kv_tokens, head_dim))
++            kv_padded[:num_kv_tokens, :input_head_dim].copy_(
++                kv_bf16.view(num_kv_tokens, input_head_dim)
++            )
++            kv_padded[:num_kv_tokens, input_head_dim:].zero_()
+             kv_padded[num_kv_tokens:].zero_()
+-            kv_padded = kv_padded.view(-1, 1, head_dim)
++            kv_padded = kv_padded.view(-1, 1, kernel_head_dim)
+ 
+         # Per-row valid-topk count = last non-pad position + 1.  Bit-exact
+         # vs topk_length=None: the skipped tail blocks contain only -1 pads
+--- a/python/sglang/srt/layers/attention/dsa/dsa_backend_kpool.py
++++ b/python/sglang/srt/layers/attention/dsa/dsa_backend_kpool.py
+@@ -54,7 +54,7 @@
+         if (
+             topk_indices is None
+             or self.dsa_index_kpool <= 1
+-            or dsa_impl in ("fa3", "tilelang", "trtllm", "flashmla_kv")
++            or dsa_impl in ("fa3", "tilelang", "trtllm", "flashmla_kv", "flashmla_sparse_q8")
+         ):
+             return
+         raise NotImplementedError(
