@@ -33,6 +33,7 @@ LABEL nearai.sglang.tool_schema_depth_cap="v1-opt-in"
 LABEL nearai.sglang.kda_host_token_count="v1"
 LABEL nearai.sglang.dsa_q8_flashmla_sparse="v1-flag-gated"
 LABEL nearai.security_remediation="CVE-2026-102268:pyjwt-2.14.0"
+LABEL nearai.security_remediation_2="CVE-2026-53398,CVE-2026-63940,CVE-2026-64535,CVE-2026-64564,CVE-2026-72399,CVE-2026-74394:linux-libc-dev-6.8.0-147.147"
 
 COPY Dockerfile \
      PROVENANCE \
