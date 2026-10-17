@@ -1,12 +1,12 @@
 # GLM-5.3 PD-Multiplexing + EAGLE (pdmux) canary: ONE base replica (gpu04 r4)
 
-Status: **prepared, not deployed, image not yet published.** Merging changes no running service. gpu04 changes only when an operator deploys the merged tag to it, scoped to the one service below, through the already-running compose-manager. `PDMUX_IMAGE_DIGEST` in `scripts/prepare_glm53_pdmux_canary.py` is a **placeholder** until the image is published (next section); the canary file must not be deployed with it.
+Status: **DO NOT DEPLOY: the lab gate fails** (long-prompt TTFT starvation, see "Lab gate" below). Prepared, not deployed, image not yet published. Kept as a draft so the recipe, generator and runbook are reviewable; deploy only after a fixed patch passes the gate again. Merging changes no running service. gpu04 changes only when an operator deploys the merged tag to it, scoped to the one service below, through the already-running compose-manager. `PDMUX_IMAGE_DIGEST` in `scripts/prepare_glm53_pdmux_canary.py` is a **placeholder** until the image is published (next section); the canary file must not be deployed with it.
 
 ## What changes
 
 | | gpu04 r4 (canary) | gpu04 r1-r3 (controls), gpu03 r1-r4 |
 |---|---|---|
-| image | **`glm53-hicache-w4afp8-v7-pdmuxe`** (see `PDMUX_IMAGE_DIGEST` in `scripts/prepare_glm53_pdmux_canary.py`) = v7 recipe + `pdmux-eagle.diff` | v7 `sha256:fa730e6e…` (gpu03 r4: v8 KDA canary, #354) |
+| image | **`glm53-hicache-w4afp8-v7-pdmuxe`** (see `PDMUX_IMAGE_DIGEST` in `scripts/prepare_glm53_pdmux_canary.py`) = v7 recipe + `pdmux-eagle.diff` (pdmux + EAGLE handoff + per-stream draft CUDA graphs) | v7 `sha256:fa730e6e…` (gpu03 r4: v8 KDA canary, #354) |
 | argv | v7 fleet argv **plus** `--enable-pdmux --sm-group-num 3 --pdmux-config-path /etc/glm53/pdmux-ov96-l4.yaml` | v7 fleet argv |
 | unchanged | EAGLE 4/1/5, chunk 8192, `--prefill-decode-interval 2`, HiCache off, overlap scheduler off, `--max-queued-requests 32`, mem 0.86, `--max-running-requests 64`, mamba 380, every environment variable, GPUs 6-7 | same |
 | `engine_image` / `config_variant` labels | new digest prefix / `...-v7-pdmuxe-ov96-l4` | unchanged |
@@ -45,19 +45,26 @@ At 0.4 conv/s: freezes 11-12% -> 0.0%, TTFT p95 2.7x, total tok/s -14%, decode r
 - Mechanism (inference, not profiled): pdmux redistributes GPU time instead of adding capacity. Prod prefill passes carry a ~0.65 s fixed cost with the GPU mostly idle (bare shows ~0.14 s), so the prod gain may be larger and the TTFT cost smaller than on bare. That is the hypothesis this canary tests.
 - **Not yet measured under confidential computing (TDX + PPCIe).** Nothing of this has run in a TEE.
 
-Lab gate for this exact canary (gpu31 lane 0, prod-identical argv from main `0489f8b` with the chat-template snapshot `84c6a6aa`, plus the three pdmux flags; 30 min soak at 1.0 conv/s, then the smoke gate per nearai/tee-bench#7). **Fill in before deploying:**
+Lab gate for this exact canary: gpu31, prod-identical base argv from main `0489f8b` with chat-template snapshot `84c6a6aa`, plus the three pdmux flags. Overlay = this recipe's `pdmux-eagle.diff` bytes. 30-minute soak at 1.0 conv/s, then GSM8K-100 and the smoke gate (nearai/tee-bench#7). v7 control on the other lane over the same 30 minutes. tee-bench exp 45, cells `base-prodv7-soakL0` and `base-pdmuxegbl-prod-ov96-l4-off-c2L1` (2026-10-17):
 
-| | v7 `prodv7` (300 s, 1.0 conv/s) | `pdmuxe-prod-ov96-l4` (1800 s soak, 1.0 conv/s) |
-|---|---|---|
-| run id | `g10L0` | `g10L0` |
-| errors / sheds at queue 32 | TBD | TBD |
-| freeze share (> 300 ms) | TBD | TBD |
-| decode_rate_tw, TPOT p50 / p95 | TBD | TBD |
-| TTFT p50 / p95 | TBD | TBD |
-| total tok/s | TBD | TBD |
-| GSM8K-100, accept length | TBD | TBD |
-| smoke gate (tee-bench#7) | TBD | TBD |
-| engine errors in `server.log` | TBD | TBD |
+| | v7 (1,800 s) | v7-pdmuxe (1,800 s) | gate |
+|---|---|---|---|
+| ok / queue-full sheds (queue 32) | 4,086 / 404 | 3,258 / 599 (+48%) | advisory |
+| freeze share (> 300 ms) | 71.1% | **0.0%** | pass |
+| decode_rate_tw; TPOT p50 / p95 | 15.1 tok/s; 64.6 / 99.8 ms | **30.7 tok/s; 31.7 / 44.6 ms** | pass |
+| TTFT p50 / p95 | 10.85 / 22.2 s | 3.20 / 144.1 s | see next row |
+| **TTFT >=16K prompts, first 300 s (prod-like load, running p50 18)** | p95 9.7 s, max 21.8 s | **p95 122.6 s, max 144.1 s** | **FAIL** |
+| total tok/s | 16,007 | 11,917 (-26%) | advisory |
+| GSM8K-100; mean accept length | n/a; 3.44 | 0.99; 3.49 | pass |
+| smoke gate | 48 pass / 0 fail / 0 fatal (T06, F03 known; C08-C10, C12 skipped) | same | pass |
+| engine errors in `server.log` | 0 | 0 (one client `ServerDisconnectedError`) | pass |
+
+Reading:
+- The 1.0 conv/s soak overloads v7 as well after minute 5: it sits at `--max-running-requests 64` with 9% sheds. Only the first 300 s are prod-like.
+- In those 300 s, pdmux holds decode at 1.7x v7 with no freezes. But long prompts wait up to 2.4 minutes for a first token. Under overload, every bucket at or above 4K tokens has a TTFT p90 of about 140-165 s.
+- OpenRouter clients sending long prompts to r4 would see multi-minute TTFTs or time out.
+- **Fix before deploying:** make pdmux split-prefill admission fair to long chunked requests, then re-run this gate.
+- Full record: tee-bench `evidence/gpu31-exp45-decode-isolation/README.md` (sections "Capacity fixes").
 
 ## Why gpu04 r4
 
@@ -98,9 +105,9 @@ Same 5-minute bake checklist as `docs/glm53-v7-fleet-rollout.md` (ready and rout
 |---|---|---|
 | ITL **freeze share** | wall-weighted share of `sglang_inter_token_latency_seconds` observations in buckets above 0.3 s: sum over buckets with `le` > 0.3 of (observations in the bucket x bucket midpoint) divided by the total of `_sum`. Check the bucket boundaries in Grafana first | v7 controls high (about half of streamed time at peak in the lab), r4 near zero |
 | mean vs p50 ITL | `rate(sglang_inter_token_latency_seconds_sum) / rate(..._count)` against `histogram_quantile(0.5, ...)` | mean/p50 gap closes on r4 (the freezes inflate v7's mean) |
-| TTFT p50 / p95 | `sglang_time_to_first_token_seconds` | **worse** on r4 (lab 2.7-4.5x p95) |
-| queue-full 503s | proxy 5xx/503 responses with body `The request queue is full` for r4 vs r1-r3 (the proxy's per-backend status panel) | higher on r4 (lab 7% at queue 8) |
-| accept length | `sglang_spec_accept_length` | about v7's (lab 3.43 vs 3.36) |
+| TTFT p50 / p95 | `sglang_time_to_first_token_seconds` | **worse** on r4 (lab: p50 about 5x at prod-like load; long prompts up to minutes) |
+| queue-full 503s | proxy 5xx/503 responses with body `The request queue is full` for r4 vs r1-r3 (the proxy's per-backend status panel) | higher on r4 (lab +48% vs v7 in the 30-min soak, queue 32) |
+| accept length | `sglang_spec_accept_length` | about v7's (lab 3.49 vs 3.44) |
 | generation throughput | `sglang_gen_throughput` (confirm the exact series name in Grafana), served generation tok/s | decode up, total possibly down |
 | engine errors, restarts | container restart count for r4, `docker logs` for Traceback / CUDA / NCCL / Xid, engine exits | none |
 
@@ -111,9 +118,11 @@ Same 5-minute bake checklist as `docs/glm53-v7-fleet-rollout.md` (ready and rout
 ## Risks
 
 - **Green contexts under CC are untested.** Boot failure is the expected failure mode and it is safe (see above). A failure only after warm-up, under load, is the real risk: that is what the abort criteria cover.
-- **Eager drafter.** Draft forwards run eager under pdmux (no draft CUDA graphs), the main suspect for the lower total throughput (decode rate -17% at 0.4 conv/s). Per-stream draft graphs are not built.
+- **Long-prompt starvation (lab gate failure).** See "Lab gate". This is the blocking risk.
+- **Draft graphs.** Draft decode now replays per-stream-group CUDA graphs (captured for decode stream groups 1 and 2, about 0.17 GB each). On bare metal they changed no capacity metric versus the eager prototype. Under CC, where launches cost about 3x more, they should matter more; this is untested.
+- **Backlog mode is in the patch but off.** The baked YAML has no `backlog_*` keys, so it stays off. Do not enable it: in exp 45 it erased the decode gain, and the uncapped variant deadlocked across TP ranks.
 - **Prototype status.** A port of upstream PRs with local fixes; n=1 per lab cell; one crash was found and fixed in the first GPU run (fix 1). The extra decode fence (`SGLANG_PDMUX_EAGLE_DECODE_FENCE`, default 1) measured no effect, so leave it as is.
-- **Capacity.** The lab shows a prefill-bound 4.5x TTFT and 7% sheds at 1.0 conv/s; r4 may shed more than its peers at peak. Blast radius is 1 of 8 base replicas (12.5% of base capacity); the proxy only routes to ready replicas.
+- **Capacity.** In the 30-minute lab soak, total throughput is -26% and queue-full sheds are +48% versus v7, so r4 may shed more than its peers at peak. Blast radius is 1 of 8 base replicas (12.5% of base capacity); the proxy only routes to ready replicas.
 - Not covered by the port or the lab: DP-attention (skipped in the port) and HiCache with pdmux (a pdmux HiCache test exists but HiCache is off in the fleet argv and stays off here).
 
 ## Rollback
