@@ -32,10 +32,11 @@ PATCHES: Final = {
     "preprocess-pool.diff": "5cd330b7e998f78c84acda8cd8c63a59c15479e4f3ca085b6f8523144880d9d0",
     "tool-schema-depth-cap.diff": "795e541d91369f3f119a427a854bf9661b433a931381eba0ebb4a145ac8b0262",
     # Last, on the complete v7 tree: pdmux-eagle.diff turns the v7 image's final bytes (what the 12 patches above
-    # leave) of 17 files into the PD-Multiplexing + EAGLE overlay tree. Two of them, layers/quantization/w4afp8.py
-    # and managers/scheduler.py, are also edited by earlier patches, so it must stay after them; the other 15 are
-    # touched by nothing else in this recipe (before = base image = v7 image bytes).
-    "pdmux-eagle.diff": "08b59bc4cdeda2dda8cd3f4da2d6ec62b9bf5d61707cc0a9c2e1cc5bf1de8e46",
+    # leave) of 19 files into the PD-Multiplexing + EAGLE overlay tree (the combined overlay with per-stream EAGLE
+    # draft CUDA graphs and the backlog mode, which stays off unless its YAML keys are set). Two of them,
+    # layers/quantization/w4afp8.py and managers/scheduler.py, are also edited by earlier patches, so it must stay
+    # after them; the other 17 are touched by nothing else in this recipe (before = base image = v7 image bytes).
+    "pdmux-eagle.diff": "b2c36418088b97a21b6a3ce85c2ec98f241520cee67c6cc04d7365c0834569f7",
 }
 MANIFEST: Final = json.loads((CONTEXT / "source-manifest.json").read_text())
 

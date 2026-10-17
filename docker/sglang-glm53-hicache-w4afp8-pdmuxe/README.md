@@ -35,16 +35,17 @@ with `--kv-cache-dtype fp8_e4m3`), an opt-in preprocess process pool and an opt-
 | `fp8kv-flashmla.diff` | new here (flag-gated: `--kv-cache-dtype fp8_e4m3` with `flashmla_kv`) | 656 B fp8 row in `kv_cache_configurator.py`, q pad and kpool index pad in `dsa_backend.py`, `flashmla_kv` allowed for `index_kpool > 1` in `dsa_backend_kpool.py`, `k_pe=None` and hybrid-wrapper metadata in `forward_mha.py` |
 | `preprocess-pool.diff` | new here (opt-in, `SGLANG_PREPROCESS_WORKERS=N`), applied after `sglang-pr30771.diff` and `shm-off-loop.diff` | new `managers/preprocess_pool.py`, a call in the HTTP lifespan and a pool attempt in `OpenAIServingBase.handle_request` |
 | `tool-schema-depth-cap.diff` | new here (opt-in, `SGLANG_TOOL_SCHEMA_MAX_DEPTH` / `_MAX_NODES`) | new `utils/tool_schema_guard.py` plus one call in `OpenAIServingChat._validate_request` |
-| `pdmux-eagle.diff` | new here (v7-pdmuxe, flag-gated: `--enable-pdmux`), applied last | 17 files: PD-Multiplexing for GLM with single-layer EAGLE, see "PD-Multiplexing + EAGLE" |
+| `pdmux-eagle.diff` | new here (v7-pdmuxe, flag-gated: `--enable-pdmux`), applied last | 19 files: PD-Multiplexing for GLM with single-layer EAGLE and per-stream EAGLE draft CUDA graphs; backlog mode code present but OFF, see "PD-Multiplexing + EAGLE" |
 
-## PD-Multiplexing + EAGLE (opt-in, `--enable-pdmux`; prototype)
+## PD-Multiplexing + EAGLE (opt-in, `--enable-pdmux`; prototype, draft graphs v2)
 
 SGLang PD-Multiplexing runs prefill in layer slices on its own CUDA stream, in a green context capped at
 a number of SMs, beside the decode stream, instead of in a pass that freezes every decoder. Upstream
 supports it only without speculative decoding. `pdmux-eagle.diff` is a port of upstream PR #42411 (GLM
 PD-Multiplexing) and the single-layer MTP part of PR #42414 onto the v7 sources, with the prototype
-fixes listed in `PROVENANCE` (`patch_13_origin`). tee-bench exp 45
-(`evidence/gpu31-exp45-decode-isolation`) is the evidence and `pdmux-eagle/PORT.md` there the port notes.
+fixes listed in `PROVENANCE` (`patch_13_origin`), plus the combined overlay of tee-bench exp 45
+(`evidence/gpu31-exp45-decode-isolation/pdmux-eagle-gbl`: per-stream EAGLE draft CUDA graphs and the backlog
+mode). The evidence is in that directory (`pdmux-eagle/PORT.md` and `pdmux-eagle-g/PORT.md` there are the port notes).
 
 What the patch does (files under `python/sglang/srt/`):
 
@@ -53,13 +54,22 @@ What the patch does (files under `python/sglang/srt/`):
 - verify, eager verify, idle attention and the mamba state commit run on the decode attention backend
   (`model_executor/model_runner.py`, `runner/eager_runner.py`, `speculative/eagle_worker_common.py`,
   `speculative/spec_utils.py`);
-- draft forwards run **eager** under pdmux: no draft CUDA graphs are captured or replayed;
+- EAGLE draft forwards (draft decode and decode-step draft extend) replay **per-stream draft CUDA graphs**: one
+  set per decode stream group (groups 1 and 2 for `--sm-group-num 3`), replayed on the scheduler's current decode
+  stream. The prefill-side draft extend after a split prefill stays eager. `SGLANG_PDMUX_EAGLE_DRAFT_GRAPHS=0`
+  switches back to the eager draft forwards of the first prototype (default 1);
+  `SGLANG_PDMUX_EAGLE_DRAFT_GRAPH_GROUPS` (e.g. `2`) restricts capture to fewer groups to save memory;
 - helper streams for the target-verify and NextN blocks (`models/glm5_next.py`, `models/glm5_next_nextn.py`);
 - `arg_groups/validation_hook.py`: with `--enable-pdmux` only fixed single-layer EAGLE/NEXTN is accepted
   (no EAGLE3, multi-layer EAGLE, adaptive speculation), and the overlap scheduler and mixed chunking are
   rejected; `--sm-group-num` must equal the YAML's `sm_group_num`;
 - prototype safety: an extra decode fence after each final-slice draft extend (`SGLANG_PDMUX_EAGLE_DECODE_FENCE=0`
-  removes it, default 1; exp 45 measured no effect either way) and `record_stream` on the merged draft tensors.
+  removes it, default 1; exp 45 measured no effect either way) and `record_stream` on the merged draft tensors;
+- backlog mode (`multiplex/pdmux_context.py`, `multiplex/multiplexing_mixin.py`) is in the code and is **OFF**: it
+  only turns on when `backlog_*` keys are set in the YAML, and the baked `pdmux-ov96-l4.yaml` has none. **It MUST NOT
+  be enabled.** In exp 45 it was rejected: decode was worse than v7 in every window (decode_rate_tw 16.7 vs 24.3 in
+  the first 5 minutes), and the uncapped variant (`backlog_max_split_forward_layers: 0`) deadlocked across the TP
+  ranks after about 5 minutes.
 
 **Config baked into the image:** `/etc/glm53/pdmux-ov96-l4.yaml` (read-only, from `pdmux-ov96-l4.yaml`):
 
@@ -82,15 +92,23 @@ mode), and at most 4 prefill layers are launched per scheduler iteration.
 
 **Tests (`test-cpu.sh` step 14, no GPU).** Every patched file compiles and the pdmux modules import; the baked
 YAML has the reviewed content; `check_server_args` accepts the canary argv and rejects EAGLE3, multi-layer EAGLE,
-the overlap scheduler, mixed chunking and a mismatched `--sm-group-num`; the seven ported test files (56 tests:
-`test_eagle_pdmux.py`, `test_glm5_next_pdmux.py`, `test_pdmux_group_alias.py`, `test_pdmux_hicache_events.py`,
-`test_pdmux_overlap_streams.py`, `test_pdmux_scheduler.py`, `test_w4afp8_pdmux_buffers.py`) run against the installed sources.
+the overlap scheduler, mixed chunking and a mismatched `--sm-group-num`; the nine ported test files (`test_eagle_pdmux.py`, `test_eagle_pdmux_draft_graphs.py`,
+`test_glm5_next_pdmux.py`, `test_pdmux_backlog.py`, `test_pdmux_group_alias.py`, `test_pdmux_hicache_events.py`,
+`test_pdmux_overlap_streams.py`, `test_pdmux_scheduler.py`, `test_w4afp8_pdmux_buffers.py`; 107 tests in the lab's
+CPU run) run against the installed sources.
 
 **Evidence and costs (bare gpu31, CC OFF, lab image v7 + this overlay bind-mounted; never run in a TEE, and this
 built image has not run on GPU).** At 1.0 conv/s: prefill freezes (gaps over 300 ms) 50.3% of streamed time under
 v7 vs 0.5%; token-weighted decode rate +29%; GSM8K-100 0.99 (v7: 0.99); accept length 3.43 vs 3.36. Costs: TTFT
 p50 and p95 about 4.5x, total tok/s -27%, 55 queue sheds of 665 at queue 8 (7% vs 0.5%). At 0.4 conv/s: TTFT p95
 2.7x, total tok/s -14%. The eager drafter is the main suspect for the throughput cost.
+
+**Evidence for the shipped overlay (graphs only, backlog off).** tee-bench exp 45 arm `pdmuxegbl-prod-ov96-l4-off`
+(lab run `c2L1`, bare gpu31, CC OFF, prod argv, 1.0 conv/s, 1,800 s, not in a TEE, not this built image) against v7
+over the same soak: decode_rate_tw 30.7 vs 15.1, freeze300 (prefill freezes over 300 ms) 0.0% vs 71.1%, gap p95 130
+vs 669 ms, TTFT p95 144 s vs 22 s, total tok/s 11,917 vs 16,007 (-26%), 599 errors vs 404. The throughput loss
+and the long-prompt TTFT tail fail the canary's lab gate (see `docs/glm53-pdmux-canary.md`, "Lab gate"): do not deploy
+this image until a fixed patch passes that gate.
 
 **Rollback:** redeploy the v7 digest `sha256:fa730e6e…`, or the fleet file for the service (no `--enable-pdmux`).
 
@@ -715,8 +733,11 @@ hash (`security-requirements.txt`, `--require-hashes --no-deps`) and asserts the
 ## v7-pdmuxe
 
 Adds `pdmux-eagle.diff` (patch 13) after `tool-schema-depth-cap.diff`, the baked
-`/etc/glm53/pdmux-ov96-l4.yaml`, `pdmux-canary-argv.json`, the seven ported pdmux test files and
-`test-cpu.sh` step 14. Patches 1-12 are byte-identical to v7. Fifteen of the 17 files it changes are not touched by
+`/etc/glm53/pdmux-ov96-l4.yaml`, `pdmux-canary-argv.json`, the ported pdmux test files and
+`test-cpu.sh` step 14. Later, the first 17-file prototype diff was replaced by the combined overlay (v2, 19 files:
+per-stream EAGLE draft CUDA graphs, `SGLANG_PDMUX_EAGLE_DRAFT_GRAPHS=0` for eager, and the backlog code, off);
+the paragraph below describes the 17-file prototype and is kept for history, the current counts are in
+`PROVENANCE` (`patch_13_*`). Patches 1-12 are byte-identical to v7. Fifteen of the 17 files it changes are not touched by
 any other patch (their manifest before-hash is the v7 / base image file); `layers/quantization/w4afp8.py` (patch 1)
 and `managers/scheduler.py` (patch 9) are, so the manifest keeps their base before-hash and takes the pdmux
 after-hash, and the diff is made against the v7 after-hashes. The diff was regenerated from the overlay files in

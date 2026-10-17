@@ -51,14 +51,14 @@ class PdmuxRecipeTest(unittest.TestCase):
         for name, digest in pins:
             self.assertEqual(sha256(RECIPE / name), digest, name)
 
-    def test_source_manifest_covers_the_17_pdmux_files(self):
+    def test_source_manifest_covers_the_19_pdmux_files(self):
         manifest = json.loads((RECIPE / "source-manifest.json").read_text())
         diff_files = re.findall(r"^\+\+\+ b/(\S+)$", (RECIPE / "pdmux-eagle.diff").read_text(), re.M)
-        self.assertEqual(len(diff_files), 17)
+        self.assertEqual(len(diff_files), 19)
         for name in diff_files:
             self.assertIn(name, manifest, name)
             self.assertRegex(manifest[name]["after"], r"^[0-9a-f]{64}$")
-        self.assertEqual(len(manifest), 40)
+        self.assertEqual(len(manifest), 42)
         self.assertNotIn("python/sglang/srt/layers/attention/linear/kda_backend.py", manifest)
         # the two files an earlier patch also edits keep their base-image before-hash
         self.assertEqual(manifest["python/sglang/srt/managers/scheduler.py"]["before"], "6ffd1584f6bcbbd3384f1ec45e3313a7b4b010fd3f900b8f19345d4b02f5d0ba")

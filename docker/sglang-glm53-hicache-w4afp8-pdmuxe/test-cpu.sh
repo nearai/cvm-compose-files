@@ -489,12 +489,12 @@ python3 "$RECIPE_DIR/test_tool_schema_guard.py" \
 echo "step 13 OK: the tool-schema size cap is off by default and rejects oversized tool schemas before check_schema"
 
 # 14. PD-Multiplexing + EAGLE (pdmux-eagle.diff, the last patch). Needs no GPU:
-#   a. every patched source file (all 40 in source-manifest.json) compiles and the pdmux modules import;
+#   a. every patched source file (all 42 in source-manifest.json) compiles and the pdmux modules import;
 #   b. the baked config /etc/glm53/pdmux-ov96-l4.yaml has the reviewed content;
 #   c. check_server_args accepts the exact canary argv (pdmux-canary-argv.json, which the compose file's
 #      model-sg-glm53-w4afp8-tp2-r4 command must equal, see scripts/test_glm53_pdmux_canary.py) and
 #      still rejects the setups pdmux does not support;
-#   d. the ported pytest suite (7 files, 56 tests) runs against the installed sources.
+#   d. the ported pytest suite (9 files, 107 tests) runs against the installed sources.
 python3 - <<'EOF'
 import json
 import py_compile
@@ -503,7 +503,7 @@ import yaml
 
 with open("/usr/share/nearai/glm53-hicache-w4afp8-pdmuxe/source-manifest.json") as f:
     manifest = json.load(f)
-assert len(manifest) == 40, len(manifest)
+assert len(manifest) == 42, len(manifest)
 for name in manifest:
     py_compile.compile("/sgl-workspace/sglang/" + name, cfile="/tmp/pdmux_check.pyc", doraise=True)
 
@@ -582,10 +582,10 @@ mkdir -p "$PDMUX_T"/test/registered/unit/{managers,models,multiplex,spec}
 ln -s /sgl-workspace/sglang/python "$PDMUX_T/python"
 cp "$RECIPE_DIR/test_pdmux_scheduler.py" "$PDMUX_T/test/registered/unit/managers/"
 cp "$RECIPE_DIR/test_glm5_next_pdmux.py" "$PDMUX_T/test/registered/unit/models/"
-cp "$RECIPE_DIR"/test_pdmux_group_alias.py "$RECIPE_DIR"/test_pdmux_hicache_events.py \
+cp "$RECIPE_DIR"/test_pdmux_backlog.py "$RECIPE_DIR"/test_pdmux_group_alias.py "$RECIPE_DIR"/test_pdmux_hicache_events.py \
    "$RECIPE_DIR"/test_pdmux_overlap_streams.py "$RECIPE_DIR"/test_w4afp8_pdmux_buffers.py \
    "$PDMUX_T/test/registered/unit/multiplex/"
-cp "$RECIPE_DIR/test_eagle_pdmux.py" "$PDMUX_T/test/registered/unit/spec/"
+cp "$RECIPE_DIR"/test_eagle_pdmux.py "$RECIPE_DIR"/test_eagle_pdmux_draft_graphs.py "$PDMUX_T/test/registered/unit/spec/"
 (cd /sgl-workspace/sglang/python && python3 -m pytest -p no:cacheprovider -q "$PDMUX_T/test/registered/unit")
 rm -rf "$PDMUX_T"
 echo "step 14 OK: the pdmux + EAGLE patch compiles, imports, accepts the canary argv, rejects unsupported setups and passes its ported tests"

@@ -30,7 +30,7 @@ LABEL nearai.sglang.self_profile="v1-opt-in"
 LABEL nearai.sglang.fp8_kv_nope_dsa="v1"
 LABEL nearai.sglang.preprocess_pool="v1-opt-in"
 LABEL nearai.sglang.tool_schema_depth_cap="v1-opt-in"
-LABEL nearai.sglang.pdmux_eagle="v1-opt-in-canary"
+LABEL nearai.sglang.pdmux_eagle="v2-opt-in-canary-draft-graphs"
 LABEL nearai.sglang.pdmux_config="/etc/glm53/pdmux-ov96-l4.yaml"
 LABEL nearai.security_remediation="CVE-2026-102268:pyjwt-2.14.0"
 
@@ -64,7 +64,9 @@ COPY Dockerfile \
      test_tool_schema_guard.py \
      test_fp8kv_paths.py \
      test_eagle_pdmux.py \
+     test_eagle_pdmux_draft_graphs.py \
      test_glm5_next_pdmux.py \
+     test_pdmux_backlog.py \
      test_pdmux_group_alias.py \
      test_pdmux_hicache_events.py \
      test_pdmux_overlap_streams.py \
@@ -126,12 +128,16 @@ RUN /opt/sglang/bin/python3 -m pip install --no-cache-dir --no-deps --require-ha
 # is a positive integer: a tool whose parameters schema exceeds it is rejected with HTTP 400 before
 # jsonschema's check_schema runs on the event loop.
 # PD-Multiplexing + EAGLE (pdmux-eagle.diff, the last patch) is inert unless the server is started with
-# --enable-pdmux: 17 files change, every pdmux branch is gated on that flag, and the ported tests (test-cpu.sh
+# --enable-pdmux: 19 files change, every pdmux branch is gated on that flag, and the ported tests (test-cpu.sh
 # step 14) check the non-pdmux paths keep the v7 behaviour where they are covered. With it,
 # --sm-group-num 3 and --pdmux-config-path /etc/glm53/pdmux-ov96-l4.yaml (baked above: prefill green context
 # capped at 96 SMs, decode on the full device, at most 4 prefill layers per scheduler iteration) prefill runs
-# in slices on its own stream beside decode. EAGLE 4/1/5 is supported (draft forwards run eager, no draft CUDA
-# graphs); the validation hook rejects every other speculative setup, the overlap scheduler and mixed chunking.
+# in slices on its own stream beside decode. EAGLE 4/1/5 is supported; its draft decode and draft-extend forwards
+# replay per-stream draft CUDA graphs (one set per decode stream group). SGLANG_PDMUX_EAGLE_DRAFT_GRAPHS=0 falls
+# back to the eager draft forwards (the prototype behaviour). The backlog mode in multiplex/ is code only: no
+# backlog_* key is in the baked YAML, it is off and must stay off (rejected in exp 45, decode worse than v7; the
+# uncapped variant, backlog_max_split_forward_layers 0, deadlocked across TP ranks). The validation hook rejects
+# every other speculative setup, the overlap scheduler and mixed chunking.
 # SGLANG_PDMUX_EAGLE_DECODE_FENCE=0 removes an extra decode fence after each prefill's draft extend (A/B knob,
 # default 1). This is a prototype: see README "PD-Multiplexing + EAGLE" before use.
 # Everything inherited from the base stays opt-in: admission reserve v10 via

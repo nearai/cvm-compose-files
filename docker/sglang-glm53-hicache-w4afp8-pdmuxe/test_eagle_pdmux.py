@@ -350,17 +350,25 @@ class TestEaglePDMux(unittest.TestCase):
         decode.update_mamba_state_after_mtp_verify.assert_called_once()
         prefill.update_mamba_state_after_mtp_verify.assert_not_called()
 
-    def test_draft_graphs_are_not_captured_on_ordinary_streams(self):
+    def test_draft_graphs_eager_when_pdmux_draft_graphs_switched_off(self):
+        # Per-stream-group draft graphs are the default under PDMux (see
+        # test_eagle_pdmux_draft_graphs.py); SGLANG_PDMUX_EAGLE_DRAFT_GRAPHS=0
+        # restores the prototype's eager draft forwards.
         worker = SimpleNamespace(
             cuda_graph_runner=object(), cuda_graph_runner_for_draft_extend=object()
         )
-        with patch(
-            "sglang.srt.speculative.eagle_worker_v2.get_disagg",
-            return_value=SimpleNamespace(enable_pdmux=True),
+        with (
+            patch.dict("os.environ", {"SGLANG_PDMUX_EAGLE_DRAFT_GRAPHS": "0"}),
+            patch(
+                "sglang.srt.speculative.eagle_worker_v2.get_disagg",
+                return_value=SimpleNamespace(enable_pdmux=True),
+            ),
+            patch("sglang.srt.speculative.eagle_worker_v2.log_info_on_rank0"),
         ):
             EagleDraftWorker._capture_cuda_graphs(worker)
         self.assertIsNone(worker.cuda_graph_runner)
         self.assertIsNone(worker.cuda_graph_runner_for_draft_extend)
+        self.assertIsNone(worker.draft_attn_backend_group)
 
     def test_nextn_helper_is_reset_when_returning_to_green_stream(self):
         model = Glm5NextForConditionalGenerationNextN.__new__(

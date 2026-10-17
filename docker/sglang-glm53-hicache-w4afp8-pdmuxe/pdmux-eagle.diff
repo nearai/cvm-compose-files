@@ -23,7 +23,7 @@
  def check_server_args(server_args: Any):
      from sglang.srt.arg_groups.lora_hook import check_lora_server_args
  
-@@ -111,16 +127,35 @@
+@@ -111,9 +127,12 @@
          assert cfg.pp_size == 1, (
              "PD-Multiplexing is only supported with pipeline parallelism disabled (pp_size=1)."
          )
@@ -39,17 +39,17 @@
          assert cfg.disaggregation_mode == "null", (
              "PD-Multiplexing is not compatible with disaggregation mode."
          )
-         assert cfg.disable_overlap_schedule, (
+@@ -121,6 +140,22 @@
              "PD-Multiplexing is not compatible with overlap schedule."
          )
-+
+ 
 +        if cfg.enable_hierarchical_cache and cfg.hicache_write_policy == "write_back":
 +            logger.warning(
 +                "PD-Multiplexing with --hicache-write-policy write_back may "
 +                "stall decode while write-back eviction completes; prefer "
 +                "write_through."
 +            )
- 
++
 +        if cfg.pdmux_config_path:
 +            from sglang.srt.multiplex.pdmux_context import load_pdmux_config
 +
@@ -64,15 +64,13 @@
  
 --- a/python/sglang/srt/distributed/parallel_state.py
 +++ b/python/sglang/srt/distributed/parallel_state.py
-@@ -1954,13 +1954,26 @@
-         return _PDMUX_PREFILL_TP_GROUP
-     assert _TP is not None, "tensor model parallel group is not initialized"
+@@ -1956,11 +1956,24 @@
      return _TP
-+
+ 
  
 +def _pdmux_prefill_alias(group: Optional[GroupCoordinator]):
 +    """Map a group that aliases the decode TP group to the prefill duplicate.
- 
++
 +    With attn_tp == tp (no DP attention) or moe_ep == tp, `_ATTN_TP` / `_MOE_EP`
 +    *are* `_TP`. On the PD-Multiplexing prefill stream they must follow
 +    `get_tp_group()` to the duplicate communicator, otherwise prefill and decode
@@ -162,14 +160,13 @@
      split_prefill_finished: bool = False
 --- a/python/sglang/srt/managers/scheduler.py
 +++ b/python/sglang/srt/managers/scheduler.py
-@@ -3716,7 +3716,25 @@
-                 )
+@@ -3717,6 +3717,24 @@
  
          return NextBatchPlan(batch_to_run=ret, running_batch=running_batch)
-+
+ 
 +    def check_hicache_events_if_enabled(self) -> bool:
 +        """Drain HiCache transfer acks, host locks, and prefetch progress.
- 
++
 +        Batch formation is the normal caller, so every scheduling loop must
 +        either form a batch or call this itself. The gate is load-bearing:
 +        the base `tree_cache` leaves `check_hicache_events` unimplemented.
@@ -292,12 +289,15 @@
      def forward_split_prefill(
          self,
          forward_batch: ForwardBatch,
-@@ -1761,13 +1769,18 @@
+@@ -1761,13 +1769,21 @@
          else:
              ctx_mgr = forward_context(ForwardContext(attn_backend=self.attn_backend))
          with ctx_mgr:
-+            # Draft graphs are captured on ordinary streams, rather than the
-+            # scheduler's green-context partitions. Keep PDMux drafts eager.
++            # The draft ModelRunner's own decode/prefill graph runners stay off
++            # under PDMux. EAGLE draft graphs do not go through here: they live
++            # in the per-stream-group EAGLEDraftCudaGraphRunner /
++            # EAGLEDraftExtendCudaGraphRunner, replayed by the draft worker on
++            # the scheduler's decode stream (SGLANG_PDMUX_EAGLE_DRAFT_GRAPHS).
 +            pdmux_draft = self.is_draft_worker and get_disagg().enable_pdmux
              mode_check = (
                  forward_batch.forward_mode.is_cpu_graph
@@ -312,7 +312,7 @@
                  and self.decode_cuda_graph_runner
                  and self.decode_cuda_graph_runner.can_run_graph(forward_batch)
              )
-@@ -1812,7 +1825,8 @@
+@@ -1812,7 +1828,8 @@
                      forward_count=split_forward_count,
                  )
              elif (
@@ -435,12 +435,10 @@
  
          if self.is_linear_attn:
              self.self_attn = Glm5NextLinearAttention(
-@@ -758,7 +770,23 @@
-             self.config.n_routed_experts is not None
-             and layer_id >= self.config.first_k_dense_replace
+@@ -760,6 +772,22 @@
              and layer_id % self.config.moe_layer_freq == 0
-+        )
-+
+         )
+ 
 +    def _set_pdmux_alt_stream(self, forward_batch: ForwardBatch) -> None:
 +        alt_stream = (
 +            get_pdmux_decode_alt_stream(self.pdmux_alt_stream)
@@ -449,16 +447,17 @@
 +                or forward_batch.forward_mode.is_target_verify()
 +            )
 +            else None
-         )
++        )
 +        if not self.is_linear_attn:
 +            self.self_attn.alt_stream = alt_stream
 +            if self.self_attn.indexer is not None:
 +                self.self_attn.indexer.alt_stream = alt_stream
 +        if self.is_layer_sparse:
 +            self.mlp.alt_stream = alt_stream
- 
++
      def forward(
          self,
+         positions: torch.Tensor,
 @@ -770,6 +798,8 @@
          gemm_output_zero_allocator: BumpAllocator = None,
          prev_topk_indices: Optional[torch.Tensor] = None,
@@ -490,11 +489,10 @@
          total_num_layers = self.end_layer - self.start_layer
          if self.pp_group.is_first_rank:
              if input_embeds is None:
-@@ -1074,6 +1111,102 @@
-         if len(aux_hidden_states) == 0:
+@@ -1075,6 +1112,102 @@
              return hidden_states
          return hidden_states, aux_hidden_states
-+
+ 
 +    def forward_split_prefill(
 +        self,
 +        input_ids: Optional[torch.Tensor],
@@ -590,14 +588,14 @@
 +        if aux_hidden_states:
 +            return hidden_states, aux_hidden_states
 +        return hidden_states
- 
++
  
  class Glm5NextForConditionalGeneration(nn.Module):
-@@ -1345,7 +1478,42 @@
-             )
+     packed_modules_mapping = {
+@@ -1346,6 +1479,41 @@
          else:
              return hidden_states
-+
+ 
 +    @torch.no_grad()
 +    def forward_split_prefill(
 +        self,
@@ -608,7 +606,7 @@
 +    ):
 +        if self.is_mrope_enabled:
 +            positions = forward_batch.mrope_positions
- 
++
 +        with get_attn_tp_context().maybe_input_scattered(forward_batch):
 +            if split_interval[0] == self.model.start_layer:
 +                hidden_states = general_mm_embed_routine(
@@ -666,8 +664,8 @@
 +        # pp_proxy_tensors; this override accepts it (so the eager runner may pass it) but must not
 +        # forward it. PP is 1 here, so it is always None.
 +        return super().forward(input_ids, positions, forward_batch)
- 
 +
+ 
  EntryClass = [Glm5NextForConditionalGenerationNextN]
 --- a/python/sglang/srt/multiplex/multiplexing_mixin.py
 +++ b/python/sglang/srt/multiplex/multiplexing_mixin.py
@@ -681,15 +679,18 @@
  from typing import TYPE_CHECKING, Optional
  
  import torch
-@@ -12,6 +14,7 @@
+@@ -12,8 +14,10 @@
  from torch.cuda.streams import ExternalStream
  
  from sglang.srt.distributed.parallel_state import set_pdmux_status
 +from sglang.srt.mem_cache.base_prefix_cache import EvictParams
  from sglang.srt.model_executor.forward_batch_info import ForwardMode
  from sglang.srt.multiplex.pdmux_context import (
++    PDMuxBacklogPolicy,
      get_current_stream_idx,
-@@ -21,7 +24,7 @@
+     get_sm_counts,
+     get_stream_groups,
+@@ -21,7 +25,7 @@
      load_pdmux_config,
      set_current_stream_idx,
  )
@@ -698,7 +699,7 @@
  
  if TYPE_CHECKING:
      from sglang.srt.managers.schedule_batch import ScheduleBatch
-@@ -30,14 +33,29 @@
+@@ -30,29 +34,224 @@
  logger = logging.getLogger(__name__)
  
  
@@ -717,6 +718,11 @@
 +
 +
  class SchedulerMultiplexMixin:
++    # Backlog mode (see PDMuxConfig.backlog_*). Class-level defaults keep the
++    # default-off path untouched for schedulers that never call init_pdmux.
++    _pdmux_backlog_policy: Optional[PDMuxBacklogPolicy] = None
++    _pdmux_backlog_active: bool = False
++
      def init_pdmux(self: Scheduler):
 -        # The current split prefill batch
 +        # The current layerwise prefill batch.
@@ -730,10 +736,159 @@
          self.stream_groups = get_stream_groups()
          self.sm_counts = get_sm_counts()
          self.real_sm_group_num = len(self.stream_groups)
-@@ -45,14 +63,30 @@
+         logger.info(
              f"PD-Multiplexing enabled with {self.real_sm_group_num} stream groups, sm_counts (prefill_sm, decode_sm): {self.sm_counts}"
          )
- 
++        SchedulerMultiplexMixin._init_pdmux_backlog(self)
++
++    def _init_pdmux_backlog(self: Scheduler):
++        self._pdmux_backlog_policy = None
++        self._pdmux_backlog_active = False
++        self._pdmux_backlog_skip_tick = 0
++        cfg = self.pdmux_config
++        if not getattr(cfg, "backlog_enabled", False):
++            return
++        if getattr(self, "enable_dp_attention", False):
++            # Queue length is per DP rank; the stream group and layer count must
++            # be identical on every rank, so a local decision is unsafe here.
++            logger.warning(
++                "pdmux backlog mode is not supported with DP attention; disabled"
++            )
++            return
++        self._pdmux_backlog_policy = PDMuxBacklogPolicy(cfg)
++        self._pdmux_backlog_stats = {
++            "entered": 0,
++            "exited": 0,
++            "iterations_active": 0,
++            "decode_steps_skipped": 0,
++            "seconds_active": 0.0,
++        }
++        self._pdmux_backlog_since = 0.0
++        self._pdmux_backlog_last_log = float("-inf")
++        self._pdmux_backlog_suppressed = 0
++        self._pdmux_backlog_last_heartbeat = 0.0
++        p = self._pdmux_backlog_policy
++        logger.info(
++            "pdmux backlog mode configured: queue on/off=%d/%d, pending_tokens "
++            "on/off=%d/%d, layers/iter=%s, full_device_prefill=%s, "
++            "decode_every_n=%d",
++            p.queue_on,
++            p.queue_off,
++            p.tokens_on,
++            p.tokens_off,
++            cfg.backlog_max_split_forward_layers or "all",
++            cfg.backlog_full_device_prefill,
++            cfg.backlog_decode_every_n,
++        )
++
++    def _pdmux_backlog_tick(self: Scheduler) -> bool:
++        """Update backlog mode from the waiting queue; True if it flipped.
++
++        Runs once per loop iteration after new requests are ingested and before
++        a new split prefill batch is formed (which pops the queue).
++        """
++        policy = getattr(self, "_pdmux_backlog_policy", None)
++        if policy is None:
++            return False
++        queue = self.waiting_queue
++        pending = (
++            sum(len(req.origin_input_ids) for req in queue)
++            if policy.uses_tokens
++            else 0
++        )
++        changed = policy.update(len(queue), pending)
++        self._pdmux_backlog_active = policy.active
++        stats = self._pdmux_backlog_stats
++        if policy.active:
++            stats["iterations_active"] += 1
++        if changed:
++            SchedulerMultiplexMixin._pdmux_backlog_log_transition(
++                self, len(queue), pending
++            )
++        elif policy.active:
++            SchedulerMultiplexMixin._pdmux_backlog_heartbeat(self, len(queue), pending)
++        return changed
++
++    def _pdmux_backlog_log_transition(self: Scheduler, queue_len, pending) -> None:
++        # Wall-clock is used for logging only, never for a decision, so ranks
++        # cannot diverge on it.
++        now = time.monotonic()
++        stats = self._pdmux_backlog_stats
++        on = self._pdmux_backlog_policy.active
++        if on:
++            stats["entered"] += 1
++            self._pdmux_backlog_since = now
++        else:
++            stats["exited"] += 1
++            stats["seconds_active"] += now - self._pdmux_backlog_since
++        if getattr(self, "tp_rank", 0) != 0:
++            return
++        interval = self.pdmux_config.backlog_log_interval_s
++        if now - self._pdmux_backlog_last_log < interval:
++            self._pdmux_backlog_suppressed += 1
++            return
++        self._pdmux_backlog_last_log = now
++        total = stats["seconds_active"] + (now - self._pdmux_backlog_since if on else 0)
++        logger.info(
++            "pdmux backlog mode %s: queue=%d pending_tokens=%d "
++            "split_in_flight=%s entered=%d exited=%d seconds_active=%.1f "
++            "iterations_active=%d decode_steps_skipped=%d suppressed_lines=%d",
++            "on" if on else "off",
++            queue_len,
++            pending,
++            self.split_prefill_batch is not None,
++            stats["entered"],
++            stats["exited"],
++            total,
++            stats["iterations_active"],
++            stats["decode_steps_skipped"],
++            self._pdmux_backlog_suppressed,
++        )
++        self._pdmux_backlog_suppressed = 0
++
++    def _pdmux_backlog_heartbeat(self: Scheduler, queue_len, pending) -> None:
++        if getattr(self, "tp_rank", 0) != 0:
++            return
++        now = time.monotonic()
++        if now - self._pdmux_backlog_last_heartbeat < 30.0:
++            return
++        self._pdmux_backlog_last_heartbeat = now
++        stats = self._pdmux_backlog_stats
++        logger.info(
++            "pdmux backlog mode still on: queue=%d pending_tokens=%d "
++            "active_for=%.1fs entered=%d exited=%d seconds_active=%.1f "
++            "iterations_active=%d decode_steps_skipped=%d",
++            queue_len,
++            pending,
++            now - self._pdmux_backlog_since,
++            stats["entered"],
++            stats["exited"],
++            stats["seconds_active"] + now - self._pdmux_backlog_since,
++            stats["iterations_active"],
++            stats["decode_steps_skipped"],
++        )
++
++    def _pdmux_backlog_skip_decode(self: Scheduler) -> bool:
++        """True when this iteration's decode step should be skipped.
++
++        Only while backlog mode is on and a split prefill is in flight; the
++        counter is a deterministic function of the loop (no clocks), so TP
++        ranks skip the same iterations.
++        """
++        n = (
++            self.pdmux_config.backlog_decode_every_n
++            if self._pdmux_backlog_active
++            else 1
++        )
++        if n <= 1 or self.split_prefill_batch is None:
++            self._pdmux_backlog_skip_tick = 0
++            return False
++        self._pdmux_backlog_skip_tick += 1
++        if self._pdmux_backlog_skip_tick % n == 0:
++            return False
++        self._pdmux_backlog_stats["decode_steps_skipped"] += 1
++        return True
++
 +    @staticmethod
 +    def _global_decode_size(decode_batch: Optional[ScheduleBatch]) -> int:
 +        if decode_batch is None:
@@ -744,7 +899,7 @@
 +        if global_num_tokens is not None:
 +            return max(global_num_tokens, default=0)
 +        return 0 if decode_batch.is_empty() else decode_batch.batch_size()
-+
+ 
      # TODO(jason-fxz): This is a temporary demo
      def adjust_stream_groups(
 -        self: Scheduler, running_batch: ScheduleBatch
@@ -754,7 +909,17 @@
 -            decode_bs = running_batch.batch_size()
 +        """Pick the stream group for the next step."""
 +        decode_bs = SchedulerMultiplexMixin._global_decode_size(decode_batch)
-+        if decode_bs > 0 and self.split_prefill_batch is not None:
++        if (
++            decode_bs > 0
++            and self.split_prefill_batch is not None
++            and getattr(self, "_pdmux_backlog_active", False)
++            and self.pdmux_config.backlog_full_device_prefill
++        ):
++            # Backlog mode: the decode-only group is a pair of plain streams,
++            # so prefill is not SM-capped. It is also the proven decode lane
++            # (graphs, helper streams), unlike group 0's decode stream.
++            set_current_stream_idx(self.real_sm_group_num - 1)
++        elif decode_bs > 0 and self.split_prefill_batch is not None:
              manual_divisions = self.pdmux_config.manual_divisions
              if manual_divisions:
 +                # A decode batch under every configured threshold still has to
@@ -764,7 +929,7 @@
                  for i in range(len(manual_divisions)):
                      _, _, threshold = manual_divisions[i]
                      if decode_bs >= threshold:
-@@ -68,7 +102,7 @@
+@@ -68,7 +267,7 @@
                      ),
                  )
              set_current_stream_idx(stream_idx)
@@ -773,7 +938,7 @@
              set_current_stream_idx(self.real_sm_group_num - 1)
          else:
              set_current_stream_idx(0)
-@@ -81,28 +115,271 @@
+@@ -81,28 +280,278 @@
      def update_split_prefill_batch(
          self: Scheduler, sm_count: int, running_batch: ScheduleBatch
      ) -> tuple[bool, ScheduleBatch]:
@@ -817,13 +982,20 @@
              self.split_prefill_batch = batch
              return True, running_batch
          return False, running_batch
-+
+ 
 +    def _get_split_forward_count(
 +        self: Scheduler, decode_batch: Optional[ScheduleBatch]
 +    ) -> int:
 +        remaining_layers = (
 +            self.model_config.num_hidden_layers - self.split_prefill_batch.split_index
 +        )
++
++        if getattr(self, "_pdmux_backlog_active", False):
++            # Backlog mode: submission pace, not decode smoothness, is the
++            # bottleneck. Rank-consistent (the flag comes from the TP-identical
++            # waiting queue) and independent of decode_batch.
++            cap = self.pdmux_config.backlog_max_split_forward_layers
++            return remaining_layers if cap <= 0 else min(cap, remaining_layers)
 +
 +        # Splitting only benefits decode work that can run between prefill
 +        # intervals. maybe_prepare_mlp_sync_batch() returns a real or IDLE
@@ -955,7 +1127,7 @@
 +        batch.filter_batch(chunked_req_to_exclude=list(chunked_req_to_exclude))
 +        if batch.batch_size() < last_bs:
 +            running_batch.batch_is_full = False
- 
++
 +        if not batch.is_empty():
 +            if running_batch and not running_batch.is_empty():
 +                running_batch.merge_batch(batch)
@@ -1055,9 +1227,14 @@
          stream_idx = get_current_stream_idx()
          stream_group = self.stream_groups[stream_idx]
          prefill_stream = stream_group[0]
-@@ -118,31 +395,87 @@
+@@ -117,32 +566,106 @@
+                 recv_reqs = self.request_receiver.recv_requests()
                  self.process_input_requests(recv_reqs)
                  running_batch = self.running_batch
++                # Backlog mode flips on the freshly ingested queue; a flip
++                # changes the stream group, so force the switch below.
++                if SchedulerMultiplexMixin._pdmux_backlog_tick(self):
++                    adjust_stream_group = True
  
 -            with torch.cuda.stream(prefill_stream):
 -                set_pdmux_status(True)
@@ -1117,20 +1294,36 @@
  
              with torch.cuda.stream(decode_stream):
 -                set_pdmux_status(False)
+-                running_batch = self.update_running_batch(running_batch)
+-                self.running_batch = running_batch
 +                if formation_done is not None:
 +                    decode_stream.wait_event(formation_done)
-                 running_batch = self.update_running_batch(running_batch)
-                 self.running_batch = running_batch
-+                # Gather DP metadata before selecting streams: an empty local
-+                # decode batch may still have active peers and run an IDLE
-+                # participant. This is the existing gather, moved ahead of the
-+                # stream switch so every rank makes the same decision.
-+                decode_batch = self.dp_attn_adapter.maybe_prepare_mlp_sync_batch(
-+                    running_batch if not running_batch.is_empty() else None
-+                )
-+                has_decode = (
-+                    SchedulerMultiplexMixin._global_decode_size(decode_batch) > 0
-+                )
++                if (
++                    getattr(self, "_pdmux_backlog_policy", None) is not None
++                    and SchedulerMultiplexMixin._pdmux_backlog_skip_decode(self)
++                ):
++                    # Backlog mode with decode_every_n > 1: leave the running
++                    # batch untouched (update_running_batch would allocate KV
++                    # for a step that never runs). Stream selection still sees
++                    # the real decode population so the group does not flap.
++                    decode_batch = None
++                    stream_basis = running_batch
++                    has_decode = not running_batch.is_empty()
++                else:
++                    running_batch = self.update_running_batch(running_batch)
++                    self.running_batch = running_batch
++                    # Gather DP metadata before selecting streams: an empty
++                    # local decode batch may still have active peers and run an
++                    # IDLE participant. This is the existing gather, moved
++                    # ahead of the stream switch so every rank makes the same
++                    # decision.
++                    decode_batch = self.dp_attn_adapter.maybe_prepare_mlp_sync_batch(
++                        running_batch if not running_batch.is_empty() else None
++                    )
++                    stream_basis = decode_batch
++                    has_decode = (
++                        SchedulerMultiplexMixin._global_decode_size(decode_batch) > 0
++                    )
                  adjust_stream_group = adjust_stream_group or (
 -                    stream_idx > 0 and running_batch.is_empty()
 +                    stream_idx > 0 and not has_decode
@@ -1145,11 +1338,11 @@
                  decode_stream.synchronize()
                  stream_idx, stream_group = self.adjust_stream_groups(
 -                    running_batch=running_batch
-+                    decode_batch=decode_batch,
++                    decode_batch=stream_basis,
                  )
                  prefill_stream = stream_group[0]
                  decode_stream = stream_group[1]
-@@ -152,30 +485,19 @@
+@@ -152,30 +675,19 @@
                  )
  
              with torch.cuda.stream(decode_stream):
@@ -1185,7 +1378,7 @@
                      next_split_index = min(
                          self.split_prefill_batch.split_index + forward_count,
                          self.model_config.num_hidden_layers,
-@@ -197,13 +519,11 @@
+@@ -197,13 +709,11 @@
                      prefill_done = False
  
              with torch.cuda.stream(decode_stream):
@@ -1201,7 +1394,7 @@
                  if prefill_done and self.split_prefill_batch.split_prefill_finished:
                      wait_prefill_kernel_done = True
                      prefill_exe_done_flag = prefill_exe_done.query()
-@@ -214,16 +534,12 @@
+@@ -214,16 +724,12 @@
                      )
  
                      self.tp_cpu_group.allreduce(flags, dist.ReduceOp.SUM).wait()
@@ -1226,20 +1419,26 @@
                          adjust_stream_group = True
 --- a/python/sglang/srt/multiplex/pdmux_context.py
 +++ b/python/sglang/srt/multiplex/pdmux_context.py
-@@ -9,8 +9,12 @@
+@@ -1,5 +1,6 @@
++import os
+ from dataclasses import dataclass, field
+-from typing import List
++from typing import List, Optional
+ 
+ import torch
+ import yaml
+@@ -9,6 +10,10 @@
  SM_GROUP_NUM = 8  # Default number of SM groups
  CURRENT_STREAM_IDX = 0
  CURRENT_STREAM_GROUP = None
 +_RESERVED_GREEN_STREAMS = []
 +_FULL_DEVICE_DECODE_STREAMS = set()
- 
++
 +_OVERLAP_DECODE_STREAM_PRIORITY = -1
  
-+
+ 
  @dataclass
- class PDMuxConfig:
-     sm_group_num: int = 8
-@@ -18,7 +22,14 @@
+@@ -18,7 +23,89 @@
          default_factory=list
      )  # [prefill_sm, decode_sm, decode_bs_threshold]
      split_forward_token_budget: int = 65536
@@ -1251,10 +1450,85 @@
 +    # plain full-device streams, so the two SM sets deliberately overlap and the
 +    # manual_divisions decode_sm column is ignored.
 +    overlap_decode_full_sm: bool = False
++    # --- Adaptive backlog mode (off unless a threshold below is positive) ---
++    # While requests queue up, favour prefill throughput: run the split prefill
++    # on the unrestricted (full-device) stream group, advance more layers per
++    # scheduler iteration, and optionally run decode only every Nth iteration.
++    # Enter when waiting-queue length >= backlog_queue_on OR pending prefill
++    # tokens >= backlog_pending_tokens_on; leave only when every enabled
++    # criterion is <= its *_off value (hysteresis). 0 disables a criterion.
++    # An *_off of -1 means "derive": on // 4.
++    backlog_queue_on: int = 0
++    backlog_queue_off: int = -1
++    backlog_pending_tokens_on: int = 0
++    backlog_pending_tokens_off: int = -1
++    # Layers per iteration while in backlog mode; 0 = all remaining layers.
++    # (Unlike max_split_forward_layers, 0 here lifts the cap entirely and the
++    # split_forward_token_budget is ignored in backlog mode.)
++    backlog_max_split_forward_layers: int = 0
++    # Run the split prefill on the unrestricted stream group while in backlog
++    # mode. False keeps the configured green-context group (layer cap only).
++    backlog_full_device_prefill: bool = True
++    # Run a decode step only every Nth iteration while a split prefill is in
++    # flight in backlog mode. 1 = every iteration (no skipping).
++    backlog_decode_every_n: int = 1
++    # Minimum seconds between backlog transition log lines (rate limit).
++    backlog_log_interval_s: float = 5.0
++
++    @property
++    def backlog_enabled(self) -> bool:
++        return self.backlog_queue_on > 0 or self.backlog_pending_tokens_on > 0
++
++
++def _resolve_backlog_off(on: int, off: int) -> int:
++    return off if off >= 0 else on // 4
++
++
++class PDMuxBacklogPolicy:
++    """Hysteresis state machine for backlog mode (pure Python, no CUDA).
++
++    Decisions depend only on the waiting-queue length and pending prefill
++    tokens, which are identical on every TP rank, so all ranks make the same
++    choice in the same loop iteration (stream group and layer count feed
++    model collectives).
++    """
++
++    def __init__(self, config: "PDMuxConfig"):
++        self.queue_on = config.backlog_queue_on
++        self.queue_off = _resolve_backlog_off(
++            config.backlog_queue_on, config.backlog_queue_off
++        )
++        self.tokens_on = config.backlog_pending_tokens_on
++        self.tokens_off = _resolve_backlog_off(
++            config.backlog_pending_tokens_on, config.backlog_pending_tokens_off
++        )
++        self.active = False
++
++    @property
++    def uses_tokens(self) -> bool:
++        return self.tokens_on > 0
++
++    def update(self, queue_len: int, pending_tokens: int = 0) -> bool:
++        """Feed the current backlog; return True when the mode flipped."""
++        if not self.active:
++            enter = (self.queue_on > 0 and queue_len >= self.queue_on) or (
++                self.tokens_on > 0 and pending_tokens >= self.tokens_on
++            )
++            if enter:
++                self.active = True
++                return True
++            return False
++        stay = (self.queue_on > 0 and queue_len > self.queue_off) or (
++            self.tokens_on > 0 and pending_tokens > self.tokens_off
++        )
++        if not stay:
++            self.active = False
++            return True
++        return False
  
  
  def load_pdmux_config(config_path: str) -> PDMuxConfig:
-@@ -44,11 +55,64 @@
+@@ -44,11 +131,113 @@
              f"but got {len(manual_divisions)}"
          )
  
@@ -1309,6 +1583,8 @@
 +    ):
 +        raise ValueError("max_split_forward_layers must be a non-negative integer")
 +
++    backlog = _load_backlog_fields(raw)
++
      return PDMuxConfig(
          sm_group_num=raw["sm_group_num"],
          manual_divisions=manual_divisions,
@@ -1318,10 +1594,57 @@
 +        max_split_forward_layers=max_split_forward_layers,
 +        decode_bs_divisor=decode_bs_divisor,
 +        overlap_decode_full_sm=overlap_decode_full_sm,
++        **backlog,
++    )
++
++
++def _load_backlog_fields(raw: dict) -> dict:
++    def as_int(name, default, minimum):
++        value = raw.get(name, default)
++        if not isinstance(value, int) or isinstance(value, bool) or value < minimum:
++            raise ValueError(f"{name} must be an integer >= {minimum}")
++        return value
++
++    queue_on = as_int("backlog_queue_on", 0, 0)
++    queue_off = as_int("backlog_queue_off", -1, -1)
++    tokens_on = as_int("backlog_pending_tokens_on", 0, 0)
++    tokens_off = as_int("backlog_pending_tokens_off", -1, -1)
++    for name, on, off in (
++        ("backlog_queue", queue_on, queue_off),
++        ("backlog_pending_tokens", tokens_on, tokens_off),
++    ):
++        if on == 0 and off >= 0:
++            raise ValueError(f"{name}_off is set but {name}_on is 0 (disabled)")
++        if on > 0 and _resolve_backlog_off(on, off) >= on:
++            raise ValueError(
++                f"{name}_off must be < {name}_on (hysteresis); got "
++                f"off={_resolve_backlog_off(on, off)}, on={on}"
++            )
++    full_device = raw.get("backlog_full_device_prefill", True)
++    if not isinstance(full_device, bool):
++        raise ValueError("backlog_full_device_prefill must be a boolean")
++    log_interval = raw.get("backlog_log_interval_s", 5.0)
++    if (
++        not isinstance(log_interval, (int, float))
++        or isinstance(log_interval, bool)
++        or log_interval < 0
++    ):
++        raise ValueError("backlog_log_interval_s must be a non-negative number")
++    return dict(
++        backlog_queue_on=queue_on,
++        backlog_queue_off=_resolve_backlog_off(queue_on, queue_off),
++        backlog_pending_tokens_on=tokens_on,
++        backlog_pending_tokens_off=_resolve_backlog_off(tokens_on, tokens_off),
++        backlog_max_split_forward_layers=as_int(
++            "backlog_max_split_forward_layers", 0, 0
++        ),
++        backlog_full_device_prefill=full_device,
++        backlog_decode_every_n=as_int("backlog_decode_every_n", 1, 1),
++        backlog_log_interval_s=float(log_interval),
      )
  
  
-@@ -110,6 +174,7 @@
+@@ -110,6 +299,7 @@
          SM_GROUP_NUM, \
          CURRENT_STREAM_IDX, \
          CURRENT_STREAM_GROUP
@@ -1329,7 +1652,7 @@
      # for pd_multiplexing, Init stream_groups
      device = torch.cuda.current_device()
      total_sm_count = spatial.get_sm_available(gpu_id)
-@@ -126,21 +191,55 @@
+@@ -126,21 +316,55 @@
              config.sm_group_num - 2,
          )
  
@@ -1388,7 +1711,7 @@
  
      CURRENT_STREAM_IDX = 0
      CURRENT_STREAM_GROUP = STREAM_GROUPS[CURRENT_STREAM_IDX]
-@@ -167,3 +266,17 @@
+@@ -167,3 +391,65 @@
  def get_current_stream_idx() -> int:
      """Get the current stream index."""
      return CURRENT_STREAM_IDX
@@ -1406,6 +1729,606 @@
 +    if torch.cuda.current_stream().cuda_stream in _FULL_DEVICE_DECODE_STREAMS:
 +        return alt_stream
 +    return None
++
++
++def pdmux_eagle_draft_graphs_enabled() -> bool:
++    """Env switch for EAGLE draft CUDA graphs under PDMux.
++
++    ``SGLANG_PDMUX_EAGLE_DRAFT_GRAPHS=0`` forces the prototype's eager draft
++    forwards. Default (unset or anything else) is graphs on.
++    """
++    return os.environ.get("SGLANG_PDMUX_EAGLE_DRAFT_GRAPHS", "1") != "0"
++
++
++def get_pdmux_decode_stream_indices(num_groups: Optional[int] = None) -> List[int]:
++    """Stream-group indices a decode batch can ever run on.
++
++    ``SchedulerMultiplexMixin.adjust_stream_groups`` only selects index 0 when
++    there is no decode work; any decode batch lands on 1..N-1 (a shared group
++    while a split prefill is in flight, the decode-only group N-1 otherwise).
++    Index 0 is the prefill-only normal stream pair, so no decode graph is ever
++    replayed on it. This holds in overlap mode (``overlap_decode_full_sm``) as
++    well, where those decode streams are plain full-device streams.
++    """
++    if num_groups is None:
++        num_groups = len(STREAM_GROUPS)
++    return list(range(1, num_groups))
++
++
++def get_pdmux_eagle_draft_graph_stream_indices(
++    num_groups: Optional[int] = None,
++) -> List[int]:
++    """Stream groups to capture EAGLE draft graphs for.
++
++    Default: every decode-side group (see get_pdmux_decode_stream_indices).
++    ``SGLANG_PDMUX_EAGLE_DRAFT_GRAPH_GROUPS=1,2`` restricts the set to save
++    memory; a decode step whose current group has no draft graph runs that
++    draft forward eagerly.
++    """
++    decode_idx = get_pdmux_decode_stream_indices(num_groups)
++    raw = os.environ.get("SGLANG_PDMUX_EAGLE_DRAFT_GRAPH_GROUPS", "").strip()
++    if not raw or raw.lower() == "auto":
++        return decode_idx
++    wanted = sorted({int(x) for x in raw.split(",") if x.strip()})
++    bad = [i for i in wanted if i not in decode_idx]
++    if bad:
++        raise ValueError(
++            "SGLANG_PDMUX_EAGLE_DRAFT_GRAPH_GROUPS has indices that decode never "
++            f"uses or that do not exist: {bad} (valid: {decode_idx})"
++        )
++    return wanted
+--- a/python/sglang/srt/speculative/eagle_draft_cuda_graph_runner.py
++++ b/python/sglang/srt/speculative/eagle_draft_cuda_graph_runner.py
+@@ -1,7 +1,9 @@
+ from __future__ import annotations
+ 
++import logging
++import os
+ from dataclasses import dataclass
+-from typing import TYPE_CHECKING, Callable, Optional
++from typing import TYPE_CHECKING, Callable, List, Optional
+ 
+ import torch
+ 
+@@ -34,6 +36,10 @@
+ from sglang.srt.model_executor.runner_backend_utils import (
+     CUDA_GRAPH_CAPTURE_FAILED_MSG,
+ )
++from sglang.srt.multiplex.pdmux_context import (
++    get_current_stream_idx,
++    get_stream_groups,
++)
+ from sglang.srt.runtime_context import (
+     get_flags,
+     get_parallel,
+@@ -55,6 +61,41 @@
+ if TYPE_CHECKING:
+     from sglang.srt.speculative.eagle_worker_v2 import EagleDraftWorker
+ 
++logger = logging.getLogger(__name__)
++
++
++def share_cuda_graph_state_across_groups(
++    reference_backends: List, backends: List, keys=("page_table", "real_page_table")
++) -> int:
++    """Alias the wide static page tables of per-stream-group draft backends.
++
++    The wide ``[max_num_tokens, max_ctx_len]`` int32 page table in a DSA
++    backend's ``decode_cuda_graph_metadata`` dominates its graph-state memory.
++    PDMux decode steps are serialized (stream groups are only switched after
++    both streams are synchronized), and every replay rewrites the table before
++    launching, so the groups can share one allocation. Must run before capture
++    (captured graphs bake the pointer). Opt-in via
++    SGLANG_PDMUX_EAGLE_DRAFT_SHARE_PAGE_TABLE=1. Returns the bytes freed.
++    """
++    freed = 0
++    for ref, dst in zip(reference_backends, backends):
++        ref_state = getattr(ref, "decode_cuda_graph_metadata", None)
++        dst_state = getattr(dst, "decode_cuda_graph_metadata", None)
++        if not isinstance(ref_state, dict) or not isinstance(dst_state, dict):
++            continue
++        for key in keys:
++            a, b = ref_state.get(key), dst_state.get(key)
++            if (
++                torch.is_tensor(a)
++                and torch.is_tensor(b)
++                and a is not b
++                and a.shape == b.shape
++                and a.dtype == b.dtype
++            ):
++                freed += b.numel() * b.element_size()
++                dst_state[key] = a
++    return freed
++
+ 
+ @dataclass
+ class EagleDraftInputBuffers(ForwardInputBuffers):
+@@ -99,6 +140,7 @@
+         *,
+         draft_attn_backend=None,
+         speculative_num_steps: Optional[int] = None,
++        draft_attn_backend_group: Optional[List] = None,
+     ):
+         # Parse args
+         self.eagle_worker = eagle_worker
+@@ -131,6 +173,15 @@
+         self.topk = get_spec().speculative_eagle_topk
+         self.draft_attn_backend = draft_attn_backend or model_runner.draft_attn_backend
+ 
++        # PDMux: one multi-step draft backend instance per stream group (index =
++        # pdmux stream index, None for groups decode never runs on), mirroring
++        # ModelRunner.decode_attn_backend_group for the target. The graph for
++        # stream group k is captured on that group's decode stream with
++        # group k's backend and replayed under the same ShapeKey.stream_idx.
++        # self.draft_attn_backend stays the plain eager instance (fallback).
++        self.draft_attn_backend_group = draft_attn_backend_group
++        self.captured_stream_indices = ()
++
+         # Patch_model in parent's capture() needs an attn_backend reference.
+         # EAGLE doesn't use it (capture_one_shape calls draft_forward instead),
+         # but the field must exist.
+@@ -138,7 +189,7 @@
+ 
+         # Disable parent paths that don't apply to EAGLE.
+         self.compile_bs = []  # disables patch_model torch.compile wrapping
+-        self.enable_pdmux = False
++        self.enable_pdmux = draft_attn_backend_group is not None
+         self.record_nolora_graph = False
+         self.is_dllm = False
+ 
+@@ -156,7 +207,12 @@
+         self.max_num_token = self.max_bs * self.captured_req_width
+ 
+         # Attention backend init
+-        self.draft_attn_backend.init_cuda_graph_state(self.max_bs, self.max_num_token)
++        if self.enable_pdmux:
++            self.maybe_init_pdmux()
++        else:
++            self.draft_attn_backend.init_cuda_graph_state(
++                self.max_bs, self.max_num_token
++            )
+         self.seq_len_fill_value = self.draft_attn_backend.attn_backends[
+             0
+         ].get_cuda_graph_seq_len_fill_value()
+@@ -293,17 +349,92 @@
+     # -----------------------------------------------------------------
+     # Helpers
+     # -----------------------------------------------------------------
++    def maybe_init_pdmux(self):
++        """Init per-stream-group graph state (cf. DecodeCudaGraphRunner.maybe_init_pdmux).
++
++        The plain eager ``draft_attn_backend`` gets no graph state under PDMux:
++        it only serves the eager fallback and never replays a graph.
++        """
++        self.stream_groups = get_stream_groups()
++        group = self.draft_attn_backend_group
++        assert len(group) == len(self.stream_groups), (
++            f"draft backend group has {len(group)} entries, "
++            f"{len(self.stream_groups)} stream groups"
++        )
++        self.captured_stream_indices = tuple(
++            i for i, b in enumerate(group) if b is not None
++        )
++        assert self.captured_stream_indices, "no PDMux draft graph stream group"
++        initialized = []
++        share = os.environ.get("SGLANG_PDMUX_EAGLE_DRAFT_SHARE_PAGE_TABLE", "0") == "1"
++        for i in self.captured_stream_indices:
++            backend = group[i]
++            backend.init_cuda_graph_state(self.max_bs, self.max_num_token)
++            if share and initialized:
++                freed = share_cuda_graph_state_across_groups(
++                    initialized[0].attn_backends, backend.attn_backends
++                )
++                logger.info(
++                    "PDMux EAGLE draft decode graph state: stream group %d shares "
++                    "page tables with group %d (freed %.2f GB)",
++                    i,
++                    self.captured_stream_indices[0],
++                    freed / 2**30,
++                )
++            initialized.append(backend)
++        logger.info(
++            "PDMux EAGLE draft decode graphs: stream groups %s of %d "
++            "(max_bs=%d, steps=%d)",
++            list(self.captured_stream_indices),
++            len(self.stream_groups),
++            self.max_bs,
++            self.speculative_num_steps,
++        )
++
++    def _draft_backend_for(self, stream_idx: Optional[int]):
++        if stream_idx is None:
++            return self.draft_attn_backend
++        backend = self.draft_attn_backend_group[stream_idx]
++        assert backend is not None, f"no draft backend for stream group {stream_idx}"
++        return backend
++
++    def _current_stream_idx(self) -> Optional[int]:
++        return get_current_stream_idx() if self.enable_pdmux else None
++
++    def _capture_one_stream(self, stream_idx: Optional[int] = None) -> None:
++        if self.enable_pdmux and stream_idx not in self.captured_stream_indices:
++            return
++        before = None
++        if self.enable_pdmux:
++            before = torch.get_device_module(self.device).mem_get_info()[0]
++        super()._capture_one_stream(stream_idx)
++        if before is not None:
++            after = torch.get_device_module(self.device).mem_get_info()[0]
++            logger.info(
++                "PDMux EAGLE draft decode graph captured: stream_idx=%d bs=%s "
++                "mem usage=%.2f GB",
++                stream_idx,
++                self.capture_bs,
++                (before - after) / 2**30,
++            )
++
+     def _cache_loc_dtype(self):
+         return torch.int64
+ 
+     def _make_graph_key(self, bs, stream_idx=None, variant_label=None):
+-        # EAGLE doesn't use stream_idx / lora variants.
+-        return ShapeKey(size=bs)
++        # Keyed by pdmux stream group (None when PDMux is off); no lora variants.
++        return ShapeKey(size=bs, stream_idx=stream_idx)
+ 
+     # -----------------------------------------------------------------
+     # can_run_graph
+     # -----------------------------------------------------------------
+     def can_run_graph(self, forward_batch: ForwardBatch):
++        stream_idx = self._current_stream_idx()
++        # PDMux: only the stream groups that were captured have a graph; the
++        # padding branch below checks bs alone, so test the group explicitly.
++        if self.enable_pdmux and stream_idx not in self.captured_stream_indices:
++            return False
++
+         # Uniform-width replay invariant: the batch's actual per-request width
+         # must match this runner's capture width; anything else falls back to
+         # eager. (Unset widths pass: not every path fills the field yet.)
+@@ -322,7 +453,9 @@
+             cuda_graph_bs = forward_batch.batch_size
+ 
+         is_bs_supported = (
+-            self.backend.can_run(forward_batch, self._make_graph_key(cuda_graph_bs))
++            self.backend.can_run(
++                forward_batch, self._make_graph_key(cuda_graph_bs, stream_idx)
++            )
+             if self.disable_padding
+             else cuda_graph_bs <= self.max_bs
+         )
+@@ -346,6 +479,7 @@
+     ):
+         num_seqs = size  # EAGLE legacy name
+         buffers = self.buffers
++        draft_attn_backend = self._draft_backend_for(stream_idx)
+         num_tokens = num_seqs * self.captured_req_width
+ 
+         # Graph inputs
+@@ -453,8 +587,14 @@
+             ),
+         )
+ 
++        # Only PDMux passes the backend explicitly: the worker's own
++        # draft_attn_backend is the eager instance there.
++        draft_forward_kwargs = (
++            {"draft_attn_backend": draft_attn_backend} if self.enable_pdmux else {}
++        )
++
+         def run_once():
+-            self.draft_attn_backend.init_forward_metadata_in_graph(forward_batch)
++            draft_attn_backend.init_forward_metadata_in_graph(forward_batch)
+ 
+             forward_batch.dp_local_start_pos = forward_batch.dp_local_num_tokens = None
+             set_dp_buffer_len(
+@@ -469,7 +609,9 @@
+             hidden_states_backup = forward_batch.spec_info.hidden_states
+             dsa_topk_indices_backup = forward_batch.spec_info.dsa_topk_indices
+ 
+-            ret = self.eagle_worker.draft_forward(forward_batch)
++            ret = self.eagle_worker.draft_forward(
++                forward_batch, **draft_forward_kwargs
++            )
+ 
+             forward_batch.out_cache_loc = output_cache_loc_backup
+             forward_batch.spec_info.hidden_states = hidden_states_backup
+@@ -477,17 +619,17 @@
+             forward_batch.positions.sub_(self.eagle_worker.speculative_num_steps - 1)
+             return ret
+ 
+-        with forward_context(ForwardContext(attn_backend=self.draft_attn_backend)):
+-            self.draft_attn_backend.init_forward_metadata_out_graph(
++        with forward_context(ForwardContext(attn_backend=draft_attn_backend)):
++            draft_attn_backend.init_forward_metadata_out_graph(
+                 forward_batch, in_capture=True
+             )
+             # The capture batch is planned here (out-of-forward), so the
+             # per-step forwards inside draft_forward must not re-plan.
+             forward_batch.mark_forward_metadata_ready()
+             self.deepep_adapter.capture(is_extend_in_batch=False)
+-            shape_key = self._make_graph_key(num_seqs)
++            shape_key = self._make_graph_key(num_seqs, stream_idx)
+             post_warmup_hook = getattr(
+-                self.draft_attn_backend, "on_after_cuda_graph_warmup", None
++                draft_attn_backend, "on_after_cuda_graph_warmup", None
+             )
+             maybe_flashinfer_autotune_speculative_draft(
+                 self,
+@@ -515,6 +657,11 @@
+         assert forward_batch.out_cache_loc is not None
+         self.deepep_adapter.replay()
+         buffers = self.buffers
++        # PDMux: replay the graph captured for the current decode stream group
++        # with that group's backend instance. can_run_graph() already refused
++        # groups without a graph.
++        stream_idx = self._current_stream_idx()
++        draft_attn_backend = self._draft_backend_for(stream_idx)
+ 
+         raw_bs = forward_batch.batch_size
+         raw_num_token = raw_bs * self.captured_req_width
+@@ -668,12 +815,12 @@
+         # Prepare per-step draft attention metadata (kv_indptr / kv_indices for
+         # each speculative step).  The glue-graph optimisation is not applied
+         # here — see __init__ comment for why.
+-        self.draft_attn_backend.init_forward_metadata_out_graph(forward_batch)
++        draft_attn_backend.init_forward_metadata_out_graph(forward_batch)
+         self.raw_bs = raw_bs
+         self.bs = bs
+ 
+         # Replay via backend
+-        shape_key = self._make_graph_key(bs)
++        shape_key = self._make_graph_key(bs, stream_idx)
+         with device_timer_ctx(self.model_runner.device_timer, "eagle_draft"):
+             out = self._replay_graph(shape_key, forward_batch)
+         if self.buffers.dsa_seed_topk is not None:
+--- a/python/sglang/srt/speculative/eagle_draft_extend_cuda_graph_runner.py
++++ b/python/sglang/srt/speculative/eagle_draft_extend_cuda_graph_runner.py
+@@ -1,8 +1,10 @@
+ from __future__ import annotations
+ 
+ import contextlib
++import logging
++import os
+ from dataclasses import dataclass
+-from typing import TYPE_CHECKING, Callable, Optional
++from typing import TYPE_CHECKING, Callable, List, Optional
+ 
+ import torch
+ 
+@@ -35,11 +37,18 @@
+ from sglang.srt.model_executor.runner_backend_utils import (
+     CUDA_GRAPH_CAPTURE_FAILED_MSG,
+ )
++from sglang.srt.multiplex.pdmux_context import (
++    get_current_stream_idx,
++    get_stream_groups,
++)
+ from sglang.srt.runtime_context import (
+     get_flags,
+     get_parallel,
+     get_spec,
+ )
++from sglang.srt.speculative.eagle_draft_cuda_graph_runner import (
++    share_cuda_graph_state_across_groups,
++)
+ from sglang.srt.speculative.eagle_info import EagleDraftExtendInput
+ from sglang.srt.speculative.eagle_utils import get_draft_input_from_target_hidden_dim
+ from sglang.srt.speculative.spec_utils import resolve_num_tokens_per_req
+@@ -54,6 +63,8 @@
+ if TYPE_CHECKING:
+     from sglang.srt.speculative.eagle_worker_v2 import EagleDraftWorker
+ 
++logger = logging.getLogger(__name__)
++
+ 
+ def resolve_draft_extend_seq_len_fill_value(
+     attn_backend, captured_req_width: int
+@@ -101,6 +112,7 @@
+         *,
+         draft_extend_attn_backend=None,
+         speculative_num_steps: Optional[int] = None,
++        draft_extend_attn_backend_group: Optional[List] = None,
+     ):
+         # Parse args
+         self.eagle_worker = eagle_worker
+@@ -132,9 +144,16 @@
+         )
+         self.attn_backend = self.draft_extend_attn_backend
+ 
++        # PDMux: one draft-extend backend instance per stream group (index =
++        # pdmux stream index, None where decode never runs). See
++        # EAGLEDraftCudaGraphRunner for the shared design. The plain
++        # self.draft_extend_attn_backend stays the eager (prefill-side) one.
++        self.draft_extend_attn_backend_group = draft_extend_attn_backend_group
++        self.captured_stream_indices = ()
++
+         # Disable parent paths that don't apply.
+         self.compile_bs = []
+-        self.enable_pdmux = False
++        self.enable_pdmux = draft_extend_attn_backend_group is not None
+         self.record_nolora_graph = False
+         self.is_dllm = False
+ 
+@@ -151,9 +170,12 @@
+         self.max_bs = max(self.capture_bs)
+         self.max_num_token = self.max_bs * self.captured_req_width
+ 
+-        self.draft_extend_attn_backend.init_cuda_graph_state(
+-            self.max_bs, self.max_num_token
+-        )
++        if self.enable_pdmux:
++            self.maybe_init_pdmux()
++        else:
++            self.draft_extend_attn_backend.init_cuda_graph_state(
++                self.max_bs, self.max_num_token
++            )
+         self.seq_len_fill_value = resolve_draft_extend_seq_len_fill_value(
+             self.draft_extend_attn_backend, self.captured_req_width
+         )
+@@ -304,10 +326,81 @@
+     def _cache_loc_dtype(self):
+         return torch.int64
+ 
++    def maybe_init_pdmux(self):
++        """Init per-stream-group graph state (cf. DecodeCudaGraphRunner.maybe_init_pdmux)."""
++        self.stream_groups = get_stream_groups()
++        group = self.draft_extend_attn_backend_group
++        assert len(group) == len(self.stream_groups), (
++            f"draft-extend backend group has {len(group)} entries, "
++            f"{len(self.stream_groups)} stream groups"
++        )
++        self.captured_stream_indices = tuple(
++            i for i, b in enumerate(group) if b is not None
++        )
++        assert self.captured_stream_indices, "no PDMux draft-extend graph stream group"
++        share = os.environ.get("SGLANG_PDMUX_EAGLE_DRAFT_SHARE_PAGE_TABLE", "0") == "1"
++        first = None
++        for i in self.captured_stream_indices:
++            backend = group[i]
++            backend.init_cuda_graph_state(self.max_bs, self.max_num_token)
++            if share and first is not None:
++                freed = share_cuda_graph_state_across_groups([first], [backend])
++                logger.info(
++                    "PDMux EAGLE draft-extend graph state: stream group %d shares "
++                    "page tables with group %d (freed %.2f GB)",
++                    i,
++                    self.captured_stream_indices[0],
++                    freed / 2**30,
++                )
++            if first is None:
++                first = backend
++        logger.info(
++            "PDMux EAGLE draft-extend graphs: stream groups %s of %d "
++            "(max_bs=%d, width=%d)",
++            list(self.captured_stream_indices),
++            len(self.stream_groups),
++            self.max_bs,
++            self.captured_req_width,
++        )
++
++    def _extend_backend_for(self, stream_idx: Optional[int]):
++        if stream_idx is None:
++            return self.draft_extend_attn_backend
++        backend = self.draft_extend_attn_backend_group[stream_idx]
++        assert backend is not None, (
++            f"no draft-extend backend for stream group {stream_idx}"
++        )
++        return backend
++
++    def _current_stream_idx(self) -> Optional[int]:
++        return get_current_stream_idx() if self.enable_pdmux else None
++
++    def _capture_one_stream(self, stream_idx: Optional[int] = None) -> None:
++        if self.enable_pdmux and stream_idx not in self.captured_stream_indices:
++            return
++        before = None
++        if self.enable_pdmux:
++            before = torch.get_device_module(self.device).mem_get_info()[0]
++        super()._capture_one_stream(stream_idx)
++        if before is not None:
++            after = torch.get_device_module(self.device).mem_get_info()[0]
++            logger.info(
++                "PDMux EAGLE draft-extend graph captured: stream_idx=%d bs=%s "
++                "mem usage=%.2f GB",
++                stream_idx,
++                self.capture_bs,
++                (before - after) / 2**30,
++            )
++
+     def _make_graph_key(self, bs, stream_idx=None, variant_label=None):
+-        return ShapeKey(size=bs)
++        # Keyed by pdmux stream group (None when PDMux is off).
++        return ShapeKey(size=bs, stream_idx=stream_idx)
+ 
+     def can_run_graph(self, forward_batch: ForwardBatch):
++        stream_idx = self._current_stream_idx()
++        if self.enable_pdmux and stream_idx not in self.captured_stream_indices:
++            return False
++
+         # Uniform-width replay invariant: the batch's actual per-request width
+         # must match this runner's capture width; anything else falls back to
+         # eager. (Unset widths pass: not every path fills the field yet.)
+@@ -326,7 +419,9 @@
+             cuda_graph_bs = forward_batch.seq_lens.numel()
+ 
+         is_bs_supported = (
+-            self.backend.can_run(forward_batch, self._make_graph_key(cuda_graph_bs))
++            self.backend.can_run(
++                forward_batch, self._make_graph_key(cuda_graph_bs, stream_idx)
++            )
+             if self.disable_padding
+             else cuda_graph_bs <= self.max_bs
+         )
+@@ -348,6 +443,7 @@
+         bs = size
+         buffers = self.buffers
+         num_tokens = bs * self.captured_req_width
++        draft_extend_attn_backend = self._extend_backend_for(stream_idx)
+ 
+         # Graph inputs
+         input_ids = buffers.input_ids[:num_tokens]
+@@ -444,7 +540,7 @@
+             ]
+ 
+         def run_once():
+-            self.draft_extend_attn_backend.init_forward_metadata_in_graph(forward_batch)
++            draft_extend_attn_backend.init_forward_metadata_in_graph(forward_batch)
+ 
+             # Clean intermediate result cache for DP attention
+             forward_batch.dp_local_start_pos = forward_batch.dp_local_num_tokens = None
+@@ -469,10 +565,8 @@
+             forward_batch.spec_info.hidden_states = hidden_states_backup
+             return ret
+ 
+-        with forward_context(
+-            ForwardContext(attn_backend=self.draft_extend_attn_backend)
+-        ):
+-            self.draft_extend_attn_backend.init_forward_metadata_out_graph(
++        with forward_context(ForwardContext(attn_backend=draft_extend_attn_backend)):
++            draft_extend_attn_backend.init_forward_metadata_out_graph(
+                 forward_batch, in_capture=True
+             )
+             self.deepep_adapter.capture(is_extend_in_batch=True)
+@@ -482,9 +576,9 @@
+                 else contextlib.nullcontext()
+             )
+             with canary_ctx:
+-                shape_key = self._make_graph_key(bs)
++                shape_key = self._make_graph_key(bs, stream_idx)
+                 post_warmup_hook = getattr(
+-                    self.draft_extend_attn_backend,
++                    draft_extend_attn_backend,
+                     "on_after_cuda_graph_warmup",
+                     None,
+                 )
+@@ -505,6 +599,10 @@
+         assert forward_batch.out_cache_loc is not None
+         self.deepep_adapter.replay()
+         buffers = self.buffers
++        # PDMux: replay the graph captured for the current decode stream group
++        # with that group's backend (can_run_graph refused groups without one).
++        stream_idx = self._current_stream_idx()
++        draft_extend_attn_backend = self._extend_backend_for(stream_idx)
+ 
+         raw_bs = forward_batch.batch_size
+         num_tokens = forward_batch.input_ids.shape[0]
+@@ -623,7 +721,7 @@
+             out_cache_loc_dsv4=getattr(forward_batch, "out_cache_loc_dsv4", None),
+             spec_info=forward_batch.spec_info,
+         )
+-        self.draft_extend_attn_backend.init_forward_metadata_out_graph(fb_view)
++        draft_extend_attn_backend.init_forward_metadata_out_graph(fb_view)
+ 
+         # Snapshot built -- the forward is done reading the shared pool. Publish
+         # a read-done event the scheduler's WAR barrier waits on (draft extend
+@@ -634,7 +732,7 @@
+ 
+         self.raw_bs = raw_bs
+         self.bs = bs
+-        shape_key = self._make_graph_key(bs)
++        shape_key = self._make_graph_key(bs, stream_idx)
+         with device_timer_ctx(self.model_runner.device_timer, "eagle_draft_extend"):
+             out = self._replay_graph(shape_key, forward_batch)
+ 
 --- a/python/sglang/srt/speculative/eagle_worker_common.py
 +++ b/python/sglang/srt/speculative/eagle_worker_common.py
 @@ -345,7 +345,7 @@
@@ -1457,25 +2380,157 @@
      get_exec,
      get_model,
      get_parallel,
-@@ -367,7 +374,11 @@
+@@ -61,6 +68,11 @@
+     AdaptiveController,
+     SpecRuntimeState,
+ )
++from sglang.srt.multiplex.pdmux_context import (
++    get_pdmux_eagle_draft_graph_stream_indices,
++    get_stream_groups,
++    pdmux_eagle_draft_graphs_enabled,
++)
+ from sglang.srt.speculative.adaptive_spec_params import AdaptiveSpeculativeParams
+ from sglang.srt.speculative.base_spec_worker import BaseSpecWorker, EagleDraftWorkerBase
+ from sglang.srt.speculative.draft_utils import DraftBackendFactory
+@@ -348,6 +360,9 @@
+             self.speculative_num_steps,
+             seed_dsa_topk_from_draft_extend=self.seed_dsa_topk_from_draft_extend,
+         )
++        # Kept for the per-stream-group PDMux draft backends (see
++        # _build_pdmux_draft_backend_groups).
++        self._draft_backend_factory = draft_backend_factory
+ 
+         # Initialize decode attention backend
+         self.draft_attn_backend = draft_backend_factory.create_decode_backend()
+@@ -367,7 +382,26 @@
          self.cuda_graph_runner = None
          self.cuda_graph_runner_for_draft_extend = None
  
 -        if _is_cpu or check_cuda_graph_backend(Phase.DECODE, Backend.DISABLED):
++        # PDMux: draft graphs are captured per stream group (each with its own
++        # draft backend instances) so they replay on the scheduler's decode
++        # stream. SGLANG_PDMUX_EAGLE_DRAFT_GRAPHS=0 keeps the eager prototype.
++        pdmux_draft_graphs = (
++            get_disagg().enable_pdmux and pdmux_eagle_draft_graphs_enabled()
++        )
++        self.draft_attn_backend_group = None
++        self.draft_extend_attn_backend_group = None
 +        if (
 +            _is_cpu
-+            or get_disagg().enable_pdmux
++            or (get_disagg().enable_pdmux and not pdmux_draft_graphs)
 +            or check_cuda_graph_backend(Phase.DECODE, Backend.DISABLED)
 +        ):
++            if get_disagg().enable_pdmux:
++                log_info_on_rank0(
++                    logger,
++                    "PDMux EAGLE draft CUDA graphs disabled "
++                    "(SGLANG_PDMUX_EAGLE_DRAFT_GRAPHS=0 or graphs off): "
++                    "draft forwards run eager.",
++                )
              return
  
          if get_model().model_impl == "mindspore":
-@@ -1291,8 +1302,73 @@
-                 ):
-                     self.draft_worker._draft_extend_for_decode(batch, batch_output)
+@@ -379,6 +413,21 @@
+             "cuda": EAGLEDraftCudaGraphRunner,
+             "musa": EAGLEDraftCudaGraphRunner,
+         }
++        draft_group_kwargs: dict = {}
++        extend_group_kwargs: dict = {}
++        if pdmux_draft_graphs:
++            (
++                self.draft_attn_backend_group,
++                self.draft_extend_attn_backend_group,
++            ) = self._build_pdmux_draft_backend_groups()
++            if self.draft_attn_backend_group is not None:
++                draft_group_kwargs = {
++                    "draft_attn_backend_group": self.draft_attn_backend_group
++                }
++            if self.draft_extend_attn_backend_group is not None:
++                extend_group_kwargs = {
++                    "draft_extend_attn_backend_group": self.draft_extend_attn_backend_group
++                }
+         # Capture draft
+         decode_backend = get_exec().graph.cuda_graph_config.decode.backend
+         capture_bs, _ = get_batch_sizes_to_capture(self.draft_runner)
+@@ -393,7 +442,7 @@
+             )
+             self.cuda_graph_runner = Device2DraftCudaGraphRunner[
+                 self.target_worker.device
+-            ](self)
++            ](self, **draft_group_kwargs)
+             after_mem = get_available_gpu_memory(self.device, self.gpu_id)
+             capture_time = time.perf_counter() - tic
+             self._specialized_graph_memory_usage["draft_decode"] = (
+@@ -496,7 +545,7 @@
+             )
+             self.cuda_graph_runner_for_draft_extend = Device2ExtendCudaGraphRunner[
+                 self.target_worker.device
+-            ](self)
++            ](self, **extend_group_kwargs)
+             # draft_extend is the step's last shared-buffer-reading phase; its
+             # read-done event is what the scheduler's WAR barrier waits on.
+             after_mem = get_available_gpu_memory(self.device, self.gpu_id)
+@@ -518,6 +567,32 @@
+                 f"avail mem={after_mem:.2f} GB.",
+             )
  
-+            return batch_output
++    def _build_pdmux_draft_backend_groups(self):
++        """One multi-step draft backend and one draft-extend backend per decode
++        stream group, indexed by pdmux stream index (None where decode never
++        runs, see get_pdmux_decode_stream_indices).
 +
++        Mirrors ModelRunner.decode_attn_backend_group for the target. The
++        instances are cheap to build (their cuda-graph state is allocated by the
++        graph runners); the eager draft path keeps using self.draft_attn_backend
++        and self.draft_extend_attn_backend, which the prefill-side draft extend
++        shares, so graph replay on the decode stream never touches their
++        metadata.
++        """
++        num_groups = len(get_stream_groups())
++        indices = get_pdmux_eagle_draft_graph_stream_indices(num_groups)
++        factory = self._draft_backend_factory
++        decode_group = [None] * num_groups
++        extend_group = [None] * num_groups
++        for i in indices:
++            if self.speculative_num_steps > 1:
++                decode_group[i] = factory.create_decode_backend()
++            extend_group[i] = factory.create_draft_extend_backend()
++        return (
++            decode_group if any(b is not None for b in decode_group) else None,
++            extend_group if any(b is not None for b in extend_group) else None,
++        )
++
+     def draft(self, batch: ScheduleBatch):
+         draft_input: EagleDraftInput = batch.spec_info
+         forward_batch, can_run_decode_cuda_graph = prepare_for_draft(
+@@ -581,7 +656,11 @@
+             device=self.device,
+         )
+ 
+-    def draft_forward(self, forward_batch: ForwardBatch):
++    def draft_forward(self, forward_batch: ForwardBatch, draft_attn_backend=None):
++        # ``draft_attn_backend`` lets a PDMux graph capture run the steps with
++        # its stream group's backend; everything else uses the worker's own.
++        if draft_attn_backend is None:
++            draft_attn_backend = self.draft_attn_backend
+         # Parse args
+         spec_info: EagleDraftInput = forward_batch.spec_info
+         if forward_batch.forward_mode.is_idle():
+@@ -673,9 +752,7 @@
+                 )
+                 with (
+                     forward_context(
+-                        ForwardContext(
+-                            attn_backend=self.draft_attn_backend.attn_backends[i]
+-                        )
++                        ForwardContext(attn_backend=draft_attn_backend.attn_backends[i])
+                     ),
+                     canary_index_ctx,
+                 ):
+@@ -1293,6 +1370,71 @@
+ 
+             return batch_output
+ 
 +    def forward_batch_split_prefill(self, batch: ScheduleBatch):
 +        """PDMux layerwise prefill for EAGLE (port of sglang PR #42414).
 +
@@ -1500,8 +2555,8 @@
 +        # Extend processed L prompt tokens; next verify iter expects same L.
 +        batch_output.new_seq_lens = batch.seq_lens
 +        if self._draft_worker is None:
-             return batch_output
- 
++            return batch_output
++
 +        # The scheduler releases ScheduleBatch.input_ids after every slice. The
 +        # persistent ForwardBatch still owns them. Draft rotation / spec_info
 +        # must not mutate the split target batch, so work on a shallow view.
@@ -1544,7 +2599,7 @@
      def _build_trivial_verify_input(self, batch: ScheduleBatch) -> EagleVerifyInput:
          """Build a 1-node EagleVerifyInput rooted at the previous bonus token.
  
-@@ -1314,7 +1390,7 @@
+@@ -1314,7 +1456,7 @@
          retrieve_next_token = torch.full((bs, 1), -1, dtype=torch.long, device=device)
          retrieve_next_sibling = torch.full((bs, 1), -1, dtype=torch.long, device=device)
  
