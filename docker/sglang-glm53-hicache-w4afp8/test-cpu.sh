@@ -498,12 +498,14 @@ echo "step 14 OK: KDA prefill reads its token count from the host and keeps the 
 
 # 15. The flashmla_sparse_q8 DSA prefill backend works on the v7 FP8 NoPE KV layout (dsa-q8-flashmla-sparse.diff).
 # test_dsa_q8_flashmla_sparse.py runs the KPool top-k pad block of forward_extend on CPU tensors (2051 IDs
-# padded with -1 to 2176, aligned widths unchanged, KPool 1 untouched, an oversize width raises), checks
-# the Q8 kernel head width keeps the RoPE pad, and that KPool accepts flashmla_sparse_q8. It fails on the
-# unpatched source.
+# padded with -1 to 2176, aligned widths unchanged, KPool 1 untouched, an oversize width raises). It then
+# executes _forward_flashmla_sparse_q8kv8 on CPU with a capturing kernel stub: Flash NoPE gets 576-wide
+# Q/KV with the first 512 dims preserved, reserved dims, pad heads and KV tail rows zero, and d_v unchanged,
+# across head-count paths, born-fp8 Q (512/576), bf16/kv_k/paged-prefix KV and stale buffers; standard
+# MLA keeps 576. It also checks that KPool accepts flashmla_sparse_q8. It fails on the unpatched source.
 python3 "$RECIPE_DIR/test_dsa_q8_flashmla_sparse.py" \
   "$PWD/python/sglang/srt/layers/attention/dsa_backend.py" \
   "$PWD/python/sglang/srt/layers/attention/dsa/dsa_backend_kpool.py"
-echo "step 15 OK: flashmla_sparse_q8 pads KPool top-k IDs, keeps the RoPE pad in its kernel width and passes the KPool check"
+echo "step 15 OK: flashmla_sparse_q8 pads KPool top-k IDs, launches 576-wide zero-padded Q/KV for Flash NoPE and passes the KPool check"
 
 echo "GLM-5.3 W4AFP8 combined-image CPU checks passed"
