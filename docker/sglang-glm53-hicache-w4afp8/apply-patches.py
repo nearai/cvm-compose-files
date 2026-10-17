@@ -1,7 +1,7 @@
 """Apply the reviewed W4AFP8 loader, pool-clamp, DSA indexer query-split, event-loop offload,
 event-loop stall-dump, ghost prefix cache, KV tier metrics, self-profiling hook, FP8 KV for NoPE DSA,
-opt-in preprocess process pool, opt-in tool-schema size cap and host-side KDA token count patches to
-exact production source bytes."""
+opt-in preprocess process pool, opt-in tool-schema size cap, host-side KDA token count and flashmla_sparse_q8
+DSA prefill (Q8) patches to exact production source bytes."""
 
 import ast
 import hashlib
@@ -33,6 +33,9 @@ PATCHES: Final = {
     "tool-schema-depth-cap.diff": "795e541d91369f3f119a427a854bf9661b433a931381eba0ebb4a145ac8b0262",
     # Touches only layers/attention/linear/kda_backend.py, which no earlier patch touches.
     "kda-zero-sync.diff": "a0fdffe4d806cfc539273f34fe9ab430366488358a5e57c05e2fc203a11584e3",
+    # Last: edits dsa_backend.py and dsa/dsa_backend_kpool.py as left by fp8kv-flashmla.diff (its context is
+    # those after-bytes), so it must stay after it. Only the flashmla_sparse_q8 prefill paths change.
+    "dsa-q8-flashmla-sparse.diff": "65c8ecb343c1d1af9507121cc74c4f4eb76db3ab502c40bb03da7eb4fc93fa2b",
 }
 MANIFEST: Final = json.loads((CONTEXT / "source-manifest.json").read_text())
 
