@@ -133,6 +133,12 @@ jobs:
             python:3.12-slim \
             sh -c 'python3 scripts/prepare_glm53_v8_kda_canary.py --check && python3 -m scripts.test_glm53_v8_kda_canary'
 
+      - name: Validate GLM-5.3 base-tier v10 Q8 prefill canary (gpu04 r4)
+        run: |
+          docker run --rm -v "$PWD:/repo:ro" -w /repo \
+            python:3.12-slim \
+            sh -c 'python3 scripts/prepare_glm53_base_q8_canary.py --check && python3 -m scripts.test_glm53_base_q8_canary'
+
       - name: Validate GLM-5.3 long-tier Q8 + 16K-chunk canary generator (r2b)
         # Until the v9 digest is filled in, the generator refuses to write and the target must not exist;
         # the tests run the generator on the fleet file with a stand-in digest.
