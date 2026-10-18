@@ -1,5 +1,7 @@
 # GLM-5.3 Flash long-tier Q8 + 16K-chunk canary: ONE long TP2 replica (r2b)
 
+Superseded by the long-fleet v10 rollout (docs/glm53-long-v10-q8-rollout.md); r2b already runs the fleet config's values.
+
 Status: **prepared, not deployed.** Image `glm53-hicache-w4afp8-v10` = `docker.io/nearaidev/sglang@sha256:c15a33672ade5a9f2b4f7874a746eb4114952dae7230d5baa563a02eca081b78` (the v9 recipe plus the linux-libc-dev CVE fix #365; publish run 39074850588 failed the gate, publish run 39094781691 attested and signed). Merging changes no running service. The host changes only when an operator deploys the merged tag to r2b with the scoped `compose/up` below. Do the lab smoke (step 3) first.
 
 ## What changes
