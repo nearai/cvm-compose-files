@@ -173,10 +173,10 @@ class GeneratedFileTest(unittest.TestCase):
             service = rendered[begin:finish]
             with self.subTest(replica=suffix):
                 for flag in ("--tp-size 2", "--ep-size 2", "--mem-fraction-static 0.86", "--max-mamba-cache-size 330", "--max-running-requests 16", "--cuda-graph-max-bs-decode 16",
-                             "--kv-cache-dtype fp8_e4m3", "--dsa-prefill-backend flashmla_kv", "--dsa-decode-backend flashmla_kv", "--disable-overlap-schedule",
+                             "--kv-cache-dtype fp8_e4m3", "--dsa-prefill-backend flashmla_sparse_q8", "--dsa-decode-backend flashmla_kv", "--disable-overlap-schedule",
                              "--enable-hierarchical-cache",
                              "--max-queued-requests 8", "--speculative-num-steps 4", "--speculative-eagle-topk 1", "--speculative-num-draft-tokens 5",
-                             "--mamba-ssm-dtype bfloat16", "--chunked-prefill-size 8192", "--hicache-write-policy write_through",
+                             "--mamba-ssm-dtype bfloat16", "--chunked-prefill-size 16384", "--hicache-write-policy write_through",
                              f"--dist-init-addr {spec['dist_init']}"):
                     self.assertIn(f"\n        {flag}\n", service)
                 for forbidden in ("--speculative-adaptive", "ADMISSION_RESERVE", "NEAR_SELF_PROFILE", "--kv-cache-dtype bfloat16", "--dsa-prefill-backend tilelang"):
@@ -206,7 +206,7 @@ class GeneratedFileTest(unittest.TestCase):
         self.assertEqual(rendered.count("\n  glm53-ghost-aggregator:\n"), 1)
         self.assertEqual(rendered.count("- job_name: ghost-aggregator-glm53-ghost-aggregator\n"), 1)
         self.assertIn(f"    image: {generator.TP2_IMAGE}\n    container_name: glm53-ghost-aggregator\n", rendered)
-        self.assertTrue(generator.TP2_VARIANT.endswith("-obs-v1-v7"))
+        self.assertTrue(generator.TP2_VARIANT.endswith("-obs-v1-v10-q8"))
 
 
 class ValidatorContractTest(unittest.TestCase):
@@ -246,8 +246,12 @@ class ValidatorContractTest(unittest.TestCase):
         return self.valid.replace(before, after)
 
     def replace_r2(self, before: str, after: str) -> str:
-        """Mutate the TP4 r2 occurrence of a needle that the TP2 pair (rendered after r2) also carries."""
-        self.assertEqual(self.valid.count(before), 5, before)
+        """Mutate the TP4 r2 occurrence of a needle, which is the first one in the file (the TP2 pair is rendered after r2).
+
+        The TP2 pair no longer carries the TP4 arm's 8192 chunk (v10 runs 16384), so the needle is not a five-way match any more.
+        Each caller's message assertion still fails if the first occurrence is not the TP4 r2 service.
+        """
+        self.assertGreaterEqual(self.valid.count(before), 1, before)
         return replace_nth(self.valid, before, 0, after)
 
     def test_committed_files_pass(self) -> None:
@@ -300,7 +304,7 @@ class ValidatorContractTest(unittest.TestCase):
             # r1 is the pdi 1 control and r2 the pdi 2 canary; neither may take the other's value.
             ("\n      --prefill-decode-interval 1\n", "\n      --prefill-decode-interval 2\n", "--prefill-decode-interval 1"),
             ("\n        --prefill-decode-interval 2\n", "\n        --prefill-decode-interval 1\n", "--prefill-decode-interval 2"),
-            # Both replicas run 8192 in this arm, so neither may drift off it.
+            # Both TP4 replicas run 8192 in this arm, so neither may drift off it (the TP2 pair runs 16384).
             ("\n      --chunked-prefill-size 8192\n", "\n      --chunked-prefill-size 4096\n", "model-sg-glm53-w4afp8-tp4-r1 argv must be"),
             ("\n        --chunked-prefill-size 8192\n", "\n        --chunked-prefill-size 4096\n", "model-sg-glm53-w4afp8-tp4-r2 argv must be"),
         )
@@ -410,7 +414,7 @@ class ValidatorContractTest(unittest.TestCase):
                 self.assert_fails(replace_nth(self.valid, needle, index, replacement), message)
 
     def test_tp2_canary_rejects_flag_and_memory_drift(self) -> None:
-        argv = "argv must be the v7 fleet TP2 argv exactly"
+        argv = "argv must be the v10 fleet TP2 argv exactly"
         for name in ALL_TP2:
             start, end = tp2_bounds(self.valid, name)
             block = self.valid[start:end]
@@ -426,7 +430,8 @@ class ValidatorContractTest(unittest.TestCase):
                 ("--cuda-graph-max-bs-decode 16", "--cuda-graph-max-bs-decode 12", argv),
                 # FP8 KV needs the dtype and both backends; the overlap scheduler stays off; HiCache stays on.
                 ("--kv-cache-dtype fp8_e4m3", "--kv-cache-dtype bfloat16", argv),
-                ("--dsa-prefill-backend flashmla_kv", "--dsa-prefill-backend tilelang", argv),
+                ("--dsa-prefill-backend flashmla_sparse_q8", "--dsa-prefill-backend tilelang", argv),
+                ("--dsa-prefill-backend flashmla_sparse_q8", "--dsa-prefill-backend flashmla_kv", argv),
                 ("--dsa-decode-backend flashmla_kv", "--dsa-decode-backend tilelang", argv),
                 ("        --disable-overlap-schedule\n", "", argv),
                 ("        --enable-hierarchical-cache\n", "", argv),
@@ -434,7 +439,7 @@ class ValidatorContractTest(unittest.TestCase):
                 ("--speculative-num-draft-tokens 5", "--speculative-num-draft-tokens 6", argv),
                 ("--tp-size 2", "--tp-size 4", argv),
                 ("--hicache-write-policy write_through", "--hicache-write-policy write_through_selective", argv),
-                ("--chunked-prefill-size 8192", "--chunked-prefill-size 32768", "must not enable 32K prefill chunks"),
+                ("--chunked-prefill-size 16384", "--chunked-prefill-size 32768", "must not enable prefill chunks above 16384"),
                 ("--mamba-ssm-dtype bfloat16\n", "--mamba-ssm-dtype bfloat16\n        --speculative-adaptive\n", "must not set --speculative-adaptive"),
                 ("--mamba-ssm-dtype bfloat16\n", "--mamba-ssm-dtype bfloat16\n        --disable-overlap-schedule\n", "must set --disable-overlap-schedule exactly once"),
             )
@@ -536,7 +541,7 @@ class ValidatorContractTest(unittest.TestCase):
             # The gpu02 TP2 pair: r2b loses the ghost cache, r2a reuses r2b's name.
             ("\n      - SGLANG_GHOST_CACHE=1\n", "\n", 2, f"{R2B} must set SGLANG_GHOST_CACHE=1 {required}"),
             ("SGLANG_GHOST_CACHE_REPLICA=r2a\n", "SGLANG_GHOST_CACHE_REPLICA=r2b\n", 0, "must use distinct SGLANG_GHOST_CACHE_REPLICA names"),
-            (f'nearai.otel.config_variant: "{TP2_VARIANT}"', f'nearai.otel.config_variant: "{TP2_VARIANT.replace("-obs-v1-v7", "-v7")}"', 1,
+            (f'nearai.otel.config_variant: "{TP2_VARIANT}"', f'nearai.otel.config_variant: "{TP2_VARIANT.replace("-v10-q8", "-v7")}"', 1,
              "nearai.otel.config_variant must be"),
             ("\n    - ghost:/ghost\n", "\n", 0, "must mount ghost:/ghost"),
             ('"--port", "9464"', '"--port", "9465"', 0, "glm53-ghost-aggregator must run python3 -m"),

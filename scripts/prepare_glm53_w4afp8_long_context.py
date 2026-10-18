@@ -103,13 +103,15 @@ MODEL_PATH: Final = (
 )
 
 HEADER: Final = (
-    "# GLM-5.3 Flash LONG-CONTEXT TIER, v7 FLEET CONFIG (gpu02 and gpu23): the one long config every host of the tier deploys.\n"
-    "# The four TP2 replicas r1a/r1b/r2a/r2b run the glm53-hicache-w4afp8-v7 image (#345) with FP8 KV (flashmla_kv prefill and\n"
-    f"# decode), {TP2_MAX_RUNNING} running / {TP2_MAX_QUEUED} queued requests with {TP2_MAX_RUNNING} decode graphs, the overlap scheduler off, HiCache ON (write_through, 325 GiB\n"
+    "# GLM-5.3 Flash LONG-CONTEXT TIER, v10 FLEET CONFIG (gpu02 and gpu23; gpu13 mirrors it in small-models.yaml): the one long\n"
+    "# config every host of the tier deploys. The four TP2 replicas r1a/r1b/r2a/r2b run the glm53-hicache-w4afp8-v10 image with\n"
+    "# FP8 KV, Q8 DSA prefill (flashmla_sparse_q8) with 16384-token chunks and flashmla_kv decode (docs/glm53-long-v10-q8-rollout.md),\n"
+    f"# {TP2_MAX_RUNNING} running / {TP2_MAX_QUEUED} queued requests with {TP2_MAX_RUNNING} decode graphs, the overlap scheduler off, HiCache ON (write_through, 325 GiB\n"
     "# per replica: the long tier is at 84% of its infinite-cache ceiling, so the cache stays), the preprocess pool and the\n"
-    "# tool-schema caps, and no profiling (no NEAR_SELF_PROFILE*). Runbook and evidence: docs/glm53-v7-fleet-rollout.md.\n"
+    "# tool-schema caps, and no profiling (no NEAR_SELF_PROFILE*). v7 history: docs/glm53-v7-fleet-rollout.md.\n"
     f"# The TP4 r1/r2 services below are kept unchanged on the v6 image ({IMAGE.split(':')[-1][:12]}) for hosts not yet on TP2; none is\n"
-    "# deployed by the fleet. ROLLBACK (v7): redeploy the previous tag's copy of this file for the same services (v6, 12 running).\n"
+    "# deployed by the fleet. ROLLBACK (v10): redeploy the previous tag's copy of this file (v7, flashmla_kv, 8192 chunks) for the\n"
+    "# same service.\n"
     "# The older text below that names bf16 KV, 12 running or the v6 image describes the TP4 services and the history.\n"
     "#\n"
     "# GLM-5.3 Flash dedicated long-context tier (gpu02) on W4AFP8 + HiCache, generated from\n"
@@ -306,9 +308,12 @@ TP2_REPLICAS: Final = {
     "1b": {"devices": ("2", "3"), "gpu_pair": "2-3", "dist_init": "127.0.0.1:29515", "budget_var": "GLM53_R1B_HICACHE_RAM_BUDGET"},
 }
 # Half of r2's 650 GiB budget each, so the two replicas together take what r2 took.
-# v7 fleet image for the four TP2 replicas (glm53-hicache-w4afp8-v7, #345, publish run 37693106399, main 29a7db9). The TP4 r1/r2
-# services above keep v6: no host runs them any more and v7 FP8 KV has not been qualified at TP4. The rollback image is v6 (IMAGE).
-TP2_IMAGE: Final = "docker.io/nearaidev/sglang@sha256:fa730e6e62b2ae8058114ce540487ade33ab93bc42b1179ae78edc92bd563fc5"
+# Fleet image for the four TP2 replicas: glm53-hicache-w4afp8-v10 = the v9 recipe (#363: v8 + flag-gated flashmla_sparse_q8 DSA
+# prefill on the FP8 NoPE KV layout) plus the linux-libc-dev CVE fix (#365); publish run 39094781691 from main 913d6995, attested
+# and signed. Qualified by tee-bench exp 45b/46 and the gpu02 r2b canary (#364). The previous fleet image was v7
+# (sha256:fa730e6e..., #345); the rollback is the previous tag's copy of this file. The TP4 r1/r2 services above keep v6: no host
+# runs them any more and FP8 KV has not been qualified at TP4.
+TP2_IMAGE: Final = "docker.io/nearaidev/sglang@sha256:c15a33672ade5a9f2b4f7874a746eb4114952dae7230d5baa563a02eca081b78"
 TP2_ENGINE_IMAGE_LABEL: Final = TP2_IMAGE.split(":")[-1][:12]
 TP2_PRECISION: Final = "int4-weights-fp8-activations-fp8-kv"
 # Opt-in v7 features of the image (SGLANG_PREPROCESS_WORKERS=0 is the old single-thread path, the caps at 0 are off). No profiling.
@@ -322,11 +327,11 @@ V7_ENVIRONMENT: Final = (
 TP2_HICACHE_BUDGET: Final = "325GiB"
 TP2_MAMBA_CACHE: Final = "330"
 TP2_VARIANT: Final = (
-    "fc91d24-long-context-w4afp8-c8192-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host325g"
+    "fc91d24-long-context-w4afp8-c16384-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host325g"
     "-memopt-fp8kv-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-"
     f"mr{TP2_MAX_RUNNING}q{TP2_MAX_QUEUED}-strict-budget8192"
     + obs.VARIANT_SUFFIX
-    + "-v7"
+    + "-v10-q8"
 )
 TP2_FLAG_CHANGES: Final = {
     "--tp-size 4": "--tp-size 2",
@@ -337,7 +342,10 @@ TP2_FLAG_CHANGES: Final = {
     "--cuda-graph-max-bs-decode 32": f"--cuda-graph-max-bs-decode {TP2_MAX_RUNNING}",
     # v7: FP8 KV needs the dtype AND both flashmla_kv DSA backends (the image does not assert the pairing).
     "--kv-cache-dtype bfloat16": "--kv-cache-dtype fp8_e4m3",
-    "--dsa-prefill-backend tilelang": "--dsa-prefill-backend flashmla_kv",
+    # v10: Q8 DSA prefill (flashmla_sparse_q8) on the same FP8 NoPE KV layout, with 16K chunks. 16384 is memory-safe at
+    # 0.86 only with SGLANG_DSA_INDEXER_QSPLIT=1, which every TP2 replica sets (the validator enforces both).
+    "--dsa-prefill-backend tilelang": "--dsa-prefill-backend flashmla_sparse_q8",
+    "--chunked-prefill-size 8192": "--chunked-prefill-size 16384",
     "--dsa-decode-backend tilelang": "--dsa-decode-backend flashmla_kv",
     "--speculative-num-steps 5": "--speculative-num-steps 4",
     "--speculative-num-draft-tokens 6": "--speculative-num-draft-tokens 5",
