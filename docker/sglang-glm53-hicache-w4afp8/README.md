@@ -718,3 +718,11 @@ The base image ships PyJWT 2.13.0, which has CVE-2026-102268 (critical, fixed in
 dependency of `msal`; SGLang does not import it. The Dockerfile installs the fixed 2.14.0 wheel by exact
 hash (`security-requirements.txt`, `--require-hashes --no-deps`) and asserts the version. Published as
 `glm53-hicache-w4afp8-v6`; the v5 publish run stopped at the fixable-critical gate and was never signed.
+
+The base also ships `linux-libc-dev` 6.8.0-138.138 (kernel UAPI headers) with six fixable critical kernel CVEs
+(CVE-2026-53398, -63940, -64535, -64564, -72399, -74394; fixed in 6.8.0-147.147). The container runs the
+host kernel, so the headers are not executed. The Dockerfile upgrades only that package, to the exact
+version from noble-security, and asserts the version. The headers stay installed because glibc and Triton's
+JIT launcher builds include them. The v9 recipe's publish run 39074850588 stopped at the fixable-critical
+gate (image `sha256:0a1bc413...`, tag `glm53-hicache-w4afp8-v9`, never attested or signed). The fixed build
+publishes as `glm53-hicache-w4afp8-v10`.

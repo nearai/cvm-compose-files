@@ -33,6 +33,7 @@ LABEL nearai.sglang.tool_schema_depth_cap="v1-opt-in"
 LABEL nearai.sglang.kda_host_token_count="v1"
 LABEL nearai.sglang.dsa_q8_flashmla_sparse="v1-flag-gated"
 LABEL nearai.security_remediation="CVE-2026-102268:pyjwt-2.14.0"
+LABEL nearai.security_remediation_2="CVE-2026-53398,CVE-2026-63940,CVE-2026-64535,CVE-2026-64564,CVE-2026-72399,CVE-2026-74394:linux-libc-dev-6.8.0-147.147"
 
 COPY Dockerfile \
      PROVENANCE \
@@ -77,6 +78,17 @@ RUN test -n "$BUILD_SOURCE_REVISION" \
 RUN /opt/sglang/bin/python3 -m pip install --no-cache-dir --no-deps --require-hashes \
         -r /usr/share/nearai/glm53-hicache-w4afp8/security-requirements.txt \
     && /opt/sglang/bin/python3 -c "import jwt; assert jwt.__version__ == '2.14.0', jwt.__version__"
+
+# Security remediation: the base ships linux-libc-dev 6.8.0-138.138 (kernel UAPI headers), which carries six
+# fixable critical kernel CVEs (CVE-2026-53398, -63940, -64535, -64564, -72399, -74394; fixed in
+# 6.8.0-147.147). Containers run the host kernel, so these headers are not executed, but the publish gate
+# rejects fixable criticals. Upgrade only that package, to the exact fixed version from noble-security; the
+# headers stay installed because glibc and Triton's JIT launcher builds include them.
+RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends --only-upgrade \
+        linux-libc-dev=6.8.0-147.147 \
+    && rm -rf /var/lib/apt/lists/* \
+    && test "$(dpkg-query -W -f='${Version}' linux-libc-dev)" = "6.8.0-147.147"
 
 # The loader and pool-clamp patches are required for the W4AFP8 image and are unconditional. The DSA
 # indexer query split is inert unless SGLANG_DSA_INDEXER_QSPLIT=1. The two event-loop patches are
