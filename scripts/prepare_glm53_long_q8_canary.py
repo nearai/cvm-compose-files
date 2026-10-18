@@ -8,7 +8,8 @@
 
 The output is a full copy of prod/GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext.yaml with ONLY the TP2 replica r2b
 changed:
-- image: glm53-hicache-w4afp8-v9 (v8 + dsa-q8-flashmla-sparse.diff, flag-gated);
+- image: glm53-hicache-w4afp8-v10, the v9 recipe (v8 + dsa-q8-flashmla-sparse.diff, flag-gated) plus the
+  linux-libc-dev CVE fix (#365);
 - argv: --dsa-prefill-backend flashmla_kv -> flashmla_sparse_q8 and --chunked-prefill-size 8192 -> 16384
   (SGLANG_DSA_INDEXER_QSPLIT=1 is already set on r2b, which 16384 requires);
 - r2b's engine_image / config_variant telemetry labels (service block and its OTel scrape job).
@@ -32,9 +33,9 @@ TARGET: Final = Path("prod/GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext-Q8Canary.yam
 SERVICE: Final = "model-sg-glm53-w4afp8-tp2-r2b"
 
 V7_IMAGE_DIGEST: Final = "sha256:fa730e6e62b2ae8058114ce540487ade33ab93bc42b1179ae78edc92bd563fc5"
-# glm53-hicache-w4afp8-v9 (v8 + dsa-q8-flashmla-sparse.diff). Fill in from the publish run after the recipe
-# PR merges; generation refuses to run while it is empty.
-V9_IMAGE_DIGEST: Final = ""
+# glm53-hicache-w4afp8-v10: the v9 recipe (v8 + dsa-q8-flashmla-sparse.diff, #363) plus the linux-libc-dev CVE
+# fix (#365); published from main 913d6995 by publish run 39094781691 (Trivy critical 0, attested and signed).
+V9_IMAGE_DIGEST: Final = "sha256:c15a33672ade5a9f2b4f7874a746eb4114952dae7230d5baa563a02eca081b78"
 V7_LABEL: Final = V7_IMAGE_DIGEST.split(":")[1][:12]
 SUFFIX: Final = "-q8-c16384"
 
@@ -72,7 +73,7 @@ def generate(source: str, digest: str) -> str:
     block = replace_exact(
         block,
         f"    image: docker.io/nearaidev/sglang@{V7_IMAGE_DIGEST}\n",
-        "    # Long-tier Q8 + 16K-chunk canary (docs/glm53-long-q8-canary.md): v9 image, two argv flags.\n"
+        "    # Long-tier Q8 + 16K-chunk canary (docs/glm53-long-q8-canary.md): v10 image, two argv flags.\n"
         f"    image: {v9_image}\n",
         1,
         "image",
@@ -99,7 +100,7 @@ def generate(source: str, digest: str) -> str:
     header = (
         "# GLM-5.3 Flash long-tier Q8 + 16K-chunk CANARY file, generated from\n"
         f"# {SOURCE} by scripts/prepare_glm53_long_q8_canary.py (do not hand-edit).\n"
-        f"# Full copy of the long fleet file with ONLY {SERVICE} changed: the glm53-hicache-w4afp8-v9 image\n"
+        f"# Full copy of the long fleet file with ONLY {SERVICE} changed: the glm53-hicache-w4afp8-v10 image\n"
         f"# ({digest[:19]}...), --dsa-prefill-backend flashmla_sparse_q8, --chunked-prefill-size 16384, and its\n"
         f"# engine_image / config_variant ({SUFFIX}) labels. Deploy it ONLY to the one host named in the runbook, scoped\n"
         f"# to that one service; roll back by redeploying {SOURCE} for the same service.\n"

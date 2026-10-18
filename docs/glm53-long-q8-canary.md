@@ -1,12 +1,12 @@
 # GLM-5.3 Flash long-tier Q8 + 16K-chunk canary: ONE long TP2 replica (r2b)
 
-Status: **prepared, not deployed; blocked on the v9 image digest.** Merging changes no running service. The canary file is generated only after `glm53-hicache-w4afp8-v9` is published (`V9_IMAGE_DIGEST` in `scripts/prepare_glm53_long_q8_canary.py`), and the host changes only when an operator deploys the merged tag to it, scoped to the one service below, through the already-running compose-manager.
+Status: **prepared, not deployed.** Image `glm53-hicache-w4afp8-v10` = `docker.io/nearaidev/sglang@sha256:c15a33672ade5a9f2b4f7874a746eb4114952dae7230d5baa563a02eca081b78` (the v9 recipe plus the linux-libc-dev CVE fix #365; publish run 39074850588 failed the gate, publish run 39094781691 attested and signed). Merging changes no running service. The host changes only when an operator deploys the merged tag to r2b with the scoped `compose/up` below. Do the lab smoke (step 3) first.
 
 ## What changes
 
 | | r2b (canary) | other long TP2 replicas (controls) |
 |---|---|---|
-| image | **v9** `glm53-hicache-w4afp8-v9` = v8 + `dsa-q8-flashmla-sparse.diff` (flag-gated) | v7 `sha256:fa730e6e…` |
+| image | **v9 recipe**, published as `glm53-hicache-w4afp8-v10` = v8 + `dsa-q8-flashmla-sparse.diff` (flag-gated) + the linux-libc-dev CVE fix (#365) | v7 `sha256:fa730e6e…` |
 | `--dsa-prefill-backend` | **`flashmla_sparse_q8`** | `flashmla_kv` |
 | `--chunked-prefill-size` | **16384** | 8192 |
 | decode backend, environment (incl. `SGLANG_DSA_INDEXER_QSPLIT=1`), GPUs, queue/running caps, HiCache | long v7 fleet, unchanged | long v7 fleet |
@@ -38,7 +38,7 @@ Uncached prefill tok/s is equal (9.4K vs 9.0K). The gain is shorter prefill queu
 
 ## Build and deploy
 
-1. Merge the recipe PR; run `publish-glm53-admission-reserve.yaml` with variant `hicache-w4afp8` (default tag `glm53-hicache-w4afp8-v9`); take the pushed digest.
+1. Merge the recipe PR; run `publish-glm53-admission-reserve.yaml` with variant `hicache-w4afp8` (default tag `glm53-hicache-w4afp8-v10`); take the pushed digest. The first v9 publish (run 39074850588) stopped at the fixable-critical gate and was never signed. #365 fixed it, and the v9 recipe publishes as v10.
 2. Put the digest into `V9_IMAGE_DIGEST` and add the v9 image to `W4AFP8_QSPLIT_CAPABLE_IMAGES` (plus any long-context image allowlist) in `scripts/validate_glm53_prod_config.rb`. Run `python3 scripts/prepare_glm53_long_q8_canary.py --write`, the test, and the validator. Merge.
 3. Bare smoke of v9 with the canary argv on a lab host: boot, GSM8K-100, the smoke gate (`RUN_SMOKE=1`), one 600 s long replay.
 4. On the chosen long host only: compose-manager `POST /compose/up`, with `tag` = the merged tag, `file: prod/GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext-Q8Canary.yaml`, `services: ["model-sg-glm53-w4afp8-tp2-r2b"]`, the host's existing full `env` map, and `force_recreate: false`.
