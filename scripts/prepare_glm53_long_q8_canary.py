@@ -104,7 +104,7 @@ def generate(source: str, digest: str) -> str:
         f"# ({digest[:19]}...), --dsa-prefill-backend flashmla_sparse_q8, --chunked-prefill-size 16384, and its\n"
         f"# engine_image / config_variant ({SUFFIX}) labels. Deploy it ONLY to the one host named in the runbook, scoped\n"
         f"# to that one service; roll back by redeploying {SOURCE} for the same service.\n"
-        "# docs/glm53-long-q8-canary.md.\n"
+        "# Runbook: docs/glm53-long-q8-canary.md.\n"
         "#\n"
     )
     return header + out
@@ -124,10 +124,14 @@ def main() -> int:
         print(f"prepare_glm53_long_q8_canary: {exc}", file=sys.stderr)
         return 2
     target = ROOT / TARGET
-    if args.write:
-        _ = target.write_text(expected)
-        return 0
-    actual = target.read_text() if target.exists() else ""
+    try:
+        if args.write:
+            _ = target.write_text(expected)
+            return 0
+        actual = target.read_text() if target.exists() else ""
+    except OSError as exc:
+        print(f"prepare_glm53_long_q8_canary: {exc}", file=sys.stderr)
+        return 2
     if actual != expected:
         print("".join(difflib.unified_diff(actual.splitlines(keepends=True), expected.splitlines(keepends=True),
                                            fromfile=f"a/{TARGET}", tofile=f"b/{TARGET}")), end="")
