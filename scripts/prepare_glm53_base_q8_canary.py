@@ -70,12 +70,26 @@ def span(text: str, start_marker: str, end_pattern: str, label: str) -> tuple[in
 
 
 def command_body(text: str) -> str:
-    """The folded `command: >` body: the run of lines indented 6 spaces that follows the header."""
+    """The folded `command: >` body: the run of lines indented 6 spaces that follows the header.
+
+    Strict, so the captured argv can never be silently truncated: every body line must be an argv line
+    (`sglang serve` first, then `--flag ...`), and the body must end at the anchor's next 2-space key or at
+    the end of the anchor. A blank, re-indented or comment line inside the block is an error.
+    """
     body: list[str] = []
-    for line in text.splitlines(keepends=True):
-        if not line.startswith("      "):
-            break
-        body.append(line)
+    lines = text.splitlines(keepends=True)
+    for index, line in enumerate(lines):
+        if line.startswith("      "):
+            token = line.strip()
+            if not (token.startswith("--") or (not body and token == "sglang serve")):
+                raise GenerationError(f"unexpected line inside the anchor's command block: {line.rstrip()!r}")
+            body.append(line)
+            continue
+        if not re.match(r"  [A-Za-z_<]", line):
+            raise GenerationError(f"the anchor's command block must end at a 2-space key, got {line.rstrip()!r}")
+        break
+    if not body or body[0].strip() != "sglang serve":
+        raise GenerationError("the anchor's command block must start with `sglang serve`")
     return "".join(body)
 
 

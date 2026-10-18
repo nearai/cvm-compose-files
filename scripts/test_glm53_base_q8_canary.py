@@ -152,6 +152,16 @@ class BaseQ8CanaryTest(unittest.TestCase):
         with self.assertRaises(gen.GenerationError):
             gen.generate(SOURCE.replace('nearai.otel.config_variant: "', 'nearai.otel.config_variant_x: "'))
 
+    def test_generator_refuses_a_broken_anchor_command_block(self):
+        # A blank or stray line inside the anchor's folded command must fail loudly, never truncate the argv.
+        backend = "      --dsa-prefill-backend flashmla_kv\n"
+        start = SOURCE.index(f"\n{gen.ANCHOR}: &sg-glm53-flash-candidate\n")
+        at = SOURCE.index(backend, start)
+        for inserted in ("\n", "      # comment\n", "    --misindented flag\n"):
+            broken = SOURCE[:at] + inserted + SOURCE[at:]
+            with self.subTest(inserted=inserted), self.assertRaises(gen.GenerationError):
+                gen.generate(broken)
+
     def test_header_names_host_service_and_runbook(self):
         header = TARGET.split("#\n", 1)[0]
         for needle in (gen.HOST, gen.SERVICE, "docs/glm53-base-q8-canary.md", "Deploy it ONLY"):

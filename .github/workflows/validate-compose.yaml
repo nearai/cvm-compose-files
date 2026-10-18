@@ -134,9 +134,12 @@ jobs:
             sh -c 'python3 scripts/prepare_glm53_v8_kda_canary.py --check && python3 -m scripts.test_glm53_v8_kda_canary'
 
       - name: Validate GLM-5.3 base-tier v10 Q8 prefill canary (gpu04 r4)
+        # Pure file checks: digest-pinned image, no network, read-only root, no capabilities, bounded runtime.
+        timeout-minutes: 10
         run: |
-          docker run --rm -v "$PWD:/repo:ro" -w /repo \
-            python:3.12-slim \
+          docker run --rm --network none --read-only --cap-drop ALL --tmpfs /tmp \
+            -e PYTHONDONTWRITEBYTECODE=1 -v "$PWD:/repo:ro" -w /repo \
+            ghcr.io/astral-sh/uv:python3.11-bookworm-slim@sha256:4f5d923c9dcea037f57bda425dd209f3ec643da2f0b74227f68d09dab0b3bb36 \
             sh -c 'python3 scripts/prepare_glm53_base_q8_canary.py --check && python3 -m scripts.test_glm53_base_q8_canary'
 
       - name: Validate GLM-5.3 long-tier Q8 + 16K-chunk canary generator (r2b)
