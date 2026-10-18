@@ -246,12 +246,15 @@ class ValidatorContractTest(unittest.TestCase):
         return self.valid.replace(before, after)
 
     def replace_r2(self, before: str, after: str) -> str:
-        """Mutate the TP4 r2 occurrence of a needle, which is the first one in the file (the TP2 pair is rendered after r2).
+        """Mutate the TP4 r2 occurrence of a needle, which must be the first one in the file (the TP2 pair is rendered after r2).
 
-        The TP2 pair no longer carries the TP4 arm's 8192 chunk (v10 runs 16384), so the needle is not a five-way match any more.
-        Each caller's message assertion still fails if the first occurrence is not the TP4 r2 service.
+        The TP2 pair no longer shares every TP4 r2 token (v10 runs Q8 prefill and 16384 chunks), so instead of the old five-way
+        count, assert directly that the first occurrence lies inside the TP4 r2 service block.
         """
-        self.assertGreaterEqual(self.valid.count(before), 1, before)
+        start = self.valid.index("\n  model-sg-glm53-w4afp8-tp4-r2:\n")
+        end = self.valid.index("\n  model-", start + 1)
+        first = self.valid.find(before)
+        self.assertTrue(start <= first < end, f"first occurrence of {before!r} is not inside the TP4 r2 service")
         return replace_nth(self.valid, before, 0, after)
 
     def test_committed_files_pass(self) -> None:
