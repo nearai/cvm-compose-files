@@ -117,7 +117,7 @@ x-gptoss-engine: &gptoss-engine
     - --port=8000
 
 x-vllm-proxy-common: &vllm-proxy-common
-  image: nearaidev/vllm-proxy-rs@sha256:4c4ea0628aa4d3d0d806f596040c5d5dbfccdd312549f8b30e8511c887c2980a  # inference-proxy main 30063b1 (#298 preserve_order)
+  image: nearaidev/vllm-proxy-rs@sha256:95d96470ca618bab5de6248876bc6300ca29ead93b45816f48762496585f5b80  # inference-proxy main 1c49e8d (#309 VLLM_BACKEND_MAX_INFLIGHT)
   # Same fd limits as the prod proxies. Without them one pooled proxy hits EMFILE at ~500 concurrent streams.
   ulimits:
     nofile:
@@ -142,6 +142,19 @@ x-proxy-env: &proxy-env
   # tunnel, so the default would cap the whole lane at 100 req/s; the gateway's admission budget is the real limit.
   RATE_LIMIT_PER_SECOND: "1000"
   RATE_LIMIT_BURST_SIZE: "2000"
+  # At most 96 requests in flight per engine (inference-proxy #309). When all four are full the proxy answers 429
+  # `overloaded` with Retry-After at once instead of sending the request, so a gateway budget above 4 x 96 gives fast
+  # refusals, not slower streams. 96 per engine is where the lane ran at about 62 ms per output token on 2026-10-16
+  # (gateway budget 384); 128 per engine (budget 512) was about 80 ms with no more output tokens. The engines keep
+  # --max-num-seqs 1024, above the bound, so they never queue or refuse on their own.
+  VLLM_BACKEND_MAX_INFLIGHT: "96"
+  # Retry a request once on another engine when the chosen one refuses the connection before anything was sent (an
+  # engine restarting). Restarts cost 250-420 502s per engine without it on 2026-10-16.
+  VLLM_BACKEND_CONNECT_FAILOVER: "1"
+  # An engine admission rejection (503 queue full / busy) reaches the gateway as 429 `overloaded`, not as a 5xx that
+  # OpenRouter scores against uptime. Only the OpenRouter gateway calls this proxy: no cloud-api peer fallback keys on
+  # the 503 here.
+  VLLM_PROXY_MAP_QUEUE_FULL_TO_429: "1"
 
 x-dcgm-common: &dcgm-common
   image: nvcr.io/nvidia/k8s/dcgm-exporter@sha256:ed594cf53fe6942e84b07b0740cdcbb249fa4b39cb21feeebf93881ae51f0b5e
