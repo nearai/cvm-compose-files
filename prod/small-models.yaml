@@ -1080,6 +1080,13 @@ services:
       - VLLM_BACKEND_URLS=http://model-sg-glm53-w4afp8-tp2-r1a:8000,http://model-sg-glm53-w4afp8-tp2-r1b:8000
       - VLLM_BACKEND_CONVERSATION_AFFINITY=1
       - VLLM_PROXY_MAX_REQUEST_SIZE=104857600
+      # Drop pooled upstream connections after 3 s idle. The engines' uvicorn closes an idle
+      # keep-alive connection after 5 s (SGLANG_TIMEOUT_KEEP_ALIVE default) while this proxy
+      # keeps one for 60 s by default, so a request could reuse a connection the engine had
+      # already closed: it fails at once and is returned as HTTP 500 (no fail-over, because it
+      # is not a connect error). Same setting as every other GLM-5.3 prod file (d28c080). It
+      # applies to every pooled connection of this proxy (engines, cloud-api, compose-manager).
+      - VLLM_PROXY_POOL_IDLE_TIMEOUT_SECS=3
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
       - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
