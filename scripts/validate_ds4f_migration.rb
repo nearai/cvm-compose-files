@@ -239,7 +239,7 @@ assert.call(nginx.match?(/listen 8009;\s+location \/ \{ proxy_pass http:\/\/prox
 assert.call(nginx.match?(/server_name glm-5-3-flash\.completions\.near\.ai.*?location \/ \{ proxy_pass http:\/\/proxy-glm53:8000; \}/m), 'gpu13 GLM SNI must route to the GLM proxy')
 glm_sni = nginx[/server_name glm-5-3-flash\.completions\.near\.ai.*?location \/ \{ proxy_pass http:\/\/proxy-glm53:8000; \}/m]
 assert.call(glm_sni.include?('"~^glm-5-3-flash-b[0-9a-f]{12}\.completions(-stg)?\.near\.ai$$"'), 'gpu13 GLM SNI must accept model-proxy backend handles')
-assert.call(glm_sni.include?('gpu13.hosts.near.ai;'), 'gpu13 GLM SNI must accept the direct OpenRouter TLS hostname')
+assert.call(glm_sni.include?('gpu13.hosts.near.ai') && glm_sni.include?('gpu03.hosts.near.ai;'), 'GLM SNI must accept both direct OpenRouter TLS hostnames')
 # The host-level name must resolve to GLM alone: in any other TLS vhost it would
 # hand the OpenRouter lane a different model.
 tls_server_blocks = nginx.scan(/^server \{\n(?:.*\n)*?^\}$/).select { |block| block.include?('listen 443 ssl') }

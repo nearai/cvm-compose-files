@@ -121,7 +121,19 @@ def scrub(text: str) -> str:
 
 
 def jobs_of(text: str) -> dict[str, str]:
-    return {m.group(1): m.group(0) for m in re.finditer(r"- job_name: (\S+)\n(?:(?! {14}- job_name:).*\n)*", text)}
+    matches = list(re.finditer(r"- job_name: (\S+)\n(?:(?! {14}- job_name:).*\n)*", text))
+    jobs = {match.group(1): match.group(0) for match in matches}
+    if matches:
+        last = matches[-1]
+        indent = last.start() - text.rfind("\n", 0, last.start()) - 1
+        end = 0
+        # The final job needs an indentation boundary because no next job follows it.
+        for line in last.group(0).splitlines(keepends=True):
+            if end and line.strip() and len(line) - len(line.lstrip(" ")) <= indent:
+                break
+            end += len(line)
+        jobs[last.group(1)] = last.group(0)[:end]
+    return jobs
 
 
 def selector_lines(text: str) -> list[str]:
