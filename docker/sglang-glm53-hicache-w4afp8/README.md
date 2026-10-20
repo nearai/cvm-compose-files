@@ -581,6 +581,54 @@ baseline. `test_dsa_q8_flashmla_sparse.py` (`test-cpu.sh` step 15) runs the pad 
 
 **Rollback:** `--dsa-prefill-backend flashmla_kv` (the patch is then inert), or redeploy the v8 digest.
 
+## K-pool indexer logits budget (v11)
+
+**What it fixes.** On 2026-10-18 at 23:40 UTC, long-tier replica gpu23 r1b (v10, `flashmla_sparse_q8` prefill,
+16K chunks) crashed with a CUDA OOM in `deep_gemm.fp8_mqa_logits`. It asked for 10.79 GiB with 10.61 GiB
+free. Docker restarted it and it was serving again at 00:04.
+
+The K-pool DSA indexer scores every query row of a prefill batch against the pooled keys of every request
+in the batch. Its fp32 logits scratch is therefore rows x key rows x 4 bytes, allocated in one call:
+
+- Upstream's `Indexer._get_topk_ragged` already scores rows in blocks under a free-memory budget.
+- The K-pool plan path and our `SGLANG_DSA_INDEXER_QSPLIT=1` path do not.
+
+The scratch gets large when a 16K chunk of one deep prompt is batched with continuations of other
+conversations whose deep prefixes are cached. That is a normal SGLang prefill batch. 16K chunks double the
+rows per rank compared with 8K, so v10 reaches the limit at about half the key depth v7 does. v7 has the
+same unbounded allocation.
+
+**The patch** adds `IndexerKPool._kpool_logits_topk_rows`, which both K-pool prefill paths now use. When
+`rows x key_rows` is at least 8M elements, it scores row blocks whose scratch fits the budget:
+
+`min(free x F, (1 - mem_fraction_static) x total x F, 0.3 x total)`, with `F = SGLANG_DSA_MQA_LOGITS_FREE_MEM_FRACTION` (0.2).
+
+This is the same rule as the upstream `Indexer`. The budget is measured once per device, because
+`mem_get_info` syncs the host. Rows are independent and each block keeps every key column, so the selected
+indices equal the single call. A batch whose scratch fits runs one call, exactly as before. At the
+long-tier argv the budget is about 2.9 GiB, against 10.79 GiB for the crashing call.
+`SGLANG_DSA_KPOOL_LOGITS_BUDGET_MB` forces a budget; it is for tests only.
+
+**Lab evidence (tee-bench exp 47, bare gpu31, TP2, prod long argv).** The cause is verified in exp 47g:
+
+- The engine booted, then a ballast allocation held free memory at prod's 10.6 GiB.
+- The new smoke case `F10.deep_context_batch` then built the prod batch shape: three deep cached prefixes
+  continued while a fourth deep prompt chunks.
+- v10 crashed with the prod stack (`_get_topk_ragged_kpool_plan_qsplit` -> `fp8_mqa_logits`, 9.21 GiB with
+  5.28 GiB free). The patched engine passed the same run.
+- Without ballast, both v10 and the patch serve single prompts up to 1.04M tokens.
+
+| arm (b100_256k + b256k_plus, 0.09 conv/s, 600 s) | cells | total tok/s | TTFT p50 / p95 | TPOT p95 | GSM8K-100 | smoke |
+| --- | --- | --- | --- | --- | --- | --- |
+| v10 | 2 (lane-swapped) | 30,189 | 26.7 / 67.3 s | 161 ms | 0.99 / 0.98 | 0 fatal |
+| v10 + patch | 2 (lane-swapped) | 29,299 (-2.9%, inside v10's 5.8% A/A spread) | 24.9 / 67.9 s | 161 ms | 0.99 / 0.98 | 0 fatal |
+
+In the first pair the patch blocked 6,168 calls, up to 6.26 GiB of logits, with no errors.
+`test_dsa_kpool_logits_budget.py` (`test-cpu.sh` step 16) covers the helper on CPU tensors. It fails on the
+unpatched source, and six mutants of the helper and budget fail it.
+
+**Rollback:** redeploy the v10 digest `sha256:c15a33672ade5a9f2b4f7874a746eb4114952dae7230d5baa563a02eca081b78`.
+
 ## Why the composition is safe
 
 The HiCache patches touch `mem_cache/*`, `disaggregation/*` and `schedule_batch.py`. None of the
@@ -711,6 +759,14 @@ It touches only `layers/attention/linear/kda_backend.py`, which no other patch t
 reproduces the after-hash `761c9e6c…` that exp 37 ran in the TEE. `test_kda_zero_sync.py` passes on the
 patched file and fails on the unpatched one. Unlike the v7 additions, this patch was measured in a TEE
 (gpu31 TDX + PPCIe CVM) before the image was built; the built image itself has not run on GPU.
+
+**v11** adds `dsa-indexer-kpool-logits-budget.diff` after `dsa-q8-flashmla-sparse.diff`, with no change to
+any v10 patch. It touches only `dsa/dsa_indexer_kpool.py`, and its base is the after-hash `6120351d…` of
+`dsa-indexer-qsplit.diff`, the file in the v10 image. Applying it reproduces `65fd37aa…`. That is the file
+whose logic exp 47 ran on GPU over v10 as a bind-mounted overlay (the lab copy also carried two lab-only
+logging statements, off in the measured runs). `test_dsa_kpool_logits_budget.py` passes on the patched
+file and fails on the unpatched one. The built image has not run on GPU or in a TEE yet; it publishes as
+`glm53-hicache-w4afp8-v11`.
 
 ## Security remediation
 

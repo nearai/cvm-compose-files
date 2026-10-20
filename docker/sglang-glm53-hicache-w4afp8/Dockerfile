@@ -3,7 +3,7 @@ FROM docker.io/nearaidev/sglang@sha256:3eccc30709f5719c81084d1264f03ca5354b3059e
 
 ARG BUILD_SOURCE_REVISION
 LABEL org.opencontainers.image.title="GLM-5.3 Flash HiCache W4AFP8 engine"
-LABEL org.opencontainers.image.description="HCC-safe HiCache engine with admission reserve v10, the W4AFP8 loader fix, the unconditional chunked-prefill pool clamp, the opt-in DSA indexer query split, request preprocessing and the multimodal shared-memory copy moved off the HTTP event loop, an event-loop stall dump, an opt-in ghost prefix cache that measures would-be KV hits from keyed page hashes, opt-in rank-0 KV tier (VRAM/DRAM) eviction metrics, an opt-in one-shot self-profiler that prints a compact NEAR_PROFILE decode-step summary to stdout, FP8 KV cache support for GLM's NoPE DSA (active only with --kv-cache-dtype fp8_e4m3 on flashmla_kv), an opt-in process pool with a per-request deadline for chat preprocessing, an opt-in tool-schema size cap, a host-side KDA prefill token count (no per-layer GPU-to-CPU sync), and the flashmla_sparse_q8 DSA prefill backend on the FP8 NoPE KV layout (flag-gated)"
+LABEL org.opencontainers.image.description="HCC-safe HiCache engine with admission reserve v10, the W4AFP8 loader fix, the unconditional chunked-prefill pool clamp, the opt-in DSA indexer query split, request preprocessing and the multimodal shared-memory copy moved off the HTTP event loop, an event-loop stall dump, an opt-in ghost prefix cache that measures would-be KV hits from keyed page hashes, opt-in rank-0 KV tier (VRAM/DRAM) eviction metrics, an opt-in one-shot self-profiler that prints a compact NEAR_PROFILE decode-step summary to stdout, FP8 KV cache support for GLM's NoPE DSA (active only with --kv-cache-dtype fp8_e4m3 on flashmla_kv), an opt-in process pool with a per-request deadline for chat preprocessing, an opt-in tool-schema size cap, a host-side KDA prefill token count (no per-layer GPU-to-CPU sync), the flashmla_sparse_q8 DSA prefill backend on the FP8 NoPE KV layout (flag-gated), and a memory budget for the K-pool DSA indexer prefill logits scratch"
 LABEL org.opencontainers.image.source="https://github.com/nearai/cvm-compose-files"
 LABEL org.opencontainers.image.revision="${BUILD_SOURCE_REVISION}"
 LABEL org.opencontainers.image.base.name="docker.io/nearaidev/sglang"
@@ -31,6 +31,7 @@ LABEL nearai.sglang.fp8_kv_nope_dsa="v1"
 LABEL nearai.sglang.preprocess_pool="v1-opt-in"
 LABEL nearai.sglang.tool_schema_depth_cap="v1-opt-in"
 LABEL nearai.sglang.kda_host_token_count="v1"
+LABEL nearai.sglang.dsa_kpool_logits_budget="v1"
 LABEL nearai.sglang.dsa_q8_flashmla_sparse="v1-flag-gated"
 LABEL nearai.security_remediation="CVE-2026-102268:pyjwt-2.14.0"
 LABEL nearai.security_remediation_2="CVE-2026-53398,CVE-2026-63940,CVE-2026-64535,CVE-2026-64564,CVE-2026-72399,CVE-2026-74394:linux-libc-dev-6.8.0-147.147"
@@ -43,6 +44,7 @@ COPY Dockerfile \
      chunked-prefill-pool-clamp.diff \
      dsa-indexer-qsplit.diff \
      dsa-q8-flashmla-sparse.diff \
+     dsa-indexer-kpool-logits-budget.diff \
      event-loop-stall-dump.diff \
      fp8kv-flashmla.diff \
      ghost-prefix-cache.diff \
@@ -65,6 +67,7 @@ COPY Dockerfile \
      test_fp8kv_paths.py \
      test_kda_zero_sync.py \
      test_dsa_q8_flashmla_sparse.py \
+     test_dsa_kpool_logits_budget.py \
      kvtm_check_plugin.py \
      security-requirements.txt \
      /usr/share/nearai/glm53-hicache-w4afp8/
@@ -136,6 +139,11 @@ RUN apt-get update \
 # --dsa-prefill-backend flashmla_sparse_q8: it pads the KPool top-k IDs to the flashmla_kv width and keeps
 # the reserved 64-dim RoPE pad of the 656-byte FP8 NoPE row in the Q8 kernel's head width, and allows
 # flashmla_sparse_q8 with KPool > 1. Replicas on flashmla_kv / tilelang prefill run unchanged bytes.
+# The K-pool logits budget (dsa-indexer-kpool-logits-budget.diff) is unconditional: the K-pool prefill indexer
+# (plan path and SGLANG_DSA_INDEXER_QSPLIT=1 path) scores query rows in blocks whose fp32 logits scratch fits
+# the upstream Indexer budget, min(free x F, (1 - mem_fraction_static) x total x F, 0.3 x total) with
+# F = SGLANG_DSA_MQA_LOGITS_FREE_MEM_FRACTION, measured once per device. A batch whose scratch fits runs one
+# call as before. SGLANG_DSA_KPOOL_LOGITS_BUDGET_MB forces a budget (tests only).
 # Everything inherited from the base stays opt-in: admission reserve v10 via
 # SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE, and HiCache via --enable-hierarchical-cache plus
 # SGLANG_HICACHE_*. On an HCC/PPCIe (TEE) host SGLANG_HICACHE_CUDA_HOST_MEMORY must stay 1; 0 selects

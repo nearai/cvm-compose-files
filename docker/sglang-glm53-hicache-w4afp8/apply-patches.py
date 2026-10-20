@@ -1,7 +1,7 @@
 """Apply the reviewed W4AFP8 loader, pool-clamp, DSA indexer query-split, event-loop offload,
 event-loop stall-dump, ghost prefix cache, KV tier metrics, self-profiling hook, FP8 KV for NoPE DSA,
-opt-in preprocess process pool, opt-in tool-schema size cap, host-side KDA token count and flashmla_sparse_q8
-DSA prefill (Q8) patches to exact production source bytes."""
+opt-in preprocess process pool, opt-in tool-schema size cap, host-side KDA token count, flashmla_sparse_q8
+DSA prefill (Q8) and K-pool indexer logits budget patches to exact production source bytes."""
 
 import ast
 import hashlib
@@ -36,6 +36,9 @@ PATCHES: Final = {
     # Last: edits dsa_backend.py and dsa/dsa_backend_kpool.py as left by fp8kv-flashmla.diff (its context is
     # those after-bytes), so it must stay after it. Only the flashmla_sparse_q8 prefill paths change.
     "dsa-q8-flashmla-sparse.diff": "65c8ecb343c1d1af9507121cc74c4f4eb76db3ab502c40bb03da7eb4fc93fa2b",
+    # Stacked on dsa-indexer-qsplit.diff: it edits dsa/dsa_indexer_kpool.py as that diff leaves it (its
+    # context is those after-bytes, which no later patch touches). Only the K-pool prefill logits paths change.
+    "dsa-indexer-kpool-logits-budget.diff": "ce6132c0b91999bddfac62197ef17d8517329b8ccb1729d1e6023134b8c2f7b4",
 }
 MANIFEST: Final = json.loads((CONTEXT / "source-manifest.json").read_text())
 
