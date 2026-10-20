@@ -378,8 +378,10 @@ x-privacy-filter-common: &privacy-filter-common
     dockerfile_inline: |
       # syntax=docker/dockerfile:1.4
       FROM pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime
+      # transformers 5.20+ needs PyTorch >=2.6; this 2.5.1 base crash-loops on fresh builds.
+      # 5.16.1 matches gpu13's working image built on 2026-09-02.
       RUN pip install --no-cache-dir \
-          "transformers>=4.46" \
+          "transformers==5.16.1" \
           accelerate \
           fastapi \
           "uvicorn[standard]"
