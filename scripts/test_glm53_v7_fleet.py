@@ -255,6 +255,19 @@ class FleetFilesTest(unittest.TestCase):
 SMALL = ROOT / "prod/small-models.yaml"
 SMALL_FIXTURE = ROOT / "scripts/fixtures/pre-v7/small-models.pre-v7.yaml"
 GPU13_GLM_SERVICES = ("proxy-glm53", "model-sg-glm53-w4afp8-tp2-r1a", "model-sg-glm53-w4afp8-tp2-r1b", "glm53-ghost-aggregator", "dcgm-glm53")
+PRIVACY_FILTER_TRANSFORMERS_PIN = '"transformers==5.16.1"'
+PRIVACY_FILTER_OLD_TRANSFORMERS = '"transformers>=4.46"'
+PRIVACY_FILTER_PIN_COMMENTS = (
+    "      # transformers 5.20+ needs PyTorch >=2.6; this 2.5.1 base crash-loops on fresh builds.\n",
+    "      # 5.16.1 matches gpu13's working image built on 2026-09-02.\n",
+)
+
+
+def without_privacy_filter_pin(block: str) -> str:
+    # The deliberate 5.16.1 pin keeps PyTorch 2.5 working after transformers 5.20 dropped it.
+    for comment in PRIVACY_FILTER_PIN_COMMENTS:
+        block = block.replace(comment, "")
+    return block.replace(PRIVACY_FILTER_TRANSFORMERS_PIN, PRIVACY_FILTER_OLD_TRANSFORMERS)
 
 
 class Gpu13FleetTest(unittest.TestCase):
@@ -321,13 +334,19 @@ class Gpu13FleetTest(unittest.TestCase):
                     self.assertEqual(service_block(self.small, name), service_block(self.old, name))
         for anchor in re.findall(r"^(x-[a-z0-9-]+): &", self.old, re.MULTILINE):
             if anchor != "x-sg-glm53-flash-common":
-                self.assertEqual(anchor_block(self.small, anchor), anchor_block(self.old, anchor), anchor)
+                new_block = anchor_block(self.small, anchor)
+                if anchor == "x-privacy-filter-common":
+                    new_block = without_privacy_filter_pin(new_block)
+                self.assertEqual(new_block, anchor_block(self.old, anchor), anchor)
         # Scrape jobs of every non-GLM target are identical.
         old_jobs, new_jobs = jobs_of(self.old), jobs_of(self.small)
         self.assertEqual(list(old_jobs), list(new_jobs))
         for key in old_jobs:
             if "glm53" not in key:
                 self.assertEqual(new_jobs[key], old_jobs[key], key)
+
+    def test_privacy_filter_pins_transformers(self) -> None:
+        self.assertIn(PRIVACY_FILTER_TRANSFORMERS_PIN, anchor_block(self.small, "x-privacy-filter-common"))
 
     def test_dashboard_labels_are_unchanged_on_gpu13(self) -> None:
         def selectors(text: str) -> list[str]:
