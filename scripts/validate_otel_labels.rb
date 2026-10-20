@@ -9,7 +9,11 @@ ROOT = File.expand_path("..", __dir__)
 # and evidence contract is independently enforced by validate_migration_gpu_preflight.rb;
 # the compose-manager token rotation tool's isolation contract is independently
 # enforced by validate_rotate_compose_manager_token.rb.
-EXCLUDED_FILES = ["cleanup-hf-model.yaml", "migration-gpu-preflight.yaml", "rotate-compose-manager-token.yaml"].freeze
+# sage.yaml and sage-pull.yaml run a customer's own workload, whose logs and metrics we do not collect.
+EXCLUDED_FILES = [
+  "cleanup-hf-model.yaml", "migration-gpu-preflight.yaml", "rotate-compose-manager-token.yaml",
+  "sage.yaml", "sage-pull.yaml"
+].freeze
 REQUIRED_COLLECTOR_ENV = %w[
   MONITORING_INGEST_TOKEN
   CVM_NAME
