@@ -220,7 +220,7 @@ small_services.each do |name, service|
   assert.call(!service.fetch('command', '').to_s.match?(/--dist-init-addr 127\.0\.0\.1:2951\d/), "gpu13 #{name} must not reuse a GLM dist-init port")
 end
 small_proxy = small_services.fetch('proxy-glm53')
-assert.call(small_proxy['image'] == 'nearaidev/vllm-proxy-rs@sha256:d61357da39918a57126864a451eaf054f06a6989c03fe9a1666f7e6374ba6907', 'Qualified gpu13 GLM proxy image changed')
+assert.call(small_proxy['image'] == 'nearaidev/vllm-proxy-rs@sha256:295f16f892d7e2f7c59e54354007762b5f0054d00467d42183f95d1596d8c916', 'Qualified gpu13 GLM proxy image changed')
 assert.call(small_proxy.fetch('environment').include?('VLLM_BACKEND_URLS=http://model-sg-glm53-w4afp8-tp2-r1a:8000,http://model-sg-glm53-w4afp8-tp2-r1b:8000'), 'gpu13 GLM proxy must pool both TP2 replicas')
 assert.call(small_proxy.fetch('environment').include?('VLLM_BACKEND_CONVERSATION_AFFINITY=1'), 'gpu13 GLM affinity contract changed')
 dcgm_image = 'nvcr.io/nvidia/k8s/dcgm-exporter@sha256:ed594cf53fe6942e84b07b0740cdcbb249fa4b39cb21feeebf93881ae51f0b5e'
