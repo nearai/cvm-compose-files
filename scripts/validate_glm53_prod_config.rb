@@ -19,6 +19,7 @@ LEGACY_CANARY_FILE = File.join(ROOT, "prod", "GLM-5.3-Flash-SGL-TP4-Canary.yaml"
 RELEASED_IMAGE_FILE = File.join(ROOT, "docker", "sglang-glm53-hicache", "RELEASED_IMAGE")
 ENGINE_IMAGE = "docker.io/nearaidev/sglang@sha256:e9d29a1cb1cd65284392c4d62d5f2a36669628057e15c60fe93ea40cfe4fc7e7"
 PROXY_IMAGE = "nearaidev/vllm-proxy-rs@sha256:d61357da39918a57126864a451eaf054f06a6989c03fe9a1666f7e6374ba6907"
+V8_KDA_CANARY_PROXY_IMAGE = "nearaidev/vllm-proxy-rs@sha256:295f16f892d7e2f7c59e54354007762b5f0054d00467d42183f95d1596d8c916"
 # Engine-side priority scheduling is only safe behind an inference-proxy that
 # overwrites the `priority` of every forwarded request (build 2834196 onward,
 # nearai/inference-proxy#241). Any other proxy build lets client-chosen or
@@ -28,6 +29,8 @@ PRIORITY_NORMALIZING_PROXY_IMAGES = [
   "nearaidev/vllm-proxy-rs@sha256:b3a8c6260834231271b4356c56a7aa2718608c8a537b35973916e0a56dc88fba",
   # inference-proxy main 0f37728 (includes #241 and #274 replica-state publishing).
   "nearaidev/vllm-proxy-rs@sha256:d61357da39918a57126864a451eaf054f06a6989c03fe9a1666f7e6374ba6907",
+  # inference-proxy main 1f0cfb71 (#310, eMudhra CA distrust); gpu03 v8 KDA canary only.
+  V8_KDA_CANARY_PROXY_IMAGE,
 ].freeze
 PRIORITY_SWITCHES = %w[--enable-priority-scheduling --disable-priority-preemption].freeze
 # The proxy assigns every request's priority; an engine-side default would
@@ -668,6 +671,7 @@ end
 # the engines, their telemetry, the four-way fan-out (proxy pool, perception loop, soak relay) and the deployment label it
 # must equal the W4AFP8 base file. docs/glm53-v7-fleet-rollout.md.
 W4AFP8_TP2X4_FILE = File.join(ROOT, "prod", "GLM-5.3-Flash-SGL-TP2x4-W4AFP8.yaml")
+V8_KDA_CANARY_FILE = File.join(ROOT, "prod", "GLM-5.3-Flash-SGL-TP2x4-W4AFP8-V8KdaCanary.yaml")
 W4AFP8_TP2X4_IMAGE = "docker.io/nearaidev/sglang@sha256:fa730e6e62b2ae8058114ce540487ade33ab93bc42b1179ae78edc92bd563fc5"
 W4AFP8_FLEET_PRECISION = "int4-weights-fp8-activations-fp8-kv"
 # v7 features (opt-in in the image) every fleet engine sets; profiling (NEAR_SELF_PROFILE*) must appear nowhere in a fleet file.
@@ -933,6 +937,7 @@ def validate_w4afp8_tp2x4(errors, compose, base, raw)
   expected_backends = W4AFP8_TP2X4_REPLICAS.keys.map { |name| "http://#{name}:8000" }.join(",")
   errors << "#{label} proxy-glm53 must pool all four TP2 replicas" unless proxy_env["VLLM_BACKEND_URLS"] == expected_backends
   errors << "#{label} proxy-glm53 must enable conversation affinity" unless proxy_env["VLLM_BACKEND_CONVERSATION_AFFINITY"] == "1"
+  errors << "#{label} proxy-glm53 image must remain #{PROXY_IMAGE}" unless proxy["image"] == PROXY_IMAGE
   unless PRIORITY_NORMALIZING_PROXY_IMAGES.include?(proxy["image"])
     errors << "#{label} enables SGLang priority scheduling but proxy-glm53 image #{proxy['image'].inspect} is not a priority-normalizing inference-proxy build"
   end
@@ -1506,6 +1511,14 @@ if w4afp8_tp2x4_present
     validate_model_cache(errors, "W4AFP8 4x TP2", w4afp8_tp2x4_compose.fetch("services", {}))
   elsif w4afp8_tp2x4_compose
     errors << "W4AFP8 4x TP2 file requires the W4AFP8 base file it is generated from"
+  end
+end
+
+if File.exist?(V8_KDA_CANARY_FILE)
+  v8_kda_canary = load_compose_file(errors, "gpu03 v8 KDA canary file", V8_KDA_CANARY_FILE)
+  if v8_kda_canary
+    canary_proxy = v8_kda_canary.dig("services", "proxy-glm53", "image")
+    errors << "gpu03 v8 KDA canary proxy-glm53 image must be #{V8_KDA_CANARY_PROXY_IMAGE}" unless canary_proxy == V8_KDA_CANARY_PROXY_IMAGE
   end
 end
 

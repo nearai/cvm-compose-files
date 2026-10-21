@@ -1,8 +1,9 @@
 # GLM-5.3 Flash v8 zero-sync KDA CANARY file for gpu03, generated from prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8.yaml by
-# scripts/prepare_glm53_v8_kda_canary.py (do not hand-edit). Full copy of the base fleet file with ONLY
-# model-sg-glm53-w4afp8-tp2-r4 changed: the glm53-hicache-w4afp8-v8 image (sha256:59700363c0b6...) and its engine_image /
-# config_variant (-kda) labels. Deploy it ONLY to gpu03, scoped to that one service; roll back by redeploying
-# prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8.yaml for the same service. docs/glm53-v8-kda-canary.md.
+# scripts/prepare_glm53_v8_kda_canary.py (do not hand-edit). Full copy of the base fleet file with
+# model-sg-glm53-w4afp8-tp2-r4's glm53-hicache-w4afp8-v8 image (sha256:59700363c0b6...) and engine_image / config_variant
+# labels changed, plus the host's proxy-glm53 image (inference-proxy 1f0cfb71, #310, eMudhra CA distrust).
+# Deploy ONLY to gpu03; roll back r4 with prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8.yaml at the same tag and proxy-glm53 from the previous tag.
+# docs/glm53-v8-kda-canary.md.
 #
 # GLM-5.3 Flash BASE TIER, v7 FLEET CONFIG (gpu03 and gpu04): the one base config every host of the tier deploys.
 # All four replicas r1-r4 run the glm53-hicache-w4afp8-v7 image (#345) with FP8 KV (flashmla_kv prefill and decode),
@@ -127,7 +128,7 @@ x-nvidia: &nvidia
       hard: 65535
 
 x-vllm-proxy-common: &vllm-proxy-common
-  image: nearaidev/vllm-proxy-rs@sha256:d61357da39918a57126864a451eaf054f06a6989c03fe9a1666f7e6374ba6907
+  image: nearaidev/vllm-proxy-rs@sha256:295f16f892d7e2f7c59e54354007762b5f0054d00467d42183f95d1596d8c916
   user: root
   privileged: true
   <<: *nvidia
