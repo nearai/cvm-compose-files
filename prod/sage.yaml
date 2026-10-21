@@ -41,7 +41,6 @@ services:
     ipc: private
     security_opt:
       - no-new-privileges:true
-    cpus: 16
     mem_limit: 256g
     memswap_limit: 256g
     pids_limit: 8192
@@ -116,7 +115,6 @@ services:
       - sage
     security_opt:
       - no-new-privileges:true
-    cpus: 2
     mem_limit: 512m
     entrypoint: ["/bin/sh", "-c"]
     # Writes its config at start, then reloads every 6 h to pick up a renewed certificate.
