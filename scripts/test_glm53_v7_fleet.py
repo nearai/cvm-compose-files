@@ -255,6 +255,9 @@ class FleetFilesTest(unittest.TestCase):
 SMALL = ROOT / "prod/small-models.yaml"
 SMALL_FIXTURE = ROOT / "scripts/fixtures/pre-v7/small-models.pre-v7.yaml"
 GPU13_GLM_SERVICES = ("proxy-glm53", "model-sg-glm53-w4afp8-tp2-r1a", "model-sg-glm53-w4afp8-tp2-r1b", "glm53-ghost-aggregator", "dcgm-glm53")
+QWEN38_GPU0_SERVICE = "model-sg-qwen38-27b-fp8-tp1-r1"
+QWEN38_GPU0_ANCHOR = "x-qwen3-8-27b-common"
+QWEN38_GPU0_JOB = f"sglang-{QWEN38_GPU0_SERVICE}"
 PRIVACY_FILTER_TRANSFORMERS_PIN = '"transformers==5.16.1"'
 PRIVACY_FILTER_OLD_TRANSFORMERS = '"transformers>=4.46"'
 PRIVACY_FILTER_PIN_COMMENTS = (
@@ -268,6 +271,66 @@ def without_privacy_filter_pin(block: str) -> str:
     for comment in PRIVACY_FILTER_PIN_COMMENTS:
         block = block.replace(comment, "")
     return block.replace(PRIVACY_FILTER_TRANSFORMERS_PIN, PRIVACY_FILTER_OLD_TRANSFORMERS)
+
+
+def without_qwen38_gpu0_stage_b(text: str) -> str:
+    """Apply only the Qwen3.8 GPU 0 retirement to the frozen pre-v7 fixture."""
+    old_intro = (
+        "# GPU 0 transition replica, shared with the privacy filter. The 0.60/128\n"
+        "# recipe reached ~122 GiB on 2026-10-05, leaving too little room for the\n"
+        "# filter's ~22 GB batches. Stage B retires this replica and anchor.\n"
+    )
+    if text.count(old_intro) != 1:
+        raise AssertionError("expected one Qwen3.8 GPU 0 fixture introduction")
+    text = text.replace(old_intro, "", 1)
+    old_anchor = anchor_block(text, QWEN38_GPU0_ANCHOR)
+    if text.count(old_anchor) != 1:
+        raise AssertionError("expected one Qwen3.8 GPU 0 fixture anchor")
+    text = text.replace(old_anchor, (
+        "# Qwen3.8 runs alone on GPU 2; GPU 0 is reserved for the privacy filter.\n"
+        "# Dedicated recipe: prod/qwen36-qwen38.yaml with gpu13's cache volume."
+    ), 1)
+    old_service = service_block(text, QWEN38_GPU0_SERVICE)
+    if text.count("\n" + old_service) != 1:
+        raise AssertionError("expected one Qwen3.8 GPU 0 fixture service")
+    text = text.replace("\n" + old_service, "", 1)
+    old_heading = (
+        "  # ── Qwen3.8-27B transition: GPU 0 r1 and dedicated GPU 2 r2 ──\n"
+        "  # gpu02 maintenance evacuation; see x-qwen3-8-27b-common. Uses its own"
+    )
+    if text.count(old_heading) != 1:
+        raise AssertionError("expected one Qwen3.8 GPU 0 fixture heading")
+    text = text.replace(old_heading, (
+        "  # ── Qwen3.8-27B on dedicated GPU 2; GPU 0 is privacy-filter only ──\n"
+        "  # See x-qwen3-8-27b-dedicated. Uses its own"
+    ), 1)
+    old_job = jobs_of(text)[QWEN38_GPU0_JOB]
+    if text.count("              " + old_job) != 1:
+        raise AssertionError("expected one Qwen3.8 GPU 0 scrape job")
+    text = text.replace("              " + old_job, "", 1)
+
+    # Match the five proxy text edits and the collector's two labels exactly.
+    for original, replacements in (
+        (service_block(text, "proxy-qwen38-27b"), (
+            ("VLLM_BACKEND_URLS=http://model-sg-qwen38-27b-fp8-tp1-r1:8000,http://model-sg-qwen38-27b-fp8-tp1-r2:8000",
+             "VLLM_BACKEND_URLS=http://model-sg-qwen38-27b-fp8-tp1-r2:8000"),
+            ('"gpu_pair:0,2"', '"gpu_pair:2"'),
+            ('"config_variant:qwen38-gpu13-gpu0-gpu2-transition"', '"config_variant:qwen38-gpu13-gpu2-dedicated"'),
+            ('nearai.otel.gpu_pair: "0,2"', 'nearai.otel.gpu_pair: "2"'),
+            ('nearai.otel.config_variant: "qwen38-gpu13-gpu0-gpu2-transition"', 'nearai.otel.config_variant: "qwen38-gpu13-gpu2-dedicated"'),
+        )),
+        (jobs_of(text)["inference-proxy-proxy-qwen38-27b"], (
+            ('gpu_pair: "0,2"', 'gpu_pair: "2"'),
+            ('config_variant: "qwen38-gpu13-gpu0-gpu2-transition"', 'config_variant: "qwen38-gpu13-gpu2-dedicated"'),
+        )),
+    ):
+        updated = original
+        for old, new in replacements:
+            if updated.count(old) != 1:
+                raise AssertionError(f"expected one Qwen3.8 stage-B fixture value: {old}")
+            updated = updated.replace(old, new, 1)
+        text = text.replace(original, updated, 1)
+    return text
 
 
 class Gpu13FleetTest(unittest.TestCase):
@@ -326,21 +389,30 @@ class Gpu13FleetTest(unittest.TestCase):
         self.assertIn('device_ids: ["6","7"]', service_block(self.small, "model-sg-glm53-w4afp8-tp2-r1b"))
 
     def test_non_glm_services_and_everything_outside_the_glm_blocks_are_byte_identical(self) -> None:
+        old = without_qwen38_gpu0_stage_b(self.old)
         names = re.findall(r"^  ([a-z0-9-]+):$", self.old[self.old.index("\nservices:\n"):], re.MULTILINE)
-        self.assertEqual(names, re.findall(r"^  ([a-z0-9-]+):$", self.small[self.small.index("\nservices:\n"):], re.MULTILINE))
+        self.assertEqual(
+            [name for name in names if name != QWEN38_GPU0_SERVICE],
+            re.findall(r"^  ([a-z0-9-]+):$", self.small[self.small.index("\nservices:\n"):], re.MULTILINE),
+        )
         for name in names:
-            if name not in GPU13_GLM_SERVICES:
+            if name not in GPU13_GLM_SERVICES and name != QWEN38_GPU0_SERVICE:
                 with self.subTest(service=name):
-                    self.assertEqual(service_block(self.small, name), service_block(self.old, name))
-        for anchor in re.findall(r"^(x-[a-z0-9-]+): &", self.old, re.MULTILINE):
-            if anchor != "x-sg-glm53-flash-common":
+                    self.assertEqual(service_block(self.small, name), service_block(old, name))
+        anchors = re.findall(r"^(x-[a-z0-9-]+): &", self.old, re.MULTILINE)
+        self.assertEqual(
+            [anchor for anchor in anchors if anchor != QWEN38_GPU0_ANCHOR],
+            re.findall(r"^(x-[a-z0-9-]+): &", self.small, re.MULTILINE),
+        )
+        for anchor in anchors:
+            if anchor not in ("x-sg-glm53-flash-common", QWEN38_GPU0_ANCHOR):
                 new_block = anchor_block(self.small, anchor)
                 if anchor == "x-privacy-filter-common":
                     new_block = without_privacy_filter_pin(new_block)
-                self.assertEqual(new_block, anchor_block(self.old, anchor), anchor)
+                self.assertEqual(new_block, anchor_block(old, anchor), anchor)
         # Scrape jobs of every non-GLM target are identical.
-        old_jobs, new_jobs = jobs_of(self.old), jobs_of(self.small)
-        self.assertEqual(list(old_jobs), list(new_jobs))
+        old_jobs, new_jobs = jobs_of(old), jobs_of(self.small)
+        self.assertEqual([key for key in jobs_of(self.old) if key != QWEN38_GPU0_JOB], list(new_jobs))
         for key in old_jobs:
             if "glm53" not in key:
                 self.assertEqual(new_jobs[key], old_jobs[key], key)
@@ -348,11 +420,34 @@ class Gpu13FleetTest(unittest.TestCase):
     def test_privacy_filter_pins_transformers(self) -> None:
         self.assertIn(PRIVACY_FILTER_TRANSFORMERS_PIN, anchor_block(self.small, "x-privacy-filter-common"))
 
+    def test_stage_b_vacates_gpu0_for_privacy_filter(self) -> None:
+        names = re.findall(r"^  ([a-z0-9-]+):$", self.small[self.small.index("\nservices:\n"):], re.MULTILINE)
+        anchors = re.findall(r"^(x-[a-z0-9-]+): &", self.small, re.MULTILINE)
+        self.assertNotIn(QWEN38_GPU0_SERVICE, names)
+        self.assertNotIn(QWEN38_GPU0_ANCHOR, anchors)
+        self.assertEqual(
+            [e for e in env_of(service_block(self.small, "proxy-qwen38-27b")) if e.startswith("VLLM_BACKEND_URLS=")],
+            ["VLLM_BACKEND_URLS=http://model-sg-qwen38-27b-fp8-tp1-r2:8000"],
+        )
+        self.assertIn("    <<: *privacy-filter-common", service_block(self.small, "model-privacy-filter"))
+        self.assertEqual(anchor_block(self.small, "x-privacy-filter-common").count('device_ids: ["0"]'), 1)
+        for anchor in anchors:
+            if anchor != "x-privacy-filter-common":
+                self.assertNotRegex(anchor_block(self.small, anchor), r'device_ids:\s*\[[^\]]*"0"')
+        for name in names:
+            if name != "model-privacy-filter" and not name.startswith("dcgm-"):
+                block = service_block(self.small, name)
+                with self.subTest(service=name):
+                    self.assertNotIn("<<: *privacy-filter-common", block)
+                    self.assertNotRegex(block, r'device_ids:\s*\[[^\]]*"0"')
+
     def test_dashboard_labels_are_unchanged_on_gpu13(self) -> None:
         def selectors(text: str) -> list[str]:
             return [l for l in selector_lines(text) if "max_running_requests" not in l and "max_queued_requests" not in l]
-        self.assertEqual(selectors(self.small), selectors(self.old))
-        old_jobs, new_jobs = jobs_of(self.old), jobs_of(self.small)
+        old = without_qwen38_gpu0_stage_b(self.old)
+        self.assertEqual(selectors(self.small), selectors(old))
+        old_jobs, new_jobs = jobs_of(old), jobs_of(self.small)
+        self.assertEqual([key for key in jobs_of(self.old) if key != QWEN38_GPU0_JOB], list(new_jobs))
         for key in old_jobs:
             self.assertEqual(
                 "\n".join(l for l in scrub(new_jobs[key]).splitlines() if "max_running_requests" not in l and "max_queued_requests" not in l),
