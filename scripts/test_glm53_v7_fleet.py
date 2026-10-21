@@ -29,6 +29,8 @@ V7_IMAGE = "docker.io/nearaidev/sglang@sha256:fa730e6e62b2ae8058114ce540487ade33
 V10_IMAGE = "docker.io/nearaidev/sglang@sha256:c15a33672ade5a9f2b4f7874a746eb4114952dae7230d5baa563a02eca081b78"
 V10_LABEL = "c15a33672ade"
 V6_IMAGE = "docker.io/nearaidev/sglang@sha256:9c6ddd4319c4ab00e351d8650459e68b8830e36ffcc029d67fa5e19d0ac3ed17"
+OLD_PROXY_IMAGE = "nearaidev/vllm-proxy-rs@sha256:d61357da39918a57126864a451eaf054f06a6989c03fe9a1666f7e6374ba6907"
+NEW_PROXY_IMAGE = "nearaidev/vllm-proxy-rs@sha256:295f16f892d7e2f7c59e54354007762b5f0054d00467d42183f95d1596d8c916"
 FLEET_ENV = [
     "SGLANG_PREPROCESS_WORKERS=4",
     "SGLANG_PREPROCESS_TIMEOUT_S=60",
@@ -230,8 +232,8 @@ class FleetFilesTest(unittest.TestCase):
         self.assertIn('deployment: "glm53-flash-sgl-tp4"', self.long)
 
     def test_everything_outside_the_engines_is_unchanged_from_the_pre_rollout_files(self) -> None:
-        # Routing, nginx, registrar, proxy, DCGM, collector pipelines, volumes: textually identical outside the engine anchors,
-        # engine services, their scrape jobs, the ghost sidecar's image and the header.
+        # Routing, nginx, registrar, proxy config, DCGM, collector pipelines, volumes: textually identical outside the engine anchors,
+        # engine services, their scrape jobs, the ghost sidecar's image, the proxy image and the header.
         def strip(text: str, names: list[str], anchors: list[str]) -> str:
             text = text[text.index("x-logging-conf:"):]
             for name in names:
@@ -242,6 +244,7 @@ class FleetFilesTest(unittest.TestCase):
                 if key.startswith("sglang-model-sg-glm53"):
                     text = text.replace(jobs_of(text)[key], "")
             text = text.replace(V7_IMAGE, "IMAGE").replace(V10_IMAGE, "IMAGE").replace(V6_IMAGE, "IMAGE")
+            text = text.replace(NEW_PROXY_IMAGE, OLD_PROXY_IMAGE)
             return text
         base_names = BASE_ENGINES
         self.assertEqual(

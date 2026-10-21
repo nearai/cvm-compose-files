@@ -6,11 +6,10 @@
 # How to run: python3 scripts/prepare_glm53_v8_kda_canary.py --write   (or --check)
 """Generate the GLM-5.3 v8 (zero-sync KDA) one-replica canary file for gpu03 from the committed base fleet file.
 
-The output is a full copy of prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8.yaml with ONLY replica r4's engine image
-(v7 + kda-zero-sync.diff, #352) and telemetry labels changed, plus the host's proxy image (eMudhra CA distrust,
-inference-proxy#310). The argv, environment, GPUs, every other service and every other label are byte-identical
-to the fleet file, so r1-r3 on the same host are the v7 controls and the dashboard keeps selecting r4.
-Roll back the proxy by redeploying proxy-glm53 from the previous tag.
+The output is a full copy of prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8.yaml with ONLY replica r4 changed: the
+glm53-hicache-w4afp8-v8 image (v7 + kda-zero-sync.diff, #352) and r4's engine_image / config_variant telemetry labels
+(service block and its OTel scrape job). The argv, environment, GPUs, every other service and every other label are
+byte-identical to the fleet file, so r1-r3 on the same host are the v7 controls and the dashboard keeps selecting r4.
 
 `--write` regenerates the target; `--check` prints a diff and exits non-zero when the committed target is stale.
 Runbook: docs/glm53-v8-kda-canary.md.
@@ -36,9 +35,6 @@ V8_IMAGE: Final = f"docker.io/nearaidev/sglang@{V8_IMAGE_DIGEST}"
 V7_LABEL: Final = V7_IMAGE_DIGEST.split(":")[1][:12]
 V8_LABEL: Final = V8_IMAGE_DIGEST.split(":")[1][:12]
 SUFFIX: Final = "-kda"
-OLD_PROXY_IMAGE: Final = "nearaidev/vllm-proxy-rs@sha256:d61357da39918a57126864a451eaf054f06a6989c03fe9a1666f7e6374ba6907"
-# inference-proxy main 1f0cfb71 (#310): distrust the compromised eMudhra CA intermediates.
-NEW_PROXY_IMAGE: Final = "nearaidev/vllm-proxy-rs@sha256:295f16f892d7e2f7c59e54354007762b5f0054d00467d42183f95d1596d8c916"
 
 
 class GenerationError(ValueError):
@@ -65,17 +61,8 @@ def span(text: str, start_marker: str, end_pattern: str, label: str) -> tuple[in
 def generate(source: str) -> str:
     if "kda-zero-sync" in source or V8_IMAGE in source:
         raise GenerationError("source already carries the v8 canary")
-    if NEW_PROXY_IMAGE in source:
-        raise GenerationError("source already carries the eMudhra proxy canary")
-    out = replace_exact(
-        source,
-        f"  image: {OLD_PROXY_IMAGE}\n",
-        f"  image: {NEW_PROXY_IMAGE}\n",
-        1,
-        "proxy anchor image",
-    )
-    s_start, s_end = span(out, f"\n  {SERVICE}:\n", r"\n  [^ \n]", f"service {SERVICE}")
-    block = out[s_start:s_end]
+    s_start, s_end = span(source, f"\n  {SERVICE}:\n", r"\n  [^ \n]", f"service {SERVICE}")
+    block = source[s_start:s_end]
     if "\n    image:" in block:
         raise GenerationError("r4 sets its own image; the canary expects it to inherit the v7 anchor image")
     block = replace_exact(
@@ -94,7 +81,7 @@ def generate(source: str) -> str:
     block = replace_exact(block, f'"engine_image:{V7_LABEL}"', f'"engine_image:{V8_LABEL}"', 1, "log engine_image")
     block = replace_exact(block, f'nearai.otel.engine_image: "{V7_LABEL}"', f'nearai.otel.engine_image: "{V8_LABEL}"', 1, "otel engine_image")
     block = replace_exact(block, f'{variant}"', f'{variant}{SUFFIX}"', 2, "service config_variant")
-    out = out[:s_start] + block + out[s_end:]
+    out = source[:s_start] + block + source[s_end:]
     j_start, j_end = span(out, f"\n              - job_name: sglang-{SERVICE}\n", r"\n              - job_name:", "scrape job")
     job = out[j_start:j_end]
     job = replace_exact(job, f'engine_image: "{V7_LABEL}"', f'engine_image: "{V8_LABEL}"', 1, "scrape engine_image")
@@ -102,11 +89,10 @@ def generate(source: str) -> str:
     out = out[:j_start] + job + out[j_end:]
     header = (
         f"# GLM-5.3 Flash v8 zero-sync KDA CANARY file for {HOST}, generated from {SOURCE} by\n"
-        "# scripts/prepare_glm53_v8_kda_canary.py (do not hand-edit). Full copy of the base fleet file with\n"
-        f"# {SERVICE}'s glm53-hicache-w4afp8-v8 image ({V8_IMAGE_DIGEST[:19]}...) and engine_image / config_variant\n"
-        f"# labels changed, plus the host's proxy-glm53 image (inference-proxy 1f0cfb71, #310, eMudhra CA distrust).\n"
-        f"# Deploy ONLY to {HOST}; roll back r4 with {SOURCE} at the same tag and proxy-glm53 from the previous tag.\n"
-        "# docs/glm53-v8-kda-canary.md.\n"
+        "# scripts/prepare_glm53_v8_kda_canary.py (do not hand-edit). Full copy of the base fleet file with ONLY\n"
+        f"# {SERVICE} changed: the glm53-hicache-w4afp8-v8 image ({V8_IMAGE_DIGEST[:19]}...) and its engine_image /\n"
+        f"# config_variant ({SUFFIX}) labels. Deploy it ONLY to {HOST}, scoped to that one service; roll back by redeploying\n"
+        f"# {SOURCE} for the same service. docs/glm53-v8-kda-canary.md.\n"
         "#\n"
     )
     return header + out

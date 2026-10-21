@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 CANDIDATE = ROOT / "prod/GLM-5.3-Flash-SGL-TP4-W4AFP8-Canary.yaml"
 GENERATOR = ROOT / "scripts/prepare_glm53_w4afp8_canary.py"
 PROMOTED_IMAGE: Final = "docker.io/nearaidev/sglang@sha256:8bce6a7cc872a80faded3bd1ef0a64873a1d7abae34c94e5358775ca21f133cc"
-LONG_CONTEXT_SHA256: Final = "f16a681f1f4aef480b5b720ad55d92d87982183fb0a7412ba85315d1e8d468f1"
+LONG_CONTEXT_SHA256: Final = "afc44e8005fcbbc55d7b8b65d545976f5a00c6def0a018f1cfc8d37a4873cd7c"
 
 
 class CommittedCanaryTest(unittest.TestCase):
@@ -168,12 +168,12 @@ class CommittedCanaryTest(unittest.TestCase):
         # Then gpu02 r2 is byte-identical to the deployed HiCache arm.
         self.assertEqual(candidate_r2.replace(profile, "", 1), source_r2)
 
-    def test_canonical_long_context_source_is_unchanged(self) -> None:
+    def test_canonical_long_context_source_is_pinned(self) -> None:
         # Given the deployed long-context source is the generator input
         source = (ROOT / canary.COMPOSE).read_bytes()
         # When its immutable baseline digest is calculated
         digest = hashlib.sha256(source).hexdigest()
-        # Then promotion work has not changed the canonical production file.
+        # Then the generator source matches the proxy rollout baseline.
         self.assertEqual(digest, LONG_CONTEXT_SHA256)
 
     def test_customer_routing_requires_explicit_canary_services(self) -> None:
