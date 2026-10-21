@@ -28,9 +28,9 @@ services:
       - /dockercfg:rw,noexec,nosuid,size=1m,mode=0700
     environment:
       DOCKER_CONFIG: /dockercfg
-      PULL_USER: ${SAGE_DOCKERHUB_USER:?set SAGE_DOCKERHUB_USER}
-      PULL_TOKEN: ${SAGE_DOCKERHUB_TOKEN:?set SAGE_DOCKERHUB_TOKEN}
-      IMAGE: levantolabs/sage-v1.4-hopper-pod@sha256:36a2d4dd60e8311684abe9e5af51a98d68c0ca0f327438dbcf98edbde94efa0d
+      PULL_USER: ${SAGE_DOCKERHUB_USER}
+      PULL_TOKEN: ${SAGE_DOCKERHUB_TOKEN}
+      IMAGE: levantolabs/sage-v1.4-hopper-pod@sha256:6c15ca25e06d8fb797ab3e8b4992f0df60f6507bb99141cd8d7804c141e0f0e6
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
