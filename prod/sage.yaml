@@ -79,6 +79,11 @@ services:
       SAGE_ACME_AWS_ACCESS_KEY_ID: ${SAGE_ACME_AWS_ACCESS_KEY_ID}
       SAGE_ACME_AWS_SECRET_ACCESS_KEY: ${SAGE_ACME_AWS_SECRET_ACCESS_KEY}
       SAGE_ACME_ROUTE53_ZONE_ID: ${SAGE_ACME_ROUTE53_ZONE_ID}
+      # Sage ships its own log to Levanto's CloudWatch (key can only write that one log group) and
+      # SAGE_ADMIN_TOKEN enables its content-free /internal/diagnostics endpoint.
+      SAGE_LOG_AWS_ACCESS_KEY_ID: ${SAGE_LOG_AWS_ACCESS_KEY_ID}
+      SAGE_LOG_AWS_SECRET_ACCESS_KEY: ${SAGE_LOG_AWS_SECRET_ACCESS_KEY}
+      SAGE_ADMIN_TOKEN: ${SAGE_ADMIN_TOKEN}
       # Same GPU as device_ids below (exactly one GPU, as the image requires).
       NVIDIA_VISIBLE_DEVICES: GPU-bafbdde0-cd41-8379-fa93-149864963329
     volumes:
