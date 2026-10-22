@@ -401,7 +401,10 @@ class Gpu13FleetTest(unittest.TestCase):
         for name in names:
             if name not in GPU13_GLM_SERVICES and name != QWEN38_GPU0_SERVICE:
                 with self.subTest(service=name):
-                    self.assertEqual(service_block(self.small, name), service_block(old, name))
+                    expected = service_block(old, name)
+                    if name == "proxy-qwen38-27b":
+                        expected = expected.replace(OLD_PROXY_IMAGE, NEW_PROXY_IMAGE)
+                    self.assertEqual(service_block(self.small, name), expected)
         anchors = re.findall(r"^(x-[a-z0-9-]+): &", self.old, re.MULTILINE)
         self.assertEqual(
             [anchor for anchor in anchors if anchor != QWEN38_GPU0_ANCHOR],
@@ -412,7 +415,10 @@ class Gpu13FleetTest(unittest.TestCase):
                 new_block = anchor_block(self.small, anchor)
                 if anchor == "x-privacy-filter-common":
                     new_block = without_privacy_filter_pin(new_block)
-                self.assertEqual(new_block, anchor_block(old, anchor), anchor)
+                expected = anchor_block(old, anchor)
+                if anchor == "x-vllm-proxy-common":
+                    expected = expected.replace(OLD_PROXY_IMAGE, NEW_PROXY_IMAGE)
+                self.assertEqual(new_block, expected, anchor)
         # Scrape jobs of every non-GLM target are identical.
         old_jobs, new_jobs = jobs_of(old), jobs_of(self.small)
         self.assertEqual([key for key in jobs_of(self.old) if key != QWEN38_GPU0_JOB], list(new_jobs))
