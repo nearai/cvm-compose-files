@@ -244,8 +244,8 @@ services:
       - SYS_ADMIN
     environment:
       - NVIDIA_VISIBLE_DEVICES=0
-    ports:
-      - "9400:9400"
+    expose:
+      - "9400"
     deploy:
       resources:
         reservations:
@@ -256,7 +256,7 @@ services:
     restart: unless-stopped
     logging: *logging-conf
     labels:
-      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:Qwen/Qwen3.8-27B-abliterated","deployment:Qwen3.8-27B-abliterated-LoRA-test","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:Qwen/Qwen3.8-27B-FP8","served_model:Qwen/Qwen3.8-27B-abliterated","deployment:Qwen3.8-27B-abliterated-LoRA-test","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "dcgm"
       nearai.otel.service: "dcgm-exporter"
@@ -264,7 +264,8 @@ services:
       nearai.otel.container_name: "dcgm-qwen38-27b-abliterated"
       nearai.otel.port: "9400"
       nearai.otel.path: "/metrics"
-      nearai.otel.model: "Qwen/Qwen3.8-27B-abliterated"
+      nearai.otel.model: "Qwen/Qwen3.8-27B-FP8"
+      nearai.otel.served_model: "Qwen/Qwen3.8-27B-abliterated"
       nearai.otel.deployment: "Qwen3.8-27B-abliterated-LoRA-test"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
@@ -376,7 +377,8 @@ configs:
                       service: "dcgm-exporter"
                       source: "dcgm-exporter"
                       container_name: "dcgm-qwen38-27b-abliterated"
-                      model: "Qwen/Qwen3.8-27B-abliterated"
+                      model: "Qwen/Qwen3.8-27B-FP8"
+                      served_model: "Qwen/Qwen3.8-27B-abliterated"
                       deployment: "Qwen3.8-27B-abliterated-LoRA-test"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
