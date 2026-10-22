@@ -146,7 +146,7 @@ services:
       - HTTP_PORT=${HTTP_PORT:-8000}
       - TLS_PORT=${TLS_PORT:-8444}
       - MODEL_PROXY_TOKEN=${MODEL_PROXY_TOKEN}
-      - PROXY_TOKEN=${PROXY_TOKEN}
+      - PROXY_TOKEN=${QWEN38_ABLITERATED_PROXY_TOKEN}
     configs:
       - source: registrar_script
         target: /register.sh
@@ -165,8 +165,10 @@ services:
       - COMPOSE_MANAGER_URL=http://compose-manager:8080
       - LOG_FORMAT=json
       - MODEL_NAME=Qwen/Qwen3.8-27B-abliterated
+      # Deny customer API keys until the intended organization IDs are supplied.
+      - VLLM_PROXY_ALLOWED_ORG_IDS=${QWEN38_ABLITERATED_ALLOWED_ORG_IDS:-__no_organizations__}
       - OHTTP_ENABLED=true
-      - TOKEN=${PROXY_TOKEN}
+      - TOKEN=${QWEN38_ABLITERATED_PROXY_TOKEN}
       - FUSION_ENABLED=${FUSION_ENABLED}
       - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
       - VLLM_BACKEND_URLS=http://model-sg-qwen38-27b-abliterated-fp8-tp1:8000
