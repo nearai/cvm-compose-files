@@ -1108,7 +1108,8 @@ W4AFP8_LONG_CONTEXT_ARGV = Shellwords.split(<<~'ARGV').freeze
 ARGV
 W4AFP8_LONG_CONTEXT_HICACHE_ENV = HICACHE_ENV.merge("SGLANG_HICACHE_RAM_BUDGET" => "${GLM53_HICACHE_RAM_BUDGET:-406GiB}").freeze
 
-# 2xTP2 replicas, v12 FLEET CONFIG (v7 + Q8 DSA prefill with 16384-token chunks, docs/glm53-long-v10-q8-rollout.md). The file is shared by gpu02 and gpu23, so the TP4 r1/r2 above stay defined (v6; a host not
+# 2xTP2 replicas, v12 FLEET CONFIG (v7 + Q8 DSA prefill with 16384-token chunks, docs/glm53-long-v10-q8-rollout.md; the v12 image
+# adds the K-pool indexer logits budget, #370). The file is shared by gpu02 and gpu23, so the TP4 r1/r2 above stay defined (v6; a host not
 # yet converted keeps deploying them) and these four TP2 services start in their place (same GPUs, so a TP4 replica and its pair
 # are never up together). Lab-validated (tee-bench exp 19/29): mem 0.86, 330 mamba slots, fixed EAGLE 4/1/5; v7 adds FP8 KV
 # (flashmla_kv prefill and decode), 16 running / 8 queued with decode graphs 16, the overlap scheduler off, HiCache ON (write_through,

@@ -308,13 +308,13 @@ TP2_REPLICAS: Final = {
     "1b": {"devices": ("2", "3"), "gpu_pair": "2-3", "dist_init": "127.0.0.1:29515", "budget_var": "GLM53_R1B_HICACHE_RAM_BUDGET"},
 }
 # Half of r2's 650 GiB budget each, so the two replicas together take what r2 took.
-# Fleet image for the four TP2 replicas: glm53-hicache-w4afp8-v10 = the v9 recipe (#363: v8 + flag-gated flashmla_sparse_q8 DSA
+# Previous fleet image for the four TP2 replicas: glm53-hicache-w4afp8-v10 = the v9 recipe (#363: v8 + flag-gated flashmla_sparse_q8 DSA
 # prefill on the FP8 NoPE KV layout) plus the linux-libc-dev CVE fix (#365); publish run 39094781691 from main 913d6995, attested
 # and signed. Qualified by tee-bench exp 45b/46 and the gpu02 r2b canary (#364). The previous fleet image was v7
 # (sha256:fa730e6e..., #345); the rollback is the previous tag's copy of this file. The TP4 r1/r2 services above keep v6: no host
 # runs them any more and FP8 KV has not been qualified at TP4.
-# v12 (PR #370 + CVE pins #384, publish run 39987811670, source 79de066) = v10 + patch 15 (DSA indexer K-pool logits budget); the
-# previous fleet image was v10 (sha256:c15a33672ade..., still the base-tier Q8 canary image).
+# Fleet image now: glm53-hicache-w4afp8-v12 (PR #370 + CVE pins #384, publish run 39987811670, source 79de066, attested and
+# signed) = v10 + patch 15 (DSA indexer K-pool logits budget). v10 (sha256:c15a33672ade...) stays the base-tier Q8 canary image.
 TP2_IMAGE: Final = "docker.io/nearaidev/sglang@sha256:da8d4e4b5ec667499b58a21e56050aae9bcfc4df9669b3ac27e2e20af033d681"
 TP2_ENGINE_IMAGE_LABEL: Final = TP2_IMAGE.split(":")[-1][:12]
 TP2_PRECISION: Final = "int4-weights-fp8-activations-fp8-kv"
