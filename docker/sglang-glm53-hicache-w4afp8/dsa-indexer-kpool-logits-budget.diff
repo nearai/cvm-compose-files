@@ -1,0 +1,163 @@
+diff --git a/python/sglang/srt/layers/attention/dsa/dsa_indexer_kpool.py b/python/sglang/srt/layers/attention/dsa/dsa_indexer_kpool.py
+index 25c31e1..269d861 100644
+--- a/python/sglang/srt/layers/attention/dsa/dsa_indexer_kpool.py
++++ b/python/sglang/srt/layers/attention/dsa/dsa_indexer_kpool.py
+@@ -48,6 +48,41 @@ def _qsplit_group(n_rows: int):
+ 
+     group = get_attn_tp_group()
+     return group if group.world_size > 1 else None
++
++
++# The K-pool prefill paths score every query row against the whole gathered key buffer, so the fp32
++# logits scratch is rows x key_rows x 4 bytes. A 16K chunk on TP2 qsplit is 8192 rows per rank, so
++# with a long context the scratch reaches 10+ GiB and can exceed what mem_fraction_static leaves free
++# (prod gpu23 r1b, 2026-10-18 23:40 UTC). Score rows in blocks under the same budget the upstream
++# Indexer._get_topk_ragged path uses: min(free * F, (1 - mem_fraction_static) * total * F, 0.3 * total)
++# with F = SGLANG_DSA_MQA_LOGITS_FREE_MEM_FRACTION, measured once per device (mem_get_info syncs).
++_KPOOL_LOGITS_BYTES_PER_ELEM = 4
++_KPOOL_LOGITS_STATIC_SKIP_ELEMS = 8_000_000
++_KPOOL_LOGITS_BUDGET_BYTES: Dict[int, int] = {}
++# Test override in MiB (forces the blocked path on ordinary prompts); unset in production.
++_KPOOL_LOGITS_BUDGET_MB = int(os.environ.get("SGLANG_DSA_KPOOL_LOGITS_BUDGET_MB", "0"))
++
++
++def _kpool_logits_budget_bytes(device_index: int) -> int:
++    if _KPOOL_LOGITS_BUDGET_MB > 0:
++        return _KPOOL_LOGITS_BUDGET_MB << 20
++    cached = _KPOOL_LOGITS_BUDGET_BYTES.get(device_index)
++    if cached is not None:
++        return cached
++    from sglang.srt.runtime_context import get_schedule
++
++    fraction = envs.SGLANG_DSA_MQA_LOGITS_FREE_MEM_FRACTION.get()
++    total_mem = torch.cuda.get_device_properties(device_index).total_memory
++    budget = int(total_mem * 0.3)
++    mem_fraction_static = get_schedule().mem_fraction_static
++    if mem_fraction_static is not None:
++        budget = min(budget, int(total_mem * max(0.0, 1.0 - mem_fraction_static) * fraction))
++    if get_is_capture_mode():
++        return max(1, budget)
++    free_mem, _ = torch.cuda.mem_get_info(device_index)
++    budget = max(1, min(budget, int(free_mem * fraction)))
++    _KPOOL_LOGITS_BUDGET_BYTES[device_index] = budget
++    return budget
+ from sglang.srt.layers import deep_gemm_wrapper
+ from sglang.srt.layers.linear import ReplicatedLinear
+ from sglang.srt.layers.quantization.base_config import QuantizationConfig
+@@ -942,15 +977,8 @@ class IndexerKPool(MultiPlatformOp):
+                     qsplit_group, metadata, plan, q_fp8, weights, k_fp8, k_scale,
+                     n_real, total_q, pool_lens, seq_lens_expanded, ks_per_q, ke_per_q,
+                 )
+-            logits = deep_gemm.fp8_mqa_logits(
+-                q_fp8[:n_real].contiguous(),
+-                (k_fp8.contiguous(), k_scale.contiguous()),
+-                weights[:n_real].contiguous(),
+-                ks_per_q,
+-                ke_per_q,
+-                clean_logits=True,
+-            )
+         else:
++            k_fp8 = None
+             logits = torch.empty((n_real, 0), dtype=torch.float32, device=device)
+ 
+         topk_method = metadata.topk_transform_method
+@@ -965,6 +993,11 @@ class IndexerKPool(MultiPlatformOp):
+             elif topk_method == TopkTransformMethod.RAGGED:
+                 topk_offsets_all = attn_metadata.topk_indices_offset
+ 
++        if k_fp8 is not None:
++            return self._kpool_logits_topk_rows(
++                q_fp8[:n_real], weights[:n_real], k_fp8, k_scale, ks_per_q, ke_per_q, pool_lens,
++                seq_lens_expanded, page_table_all, page_table_row_index_all, topk_offsets_all, total_q,
++            )
+         return self._topk_from_kpool_logits(
+             logits,
+             pool_lens,
+@@ -976,6 +1009,60 @@ class IndexerKPool(MultiPlatformOp):
+             page_table_row_index=page_table_row_index_all,
+         )
+ 
++    def _kpool_logits_topk_rows(
++        self, q_fp8, weights, k_fp8, k_scale, ks, ke, pool_lens, seq_lens,
++        page_table, page_table_row_index, topk_offsets, out_rows,
++    ) -> torch.Tensor:
++        """fp8_mqa_logits + pooled top-k for these query rows, in row blocks whose logits fit the budget.
++
++        Rows are independent (each carries its own [ks, ke) key range and the logits keep every key
++        column), so blocking only bounds the scratch; the selected indices are the same as one call.
++        page_table is per request when page_table_row_index is given, else per row (as in qsplit).
++        """
++        n_rows, k_rows = q_fp8.shape[0], k_fp8.shape[0]
++        block = n_rows
++        if n_rows * k_rows >= _KPOOL_LOGITS_STATIC_SKIP_ELEMS:
++            budget = _kpool_logits_budget_bytes(q_fp8.device.index)
++            block = max(1, min(n_rows, budget // max(1, k_rows * _KPOOL_LOGITS_BYTES_PER_ELEM)))
++        kv = (k_fp8.contiguous(), k_scale.contiguous())
++        if block >= n_rows:
++            logits = deep_gemm.fp8_mqa_logits(
++                q_fp8.contiguous(), kv, weights.contiguous(), ks, ke, clean_logits=True,
++            )
++            return self._topk_from_kpool_logits(
++                logits,
++                pool_lens,
++                seq_lens=seq_lens,
++                page_table=page_table,
++                topk_offsets=topk_offsets,
++                row_starts=ks,
++                out_rows=out_rows,
++                page_table_row_index=page_table_row_index,
++            )
++        out = None
++        for lo in range(0, n_rows, block):
++            hi = min(lo + block, n_rows)
++            logits = deep_gemm.fp8_mqa_logits(
++                q_fp8[lo:hi].contiguous(), kv, weights[lo:hi].contiguous(), ks[lo:hi], ke[lo:hi],
++                clean_logits=True,
++            )
++            part = self._topk_from_kpool_logits(
++                logits,
++                pool_lens[lo:hi],
++                seq_lens=seq_lens[lo:hi],
++                page_table=page_table if page_table_row_index is not None or page_table is None else page_table[lo:hi],
++                topk_offsets=None if topk_offsets is None else topk_offsets[lo:hi],
++                row_starts=ks[lo:hi],
++                page_table_row_index=None if page_table_row_index is None else page_table_row_index[lo:hi],
++            )
++            del logits
++            if out is None:
++                out = torch.full(
++                    (max(out_rows or n_rows, n_rows), part.shape[1]), -1, dtype=part.dtype, device=part.device
++                )
++            out[lo:hi] = part
++        return out
++
+     def _get_topk_ragged_kpool_plan_qsplit(
+         self, group, metadata, plan, q_fp8, weights, k_fp8, k_scale, n_real, total_q,
+         pool_lens, seq_lens_expanded, ks_per_q, ke_per_q,
+@@ -997,23 +1084,9 @@ class IndexerKPool(MultiPlatformOp):
+             page_table = page_table[lo:hi]
+         if topk_offsets is not None:
+             topk_offsets = topk_offsets[lo:hi]
+-        logits = deep_gemm.fp8_mqa_logits(
+-            q_fp8[lo:hi].contiguous(),
+-            (k_fp8.contiguous(), k_scale.contiguous()),
+-            weights[lo:hi].contiguous(),
+-            ks_per_q[lo:hi],
+-            ke_per_q[lo:hi],
+-            clean_logits=True,
+-        )
+-        local = self._topk_from_kpool_logits(
+-            logits,
+-            pool_lens[lo:hi],
+-            seq_lens=seq_lens_expanded[lo:hi],
+-            page_table=page_table,
+-            topk_offsets=topk_offsets,
+-            row_starts=ks_per_q[lo:hi],
+-            out_rows=per,
+-            page_table_row_index=page_table_row_index,
++        local = self._kpool_logits_topk_rows(
++            q_fp8[lo:hi], weights[lo:hi], k_fp8, k_scale, ks_per_q[lo:hi], ke_per_q[lo:hi],
++            pool_lens[lo:hi], seq_lens_expanded[lo:hi], page_table, page_table_row_index, topk_offsets, per,
+         )
+         gathered = torch.empty((world * per, local.shape[1]), dtype=local.dtype, device=local.device)
+         group.all_gather_into_tensor(gathered, local.contiguous())

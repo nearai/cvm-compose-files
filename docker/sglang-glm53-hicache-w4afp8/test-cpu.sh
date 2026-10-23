@@ -508,4 +508,13 @@ python3 "$RECIPE_DIR/test_dsa_q8_flashmla_sparse.py" \
   "$PWD/python/sglang/srt/layers/attention/dsa/dsa_backend_kpool.py"
 echo "step 15 OK: flashmla_sparse_q8 pads KPool top-k IDs, launches 576-wide zero-padded Q/KV for Flash NoPE and passes the KPool check"
 
+# 16. The K-pool prefill indexer bounds its fp32 logits scratch (dsa-indexer-kpool-logits-budget.diff).
+# test_dsa_kpool_logits_budget.py runs IndexerKPool._kpool_logits_topk_rows on CPU tensors with a stub
+# fp8_mqa_logits that records each scratch: over budget it scores row blocks, each within budget, with the
+# same top-k (row offsets, per-row and per-request page tables, out_rows padding); small batches make one
+# call and skip the budget lookup. It checks the budget rule (free/static headroom, cached, capture mode,
+# MiB override) and that both K-pool prefill paths use the helper. It fails on the unpatched source.
+python3 "$RECIPE_DIR/test_dsa_kpool_logits_budget.py" "$PWD/python/sglang/srt/layers/attention/dsa/dsa_indexer_kpool.py"
+echo "step 16 OK: the K-pool prefill indexer scores rows in blocks whose logits scratch fits the budget"
+
 echo "GLM-5.3 W4AFP8 combined-image CPU checks passed"
