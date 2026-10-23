@@ -127,12 +127,12 @@ end
 # gpu13's GLM is two memory-optimized TP2/EP2 replicas (GPUs 4,5 and 6,7) with the same
 # per-replica argv as the long-context file's tp2-r2a/r2b (W4AFP8 + HiCache, campaign-2 L2 base):
 # prod/GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext.yaml, docs/long-context-glm53-2xtp2-rollout.md.
-# The #330 overlap-off canary ended when the TP4 replica was replaced; the v7+ fleet config (v10 now) runs overlap OFF again (asserted below).
-gpu13_variant = 'fc91d24-long-context-w4afp8-c16384-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host325g-memopt-fp8kv-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-gpu13-h200-tp2-ep2-eagle-fixed-4-1-5-mr16q8-strict-budget8192-obs-v1-v10-q8'
+# The #330 overlap-off canary ended when the TP4 replica was replaced; the v7+ fleet config (v12 now) runs overlap OFF again (asserted below).
+gpu13_variant = 'fc91d24-long-context-w4afp8-c16384-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host325g-memopt-fp8kv-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-gpu13-h200-tp2-ep2-eagle-fixed-4-1-5-mr16q8-strict-budget8192-obs-v1-v12-q8'
 gpu13_ports = {}
 gpu13_glm.each_key do |name|
   engine = small_services.fetch(name)
-  assert.call(engine['image'] == 'docker.io/nearaidev/sglang@sha256:c15a33672ade5a9f2b4f7874a746eb4114952dae7230d5baa563a02eca081b78', "v10 gpu13 GLM image changed: #{name}")
+  assert.call(engine['image'] == 'docker.io/nearaidev/sglang@sha256:da8d4e4b5ec667499b58a21e56050aae9bcfc4df9669b3ac27e2e20af033d681', "v12 gpu13 GLM image changed: #{name}")
   command = engine.fetch('command').to_s.split.each_slice(1).to_a.flatten.join(' ')
   assert.call(command.include?('--model-path /root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/snapshots/99f1fa70408c52b007d4fd69e02e5a522422e755'), "gpu13 GLM must serve the qualified W4AFP8 snapshot: #{name}")
   {
