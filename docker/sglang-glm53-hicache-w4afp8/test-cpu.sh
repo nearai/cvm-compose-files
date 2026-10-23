@@ -517,4 +517,41 @@ echo "step 15 OK: flashmla_sparse_q8 pads KPool top-k IDs, launches 576-wide zer
 python3 "$RECIPE_DIR/test_dsa_kpool_logits_budget.py" "$PWD/python/sglang/srt/layers/attention/dsa/dsa_indexer_kpool.py"
 echo "step 16 OK: the K-pool prefill indexer scores rows in blocks whose logits scratch fits the budget"
 
+# 17. pillow 13 (security_remediation_3) is a major bump installed with --no-deps. The PIL modules SGLang and
+# transformers import at load time still import, and an RGB array round-trips through fromarray (no mode
+# argument, which 13 removed), PNG save and SGLang's own image loader.
+python3 - <<'EOF'
+import io
+import os
+import tempfile
+
+import numpy as np
+import PIL
+from PIL import ExifTags, Image, ImageCms, ImageDraw, ImageFont, ImageOps  # noqa: F401
+
+from sglang.test.test_utils import maybe_stub_sgl_kernel
+
+maybe_stub_sgl_kernel()
+
+import transformers.image_processing_utils  # noqa: E402,F401
+import transformers.image_utils  # noqa: E402,F401
+import sglang.srt.utils as sgl_utils  # noqa: E402
+
+assert PIL.__version__ == "13.0.0", PIL.__version__
+img = Image.fromarray(np.full((8, 8, 3), 127, dtype=np.uint8))
+assert img.mode == "RGB", img.mode
+buf = io.BytesIO()
+img.save(buf, format="PNG")
+with Image.open(io.BytesIO(buf.getvalue())) as back:
+    assert back.size == (8, 8) and back.mode == "RGB", (back.size, back.mode)
+assert hasattr(sgl_utils, "load_image"), "sglang.srt.utils.load_image is missing"
+with tempfile.TemporaryDirectory() as d:
+    path = os.path.join(d, "probe.png")
+    img.save(path)
+    loaded = sgl_utils.load_image(path)
+    loaded = loaded[0] if isinstance(loaded, tuple) else loaded
+    assert loaded.size == (8, 8), loaded.size
+EOF
+echo "step 17 OK: pillow 13 imports and round-trips an RGB image through PNG and sglang load_image"
+
 echo "GLM-5.3 W4AFP8 combined-image CPU checks passed"
