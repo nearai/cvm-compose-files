@@ -4,7 +4,7 @@
 # dependencies = []
 # ///
 # How to run: python3 -m unittest scripts.test_glm53_v7_fleet (needs ruby for the validator cases)
-"""The two FLEET files (base tier on v7, long tier on v10): one config per tier, profiling off, the dashboard labels untouched, the runbook.
+"""The two FLEET files (base tier on v7, long tier on v12): one config per tier, profiling off, the dashboard labels untouched, the runbook.
 
 Imported by test_glm53_w4afp8_tp2x4.py and test_glm53_w4afp8_long_context.py so the existing CI steps run it.
 """
@@ -26,8 +26,8 @@ DCGM_VALIDATOR = Path("scripts/validate_glm53_dcgm_metrics.rb")
 RUNBOOK = ROOT / "docs/glm53-v7-fleet-rollout.md"
 
 V7_IMAGE = "docker.io/nearaidev/sglang@sha256:fa730e6e62b2ae8058114ce540487ade33ab93bc42b1179ae78edc92bd563fc5"
-V10_IMAGE = "docker.io/nearaidev/sglang@sha256:c15a33672ade5a9f2b4f7874a746eb4114952dae7230d5baa563a02eca081b78"
-V10_LABEL = "c15a33672ade"
+V12_IMAGE = "docker.io/nearaidev/sglang@sha256:da8d4e4b5ec667499b58a21e56050aae9bcfc4df9669b3ac27e2e20af033d681"
+V12_LABEL = "da8d4e4b5ec6"
 V6_IMAGE = "docker.io/nearaidev/sglang@sha256:9c6ddd4319c4ab00e351d8650459e68b8830e36ffcc029d67fa5e19d0ac3ed17"
 OLD_PROXY_IMAGE = "nearaidev/vllm-proxy-rs@sha256:d61357da39918a57126864a451eaf054f06a6989c03fe9a1666f7e6374ba6907"
 NEW_PROXY_IMAGE = "nearaidev/vllm-proxy-rs@sha256:e4a42b327523e304c0fc389f656ba7a02fd7b3d4a38cdc822f9288fd193a525a"
@@ -166,14 +166,14 @@ class FleetFilesTest(unittest.TestCase):
                 self.assertIn("SGLANG_HICACHE_RAM_BUDGET=${GLM53_HICACHE_RAM_BUDGET:-325GiB}", env)
 
     def test_long_tp2_engines_are_the_r2a_canary_config(self) -> None:
-        # The long-tier TP2 argv of the v10 fleet (v7 plus Q8 DSA prefill and 16K chunks), compared without the rendezvous port.
+        # The long-tier TP2 argv of the v12 fleet (v7 plus Q8 DSA prefill and 16K chunks), compared without the rendezvous port.
         canary_argv = shlex.split(LONG_ARGV)
         for name in LONG_ENGINES:
             block = service_block(self.long, name)
             argv = argv_of(block)
             with self.subTest(replica=name):
                 self.assertEqual([t for t in argv if not t.startswith("127.0.0.1")], [t for t in canary_argv if not t.startswith("127.0.0.1")])
-                self.assertIn(f"    image: {V10_IMAGE}\n", block)
+                self.assertIn(f"    image: {V12_IMAGE}\n", block)
                 value = lambda flag: argv[argv.index(flag) + 1]
                 self.assertEqual((value("--kv-cache-dtype"), value("--dsa-prefill-backend"), value("--dsa-decode-backend")), ("fp8_e4m3", "flashmla_sparse_q8", "flashmla_kv"))
                 self.assertEqual(value("--chunked-prefill-size"), "16384")
@@ -187,10 +187,10 @@ class FleetFilesTest(unittest.TestCase):
             block = service_block(self.long, tp4)
             self.assertNotIn("SGLANG_PREPROCESS", block)
             self.assertNotIn("fa730e6e62b2", block)
-            self.assertNotIn(V10_LABEL, block)
+            self.assertNotIn(V12_LABEL, block)
 
     def test_fleet_telemetry_values(self) -> None:
-        for text, names, engine in ((self.base, BASE_ENGINES, "fa730e6e62b2"), (self.long, LONG_ENGINES, V10_LABEL)):
+        for text, names, engine in ((self.base, BASE_ENGINES, "fa730e6e62b2"), (self.long, LONG_ENGINES, V12_LABEL)):
             for name in names:
                 block = service_block(text, name)
                 job = jobs_of(text)[f"sglang-{name}"]
@@ -204,7 +204,7 @@ class FleetFilesTest(unittest.TestCase):
         for token in ("hicacheoff", "mamba380", "fp8kv", "mr64", "-v7"):
             self.assertIn(token, base_generator.CANDIDATE_VARIANT)
         self.assertEqual(self.long.count(long_generator.TP2_VARIANT), 12)
-        for token in ("fp8kv", "mr16q8", "c16384", "-v10-q8"):
+        for token in ("fp8kv", "mr16q8", "c16384", "-v12-q8"):
             self.assertIn(token, long_generator.TP2_VARIANT)
 
     def test_the_dashboard_labels_are_untouched_for_every_service_and_scrape_job(self) -> None:
@@ -243,7 +243,7 @@ class FleetFilesTest(unittest.TestCase):
             for key in list(jobs_of(text)):
                 if key.startswith("sglang-model-sg-glm53"):
                     text = text.replace(jobs_of(text)[key], "")
-            text = text.replace(V7_IMAGE, "IMAGE").replace(V10_IMAGE, "IMAGE").replace(V6_IMAGE, "IMAGE")
+            text = text.replace(V7_IMAGE, "IMAGE").replace(V12_IMAGE, "IMAGE").replace(V6_IMAGE, "IMAGE")
             text = text.replace(NEW_PROXY_IMAGE, OLD_PROXY_IMAGE)
             return text
         base_names = BASE_ENGINES
@@ -337,7 +337,7 @@ def without_qwen38_gpu0_stage_b(text: str) -> str:
 
 
 class Gpu13FleetTest(unittest.TestCase):
-    """gpu13 deploys prod/small-models.yaml: its two GLM replicas must be the long file's v10 TP2 replicas, and nothing else may move."""
+    """gpu13 deploys prod/small-models.yaml: its two GLM replicas must be the long file's v12 TP2 replicas, and nothing else may move."""
 
     def setUp(self) -> None:
         self.small = SMALL.read_text()
@@ -370,7 +370,7 @@ class Gpu13FleetTest(unittest.TestCase):
                 self.assertEqual(host_free(argv), long_argv)
                 self.assertEqual(env_free(env), env_free(env_of(service_block(self.long, name))))
                 self.assertEqual(env_free([e for e in env if not e.startswith("SGLANG_HICACHE_RAM_BUDGET=")]), env_free([e for e in env_of(service_block(self.long, "model-sg-glm53-w4afp8-tp2-r2a")) if not e.startswith("SGLANG_HICACHE_RAM_BUDGET=")]))
-                self.assertEqual(image, V10_IMAGE)
+                self.assertEqual(image, V12_IMAGE)
                 self.assertEqual(env[-len(FLEET_ENV):], FLEET_ENV)
                 self.assertFalse([e for e in env if "NEAR_SELF_PROFILE" in e])
         self.assertIn("--disable-overlap-schedule", long_argv)
@@ -467,9 +467,9 @@ class Gpu13FleetTest(unittest.TestCase):
             block = service_block(self.small, name)
             job = jobs_of(self.small)[f"sglang-{name}"]
             self.assertIn('"precision:int4-weights-fp8-activations-fp8-kv"', block)
-            self.assertIn(f'"engine_image:{V10_LABEL}"', block)
+            self.assertIn(f'"engine_image:{V12_LABEL}"', block)
             self.assertIn('precision: "int4-weights-fp8-activations-fp8-kv"', job)
-            self.assertIn(f'engine_image: "{V10_LABEL}"', job)
+            self.assertIn(f'engine_image: "{V12_LABEL}"', job)
             self.assertIn('max_running_requests: "16"', job)
             self.assertIn('max_queued_requests: "8"', job)
             self.assertIn('nearai.otel.max_queued_requests: "8"', block)
@@ -486,7 +486,7 @@ class Gpu13FleetTest(unittest.TestCase):
             self.assertIn(f'nearai.otel.max_running_requests: "{cap}"', block)
             self.assertIn("-fp8kv-", block)
             self.assertIn("mr16q8", block)
-        self.assertEqual(service_block(self.small, "glm53-ghost-aggregator").count(f"image: {V10_IMAGE}"), 1)
+        self.assertEqual(service_block(self.small, "glm53-ghost-aggregator").count(f"image: {V12_IMAGE}"), 1)
 
 
 class FleetValidatorContractTest(unittest.TestCase):
@@ -533,7 +533,7 @@ class FleetValidatorContractTest(unittest.TestCase):
         self.assert_fails("base", base.replace("      - SGLANG_PREPROCESS_WORKERS=4\n", "", 1), "environment must be the W4AFP8 base engine environment plus")
         self.assert_fails("long", long.replace("      - SGLANG_PREPROCESS_WORKERS=4\n", "", 1), "environment must be the long-context environment plus")
         self.assert_fails("base", base.replace("  image: " + V7_IMAGE + "\n", "  image: " + V6_IMAGE + "\n", 1), "image must be")
-        self.assert_fails("long", long.replace(f"    image: {V10_IMAGE}\n", f"    image: {V6_IMAGE}\n", 1), "image must be")
+        self.assert_fails("long", long.replace(f"    image: {V12_IMAGE}\n", f"    image: {V6_IMAGE}\n", 1), "image must be")
 
 
 class FleetRunbookTest(unittest.TestCase):

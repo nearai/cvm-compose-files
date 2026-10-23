@@ -759,8 +759,8 @@ W4AFP8_TP2X4_EXTRA_ENV = HICACHE_ENV.merge(
 ).merge(V7_FLEET_ENV).freeze
 
 # FP8 KV needs --kv-cache-dtype fp8_e4m3 AND both DSA backends flashmla_kv; the image does not assert the pairing, so the file must.
-# Exception: the v10 image (#363) adds flashmla_sparse_q8 prefill on the same FP8 NoPE KV layout. Only a caller that has already
-# pinned the replica to that image passes prefill: "flashmla_sparse_q8" (the long-tier TP2 replicas); every other caller keeps
+# Exception: the v10 image (#363) adds flashmla_sparse_q8 prefill on the same FP8 NoPE KV layout (v12 keeps it). Only a caller that has already
+# pinned the replica to a v10-or-later image passes prefill: "flashmla_sparse_q8" (the long-tier TP2 replicas); every other caller keeps
 # flashmla_kv, so a v7 image can never be paired with Q8 prefill.
 def validate_fp8_kv_pairing(errors, who, argv, prefill: "flashmla_kv")
   value = lambda { |flag| argv.each_cons(2).find { |token, _| token == flag }&.last }
@@ -1058,9 +1058,12 @@ W4AFP8_LONG_CONTEXT_V6_IMAGE = "docker.io/nearaidev/sglang@sha256:9c6ddd4319c4ab
 # glm53-hicache-w4afp8-v7 (#345, publish run 37693106399): v6 + FP8 KV for NoPE DSA + opt-in preprocess pool and tool-schema caps. The fleet's TP2 replicas run it.
 W4AFP8_LONG_CONTEXT_V7_IMAGE = "docker.io/nearaidev/sglang@sha256:fa730e6e62b2ae8058114ce540487ade33ab93bc42b1179ae78edc92bd563fc5"
 # glm53-hicache-w4afp8-v10 (#363 v9 recipe + #365 linux-libc-dev CVE fix, publish run 39094781691): v8 + the
-# flag-gated flashmla_sparse_q8 DSA prefill on the FP8 NoPE KV layout. The long-tier r2b Q8 canary runs it.
+# flag-gated flashmla_sparse_q8 DSA prefill on the FP8 NoPE KV layout. The base-tier r4 Q8 canary runs it.
 W4AFP8_LONG_CONTEXT_V10_IMAGE = "docker.io/nearaidev/sglang@sha256:c15a33672ade5a9f2b4f7874a746eb4114952dae7230d5baa563a02eca081b78"
-W4AFP8_QSPLIT_CAPABLE_IMAGES = [W4AFP8_LONG_CONTEXT_V2_IMAGE, W4AFP8_LONG_CONTEXT_V3_IMAGE, W4AFP8_LONG_CONTEXT_V6_IMAGE, W4AFP8_LONG_CONTEXT_V7_IMAGE, W4AFP8_LONG_CONTEXT_V10_IMAGE].freeze
+# glm53-hicache-w4afp8-v12 (#370 + CVE pins #384, publish run 39987811670, source 79de066): v10 + patch 15 (DSA indexer K-pool logits
+# budget). The long tier's TP2 replicas run it; the base-tier r4 Q8 canary stays on v10.
+W4AFP8_LONG_CONTEXT_V12_IMAGE = "docker.io/nearaidev/sglang@sha256:da8d4e4b5ec667499b58a21e56050aae9bcfc4df9669b3ac27e2e20af033d681"
+W4AFP8_QSPLIT_CAPABLE_IMAGES = [W4AFP8_LONG_CONTEXT_V2_IMAGE, W4AFP8_LONG_CONTEXT_V3_IMAGE, W4AFP8_LONG_CONTEXT_V6_IMAGE, W4AFP8_LONG_CONTEXT_V7_IMAGE, W4AFP8_LONG_CONTEXT_V10_IMAGE, W4AFP8_LONG_CONTEXT_V12_IMAGE].freeze
 W4AFP8_LONG_CONTEXT_VARIANT = "fc91d24-long-context-w4afp8-cCHUNK-QSPLITOFFLOOPhicache-cuda-host-pooled-v1-HOSTadmission-reserve-disabled-pool-clamp-pdiPDI-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192#{OBSERVABILITY_VARIANT_SUFFIX}"
 W4AFP8_QSPLIT_ENV = "SGLANG_DSA_INDEXER_QSPLIT"
 # c16384 is only memory-safe WITH the split: without it a concurrent long burst left 0.04-0.65 GB
@@ -1105,7 +1108,7 @@ W4AFP8_LONG_CONTEXT_ARGV = Shellwords.split(<<~'ARGV').freeze
 ARGV
 W4AFP8_LONG_CONTEXT_HICACHE_ENV = HICACHE_ENV.merge("SGLANG_HICACHE_RAM_BUDGET" => "${GLM53_HICACHE_RAM_BUDGET:-406GiB}").freeze
 
-# 2xTP2 replicas, v10 FLEET CONFIG (v7 + Q8 DSA prefill with 16384-token chunks, docs/glm53-long-v10-q8-rollout.md). The file is shared by gpu02 and gpu23, so the TP4 r1/r2 above stay defined (v6; a host not
+# 2xTP2 replicas, v12 FLEET CONFIG (v7 + Q8 DSA prefill with 16384-token chunks, docs/glm53-long-v10-q8-rollout.md). The file is shared by gpu02 and gpu23, so the TP4 r1/r2 above stay defined (v6; a host not
 # yet converted keeps deploying them) and these four TP2 services start in their place (same GPUs, so a TP4 replica and its pair
 # are never up together). Lab-validated (tee-bench exp 19/29): mem 0.86, 330 mamba slots, fixed EAGLE 4/1/5; v7 adds FP8 KV
 # (flashmla_kv prefill and decode), 16 running / 8 queued with decode graphs 16, the overlap scheduler off, HiCache ON (write_through,
@@ -1126,7 +1129,7 @@ W4AFP8_TP2_PARENT = {
   "model-sg-glm53-w4afp8-tp2-r1a" => "model-sg-glm53-w4afp8-tp4-r1", "model-sg-glm53-w4afp8-tp2-r1b" => "model-sg-glm53-w4afp8-tp4-r1",
   "model-sg-glm53-w4afp8-tp2-r2a" => "model-sg-glm53-w4afp8-tp4-r2", "model-sg-glm53-w4afp8-tp2-r2b" => "model-sg-glm53-w4afp8-tp4-r2",
 }.freeze
-W4AFP8_TP2_CANARY_VARIANT = "fc91d24-long-context-w4afp8-c16384-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host325g-memopt-fp8kv-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-mr16q8-strict-budget8192#{OBSERVABILITY_VARIANT_SUFFIX}-v10-q8"
+W4AFP8_TP2_CANARY_VARIANT = "fc91d24-long-context-w4afp8-c16384-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host325g-memopt-fp8kv-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-mr16q8-strict-budget8192#{OBSERVABILITY_VARIANT_SUFFIX}-v12-q8"
 W4AFP8_TP2_CANARY_ARGV = Shellwords.split(<<~'ARGV').freeze
   sglang serve
   --model-path /root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/snapshots/99f1fa70408c52b007d4fd69e02e5a522422e755
@@ -1285,9 +1288,9 @@ def validate_w4afp8_long_context(errors, compose, reference)
   errors << "#{label} replicas must share one image for the #{GHOST_SERVICE} sidecar to follow" unless images.length == 1
   # Every GLM engine in the file: TP4 r1/r2 (gpu23, gpu02 r1) and the gpu02 TP2 pair r2a/r2b.
   ghost_replicas = W4AFP8_LONG_CONTEXT_REPLICAS.merge(W4AFP8_TP2_CANARY_REPLICAS).transform_values { |spec| spec["ghost_replica"] }
-  # The sidecar follows the fleet's TP2 replicas (v10); the TP4 r1/r2 stay on v6 and are not deployed by the fleet.
+  # The sidecar follows the fleet's TP2 replicas (v12); the TP4 r1/r2 stay on v6 and are not deployed by the fleet.
   validate_observability(errors, label, compose, collector, ghost_replicas,
-                         W4AFP8_LONG_CONTEXT_V10_IMAGE, W4AFP8_BASE_DEPLOYMENT)
+                         W4AFP8_LONG_CONTEXT_V12_IMAGE, W4AFP8_BASE_DEPLOYMENT)
 
   dcgm_labels = services.dig("dcgm-glm53", "labels") || {}
   errors << "#{label} dcgm-glm53 nearai.otel.model_path must be #{W4AFP8_CHECKPOINT}" unless dcgm_labels["nearai.otel.model_path"] == W4AFP8_CHECKPOINT
@@ -1324,8 +1327,8 @@ def validate_w4afp8_tp2_canary(errors, label, services, collector, replicas)
     next errors << "#{label} missing services.#{name}" if service.nil?
 
     tp2_services[name] = service
-    engine_image_label = W4AFP8_LONG_CONTEXT_V10_IMAGE.split(":").last[0, 12]
-    errors << "#{label} #{name} image must be #{W4AFP8_LONG_CONTEXT_V10_IMAGE}" unless service["image"] == W4AFP8_LONG_CONTEXT_V10_IMAGE
+    engine_image_label = W4AFP8_LONG_CONTEXT_V12_IMAGE.split(":").last[0, 12]
+    errors << "#{label} #{name} image must be #{W4AFP8_LONG_CONTEXT_V12_IMAGE}" unless service["image"] == W4AFP8_LONG_CONTEXT_V12_IMAGE
     errors << "#{label} #{name} must use the prebuilt signed image, not a host-local build" if service.key?("build")
     expected_argv = W4AFP8_TP2_CANARY_ARGV.map { |token| token == "DIST_INIT" ? spec["dist_init"] : token }
     actual_argv = begin
@@ -1336,7 +1339,7 @@ def validate_w4afp8_tp2_canary(errors, label, services, collector, replicas)
     end
     unless actual_argv == expected_argv
       drift = ((actual_argv - expected_argv) + (expected_argv - actual_argv)).uniq
-      errors << "#{label} #{name} argv must be the v10 fleet TP2 argv exactly (tp2/ep2, 0.86, 330 mamba slots, bf16 state, fixed EAGLE 4/1/5, FP8 KV with flashmla_sparse_q8 prefill and flashmla_kv decode, 16 running/8 queued, graphs 16, overlap off, chunk 16384, write_through, --dist-init-addr #{spec['dist_init']}); differing tokens: #{drift.first(8).join(' ')}"
+      errors << "#{label} #{name} argv must be the v12 fleet TP2 argv exactly (tp2/ep2, 0.86, 330 mamba slots, bf16 state, fixed EAGLE 4/1/5, FP8 KV with flashmla_sparse_q8 prefill and flashmla_kv decode, 16 running/8 queued, graphs 16, overlap off, chunk 16384, write_through, --dist-init-addr #{spec['dist_init']}); differing tokens: #{drift.first(8).join(' ')}"
     end
     validate_fp8_kv_pairing(errors, "#{label} #{name}", actual_argv, prefill: "flashmla_sparse_q8")
     errors << "#{label} #{name} must set --disable-overlap-schedule exactly once" unless actual_argv.count("--disable-overlap-schedule") == 1

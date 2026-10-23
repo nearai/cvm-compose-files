@@ -87,7 +87,7 @@ class Gpu13Tp2Test(unittest.TestCase):
             (self.valid.replace("\n    - ghost:/ghost\n", "\n", 1), f"{A} must mount ghost:/ghost"),
             (self.valid.replace('"--socket", "/ghost/aggregator.sock"', '"--socket", "/tmp/x.sock"', 1), "glm53-ghost-aggregator argv changed"),
             (self.valid.replace("job_name: ghost-aggregator-glm53-ghost-aggregator", "job_name: ghost-x", 1), "gpu13 OTel scrape missing: ghost-aggregator-glm53-ghost-aggregator"),
-            (self.valid.replace("-mr16q8-strict-budget8192-obs-v1-v10-q8", "-mr16q8-strict-budget8192"), "config_variant"),
+            (self.valid.replace("-mr16q8-strict-budget8192-obs-v1-v12-q8", "-mr16q8-strict-budget8192"), "config_variant"),
         )
         for index, (mutated, message) in enumerate(cases):
             with self.subTest(index=index, message=message):

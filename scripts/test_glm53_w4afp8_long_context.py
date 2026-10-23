@@ -206,7 +206,7 @@ class GeneratedFileTest(unittest.TestCase):
         self.assertEqual(rendered.count("\n  glm53-ghost-aggregator:\n"), 1)
         self.assertEqual(rendered.count("- job_name: ghost-aggregator-glm53-ghost-aggregator\n"), 1)
         self.assertIn(f"    image: {generator.TP2_IMAGE}\n    container_name: glm53-ghost-aggregator\n", rendered)
-        self.assertTrue(generator.TP2_VARIANT.endswith("-obs-v1-v10-q8"))
+        self.assertTrue(generator.TP2_VARIANT.endswith("-obs-v1-v12-q8"))
 
 
 class ValidatorContractTest(unittest.TestCase):
@@ -248,7 +248,7 @@ class ValidatorContractTest(unittest.TestCase):
     def replace_r2(self, before: str, after: str) -> str:
         """Mutate the TP4 r2 occurrence of a needle, which must be the first one in the file (the TP2 pair is rendered after r2).
 
-        The TP2 pair no longer shares every TP4 r2 token (v10 runs Q8 prefill and 16384 chunks), so instead of the old five-way
+        The TP2 pair no longer shares every TP4 r2 token (v12 runs Q8 prefill and 16384 chunks), so instead of the old five-way
         count, assert directly that the first occurrence lies inside the TP4 r2 service block.
         """
         start = self.valid.index("\n  model-sg-glm53-w4afp8-tp4-r2:\n")
@@ -417,7 +417,7 @@ class ValidatorContractTest(unittest.TestCase):
                 self.assert_fails(replace_nth(self.valid, needle, index, replacement), message)
 
     def test_tp2_canary_rejects_flag_and_memory_drift(self) -> None:
-        argv = "argv must be the v10 fleet TP2 argv exactly"
+        argv = "argv must be the v12 fleet TP2 argv exactly"
         for name in ALL_TP2:
             start, end = tp2_bounds(self.valid, name)
             block = self.valid[start:end]
@@ -544,7 +544,7 @@ class ValidatorContractTest(unittest.TestCase):
             # The gpu02 TP2 pair: r2b loses the ghost cache, r2a reuses r2b's name.
             ("\n      - SGLANG_GHOST_CACHE=1\n", "\n", 2, f"{R2B} must set SGLANG_GHOST_CACHE=1 {required}"),
             ("SGLANG_GHOST_CACHE_REPLICA=r2a\n", "SGLANG_GHOST_CACHE_REPLICA=r2b\n", 0, "must use distinct SGLANG_GHOST_CACHE_REPLICA names"),
-            (f'nearai.otel.config_variant: "{TP2_VARIANT}"', f'nearai.otel.config_variant: "{TP2_VARIANT.replace("-v10-q8", "-v7")}"', 1,
+            (f'nearai.otel.config_variant: "{TP2_VARIANT}"', f'nearai.otel.config_variant: "{TP2_VARIANT.replace("-v12-q8", "-v7")}"', 1,
              "nearai.otel.config_variant must be"),
             ("\n    - ghost:/ghost\n", "\n", 0, "must mount ghost:/ghost"),
             ('"--port", "9464"', '"--port", "9465"', 0, "glm53-ghost-aggregator must run python3 -m"),

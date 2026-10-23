@@ -103,14 +103,14 @@ MODEL_PATH: Final = (
 )
 
 HEADER: Final = (
-    "# GLM-5.3 Flash LONG-CONTEXT TIER, v10 FLEET CONFIG (gpu02 and gpu23; gpu13 mirrors it in small-models.yaml): the one long\n"
-    "# config every host of the tier deploys. The four TP2 replicas r1a/r1b/r2a/r2b run the glm53-hicache-w4afp8-v10 image with\n"
+    "# GLM-5.3 Flash LONG-CONTEXT TIER, v12 FLEET CONFIG (gpu02 and gpu23; gpu13 mirrors it in small-models.yaml): the one long\n"
+    "# config every host of the tier deploys. The four TP2 replicas r1a/r1b/r2a/r2b run the glm53-hicache-w4afp8-v12 image (v10 + K-pool indexer logits budget) with\n"
     "# FP8 KV, Q8 DSA prefill (flashmla_sparse_q8) with 16384-token chunks and flashmla_kv decode (docs/glm53-long-v10-q8-rollout.md),\n"
     f"# {TP2_MAX_RUNNING} running / {TP2_MAX_QUEUED} queued requests with {TP2_MAX_RUNNING} decode graphs, the overlap scheduler off, HiCache ON (write_through, 325 GiB\n"
     "# per replica: the long tier is at 84% of its infinite-cache ceiling, so the cache stays), the preprocess pool and the\n"
     "# tool-schema caps, and no profiling (no NEAR_SELF_PROFILE*). v7 history: docs/glm53-v7-fleet-rollout.md.\n"
     f"# The TP4 r1/r2 services below are kept unchanged on the v6 image ({IMAGE.split(':')[-1][:12]}) for hosts not yet on TP2; none is\n"
-    "# deployed by the fleet. ROLLBACK (v10): redeploy the previous tag's copy of this file (v7, flashmla_kv, 8192 chunks) for the\n"
+    "# deployed by the fleet. ROLLBACK (v12): redeploy the previous tag's copy of this file (v10 image) for the\n"
     "# same service.\n"
     "# The older text below that names bf16 KV, 12 running or the v6 image describes the TP4 services and the history.\n"
     "#\n"
@@ -313,7 +313,9 @@ TP2_REPLICAS: Final = {
 # and signed. Qualified by tee-bench exp 45b/46 and the gpu02 r2b canary (#364). The previous fleet image was v7
 # (sha256:fa730e6e..., #345); the rollback is the previous tag's copy of this file. The TP4 r1/r2 services above keep v6: no host
 # runs them any more and FP8 KV has not been qualified at TP4.
-TP2_IMAGE: Final = "docker.io/nearaidev/sglang@sha256:c15a33672ade5a9f2b4f7874a746eb4114952dae7230d5baa563a02eca081b78"
+# v12 (PR #370 + CVE pins #384, publish run 39987811670, source 79de066) = v10 + patch 15 (DSA indexer K-pool logits budget); the
+# previous fleet image was v10 (sha256:c15a33672ade..., still the base-tier Q8 canary image).
+TP2_IMAGE: Final = "docker.io/nearaidev/sglang@sha256:da8d4e4b5ec667499b58a21e56050aae9bcfc4df9669b3ac27e2e20af033d681"
 TP2_ENGINE_IMAGE_LABEL: Final = TP2_IMAGE.split(":")[-1][:12]
 TP2_PRECISION: Final = "int4-weights-fp8-activations-fp8-kv"
 # Opt-in v7 features of the image (SGLANG_PREPROCESS_WORKERS=0 is the old single-thread path, the caps at 0 are off). No profiling.
@@ -331,7 +333,7 @@ TP2_VARIANT: Final = (
     "-memopt-fp8kv-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-"
     f"mr{TP2_MAX_RUNNING}q{TP2_MAX_QUEUED}-strict-budget8192"
     + obs.VARIANT_SUFFIX
-    + "-v10-q8"
+    + "-v12-q8"
 )
 TP2_FLAG_CHANGES: Final = {
     "--tp-size 4": "--tp-size 2",
