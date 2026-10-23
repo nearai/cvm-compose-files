@@ -284,6 +284,17 @@ COLOC_BLOCK_HASHES = {
     COLOC_ENGINE: "670273cabb20266ebab017a7c46a9a2860504cac0e2299a11f32a632c801d7d7",
     COLOC_ENGINE_JOB: "b5c730ba7b0196a959960be2a6eadec8024524e95852245ea2b43b84f85775ad",
 }
+# Levanto Sage moved in from prod/sage.yaml (gpu04 GPU 6) to gpu13 GPU 0, unchanged except the GPU.
+SAGE_FILE = ROOT / "prod/sage.yaml"
+SAGE_SERVICES = ("sage-dstack", "sage")
+SAGE_HEADING = "  # ── Levanto Sage on gpu13 GPU 0"
+SAGE_GPU04_GPU = "GPU-bafbdde0-cd41-8379-fa93-149864963329"
+SAGE_GPU13_GPU = "GPU-9ec3a20b-6169-7fdc-a19a-6058228132c1"
+SAGE_BLOCK_HASHES = {
+    "sage-dstack": "e3020a51e7f4f6c6a02868004618e880da664a55abc6c875c1da860595f16518",
+    "sage": "87e356dd48ed97989298d1ec040a94367c8e6b7be0f8f23ec12256116bae6e03",
+    "networks": "f83c2c4fabfffcf0587e644bb575e4cc4c602f0fe8a032061fac8215403be193",
+}
 
 
 def without_privacy_filter_pin(block: str) -> str:
@@ -488,6 +499,11 @@ class Gpu13FleetTest(unittest.TestCase):
         names = re.findall(r"^  ([a-z0-9-]+):$", self.old[self.old.index("\nservices:\n"):], re.MULTILINE)
         expected_names = [name for name in names if name != QWEN38_GPU0_SERVICE]
         expected_names.insert(expected_names.index("model-sg-qwen38-27b-fp8-tp1-r2") + 1, COLOC_ENGINE)
+        # Sage (pinned separately): its two services before the collector, its network and its volume.
+        otelcol = expected_names.index("otelcol-contrib")
+        expected_names[otelcol:otelcol] = list(SAGE_SERVICES)
+        expected_names.insert(expected_names.index("default"), "sage")
+        expected_names.insert(expected_names.index("certs"), "sage-data")
         self.assertEqual(
             expected_names,
             re.findall(r"^  ([a-z0-9-]+):$", self.small[self.small.index("\nservices:\n"):], re.MULTILINE),
@@ -498,6 +514,8 @@ class Gpu13FleetTest(unittest.TestCase):
                     new_block = service_block(self.small, name)
                     if name == "model-sg-qwen38-27b-fp8-tp1-r2":
                         new_block = new_block.split("  # Production co-location trial", 1)[0].rstrip("\n") + "\n"
+                    if name == "dcgm-shared-gpu3":
+                        new_block = new_block.split(SAGE_HEADING, 1)[0].rstrip("\n") + "\n"
                     expected = service_block(old, name)
                     if name == "proxy-qwen38-27b":
                         expected = expected.replace(OLD_PROXY_IMAGE, NEW_PROXY_IMAGE)
@@ -535,8 +553,30 @@ class Gpu13FleetTest(unittest.TestCase):
                 self.assertEqual(hashlib.sha256(block.encode()).hexdigest(), COLOC_BLOCK_HASHES[name])
         old_volumes = self.old.split("\nvolumes:\n", 1)[1].split("\nconfigs:\n", 1)[0]
         new_volumes = self.small.split("\nvolumes:\n", 1)[1].split("\nconfigs:\n", 1)[0]
-        self.assertEqual(new_volumes.replace("  qwen38_coloc_kernel_cache:\n", ""), old_volumes)
+        self.assertEqual(new_volumes.replace("  qwen38_coloc_kernel_cache:\n", "").replace("  sage-data:\n", ""), old_volumes)
         self.assertEqual(new_volumes.count("  qwen38_coloc_kernel_cache:\n"), 1)
+        self.assertEqual(new_volumes.count("  sage-data:\n"), 1)
+
+    def test_sage_moves_in_from_prod_sage_on_gpu13_gpu0_unchanged_except_the_gpu(self) -> None:
+        networks = self.small.split("\nnetworks:\n", 1)[1].split("\nvolumes:\n", 1)[0]
+        blocks = {name: service_block(self.small, name) for name in SAGE_SERVICES}
+        for name, block in {**blocks, "networks": networks}.items():
+            with self.subTest(block=name):
+                self.assertEqual(hashlib.sha256(block.encode()).hexdigest(), SAGE_BLOCK_HASHES[name])
+        # Deployed the way prod/sage.yaml was: no profile, nothing added.
+        for name, block in blocks.items():
+            self.assertNotIn("profiles:", block, name)
+        self.assertEqual(blocks["sage"].count(SAGE_GPU13_GPU), 2)
+        self.assertNotIn(SAGE_GPU04_GPU, self.small)
+        # The services are prod/sage.yaml's (#380) line for line, comments aside, except the GPU.
+        old = SAGE_FILE.read_text()
+        for name, block in blocks.items():
+            with self.subTest(service=name):
+                old_lines = [l.replace(SAGE_GPU04_GPU, SAGE_GPU13_GPU) for l in service_block(old, name).split("\nnetworks:", 1)[0].splitlines()
+                             if l.strip() and not l.lstrip().startswith("#")]
+                new_lines = [l for l in block.splitlines()
+                             if l.strip() and not l.lstrip().startswith("#")]
+                self.assertEqual(new_lines, old_lines)
 
     def test_privacy_filter_pins_transformers(self) -> None:
         self.assertIn(PRIVACY_FILTER_TRANSFORMERS_PIN, anchor_block(self.small, "x-privacy-filter-common"))
