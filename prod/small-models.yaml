@@ -109,7 +109,7 @@ x-qwen3-6-common: &qwen3-6-common
   stop_grace_period: 5m
   logging: *logging-conf
 
-# Qwen3.8 runs alone on GPU 2; GPU 0 is reserved for the privacy filter.
+# Qwen3.8 runs on GPU 2 beside the privacy filter; GPU 0 is Levanto Sage.
 # Dedicated recipe: prod/qwen36-qwen38.yaml with gpu13's cache volume.
 x-qwen3-8-27b-dedicated: &qwen3-8-27b-dedicated
   <<: *nvidia
@@ -665,7 +665,7 @@ x-privacy-filter-common: &privacy-filter-common
     # Root-cause fix for the VRAM leak: let the CUDA caching allocator shrink
     # reserved segments instead of ratcheting them up and hoarding GPU memory.
     - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-    # Shared GPU 0 is a 139.4 GiB H200. The 0.25 cap (~35 GiB) is the real
+    # Shared GPU 2 is a 139.4 GiB H200. The 0.25 cap (~35 GiB) is the real
     # limit; consecutive-OOM exit restarts the filter below the 36 GiB watchdog.
     - GPU_MEM_LIMIT_GB=36
     - FILTER_GPU_MEM_FRACTION=0.25
@@ -689,7 +689,7 @@ x-privacy-filter-common: &privacy-filter-common
       reservations:
         devices:
           - driver: nvidia
-            device_ids: ["0"]
+            device_ids: ["2"]
             capabilities: [gpu]
 
 services:
@@ -902,7 +902,7 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
-  # ── Qwen3.8-27B on GPU 0 beside the privacy filter; GPU 2 is Levanto Sage ──
+  # ── Qwen3.8-27B on GPU 2 beside the privacy filter; GPU 0 is Levanto Sage ──
   # See x-qwen3-8-27b-dedicated. Uses its own
   # nginx (host :8000 HTTP, :8001 TLS) and its own registrar (profile
   # register-qwen38) so the shared nginx, the shared registrar and their live
@@ -946,7 +946,7 @@ services:
       - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
       - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:Qwen/Qwen3.8-27B","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","gpu_pair:0","config_variant:qwen38-gpu0-coloc-only"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:Qwen/Qwen3.8-27B","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","gpu_pair:2","config_variant:qwen38-gpu2-coloc-only"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "inference-proxy"
       nearai.otel.service: "vllm-proxy"
@@ -961,12 +961,12 @@ services:
       nearai.otel.host_machine: "${CVM_HOST}"
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
-      nearai.otel.gpu_pair: "0"
-      nearai.otel.config_variant: "qwen38-gpu0-coloc-only"
+      nearai.otel.gpu_pair: "2"
+      nearai.otel.config_variant: "qwen38-gpu2-coloc-only"
 
-  # Production co-location trial: this GPU 0 engine, beside the production privacy filter, is the only
-  # private Qwen3.8 replica on this host since Levanto Sage took GPU 2 (r2 removed). If the abort rule
-  # fires, compose/down of this engine takes private Qwen3.8 off this host entirely.
+  # Production co-location trial: this GPU 2 engine, beside the production privacy filter (both moved
+  # together from GPU 0 when Levanto Sage took GPU 0; r2 was removed earlier), is the only private Qwen3.8
+  # replica on this host; if the abort rule fires, compose/down of this engine takes it off this host entirely.
   model-sg-qwen38-27b-fp8-tp1-coloc:
     <<: *qwen3-8-27b-dedicated
     container_name: model-sg-qwen38-27b-fp8-tp1-coloc
@@ -1016,10 +1016,10 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["0"]
+              device_ids: ["2"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:Qwen/Qwen3.8-27B-FP8","served_model:Qwen/Qwen3.8-27B","model_revision:017b9c7af6b5689d5dd426a76e0bc077eb5ca20a","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:0","gpu_pair:0","config_variant:qwen38-gpu13-gpu0-coloc-test","quantization:fp8","sglang_revision:qwen38.27b.g561c8f3","engine_image:febfb971c735"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:Qwen/Qwen3.8-27B-FP8","served_model:Qwen/Qwen3.8-27B","model_revision:017b9c7af6b5689d5dd426a76e0bc077eb5ca20a","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:0","gpu_pair:2","config_variant:qwen38-gpu13-gpu0-coloc-test","quantization:fp8","sglang_revision:qwen38.27b.g561c8f3","engine_image:febfb971c735"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -1037,7 +1037,7 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.instance: "0"
-      nearai.otel.gpu_pair: "0"
+      nearai.otel.gpu_pair: "2"
       nearai.otel.config_variant: "qwen38-gpu13-gpu0-coloc-test"
       nearai.otel.quantization: "fp8"
       nearai.otel.chunk_size: "4096"
@@ -1802,7 +1802,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["0"]
+              device_ids: ["2"]
               capabilities: [gpu]
     labels:
       com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:openai/privacy-filter","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
@@ -1909,10 +1909,10 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
-  # ── Levanto Sage on GPU 2 of the small-models host (gpu23; moved from gpu04 GPU 6, prod/sage.yaml) ──
-  # Sage takes GPU 2 from Qwen3.8 r2, which is removed; private Qwen3.8 is served by the GPU 0 engine beside the
-  # privacy filter. Moving Sage here frees gpu04 GPU 6 for a fourth GLM replica. The two services are
-  # prod/sage.yaml's (#380) unchanged except the GPU, pinned by UUID to gpu23's GPU 2: never include them in a
+  # ── Levanto Sage on GPU 0 of the small-models host (gpu23; moved from gpu04 GPU 6, prod/sage.yaml) ──
+  # Sage takes GPU 0; the privacy filter and Qwen3.8 coloc engine that shared GPU 0 move together to GPU 2
+  # (Qwen3.8 r2's GPU, r2 removed in #389). Moving Sage here frees gpu04 GPU 6 for a fourth GLM replica.
+  # The two services are prod/sage.yaml's (#380) unchanged except the GPU, pinned by UUID to gpu23's GPU 0: never include them in a
   # deploy on another host (the image is not there and the GPU is gpu23's, so they fail closed). Start them on
   # gpu23 by name, with the SAGE_* values in the env:
   #   POST /compose/up {"tag":"v0.0.N","file":"prod/small-models.yaml","services":["sage-dstack","sage"],"env":{...}}
@@ -1994,7 +1994,7 @@ services:
       # Enables Sage's content-free /internal/diagnostics endpoint.
       SAGE_ADMIN_TOKEN: ${SAGE_ADMIN_TOKEN}
       # Same GPU as device_ids below (exactly one GPU, as the image requires).
-      NVIDIA_VISIBLE_DEVICES: GPU-2f40e72c-80c6-c9b4-b65c-d6ec155ecc8d
+      NVIDIA_VISIBLE_DEVICES: GPU-a0cb74c4-802a-13a5-86c5-e9528738b27d
     volumes:
       - sage-data:/workspace
       - /var/run/sage-dstack/dstack.sock:/var/run/dstack.sock
@@ -2020,8 +2020,8 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              # gpu23 index 2 (PCI 03:00.0), Qwen3.8 r2's GPU until Sage took it.
-              device_ids: ["GPU-2f40e72c-80c6-c9b4-b65c-d6ec155ecc8d"]
+              # gpu23 index 0 (PCI 01:00.0), the privacy filter's and Qwen3.8 coloc's GPU until Sage took it.
+              device_ids: ["GPU-a0cb74c4-802a-13a5-86c5-e9528738b27d"]
               capabilities: [gpu]
 
   otelcol-contrib:
@@ -2466,7 +2466,7 @@ configs:
                       ip: "${HOST_IP}"
                       port: "8000"
                       instance: "0"
-                      gpu_pair: "0"
+                      gpu_pair: "2"
                       model_revision: "017b9c7af6b5689d5dd426a76e0bc077eb5ca20a"
                       config_variant: "qwen38-gpu13-gpu0-coloc-test"
                       quantization: "fp8"
@@ -2496,8 +2496,8 @@ configs:
                       cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "8000"
-                      gpu_pair: "0"
-                      config_variant: "qwen38-gpu0-coloc-only"
+                      gpu_pair: "2"
+                      config_variant: "qwen38-gpu2-coloc-only"
               - job_name: inference-proxy-proxy-glm53
                 scrape_interval: 15s
                 metrics_path: /metrics

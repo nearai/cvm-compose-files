@@ -280,23 +280,23 @@ PRIVACY_FILTER_PIN_COMMENTS = (
 COLOC_ENGINE = "model-sg-qwen38-27b-fp8-tp1-coloc"
 COLOC_ENGINE_JOB = f"sglang-{COLOC_ENGINE}"
 COLOC_BLOCK_HASHES = {
-    "x-privacy-filter-common": "b4a275a42bf94b58f24a624c37a9b4b9abb8378f76e79fc5becb49e469f13776",
-    COLOC_ENGINE: "670273cabb20266ebab017a7c46a9a2860504cac0e2299a11f32a632c801d7d7",
-    COLOC_ENGINE_JOB: "b5c730ba7b0196a959960be2a6eadec8024524e95852245ea2b43b84f85775ad",
+    "x-privacy-filter-common": "8b0fa38844cc279cf27d02250fd37ecb7125a4e2fd0dec08fb66f4f35ee55c9e",
+    COLOC_ENGINE: "63f6d8d7f12a81be574554cc3821f3627f059d04858a7a1c4d898f6d6df88155",
+    COLOC_ENGINE_JOB: "1727948d4fab3e8c7d13d4d65b3057c8d788892ae264a323ea4c32baf4449c9a",
 }
-# Levanto Sage moved in from prod/sage.yaml (gpu04 GPU 6), unchanged except the GPU: GPU 2 of the
-# small-models host (gpu23), which Qwen3.8 r2 and its DCGM exporter gave up.
+# Levanto Sage moved in from prod/sage.yaml (gpu04 GPU 6), unchanged except the GPU: GPU 0 of the
+# small-models host (gpu23). The filter and Qwen3.8 coloc move together to GPU 2.
 SAGE_FILE = ROOT / "prod/sage.yaml"
 SAGE_SERVICES = ("sage-dstack", "sage")
-SAGE_HEADING = "  # ── Levanto Sage on GPU 2 of the small-models host"
+SAGE_HEADING = "  # ── Levanto Sage on GPU 0 of the small-models host"
 SAGE_GPU04_GPU = "GPU-bafbdde0-cd41-8379-fa93-149864963329"
-SAGE_GPU = "GPU-2f40e72c-80c6-c9b4-b65c-d6ec155ecc8d"
+SAGE_GPU = "GPU-a0cb74c4-802a-13a5-86c5-e9528738b27d"
 QWEN38_R2 = "model-sg-qwen38-27b-fp8-tp1-r2"
 QWEN38_R2_DCGM = "dcgm-qwen38-27b"
 QWEN38_R2_JOBS = (f"sglang-{QWEN38_R2}", f"dcgm-{QWEN38_R2_DCGM}")
 SAGE_BLOCK_HASHES = {
     "sage-dstack": "e3020a51e7f4f6c6a02868004618e880da664a55abc6c875c1da860595f16518",
-    "sage": "652c4833c281db47955a64f64cd25d57b44aa621dcbe8ca9a01a346182cf0ac5",
+    "sage": "4f9dadac8d935500d513a0c194a3bd62aea8573def1f7a56846a7d08f9ff1a7f",
     "networks": "f83c2c4fabfffcf0587e644bb575e4cc4c602f0fe8a032061fac8215403be193",
 }
 
@@ -394,7 +394,7 @@ def with_qwen38_coloc_pool(text: str) -> str:
 
 
 def with_sage_on_gpu2(text: str) -> str:
-    """Apply only the Qwen3.8 r2 retirement (Levanto Sage takes GPU 2) to the coloc-pool fixture."""
+    """Apply the historical r2 retirement before the final GPU reassignment."""
     old_heading = "  # ── Qwen3.8-27B on dedicated GPU 2; GPU 0 is privacy-filter only ──\n"
     if text.count(old_heading) != 1:
         raise AssertionError("expected one Qwen3.8 GPU 2 fixture heading")
@@ -429,6 +429,42 @@ def with_sage_on_gpu2(text: str) -> str:
                 raise AssertionError(f"expected one Qwen3.8 r2-retirement fixture value: {old}")
             updated = updated.replace(old, new, 1)
         text = text.replace(original, updated, 1)
+    return text
+
+
+def with_filter_and_coloc_on_gpu2(text: str) -> str:
+    """Move the filter, DCGM exporter and Qwen3.8 telemetry in the fixture to GPU 2."""
+    for old, new in (
+        ("# Qwen3.8 runs alone on GPU 2; GPU 0 is reserved for the privacy filter.",
+         "# Qwen3.8 runs on GPU 2 beside the privacy filter; GPU 0 is Levanto Sage."),
+        ("  # ── Qwen3.8-27B on GPU 0 beside the privacy filter; GPU 2 is Levanto Sage ──",
+         "  # ── Qwen3.8-27B on GPU 2 beside the privacy filter; GPU 0 is Levanto Sage ──"),
+    ):
+        if text.count(old) != 1:
+            raise AssertionError(f"expected one GPU placement fixture comment: {old}")
+        text = text.replace(old, new, 1)
+    for block, replacements in (
+        (service_block(text, "dcgm-privacy-filter"), (('device_ids: ["0"]', 'device_ids: ["2"]'),)),
+        (service_block(text, "proxy-qwen38-27b"), (
+            ('"gpu_pair:0"', '"gpu_pair:2"'),
+            ('"config_variant:qwen38-gpu0-coloc-only"', '"config_variant:qwen38-gpu2-coloc-only"'),
+            ('nearai.otel.gpu_pair: "0"', 'nearai.otel.gpu_pair: "2"'),
+            ('nearai.otel.config_variant: "qwen38-gpu0-coloc-only"',
+             'nearai.otel.config_variant: "qwen38-gpu2-coloc-only"'),
+        )),
+        (jobs_of(text)["inference-proxy-proxy-qwen38-27b"], (
+            ('gpu_pair: "0"', 'gpu_pair: "2"'),
+            ('config_variant: "qwen38-gpu0-coloc-only"', 'config_variant: "qwen38-gpu2-coloc-only"'),
+        )),
+    ):
+        updated = block
+        for old, new in replacements:
+            if updated.count(old) != 1:
+                raise AssertionError(f"expected one GPU placement fixture value: {old}")
+            updated = updated.replace(old, new, 1)
+        if text.count(block) != 1:
+            raise AssertionError("expected one GPU placement fixture block")
+        text = text.replace(block, updated, 1)
     return text
 
 
@@ -538,11 +574,11 @@ class Gpu13FleetTest(unittest.TestCase):
         self.assertIn('device_ids: ["6","7"]', service_block(self.small, "model-sg-glm53-w4afp8-tp2-r1b"))
 
     def test_non_glm_services_and_everything_outside_the_glm_blocks_are_byte_identical(self) -> None:
-        old = with_sage_on_gpu2(with_qwen38_coloc_pool(without_qwen38_gpu0_stage_b(self.old)))
+        old = with_filter_and_coloc_on_gpu2(with_sage_on_gpu2(with_qwen38_coloc_pool(without_qwen38_gpu0_stage_b(self.old))))
         names = re.findall(r"^  ([a-z0-9-]+):$", self.old[self.old.index("\nservices:\n"):], re.MULTILINE)
         expected_names = [name for name in names if name != QWEN38_GPU0_SERVICE]
         expected_names.insert(expected_names.index(QWEN38_R2) + 1, COLOC_ENGINE)
-        # Sage took GPU 2: r2 and its DCGM exporter are gone.
+        # Sage took GPU 0: r2 and its DCGM exporter are gone.
         expected_names = [name for name in expected_names if name not in (QWEN38_R2, QWEN38_R2_DCGM)]
         # Sage (pinned separately): its two services before the collector, its network and its volume.
         otelcol = expected_names.index("otelcol-contrib")
@@ -588,7 +624,7 @@ class Gpu13FleetTest(unittest.TestCase):
             if "glm53" not in key:
                 self.assertEqual(new_jobs[key], old_jobs[key], key)
 
-    def test_gpu0_coloc_blocks_are_exactly_the_reviewed_additions(self) -> None:
+    def test_gpu2_coloc_blocks_are_exactly_the_reviewed_additions(self) -> None:
         blocks = {
             "x-privacy-filter-common": anchor_block(self.small, "x-privacy-filter-common"),
             COLOC_ENGINE: service_block(self.small, COLOC_ENGINE),
@@ -603,7 +639,7 @@ class Gpu13FleetTest(unittest.TestCase):
         self.assertEqual(new_volumes.count("  qwen38_coloc_kernel_cache:\n"), 1)
         self.assertEqual(new_volumes.count("  sage-data:\n"), 1)
 
-    def test_sage_moves_in_from_prod_sage_on_gpu2_of_the_small_models_host_unchanged_except_the_gpu(self) -> None:
+    def test_sage_moves_in_from_prod_sage_on_gpu0_of_the_small_models_host_unchanged_except_the_gpu(self) -> None:
         networks = self.small.split("\nnetworks:\n", 1)[1].split("\nvolumes:\n", 1)[0]
         blocks = {name: service_block(self.small, name) for name in SAGE_SERVICES}
         for name, block in {**blocks, "networks": networks}.items():
@@ -789,26 +825,31 @@ class Gpu13FleetTest(unittest.TestCase):
             [e for e in env_of(service_block(self.small, "proxy-qwen38-27b")) if e.startswith("VLLM_BACKEND_URLS=")],
             ["VLLM_BACKEND_URLS=http://model-sg-qwen38-27b-fp8-tp1-coloc:8000"],
         )
-        # Since Sage took GPU 2 the GPU 0 engine is the only private Qwen3.8 replica.
+        # Since Sage took GPU 0 the GPU 2 engine is the only private Qwen3.8 replica.
         self.assertNotIn(QWEN38_R2, names)
         self.assertNotIn(QWEN38_R2_DCGM, names)
         self.assertIn("    <<: *privacy-filter-common", service_block(self.small, "model-privacy-filter"))
-        self.assertEqual(anchor_block(self.small, "x-privacy-filter-common").count('device_ids: ["0"]'), 1)
-        self.assertIn('device_ids: ["0"]', service_block(self.small, COLOC_ENGINE))
+        self.assertEqual(anchor_block(self.small, "x-privacy-filter-common").count('device_ids: ["2"]'), 1)
+        self.assertEqual(service_block(self.small, COLOC_ENGINE).count('device_ids: ["2"]'), 1)
         for anchor in anchors:
             if anchor != "x-privacy-filter-common":
-                self.assertNotRegex(anchor_block(self.small, anchor), r'device_ids:\s*\[[^\]]*"0"')
+                self.assertNotRegex(anchor_block(self.small, anchor), r'device_ids:\s*\[[^\]]*"2"')
+            self.assertNotRegex(anchor_block(self.small, anchor), r'device_ids:\s*\[[^\]]*"0"')
         for name in names:
             if name not in ("model-privacy-filter", COLOC_ENGINE) and not name.startswith("dcgm-"):
                 block = service_block(self.small, name)
                 with self.subTest(service=name):
                     self.assertNotIn("<<: *privacy-filter-common", block)
+                    self.assertNotRegex(block, r'device_ids:\s*\[[^\]]*"2"')
+            if not name.startswith("dcgm-"):
+                block = service_block(self.small, name)
+                with self.subTest(gpu0_service=name):
                     self.assertNotRegex(block, r'device_ids:\s*\[[^\]]*"0"')
 
     def test_dashboard_labels_are_unchanged_on_gpu13(self) -> None:
         def selectors(text: str) -> list[str]:
             return [l for l in selector_lines(text) if "max_running_requests" not in l and "max_queued_requests" not in l]
-        old = with_sage_on_gpu2(with_qwen38_coloc_pool(without_qwen38_gpu0_stage_b(self.old)))
+        old = with_filter_and_coloc_on_gpu2(with_sage_on_gpu2(with_qwen38_coloc_pool(without_qwen38_gpu0_stage_b(self.old))))
         without_coloc = self.small
         for name in (COLOC_ENGINE,):
             without_coloc = without_coloc.replace(service_block(without_coloc, name), "", 1)
