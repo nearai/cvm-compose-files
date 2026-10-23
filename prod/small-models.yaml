@@ -353,6 +353,7 @@ x-privacy-filter-common: &privacy-filter-common
       from fastapi import FastAPI, HTTPException
       from fastapi.responses import JSONResponse
       from pydantic import BaseModel, Field
+      from starlette.background import BackgroundTask
       from transformers import AutoTokenizer, pipeline
 
       MODEL_ID = "openai/privacy-filter"
@@ -367,6 +368,13 @@ x-privacy-filter-common: &privacy-filter-common
               return default
 
 
+      def _retry_window(max_length, cap):
+          # The retry must use a strictly smaller window than the primary pass, or it
+          # repeats the identical forward (clamped eager mode is 4096 -> 2048).
+          window = min(cap, max_length // 2)
+          return window if window >= 8 else None
+
+
       # GPU 0 has served privacy-filter since 33b77d5. Left unbounded,
       # the HF pipeline's CUDA caching allocator ratchets its reserved memory up
       # under traffic and never releases it, eventually filling the card.
@@ -376,10 +384,12 @@ x-privacy-filter-common: &privacy-filter-common
       #   * A watchdog returns idle cached blocks to the driver on an interval (never
       #     per request: empty_cache() is a synchronizing cudaFree that would stall
       #     the GPU) and hard-restarts the container if this process exceeds its VRAM
-      #     budget — a real restart (clean reclaim) rather than silently serving 500s
-      #     behind a still-healthy /v1/models probe.
-      #   * An acute CUDA-OOM in a request retries with a smaller window and returns
-      #     503 if GPU 0 remains under pressure from the test Qwen3.8 engine.
+      #     budget. Beside the coloc Qwen3.8 the per-process cap keeps reserved memory
+      #     under that budget, so the OOM bullet below is the restart path.
+      #   * An acute CUDA-OOM retries once with a strictly smaller window, then returns
+      #     503 if memory is still short. After FILTER_OOM_EXIT_AFTER consecutive 503s
+      #     without a successful classify, exit for a clean restart rather than serving
+      #     errors behind a still-healthy /v1/models probe.
       # The model's sliding_window is 128, so a non-eager attention implementation
       # makes attention cost linear in sequence length, not quadratic. That permits a
       # single 131072-token pass at batch 1. Eager attention measured ~13 GB over
@@ -394,6 +404,9 @@ x-privacy-filter-common: &privacy-filter-common
       WATCHDOG_INTERVAL_S = max(1.0, _env("WATCHDOG_INTERVAL_S", 30.0, float))
       FILTER_GPU_MEM_FRACTION = min(1.0, max(0.01, _env("FILTER_GPU_MEM_FRACTION", 0.25, float)))
       OOM_RETRY_MAX_LENGTH = max(8, _env("FILTER_OOM_RETRY_MAX_LENGTH", 16384, int))
+      OOM_EXIT_AFTER = max(1, _env("FILTER_OOM_EXIT_AFTER", 3, int))
+      _oom_lock = threading.Lock()
+      _consecutive_oom_503 = 0
 
       USE_CUDA = torch.cuda.is_available()
       if USE_CUDA:
@@ -494,16 +507,19 @@ x-privacy-filter-common: &privacy-filter-common
       # this into model_max_length-token windows (see the classify() stride= arg below).
       clf.tokenizer.model_max_length = MAX_LENGTH
       # The retry has its own tokenizer window but shares the same model weights.
-      retry_max_length = min(MAX_LENGTH, OOM_RETRY_MAX_LENGTH)
-      retry_tokenizer = copy.deepcopy(clf.tokenizer)
-      retry_tokenizer.model_max_length = retry_max_length
-      clf_retry = pipeline(
-          "token-classification",
-          model=clf.model,
-          tokenizer=retry_tokenizer,
-          aggregation_strategy="simple",
-          device=0 if USE_CUDA else -1,
-      )
+      retry_max_length = _retry_window(MAX_LENGTH, OOM_RETRY_MAX_LENGTH)
+      if retry_max_length is not None:
+          retry_tokenizer = copy.deepcopy(clf.tokenizer)
+          retry_tokenizer.model_max_length = retry_max_length
+          clf_retry = pipeline(
+              "token-classification",
+              model=clf.model,
+              tokenizer=retry_tokenizer,
+              aggregation_strategy="simple",
+              device=0 if USE_CUDA else -1,
+          )
+      else:
+          clf_retry = None
       # Separate tokenizer for usage counts only — left UNBOUNDED so input_tokens stays
       # accurate for the full text (it never truncates: truncation defaults to False).
       tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, revision=MODEL_REVISION, trust_remote_code=True)
@@ -561,12 +577,14 @@ x-privacy-filter-common: &privacy-filter-common
 
       @app.post("/v1/privacy/classify")
       def classify(req: ClassifyRequest):
+          global _consecutive_oom_503
           texts = [req.input] if isinstance(req.input, str) else req.input
           if not texts or any(not isinstance(t, str) for t in texts):
               raise HTTPException(400, "input must be a non-empty string or list of strings")
 
           # The pipeline runs the forward under torch.no_grad() internally.
-          # No lock: classify requests stay concurrent, as before.
+          # No lock: classify requests stay concurrent (the OOM counter's lock
+          # never covers a forward).
           # Recover after leaving each except block: while an OOM is being handled, its
           # traceback still holds the failed forward's frames and their tensors, so
           # empty_cache() could not return that memory.
@@ -581,16 +599,34 @@ x-privacy-filter-common: &privacy-filter-common
               print(json.dumps({"event": "filter_oom", "retry_max_length": retry_max_length}), flush=True)
               gc.collect()
               torch.cuda.empty_cache()
-              retry_oom = False
-              try:
-                  raw = clf_retry(texts, batch_size=BATCH_SIZE, stride=min(STRIDE, retry_max_length - 1))
-              except torch.cuda.OutOfMemoryError:
-                  retry_oom = True
+              retry_oom = clf_retry is None
+              if clf_retry is not None:
+                  try:
+                      raw = clf_retry(texts, batch_size=BATCH_SIZE, stride=min(STRIDE, retry_max_length - 1))
+                  except torch.cuda.OutOfMemoryError:
+                      retry_oom = True
               if retry_oom:
-                  gc.collect()
-                  torch.cuda.empty_cache()
+                  if clf_retry is not None:
+                      gc.collect()
+                      torch.cuda.empty_cache()
+                  with _oom_lock:
+                      _consecutive_oom_503 += 1
+                      consecutive_503 = _consecutive_oom_503
+                  if consecutive_503 >= OOM_EXIT_AFTER:
+                      print(json.dumps({"event": "filter_oom_exit", "consecutive_503": consecutive_503}), flush=True)
+                      sys.stderr.write(
+                          "privacy-filter: %d consecutive memory-pressure 503s; "
+                          "exiting for a clean restart\n" % consecutive_503
+                      )
+                      sys.stderr.flush()
+                      return JSONResponse(status_code=503, headers={"Retry-After": "2"},
+                                          content={"error": "gpu_memory_pressure"},
+                                          background=BackgroundTask(os._exit, 1))
                   return JSONResponse(status_code=503, headers={"Retry-After": "2"},
                                       content={"error": "gpu_memory_pressure"})
+
+          with _oom_lock:
+              _consecutive_oom_503 = 0
 
           # Single batched tokenize for usage counts instead of N sequential calls.
           tok_lens = [len(ids) for ids in tokenizer(texts).input_ids]
@@ -629,12 +665,14 @@ x-privacy-filter-common: &privacy-filter-common
     # Root-cause fix for the VRAM leak: let the CUDA caching allocator shrink
     # reserved segments instead of ratcheting them up and hoarding GPU memory.
     - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-    # Shared GPU 0 is a 139.4 GiB H200. The 36 GiB watchdog is a backstop;
-    # the 0.25 per-process cap (~35 GiB) is the real limit beside test Qwen3.8.
+    # Shared GPU 0 is a 139.4 GiB H200. The 0.25 cap (~35 GiB) is the real
+    # limit; consecutive-OOM exit restarts the filter below the 36 GiB watchdog.
     - GPU_MEM_LIMIT_GB=36
     - FILTER_GPU_MEM_FRACTION=0.25
-    # On OOM retry once with 16K-token overlapping pipeline windows.
+    # On OOM retry with the smaller of this cap and half the primary window.
     - FILTER_OOM_RETRY_MAX_LENGTH=16384
+    # Restart after three memory-pressure 503s without a successful classify.
+    - FILTER_OOM_EXIT_AFTER=3
     # sliding_window=128 makes attention linear in sequence length with SDPA, so
     # batch 1 can classify 131072 tokens in one pass. Explicit eager mode, or a
     # rejected non-eager implementation, clamps MAX_LENGTH to 4096 and chunks with

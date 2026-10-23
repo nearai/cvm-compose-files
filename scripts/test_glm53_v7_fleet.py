@@ -21,6 +21,7 @@ import shutil
 import subprocess
 import tempfile
 import textwrap
+import threading
 import types
 import unittest
 import weakref
@@ -279,7 +280,7 @@ PRIVACY_FILTER_PIN_COMMENTS = (
 COLOC_ENGINE = "model-sg-qwen38-27b-fp8-tp1-coloc"
 COLOC_ENGINE_JOB = f"sglang-{COLOC_ENGINE}"
 COLOC_BLOCK_HASHES = {
-    "x-privacy-filter-common": "d43dfc5cb0cfe324b4d9cb6b367a1836de8082f4577334b9281fe3ce61fe34ac",
+    "x-privacy-filter-common": "b4a275a42bf94b58f24a624c37a9b4b9abb8378f76e79fc5becb49e469f13776",
     COLOC_ENGINE: "4cb08e04027204438a4d1995ca4cc77c9637537c5b328a7f1ba62e5719d1cb8f",
     COLOC_ENGINE_JOB: "b5c730ba7b0196a959960be2a6eadec8024524e95852245ea2b43b84f85775ad",
 }
@@ -384,6 +385,56 @@ class Gpu13FleetTest(unittest.TestCase):
         self.small = SMALL.read_text()
         self.old = SMALL_FIXTURE.read_text()
         self.long = LONG_FILE.read_text()
+
+    def privacy_filter_function(self, name: str) -> types.CodeType:
+        block = anchor_block(self.small, "x-privacy-filter-common")
+        source = textwrap.dedent(block.split("COPY <<'PYEOF' /app/server.py\n", 1)[1].split("\n      PYEOF", 1)[0])
+        function = next(node for node in ast.parse(source).body if isinstance(node, ast.FunctionDef) and node.name == name)
+        function.decorator_list = []
+        return compile(ast.fix_missing_locations(ast.Module(body=[function], type_ignores=[])), "server.py", "exec")
+
+    def privacy_filter_oom_namespace(self, primary, retry, retry_max_length=16384, exit_after=3):
+        class OutOfMemoryError(Exception):
+            pass
+
+        class JSONResponse:
+            def __init__(self, status_code, headers, content, background=None):
+                self.status_code = status_code
+                self.headers = headers
+                self.content = content
+                self.background = background
+
+        class BackgroundTask:
+            def __init__(self, func, *args):
+                self.func = func
+                self.args = args
+
+        exit_calls = []
+        exit_stub = lambda code: exit_calls.append(code)
+        namespace = {
+            "torch": types.SimpleNamespace(cuda=types.SimpleNamespace(OutOfMemoryError=OutOfMemoryError, empty_cache=lambda: None)),
+            "gc": gc,
+            "json": json,
+            "os": types.SimpleNamespace(_exit=exit_stub),
+            "sys": types.SimpleNamespace(stderr=io.StringIO()),
+            "JSONResponse": JSONResponse,
+            "BackgroundTask": BackgroundTask,
+            "HTTPException": Exception,
+            "ClassifyRequest": object,
+            "clf": lambda *args, **kwargs: primary(OutOfMemoryError),
+            "clf_retry": None if retry is None else lambda *args, **kwargs: retry(OutOfMemoryError),
+            "tokenizer": lambda texts: types.SimpleNamespace(input_ids=[[0] for _ in texts]),
+            "_merge_adjacent_spans": lambda spans: spans,
+            "MODEL_ID": "openai/privacy-filter",
+            "BATCH_SIZE": 1,
+            "STRIDE": 256,
+            "retry_max_length": retry_max_length,
+            "OOM_EXIT_AFTER": exit_after,
+            "_oom_lock": threading.Lock(),
+            "_consecutive_oom_503": 0,
+        }
+        exec(self.privacy_filter_function("classify"), namespace)
+        return namespace, exit_calls
 
     def gpu13(self, name: str) -> tuple[list[str], list[str], str]:
         """(argv, env, image) of a gpu13 GLM replica; r1a inherits the shared anchor, r1b carries its own copy."""
@@ -490,12 +541,25 @@ class Gpu13FleetTest(unittest.TestCase):
     def test_privacy_filter_pins_transformers(self) -> None:
         self.assertIn(PRIVACY_FILTER_TRANSFORMERS_PIN, anchor_block(self.small, "x-privacy-filter-common"))
 
+    def test_privacy_filter_retry_window_is_strictly_smaller(self) -> None:
+        namespace = {}
+        exec(self.privacy_filter_function("_retry_window"), namespace)
+        for max_length, cap, expected in (
+            (131072, 16384, 16384),
+            (4096, 16384, 2048),
+            (32768, 16384, 16384),
+            (16384, 16384, 8192),
+            (15, 16384, None),
+            (8, 16384, None),
+        ):
+            with self.subTest(max_length=max_length, cap=cap):
+                result = namespace["_retry_window"](max_length, cap)
+                self.assertEqual(result, expected)
+                if result is not None:
+                    self.assertLess(result, max_length)
+
     def test_privacy_filter_oom_recovery_runs_after_the_failed_forward_is_released(self) -> None:
-        block = anchor_block(self.small, "x-privacy-filter-common")
-        source = textwrap.dedent(block.split("COPY <<'PYEOF' /app/server.py\n", 1)[1].split("\n      PYEOF", 1)[0])
-        classify = next(node for node in ast.parse(source).body if isinstance(node, ast.FunctionDef) and node.name == "classify")
-        classify.decorator_list = []
-        code = compile(ast.fix_missing_locations(ast.Module(body=[classify], type_ignores=[])), "server.py", "exec")
+        code = self.privacy_filter_function("classify")
 
         class OutOfMemoryError(Exception):
             pass
@@ -504,10 +568,16 @@ class Gpu13FleetTest(unittest.TestCase):
             pass
 
         class JSONResponse:
-            def __init__(self, status_code, headers, content):
+            def __init__(self, status_code, headers, content, background=None):
                 self.status_code = status_code
                 self.headers = headers
                 self.content = content
+                self.background = background
+
+        class BackgroundTask:
+            def __init__(self, func, *args):
+                self.func = func
+                self.args = args
 
         class Sentinel:
             pass
@@ -538,7 +608,10 @@ class Gpu13FleetTest(unittest.TestCase):
                     "torch": types.SimpleNamespace(cuda=types.SimpleNamespace(OutOfMemoryError=OutOfMemoryError, empty_cache=empty_cache)),
                     "gc": gc,
                     "json": json,
+                    "os": types.SimpleNamespace(_exit=lambda code: None),
+                    "sys": types.SimpleNamespace(stderr=io.StringIO()),
                     "JSONResponse": JSONResponse,
+                    "BackgroundTask": BackgroundTask,
                     "HTTPException": HTTPException,
                     "ClassifyRequest": object,
                     "clf": primary,
@@ -549,6 +622,9 @@ class Gpu13FleetTest(unittest.TestCase):
                     "BATCH_SIZE": 1,
                     "STRIDE": 256,
                     "retry_max_length": 16384,
+                    "OOM_EXIT_AFTER": 3,
+                    "_oom_lock": threading.Lock(),
+                    "_consecutive_oom_503": 0,
                 }
                 exec(code, namespace)
                 stdout = io.StringIO()
@@ -564,6 +640,59 @@ class Gpu13FleetTest(unittest.TestCase):
                     self.assertEqual(result.headers, {"Retry-After": "2"})
                 else:
                     self.assertEqual(result["data"][0]["spans"], [])
+
+    def test_privacy_filter_oom_without_retry_returns_503(self) -> None:
+        def primary(oom_error):
+            raise oom_error("primary OOM")
+
+        namespace, exit_calls = self.privacy_filter_oom_namespace(primary, None, retry_max_length=None)
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            result = namespace["classify"](types.SimpleNamespace(input="x", threshold=0.0))
+        self.assertEqual(result.status_code, 503)
+        self.assertEqual(result.headers, {"Retry-After": "2"})
+        self.assertIsNone(result.background)
+        self.assertEqual(json.loads(stdout.getvalue().splitlines()[0]), {"event": "filter_oom", "retry_max_length": None})
+        self.assertEqual(exit_calls, [])
+
+    def test_privacy_filter_exits_after_three_consecutive_oom_503s(self) -> None:
+        def oom(oom_error):
+            raise oom_error("simulated OOM")
+
+        namespace, exit_calls = self.privacy_filter_oom_namespace(oom, oom)
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            results = [namespace["classify"](types.SimpleNamespace(input="x", threshold=0.0)) for _ in range(3)]
+        self.assertEqual([response.status_code for response in results], [503, 503, 503])
+        self.assertEqual([response.headers for response in results], [{"Retry-After": "2"}] * 3)
+        self.assertEqual([response.background is not None for response in results], [False, False, True])
+        self.assertIs(results[2].background.func, namespace["os"]._exit)
+        self.assertEqual(results[2].background.args, (1,))
+        self.assertEqual(exit_calls, [])
+        self.assertEqual([json.loads(line) for line in stdout.getvalue().splitlines() if 'filter_oom_exit' in line],
+                         [{"event": "filter_oom_exit", "consecutive_503": 3}])
+
+    def test_privacy_filter_success_resets_consecutive_oom_503s(self) -> None:
+        def primary(oom_error):
+            raise oom_error("primary OOM")
+
+        retry_outcomes = iter((False, False, True, False, False))
+
+        def retry(oom_error):
+            if next(retry_outcomes):
+                return [[]]
+            raise oom_error("retry OOM")
+
+        namespace, exit_calls = self.privacy_filter_oom_namespace(primary, retry)
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            results = [namespace["classify"](types.SimpleNamespace(input="x", threshold=0.0)) for _ in range(5)]
+        self.assertEqual([response.status_code if hasattr(response, "status_code") else 200 for response in results],
+                         [503, 503, 200, 503, 503])
+        self.assertTrue(all(getattr(response, "background", None) is None for response in results))
+        self.assertEqual(namespace["_consecutive_oom_503"], 2)
+        self.assertNotIn("filter_oom_exit", stdout.getvalue())
+        self.assertEqual(exit_calls, [])
 
     def test_coloc_engine_joins_customer_routing_without_synthetic_load(self) -> None:
         names = re.findall(r"^  ([a-z0-9-]+):$", self.small[self.small.index("\nservices:\n"):], re.MULTILINE)

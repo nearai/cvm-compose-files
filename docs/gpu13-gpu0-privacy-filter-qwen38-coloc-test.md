@@ -10,9 +10,9 @@ The dedicated Qwen3.8 engine on gpu13 GPU 2 grew from 128 to 139.2 GiB in five d
 
 ## Design and GPU 0 memory budget
 
-`prod/small-models.yaml` retains the production filter image, model revision, API, `transformers==5.16.1`, batch 1, 131072-token window, stride 256, SDPA, and GPU 0 assignment. The filter now applies `torch.cuda.set_per_process_memory_fraction(0.25)`, about 35 GiB of the 139.4 GiB H200. `GPU_MEM_LIMIT_GB=36` is a watchdog backstop; the per-process cap is the active limit. Its existing expandable-segments allocator setting remains. The watchdog emits `filter_mem` with reserved, maximum reserved, and allocated GiB every interval. Exceeding the watchdog limit still restarts the filter.
+`prod/small-models.yaml` retains the production filter image, model revision, API, `transformers==5.16.1`, batch 1, 131072-token window, stride 256, SDPA, and GPU 0 assignment. The filter now applies `torch.cuda.set_per_process_memory_fraction(0.25)`, about 35 GiB of the 139.4 GiB H200. The per-process cap is the active limit. Its existing expandable-segments allocator setting remains. The watchdog emits `filter_mem` with reserved, maximum reserved, and allocated GiB every interval.
 
-On request CUDA OOM, the filter emits `filter_oom`, clears cached blocks, and retries with the same model weights and a deep-copied tokenizer limited to the smaller of the effective primary window and 16384 tokens. A second OOM returns HTTP 503 with `Retry-After: 2` and `{"error":"gpu_memory_pressure"}` after clearing cached blocks. The retry and the 503 response run after their `except` blocks, once the failed forward's memory has been released with `gc.collect()` and `empty_cache()`. The request path uses no classify lock and does not mutate the primary tokenizer, preserving production concurrency and its real memory peaks.
+On request CUDA OOM, the filter emits `filter_oom`, clears cached blocks, and retries with the same model weights and a deep-copied tokenizer. The retry window is the smaller of 16384 tokens and half the primary window; there is no retry if that would be under 8 tokens. If memory remains short, it returns HTTP 503 with `Retry-After: 2` and `{"error":"gpu_memory_pressure"}`. The retry and the 503 response run after their `except` blocks, once the failed forward's memory has been released with `gc.collect()` and `empty_cache()`. After `FILTER_OOM_EXIT_AFTER` (3) consecutive memory-pressure 503s with no successful classify in between, it logs `filter_oom_exit`, sends the 503, and exits so Docker restarts it, as production did. The watchdog's 36 GiB limit sits above the 0.25 cap and is not the restart path. The request path uses no classify lock and does not mutate the primary tokenizer, preserving production concurrency and its real memory peaks.
 
 The coloc engine runs on GPU 0 with static fraction **0.50**, about 70 GiB, plus non-static allocations that must be measured. Relative to the dedicated GPU 2 recipe, mamba cache **320 → 128** reduces persistent memory; running requests **64 → 32** and queued requests **128 → 64** bound admission; chunked prefill and maximum prefill **8192 → 4096** reduce activation spikes; CUDA graph max batch **32** bounds graph workspace to the running-request ceiling. Its model, revision, parsers, mixed-chunk and metrics flags match the dedicated recipe. It uses `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` and its own `qwen38_coloc_kernel_cache`, separate from r2's kernel cache. The downloader completes before it starts. The existing `otelcol-contrib` collector scrapes the coloc engine and proxy; Docker logs use the existing pipeline.
 
@@ -21,7 +21,7 @@ The coloc engine runs on GPU 0 with static fraction **0.50**, about 70 GiB, plus
 Observe for **at least 14 days, ideally 28**. All criteria must hold:
 
 1. Zero filter restarts after its initial start: Loki `{container_name="model-privacy-filter"} |= "Started server process"`.
-2. Zero classify 5xx at `proxy-privacy-filter` (`http_requests_total{container_name="proxy-privacy-filter",endpoint="/v1/privacy/classify",status=~"5.."}`) and zero `filter_oom` logs.
+2. Zero classify 5xx at `proxy-privacy-filter` (`http_requests_total{container_name="proxy-privacy-filter",endpoint="/v1/privacy/classify",status=~"5.."}`) and zero `filter_oom` or `filter_oom_exit` logs.
 3. Zero coloc engine restarts after its initial start: Loki `{container_name="model-sg-qwen38-27b-fp8-tp1-coloc"} |= "Started server process"`.
 4. Zero Qwen3.8 5xx at `proxy-qwen38-27b`.
 5. GPU 0 framebuffer use from `dcgm-privacy-filter` (`DCGM_FI_DEV_FB_USED`) never exceeds **134 GiB**.
@@ -29,7 +29,7 @@ Observe for **at least 14 days, ideally 28**. All criteria must hold:
 7. Coloc TTFT and ITL p95 stay within **20% of r2** over the same windows.
 8. Classify latency p95 is no worse than in the prior 14 days.
 
-On **any** `filter_oom`, classify 5xx, coloc OOM or crash, or GPU 0 above 134 GiB, `compose/down` only `model-sg-qwen38-27b-fp8-tp1-coloc`. The proxy health check marks it unhealthy within approximately 15 seconds (checks every 5 seconds, 3-second timeout, 3 failures); r2 then serves all Qwen3.8 traffic, and GPU 0 is the filter's alone again. Follow up with a PR removing the coloc URL from `VLLM_BACKEND_URLS`. Record the timeline, metrics, logs, tag, and container identities.
+On **any** `filter_oom` or `filter_oom_exit`, classify 5xx, coloc OOM or crash, or GPU 0 above 134 GiB, `compose/down` only `model-sg-qwen38-27b-fp8-tp1-coloc`. The proxy health check marks it unhealthy within approximately 15 seconds (checks every 5 seconds, 3-second timeout, 3 failures); r2 then serves all Qwen3.8 traffic, and GPU 0 is the filter's alone again. Follow up with a PR removing the coloc URL from `VLLM_BACKEND_URLS`. Record the timeline, metrics, logs, tag, and container identities.
 
 ## Deploy after merge
 
