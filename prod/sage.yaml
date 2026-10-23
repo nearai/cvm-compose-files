@@ -1,5 +1,7 @@
-# Levanto Sage on gpu04 GPU 6, as its own compose-manager project inside gpu04's GLM CVM.
-# gpu04 must run prod/GLM-5.3-Flash-SGL-TP2x3-W4AFP8-gpu04.yaml (three GLM replicas on GPUs 0-5) first.
+# Levanto Sage on gpu13 GPU 0, as its own compose-manager project inside gpu13's CVM.
+# gpu13's small models moved to gpu23 on 2026-10-23, which freed GPUs 0-3; GLM r1a/r1b keep GPUs 4-7. Never run an
+# unscoped compose/up of prod/small-models.yaml on gpu13 while Sage is there: it would start the small models on
+# GPUs 0-3 again. Moving Sage here frees gpu04 GPU 6 for a fourth GLM replica.
 #
 # Deploy as project "sage" (never "work" or "dstack"):
 #   POST /compose/up {"tag":"v0.0.N","file":"prod/sage.yaml","project":"sage","env":{SAGE_* values}}
@@ -8,7 +10,7 @@
 #
 # Sage runs with SAGE_CONFIDENTIAL=required: it refuses to start unless the env, the TDX quote, the GPU CC state
 # (Protected PCIe on this board) and the weights all check out, ends TLS itself on 8443 with a key made in the CVM
-# (VM port 8010; the gpu04 host maps 443 to 8010) and serves /v1/attestation/report.
+# (VM port 8010; the host maps 443 to 8010) and serves /v1/attestation/report.
 # Sage never gets the CVM's dstack socket: sage-dstack exposes only GET /Info and GET /GetQuote to it. Key
 # derivation and event calls (GetKey, EmitEvent, ...) are refused, since our own services use them.
 # Values come from SAGE_-prefixed variables our own env never sets. They are not marked required (${VAR:?}) so
@@ -85,7 +87,7 @@ services:
       # Enables Sage's content-free /internal/diagnostics endpoint.
       SAGE_ADMIN_TOKEN: ${SAGE_ADMIN_TOKEN}
       # Same GPU as device_ids below (exactly one GPU, as the image requires).
-      NVIDIA_VISIBLE_DEVICES: GPU-bafbdde0-cd41-8379-fa93-149864963329
+      NVIDIA_VISIBLE_DEVICES: GPU-9ec3a20b-6169-7fdc-a19a-6058228132c1
     volumes:
       - sage-data:/workspace
       - /var/run/sage-dstack/dstack.sock:/var/run/dstack.sock
@@ -111,8 +113,8 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              # Index 6, the GPU freed by GLM r4. GPU 7 stays idle.
-              device_ids: ["GPU-bafbdde0-cd41-8379-fa93-149864963329"]
+              # gpu13 index 0 (PCI 01:00.0), the privacy filter's GPU until the small models moved to gpu23.
+              device_ids: ["GPU-9ec3a20b-6169-7fdc-a19a-6058228132c1"]
               capabilities: [gpu]
 
 networks:
