@@ -1039,6 +1039,10 @@ services:
       --enable-cache-report
       --enable-metrics
       --log-requests-level 0
+    # No PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True here. SGLang hands
+    # tensors between its processes over CUDA IPC, which under expandable
+    # segments needs pidfd_getfd; the container may not call it, and the engine
+    # crashed on its first request on gpu23 (2026-10-23).
     environment:
       - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
       - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0}
@@ -1046,7 +1050,6 @@ services:
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
       - OPENBLAS_L2_SIZE=2097152
       - NCCL_DEBUG=WARN
-      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
     volumes:
       - hugginface_cache:/root/.cache/huggingface
       - qwen38_coloc_kernel_cache:/root/.cache/sglang
