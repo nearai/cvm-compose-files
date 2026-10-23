@@ -6,6 +6,8 @@ From 2026-10-02 through 2026-10-05, gpu13 GPU 0 carried the privacy filter and Q
 
 On 2026-10-23 the user chose a bounded production co-location trial on **gpu13 GPU 0**. The hardened filter serves real classify traffic through `model-privacy-filter`, `proxy-privacy-filter`, and the existing route. `model-sg-qwen38-27b-fp8-tp1-coloc` serves real private Qwen3.8 traffic through `proxy-qwen38-27b`, pooled with r2 on GPU 2. There is no synthetic load. This trial relaxes the dedicated-card rule and frees gpu04 GPU 7 for its fourth GLM replica.
 
+**Update (2026-10-23):** the small models now run on gpu23, and Levanto Sage takes GPU 2 of the small-models host. Qwen3.8 r2 and its `dcgm-qwen38-27b` exporter are removed. `proxy-qwen38-27b` pools only the coloc engine, which is now the only private Qwen3.8 replica on that host. Criterion 7 below compares against r2's last 14 days before its removal. The abort rule now takes private Qwen3.8 off that host until it is placed again.
+
 The dedicated Qwen3.8 engine on gpu13 GPU 2 grew from 128 to 139.2 GiB in five days at static fraction 0.85, mamba cache 320, and 64 running requests on a roughly 139.4 GiB card. SGLang image `lmsysorg/sglang@sha256:febfb971…` has no hard cap for non-static memory. The filter idles at 5–7 GiB and peaked at 20–33 GiB over 12-hour windows with batch 1, a 131072-token window, and SDPA. Qwen private serving averaged 2.3 running requests (p95 9, maximum about 25), and the filter received about 4,000 classify requests/day.
 
 ## Design and GPU 0 memory budget
@@ -26,10 +28,10 @@ Observe for **at least 14 days, ideally 28**. All criteria must hold:
 4. Zero Qwen3.8 5xx at `proxy-qwen38-27b`.
 5. GPU 0 framebuffer use from `dcgm-privacy-filter` (`DCGM_FI_DEV_FB_USED`) never exceeds **134 GiB**.
 6. Estimated coloc memory, GPU 0 used minus the filter's `reserved_gb` in `filter_mem`, sets no new rolling 24-hour high during week two.
-7. Coloc TTFT and ITL p95 stay within **20% of r2** over the same windows.
+7. Coloc TTFT and ITL p95 stay within **20% of r2** over the same windows (since r2's removal, of r2's last 14 days).
 8. Classify latency p95 is no worse than in the prior 14 days.
 
-On **any** `filter_oom` or `filter_oom_exit`, classify 5xx, coloc OOM or crash, or GPU 0 above 134 GiB, `compose/down` only `model-sg-qwen38-27b-fp8-tp1-coloc`. The proxy health check marks it unhealthy within approximately 15 seconds (checks every 5 seconds, 3-second timeout, 3 failures); r2 then serves all Qwen3.8 traffic, and GPU 0 is the filter's alone again. Follow up with a PR removing the coloc URL from `VLLM_BACKEND_URLS`. Record the timeline, metrics, logs, tag, and container identities.
+On **any** `filter_oom` or `filter_oom_exit`, classify 5xx, coloc OOM or crash, or GPU 0 above 134 GiB, `compose/down` only `model-sg-qwen38-27b-fp8-tp1-coloc`. The proxy health check marks it unhealthy within approximately 15 seconds (checks every 5 seconds, 3-second timeout, 3 failures), and GPU 0 is the filter's alone again. With r2 removed, private Qwen3.8 then has no replica on that host until it is placed again; follow up with a PR that does so. Record the timeline, metrics, logs, tag, and container identities.
 
 ## Deploy after merge
 
@@ -48,7 +50,7 @@ PR #382 changes the `proxy-qwen38-27b` image and also edits `prod/small-models.y
 
 ## Teardown and rollback
 
-If the abort rule fires, `compose/down` only `model-sg-qwen38-27b-fp8-tp1-coloc`, then follow up with a PR removing it from the pool. Before `compose/down`, dry-run `compose/up` on the same merged tag and file so Compose Manager has that checkout; `compose/down` does not check out a tag and ignores `dry_run`. Confirm the engine is gone, r2 serves Qwen3.8, and the filter continues to classify. The hardened filter can stay.
+If the abort rule fires, `compose/down` only `model-sg-qwen38-27b-fp8-tp1-coloc`, then follow up with a PR removing it from the pool. Before `compose/down`, dry-run `compose/up` on the same merged tag and file so Compose Manager has that checkout; `compose/down` does not check out a tag and ignores `dry_run`. Confirm the engine is gone and the filter continues to classify; with r2 removed, Qwen3.8 is unserved on that host until it is placed again. The hardened filter can stay.
 
 ## Brave
 

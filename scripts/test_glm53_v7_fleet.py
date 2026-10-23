@@ -284,15 +284,19 @@ COLOC_BLOCK_HASHES = {
     COLOC_ENGINE: "670273cabb20266ebab017a7c46a9a2860504cac0e2299a11f32a632c801d7d7",
     COLOC_ENGINE_JOB: "b5c730ba7b0196a959960be2a6eadec8024524e95852245ea2b43b84f85775ad",
 }
-# Levanto Sage moved in from prod/sage.yaml (gpu04 GPU 6) to gpu13 GPU 0, unchanged except the GPU.
+# Levanto Sage moved in from prod/sage.yaml (gpu04 GPU 6), unchanged except the GPU: GPU 2 of the
+# small-models host (gpu23), which Qwen3.8 r2 and its DCGM exporter gave up.
 SAGE_FILE = ROOT / "prod/sage.yaml"
 SAGE_SERVICES = ("sage-dstack", "sage")
-SAGE_HEADING = "  # ── Levanto Sage on gpu13 GPU 0"
+SAGE_HEADING = "  # ── Levanto Sage on GPU 2 of the small-models host"
 SAGE_GPU04_GPU = "GPU-bafbdde0-cd41-8379-fa93-149864963329"
-SAGE_GPU13_GPU = "GPU-9ec3a20b-6169-7fdc-a19a-6058228132c1"
+SAGE_GPU = "GPU-2f40e72c-80c6-c9b4-b65c-d6ec155ecc8d"
+QWEN38_R2 = "model-sg-qwen38-27b-fp8-tp1-r2"
+QWEN38_R2_DCGM = "dcgm-qwen38-27b"
+QWEN38_R2_JOBS = (f"sglang-{QWEN38_R2}", f"dcgm-{QWEN38_R2_DCGM}")
 SAGE_BLOCK_HASHES = {
     "sage-dstack": "e3020a51e7f4f6c6a02868004618e880da664a55abc6c875c1da860595f16518",
-    "sage": "87e356dd48ed97989298d1ec040a94367c8e6b7be0f8f23ec12256116bae6e03",
+    "sage": "652c4833c281db47955a64f64cd25d57b44aa621dcbe8ca9a01a346182cf0ac5",
     "networks": "f83c2c4fabfffcf0587e644bb575e4cc4c602f0fe8a032061fac8215403be193",
 }
 
@@ -384,6 +388,45 @@ def with_qwen38_coloc_pool(text: str) -> str:
         for old, new in replacements:
             if updated.count(old) != 1:
                 raise AssertionError(f"expected one Qwen3.8 pooling fixture value: {old}")
+            updated = updated.replace(old, new, 1)
+        text = text.replace(original, updated, 1)
+    return text
+
+
+def with_sage_on_gpu2(text: str) -> str:
+    """Apply only the Qwen3.8 r2 retirement (Levanto Sage takes GPU 2) to the coloc-pool fixture."""
+    old_heading = "  # ── Qwen3.8-27B on dedicated GPU 2; GPU 0 is privacy-filter only ──\n"
+    if text.count(old_heading) != 1:
+        raise AssertionError("expected one Qwen3.8 GPU 2 fixture heading")
+    text = text.replace(old_heading, "  # ── Qwen3.8-27B on GPU 0 beside the privacy filter; GPU 2 is Levanto Sage ──\n", 1)
+    for name in (QWEN38_R2, QWEN38_R2_DCGM):
+        old_service = service_block(text, name)
+        if text.count("\n" + old_service) != 1:
+            raise AssertionError(f"expected one {name} fixture service")
+        text = text.replace("\n" + old_service, "", 1)
+    for job in QWEN38_R2_JOBS:
+        old_job = jobs_of(text)[job]
+        if text.count("              " + old_job) != 1:
+            raise AssertionError(f"expected one {job} scrape job")
+        text = text.replace("              " + old_job, "", 1)
+    for original, replacements in (
+        (service_block(text, "proxy-qwen38-27b"), (
+            ("VLLM_BACKEND_URLS=http://model-sg-qwen38-27b-fp8-tp1-r2:8000,http://model-sg-qwen38-27b-fp8-tp1-coloc:8000",
+             "VLLM_BACKEND_URLS=http://model-sg-qwen38-27b-fp8-tp1-coloc:8000"),
+            ('"gpu_pair:0,2"', '"gpu_pair:0"'),
+            ('"config_variant:qwen38-gpu13-gpu2-plus-gpu0-coloc"', '"config_variant:qwen38-gpu0-coloc-only"'),
+            ('nearai.otel.gpu_pair: "0,2"', 'nearai.otel.gpu_pair: "0"'),
+            ('nearai.otel.config_variant: "qwen38-gpu13-gpu2-plus-gpu0-coloc"', 'nearai.otel.config_variant: "qwen38-gpu0-coloc-only"'),
+        )),
+        (jobs_of(text)["inference-proxy-proxy-qwen38-27b"], (
+            ('gpu_pair: "0,2"', 'gpu_pair: "0"'),
+            ('config_variant: "qwen38-gpu13-gpu2-plus-gpu0-coloc"', 'config_variant: "qwen38-gpu0-coloc-only"'),
+        )),
+    ):
+        updated = original
+        for old, new in replacements:
+            if updated.count(old) != 1:
+                raise AssertionError(f"expected one Qwen3.8 r2-retirement fixture value: {old}")
             updated = updated.replace(old, new, 1)
         text = text.replace(original, updated, 1)
     return text
@@ -495,10 +538,12 @@ class Gpu13FleetTest(unittest.TestCase):
         self.assertIn('device_ids: ["6","7"]', service_block(self.small, "model-sg-glm53-w4afp8-tp2-r1b"))
 
     def test_non_glm_services_and_everything_outside_the_glm_blocks_are_byte_identical(self) -> None:
-        old = with_qwen38_coloc_pool(without_qwen38_gpu0_stage_b(self.old))
+        old = with_sage_on_gpu2(with_qwen38_coloc_pool(without_qwen38_gpu0_stage_b(self.old)))
         names = re.findall(r"^  ([a-z0-9-]+):$", self.old[self.old.index("\nservices:\n"):], re.MULTILINE)
         expected_names = [name for name in names if name != QWEN38_GPU0_SERVICE]
-        expected_names.insert(expected_names.index("model-sg-qwen38-27b-fp8-tp1-r2") + 1, COLOC_ENGINE)
+        expected_names.insert(expected_names.index(QWEN38_R2) + 1, COLOC_ENGINE)
+        # Sage took GPU 2: r2 and its DCGM exporter are gone.
+        expected_names = [name for name in expected_names if name not in (QWEN38_R2, QWEN38_R2_DCGM)]
         # Sage (pinned separately): its two services before the collector, its network and its volume.
         otelcol = expected_names.index("otelcol-contrib")
         expected_names[otelcol:otelcol] = list(SAGE_SERVICES)
@@ -509,10 +554,10 @@ class Gpu13FleetTest(unittest.TestCase):
             re.findall(r"^  ([a-z0-9-]+):$", self.small[self.small.index("\nservices:\n"):], re.MULTILINE),
         )
         for name in names:
-            if name not in GPU13_GLM_SERVICES and name != QWEN38_GPU0_SERVICE:
+            if name not in GPU13_GLM_SERVICES and name not in (QWEN38_GPU0_SERVICE, QWEN38_R2, QWEN38_R2_DCGM):
                 with self.subTest(service=name):
                     new_block = service_block(self.small, name)
-                    if name == "model-sg-qwen38-27b-fp8-tp1-r2":
+                    if name == "proxy-qwen38-27b":
                         new_block = new_block.split("  # Production co-location trial", 1)[0].rstrip("\n") + "\n"
                     if name == "dcgm-shared-gpu3":
                         new_block = new_block.split(SAGE_HEADING, 1)[0].rstrip("\n") + "\n"
@@ -535,8 +580,9 @@ class Gpu13FleetTest(unittest.TestCase):
         # The coloc scrape job is pinned separately; every old non-GLM job stays identical.
         old_jobs, new_jobs = jobs_of(old), jobs_of(self.small)
         expected_jobs = [key for key in jobs_of(self.old) if key != QWEN38_GPU0_JOB]
-        index = expected_jobs.index("sglang-model-sg-qwen38-27b-fp8-tp1-r2") + 1
+        index = expected_jobs.index(f"sglang-{QWEN38_R2}") + 1
         expected_jobs[index:index] = [COLOC_ENGINE_JOB]
+        expected_jobs = [key for key in expected_jobs if key not in QWEN38_R2_JOBS]
         self.assertEqual(expected_jobs, list(new_jobs))
         for key in old_jobs:
             if "glm53" not in key:
@@ -557,7 +603,7 @@ class Gpu13FleetTest(unittest.TestCase):
         self.assertEqual(new_volumes.count("  qwen38_coloc_kernel_cache:\n"), 1)
         self.assertEqual(new_volumes.count("  sage-data:\n"), 1)
 
-    def test_sage_moves_in_from_prod_sage_on_gpu13_gpu0_unchanged_except_the_gpu(self) -> None:
+    def test_sage_moves_in_from_prod_sage_on_gpu2_of_the_small_models_host_unchanged_except_the_gpu(self) -> None:
         networks = self.small.split("\nnetworks:\n", 1)[1].split("\nvolumes:\n", 1)[0]
         blocks = {name: service_block(self.small, name) for name in SAGE_SERVICES}
         for name, block in {**blocks, "networks": networks}.items():
@@ -566,13 +612,13 @@ class Gpu13FleetTest(unittest.TestCase):
         # Deployed the way prod/sage.yaml was: no profile, nothing added.
         for name, block in blocks.items():
             self.assertNotIn("profiles:", block, name)
-        self.assertEqual(blocks["sage"].count(SAGE_GPU13_GPU), 2)
+        self.assertEqual(blocks["sage"].count(SAGE_GPU), 2)
         self.assertNotIn(SAGE_GPU04_GPU, self.small)
         # The services are prod/sage.yaml's (#380) line for line, comments aside, except the GPU.
         old = SAGE_FILE.read_text()
         for name, block in blocks.items():
             with self.subTest(service=name):
-                old_lines = [l.replace(SAGE_GPU04_GPU, SAGE_GPU13_GPU) for l in service_block(old, name).split("\nnetworks:", 1)[0].splitlines()
+                old_lines = [l.replace(SAGE_GPU04_GPU, SAGE_GPU) for l in service_block(old, name).split("\nnetworks:", 1)[0].splitlines()
                              if l.strip() and not l.lstrip().startswith("#")]
                 new_lines = [l for l in block.splitlines()
                              if l.strip() and not l.lstrip().startswith("#")]
@@ -741,8 +787,11 @@ class Gpu13FleetTest(unittest.TestCase):
         self.assertNotIn(QWEN38_GPU0_ANCHOR, anchors)
         self.assertEqual(
             [e for e in env_of(service_block(self.small, "proxy-qwen38-27b")) if e.startswith("VLLM_BACKEND_URLS=")],
-            ["VLLM_BACKEND_URLS=http://model-sg-qwen38-27b-fp8-tp1-r2:8000,http://model-sg-qwen38-27b-fp8-tp1-coloc:8000"],
+            ["VLLM_BACKEND_URLS=http://model-sg-qwen38-27b-fp8-tp1-coloc:8000"],
         )
+        # Since Sage took GPU 2 the GPU 0 engine is the only private Qwen3.8 replica.
+        self.assertNotIn(QWEN38_R2, names)
+        self.assertNotIn(QWEN38_R2_DCGM, names)
         self.assertIn("    <<: *privacy-filter-common", service_block(self.small, "model-privacy-filter"))
         self.assertEqual(anchor_block(self.small, "x-privacy-filter-common").count('device_ids: ["0"]'), 1)
         self.assertIn('device_ids: ["0"]', service_block(self.small, COLOC_ENGINE))
@@ -759,7 +808,7 @@ class Gpu13FleetTest(unittest.TestCase):
     def test_dashboard_labels_are_unchanged_on_gpu13(self) -> None:
         def selectors(text: str) -> list[str]:
             return [l for l in selector_lines(text) if "max_running_requests" not in l and "max_queued_requests" not in l]
-        old = with_qwen38_coloc_pool(without_qwen38_gpu0_stage_b(self.old))
+        old = with_sage_on_gpu2(with_qwen38_coloc_pool(without_qwen38_gpu0_stage_b(self.old)))
         without_coloc = self.small
         for name in (COLOC_ENGINE,):
             without_coloc = without_coloc.replace(service_block(without_coloc, name), "", 1)
@@ -768,8 +817,9 @@ class Gpu13FleetTest(unittest.TestCase):
         self.assertEqual(selectors(without_coloc), selectors(old))
         old_jobs, new_jobs = jobs_of(old), jobs_of(self.small)
         expected_jobs = [key for key in jobs_of(self.old) if key != QWEN38_GPU0_JOB]
-        index = expected_jobs.index("sglang-model-sg-qwen38-27b-fp8-tp1-r2") + 1
+        index = expected_jobs.index(f"sglang-{QWEN38_R2}") + 1
         expected_jobs[index:index] = [COLOC_ENGINE_JOB]
+        expected_jobs = [key for key in expected_jobs if key not in QWEN38_R2_JOBS]
         self.assertEqual(expected_jobs, list(new_jobs))
         for key in old_jobs:
             self.assertEqual(
