@@ -343,6 +343,7 @@ x-privacy-filter-common: &privacy-filter-common
       WORKDIR /app
       COPY <<'PYEOF' /app/server.py
       import copy
+      import gc
       import json
       import os
       import sys
@@ -566,16 +567,27 @@ x-privacy-filter-common: &privacy-filter-common
 
           # The pipeline runs the forward under torch.no_grad() internally.
           # No lock: classify requests stay concurrent, as before.
+          # Recover after leaving each except block: while an OOM is being handled, its
+          # traceback still holds the failed forward's frames and their tensors, so
+          # empty_cache() could not return that memory.
+          oom = False
           try:
               raw = clf(texts, batch_size=BATCH_SIZE, stride=STRIDE)
           except torch.cuda.OutOfMemoryError:
+              oom = True
+          if oom:
               # Don't 500-storm behind a healthy /v1/models probe: retry with
               # smaller windows without mutating the shared classifier state.
               print(json.dumps({"event": "filter_oom", "retry_max_length": retry_max_length}), flush=True)
+              gc.collect()
               torch.cuda.empty_cache()
+              retry_oom = False
               try:
                   raw = clf_retry(texts, batch_size=BATCH_SIZE, stride=min(STRIDE, retry_max_length - 1))
               except torch.cuda.OutOfMemoryError:
+                  retry_oom = True
+              if retry_oom:
+                  gc.collect()
                   torch.cuda.empty_cache()
                   return JSONResponse(status_code=503, headers={"Retry-After": "2"},
                                       content={"error": "gpu_memory_pressure"})

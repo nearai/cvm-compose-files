@@ -9,13 +9,21 @@
 Imported by test_glm53_w4afp8_tp2x4.py and test_glm53_w4afp8_long_context.py so the existing CI steps run it.
 """
 
+import ast
+import contextlib
+import gc
 import hashlib
+import io
+import json
 import re
 import shlex
 import shutil
 import subprocess
 import tempfile
+import textwrap
+import types
 import unittest
+import weakref
 from pathlib import Path
 
 from scripts import prepare_glm53_w4afp8_long_context as long_generator
@@ -271,7 +279,7 @@ PRIVACY_FILTER_PIN_COMMENTS = (
 COLOC_ENGINE = "model-sg-qwen38-27b-fp8-tp1-coloc"
 COLOC_ENGINE_JOB = f"sglang-{COLOC_ENGINE}"
 COLOC_BLOCK_HASHES = {
-    "x-privacy-filter-common": "3eb646355ba7bb781c3eb13ef4c1e2320385b66b74642cec8ed91765f975ca92",
+    "x-privacy-filter-common": "d43dfc5cb0cfe324b4d9cb6b367a1836de8082f4577334b9281fe3ce61fe34ac",
     COLOC_ENGINE: "4cb08e04027204438a4d1995ca4cc77c9637537c5b328a7f1ba62e5719d1cb8f",
     COLOC_ENGINE_JOB: "b5c730ba7b0196a959960be2a6eadec8024524e95852245ea2b43b84f85775ad",
 }
@@ -481,6 +489,81 @@ class Gpu13FleetTest(unittest.TestCase):
 
     def test_privacy_filter_pins_transformers(self) -> None:
         self.assertIn(PRIVACY_FILTER_TRANSFORMERS_PIN, anchor_block(self.small, "x-privacy-filter-common"))
+
+    def test_privacy_filter_oom_recovery_runs_after_the_failed_forward_is_released(self) -> None:
+        block = anchor_block(self.small, "x-privacy-filter-common")
+        source = textwrap.dedent(block.split("COPY <<'PYEOF' /app/server.py\n", 1)[1].split("\n      PYEOF", 1)[0])
+        classify = next(node for node in ast.parse(source).body if isinstance(node, ast.FunctionDef) and node.name == "classify")
+        classify.decorator_list = []
+        code = compile(ast.fix_missing_locations(ast.Module(body=[classify], type_ignores=[])), "server.py", "exec")
+
+        class OutOfMemoryError(Exception):
+            pass
+
+        class HTTPException(Exception):
+            pass
+
+        class JSONResponse:
+            def __init__(self, status_code, headers, content):
+                self.status_code = status_code
+                self.headers = headers
+                self.content = content
+
+        class Sentinel:
+            pass
+
+        for retry_fails in (False, True):
+            with self.subTest(retry_fails=retry_fails):
+                sentinels = []
+                cache_checks = []
+
+                def fail_forward():
+                    sentinel = Sentinel()
+                    sentinels.append(weakref.ref(sentinel))
+                    raise OutOfMemoryError("simulated failed forward")
+
+                def primary(texts, batch_size, stride):
+                    return fail_forward()
+
+                def retry(texts, batch_size, stride):
+                    self.assertIsNone(sentinels[0]())
+                    if retry_fails:
+                        return fail_forward()
+                    return [[]]
+
+                def empty_cache():
+                    cache_checks.append(all(ref() is None for ref in sentinels))
+
+                namespace = {
+                    "torch": types.SimpleNamespace(cuda=types.SimpleNamespace(OutOfMemoryError=OutOfMemoryError, empty_cache=empty_cache)),
+                    "gc": gc,
+                    "json": json,
+                    "JSONResponse": JSONResponse,
+                    "HTTPException": HTTPException,
+                    "ClassifyRequest": object,
+                    "clf": primary,
+                    "clf_retry": retry,
+                    "tokenizer": lambda texts: types.SimpleNamespace(input_ids=[[0] for _ in texts]),
+                    "_merge_adjacent_spans": lambda spans: spans,
+                    "MODEL_ID": "openai/privacy-filter",
+                    "BATCH_SIZE": 1,
+                    "STRIDE": 256,
+                    "retry_max_length": 16384,
+                }
+                exec(code, namespace)
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    result = namespace["classify"](types.SimpleNamespace(input="x", threshold=0.0))
+
+                self.assertEqual(len(cache_checks), 2 if retry_fails else 1)
+                self.assertTrue(all(cache_checks))
+                self.assertEqual([json.loads(line)["event"] for line in stdout.getvalue().splitlines()], ["filter_oom"])
+                if retry_fails:
+                    self.assertIsInstance(result, JSONResponse)
+                    self.assertEqual(result.status_code, 503)
+                    self.assertEqual(result.headers, {"Retry-After": "2"})
+                else:
+                    self.assertEqual(result["data"][0]["spans"], [])
 
     def test_coloc_engine_joins_customer_routing_without_synthetic_load(self) -> None:
         names = re.findall(r"^  ([a-z0-9-]+):$", self.small[self.small.index("\nservices:\n"):], re.MULTILINE)
