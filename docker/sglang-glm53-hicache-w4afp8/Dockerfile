@@ -35,6 +35,7 @@ LABEL nearai.sglang.dsa_kpool_logits_budget="v1"
 LABEL nearai.sglang.dsa_q8_flashmla_sparse="v1-flag-gated"
 LABEL nearai.security_remediation="CVE-2026-102268:pyjwt-2.14.0"
 LABEL nearai.security_remediation_2="CVE-2026-53398,CVE-2026-63940,CVE-2026-64535,CVE-2026-64564,CVE-2026-72399,CVE-2026-74394:linux-libc-dev-6.8.0-147.147"
+LABEL nearai.security_remediation_3="CVE-2026-112393,CVE-2026-112403,CVE-2026-112900,CVE-2026-96639,GHSA-6q48-6c7w-9gw2,GHSA-hq85-5cpj-mr62:pillow-13.0.0,certifi-2026.10.19,pip-26.2.2,uv-0.13.4"
 
 COPY Dockerfile \
      PROVENANCE \
@@ -78,9 +79,15 @@ RUN test -n "$BUILD_SOURCE_REVISION" \
 
 # Security remediation: the base ships PyJWT 2.13.0 (CVE-2026-102268, fixed in 2.14.0). It is only a
 # dependency of msal; SGLang never imports it. Install the fixed wheel by exact hash, without deps.
+# The same file pins the fixes for the v11 publish gate (security_remediation_3): pillow 12.3.0 -> 13.0.0
+# (CVE-2026-112393, -112403, -112900, -96639), certifi 2026.7.22 -> 2026.10.19 (GHSA-6q48-6c7w-9gw2),
+# uv 0.12.8 -> 0.13.4 (GHSA-hq85-5cpj-mr62) and pip 26.2.1 -> 26.2.2, whose vendored certifi 2026.6.17
+# (pip/_vendor, reported from pip/_vendor/bom.cdx.json) is the second GHSA-6q48-6c7w-9gw2 hit; 26.2.2
+# vendors certifi 2026.10.19.
 RUN /opt/sglang/bin/python3 -m pip install --no-cache-dir --no-deps --require-hashes \
         -r /usr/share/nearai/glm53-hicache-w4afp8/security-requirements.txt \
-    && /opt/sglang/bin/python3 -c "import jwt; assert jwt.__version__ == '2.14.0', jwt.__version__"
+    && /opt/sglang/bin/python3 -c "import jwt; assert jwt.__version__ == '2.14.0', jwt.__version__" \
+    && /opt/sglang/bin/python3 -c "from importlib.metadata import version as v; from pip._vendor import certifi as vc; got = {n: v(n) for n in ('pillow', 'certifi', 'pip', 'uv')}; assert got == {'pillow': '13.0.0', 'certifi': '2026.10.19', 'pip': '26.2.2', 'uv': '0.13.4'}, got; assert vc.__version__ == '2026.10.19', vc.__version__; import PIL; assert PIL.__version__ == '13.0.0', PIL.__version__"
 
 # Security remediation: the base ships linux-libc-dev 6.8.0-138.138 (kernel UAPI headers), which carries six
 # fixable critical kernel CVEs (CVE-2026-53398, -63940, -64535, -64564, -72399, -74394; fixed in
