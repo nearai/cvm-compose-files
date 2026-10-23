@@ -782,3 +782,15 @@ version from noble-security, and asserts the version. The headers stay installed
 JIT launcher builds include them. The v9 recipe's publish run 39074850588 stopped at the fixable-critical
 gate (image `sha256:0a1bc413...`, tag `glm53-hicache-w4afp8-v9`, never attested or signed). The fixed build
 publishes as `glm53-hicache-w4afp8-v10`.
+
+The v11 recipe's image (`sha256:a3c6a382...`, tag `glm53-hicache-w4afp8-v11`, build run 39979162483) passed the
+CPU tests, but its publish gate (resume run 39979846797) stopped at 7 fixable criticals inherited from the base
+and was never attested or signed. They are four pillow 12.3.0 CVEs (CVE-2026-112393, -112403, -112900,
+-96639; fixed in 13.0.0), certifi 2026.7.22 and certifi 2026.6.17 (GHSA-6q48-6c7w-9gw2; fixed in 2026.10.19)
+and uv 0.12.8 (GHSA-hq85-5cpj-mr62; fixed in 0.13.4). The second certifi is the copy vendored inside pip 26.2.1
+(`pip/_vendor`), so it is fixed by upgrading pip to 26.2.2, which vendors certifi 2026.10.19. All four wheels
+are installed from `security-requirements.txt` by exact hash (`--require-hashes --no-deps`) and the Dockerfile
+asserts the versions. pillow 13 is a major bump; the removed APIs (the `Image.fromarray` `mode` argument,
+`Image.get_child_images`, the ImageCms profile `product_name`/`product_info`, `ExifTags.IFD.Makernote`, saving
+I-mode PNGs) are not used on the text-only GLM-5.3 path. The fixed build publishes as
+`glm53-hicache-w4afp8-v12`.
