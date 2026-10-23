@@ -9,6 +9,7 @@
 Imported by test_glm53_w4afp8_tp2x4.py and test_glm53_w4afp8_long_context.py so the existing CI steps run it.
 """
 
+import hashlib
 import re
 import shlex
 import shutil
@@ -267,6 +268,13 @@ PRIVACY_FILTER_PIN_COMMENTS = (
     "      # transformers 5.20+ needs PyTorch >=2.6; this 2.5.1 base crash-loops on fresh builds.\n",
     "      # 5.16.1 matches gpu13's working image built on 2026-09-02.\n",
 )
+COLOC_ENGINE = "model-sg-qwen38-27b-fp8-tp1-coloc"
+COLOC_ENGINE_JOB = f"sglang-{COLOC_ENGINE}"
+COLOC_BLOCK_HASHES = {
+    "x-privacy-filter-common": "3eb646355ba7bb781c3eb13ef4c1e2320385b66b74642cec8ed91765f975ca92",
+    COLOC_ENGINE: "4cb08e04027204438a4d1995ca4cc77c9637537c5b328a7f1ba62e5719d1cb8f",
+    COLOC_ENGINE_JOB: "b5c730ba7b0196a959960be2a6eadec8024524e95852245ea2b43b84f85775ad",
+}
 
 
 def without_privacy_filter_pin(block: str) -> str:
@@ -336,6 +344,31 @@ def without_qwen38_gpu0_stage_b(text: str) -> str:
     return text
 
 
+def with_qwen38_coloc_pool(text: str) -> str:
+    """Apply only the serving-pool changes to the retired-GPU-0 fixture."""
+    for original, replacements in (
+        (service_block(text, "proxy-qwen38-27b"), (
+            ("VLLM_BACKEND_URLS=http://model-sg-qwen38-27b-fp8-tp1-r2:8000",
+             "VLLM_BACKEND_URLS=http://model-sg-qwen38-27b-fp8-tp1-r2:8000,http://model-sg-qwen38-27b-fp8-tp1-coloc:8000"),
+            ('"gpu_pair:2"', '"gpu_pair:0,2"'),
+            ('"config_variant:qwen38-gpu13-gpu2-dedicated"', '"config_variant:qwen38-gpu13-gpu2-plus-gpu0-coloc"'),
+            ('nearai.otel.gpu_pair: "2"', 'nearai.otel.gpu_pair: "0,2"'),
+            ('nearai.otel.config_variant: "qwen38-gpu13-gpu2-dedicated"', 'nearai.otel.config_variant: "qwen38-gpu13-gpu2-plus-gpu0-coloc"'),
+        )),
+        (jobs_of(text)["inference-proxy-proxy-qwen38-27b"], (
+            ('gpu_pair: "2"', 'gpu_pair: "0,2"'),
+            ('config_variant: "qwen38-gpu13-gpu2-dedicated"', 'config_variant: "qwen38-gpu13-gpu2-plus-gpu0-coloc"'),
+        )),
+    ):
+        updated = original
+        for old, new in replacements:
+            if updated.count(old) != 1:
+                raise AssertionError(f"expected one Qwen3.8 pooling fixture value: {old}")
+            updated = updated.replace(old, new, 1)
+        text = text.replace(original, updated, 1)
+    return text
+
+
 class Gpu13FleetTest(unittest.TestCase):
     """gpu13 deploys prod/small-models.yaml: its two GLM replicas must be the long file's v10 TP2 replicas, and nothing else may move."""
 
@@ -392,59 +425,80 @@ class Gpu13FleetTest(unittest.TestCase):
         self.assertIn('device_ids: ["6","7"]', service_block(self.small, "model-sg-glm53-w4afp8-tp2-r1b"))
 
     def test_non_glm_services_and_everything_outside_the_glm_blocks_are_byte_identical(self) -> None:
-        old = without_qwen38_gpu0_stage_b(self.old)
+        old = with_qwen38_coloc_pool(without_qwen38_gpu0_stage_b(self.old))
         names = re.findall(r"^  ([a-z0-9-]+):$", self.old[self.old.index("\nservices:\n"):], re.MULTILINE)
+        expected_names = [name for name in names if name != QWEN38_GPU0_SERVICE]
+        expected_names.insert(expected_names.index("model-sg-qwen38-27b-fp8-tp1-r2") + 1, COLOC_ENGINE)
         self.assertEqual(
-            [name for name in names if name != QWEN38_GPU0_SERVICE],
+            expected_names,
             re.findall(r"^  ([a-z0-9-]+):$", self.small[self.small.index("\nservices:\n"):], re.MULTILINE),
         )
         for name in names:
             if name not in GPU13_GLM_SERVICES and name != QWEN38_GPU0_SERVICE:
                 with self.subTest(service=name):
+                    new_block = service_block(self.small, name)
+                    if name == "model-sg-qwen38-27b-fp8-tp1-r2":
+                        new_block = new_block.split("  # Production co-location trial", 1)[0].rstrip("\n") + "\n"
                     expected = service_block(old, name)
                     if name == "proxy-qwen38-27b":
                         expected = expected.replace(OLD_PROXY_IMAGE, NEW_PROXY_IMAGE)
-                    self.assertEqual(service_block(self.small, name), expected)
+                    self.assertEqual(new_block, expected)
         anchors = re.findall(r"^(x-[a-z0-9-]+): &", self.old, re.MULTILINE)
         self.assertEqual(
             [anchor for anchor in anchors if anchor != QWEN38_GPU0_ANCHOR],
             re.findall(r"^(x-[a-z0-9-]+): &", self.small, re.MULTILINE),
         )
         for anchor in anchors:
-            if anchor not in ("x-sg-glm53-flash-common", QWEN38_GPU0_ANCHOR):
+            if anchor not in ("x-sg-glm53-flash-common", QWEN38_GPU0_ANCHOR, "x-privacy-filter-common"):
                 new_block = anchor_block(self.small, anchor)
-                if anchor == "x-privacy-filter-common":
-                    new_block = without_privacy_filter_pin(new_block)
                 expected = anchor_block(old, anchor)
                 if anchor == "x-vllm-proxy-common":
                     expected = expected.replace(OLD_PROXY_IMAGE, NEW_PROXY_IMAGE)
                 self.assertEqual(new_block, expected, anchor)
-        # Scrape jobs of every non-GLM target are identical.
+        # The coloc scrape job is pinned separately; every old non-GLM job stays identical.
         old_jobs, new_jobs = jobs_of(old), jobs_of(self.small)
-        self.assertEqual([key for key in jobs_of(self.old) if key != QWEN38_GPU0_JOB], list(new_jobs))
+        expected_jobs = [key for key in jobs_of(self.old) if key != QWEN38_GPU0_JOB]
+        index = expected_jobs.index("sglang-model-sg-qwen38-27b-fp8-tp1-r2") + 1
+        expected_jobs[index:index] = [COLOC_ENGINE_JOB]
+        self.assertEqual(expected_jobs, list(new_jobs))
         for key in old_jobs:
             if "glm53" not in key:
                 self.assertEqual(new_jobs[key], old_jobs[key], key)
 
+    def test_gpu0_coloc_blocks_are_exactly_the_reviewed_additions(self) -> None:
+        blocks = {
+            "x-privacy-filter-common": anchor_block(self.small, "x-privacy-filter-common"),
+            COLOC_ENGINE: service_block(self.small, COLOC_ENGINE),
+            COLOC_ENGINE_JOB: jobs_of(self.small)[COLOC_ENGINE_JOB],
+        }
+        for name, block in blocks.items():
+            with self.subTest(block=name):
+                self.assertEqual(hashlib.sha256(block.encode()).hexdigest(), COLOC_BLOCK_HASHES[name])
+        old_volumes = self.old.split("\nvolumes:\n", 1)[1].split("\nconfigs:\n", 1)[0]
+        new_volumes = self.small.split("\nvolumes:\n", 1)[1].split("\nconfigs:\n", 1)[0]
+        self.assertEqual(new_volumes.replace("  qwen38_coloc_kernel_cache:\n", ""), old_volumes)
+        self.assertEqual(new_volumes.count("  qwen38_coloc_kernel_cache:\n"), 1)
+
     def test_privacy_filter_pins_transformers(self) -> None:
         self.assertIn(PRIVACY_FILTER_TRANSFORMERS_PIN, anchor_block(self.small, "x-privacy-filter-common"))
 
-    def test_stage_b_vacates_gpu0_for_privacy_filter(self) -> None:
+    def test_coloc_engine_joins_customer_routing_without_synthetic_load(self) -> None:
         names = re.findall(r"^  ([a-z0-9-]+):$", self.small[self.small.index("\nservices:\n"):], re.MULTILINE)
         anchors = re.findall(r"^(x-[a-z0-9-]+): &", self.small, re.MULTILINE)
         self.assertNotIn(QWEN38_GPU0_SERVICE, names)
         self.assertNotIn(QWEN38_GPU0_ANCHOR, anchors)
         self.assertEqual(
             [e for e in env_of(service_block(self.small, "proxy-qwen38-27b")) if e.startswith("VLLM_BACKEND_URLS=")],
-            ["VLLM_BACKEND_URLS=http://model-sg-qwen38-27b-fp8-tp1-r2:8000"],
+            ["VLLM_BACKEND_URLS=http://model-sg-qwen38-27b-fp8-tp1-r2:8000,http://model-sg-qwen38-27b-fp8-tp1-coloc:8000"],
         )
         self.assertIn("    <<: *privacy-filter-common", service_block(self.small, "model-privacy-filter"))
         self.assertEqual(anchor_block(self.small, "x-privacy-filter-common").count('device_ids: ["0"]'), 1)
+        self.assertIn('device_ids: ["0"]', service_block(self.small, COLOC_ENGINE))
         for anchor in anchors:
             if anchor != "x-privacy-filter-common":
                 self.assertNotRegex(anchor_block(self.small, anchor), r'device_ids:\s*\[[^\]]*"0"')
         for name in names:
-            if name != "model-privacy-filter" and not name.startswith("dcgm-"):
+            if name not in ("model-privacy-filter", COLOC_ENGINE) and not name.startswith("dcgm-"):
                 block = service_block(self.small, name)
                 with self.subTest(service=name):
                     self.assertNotIn("<<: *privacy-filter-common", block)
@@ -453,10 +507,18 @@ class Gpu13FleetTest(unittest.TestCase):
     def test_dashboard_labels_are_unchanged_on_gpu13(self) -> None:
         def selectors(text: str) -> list[str]:
             return [l for l in selector_lines(text) if "max_running_requests" not in l and "max_queued_requests" not in l]
-        old = without_qwen38_gpu0_stage_b(self.old)
-        self.assertEqual(selectors(self.small), selectors(old))
+        old = with_qwen38_coloc_pool(without_qwen38_gpu0_stage_b(self.old))
+        without_coloc = self.small
+        for name in (COLOC_ENGINE,):
+            without_coloc = without_coloc.replace(service_block(without_coloc, name), "", 1)
+        for name in (COLOC_ENGINE_JOB,):
+            without_coloc = without_coloc.replace("              " + jobs_of(without_coloc)[name], "", 1)
+        self.assertEqual(selectors(without_coloc), selectors(old))
         old_jobs, new_jobs = jobs_of(old), jobs_of(self.small)
-        self.assertEqual([key for key in jobs_of(self.old) if key != QWEN38_GPU0_JOB], list(new_jobs))
+        expected_jobs = [key for key in jobs_of(self.old) if key != QWEN38_GPU0_JOB]
+        index = expected_jobs.index("sglang-model-sg-qwen38-27b-fp8-tp1-r2") + 1
+        expected_jobs[index:index] = [COLOC_ENGINE_JOB]
+        self.assertEqual(expected_jobs, list(new_jobs))
         for key in old_jobs:
             self.assertEqual(
                 "\n".join(l for l in scrub(new_jobs[key]).splitlines() if "max_running_requests" not in l and "max_queued_requests" not in l),

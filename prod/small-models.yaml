@@ -342,12 +342,15 @@ x-privacy-filter-common: &privacy-filter-common
           "uvicorn[standard]"
       WORKDIR /app
       COPY <<'PYEOF' /app/server.py
+      import copy
+      import json
       import os
       import sys
       import threading
       import time
       import torch
       from fastapi import FastAPI, HTTPException
+      from fastapi.responses import JSONResponse
       from pydantic import BaseModel, Field
       from transformers import AutoTokenizer, pipeline
 
@@ -363,7 +366,7 @@ x-privacy-filter-common: &privacy-filter-common
               return default
 
 
-      # Dedicated GPU 0 has served privacy-filter since 33b77d5. Left unbounded,
+      # GPU 0 has served privacy-filter since 33b77d5. Left unbounded,
       # the HF pipeline's CUDA caching allocator ratchets its reserved memory up
       # under traffic and never releases it, eventually filling the card.
       # Defence in depth (all tunable via env, no rebuild):
@@ -374,7 +377,8 @@ x-privacy-filter-common: &privacy-filter-common
       #     the GPU) and hard-restarts the container if this process exceeds its VRAM
       #     budget — a real restart (clean reclaim) rather than silently serving 500s
       #     behind a still-healthy /v1/models probe.
-      #   * An acute CUDA-OOM in a request also exits, for the same clean recycle.
+      #   * An acute CUDA-OOM in a request retries with a smaller window and returns
+      #     503 if GPU 0 remains under pressure from the test Qwen3.8 engine.
       # The model's sliding_window is 128, so a non-eager attention implementation
       # makes attention cost linear in sequence length, not quadratic. That permits a
       # single 131072-token pass at batch 1. Eager attention measured ~13 GB over
@@ -385,10 +389,15 @@ x-privacy-filter-common: &privacy-filter-common
       MAX_LENGTH = max(8, _env("PRIVACY_MAX_LENGTH", 4096, int))
       STRIDE = max(0, min(_env("PRIVACY_STRIDE", 256, int), MAX_LENGTH - 1))
       ATTN_IMPL = _env("PRIVACY_ATTN_IMPL", "sdpa", str)
-      GPU_MEM_LIMIT_GB = max(1.0, _env("GPU_MEM_LIMIT_GB", 32.0, float))
+      GPU_MEM_LIMIT_GB = max(1.0, _env("GPU_MEM_LIMIT_GB", 36.0, float))
       WATCHDOG_INTERVAL_S = max(1.0, _env("WATCHDOG_INTERVAL_S", 30.0, float))
+      FILTER_GPU_MEM_FRACTION = min(1.0, max(0.01, _env("FILTER_GPU_MEM_FRACTION", 0.25, float)))
+      OOM_RETRY_MAX_LENGTH = max(8, _env("FILTER_OOM_RETRY_MAX_LENGTH", 16384, int))
 
       USE_CUDA = torch.cuda.is_available()
+      if USE_CUDA:
+          # Per-process ceiling includes live tensors and the caching allocator.
+          torch.cuda.set_per_process_memory_fraction(FILTER_GPU_MEM_FRACTION)
 
       if ATTN_IMPL == "eager":
           MAX_LENGTH = 4096
@@ -483,6 +492,17 @@ x-privacy-filter-common: &privacy-filter-common
       # Cap the pipeline's per-forward window. The pipeline chunks inputs longer than
       # this into model_max_length-token windows (see the classify() stride= arg below).
       clf.tokenizer.model_max_length = MAX_LENGTH
+      # The retry has its own tokenizer window but shares the same model weights.
+      retry_max_length = min(MAX_LENGTH, OOM_RETRY_MAX_LENGTH)
+      retry_tokenizer = copy.deepcopy(clf.tokenizer)
+      retry_tokenizer.model_max_length = retry_max_length
+      clf_retry = pipeline(
+          "token-classification",
+          model=clf.model,
+          tokenizer=retry_tokenizer,
+          aggregation_strategy="simple",
+          device=0 if USE_CUDA else -1,
+      )
       # Separate tokenizer for usage counts only — left UNBOUNDED so input_tokens stays
       # accurate for the full text (it never truncates: truncation defaults to False).
       tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, revision=MODEL_REVISION, trust_remote_code=True)
@@ -493,6 +513,10 @@ x-privacy-filter-common: &privacy-filter-common
               time.sleep(WATCHDOG_INTERVAL_S)
               torch.cuda.empty_cache()
               reserved_gb = torch.cuda.memory_reserved(0) / 1024 ** 3
+              max_reserved_gb = torch.cuda.max_memory_reserved(0) / 1024 ** 3
+              allocated_gb = torch.cuda.memory_allocated(0) / 1024 ** 3
+              print(json.dumps({"event": "filter_mem", "reserved_gb": reserved_gb,
+                                "max_reserved_gb": max_reserved_gb, "allocated_gb": allocated_gb}), flush=True)
               if reserved_gb > GPU_MEM_LIMIT_GB:
                   sys.stderr.write(
                       "privacy-filter: reserved %.1f GB > %.1f GB limit; "
@@ -541,13 +565,20 @@ x-privacy-filter-common: &privacy-filter-common
               raise HTTPException(400, "input must be a non-empty string or list of strings")
 
           # The pipeline runs the forward under torch.no_grad() internally.
+          # No lock: classify requests stay concurrent, as before.
           try:
               raw = clf(texts, batch_size=BATCH_SIZE, stride=STRIDE)
           except torch.cuda.OutOfMemoryError:
-              # Don't 500-storm behind a healthy /v1/models probe: recycle the
-              # container so restart:unless-stopped reclaims the VRAM cleanly.
+              # Don't 500-storm behind a healthy /v1/models probe: retry with
+              # smaller windows without mutating the shared classifier state.
+              print(json.dumps({"event": "filter_oom", "retry_max_length": retry_max_length}), flush=True)
               torch.cuda.empty_cache()
-              os._exit(1)
+              try:
+                  raw = clf_retry(texts, batch_size=BATCH_SIZE, stride=min(STRIDE, retry_max_length - 1))
+              except torch.cuda.OutOfMemoryError:
+                  torch.cuda.empty_cache()
+                  return JSONResponse(status_code=503, headers={"Retry-After": "2"},
+                                      content={"error": "gpu_memory_pressure"})
 
           # Single batched tokenize for usage counts instead of N sequential calls.
           tok_lens = [len(ids) for ids in tokenizer(texts).input_ids]
@@ -586,9 +617,12 @@ x-privacy-filter-common: &privacy-filter-common
     # Root-cause fix for the VRAM leak: let the CUDA caching allocator shrink
     # reserved segments instead of ratcheting them up and hoarding GPU memory.
     - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-    # Dedicated GPU 0 is a 141 GB H200. The 110 GB watchdog remains a real
-    # backstop while leaving ~30 GB for the driver, fragmentation, and DCGM.
-    - GPU_MEM_LIMIT_GB=110
+    # Shared GPU 0 is a 139.4 GiB H200. The 36 GiB watchdog is a backstop;
+    # the 0.25 per-process cap (~35 GiB) is the real limit beside test Qwen3.8.
+    - GPU_MEM_LIMIT_GB=36
+    - FILTER_GPU_MEM_FRACTION=0.25
+    # On OOM retry once with 16K-token overlapping pipeline windows.
+    - FILTER_OOM_RETRY_MAX_LENGTH=16384
     # sliding_window=128 makes attention linear in sequence length with SDPA, so
     # batch 1 can classify 131072 tokens in one pass. Explicit eager mode, or a
     # rejected non-eager implementation, clamps MAX_LENGTH to 4096 and chunks with
@@ -855,14 +889,14 @@ services:
       - TOKEN=${PROXY_TOKEN}
       - FUSION_ENABLED=${FUSION_ENABLED}
       - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
-      - VLLM_BACKEND_URLS=http://model-sg-qwen38-27b-fp8-tp1-r2:8000
+      - VLLM_BACKEND_URLS=http://model-sg-qwen38-27b-fp8-tp1-r2:8000,http://model-sg-qwen38-27b-fp8-tp1-coloc:8000
       - VLLM_PROXY_MAX_REQUEST_SIZE=104857600
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
       - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
       - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:Qwen/Qwen3.8-27B","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","gpu_pair:2","config_variant:qwen38-gpu13-gpu2-dedicated"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:Qwen/Qwen3.8-27B","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","gpu_pair:0,2","config_variant:qwen38-gpu13-gpu2-plus-gpu0-coloc"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "inference-proxy"
       nearai.otel.service: "vllm-proxy"
@@ -877,8 +911,8 @@ services:
       nearai.otel.host_machine: "${CVM_HOST}"
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
-      nearai.otel.gpu_pair: "2"
-      nearai.otel.config_variant: "qwen38-gpu13-gpu2-dedicated"
+      nearai.otel.gpu_pair: "0,2"
+      nearai.otel.config_variant: "qwen38-gpu13-gpu2-plus-gpu0-coloc"
 
   model-sg-qwen38-27b-fp8-tp1-r2:
     <<: *qwen3-8-27b-dedicated
@@ -922,6 +956,89 @@ services:
       nearai.otel.max_mamba_cache_size: "320"
       nearai.otel.max_running_requests: "64"
       nearai.otel.max_queued_requests: "128"
+      nearai.otel.sglang_revision: "qwen38.27b.g561c8f3"
+      nearai.otel.engine_image: "febfb971c735"
+
+  # Production co-location trial: this GPU 0 engine serves real private Qwen3.8
+  # traffic pooled with r2 on GPU 2, beside the production privacy filter.
+  # If the abort rule fires, remove this engine with compose/down.
+  model-sg-qwen38-27b-fp8-tp1-coloc:
+    <<: *qwen3-8-27b-dedicated
+    container_name: model-sg-qwen38-27b-fp8-tp1-coloc
+    command: >
+      sglang serve
+      --trust-remote-code
+      --model-path Qwen/Qwen3.8-27B-FP8
+      --revision 017b9c7af6b5689d5dd426a76e0bc077eb5ca20a
+      --served-model-name Qwen/Qwen3.8-27B
+      --tp 1
+      --mem-fraction-static 0.50
+      --attention-backend flashinfer
+      --mm-attention-backend fa3
+      --chunked-prefill-size 4096
+      --max-prefill-tokens 4096
+      --enable-mixed-chunk
+      --max-mamba-cache-size 128
+      --max-running-requests 32
+      --max-queued-requests 64
+      --cuda-graph-max-bs 32
+      --reasoning-parser qwen3
+      --tool-call-parser qwen3_coder
+      --port 8000
+      --host 0.0.0.0
+      --enable-cache-report
+      --enable-metrics
+      --log-requests-level 0
+    environment:
+      - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+      - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0}
+      - VLLM_LOGGING_LEVEL=INFO
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - OPENBLAS_L2_SIZE=2097152
+      - NCCL_DEBUG=WARN
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+    volumes:
+      - hugginface_cache:/root/.cache/huggingface
+      - qwen38_coloc_kernel_cache:/root/.cache/sglang
+    depends_on:
+      model-downloader-qwen38:
+        condition: service_completed_successfully
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["0"]
+              capabilities: [gpu]
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:Qwen/Qwen3.8-27B-FP8","served_model:Qwen/Qwen3.8-27B","model_revision:017b9c7af6b5689d5dd426a76e0bc077eb5ca20a","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:0","gpu_pair:0","config_variant:qwen38-gpu13-gpu0-coloc-test","quantization:fp8","sglang_revision:qwen38.27b.g561c8f3","engine_image:febfb971c735"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "sglang"
+      nearai.otel.service: "sglang"
+      nearai.otel.source: "sglang"
+      nearai.otel.container_name: "model-sg-qwen38-27b-fp8-tp1-coloc"
+      nearai.otel.port: "8000"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "Qwen/Qwen3.8-27B-FP8"
+      nearai.otel.served_model: "Qwen/Qwen3.8-27B"
+      nearai.otel.model_revision: "017b9c7af6b5689d5dd426a76e0bc077eb5ca20a"
+      nearai.otel.deployment: "small-models"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
+      nearai.otel.instance: "0"
+      nearai.otel.gpu_pair: "0"
+      nearai.otel.config_variant: "qwen38-gpu13-gpu0-coloc-test"
+      nearai.otel.quantization: "fp8"
+      nearai.otel.chunk_size: "4096"
+      nearai.otel.max_prefill_tokens: "4096"
+      nearai.otel.mixed_chunk: "1"
+      nearai.otel.mem_fraction_static: "0.50"
+      nearai.otel.max_mamba_cache_size: "128"
+      nearai.otel.max_running_requests: "32"
+      nearai.otel.max_queued_requests: "64"
       nearai.otel.sglang_revision: "qwen38.27b.g561c8f3"
       nearai.otel.engine_image: "febfb971c735"
 
@@ -1860,6 +1977,7 @@ volumes:
       device: tmpfs
       o: "size=1m,mode=0700"
   qwen38_kernel_cache:
+  qwen38_coloc_kernel_cache:
   certs:
     external: true
     name: certs
@@ -2274,6 +2392,38 @@ configs:
                       max_queued_requests: "128"
                       sglang_revision: "qwen38.27b.g561c8f3"
                       engine_image: "febfb971c735"
+              - job_name: sglang-model-sg-qwen38-27b-fp8-tp1-coloc
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['model-sg-qwen38-27b-fp8-tp1-coloc:8000']
+                    labels:
+                      service: "sglang"
+                      source: "sglang"
+                      container_name: "model-sg-qwen38-27b-fp8-tp1-coloc"
+                      model: "Qwen/Qwen3.8-27B-FP8"
+                      served_model: "Qwen/Qwen3.8-27B"
+                      deployment: "small-models"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      port: "8000"
+                      instance: "0"
+                      gpu_pair: "0"
+                      model_revision: "017b9c7af6b5689d5dd426a76e0bc077eb5ca20a"
+                      config_variant: "qwen38-gpu13-gpu0-coloc-test"
+                      quantization: "fp8"
+                      chunk_size: "4096"
+                      max_prefill_tokens: "4096"
+                      mixed_chunk: "1"
+                      mem_fraction_static: "0.50"
+                      max_mamba_cache_size: "128"
+                      max_running_requests: "32"
+                      max_queued_requests: "64"
+                      sglang_revision: "qwen38.27b.g561c8f3"
+                      engine_image: "febfb971c735"
               - job_name: inference-proxy-proxy-qwen38-27b
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -2291,8 +2441,8 @@ configs:
                       cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "8000"
-                      gpu_pair: "2"
-                      config_variant: "qwen38-gpu13-gpu2-dedicated"
+                      gpu_pair: "0,2"
+                      config_variant: "qwen38-gpu13-gpu2-plus-gpu0-coloc"
               - job_name: inference-proxy-proxy-glm53
                 scrape_interval: 15s
                 metrics_path: /metrics
