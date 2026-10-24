@@ -109,7 +109,7 @@ x-qwen3-6-common: &qwen3-6-common
   stop_grace_period: 5m
   logging: *logging-conf
 
-# Qwen3.8 runs on GPU 2 beside the privacy filter; GPU 0 is Levanto Sage.
+# Qwen3.8 runs on GPU 2 beside the privacy filter; gpu23 GPU 0 is free; Sage runs on gpu13 GPU 0.
 # Dedicated recipe: prod/qwen36-qwen38.yaml with gpu13's cache volume.
 x-qwen3-8-27b-dedicated: &qwen3-8-27b-dedicated
   <<: *nvidia
@@ -902,7 +902,7 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
-  # ── Qwen3.8-27B on GPU 2 beside the privacy filter; GPU 0 is Levanto Sage ──
+  # ── Qwen3.8-27B on GPU 2 beside the privacy filter; gpu23 GPU 0 is free (Sage on gpu13 GPU 0) ──
   # See x-qwen3-8-27b-dedicated. Uses its own
   # nginx (host :8000 HTTP, :8001 TLS) and its own registrar (profile
   # register-qwen38) so the shared nginx, the shared registrar and their live
@@ -965,7 +965,7 @@ services:
       nearai.otel.config_variant: "qwen38-gpu2-coloc-only"
 
   # Production co-location trial: this GPU 2 engine, beside the production privacy filter (both moved
-  # together from GPU 0 when Levanto Sage took GPU 0; r2 was removed earlier), is the only private Qwen3.8
+  # together from gpu23 GPU 0 in #390; Sage runs on gpu13 GPU 0; r2 was removed earlier), is the only private Qwen3.8
   # replica on this host; if the abort rule fires, compose/down of this engine takes it off this host entirely.
   model-sg-qwen38-27b-fp8-tp1-coloc:
     <<: *qwen3-8-27b-dedicated
@@ -1909,12 +1909,12 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
-  # ── Levanto Sage on GPU 0 of the small-models host (gpu23; moved from gpu04 GPU 6, prod/sage.yaml) ──
-  # Sage takes GPU 0; the privacy filter and Qwen3.8 coloc engine that shared GPU 0 move together to GPU 2
-  # (Qwen3.8 r2's GPU, r2 removed in #389). Moving Sage here frees gpu04 GPU 6 for a fourth GLM replica.
-  # The two services are prod/sage.yaml's (#380) unchanged except the GPU, pinned by UUID to gpu23's GPU 0: never include them in a
-  # deploy on another host (the image is not there and the GPU is gpu23's, so they fail closed). Start them on
-  # gpu23 by name, with the SAGE_* values in the env:
+  # ── Levanto Sage on gpu13 GPU 0 (moved from gpu04 GPU 6, prod/sage.yaml) ──
+  # The privacy filter and Qwen3.8 coloc move to GPU 2 on gpu23 (#390); this is unrelated to Sage's host.
+  # Moving Sage here frees gpu04 GPU 6 for a fourth GLM replica.
+  # The two services are prod/sage.yaml's (#380) unchanged except the GPU, pinned by UUID to gpu13's GPU 0.
+  # Never include sage-dstack/sage in a gpu23 deploy: the image is not there and the GPU is gpu13's, so they fail closed.
+  # Start them on gpu13 by name, with the SAGE_* values in the env:
   #   POST /compose/up {"tag":"v0.0.N","file":"prod/small-models.yaml","services":["sage-dstack","sage"],"env":{...}}
   # prod/sage-pull.yaml must have put the image in the VM's image store before: compose-manager has no registry
   # login, and this file never pulls the private image (pull_policy: never), so a missing image fails closed.
@@ -1994,7 +1994,7 @@ services:
       # Enables Sage's content-free /internal/diagnostics endpoint.
       SAGE_ADMIN_TOKEN: ${SAGE_ADMIN_TOKEN}
       # Same GPU as device_ids below (exactly one GPU, as the image requires).
-      NVIDIA_VISIBLE_DEVICES: GPU-a0cb74c4-802a-13a5-86c5-e9528738b27d
+      NVIDIA_VISIBLE_DEVICES: GPU-9ec3a20b-6169-7fdc-a19a-6058228132c1
     volumes:
       - sage-data:/workspace
       - /var/run/sage-dstack/dstack.sock:/var/run/dstack.sock
@@ -2020,8 +2020,8 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              # gpu23 index 0 (PCI 01:00.0), the privacy filter's and Qwen3.8 coloc's GPU until Sage took it.
-              device_ids: ["GPU-a0cb74c4-802a-13a5-86c5-e9528738b27d"]
+              # gpu13 index 0 (PCI 01:00.0); gpu13's small models moved to gpu23.
+              device_ids: ["GPU-9ec3a20b-6169-7fdc-a19a-6058228132c1"]
               capabilities: [gpu]
 
   otelcol-contrib:
