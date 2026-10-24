@@ -284,19 +284,19 @@ COLOC_BLOCK_HASHES = {
     COLOC_ENGINE: "63f6d8d7f12a81be574554cc3821f3627f059d04858a7a1c4d898f6d6df88155",
     COLOC_ENGINE_JOB: "1727948d4fab3e8c7d13d4d65b3057c8d788892ae264a323ea4c32baf4449c9a",
 }
-# Levanto Sage moved in from prod/sage.yaml (gpu04 GPU 6), unchanged except the GPU: GPU 0 of the
-# small-models host (gpu23). The filter and Qwen3.8 coloc move together to GPU 2.
+# Levanto Sage moved in from prod/sage.yaml (gpu04 GPU 6), unchanged except the GPU: gpu13 GPU 0.
+# The filter and Qwen3.8 coloc move together to GPU 2 on gpu23.
 SAGE_FILE = ROOT / "prod/sage.yaml"
 SAGE_SERVICES = ("sage-dstack", "sage")
-SAGE_HEADING = "  # ── Levanto Sage on GPU 0 of the small-models host"
+SAGE_HEADING = "  # ── Levanto Sage on gpu13 GPU 0"
 SAGE_GPU04_GPU = "GPU-bafbdde0-cd41-8379-fa93-149864963329"
-SAGE_GPU = "GPU-a0cb74c4-802a-13a5-86c5-e9528738b27d"
+SAGE_GPU = "GPU-9ec3a20b-6169-7fdc-a19a-6058228132c1"
 QWEN38_R2 = "model-sg-qwen38-27b-fp8-tp1-r2"
 QWEN38_R2_DCGM = "dcgm-qwen38-27b"
 QWEN38_R2_JOBS = (f"sglang-{QWEN38_R2}", f"dcgm-{QWEN38_R2_DCGM}")
 SAGE_BLOCK_HASHES = {
     "sage-dstack": "e3020a51e7f4f6c6a02868004618e880da664a55abc6c875c1da860595f16518",
-    "sage": "4f9dadac8d935500d513a0c194a3bd62aea8573def1f7a56846a7d08f9ff1a7f",
+    "sage": "df1141e760d008bea56b14f6a24de27b1fcb18714cb5ccb20bf32f13e2ae1cc1",
     "networks": "f83c2c4fabfffcf0587e644bb575e4cc4c602f0fe8a032061fac8215403be193",
 }
 
@@ -436,9 +436,9 @@ def with_filter_and_coloc_on_gpu2(text: str) -> str:
     """Move the filter, DCGM exporter and Qwen3.8 telemetry in the fixture to GPU 2."""
     for old, new in (
         ("# Qwen3.8 runs alone on GPU 2; GPU 0 is reserved for the privacy filter.",
-         "# Qwen3.8 runs on GPU 2 beside the privacy filter; GPU 0 is Levanto Sage."),
+         "# Qwen3.8 runs on GPU 2 beside the privacy filter; gpu23 GPU 0 is free; Sage runs on gpu13 GPU 0."),
         ("  # ── Qwen3.8-27B on GPU 0 beside the privacy filter; GPU 2 is Levanto Sage ──",
-         "  # ── Qwen3.8-27B on GPU 2 beside the privacy filter; GPU 0 is Levanto Sage ──"),
+         "  # ── Qwen3.8-27B on GPU 2 beside the privacy filter; gpu23 GPU 0 is free (Sage on gpu13 GPU 0) ──"),
     ):
         if text.count(old) != 1:
             raise AssertionError(f"expected one GPU placement fixture comment: {old}")
@@ -578,7 +578,7 @@ class Gpu13FleetTest(unittest.TestCase):
         names = re.findall(r"^  ([a-z0-9-]+):$", self.old[self.old.index("\nservices:\n"):], re.MULTILINE)
         expected_names = [name for name in names if name != QWEN38_GPU0_SERVICE]
         expected_names.insert(expected_names.index(QWEN38_R2) + 1, COLOC_ENGINE)
-        # Sage took GPU 0: r2 and its DCGM exporter are gone.
+        # With r2 and its DCGM exporter gone, gpu23 GPU 0 stays free for Sage on gpu13 GPU 0.
         expected_names = [name for name in expected_names if name not in (QWEN38_R2, QWEN38_R2_DCGM)]
         # Sage (pinned separately): its two services before the collector, its network and its volume.
         otelcol = expected_names.index("otelcol-contrib")
@@ -639,7 +639,7 @@ class Gpu13FleetTest(unittest.TestCase):
         self.assertEqual(new_volumes.count("  qwen38_coloc_kernel_cache:\n"), 1)
         self.assertEqual(new_volumes.count("  sage-data:\n"), 1)
 
-    def test_sage_moves_in_from_prod_sage_on_gpu0_of_the_small_models_host_unchanged_except_the_gpu(self) -> None:
+    def test_sage_moves_in_from_prod_sage_on_gpu13_gpu0_unchanged_except_the_gpu(self) -> None:
         networks = self.small.split("\nnetworks:\n", 1)[1].split("\nvolumes:\n", 1)[0]
         blocks = {name: service_block(self.small, name) for name in SAGE_SERVICES}
         for name, block in {**blocks, "networks": networks}.items():
@@ -825,7 +825,7 @@ class Gpu13FleetTest(unittest.TestCase):
             [e for e in env_of(service_block(self.small, "proxy-qwen38-27b")) if e.startswith("VLLM_BACKEND_URLS=")],
             ["VLLM_BACKEND_URLS=http://model-sg-qwen38-27b-fp8-tp1-coloc:8000"],
         )
-        # Since Sage took GPU 0 the GPU 2 engine is the only private Qwen3.8 replica.
+        # With r2 removed, the GPU 2 engine is the only private Qwen3.8 replica on gpu23.
         self.assertNotIn(QWEN38_R2, names)
         self.assertNotIn(QWEN38_R2_DCGM, names)
         self.assertIn("    <<: *privacy-filter-common", service_block(self.small, "model-privacy-filter"))
