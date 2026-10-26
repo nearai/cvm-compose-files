@@ -84,8 +84,8 @@ Follow the existing rules:
 
 ## Before prod
 
-1. l11 (Engram in HBM) passes on gpu31.
-2. The inference-proxy strict-model change is merged and a proxy-in-front replay passes.
-3. A CC run of one replica on a TDX+PPCIe host, covering the Engram layout and the DEP NCCL all-to-all.
+1. The inference-proxy strict-model change (inference-proxy #331) is merged and published; its digest and the engine digest (published from #393) are filled in via the generator.
+2. gpu02 staging (unlisted, from a main tag): both replicas boot with Engram in HBM under TDX+PPCIe, and the DEP NCCL all-to-all works. This replaces the cancelled gpu31 l11/l12 runs.
+3. On gpu02: strict refusals per proxy, KV-per-adapter (`scripts/lab_kv_adapter_check.py` with `KV_URL_MAP`), Henry's smoke per id, the tee-bench load matrix (base:adapter 1:0 / 1:1 / 0:1), then a 24 h soak.
 4. A refusal-behaviour eval of the adapter on the team's set.
 5. The cloud-api catalog row for the abliterated id (#1237, unlisted + per-org).
