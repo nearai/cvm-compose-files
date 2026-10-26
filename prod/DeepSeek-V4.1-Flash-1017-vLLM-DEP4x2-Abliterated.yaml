@@ -6,7 +6,7 @@
 # NOT DEPLOYABLE YET. Before any compose_up, all of the following must hold:
 #   - ENGINE_IMAGE / PROXY_IMAGE are real digests (both are zero placeholders here);
 #   - the proxy build supports VLLM_PROXY_STRICT_MODEL (inference-proxy feat/strict-model);
-#   - the Engram layout (host) has passed on a TDX+PPCIe host;
+#   - the Engram layout (hbm) has passed on a TDX+PPCIe host;
 #   - a one-replica CC canary has passed. Deploy from a main tag only, one replica at a time.
 #
 # Layout: replica r1 = guest GPUs 0-3, r2 = 4-7; each is four `vllm serve` processes, one per GPU
@@ -85,7 +85,7 @@ services:
       - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
     logging: *logging-conf
     labels:
-      com.datadoghq.ad.logs: '[{"source":"model-downloader","service":"model-downloader","tags":["model:multi","deployment:dsv41-flash-1017-vllm-dep4x2-abliterated","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0320-lora3p-w4a8-dep4-c8192-dspark3-mr64-engram-host"]}]'
+      com.datadoghq.ad.logs: '[{"source":"model-downloader","service":"model-downloader","tags":["model:multi","deployment:dsv41-flash-1017-vllm-dep4x2-abliterated","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0320-lora3p-w4a8-dep4-c8192-dspark3-mr64-engram-hbm"]}]'
 
   nginx:
     image: nginx@sha256:1d13701a5f9f3fb01aaa88cef2344d65b6b5bf6b7d9fa4cf0dca557a8d7702ba
@@ -108,7 +108,7 @@ services:
     restart: unless-stopped
     logging: *logging-conf
     labels:
-      com.datadoghq.ad.logs: '[{"source":"nginx","service":"nginx","tags":["model:multi","deployment:dsv41-flash-1017-vllm-dep4x2-abliterated","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0320-lora3p-w4a8-dep4-c8192-dspark3-mr64-engram-host"]}]'
+      com.datadoghq.ad.logs: '[{"source":"nginx","service":"nginx","tags":["model:multi","deployment:dsv41-flash-1017-vllm-dep4x2-abliterated","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0320-lora3p-w4a8-dep4-c8192-dspark3-mr64-engram-hbm"]}]'
 
   model-proxy-registrar:
     image: curlimages/curl@sha256:d94d07ba9e7d6de898b6d96c1a072f6f8266c687af78a74f380087a0addf5d17
@@ -133,7 +133,7 @@ services:
         mode: 0755
     logging: *logging-conf
     labels:
-      com.datadoghq.ad.logs: '[{"source":"model-proxy-registrar","service":"model-proxy-registrar","tags":["model:multi","deployment:dsv41-flash-1017-vllm-dep4x2-abliterated","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0320-lora3p-w4a8-dep4-c8192-dspark3-mr64-engram-host"]}]'
+      com.datadoghq.ad.logs: '[{"source":"model-proxy-registrar","service":"model-proxy-registrar","tags":["model:multi","deployment:dsv41-flash-1017-vllm-dep4x2-abliterated","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0320-lora3p-w4a8-dep4-c8192-dspark3-mr64-engram-hbm"]}]'
 
   proxy-dsv41:
     <<: *vllm-proxy-common
@@ -159,7 +159,7 @@ services:
       - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
       - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:deepseek-ai/DeepSeek-V4.1-Flash-1017","port:8010","deployment:dsv41-flash-1017-vllm-dep4x2-abliterated","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0320-lora3p-w4a8-dep4-c8192-dspark3-mr64-engram-host"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:deepseek-ai/DeepSeek-V4.1-Flash-1017","port:8010","deployment:dsv41-flash-1017-vllm-dep4x2-abliterated","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0320-lora3p-w4a8-dep4-c8192-dspark3-mr64-engram-hbm"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "inference-proxy"
       nearai.otel.service: "vllm-proxy"
@@ -175,7 +175,7 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.ppcie: "true"
-      nearai.otel.config_variant: "vllm0320-lora3p-w4a8-dep4-c8192-dspark3-mr64-engram-host"
+      nearai.otel.config_variant: "vllm0320-lora3p-w4a8-dep4-c8192-dspark3-mr64-engram-hbm"
 
   proxy-dsv41-abliterated:
     <<: *vllm-proxy-common
@@ -201,7 +201,7 @@ services:
       - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
       - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated","port:8012","deployment:dsv41-flash-1017-vllm-dep4x2-abliterated","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0320-lora3p-w4a8-dep4-c8192-dspark3-mr64-engram-host"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated","port:8012","deployment:dsv41-flash-1017-vllm-dep4x2-abliterated","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0320-lora3p-w4a8-dep4-c8192-dspark3-mr64-engram-hbm"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "inference-proxy"
       nearai.otel.service: "vllm-proxy"
@@ -217,7 +217,7 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.ppcie: "true"
-      nearai.otel.config_variant: "vllm0320-lora3p-w4a8-dep4-c8192-dspark3-mr64-engram-host"
+      nearai.otel.config_variant: "vllm0320-lora3p-w4a8-dep4-c8192-dspark3-mr64-engram-hbm"
 
   model-vllm-dsv41-r1-dp0:
     <<: *dsv41-engine-common
@@ -239,7 +239,7 @@ services:
       --max-model-len 1048576
       --max-num-batched-tokens 8192
       --max-num-seqs 64
-      --gpu-memory-utilization 0.85
+      --gpu-memory-utilization 0.95
       --enable-prompt-tokens-details
       --tokenizer-mode deepseek_v41
       --reasoning-parser deepseek_v41
@@ -248,6 +248,7 @@ services:
       --speculative-config '{"method":"dspark","num_speculative_tokens":3}'
       --enable-lora --max-loras 1 --max-cpu-loras 1 --max-lora-rank 8 --lora-target-modules wo_b
       --lora-modules '{"name":"deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated","path":"/root/.cache/huggingface/hub/models--UnderTides--DeepSeek-V4.1-Flash-1017-heretic-lora/snapshots/196c06e3c2aad43e9688d16fa993b4333f69358a","base_model_name":"deepseek-ai/DeepSeek-V4.1-Flash-1017"}'
+      --engram-config '{"cpu_offload":false,"embedding_across_dp":true}'
       --host 0.0.0.0
       --port 8000
     deploy:
@@ -258,7 +259,7 @@ services:
               device_ids: ["0"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:deepseek-ai/DeepSeek-V4.1-Flash-1017","replica:r1","dp_rank:0","gpu:0","deployment:dsv41-flash-1017-vllm-dep4x2-abliterated","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0320-lora3p-w4a8-dep4-c8192-dspark3-mr64-engram-host"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:deepseek-ai/DeepSeek-V4.1-Flash-1017","replica:r1","dp_rank:0","gpu:0","deployment:dsv41-flash-1017-vllm-dep4x2-abliterated","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0320-lora3p-w4a8-dep4-c8192-dspark3-mr64-engram-hbm"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
@@ -274,7 +275,7 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.ppcie: "true"
-      nearai.otel.config_variant: "vllm0320-lora3p-w4a8-dep4-c8192-dspark3-mr64-engram-host"
+      nearai.otel.config_variant: "vllm0320-lora3p-w4a8-dep4-c8192-dspark3-mr64-engram-hbm"
 
   model-vllm-dsv41-r1-dp1:
     <<: *dsv41-engine-common
@@ -298,7 +299,7 @@ services:
       --max-model-len 1048576
       --max-num-batched-tokens 8192
       --max-num-seqs 64
-      --gpu-memory-utilization 0.85
+      --gpu-memory-utilization 0.95
       --enable-prompt-tokens-details
       --tokenizer-mode deepseek_v41
       --reasoning-parser deepseek_v41
@@ -307,6 +308,7 @@ services:
       --speculative-config '{"method":"dspark","num_speculative_tokens":3}'
       --enable-lora --max-loras 1 --max-cpu-loras 1 --max-lora-rank 8 --lora-target-modules wo_b
       --lora-modules '{"name":"deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated","path":"/root/.cache/huggingface/hub/models--UnderTides--DeepSeek-V4.1-Flash-1017-heretic-lora/snapshots/196c06e3c2aad43e9688d16fa993b4333f69358a","base_model_name":"deepseek-ai/DeepSeek-V4.1-Flash-1017"}'
+      --engram-config '{"cpu_offload":false,"embedding_across_dp":true}'
       --host 0.0.0.0
       --port 8000
     deploy:
@@ -317,7 +319,7 @@ services:
               device_ids: ["1"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:deepseek-ai/DeepSeek-V4.1-Flash-1017","replica:r1","dp_rank:1","gpu:1","deployment:dsv41-flash-1017-vllm-dep4x2-abliterated","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0320-lora3p-w4a8-dep4-c8192-dspark3-mr64-engram-host"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:deepseek-ai/DeepSeek-V4.1-Flash-1017","replica:r1","dp_rank:1","gpu:1","deployment:dsv41-flash-1017-vllm-dep4x2-abliterated","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0320-lora3p-w4a8-dep4-c8192-dspark3-mr64-engram-hbm"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
@@ -333,7 +335,7 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.ppcie: "true"
-      nearai.otel.config_variant: "vllm0320-lora3p-w4a8-dep4-c8192-dspark3-mr64-engram-host"
+      nearai.otel.config_variant: "vllm0320-lora3p-w4a8-dep4-c8192-dspark3-mr64-engram-hbm"
 
   model-vllm-dsv41-r1-dp2:
     <<: *dsv41-engine-common
@@ -357,7 +359,7 @@ services:
       --max-model-len 1048576
       --max-num-batched-tokens 8192
       --max-num-seqs 64
-      --gpu-memory-utilization 0.85
+      --gpu-memory-utilization 0.95
       --enable-prompt-tokens-details
       --tokenizer-mode deepseek_v41
       --reasoning-parser deepseek_v41
@@ -366,6 +368,7 @@ services:
       --speculative-config '{"method":"dspark","num_speculative_tokens":3}'
       --enable-lora --max-loras 1 --max-cpu-loras 1 --max-lora-rank 8 --lora-target-modules wo_b
       --lora-modules '{"name":"deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated","path":"/root/.cache/huggingface/hub/models--UnderTides--DeepSeek-V4.1-Flash-1017-heretic-lora/snapshots/196c06e3c2aad43e9688d16fa993b4333f69358a","base_model_name":"deepseek-ai/DeepSeek-V4.1-Flash-1017"}'
+      --engram-config '{"cpu_offload":false,"embedding_across_dp":true}'
       --host 0.0.0.0
       --port 8000
     deploy:
@@ -376,7 +379,7 @@ services:
               device_ids: ["2"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:deepseek-ai/DeepSeek-V4.1-Flash-1017","replica:r1","dp_rank:2","gpu:2","deployment:dsv41-flash-1017-vllm-dep4x2-abliterated","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0320-lora3p-w4a8-dep4-c8192-dspark3-mr64-engram-host"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:deepseek-ai/DeepSeek-V4.1-Flash-1017","replica:r1","dp_rank:2","gpu:2","deployment:dsv41-flash-1017-vllm-dep4x2-abliterated","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0320-lora3p-w4a8-dep4-c8192-dspark3-mr64-engram-hbm"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
@@ -392,7 +395,7 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.ppcie: "true"
-      nearai.otel.config_variant: "vllm0320-lora3p-w4a8-dep4-c8192-dspark3-mr64-engram-host"
+      nearai.otel.config_variant: "vllm0320-lora3p-w4a8-dep4-c8192-dspark3-mr64-engram-hbm"
 
   model-vllm-dsv41-r1-dp3:
     <<: *dsv41-engine-common
@@ -416,7 +419,7 @@ services:
       --max-model-len 1048576
       --max-num-batched-tokens 8192
       --max-num-seqs 64
-      --gpu-memory-utilization 0.85
+      --gpu-memory-utilization 0.95
       --enable-prompt-tokens-details
       --tokenizer-mode deepseek_v41
       --reasoning-parser deepseek_v41
@@ -425,6 +428,7 @@ services:
       --speculative-config '{"method":"dspark","num_speculative_tokens":3}'
       --enable-lora --max-loras 1 --max-cpu-loras 1 --max-lora-rank 8 --lora-target-modules wo_b
       --lora-modules '{"name":"deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated","path":"/root/.cache/huggingface/hub/models--UnderTides--DeepSeek-V4.1-Flash-1017-heretic-lora/snapshots/196c06e3c2aad43e9688d16fa993b4333f69358a","base_model_name":"deepseek-ai/DeepSeek-V4.1-Flash-1017"}'
+      --engram-config '{"cpu_offload":false,"embedding_across_dp":true}'
       --host 0.0.0.0
       --port 8000
     deploy:
@@ -435,7 +439,7 @@ services:
               device_ids: ["3"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:deepseek-ai/DeepSeek-V4.1-Flash-1017","replica:r1","dp_rank:3","gpu:3","deployment:dsv41-flash-1017-vllm-dep4x2-abliterated","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0320-lora3p-w4a8-dep4-c8192-dspark3-mr64-engram-host"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:deepseek-ai/DeepSeek-V4.1-Flash-1017","replica:r1","dp_rank:3","gpu:3","deployment:dsv41-flash-1017-vllm-dep4x2-abliterated","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0320-lora3p-w4a8-dep4-c8192-dspark3-mr64-engram-hbm"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
@@ -451,7 +455,7 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.ppcie: "true"
-      nearai.otel.config_variant: "vllm0320-lora3p-w4a8-dep4-c8192-dspark3-mr64-engram-host"
+      nearai.otel.config_variant: "vllm0320-lora3p-w4a8-dep4-c8192-dspark3-mr64-engram-hbm"
 
   model-vllm-dsv41-r2-dp0:
     <<: *dsv41-engine-common
@@ -473,7 +477,7 @@ services:
       --max-model-len 1048576
       --max-num-batched-tokens 8192
       --max-num-seqs 64
-      --gpu-memory-utilization 0.85
+      --gpu-memory-utilization 0.95
       --enable-prompt-tokens-details
       --tokenizer-mode deepseek_v41
       --reasoning-parser deepseek_v41
@@ -482,6 +486,7 @@ services:
       --speculative-config '{"method":"dspark","num_speculative_tokens":3}'
       --enable-lora --max-loras 1 --max-cpu-loras 1 --max-lora-rank 8 --lora-target-modules wo_b
       --lora-modules '{"name":"deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated","path":"/root/.cache/huggingface/hub/models--UnderTides--DeepSeek-V4.1-Flash-1017-heretic-lora/snapshots/196c06e3c2aad43e9688d16fa993b4333f69358a","base_model_name":"deepseek-ai/DeepSeek-V4.1-Flash-1017"}'
+      --engram-config '{"cpu_offload":false,"embedding_across_dp":true}'
       --host 0.0.0.0
       --port 8000
     deploy:
@@ -492,7 +497,7 @@ services:
               device_ids: ["4"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:deepseek-ai/DeepSeek-V4.1-Flash-1017","replica:r2","dp_rank:0","gpu:4","deployment:dsv41-flash-1017-vllm-dep4x2-abliterated","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0320-lora3p-w4a8-dep4-c8192-dspark3-mr64-engram-host"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:deepseek-ai/DeepSeek-V4.1-Flash-1017","replica:r2","dp_rank:0","gpu:4","deployment:dsv41-flash-1017-vllm-dep4x2-abliterated","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0320-lora3p-w4a8-dep4-c8192-dspark3-mr64-engram-hbm"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
@@ -508,7 +513,7 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.ppcie: "true"
-      nearai.otel.config_variant: "vllm0320-lora3p-w4a8-dep4-c8192-dspark3-mr64-engram-host"
+      nearai.otel.config_variant: "vllm0320-lora3p-w4a8-dep4-c8192-dspark3-mr64-engram-hbm"
 
   model-vllm-dsv41-r2-dp1:
     <<: *dsv41-engine-common
@@ -532,7 +537,7 @@ services:
       --max-model-len 1048576
       --max-num-batched-tokens 8192
       --max-num-seqs 64
-      --gpu-memory-utilization 0.85
+      --gpu-memory-utilization 0.95
       --enable-prompt-tokens-details
       --tokenizer-mode deepseek_v41
       --reasoning-parser deepseek_v41
@@ -541,6 +546,7 @@ services:
       --speculative-config '{"method":"dspark","num_speculative_tokens":3}'
       --enable-lora --max-loras 1 --max-cpu-loras 1 --max-lora-rank 8 --lora-target-modules wo_b
       --lora-modules '{"name":"deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated","path":"/root/.cache/huggingface/hub/models--UnderTides--DeepSeek-V4.1-Flash-1017-heretic-lora/snapshots/196c06e3c2aad43e9688d16fa993b4333f69358a","base_model_name":"deepseek-ai/DeepSeek-V4.1-Flash-1017"}'
+      --engram-config '{"cpu_offload":false,"embedding_across_dp":true}'
       --host 0.0.0.0
       --port 8000
     deploy:
@@ -551,7 +557,7 @@ services:
               device_ids: ["5"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:deepseek-ai/DeepSeek-V4.1-Flash-1017","replica:r2","dp_rank:1","gpu:5","deployment:dsv41-flash-1017-vllm-dep4x2-abliterated","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0320-lora3p-w4a8-dep4-c8192-dspark3-mr64-engram-host"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:deepseek-ai/DeepSeek-V4.1-Flash-1017","replica:r2","dp_rank:1","gpu:5","deployment:dsv41-flash-1017-vllm-dep4x2-abliterated","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0320-lora3p-w4a8-dep4-c8192-dspark3-mr64-engram-hbm"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
@@ -567,7 +573,7 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.ppcie: "true"
-      nearai.otel.config_variant: "vllm0320-lora3p-w4a8-dep4-c8192-dspark3-mr64-engram-host"
+      nearai.otel.config_variant: "vllm0320-lora3p-w4a8-dep4-c8192-dspark3-mr64-engram-hbm"
 
   model-vllm-dsv41-r2-dp2:
     <<: *dsv41-engine-common
@@ -591,7 +597,7 @@ services:
       --max-model-len 1048576
       --max-num-batched-tokens 8192
       --max-num-seqs 64
-      --gpu-memory-utilization 0.85
+      --gpu-memory-utilization 0.95
       --enable-prompt-tokens-details
       --tokenizer-mode deepseek_v41
       --reasoning-parser deepseek_v41
@@ -600,6 +606,7 @@ services:
       --speculative-config '{"method":"dspark","num_speculative_tokens":3}'
       --enable-lora --max-loras 1 --max-cpu-loras 1 --max-lora-rank 8 --lora-target-modules wo_b
       --lora-modules '{"name":"deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated","path":"/root/.cache/huggingface/hub/models--UnderTides--DeepSeek-V4.1-Flash-1017-heretic-lora/snapshots/196c06e3c2aad43e9688d16fa993b4333f69358a","base_model_name":"deepseek-ai/DeepSeek-V4.1-Flash-1017"}'
+      --engram-config '{"cpu_offload":false,"embedding_across_dp":true}'
       --host 0.0.0.0
       --port 8000
     deploy:
@@ -610,7 +617,7 @@ services:
               device_ids: ["6"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:deepseek-ai/DeepSeek-V4.1-Flash-1017","replica:r2","dp_rank:2","gpu:6","deployment:dsv41-flash-1017-vllm-dep4x2-abliterated","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0320-lora3p-w4a8-dep4-c8192-dspark3-mr64-engram-host"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:deepseek-ai/DeepSeek-V4.1-Flash-1017","replica:r2","dp_rank:2","gpu:6","deployment:dsv41-flash-1017-vllm-dep4x2-abliterated","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0320-lora3p-w4a8-dep4-c8192-dspark3-mr64-engram-hbm"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
@@ -626,7 +633,7 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.ppcie: "true"
-      nearai.otel.config_variant: "vllm0320-lora3p-w4a8-dep4-c8192-dspark3-mr64-engram-host"
+      nearai.otel.config_variant: "vllm0320-lora3p-w4a8-dep4-c8192-dspark3-mr64-engram-hbm"
 
   model-vllm-dsv41-r2-dp3:
     <<: *dsv41-engine-common
@@ -650,7 +657,7 @@ services:
       --max-model-len 1048576
       --max-num-batched-tokens 8192
       --max-num-seqs 64
-      --gpu-memory-utilization 0.85
+      --gpu-memory-utilization 0.95
       --enable-prompt-tokens-details
       --tokenizer-mode deepseek_v41
       --reasoning-parser deepseek_v41
@@ -659,6 +666,7 @@ services:
       --speculative-config '{"method":"dspark","num_speculative_tokens":3}'
       --enable-lora --max-loras 1 --max-cpu-loras 1 --max-lora-rank 8 --lora-target-modules wo_b
       --lora-modules '{"name":"deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated","path":"/root/.cache/huggingface/hub/models--UnderTides--DeepSeek-V4.1-Flash-1017-heretic-lora/snapshots/196c06e3c2aad43e9688d16fa993b4333f69358a","base_model_name":"deepseek-ai/DeepSeek-V4.1-Flash-1017"}'
+      --engram-config '{"cpu_offload":false,"embedding_across_dp":true}'
       --host 0.0.0.0
       --port 8000
     deploy:
@@ -669,7 +677,7 @@ services:
               device_ids: ["7"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:deepseek-ai/DeepSeek-V4.1-Flash-1017","replica:r2","dp_rank:3","gpu:7","deployment:dsv41-flash-1017-vllm-dep4x2-abliterated","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0320-lora3p-w4a8-dep4-c8192-dspark3-mr64-engram-host"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:deepseek-ai/DeepSeek-V4.1-Flash-1017","replica:r2","dp_rank:3","gpu:7","deployment:dsv41-flash-1017-vllm-dep4x2-abliterated","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0320-lora3p-w4a8-dep4-c8192-dspark3-mr64-engram-hbm"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
@@ -685,7 +693,7 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.ppcie: "true"
-      nearai.otel.config_variant: "vllm0320-lora3p-w4a8-dep4-c8192-dspark3-mr64-engram-host"
+      nearai.otel.config_variant: "vllm0320-lora3p-w4a8-dep4-c8192-dspark3-mr64-engram-hbm"
 
   dcgm-dsv41:
     image: nvcr.io/nvidia/k8s/dcgm-exporter@sha256:ed594cf53fe6942e84b07b0740cdcbb249fa4b39cb21feeebf93881ae51f0b5e
@@ -703,7 +711,7 @@ services:
     restart: unless-stopped
     logging: *logging-conf
     labels:
-      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:deepseek-ai/DeepSeek-V4.1-Flash-1017","deployment:dsv41-flash-1017-vllm-dep4x2-abliterated","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0320-lora3p-w4a8-dep4-c8192-dspark3-mr64-engram-host"]}]'
+      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:deepseek-ai/DeepSeek-V4.1-Flash-1017","deployment:dsv41-flash-1017-vllm-dep4x2-abliterated","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0320-lora3p-w4a8-dep4-c8192-dspark3-mr64-engram-hbm"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "dcgm"
       nearai.otel.service: "dcgm-exporter"
@@ -719,7 +727,7 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.ppcie: "true"
-      nearai.otel.config_variant: "vllm0320-lora3p-w4a8-dep4-c8192-dspark3-mr64-engram-host"
+      nearai.otel.config_variant: "vllm0320-lora3p-w4a8-dep4-c8192-dspark3-mr64-engram-hbm"
 
   otelcol-contrib:
     image: otel/opentelemetry-collector-contrib@sha256:85ac41c2db88d0df9bd6145e608a3cb023f5d8443868adbfbbf66efb51087917
@@ -751,7 +759,7 @@ services:
         max-size: "20m"
         max-file: "3"
     labels:
-      com.datadoghq.ad.logs: '[{"source":"otelcol-contrib","service":"otelcol-contrib","tags":["model:multi","deployment:dsv41-flash-1017-vllm-dep4x2-abliterated","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0320-lora3p-w4a8-dep4-c8192-dspark3-mr64-engram-host"]}]'
+      com.datadoghq.ad.logs: '[{"source":"otelcol-contrib","service":"otelcol-contrib","tags":["model:multi","deployment:dsv41-flash-1017-vllm-dep4x2-abliterated","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0320-lora3p-w4a8-dep4-c8192-dspark3-mr64-engram-hbm"]}]'
 
 networks:
   default:
@@ -887,6 +895,7 @@ configs:
                       source: "vllm"
                       container_name: "model-vllm-dsv41-r1-dp0"
                       model: "deepseek-ai/DeepSeek-V4.1-Flash-1017"
+                      served_model: "deepseek-ai/DeepSeek-V4.1-Flash-1017"
                       model_revision: "1bae0e1088993b9b82de08f59de5be5a34e42170"
                       replica: "r1"
                       dp_rank: "0"
@@ -899,7 +908,7 @@ configs:
                       ip: "${HOST_IP}"
                       ppcie: "true"
                       deployment: "dsv41-flash-1017-vllm-dep4x2-abliterated"
-                      config_variant: "vllm0320-lora3p-w4a8-dep4-c8192-dspark3-mr64-engram-host"
+                      config_variant: "vllm0320-lora3p-w4a8-dep4-c8192-dspark3-mr64-engram-hbm"
               - job_name: vllm-model-vllm-dsv41-r1-dp1
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -910,6 +919,7 @@ configs:
                       source: "vllm"
                       container_name: "model-vllm-dsv41-r1-dp1"
                       model: "deepseek-ai/DeepSeek-V4.1-Flash-1017"
+                      served_model: "deepseek-ai/DeepSeek-V4.1-Flash-1017"
                       model_revision: "1bae0e1088993b9b82de08f59de5be5a34e42170"
                       replica: "r1"
                       dp_rank: "1"
@@ -922,7 +932,7 @@ configs:
                       ip: "${HOST_IP}"
                       ppcie: "true"
                       deployment: "dsv41-flash-1017-vllm-dep4x2-abliterated"
-                      config_variant: "vllm0320-lora3p-w4a8-dep4-c8192-dspark3-mr64-engram-host"
+                      config_variant: "vllm0320-lora3p-w4a8-dep4-c8192-dspark3-mr64-engram-hbm"
               - job_name: vllm-model-vllm-dsv41-r1-dp2
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -933,6 +943,7 @@ configs:
                       source: "vllm"
                       container_name: "model-vllm-dsv41-r1-dp2"
                       model: "deepseek-ai/DeepSeek-V4.1-Flash-1017"
+                      served_model: "deepseek-ai/DeepSeek-V4.1-Flash-1017"
                       model_revision: "1bae0e1088993b9b82de08f59de5be5a34e42170"
                       replica: "r1"
                       dp_rank: "2"
@@ -945,7 +956,7 @@ configs:
                       ip: "${HOST_IP}"
                       ppcie: "true"
                       deployment: "dsv41-flash-1017-vllm-dep4x2-abliterated"
-                      config_variant: "vllm0320-lora3p-w4a8-dep4-c8192-dspark3-mr64-engram-host"
+                      config_variant: "vllm0320-lora3p-w4a8-dep4-c8192-dspark3-mr64-engram-hbm"
               - job_name: vllm-model-vllm-dsv41-r1-dp3
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -956,6 +967,7 @@ configs:
                       source: "vllm"
                       container_name: "model-vllm-dsv41-r1-dp3"
                       model: "deepseek-ai/DeepSeek-V4.1-Flash-1017"
+                      served_model: "deepseek-ai/DeepSeek-V4.1-Flash-1017"
                       model_revision: "1bae0e1088993b9b82de08f59de5be5a34e42170"
                       replica: "r1"
                       dp_rank: "3"
@@ -968,7 +980,7 @@ configs:
                       ip: "${HOST_IP}"
                       ppcie: "true"
                       deployment: "dsv41-flash-1017-vllm-dep4x2-abliterated"
-                      config_variant: "vllm0320-lora3p-w4a8-dep4-c8192-dspark3-mr64-engram-host"
+                      config_variant: "vllm0320-lora3p-w4a8-dep4-c8192-dspark3-mr64-engram-hbm"
               - job_name: vllm-model-vllm-dsv41-r2-dp0
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -979,6 +991,7 @@ configs:
                       source: "vllm"
                       container_name: "model-vllm-dsv41-r2-dp0"
                       model: "deepseek-ai/DeepSeek-V4.1-Flash-1017"
+                      served_model: "deepseek-ai/DeepSeek-V4.1-Flash-1017"
                       model_revision: "1bae0e1088993b9b82de08f59de5be5a34e42170"
                       replica: "r2"
                       dp_rank: "0"
@@ -991,7 +1004,7 @@ configs:
                       ip: "${HOST_IP}"
                       ppcie: "true"
                       deployment: "dsv41-flash-1017-vllm-dep4x2-abliterated"
-                      config_variant: "vllm0320-lora3p-w4a8-dep4-c8192-dspark3-mr64-engram-host"
+                      config_variant: "vllm0320-lora3p-w4a8-dep4-c8192-dspark3-mr64-engram-hbm"
               - job_name: vllm-model-vllm-dsv41-r2-dp1
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -1002,6 +1015,7 @@ configs:
                       source: "vllm"
                       container_name: "model-vllm-dsv41-r2-dp1"
                       model: "deepseek-ai/DeepSeek-V4.1-Flash-1017"
+                      served_model: "deepseek-ai/DeepSeek-V4.1-Flash-1017"
                       model_revision: "1bae0e1088993b9b82de08f59de5be5a34e42170"
                       replica: "r2"
                       dp_rank: "1"
@@ -1014,7 +1028,7 @@ configs:
                       ip: "${HOST_IP}"
                       ppcie: "true"
                       deployment: "dsv41-flash-1017-vllm-dep4x2-abliterated"
-                      config_variant: "vllm0320-lora3p-w4a8-dep4-c8192-dspark3-mr64-engram-host"
+                      config_variant: "vllm0320-lora3p-w4a8-dep4-c8192-dspark3-mr64-engram-hbm"
               - job_name: vllm-model-vllm-dsv41-r2-dp2
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -1025,6 +1039,7 @@ configs:
                       source: "vllm"
                       container_name: "model-vllm-dsv41-r2-dp2"
                       model: "deepseek-ai/DeepSeek-V4.1-Flash-1017"
+                      served_model: "deepseek-ai/DeepSeek-V4.1-Flash-1017"
                       model_revision: "1bae0e1088993b9b82de08f59de5be5a34e42170"
                       replica: "r2"
                       dp_rank: "2"
@@ -1037,7 +1052,7 @@ configs:
                       ip: "${HOST_IP}"
                       ppcie: "true"
                       deployment: "dsv41-flash-1017-vllm-dep4x2-abliterated"
-                      config_variant: "vllm0320-lora3p-w4a8-dep4-c8192-dspark3-mr64-engram-host"
+                      config_variant: "vllm0320-lora3p-w4a8-dep4-c8192-dspark3-mr64-engram-hbm"
               - job_name: vllm-model-vllm-dsv41-r2-dp3
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -1048,6 +1063,7 @@ configs:
                       source: "vllm"
                       container_name: "model-vllm-dsv41-r2-dp3"
                       model: "deepseek-ai/DeepSeek-V4.1-Flash-1017"
+                      served_model: "deepseek-ai/DeepSeek-V4.1-Flash-1017"
                       model_revision: "1bae0e1088993b9b82de08f59de5be5a34e42170"
                       replica: "r2"
                       dp_rank: "3"
@@ -1060,7 +1076,7 @@ configs:
                       ip: "${HOST_IP}"
                       ppcie: "true"
                       deployment: "dsv41-flash-1017-vllm-dep4x2-abliterated"
-                      config_variant: "vllm0320-lora3p-w4a8-dep4-c8192-dspark3-mr64-engram-host"
+                      config_variant: "vllm0320-lora3p-w4a8-dep4-c8192-dspark3-mr64-engram-hbm"
               - job_name: dcgm-dcgm-dsv41
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -1079,7 +1095,7 @@ configs:
                       ip: "${HOST_IP}"
                       ppcie: "true"
                       deployment: "dsv41-flash-1017-vllm-dep4x2-abliterated"
-                      config_variant: "vllm0320-lora3p-w4a8-dep4-c8192-dspark3-mr64-engram-host"
+                      config_variant: "vllm0320-lora3p-w4a8-dep4-c8192-dspark3-mr64-engram-hbm"
               - job_name: inference-proxy-proxy-dsv41
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -1098,7 +1114,7 @@ configs:
                       ip: "${HOST_IP}"
                       ppcie: "true"
                       deployment: "dsv41-flash-1017-vllm-dep4x2-abliterated"
-                      config_variant: "vllm0320-lora3p-w4a8-dep4-c8192-dspark3-mr64-engram-host"
+                      config_variant: "vllm0320-lora3p-w4a8-dep4-c8192-dspark3-mr64-engram-hbm"
               - job_name: inference-proxy-proxy-dsv41-abliterated
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -1117,7 +1133,7 @@ configs:
                       ip: "${HOST_IP}"
                       ppcie: "true"
                       deployment: "dsv41-flash-1017-vllm-dep4x2-abliterated"
-                      config_variant: "vllm0320-lora3p-w4a8-dep4-c8192-dspark3-mr64-engram-host"
+                      config_variant: "vllm0320-lora3p-w4a8-dep4-c8192-dspark3-mr64-engram-hbm"
 
         prometheus/self:
           config:

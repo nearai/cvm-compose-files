@@ -35,9 +35,10 @@ ENGINE_IMAGE: Final = "docker.io/nearaidev/vllm@sha256:0000000000000000000000000
 # merged and published: an older proxy ignores the variable and would serve the adapter on the
 # base endpoint at the base price.
 PROXY_IMAGE: Final = "nearaidev/vllm-proxy-rs@sha256:0000000000000000000000000000000000000000000000000000000000000000"
-# Engram table placement. "host": pinned host memory read through UVA (vLLM default; exp 51 l9).
-# "hbm": sharded across the four DP ranks' HBM, no host-memory reads (the CC-safe layout, lab arm l11).
-ENGRAM_LAYOUT: Final = "host"
+# Engram table placement. "hbm" (chosen for gpu02): tables sharded across the four DP ranks' HBM, no host-memory
+# reads, the CC-safe layout; its first boot is the gpu02 deploy itself. "host": pinned host memory read through UVA
+# (vLLM default; what the bare-metal lab validated, exp 51 l9), the fallback if "hbm" does not fit.
+ENGRAM_LAYOUT: Final = "hbm"
 DEPLOYMENT: Final = "dsv41-flash-1017-vllm-dep4x2-abliterated"
 VARIANT: Final = "vllm0320-lora3p-w4a8-dep4-c8192-dspark3-mr64-engram-" + ENGRAM_LAYOUT
 
@@ -132,7 +133,7 @@ def otel_config_block(source: str) -> str:
         for rank, gpu in enumerate(gpus):
             svc = rank_service(replica, rank)
             jobs.append(scrape_job(f"vllm-{svc}", f"{svc}:8000", {
-                "service": "vllm", "source": "vllm", "container_name": svc, "model": BASE_ID,
+                "service": "vllm", "source": "vllm", "container_name": svc, "model": BASE_ID, "served_model": BASE_ID,
                 "model_revision": BASE_REVISION, "replica": replica, "dp_rank": str(rank), "gpu": str(gpu),
                 "port": str(PROXIES[0][2]), **common}))
     jobs.append(scrape_job("dcgm-dcgm-dsv41", "dcgm-dsv41:9400", {
