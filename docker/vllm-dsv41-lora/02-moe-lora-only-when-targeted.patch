@@ -1,0 +1,36 @@
+--- a/vllm/model_executor/layers/fused_moe/layer.py
++++ b/vllm/model_executor/layers/fused_moe/layer.py
+@@ -7,7 +7,7 @@
+ import torch
+ 
+ from vllm._aiter_ops import rocm_aiter_ops
+-from vllm.config import ParallelConfig, get_current_vllm_config
++from vllm.config import LoRAConfig, ParallelConfig, get_current_vllm_config
+ from vllm.distributed import (
+     get_dp_group,
+     get_pcp_group,
+@@ -85,6 +85,15 @@
+     return global_num_experts, logical_num_experts, num_fused_shared_experts
+ 
+ 
++def _is_moe_lora_target(lora_config: LoRAConfig | None, layer_name: str) -> bool:
++    """Whether the LoRA manager wraps this MoE (same target_modules check)."""
++    if lora_config is None:
++        return False
++    from vllm.lora.utils import is_in_target_modules  # import cycle
++
++    return is_in_target_modules(layer_name, lora_config.target_modules)
++
++
+ def FusedMoEFactory(
+     num_experts: int,  # Global number of experts
+     top_k: int,
+@@ -361,7 +370,7 @@
+         max_num_tokens=max_num_batched_tokens,
+         elastic_ep_max_dp_size=vllm_config.parallel_config.elastic_ep_max_dp_size,
+         has_bias=has_bias,
+-        is_lora_enabled=vllm_config.lora_config is not None,
++        is_lora_enabled=_is_moe_lora_target(vllm_config.lora_config, layer_name),
+         shared_expert_prefix=shared_expert_prefix,
+         activation=moe_activation,
+         device=vllm_config.device_config.device,
