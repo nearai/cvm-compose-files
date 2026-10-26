@@ -1,0 +1,64 @@
+--- a/vllm/models/deepseek_v41/decoder_replay_layers.py
++++ b/vllm/models/deepseek_v41/decoder_replay_layers.py
+@@ -26,6 +26,7 @@
+     override_forward_context,
+ )
+ from vllm.model_executor.layers.fused_moe.moe_output import MoEOutput
++from vllm.utils.gpu_sync_debug import gpu_sync_allowed
+ 
+ 
+ @dataclass
+@@ -77,6 +78,19 @@
+                 return self._run_in_graph_break(hidden_states, *states)
+         return self._run(hidden_states, *states)
+ 
++    def _punica_wrapper(self):
++        """The LoRA punica wrapper the replay layers' wo_b uses, or None without LoRA.
++
++        Looked up on each call until found: LoRA wraps the layers after construction."""
++        if getattr(self, "_punica", None) is None:
++            model = getattr(self.run_layers, "__self__", None)
++            for layer in getattr(model, "layers", ()):
++                wrapper = getattr(getattr(getattr(layer, "attn", None), "wo_b", None), "punica_wrapper", None)
++                if wrapper is not None:
++                    self._punica = wrapper
++                    break
++        return getattr(self, "_punica", None)
++
+     def uses_replay_batch(self) -> bool:
+         """Whether this forward uses the replay batch: in a PIECEWISE graph by its
+         size, fixed at capture (no replay batch is set then); else if one is set."""
+@@ -115,13 +129,26 @@
+         assert isinstance(hidden_states, torch.Tensor)
+         rows = replay_batch.rows
+         inputs = (hidden_states, *states)
+-        with override_forward_context(replay_batch.forward_context):
+-            if replay_batch.run_graph is not None:
+-                row_outputs = replay_batch.run_graph(rows, inputs)
+-            else:
+-                row_outputs = self.run_layers(
+-                    *(None if t is None else t.index_select(0, rows) for t in inputs)
+-                )
++        punica = self._punica_wrapper()
++        full_lora = None
++        if punica is not None:
++            # LoRA kernels index tokens through this metadata: map it to the rows.
++            assert replay_batch.run_graph is None, "replay graphs hold no LoRA mapping"
++            full_lora = punica.token_lora_indices
++            with gpu_sync_allowed():
++                punica.token_mapping_meta.prepare_tensors(full_lora.index_select(0, rows))
++        try:
++            with override_forward_context(replay_batch.forward_context):
++                if replay_batch.run_graph is not None:
++                    row_outputs = replay_batch.run_graph(rows, inputs)
++                else:
++                    row_outputs = self.run_layers(
++                        *(None if t is None else t.index_select(0, rows) for t in inputs)
++                    )
++        finally:
++            if full_lora is not None:
++                with gpu_sync_allowed():
++                    punica.token_mapping_meta.prepare_tensors(full_lora)
+         # The trimmed rows' outputs stay zero; nothing reads them.
+         num_tokens = hidden_states.shape[0]
+         return tuple(
