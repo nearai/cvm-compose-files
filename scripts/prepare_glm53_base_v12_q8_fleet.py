@@ -14,7 +14,7 @@ rollback) with ONLY:
   `--dsa-prefill-backend flashmla_kv` -> `flashmla_sparse_q8` (chunk 8192, queue 32 and everything else kept);
 - the four replicas' engine_image / config_variant (-v7 -> -v12-q8) labels, in their service blocks and OTel scrape jobs.
 
-ARGV_EDITS / ARGV_APPENDED are the one place to add a lever that wins later (EAGLE steps, chunk): the fleet anchor and
+ARGV_EDITS / ARGV_APPENDED are the one place to add a lever that wins later (exp 53 rejected EAGLE 3/1/4, chunk 4096, queue 64): the fleet anchor and
 the gpu04 r4 canary (scripts/prepare_glm53_base_q8_canary.py imports them) both follow. The tests pin the exact
 argv difference, so a new lever also needs its test line.
 

@@ -29,7 +29,7 @@ v12 = v10 (v8 zero-sync KDA, flag-gated Q8 DSA prefill #363, CVE fix #365) + the
 
 Why a new fleet file instead of editing the v7 file in place (the v7 rollout's method): the canary and the fleet are prepared together, before the canary has been read. An in-place edit would leave the canary with no v7 file to derive from. It would also force a regeneration of the files gpu03 and gpu04 are recorded as running (`-V8KdaCanary`, `-TP2x3-…-gpu04`, both generated from the v7 file) to v12. After the fleet is fully on v12 and baked, a follow-up PR can fold v12 into `scripts/prepare_glm53_w4afp8_tp2x4.py` and retire the canary, V8 KDA and three-replica files, as the v7 PR did with its canary files.
 
-**Adding a lever later (EAGLE 3/1/4, chunk 4096, …)** is one edit: `ARGV_EDITS` (or `ARGV_APPENDED`) in `scripts/prepare_glm53_base_v12_q8_fleet.py`. Both generators then regenerate (the canary imports the edits). Three things must be updated deliberately: the pinned argv diff in `scripts/test_glm53_base_v12_q8_fleet.py` and `scripts/test_glm53_base_q8_canary.py`, `W4AFP8_TP2X4_V12Q8_ARGV` in `scripts/validate_glm53_prod_config.rb`, and the `config_variant` suffix.
+**The argv change is final at image + prefill backend** (exp 53 lock, below). EAGLE 3/1/4, chunk 4096 and queue 64 were tested and rejected; do not add them. **Adding a future lever** is one edit: `ARGV_EDITS` (or `ARGV_APPENDED`) in `scripts/prepare_glm53_base_v12_q8_fleet.py`. Both generators then regenerate (the canary imports the edits). Three things must be updated deliberately: the pinned argv diff in `scripts/test_glm53_base_v12_q8_fleet.py` and `scripts/test_glm53_base_q8_canary.py`, `W4AFP8_TP2X4_V12Q8_ARGV` in `scripts/validate_glm53_prod_config.rb`, and the `config_variant` suffix.
 
 Tests:
 - `scripts/test_glm53_base_v12_q8_fleet.py` asserts:
@@ -60,6 +60,8 @@ Sources:
 
 If the proxy lacks r4, **stop**: the canary would get no traffic. Recreating `proxy-glm53` (same image; the env gains r4) interrupts in-flight gpu04 streams, so it needs Henry's go (see open decisions).
 
+**Repo vs live drift (unresolved, not changed by this PR).** The repo's gpu04 file, `prod/GLM-5.3-Flash-SGL-TP2x3-W4AFP8-gpu04.yaml`, defines r1-r3 only, and its `proxy-glm53` pools only r1-r3. Live gpu04 has **four** serving replicas. **Before the canary, the operator must confirm which file gpu04 was actually deployed from**: the compose-manager action log (file and services of each deploy since #388) and the live proxy env above. Pick the canary, fleet and rollback files only after that is known. Which file is gpu04's record of truth, and whether the TP2x3 file is retired or regenerated, is **an open decision for Henry**. This PR leaves the gpu04 file untouched.
+
 ## Rules
 
 - **At most 2 base replicas down fleet-wide, and never two on the same host.** A replica that is down for any reason counts. Check `docker/ps` and `/backends/list` on gpu03 and gpu04 before every step.
@@ -82,9 +84,9 @@ Send it with `dry_run: true`, check the plan, then send the same call with `dry_
 
 1. **Canary: gpu04 r4.**
    - `file: prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8-Q8Canary.yaml`.
-   - Run the gpu04 pre-check above first.
+   - Run the gpu04 pre-check above first, including the confirmation of which file gpu04 was deployed from.
    - Bake (5-minute checklist), then reads at **2 h, the next peak, and 24 h**: r4 against gpu04 r1-r3, which stay v7.
-   - Go to step 2 only after the 24 h read passes.
+   - **Gate:** go to step 2 only after the canary's 24 h read passes. The lab work (exp 53) is complete and is not a further gate.
 2. **gpu04 r3 -> r2 -> r1**, one at a time, `file: prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8-V12Q8.yaml`. Each gets the 5-minute bake before the next starts.
    - r4 needs no redeploy: the canary's r4 equals the fleet's r4 (tested).
    - The canary file and the fleet file differ only in r1-r3 and the aggregator/collector config, which this sequence replaces.
@@ -119,7 +121,7 @@ Its startup-line check changes for v12:
 - prefill/decode step time from `Prefill batch` / `Decode batch` log windows;
 - `docker inspect -f '{{.RestartCount}}'` stays 0; no `Traceback|CUDA error|Xid|out of memory|NCCL` in the logs.
 
-The lab predicts (not a gate): TTFT p50 down 10-30%, decode per stream up 5-15%, served req/s up 5-9% at saturation.
+The lab expectation (exp 53, bare metal; not a gate): served req/s +5-8% and decode per stream +5-14% at saturation, and TTFT p50 -12 to -31% below or at saturation. At heavy overload TTFT moves inside the lab noise floor.
 
 ## Abort and rollback
 
@@ -139,35 +141,53 @@ The lab predicts (not a gate): TTFT p50 down 10-30%, decode per stream up 5-15%,
 
 ## Evidence
 
-**Source:** tee-bench **exp 53**, branch **`exp53-glm53-base-fp8-load-ladder`** (`exp53-README.md`; cells named `e48*` on gpu31).
+**Source:** tee-bench **exp 53**, branch **`exp53-glm53-base-fp8-load-ladder`** (`exp53-README.md`; cells named `e48*` on gpu31). The final base config was **locked 2026-10-27 23:27 UTC**: v12 `sha256:da8d4e4b5ec6…` + `--dsa-prefill-backend flashmla_sparse_q8`, everything else the current base prod argv (chunk 8192, EAGLE fixed 4/1/5, `--max-queued-requests 32`, `--max-running-requests 64`). This PR's files match it exactly (tested).
 
 **Setup:**
 - gpu31 bare metal, two isolated TP2 lanes, n=2 lane-swapped rounds;
-- driver `replay_with_raw_gaps.py`, prod mix, 600 s;
+- driver `replay_with_raw_gaps.py`, 600 s, seed 3308;
 - arms differ only in the image and the prefill backend token, on the base prod argv.
 
-**v12q8 against v7:**
+**Load ladder, lab prod mix, v12q8 against v7 (R1 / R2):**
 
 | Load | Result |
 |---|---|
-| 0.5 conv/s (below capacity, 0 shed) | TTFT p50 -12/-14%, E2E p95 -10/-9%, decode per stream +9/+5% (served by both) |
+| 0.5 conv/s (below capacity, 0 shed, 77% cached) | served req/s flat (+2.0/+0.5%). Served by both: TTFT p50 -12/-14%, E2E p95 -10/-9%. Decode per stream +9/+5%. |
 | 1.0 conv/s (saturated) | served req/s +7.7/+5.6%, shed -1.5 pp, output tok/s +10/+7%, decode +12/+7%. Served by both: TTFT p50 -31/-27%, E2E p95 -12/-11%. |
-| 1.5 conv/s | served req/s +5.6/+4.7%, total tok/s +8.5/+11.6%, E2E p95 -6/-7% |
-| 2.0 conv/s | served req/s +8.5/+5.0%, decode +13/+15%, E2E p95 -8/-4% |
+| 1.5 conv/s (about 18-19% shed) | served req/s +5.6/+4.7%, total tok/s +8.5/+11.6%, decode +6.0/+0.6%, E2E p95 -6/-7% |
+| 2.0 conv/s (27-30% shed) | served req/s +8.5/+5.0%, output tok/s +11/+17%, total tok/s +5.9/+8.0%, decode +13/+15%, TPOT p95 -9/-8%, E2E p95 -8/-4% |
 
-At 1.5 and 2.0, TTFT follows the lane, not the arm; read it only against the A/A cells.
+**`prodbase` mix** (the base tier's 72 h request shares: b0_4k 17.4%, b4_16k 64.4%, b16_32k 16.3%, b32_64k 1.9%), v12q8 against v7:
+
+| Load | Result |
+|---|---|
+| 1.5 conv/s (v7 shed about 22%) | served req/s +7.5/+4.9%, output tok/s +11.3/+0.6%, decode +9.4/+0.4%, TPOT p95 -6/-8%, freeze300 -6.6/-1.6 pp. Served by both: TTFT p50 -14/-10%. |
+| 2.0 conv/s (v7 shed about 35%) | served req/s flat (+3.0/-0.3%), output tok/s +13.0/+8.6%, decode +13.0/+11.0%, TPOT p95 -9/-8%, freeze300 -7.5/-8.0 pp |
+
+The FP8 win holds on the prod-shaped mix. Served req/s at 2.0 is flat because both arms shed about 35%. The suite's conversations give only 29-42% cached against prod's 75%.
+
+**A/A noise floor** (v7 vs v7, 1.5 conv/s, prod mix, 2 rounds):
+- throughput about ±3% (served req/s +1.4/-0.4%, total tok/s +2.9/-0.5%);
+- a small lane-1 penalty: output tok/s about 3% lower, decode about 2% lower;
+- TTFT p50 about ±10% and TTFT p95 about ±15% at overload.
+
+Against that floor:
+- **Clear it:** every prod-mix served req/s delta at 1.0-2.0 (+4.7 to +8.5%), every total tok/s delta (+5.8 to +11.6%), decode at 0.5, 1.0 and 2.0 (+5.3 to +14.5%), and the TTFT p50 gains at 0.5 and 1.0.
+- **Inside it:** decode at 1.5 (one round only), every TTFT delta at 1.5 and 2.0, and prodbase served req/s at 2.0.
+
+**Rejected levers.** The final argv keeps prod's values:
+
+| Lever | Result | Decision |
+|---|---|---|
+| EAGLE 3/1/4 vs 4/1/5 (1.0 conv/s, n=2) | throughput -1.2 to -3.5% in both rounds; TTFT ≤ 10 s attainment lower | keep 4/1/5 |
+| Chunk 4096 vs 8192 (1.0 conv/s, R1; R2 had not landed at lock) | TTFT p95 +128 to +284% on 4-64K prompts (multi-chunk starvation); served req/s +2.0% (noise) | keep 8192 |
+| Queue 64 vs 32 (2.0 conv/s, n=2, both arms) | shed barely moves; TTFT ≤ 10 s attainment roughly halves (e.g. 42.2 → 21.5%); TTFT p50 about 2-3x | keep 32 (prod queue depth p99 is 2, max 27) |
 
 **Other results:**
-- Quality: GSM8K-100 0.99 (v12q8) vs 0.98 (v7). Smoke: 0 fatal, no new failures.
-- Queue 64 lost to queue 32 (TTFT ≤ 10 s attainment fell in all four comparisons), so **queue stays 32**.
-- Earlier: exp 46c (v10 + Q8 against v7, 1.0 conv/s) showed the same direction; Q8 with 16K chunks hurt base decode, so **chunk stays 8192**.
+- Quality: GSM8K-100 0.99 (v12q8) vs 0.98 (v7). Smoke: 0 fatal, no new failures (crashers skipped; see caveats).
+- Earlier: exp 46c (v10 + Q8 against v7, 1.0 conv/s) showed the same direction, and Q8 with 16K chunks hurt base decode.
 
-**Pending at preparation:**
-- the A/A noise floor (`e48aa*`);
-- the prod-shaped `prodbase` mix cells;
-- the lever cells (EAGLE 3/1/4, chunk 4096).
-
-The argv change here is limited to the image and the prefill backend.
+The prodbase and A/A runs are complete. The lab sets the config but does not gate the fleet: fleet steps after the canary are gated by the canary's bake and reads (2 h, next peak, 24 h).
 
 ## Caveats
 
@@ -180,10 +200,10 @@ The argv change here is limited to the image and the prefill backend.
 
   The exp 53 delta is the bundle, not Q8 alone.
 - **Smoke crashers C08/C09/C10/C12 were skipped on v12 in the lab** (as in 46c), so v12's behaviour on those inputs is unmeasured on the base argv. Prod exposure depends on whether the gateway clamps or rejects those inputs before they reach an engine. Confirm the gateway clamps with Route/Ops before the fleet steps. Note that the long tier has served the same image since #385.
-- **The lab mix is harsher than prod base:** 17% of lab requests are 32-64K against 1.6% in prod, and 56% are cached against 75%. Absolute lab numbers are pessimistic; only the arm deltas carry over.
+- **The lab mix is harsher than prod base:** 17% of lab requests are 32-64K against 1.6% in prod, and 56% are cached against 75%. Absolute lab numbers are pessimistic; only the arm deltas carry over. The `prodbase` cells fix the length shares but not the cache rate (29-42% cached).
 
 ## Open decisions (Henry)
 
 - **gpu04 proxy:** if the pre-check shows gpu04's `proxy-glm53` without r4, approve (or not) a scoped `proxy-glm53` recreate from the fleet file before the canary. It is the same image; only `VLLM_BACKEND_URLS` gains r4, and in-flight gpu04 streams drop.
-- **Gate for the fleet steps:** whether to wait for the exp 53 A/A and `prodbase` cells before step 2, or rely on the canary's 24 h read.
+- **gpu04's deployed file:** live gpu04 serves four replicas, but the repo's gpu04 file (`-TP2x3-W4AFP8-gpu04`) lists r1-r3 only. Decide which file is gpu04's record of truth after the operator confirms what it was deployed from, and whether the TP2x3 file is retired or regenerated. This PR does not touch it.
 - **New fleet file vs in-place edit** (reason above). The follow-up fold-in PR is the cleanup.
