@@ -751,6 +751,36 @@ W4AFP8_TP2X4_CANDIDATE_ARGV = Shellwords.split(<<~'ARGV').freeze
   --max-mamba-cache-size 380 --mamba-ssm-dtype bfloat16
   --disable-overlap-schedule
 ARGV
+# v12 base fleet file (scripts/prepare_glm53_base_v12_q8_fleet.py, docs/glm53-base-v12-q8-rollout.md): the v7 fleet file with the
+# v12 image (the long tier's) and Q8 DSA prefill. Its argv is written out in full like the v7 one; against it only
+# --dsa-prefill-backend flashmla_kv -> flashmla_sparse_q8 differs (chunk 8192, queue 32 and flashmla_kv decode stay).
+W4AFP8_TP2X4_V12Q8_FILE = File.join(ROOT, "prod", "GLM-5.3-Flash-SGL-TP2x4-W4AFP8-V12Q8.yaml")
+W4AFP8_TP2X4_V12Q8_IMAGE = "docker.io/nearaidev/sglang@sha256:da8d4e4b5ec667499b58a21e56050aae9bcfc4df9669b3ac27e2e20af033d681"
+W4AFP8_TP2X4_V12Q8_VARIANT = "w4afp8-qsplit-hicacheoff-mamba380-fp8kv-memopt086-mr64-c8192-admission-reserve-v10-pdi#{W4AFP8_TP2X4_CANDIDATE_PDI}-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192#{OBSERVABILITY_VARIANT_SUFFIX}-v12-q8"
+W4AFP8_TP2X4_V12Q8_ARGV = Shellwords.split(<<~'ARGV').freeze
+  sglang serve
+  --model-path /root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/snapshots/99f1fa70408c52b007d4fd69e02e5a522422e755
+  --served-model-name z-ai/glm-5.3-flash
+  --tp-size 2 --ep-size 2
+  --mem-fraction-static 0.86
+  --max-running-requests 64 --max-queued-requests 32
+  --enable-priority-scheduling --disable-priority-preemption
+  --chunked-prefill-size 8192 --max-prefill-tokens 32768 --prefill-decode-interval 2
+  --cuda-graph-max-bs-decode 64
+  --dsa-prefill-backend flashmla_sparse_q8 --dsa-decode-backend flashmla_kv
+  --kv-cache-dtype fp8_e4m3
+  --speculative-algorithm EAGLE --speculative-num-steps 4 --speculative-eagle-topk 1
+  --speculative-num-draft-tokens 5
+  --reasoning-parser glm45 --enable-strict-thinking --grammar-backend xgrammar --tool-call-parser glm47
+  --chat-template /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/3f1971b7b5f7a528c9c4ef6212c8785298a8c24a/chat_template.jinja
+  --context-length 1048576
+  --dist-init-addr 127.0.0.1:29510
+  --watchdog-timeout 1800 --host 0.0.0.0 --port 8000
+  --enable-metrics --enable-cache-report --log-requests-level 0
+  --disable-fast-image-processor --limit-mm-data-per-request '{"image": 64}'
+  --max-mamba-cache-size 380 --mamba-ssm-dtype bfloat16
+  --disable-overlap-schedule
+ARGV
 # Every running request needs 5 mamba state slots (fleet: 380 slots for 64 running).
 W4AFP8_TP2X4_MAMBA_SLOTS_PER_REQUEST = 5
 W4AFP8_TP2X4_EXTRA_ENV = HICACHE_ENV.merge(
@@ -808,8 +838,8 @@ def w4afp8_tp2x4_view(errors, file_label, compose, replica_names)
   )
 end
 
-def validate_w4afp8_tp2x4(errors, compose, base, raw)
-  label = "W4AFP8 4x TP2"
+def validate_w4afp8_tp2x4(errors, compose, base, raw, label: "W4AFP8 4x TP2", image: W4AFP8_TP2X4_IMAGE, fleet_name: "v7 fleet",
+                          candidate_argv: W4AFP8_TP2X4_CANDIDATE_ARGV, candidate_variant: W4AFP8_TP2X4_CANDIDATE_VARIANT, prefill: "flashmla_kv")
   services = compose.fetch("services", {})
   expected_services = EXPECTED_SERVICES - REPLICAS.keys + W4AFP8_TP2X4_REPLICAS.keys + [GHOST_SERVICE]
   missing = expected_services - services.keys
@@ -835,7 +865,7 @@ def validate_w4afp8_tp2x4(errors, compose, base, raw)
 
   base_env = environment_map(base.dig("services", W4AFP8_BASE_REPLICAS.keys.first) || {}).merge(W4AFP8_TP2X4_EXTRA_ENV)
   collector = load_embedded_yaml(errors, "#{label} file otelcol_app_config", compose.dig("configs", "otelcol_app_config", "content"))
-  engine_image_label = W4AFP8_TP2X4_IMAGE.split(":").last[0, 12]
+  engine_image_label = image.split(":").last[0, 12]
   replicas = {}
   W4AFP8_TP2X4_REPLICAS.each do |name, spec|
     service = services[name]
@@ -843,7 +873,7 @@ def validate_w4afp8_tp2x4(errors, compose, base, raw)
 
     replicas[name] = service
     errors << "#{label} #{name} container_name must be #{name}" unless service["container_name"] == name
-    errors << "#{label} #{name} image must be #{W4AFP8_TP2X4_IMAGE}" unless service["image"] == W4AFP8_TP2X4_IMAGE
+    errors << "#{label} #{name} image must be #{image}" unless service["image"] == image
     errors << "#{label} #{name} must use the prebuilt signed image, not a host-local build" if service.key?("build")
     actual_argv = begin
       Shellwords.split(command_text(service))
@@ -852,11 +882,11 @@ def validate_w4afp8_tp2x4(errors, compose, base, raw)
       []
     end
     candidate = spec["role"] == "candidate"
-    expected_argv = candidate ? W4AFP8_TP2X4_CANDIDATE_ARGV : W4AFP8_TP2X4_ARGV
-    expected_variant = candidate ? W4AFP8_TP2X4_CANDIDATE_VARIANT : W4AFP8_TP2X4_VARIANT
+    expected_argv = candidate ? candidate_argv : W4AFP8_TP2X4_ARGV
+    expected_variant = candidate ? candidate_variant : W4AFP8_TP2X4_VARIANT
     unless actual_argv == expected_argv
       drift = ((actual_argv - expected_argv) + (expected_argv - actual_argv)).uniq
-      errors << "#{label} #{name} argv must be the #{candidate ? 'v7 fleet' : 'lab-qualified TP2 control'} argv exactly; differing tokens: #{drift.first(8).join(' ')}"
+      errors << "#{label} #{name} argv must be the #{candidate ? fleet_name : 'lab-qualified TP2 control'} argv exactly; differing tokens: #{drift.first(8).join(' ')}"
     end
     # Capacity invariants, asserted on what the file says rather than on the expected argv.
     flag_value = lambda do |flag|
@@ -871,7 +901,7 @@ def validate_w4afp8_tp2x4(errors, compose, base, raw)
     end
     errors << "#{label} #{name} --cuda-graph-max-bs-decode must equal --max-running-requests (#{running})" unless flag_value.call("--cuda-graph-max-bs-decode") == running
     if candidate
-      validate_fp8_kv_pairing(errors, "#{label} #{name}", actual_argv)
+      validate_fp8_kv_pairing(errors, "#{label} #{name}", actual_argv, prefill: prefill)
       validate_hicache_off(errors, "#{label} #{name}", actual_argv)
       errors << "#{label} #{name} must set --disable-overlap-schedule exactly once" unless actual_argv.count("--disable-overlap-schedule") == 1
     end
@@ -925,7 +955,7 @@ def validate_w4afp8_tp2x4(errors, compose, base, raw)
     errors << "#{label} replicas must use identical runtime configuration" unless contracts.uniq.length == 1
   end
   validate_observability(errors, label, compose, collector, W4AFP8_TP2X4_REPLICAS.transform_values { |spec| spec["ghost_replica"] },
-                         W4AFP8_TP2X4_IMAGE, W4AFP8_TP2X4_DEPLOYMENT)
+                         image, W4AFP8_TP2X4_DEPLOYMENT)
 
   dcgm_labels = services.dig("dcgm-glm53", "labels") || {}
   errors << "#{label} dcgm-glm53 nearai.otel.model_path must be #{W4AFP8_CHECKPOINT}" unless dcgm_labels["nearai.otel.model_path"] == W4AFP8_CHECKPOINT
@@ -1058,7 +1088,7 @@ W4AFP8_LONG_CONTEXT_V6_IMAGE = "docker.io/nearaidev/sglang@sha256:9c6ddd4319c4ab
 # glm53-hicache-w4afp8-v7 (#345, publish run 37693106399): v6 + FP8 KV for NoPE DSA + opt-in preprocess pool and tool-schema caps. The fleet's TP2 replicas run it.
 W4AFP8_LONG_CONTEXT_V7_IMAGE = "docker.io/nearaidev/sglang@sha256:fa730e6e62b2ae8058114ce540487ade33ab93bc42b1179ae78edc92bd563fc5"
 # glm53-hicache-w4afp8-v10 (#363 v9 recipe + #365 linux-libc-dev CVE fix, publish run 39094781691): v8 + the
-# flag-gated flashmla_sparse_q8 DSA prefill on the FP8 NoPE KV layout. The base-tier r4 Q8 canary runs it.
+# flag-gated flashmla_sparse_q8 DSA prefill on the FP8 NoPE KV layout. (The base-tier r4 Q8 canary now runs v12, not v10.)
 W4AFP8_LONG_CONTEXT_V10_IMAGE = "docker.io/nearaidev/sglang@sha256:c15a33672ade5a9f2b4f7874a746eb4114952dae7230d5baa563a02eca081b78"
 # glm53-hicache-w4afp8-v12 (#370 + CVE pins #384, publish run 39987811670, source 79de066): v10 + patch 15 (DSA indexer K-pool logits
 # budget). The long tier's TP2 replicas run it; the base-tier r4 Q8 canary stays on v10.
@@ -1516,6 +1546,19 @@ if w4afp8_tp2x4_present
   end
 end
 
+w4afp8_tp2x4_v12q8_present = File.exist?(W4AFP8_TP2X4_V12Q8_FILE)
+if w4afp8_tp2x4_v12q8_present
+  w4afp8_tp2x4_v12q8_compose = load_compose_file(errors, "W4AFP8 4x TP2 v12 Q8 file", W4AFP8_TP2X4_V12Q8_FILE)
+  if w4afp8_tp2x4_v12q8_compose && w4afp8_base_compose
+    validate_w4afp8_tp2x4(errors, w4afp8_tp2x4_v12q8_compose, w4afp8_base_compose, File.read(W4AFP8_TP2X4_V12Q8_FILE),
+                          label: "W4AFP8 4x TP2 v12 Q8", image: W4AFP8_TP2X4_V12Q8_IMAGE, fleet_name: "v12 Q8 base fleet",
+                          candidate_argv: W4AFP8_TP2X4_V12Q8_ARGV, candidate_variant: W4AFP8_TP2X4_V12Q8_VARIANT, prefill: "flashmla_sparse_q8")
+    validate_model_cache(errors, "W4AFP8 4x TP2 v12 Q8", w4afp8_tp2x4_v12q8_compose.fetch("services", {}))
+  elsif w4afp8_tp2x4_v12q8_compose
+    errors << "W4AFP8 4x TP2 v12 Q8 file requires the W4AFP8 base file it is generated from"
+  end
+end
+
 hicache_compose = nil
 if hicache_present
   hicache_compose = load_compose_file(errors, "HiCache file", HICACHE_FILE)
@@ -1573,6 +1616,7 @@ end
 puts "GLM-5.3 production contract OK (prod/GLM-5.3-Flash-SGL-TP4.yaml)"
 puts "GLM-5.3 production contract OK (prod/GLM-5.3-Flash-SGL-TP4-W4AFP8.yaml)" if w4afp8_base_present
 puts "GLM-5.3 production contract OK (prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8.yaml)" if w4afp8_tp2x4_present
+puts "GLM-5.3 production contract OK (prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8-V12Q8.yaml)" if w4afp8_tp2x4_v12q8_present
 puts "GLM-5.3 production contract OK (prod/GLM-5.3-Flash-SGL-TP4-HiCache.yaml)" if hicache_present
 puts "GLM-5.3 production contract OK (prod/GLM-5.3-Flash-SGL-TP4-LongContext.yaml)" if long_context_present
 puts "GLM-5.3 production contract OK (prod/GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext.yaml)" if w4afp8_long_context_present

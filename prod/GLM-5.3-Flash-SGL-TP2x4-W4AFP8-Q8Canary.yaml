@@ -1,9 +1,10 @@
-# GLM-5.3 Flash base-tier v10 Q8-prefill CANARY file for gpu04, generated from prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8.yaml by
-# scripts/prepare_glm53_base_q8_canary.py (do not hand-edit). Full copy of the base fleet file with ONLY
-# model-sg-glm53-w4afp8-tp2-r4 changed: the glm53-hicache-w4afp8-v10 image (sha256:c15a33672ade...), its own command (the
+# GLM-5.3 Flash base-tier v12 Q8-prefill CANARY file for gpu04, generated from prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8.yaml by
+# scripts/prepare_glm53_base_q8_canary.py (do not hand-edit). Full copy of the v7 base fleet file with ONLY
+# model-sg-glm53-w4afp8-tp2-r4 changed: the glm53-hicache-w4afp8-v12 image (sha256:da8d4e4b5ec6...), its own command (the
 # anchor argv with --dsa-prefill-backend flashmla_sparse_q8, chunk 8192), and its engine_image /
-# config_variant (-q8) labels. Deploy it ONLY to gpu04, scoped to that one service; roll back by
-# redeploying prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8.yaml for the same service. Runbook: docs/glm53-base-q8-canary.md.
+# config_variant (-v12-q8) labels; r4 equals r4 of the v12 fleet file. Deploy it ONLY to gpu04, scoped
+# to that one service; roll back by redeploying prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8.yaml for the same service.
+# Runbook: docs/glm53-base-v12-q8-rollout.md.
 #
 # GLM-5.3 Flash BASE TIER, v7 FLEET CONFIG (gpu03 and gpu04): the one base config every host of the tier deploys.
 # All four replicas r1-r4 run the glm53-hicache-w4afp8-v7 image (#345) with FP8 KV (flashmla_kv prefill and decode),
@@ -781,9 +782,9 @@ services:
   model-sg-glm53-w4afp8-tp2-r4:
     <<: *sg-glm53-flash-candidate
     container_name: model-sg-glm53-w4afp8-tp2-r4
-    # Base-tier Q8 canary (docs/glm53-base-q8-canary.md): v10 image, and command is the anchor argv with only
+    # Base-tier v12 Q8 canary (docs/glm53-base-v12-q8-rollout.md): v12 image, and command is the anchor argv with only
     # the prefill backend changed to flashmla_sparse_q8 (8K chunk kept). The anchor is not touched.
-    image: docker.io/nearaidev/sglang@sha256:c15a33672ade5a9f2b4f7874a746eb4114952dae7230d5baa563a02eca081b78
+    image: docker.io/nearaidev/sglang@sha256:da8d4e4b5ec667499b58a21e56050aae9bcfc4df9669b3ac27e2e20af033d681
     command: >
       sglang serve
       --model-path /root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/snapshots/99f1fa70408c52b007d4fd69e02e5a522422e755
@@ -908,7 +909,7 @@ services:
               device_ids: ["6","7"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-fp8-kv","deployment:glm53-flash-sgl-tp2x4","config_variant:w4afp8-qsplit-hicacheoff-mamba380-fp8kv-memopt086-mr64-c8192-admission-reserve-v10-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192-obs-v1-v7-q8","request_logging:disabled","engine_image:c15a33672ade","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:4"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-fp8-kv","deployment:glm53-flash-sgl-tp2x4","config_variant:w4afp8-qsplit-hicacheoff-mamba380-fp8kv-memopt086-mr64-c8192-admission-reserve-v10-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192-obs-v1-v12-q8","request_logging:disabled","engine_image:da8d4e4b5ec6","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:4"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -920,10 +921,10 @@ services:
       nearai.otel.model_path: "graphistry/GLM-5.3-Flash-W4AFP8"
       nearai.otel.served_model: "z-ai/glm-5.3-flash"
       nearai.otel.deployment: "glm53-flash-sgl-tp2x4"
-      nearai.otel.config_variant: "w4afp8-qsplit-hicacheoff-mamba380-fp8kv-memopt086-mr64-c8192-admission-reserve-v10-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192-obs-v1-v7-q8"
+      nearai.otel.config_variant: "w4afp8-qsplit-hicacheoff-mamba380-fp8kv-memopt086-mr64-c8192-admission-reserve-v10-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192-obs-v1-v12-q8"
       nearai.otel.thinking_budget_policy: "default8192-public-to-native"
       nearai.otel.request_logging: "disabled"
-      nearai.otel.engine_image: "c15a33672ade"
+      nearai.otel.engine_image: "da8d4e4b5ec6"
       nearai.otel.instance: "4"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
@@ -1469,10 +1470,10 @@ configs:
                       ip: "${HOST_IP}"
                       port: "8000"
                       instance: "4"
-                      config_variant: "w4afp8-qsplit-hicacheoff-mamba380-fp8kv-memopt086-mr64-c8192-admission-reserve-v10-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192-obs-v1-v7-q8"
+                      config_variant: "w4afp8-qsplit-hicacheoff-mamba380-fp8kv-memopt086-mr64-c8192-admission-reserve-v10-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192-obs-v1-v12-q8"
                       thinking_budget_policy: "default8192-public-to-native"
                       request_logging: "disabled"
-                      engine_image: "c15a33672ade"
+                      engine_image: "da8d4e4b5ec6"
               - job_name: ghost-aggregator-glm53-ghost-aggregator
                 scrape_interval: 15s
                 metrics_path: /metrics

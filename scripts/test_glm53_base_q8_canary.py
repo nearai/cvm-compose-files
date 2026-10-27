@@ -1,7 +1,7 @@
-"""Confinement tests for the base-tier v10 Q8-prefill canary file (scripts/prepare_glm53_base_q8_canary.py).
+"""Confinement tests for the base-tier v12 Q8-prefill canary file (scripts/prepare_glm53_base_q8_canary.py).
 
-The canary is gpu04 r4 only: image v10, its own command (anchor argv with the prefill backend swapped), and its
-telemetry labels. Run: python3 -m scripts.test_glm53_base_q8_canary
+The canary is gpu04 r4 only: image v12, its own command (anchor argv with the prefill backend swapped), and its
+telemetry labels, all equal to r4 of the v12 fleet file. Run: python3 -m scripts.test_glm53_base_q8_canary
 """
 
 import difflib
@@ -10,11 +10,13 @@ import unittest
 from pathlib import Path
 
 from scripts import prepare_glm53_base_q8_canary as gen
+from scripts import prepare_glm53_base_v12_q8_fleet as fleet
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = (ROOT / gen.SOURCE).read_text()
 TARGET = (ROOT / gen.TARGET).read_text()
 BODY = TARGET.split("#\n", 1)[1]  # past the generated header comment
+FLEET = (ROOT / fleet.TARGET).read_text()
 OLD_BACKEND = "--dsa-prefill-backend flashmla_kv"
 NEW_BACKEND = "--dsa-prefill-backend flashmla_sparse_q8"
 
@@ -67,22 +69,27 @@ class BaseQ8CanaryTest(unittest.TestCase):
     def test_committed_target_is_fresh(self):
         self.assertEqual(TARGET, gen.generate(SOURCE), "run scripts/prepare_glm53_base_q8_canary.py --write")
 
-    def test_digest_is_published(self):
-        self.assertRegex(gen.V10_IMAGE_DIGEST, r"^sha256:[0-9a-f]{64}$")
-        self.assertNotEqual(gen.V10_IMAGE_DIGEST, gen.V7_IMAGE_DIGEST)
+    def test_digest_is_the_long_tier_v12(self):
+        self.assertRegex(gen.V12_IMAGE_DIGEST, r"^sha256:[0-9a-f]{64}$")
+        self.assertNotEqual(gen.V12_IMAGE_DIGEST, gen.V7_IMAGE_DIGEST)
+        self.assertEqual(gen.V12_LABEL, "da8d4e4b5ec6")
+        long_file = (ROOT / "prod/GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext.yaml").read_text()
+        self.assertIn(f"image: {gen.V12_IMAGE}", long_file)
+        self.assertNotIn("c15a33672ade", TARGET)  # the superseded v10 canary image is gone
 
     def test_only_r4_image_command_and_labels_differ(self):
         # Undo exactly the generator's additions (comment, image, command block) and its label edits; the result
         # must equal the source byte for byte. Everything else in the file is therefore identical.
         r4 = service_block(BODY, gen.SERVICE)
-        start = r4.index("    # Base-tier Q8 canary (docs/glm53-base-q8-canary.md)")
+        start = r4.index("    # Base-tier v12 Q8 canary (docs/glm53-base-v12-q8-rollout.md)")
         argv = "\n".join(command_body(r4)) + "\n"
         end = r4.index(argv, start) + len(argv)
         restored = BODY.replace(r4, r4[:start] + r4[end:])
         variant = re.search(r'nearai\.otel\.config_variant: "([^"]+)"', SOURCE).group(1)
-        restored = restored.replace(f"{variant}{gen.SUFFIX}", variant)
-        restored = restored.replace(f"engine_image:{gen.V10_LABEL}", f"engine_image:{gen.V7_LABEL}")
-        restored = restored.replace(f'engine_image: "{gen.V10_LABEL}"', f'engine_image: "{gen.V7_LABEL}"')
+        self.assertTrue(variant.endswith(gen.V7_VARIANT_SUFFIX))
+        restored = restored.replace(variant[: -len(gen.V7_VARIANT_SUFFIX)] + gen.V12_VARIANT_SUFFIX, variant)
+        restored = restored.replace(f"engine_image:{gen.V12_LABEL}", f"engine_image:{gen.V7_LABEL}")
+        restored = restored.replace(f'engine_image: "{gen.V12_LABEL}"', f'engine_image: "{gen.V7_LABEL}"')
         self.assertEqual(restored, SOURCE)
 
     def test_changed_lines_are_r4_only(self):
@@ -92,12 +99,12 @@ class BaseQ8CanaryTest(unittest.TestCase):
         self.assertEqual(len(removed), 5, removed)
         for line in removed:
             self.assertRegex(line, r"config_variant|engine_image")
-        self.assertIn(f"    image: {gen.V10_IMAGE}", added)
+        self.assertIn(f"    image: {gen.V12_IMAGE}", added)
         self.assertIn("    command: >", added)
 
     def test_image_is_only_on_r4(self):
-        self.assertEqual(TARGET.count(gen.V10_IMAGE), 1)
-        self.assertIn(gen.V10_IMAGE, service_block(TARGET, gen.SERVICE))
+        self.assertEqual(TARGET.count(gen.V12_IMAGE), 1)
+        self.assertIn(gen.V12_IMAGE, service_block(TARGET, gen.SERVICE))
         self.assertEqual(TARGET.count(gen.V7_IMAGE_DIGEST), SOURCE.count(gen.V7_IMAGE_DIGEST))
 
     def test_r4_argv_is_anchor_argv_with_only_backend_swapped(self):
@@ -125,21 +132,31 @@ class BaseQ8CanaryTest(unittest.TestCase):
         self.assertEqual(anchor_block(TARGET), anchor_block(SOURCE))
         self.assertEqual(r4_argv_tokens(SOURCE), [])  # the source r4 has no command of its own
 
-    def test_r4_labels_carry_v10_and_suffix(self):
+    def test_r4_labels_carry_v12_and_suffix(self):
         block = service_block(TARGET, gen.SERVICE)
-        self.assertIn(f'"engine_image:{gen.V10_LABEL}"', block)
-        self.assertIn(f'nearai.otel.engine_image: "{gen.V10_LABEL}"', block)
-        self.assertRegex(block, rf'nearai\.otel\.config_variant: "[^"]+{re.escape(gen.SUFFIX)}"')
+        self.assertIn(f'"engine_image:{gen.V12_LABEL}"', block)
+        self.assertIn(f'nearai.otel.engine_image: "{gen.V12_LABEL}"', block)
+        self.assertRegex(block, r'nearai\.otel\.config_variant: "[^"]+-obs-v1-v12-q8"')
         job = scrape_job(TARGET, gen.SERVICE)
-        self.assertIn(f'engine_image: "{gen.V10_LABEL}"', job)
-        self.assertRegex(job, rf'config_variant: "[^"]+{re.escape(gen.SUFFIX)}"')
+        self.assertIn(f'engine_image: "{gen.V12_LABEL}"', job)
+        self.assertRegex(job, r'config_variant: "[^"]+-obs-v1-v12-q8"')
         self.assertNotIn(gen.V7_LABEL, block + job)
+        self.assertNotIn("-v7-q8", TARGET)  # the v10 canary's suffix
+
+    def test_r4_is_exactly_r4_of_the_v12_fleet_file(self):
+        # Same image, argv, labels and scrape job as the fleet file's r4, so a pass on the canary qualifies the fleet's r4.
+        self.assertEqual(r4_argv_tokens(TARGET), " ".join(command_body(anchor_block(FLEET))).split())
+        self.assertEqual(scrape_job(TARGET, gen.SERVICE), scrape_job(FLEET, gen.SERVICE))
+        canary_labels = service_block(TARGET, gen.SERVICE).split("    labels:\n", 1)[1]
+        fleet_labels = service_block(FLEET, gen.SERVICE).split("    labels:\n", 1)[1]
+        self.assertEqual(canary_labels, fleet_labels)
+        self.assertIn(f"\n  image: {gen.V12_IMAGE}\n", FLEET)  # the fleet's r4 inherits v12 from the common anchor
 
     def test_generator_refuses_source_already_carrying_q8(self):
         with self.assertRaises(gen.GenerationError):
             gen.generate(SOURCE.replace(OLD_BACKEND, NEW_BACKEND, 1))
         with self.assertRaises(gen.GenerationError):
-            gen.generate(SOURCE + f"\n# {gen.V10_IMAGE}\n")
+            gen.generate(SOURCE + f"\n# {gen.V12_IMAGE}\n")
 
     def test_generator_refuses_missing_or_duplicated_tokens(self):
         with self.assertRaises(gen.GenerationError):
@@ -164,9 +181,9 @@ class BaseQ8CanaryTest(unittest.TestCase):
 
     def test_header_names_host_service_and_runbook(self):
         header = TARGET.split("#\n", 1)[0]
-        for needle in (gen.HOST, gen.SERVICE, "docs/glm53-base-q8-canary.md", "Deploy it ONLY"):
+        for needle in (gen.HOST, gen.SERVICE, "docs/glm53-base-v12-q8-rollout.md", "Deploy it ONLY"):
             self.assertIn(needle, header)
-        self.assertTrue((ROOT / "docs/glm53-base-q8-canary.md").exists())
+        self.assertTrue((ROOT / "docs/glm53-base-v12-q8-rollout.md").exists())
 
     def test_dashboard_selectors_unchanged(self):
         for key in ("deployment", "host_machine", "server_address", "container_name", "instance", "service"):
