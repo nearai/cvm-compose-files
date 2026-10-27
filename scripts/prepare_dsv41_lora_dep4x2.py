@@ -31,10 +31,10 @@ ADAPTER_REVISION: Final = "196c06e3c2aad43e9688d16fa993b4333f69358a"
 # docker/vllm-dsv41-lora, published by .github/workflows/publish-vllm-dsv41-lora.yaml.
 # Run 40422926821 from main 0086ccb (#393), tag dsv41-lora-v0.32.0-near-v1, Trivy 0 critical.
 ENGINE_IMAGE: Final = "docker.io/nearaidev/vllm@sha256:0956859f52d262fa17084d61320c5b1ea22845825c7aab57d49ed8064cc8a396"
-# inference-proxy with VLLM_PROXY_STRICT_MODEL (feat/strict-model). Placeholder until it is
-# merged and published: an older proxy ignores the variable and would serve the adapter on the
-# base endpoint at the base price.
-PROXY_IMAGE: Final = "nearaidev/vllm-proxy-rs@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+# inference-proxy main 5faff1b (#329: VLLM_PROXY_STRICT_REQUEST_MODEL), Build & Deploy run
+# 40425504976, pushed as :staging. An older proxy ignores the variable and would serve the adapter
+# on the base endpoint at the base price.
+PROXY_IMAGE: Final = "nearaidev/vllm-proxy-rs@sha256:4937ad68d86dcc79871bd52341f2030a71e49bcafdf69d82ca287171aeb43c7b"
 # Engram table placement. "hbm" (chosen for gpu02): tables sharded across the four DP ranks' HBM, no host-memory
 # reads, the CC-safe layout; its first boot is the gpu02 deploy itself. "host": pinned host memory read through UVA
 # (vLLM default; what the bare-metal lab validated, exp 51 l9), the fallback if "hbm" does not fit.
@@ -157,16 +157,13 @@ HEADER = f"""# DeepSeek-V4.1-Flash-1017 + abliterated LoRA: two vLLM DEP4 replic
 # promote's zone guard refuses a completions-stg URL, but the chain still auto-merges infra-tests
 # PRs, so coordinate with Henry before that PATCH.
 #
-# NOT DEPLOYABLE YET. Before any compose_up, all of the following must hold:
-#   - PROXY_IMAGE is a real digest (zero placeholder here; ENGINE_IMAGE is published);
-#   - the proxy build supports VLLM_PROXY_STRICT_MODEL (inference-proxy feat/strict-model);
-#   - the Engram layout ({ENGRAM_LAYOUT}) has passed on a TDX+PPCIe host;
-#   - a one-replica CC canary has passed. Deploy from a main tag only, one replica at a time.
+# Staging deploy from a main tag only. The gpu02 staging run is itself the first TDX+PPCIe test of
+# the Engram layout ({ENGRAM_LAYOUT}) and the DEP4 all-to-all; nothing here is qualified for prod.
 #
 # Layout: replica r1 = guest GPUs 0-3, r2 = 4-7; each is four `vllm serve` processes, one per GPU
 # (DP4 attention + EP4 experts, TP1, external DP load balancing), so the proxies see eight
 # rank endpoints. Two proxies, one per model id, both over all eight ranks; each refuses the other
-# id (VLLM_PROXY_STRICT_MODEL=1) so each id is attested, billed and access-controlled as itself.
+# id (VLLM_PROXY_STRICT_REQUEST_MODEL=1) so each id is attested, billed and access-controlled as itself.
 # Engine argv = tee-bench exp 50 best stack (W4A8 Humming, 8K prefill chunk, DSpark 3, 64 running)
 # plus the wo_b LoRA of exp 51 arm l9 ({ADAPTER_REPO} rev {ADAPTER_REVISION[:8]}).
 #
@@ -310,7 +307,7 @@ services:
       - LOG_FORMAT=json
       - MODEL_NAME={model}
       # Refuse the other model id: this proxy attests, bills and access-controls only {model}.
-      - VLLM_PROXY_STRICT_MODEL=1
+      - VLLM_PROXY_STRICT_REQUEST_MODEL=1
       - OHTTP_ENABLED=true
       - TOKEN=${{PROXY_TOKEN}}
       - VLLM_BACKEND_URLS={backends}

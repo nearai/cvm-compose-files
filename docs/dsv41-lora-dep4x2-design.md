@@ -65,7 +65,7 @@ How vllm-proxy-rs behaves in CVM mode, read at origin/main a737734:
 - `proxy-dsv41`: `MODEL_NAME` = base.
 - `proxy-dsv41-abliterated`: `MODEL_NAME` = abliterated id.
 - Both list the same 8 rank endpoints and have their own model-proxy registration, attestation and billing.
-- Required change: an opt-in strict mode in which the CVM proxy refuses (404 `model_not_found`) a body `model` that is not its own `MODEL_NAME`. Without it, the base endpoint serves the adapter at base price.
+- Strict mode (inference-proxy #329, `VLLM_PROXY_STRICT_REQUEST_MODEL=1`): each proxy refuses (404 `model_not_found`) a body `model` that is not its own `MODEL_NAME`. Without it, the base endpoint serves the adapter at base price.
 - Affinity: both proxies hash the same conversation to the same rank. That is fine, since the prefix cache is per adapter on the engine.
 
 Adding another variant later means one more `--lora-modules` entry on both replicas and one more proxy service and registration.
@@ -90,7 +90,7 @@ Follow the existing rules:
 
 ## Before prod
 
-1. The inference-proxy strict-model change (inference-proxy #331) is merged and published; its digest and the engine digest (published from #393) are filled in via the generator.
+1. Done: engine image published from #393 (`nearaidev/vllm@sha256:0956859f…`); proxy from inference-proxy main 5faff1b with Henry's #329 `VLLM_PROXY_STRICT_REQUEST_MODEL` (`nearaidev/vllm-proxy-rs@sha256:4937ad68…`). No `VLLM_PROXY_BACKEND_LORA`: vLLM selects the adapter by the model id.
 2. gpu02 staging (unlisted, from a main tag): both replicas boot with Engram in HBM under TDX+PPCIe, and the DEP NCCL all-to-all works. This replaces the cancelled gpu31 l11/l12 runs.
 3. On gpu02: strict refusals per proxy, KV-per-adapter (`scripts/lab_kv_adapter_check.py` with `KV_URL_MAP`), Henry's smoke per id, the tee-bench load matrix (base:adapter 1:0 / 1:1 / 0:1), then a 24 h soak.
 4. A refusal-behaviour eval of the adapter on the team's set.

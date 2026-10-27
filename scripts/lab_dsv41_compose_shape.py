@@ -58,7 +58,7 @@ for (name, model, *_), port in zip(pack.PROXIES, (31150, 31151)):
     container_name: lab-{name}
     environment:
       - MODEL_NAME={model}
-      - VLLM_PROXY_STRICT_MODEL=1
+      - VLLM_PROXY_STRICT_REQUEST_MODEL=1
       - TOKEN=${{LAB_TOKEN}}
       - VLLM_BACKEND_URLS={backends}
       - VLLM_BACKEND_CONVERSATION_AFFINITY=1

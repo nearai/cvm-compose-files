@@ -9,16 +9,13 @@
 # promote's zone guard refuses a completions-stg URL, but the chain still auto-merges infra-tests
 # PRs, so coordinate with Henry before that PATCH.
 #
-# NOT DEPLOYABLE YET. Before any compose_up, all of the following must hold:
-#   - PROXY_IMAGE is a real digest (zero placeholder here; ENGINE_IMAGE is published);
-#   - the proxy build supports VLLM_PROXY_STRICT_MODEL (inference-proxy feat/strict-model);
-#   - the Engram layout (hbm) has passed on a TDX+PPCIe host;
-#   - a one-replica CC canary has passed. Deploy from a main tag only, one replica at a time.
+# Staging deploy from a main tag only. The gpu02 staging run is itself the first TDX+PPCIe test of
+# the Engram layout (hbm) and the DEP4 all-to-all; nothing here is qualified for prod.
 #
 # Layout: replica r1 = guest GPUs 0-3, r2 = 4-7; each is four `vllm serve` processes, one per GPU
 # (DP4 attention + EP4 experts, TP1, external DP load balancing), so the proxies see eight
 # rank endpoints. Two proxies, one per model id, both over all eight ranks; each refuses the other
-# id (VLLM_PROXY_STRICT_MODEL=1) so each id is attested, billed and access-controlled as itself.
+# id (VLLM_PROXY_STRICT_REQUEST_MODEL=1) so each id is attested, billed and access-controlled as itself.
 # Engine argv = tee-bench exp 50 best stack (W4A8 Humming, 8K prefill chunk, DSpark 3, 64 running)
 # plus the wo_b LoRA of exp 51 arm l9 (UnderTides/DeepSeek-V4.1-Flash-1017-heretic-lora rev 196c06e3).
 #
@@ -39,7 +36,7 @@ x-nvidia: &nvidia
       hard: 65535
 
 x-vllm-proxy-common: &vllm-proxy-common
-  image: nearaidev/vllm-proxy-rs@sha256:0000000000000000000000000000000000000000000000000000000000000000
+  image: nearaidev/vllm-proxy-rs@sha256:4937ad68d86dcc79871bd52341f2030a71e49bcafdf69d82ca287171aeb43c7b
   user: root
   privileged: true
   <<: *nvidia
@@ -152,7 +149,7 @@ services:
       - LOG_FORMAT=json
       - MODEL_NAME=deepseek-ai/DeepSeek-V4.1-Flash-1017
       # Refuse the other model id: this proxy attests, bills and access-controls only deepseek-ai/DeepSeek-V4.1-Flash-1017.
-      - VLLM_PROXY_STRICT_MODEL=1
+      - VLLM_PROXY_STRICT_REQUEST_MODEL=1
       - OHTTP_ENABLED=true
       - TOKEN=${PROXY_TOKEN}
       - VLLM_BACKEND_URLS=http://model-vllm-dsv41-r1-dp0:8000,http://model-vllm-dsv41-r1-dp1:8000,http://model-vllm-dsv41-r1-dp2:8000,http://model-vllm-dsv41-r1-dp3:8000,http://model-vllm-dsv41-r2-dp0:8000,http://model-vllm-dsv41-r2-dp1:8000,http://model-vllm-dsv41-r2-dp2:8000,http://model-vllm-dsv41-r2-dp3:8000
@@ -194,7 +191,7 @@ services:
       - LOG_FORMAT=json
       - MODEL_NAME=deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated
       # Refuse the other model id: this proxy attests, bills and access-controls only deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated.
-      - VLLM_PROXY_STRICT_MODEL=1
+      - VLLM_PROXY_STRICT_REQUEST_MODEL=1
       - OHTTP_ENABLED=true
       - TOKEN=${PROXY_TOKEN}
       - VLLM_BACKEND_URLS=http://model-vllm-dsv41-r1-dp0:8000,http://model-vllm-dsv41-r1-dp1:8000,http://model-vllm-dsv41-r1-dp2:8000,http://model-vllm-dsv41-r1-dp3:8000,http://model-vllm-dsv41-r2-dp0:8000,http://model-vllm-dsv41-r2-dp1:8000,http://model-vllm-dsv41-r2-dp2:8000,http://model-vllm-dsv41-r2-dp3:8000
