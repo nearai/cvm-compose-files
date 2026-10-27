@@ -281,8 +281,29 @@ COLOC_ENGINE = "model-sg-qwen38-27b-fp8-tp1-coloc"
 COLOC_ENGINE_JOB = f"sglang-{COLOC_ENGINE}"
 COLOC_BLOCK_HASHES = {
     "x-privacy-filter-common": "8b0fa38844cc279cf27d02250fd37ecb7125a4e2fd0dec08fb66f4f35ee55c9e",
-    COLOC_ENGINE: "63f6d8d7f12a81be574554cc3821f3627f059d04858a7a1c4d898f6d6df88155",
+    COLOC_ENGINE: "4626f8853da71304d3b8a1bd625a2f10febb6e27adeb7d161dacf832043e84d2",
     COLOC_ENGINE_JOB: "1727948d4fab3e8c7d13d4d65b3057c8d788892ae264a323ea4c32baf4449c9a",
+}
+# Qwen3.8 abliterated LoRA canary (#395): the coloc engine and proxy-qwen38-27b change as modelled by
+# with_qwen38_abliterated_lora(); everything new is pinned by hash below and is gated behind the
+# register-abliterated profile (nginx, registrar) or has no public route (proxy, adapter downloader).
+LORA_PROXY_IMAGE = "nearaidev/vllm-proxy-rs@sha256:4937ad68d86dcc79871bd52341f2030a71e49bcafdf69d82ca287171aeb43c7b"
+LORA_SERVICES = (
+    "qwen38-lora-adapter-downloader",
+    "proxy-qwen38-27b-abliterated",
+    "nginx-qwen38-abliterated",
+    "qwen38-abliterated-registrar",
+)
+LORA_CONFIGS = ("nginx_qwen38_abliterated_conf", "qwen38_abliterated_registrar_script")
+LORA_JOB = "inference-proxy-proxy-qwen38-27b-abliterated"
+LORA_BLOCK_HASHES = {
+    "qwen38-lora-adapter-downloader": "f00890986a1cbe050f1158fc94fb46c6a2910fad7ac622387bc09f21f47e7d4b",
+    "proxy-qwen38-27b-abliterated": "ffc69b6e10b2755e02feee25114853cdef4a7bd7e9c17cbaa0bc8e930ccf7ae8",
+    "nginx-qwen38-abliterated": "4618c0f92d66874323c93732d147e59c4a90efddc7bd7048fe0af802d454fee8",
+    "qwen38-abliterated-registrar": "e5f22c0b77fad5a59fc45d6a4065f6597648bfea5b19290209ce3071fe6addbb",
+    "nginx_qwen38_abliterated_conf": "5eebd7ea6794ccf682e6dd5a252a99ad2f9c5e8edf8e5eb5102bab039bed0285",
+    "qwen38_abliterated_registrar_script": "acb1a55e418b0a05cd44b3d064d91eea77cbfe6cf4716d9a420b291680cac020",
+    LORA_JOB: "d460fc2dba76b8fa9b5222278c720637757045231b1da52336089c4c058a4c89",
 }
 # Levanto Sage moved in from prod/sage.yaml (gpu04 GPU 6), unchanged except the GPU: gpu13 GPU 0.
 # The filter and Qwen3.8 coloc move together to GPU 2 on gpu23.
@@ -468,6 +489,41 @@ def with_filter_and_coloc_on_gpu2(text: str) -> str:
     return text
 
 
+def config_block(text: str, name: str) -> str:
+    start = text.index(f"\n  {name}:\n", text.index("\nconfigs:\n")) + 1
+    match = re.search(r"\n  [^ \n#]", text[start + 1:])
+    return text[start: start + 1 + match.start()] if match else text[start:]
+
+
+def without_lora_configs(text: str) -> str:
+    """The text minus the LoRA canary's two configs, which sit at the end of the file where the last scrape job's block would swallow them."""
+    for name in LORA_CONFIGS:
+        block = config_block(text, name)
+        if text.count(block) != 1:
+            raise AssertionError(f"expected one LoRA canary config: {name}")
+        text = text.replace(block, "", 1)
+    return text.rstrip("\n") + "\n"
+
+
+def with_qwen38_abliterated_lora(text: str) -> str:
+    """Apply only the LoRA canary's edit to proxy-qwen38-27b: the 5faff1b image (with its comment) and strict request-model matching."""
+    block = service_block(text, "proxy-qwen38-27b")
+    image = f"    image: {OLD_PROXY_IMAGE}\n"
+    model = "      - MODEL_NAME=Qwen/Qwen3.8-27B\n"
+    for old in (image, model):
+        if block.count(old) != 1:
+            raise AssertionError(f"expected one LoRA canary fixture line: {old}")
+    updated = block.replace(image, (
+        "    # inference-proxy 5faff1b (#329): strict request-model match and LoRA selector\n"
+        "    # refusal. The coloc engine serves the abliterated adapter too, so this proxy\n"
+        "    # must keep VLLM_PROXY_STRICT_REQUEST_MODEL on.\n"
+        f"    image: {LORA_PROXY_IMAGE}\n"
+    ), 1).replace(model, model + "      - VLLM_PROXY_STRICT_REQUEST_MODEL=true\n", 1)
+    if text.count(block) != 1:
+        raise AssertionError("expected one LoRA canary fixture block")
+    return text.replace(block, updated, 1)
+
+
 class Gpu13FleetTest(unittest.TestCase):
     """gpu13 deploys prod/small-models.yaml: its two GLM replicas must be the long file's v12 TP2 replicas, and nothing else may move."""
 
@@ -574,10 +630,13 @@ class Gpu13FleetTest(unittest.TestCase):
         self.assertIn('device_ids: ["6","7"]', service_block(self.small, "model-sg-glm53-w4afp8-tp2-r1b"))
 
     def test_non_glm_services_and_everything_outside_the_glm_blocks_are_byte_identical(self) -> None:
-        old = with_filter_and_coloc_on_gpu2(with_sage_on_gpu2(with_qwen38_coloc_pool(without_qwen38_gpu0_stage_b(self.old))))
+        old = with_qwen38_abliterated_lora(with_filter_and_coloc_on_gpu2(with_sage_on_gpu2(with_qwen38_coloc_pool(without_qwen38_gpu0_stage_b(self.old)))))
         names = re.findall(r"^  ([a-z0-9-]+):$", self.old[self.old.index("\nservices:\n"):], re.MULTILINE)
         expected_names = [name for name in names if name != QWEN38_GPU0_SERVICE]
         expected_names.insert(expected_names.index(QWEN38_R2) + 1, COLOC_ENGINE)
+        # The LoRA canary's four services sit right after qwen38-registrar (pinned separately).
+        lora_at = expected_names.index("qwen38-registrar") + 1
+        expected_names[lora_at:lora_at] = list(LORA_SERVICES)
         # With r2 and its DCGM exporter gone, gpu23 GPU 0 stays free for Sage on gpu13 GPU 0.
         expected_names = [name for name in expected_names if name not in (QWEN38_R2, QWEN38_R2_DCGM)]
         # Sage (pinned separately): its two services before the collector, its network and its volume.
@@ -614,11 +673,14 @@ class Gpu13FleetTest(unittest.TestCase):
                     expected = expected.replace(OLD_PROXY_IMAGE, NEW_PROXY_IMAGE)
                 self.assertEqual(new_block, expected, anchor)
         # The coloc scrape job is pinned separately; every old non-GLM job stays identical.
-        old_jobs, new_jobs = jobs_of(old), jobs_of(self.small)
+        old_jobs, new_jobs = jobs_of(old), jobs_of(without_lora_configs(self.small))
         expected_jobs = [key for key in jobs_of(self.old) if key != QWEN38_GPU0_JOB]
         index = expected_jobs.index(f"sglang-{QWEN38_R2}") + 1
         expected_jobs[index:index] = [COLOC_ENGINE_JOB]
         expected_jobs = [key for key in expected_jobs if key not in QWEN38_R2_JOBS]
+        # The abliterated proxy's scrape job follows the base proxy's (pinned separately).
+        index = expected_jobs.index("inference-proxy-proxy-qwen38-27b") + 1
+        expected_jobs[index:index] = [LORA_JOB]
         self.assertEqual(expected_jobs, list(new_jobs))
         for key in old_jobs:
             if "glm53" not in key:
@@ -633,10 +695,23 @@ class Gpu13FleetTest(unittest.TestCase):
         for name, block in blocks.items():
             with self.subTest(block=name):
                 self.assertEqual(hashlib.sha256(block.encode()).hexdigest(), COLOC_BLOCK_HASHES[name])
+        # The LoRA canary's additions, each pinned whole.
+        lora_blocks = {
+            **{name: service_block(self.small, name) for name in LORA_SERVICES},
+            **{name: config_block(self.small, name) for name in LORA_CONFIGS},
+            LORA_JOB: jobs_of(self.small)[LORA_JOB],
+        }
+        for name, block in lora_blocks.items():
+            with self.subTest(lora_block=name):
+                self.assertEqual(hashlib.sha256(block.encode()).hexdigest(), LORA_BLOCK_HASHES[name])
         old_volumes = self.old.split("\nvolumes:\n", 1)[1].split("\nconfigs:\n", 1)[0]
         new_volumes = self.small.split("\nvolumes:\n", 1)[1].split("\nconfigs:\n", 1)[0]
-        self.assertEqual(new_volumes.replace("  qwen38_coloc_kernel_cache:\n", "").replace("  sage-data:\n", ""), old_volumes)
+        self.assertEqual(
+            new_volumes.replace("  qwen38_coloc_kernel_cache:\n", "").replace("  sage-data:\n", "").replace("  lora_adapter:\n", ""),
+            old_volumes,
+        )
         self.assertEqual(new_volumes.count("  qwen38_coloc_kernel_cache:\n"), 1)
+        self.assertEqual(new_volumes.count("  lora_adapter:\n"), 1)
         self.assertEqual(new_volumes.count("  sage-data:\n"), 1)
 
     def test_sage_moves_in_from_prod_sage_on_gpu13_gpu0_unchanged_except_the_gpu(self) -> None:
@@ -849,18 +924,20 @@ class Gpu13FleetTest(unittest.TestCase):
     def test_dashboard_labels_are_unchanged_on_gpu13(self) -> None:
         def selectors(text: str) -> list[str]:
             return [l for l in selector_lines(text) if "max_running_requests" not in l and "max_queued_requests" not in l]
-        old = with_filter_and_coloc_on_gpu2(with_sage_on_gpu2(with_qwen38_coloc_pool(without_qwen38_gpu0_stage_b(self.old))))
+        old = with_qwen38_abliterated_lora(with_filter_and_coloc_on_gpu2(with_sage_on_gpu2(with_qwen38_coloc_pool(without_qwen38_gpu0_stage_b(self.old)))))
         without_coloc = self.small
-        for name in (COLOC_ENGINE,):
+        for name in (COLOC_ENGINE, *LORA_SERVICES):
             without_coloc = without_coloc.replace(service_block(without_coloc, name), "", 1)
-        for name in (COLOC_ENGINE_JOB,):
+        for name in (COLOC_ENGINE_JOB, LORA_JOB):
             without_coloc = without_coloc.replace("              " + jobs_of(without_coloc)[name], "", 1)
         self.assertEqual(selectors(without_coloc), selectors(old))
-        old_jobs, new_jobs = jobs_of(old), jobs_of(self.small)
+        old_jobs, new_jobs = jobs_of(old), jobs_of(without_lora_configs(self.small))
         expected_jobs = [key for key in jobs_of(self.old) if key != QWEN38_GPU0_JOB]
         index = expected_jobs.index(f"sglang-{QWEN38_R2}") + 1
         expected_jobs[index:index] = [COLOC_ENGINE_JOB]
         expected_jobs = [key for key in expected_jobs if key not in QWEN38_R2_JOBS]
+        index = expected_jobs.index("inference-proxy-proxy-qwen38-27b") + 1
+        expected_jobs[index:index] = [LORA_JOB]
         self.assertEqual(expected_jobs, list(new_jobs))
         for key in old_jobs:
             self.assertEqual(
