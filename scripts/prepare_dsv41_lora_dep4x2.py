@@ -452,6 +452,9 @@ def nginx_block() -> str:
         for name, _, http, *_ in PROXIES
     )
     tls_head = (
+        # deepseek-v4-1-flash-abliterated.completions-stg.near.ai (55 bytes) overflows the default
+        # 64-byte server_names bucket and nginx -t fails.
+        "      server_names_hash_bucket_size 128;\n"
         "      ssl_certificate /etc/letsencrypt/live/completions.near.ai/fullchain.pem;\n"
         "      ssl_certificate_key /etc/letsencrypt/live/completions.near.ai/privkey.pem;\n"
         "      ssl_protocols TLSv1.2 TLSv1.3;\n\n"
