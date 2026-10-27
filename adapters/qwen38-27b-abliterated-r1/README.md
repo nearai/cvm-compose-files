@@ -8,6 +8,18 @@ approximation of the changed output-projection matrices between
 at `739e3c5b89849f6c238ce1e5b70008612ae42cdd`. Both upstream model
 repositories identify their license as Apache-2.0; its text is included here.
 
+## Attribution
+
+This adapter is a derivative work of two Apache-2.0 models, and is
+redistributed under the same license:
+
+- Qwen3.8-27B, copyright 2026 Alibaba Cloud (the Qwen team).
+- Huihui-Qwen3.8-27B-abliterated, published by huihui-ai, itself derived from
+  Qwen3.8-27B.
+
+The adapter weights were changed from both: they approximate the difference
+between the two checkpoints above.
+
 The adapter contains 70 changed `o_proj`, `out_proj`, and `down_proj` matrices
 from language-model layers, represented by 140 LoRA tensors. MTP and vision
 weights were excluded. The aggregate relative weight reconstruction error
@@ -23,6 +35,6 @@ SHA-256:
 c2f78fe464c7c24d742e20d0fab6477647f848525736d2e5661f5bb4c66d0faf  adapter_config.json
 ```
 
-The staging Compose downloader fetches these files from this repository and
+The Compose downloader in `prod/small-models.yaml` fetches these files from this repository and
 checks both hashes before mounting the adapter into SGLang. The FP8 base model
 has its own pinned Hugging Face revision in the Compose file.
