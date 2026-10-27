@@ -35,10 +35,14 @@ ENGINE_IMAGE: Final = "docker.io/nearaidev/vllm@sha256:0956859f52d262fa17084d613
 # 40425504976, pushed as :staging. An older proxy ignores the variable and would serve the adapter
 # on the base endpoint at the base price.
 PROXY_IMAGE: Final = "nearaidev/vllm-proxy-rs@sha256:4937ad68d86dcc79871bd52341f2030a71e49bcafdf69d82ca287171aeb43c7b"
-# Engram table placement. "hbm" (chosen for gpu02): tables sharded across the four DP ranks' HBM, no host-memory
-# reads, the CC-safe layout; its first boot is the gpu02 deploy itself. "host": pinned host memory read through UVA
-# (vLLM default; what the bare-metal lab validated, exp 51 l9), the fallback if "hbm" does not fit.
-ENGRAM_LAYOUT: Final = "hbm"
+# Engram table placement (186 GiB of FP8 tables per replica).
+#   "host-cc" (gpu02): pinned host memory read through UVA, sharded across the replica's four DP ranks (~47 GiB
+#     pinned per rank), with dp_shared_memory and THP off: both register memory with cudaHostRegister, which fails
+#     under TDX+PPCIe (801), while the cudaHostAlloc pinning used here works there. GPU memory as in the lab (0.85).
+#   "host": vLLM default (DP-shared /dev/shm tables); the bare-metal lab layout (exp 51 l9).
+#   "hbm": tables in GPU memory. Tried on gpu02 (v0.0.517): 130 GiB/GPU of weights + tables left no KV pool at
+#     0.95 and the ranks hung in warmup. Not viable for 2x DEP4.
+ENGRAM_LAYOUT: Final = "host-cc"
 DEPLOYMENT: Final = "dsv41-flash-1017-vllm-dep4x2-abliterated"
 VARIANT: Final = "vllm0320-lora3p-w4a8-dep4-c8192-dspark3-mr64-engram-" + ENGRAM_LAYOUT
 
@@ -75,7 +79,7 @@ def engine_command(replica: str, rank: int) -> str:
         "--max-model-len 1048576",
         "--max-num-batched-tokens 8192",
         "--max-num-seqs 64",
-        "--gpu-memory-utilization " + ("0.85" if ENGRAM_LAYOUT == "host" else "0.95"),
+        "--gpu-memory-utilization " + ("0.95" if ENGRAM_LAYOUT == "hbm" else "0.85"),
         "--enable-prompt-tokens-details",
         "--tokenizer-mode deepseek_v41",
         "--reasoning-parser deepseek_v41",
@@ -87,6 +91,10 @@ def engine_command(replica: str, rank: int) -> str:
     ]
     if ENGRAM_LAYOUT == "hbm":
         args.append("""--engram-config '{"cpu_offload":false,"embedding_across_dp":true}'""")
+    elif ENGRAM_LAYOUT == "host-cc":
+        args.append(
+            """--engram-config '{"cpu_offload":true,"embedding_across_dp":true,"dp_shared_memory":false,"use_thp":false}'"""
+        )
     args += ["--host 0.0.0.0", "--port 8000"]
     return "\n      ".join(args)
 
