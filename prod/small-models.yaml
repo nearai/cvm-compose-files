@@ -799,6 +799,8 @@ services:
       - "8007:8007"
       - "8008:8008"
       - "8009:8009"
+      # Sage proxy probe port for model-proxy; gpu13 must forward VM port 8011 (see proxy-sage).
+      - "8011:8011"
       - "8444:443"
     volumes:
       - certs:/etc/letsencrypt:ro
@@ -2147,6 +2149,60 @@ services:
               device_ids: ["GPU-9ec3a20b-6169-7fdc-a19a-6058228132c1"]
               capabilities: [gpu]
 
+  # ── Our inference-proxy in front of Sage, for Cloud API (levanto/sage-1.4 as a NEAR model) ──
+  # Gives Sage's answers this CVM's attestation report and per-answer signatures (POST /v1/systemone,
+  # nearai/inference-proxy SYSTEMONE_UPSTREAM_MODEL). It calls Sage the way Levanto's own clients do:
+  # by its real name, on Sage's published VM port 8010, so it checks Sage's Let's Encrypt certificate
+  # and Sage itself is untouched (TLS still ends inside Sage on Levanto's direct path). It also joins
+  # sage_net so that hop stays on one bridge (docker drops traffic between bridge networks).
+  # Deploy on gpu13 only, by name, after nginx and the registrar: services ["proxy-sage"]. Never with
+  # sage or sage-dstack (their SAGE_* env is not stored). SAGE_PROXY_UPSTREAM_KEY is NEAR's Levanto API
+  # key (the one Levanto issued for the NEAR listing), kept in gpu13's stored env.
+  proxy-sage:
+    <<: *vllm-proxy-common
+    # Branch build of nearai/inference-proxy#332 (POST /v1/systemone); re-pin to the merged build.
+    image: nearaidev/vllm-proxy-rs@sha256:aaba285906bc01361b2807e04bdf6e54108249cc05d88cfcdaa5f890ee2bb2d8
+    container_name: proxy-sage
+    extra_hosts:
+      - "compose-manager:host-gateway"
+      - "private.sage.levanto.ai:host-gateway"
+    networks:
+      - default
+      - sage
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - CLOUD_API_URL=https://cloud-api.near.ai
+      - CLOUD_API_USAGE_TOKEN=${CLOUD_API_USAGE_TOKEN}
+      - COMPOSE_MANAGER_URL=http://compose-manager:8080
+      - LOG_FORMAT=json
+      - MODEL_NAME=levanto/sage-1.4
+      - SYSTEMONE_UPSTREAM_MODEL=levanto-sage-v1.4
+      - TOKEN=${PROXY_TOKEN}
+      - VLLM_BASE_URL=https://private.sage.levanto.ai:8010
+      - VLLM_BACKEND_TOKEN=${SAGE_PROXY_UPSTREAM_KEY}
+      # Sage's unauthenticated readiness route; /v1/models lists the model only while it answers 2xx.
+      - VLLM_BACKEND_HEALTH_PATH=/ready
+      - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
+      - USE_NV_ATTESTATION_SDK=true
+      - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
+      - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:levanto/sage-1.4","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8011"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "inference-proxy"
+      nearai.otel.service: "vllm-proxy"
+      nearai.otel.source: "vllm-proxy"
+      nearai.otel.container_name: "proxy-sage"
+      nearai.otel.port: "8000"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "levanto/sage-1.4"
+      nearai.otel.deployment: "small-models"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
+
   otelcol-contrib:
     image: otel/opentelemetry-collector-contrib@sha256:85ac41c2db88d0df9bd6145e608a3cb023f5d8443868adbfbbf66efb51087917
     container_name: otelcol-contrib
@@ -2763,6 +2819,23 @@ configs:
                       cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "8007"
+              - job_name: inference-proxy-proxy-sage
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['proxy-sage:8000']
+                    labels:
+                      service: "vllm-proxy"
+                      source: "vllm-proxy"
+                      container_name: "proxy-sage"
+                      model: "levanto/sage-1.4"
+                      deployment: "small-models"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      port: "8011"
 
         prometheus/self:
           config:
@@ -2903,7 +2976,7 @@ configs:
       TLS_PORT=8444
 
       # Track registration state per port
-      for port in 8002 8003 8004 8005 8006 8007 8008; do
+      for port in 8002 8003 8004 8005 8006 8007 8008 8011; do
         eval "REG_$$port=false"
         eval "FAIL_COUNT_$$port=0"
       done
@@ -2931,7 +3004,7 @@ configs:
 
       cleanup() {
         echo "SIGTERM received, unregistering all endpoints"
-        for port in 8002 8003 8004 8005 8006 8007 8008; do
+        for port in 8002 8003 8004 8005 8006 8007 8008 8011; do
           unregister_endpoint "$${HOST_IP}:$$port"
         done
         exit 0
@@ -2969,6 +3042,7 @@ configs:
           8006) check_models "$${HOST_IP}:8006" ;;
           8007) check_models "$${HOST_IP}:8007" ;;
           8008) check_chat "$${HOST_IP}:8008" "Qwen/Qwen3.6-35B-A3B-FP8" ;;
+          8011) check_models "$${HOST_IP}:8011" ;;
         esac
       }
 
@@ -2996,7 +3070,7 @@ configs:
       echo "First model ready, starting registration loop"
 
       while true; do
-        for port in 8002 8003 8004 8005 8006 8007 8008; do
+        for port in 8002 8003 8004 8005 8006 8007 8008 8011; do
           # Liveness marker for the container healthcheck (see service def);
           # refreshed each port so a slow-but-progressing serial loop (these
           # probes can take minutes in aggregate) is not falsely marked
@@ -3027,6 +3101,7 @@ configs:
         register_model "openai/whisper-large-v3" "whisper-large-v3.completions.near.ai"
         register_model "openai/privacy-filter" "privacy-filter.completions.near.ai"
         register_model "Qwen/Qwen3.6-35B-A3B-FP8" "qwen3-6-35b.completions.near.ai"
+        register_model "levanto/sage-1.4" "sage.completions.near.ai"
         # GLM-5.3 Flash (:8009) is deliberately NOT registered with model-proxy.
         # gpu13's single TP4 replica is dedicated to the OpenRouter lane, whose
         # gateway reaches it directly on the host's plain :8009 port. Keeping it
@@ -3116,6 +3191,17 @@ configs:
       server {
           listen 8009;
           location / { proxy_pass http://proxy-glm53:8000; }
+      }
+
+      # :8011 - Levanto Sage proxy (model-proxy probe). Resolved per request through docker DNS so nginx
+      # starts on hosts without proxy-sage (gpu23 deploys this file too); there it answers 502.
+      server {
+          listen 8011;
+          location / {
+              resolver 127.0.0.11 valid=10s ipv6=off;
+              set $$sage_proxy http://proxy-sage:8000;
+              proxy_pass $$sage_proxy;
+          }
       }
 
       # ── TLS server blocks (port 443 = host 8444) ──
@@ -3214,6 +3300,23 @@ configs:
           location ^~ /metrics { return 404; }
           location ^~ /v1/metrics { return 404; }
           location / { proxy_pass http://proxy-privacy-filter:8000; }
+      }
+
+      server {
+          listen 443 ssl http2;
+          server_name sage.completions.near.ai
+                      sage.completions-stg.near.ai
+                      ~^sage-i\d+\.completions(-stg)?\.near\.ai$$;
+          # Non-streaming endpoint; same connection handling as the other single-shot models.
+          keepalive_timeout 1h;
+          keepalive_requests 1000000;
+          location ^~ /metrics { return 404; }
+          location ^~ /v1/metrics { return 404; }
+          location / {
+              resolver 127.0.0.11 valid=10s ipv6=off;
+              set $$sage_proxy http://proxy-sage:8000;
+              proxy_pass $$sage_proxy;
+          }
       }
 
       server {
