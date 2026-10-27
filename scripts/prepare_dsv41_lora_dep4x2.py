@@ -151,6 +151,12 @@ HEADER = f"""# DeepSeek-V4.1-Flash-1017 + abliterated LoRA: two vLLM DEP4 replic
 # scripts/prepare_dsv41_lora_dep4x2.py (do not hand-edit). Design, evidence and open gates:
 # docs/dsv41-lora-dep4x2-design.md (tee-bench exp 50 PR #13, exp 51 PR #14).
 #
+# STAGING ONLY, NOT LISTED. Register only the staging inferenceUrl
+# (https://<sub>.completions-stg.near.ai) in cloud-stg-api; never PATCH prod cloud-api. Note that
+# any active PATCH to cloud-stg-api fires validate_model_staging -> promote_model_prod; the
+# promote's zone guard refuses a completions-stg URL, but the chain still auto-merges infra-tests
+# PRs, so coordinate with Henry before that PATCH.
+#
 # NOT DEPLOYABLE YET. Before any compose_up, all of the following must hold:
 #   - PROXY_IMAGE is a real digest (zero placeholder here; ENGINE_IMAGE is published);
 #   - the proxy build supports VLLM_PROXY_STRICT_MODEL (inference-proxy feat/strict-model);
@@ -459,7 +465,8 @@ def nginx_block() -> str:
         tls.append(
             f"      server {{\n        listen {tls_port} ssl http2;\n"
             f"        server_name {domain}\n"
-            f"                    ~^{sub}-i\\d+\\.completions\\.near\\.ai$$;\n"
+            f"                    {sub}.completions-stg.near.ai\n"
+            f"                    ~^{sub}-i\\d+\\.completions(-stg)?\\.near\\.ai$$;\n"
             "        keepalive_timeout 1h;\n        keepalive_requests 1000000;\n"
             "        location ^~ /metrics { return 404; }\n        location ^~ /v1/metrics { return 404; }\n"
             f"        location / {{ proxy_pass http://{name}:8000; }}\n      }}\n"

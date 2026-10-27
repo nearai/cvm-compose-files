@@ -82,6 +82,12 @@ Follow the existing rules:
 - tell the team before any prod redeploy;
 - validate under CC on a CC-on host before gpu02.
 
+## Staging only, not listed (decided 10-26)
+
+- Both ids are reachable only through the staging zone (`deepseek-v4-1-flash[-abliterated].completions-stg.near.ai`); the pack's nginx also answers those names.
+- No prod cloud-api catalog row. A cloud-stg-api row, if wanted, uses the `completions-stg` inferenceUrl.
+- Caveat: any active `PATCH /v1/admin/models` on cloud-stg-api fires `validate_model_staging`, which auto-merges infra-tests PRs (staging and prod tests) and then runs `promote_model_prod`. The promote's zone guard refuses a `completions-stg` URL, so the model will not reach prod cloud-api, but the infra-tests prod PR would still land. Agree with Henry before that PATCH, or test by calling the proxies directly.
+
 ## Before prod
 
 1. The inference-proxy strict-model change (inference-proxy #331) is merged and published; its digest and the engine digest (published from #393) are filled in via the generator.
