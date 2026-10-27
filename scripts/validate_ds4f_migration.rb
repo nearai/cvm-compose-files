@@ -229,22 +229,43 @@ assert.call(small_services.fetch('dcgm-shared-gpu3')['image'] == dcgm_image, 'gp
 registrar = small.fetch('configs').fetch('registrar_script').fetch('content')
 nginx = small.fetch('configs').fetch('nginx_conf').fetch('content')
 assert.call(small_services.fetch('nginx').fetch('ports').map(&:to_s).include?('8009:8009'), 'gpu13 nginx must publish host port 8009')
-# GLM (:8009) is the OpenRouter-only lane: the gateway reaches it directly on
-# the host port, so the registrar must never probe or register it. Comments are
-# stripped first so the explanatory ":8009" comment block is not a false match.
+# GLM (:8009) serves the OpenRouter gateway directly on the host port AND joins the
+# cloud-api long-context tier. The registrar probes :8009 with the canonical engine
+# id but registers it ONLY under the synthetic long id / long domain; registering the
+# canonical id would put gpu13 in the base glm-5-3-flash pool and fight the other
+# hosts' registrars (model-proxy's model->domain map is one domain per id). Comments
+# are stripped first so explanatory text is not a false match.
 registrar_code = registrar.lines.reject { |line| line.strip.start_with?('#') }.join
-assert.call(!registrar_code.include?('8009'), 'gpu13 registrar must not reference port 8009 (GLM is the OpenRouter-only lane)')
-assert.call(!registrar.match?(/register_model "z-ai\/glm-5\.3-flash/), 'gpu13 registrar must not register GLM with model-proxy')
-assert.call(nginx.match?(/listen 8009;\s+location \/ \{ proxy_pass http:\/\/proxy-glm53:8000; \}/), 'gpu13 nginx port 8009 must route to the GLM proxy')
+assert.call(registrar_code.scan(/for port in 8002 8003 8004 8005 8006 8007 8008 8009; do/).length == 3, 'gpu13 registrar must cover :8009 in all three port loops')
+assert.call(registrar_code.include?('8009) check_chat "${HOST_IP}:8009" "z-ai/glm-5.3-flash" ;;'.gsub('$', '$$')), 'gpu13 registrar must probe :8009 with the canonical GLM id')
+assert.call(registrar_code.include?('register_model "z-ai/glm-5.3-flash-long" "glm-5-3-flash-long.completions.near.ai"'), 'gpu13 registrar must register GLM under the long-context domain via the synthetic id')
+assert.call(!registrar.match?(/register_model "z-ai\/glm-5\.3-flash" /), 'gpu13 registrar must never register the canonical GLM id (base pool)')
+assert.call(!registrar.match?(/glm-5-3-flash\.completions\.near\.ai/), 'gpu13 registrar must not reference the base GLM domain')
+glm_8009 = nginx[/^server \{\n\s+listen 8009;\n(?:.*\n)*?^\}$/]
+assert.call(!glm_8009.nil?, 'gpu13 nginx must define the :8009 server')
+assert.call(glm_8009.include?('location / { proxy_pass http://proxy-glm53:8000; }'), 'gpu13 nginx port 8009 must route to the GLM proxy')
+assert.call(glm_8009.include?('location = /v1/models {') && glm_8009.include?('auth_request /_glm53_long_health;') && glm_8009.include?('try_files /__synthetic_models__ @glm53_long_models;'), 'gpu13 :8009 /v1/models stub must be gated on the real serving path (auth_request + try_files, never a bare return)')
+assert.call(glm_8009.scan(/location = \/v1\/models \{[^}]*return /).empty?, 'gpu13 :8009 /v1/models must not use a bare return (it would skip auth_request)')
+assert.call(glm_8009.include?('proxy_pass http://proxy-glm53:8000/v1/models;') && glm_8009.include?('internal;'), 'gpu13 :8009 health gate must be an internal static proxy_pass to proxy-glm53 /v1/models')
+assert.call(glm_8009.include?('return 200 \'{"object":"list","data":[{"id":"z-ai/glm-5.3-flash-long","object":"model","owned_by":"nearai"}]}\';'), 'gpu13 :8009 stub must advertise only the synthetic long id')
+nginx_code = nginx.lines.reject { |line| line.strip.start_with?('#') }.join
+assert.call(nginx_code.scan('z-ai/glm-5.3-flash-long').length == 1 && glm_8009.scan('z-ai/glm-5.3-flash-long').length == 1, 'the synthetic long id must appear only in the :8009 discovery stub')
 assert.call(nginx.match?(/server_name glm-5-3-flash\.completions\.near\.ai.*?location \/ \{ proxy_pass http:\/\/proxy-glm53:8000; \}/m), 'gpu13 GLM SNI must route to the GLM proxy')
 glm_sni = nginx[/server_name glm-5-3-flash\.completions\.near\.ai.*?location \/ \{ proxy_pass http:\/\/proxy-glm53:8000; \}/m]
 assert.call(glm_sni.include?('"~^glm-5-3-flash-b[0-9a-f]{12}\.completions(-stg)?\.near\.ai$$"'), 'gpu13 GLM SNI must accept model-proxy backend handles')
 assert.call(glm_sni.include?('gpu13.hosts.near.ai;'), 'gpu13 GLM SNI must accept the direct OpenRouter TLS hostname')
+[
+  'glm-5-3-flash-long.completions.near.ai',
+  'glm-5-3-flash-long.completions-stg.near.ai',
+  '~^glm-5-3-flash-long-i\d+\.completions(-stg)?\.near\.ai$$',
+  '"~^glm-5-3-flash-long-b[0-9a-f]{12}\.completions(-stg)?\.near\.ai$$"'
+].each { |name| assert.call(glm_sni.scan(name).length == 1, "gpu13 GLM SNI must accept the long-context name exactly once: #{name}") }
 # The host-level name must resolve to GLM alone: in any other TLS vhost it would
 # hand the OpenRouter lane a different model.
 tls_server_blocks = nginx.scan(/^server \{\n(?:.*\n)*?^\}$/).select { |block| block.include?('listen 443 ssl') }
 host_name_blocks = tls_server_blocks.select { |block| block.include?('gpu13.hosts.near.ai') }
 assert.call(host_name_blocks.length == 1 && host_name_blocks.first.include?('proxy_pass http://proxy-glm53:8000;'), 'gpu13.hosts.near.ai must be bound to the GLM vhost only')
+assert.call(tls_server_blocks.count { |block| block.include?('glm-5-3-flash-long') } == 1 && tls_server_blocks.count { |block| block.include?('glm-5-3-flash') } == 1, 'the GLM long-context names must be bound to the one GLM TLS vhost only')
 small_jobs = YAML.safe_load(small.fetch('configs').fetch('otelcol_app_config').fetch('content')).dig('receivers', 'prometheus/apps', 'config', 'scrape_configs')
 %w[sglang-model-sg-glm53-w4afp8-tp2-r1a sglang-model-sg-glm53-w4afp8-tp2-r1b dcgm-dcgm-glm53 dcgm-dcgm-shared-gpu3 inference-proxy-proxy-glm53 ghost-aggregator-glm53-ghost-aggregator].each do |job|
   assert.call(small_jobs.any? { |entry| entry['job_name'] == job }, "gpu13 OTel scrape missing: #{job}")

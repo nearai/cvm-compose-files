@@ -2903,7 +2903,7 @@ configs:
       TLS_PORT=8444
 
       # Track registration state per port
-      for port in 8002 8003 8004 8005 8006 8007 8008; do
+      for port in 8002 8003 8004 8005 8006 8007 8008 8009; do
         eval "REG_$$port=false"
         eval "FAIL_COUNT_$$port=0"
       done
@@ -2931,7 +2931,7 @@ configs:
 
       cleanup() {
         echo "SIGTERM received, unregistering all endpoints"
-        for port in 8002 8003 8004 8005 8006 8007 8008; do
+        for port in 8002 8003 8004 8005 8006 8007 8008 8009; do
           unregister_endpoint "$${HOST_IP}:$$port"
         done
         exit 0
@@ -2969,6 +2969,7 @@ configs:
           8006) check_models "$${HOST_IP}:8006" ;;
           8007) check_models "$${HOST_IP}:8007" ;;
           8008) check_chat "$${HOST_IP}:8008" "Qwen/Qwen3.6-35B-A3B-FP8" ;;
+          8009) check_chat "$${HOST_IP}:8009" "z-ai/glm-5.3-flash" ;;
         esac
       }
 
@@ -2996,7 +2997,7 @@ configs:
       echo "First model ready, starting registration loop"
 
       while true; do
-        for port in 8002 8003 8004 8005 8006 8007 8008; do
+        for port in 8002 8003 8004 8005 8006 8007 8008 8009; do
           # Liveness marker for the container healthcheck (see service def);
           # refreshed each port so a slow-but-progressing serial loop (these
           # probes can take minutes in aggregate) is not falsely marked
@@ -3027,14 +3028,21 @@ configs:
         register_model "openai/whisper-large-v3" "whisper-large-v3.completions.near.ai"
         register_model "openai/privacy-filter" "privacy-filter.completions.near.ai"
         register_model "Qwen/Qwen3.6-35B-A3B-FP8" "qwen3-6-35b.completions.near.ai"
-        # GLM-5.3 Flash (:8009) is deliberately NOT registered with model-proxy.
-        # gpu13's single TP4 replica is dedicated to the OpenRouter lane, whose
-        # gateway reaches it directly on the host's plain :8009 port. Keeping it
-        # out of glm-5-3-flash.completions.near.ai keeps cloud-api traffic off a
-        # 40-slot engine the lane fills on its own, and keeps the public pool on
-        # one signing identity (this CVM is on the old KMS root; gpu04/gpu03/
-        # gpu23 are not). To rejoin the public pool, restore 8009 in the three
-        # port loops, its check_chat case, and the register_model line.
+        # GLM-5.3 Flash (:8009) is registered for the LONG-CONTEXT domain only.
+        # model-proxy discovers :8009 through the synthetic id
+        # z-ai/glm-5.3-flash-long, which the shared nginx's plain :8009 server
+        # answers on /v1/models (a discovery-only stub gated on proxy-glm53's real
+        # /v1/models; see nginx_conf). The canonical z-ai/glm-5.3-flash is NEVER
+        # registered here: model-proxy's model->domain map is one domain per model
+        # id, last-writer-wins, so doing so would put gpu13 in the base
+        # glm-5-3-flash pool and fight the other GLM-5.3 hosts' registrars each
+        # cycle.
+        # The OpenRouter gateway is unchanged: it keeps reaching the engine directly
+        # on the host's plain :8009 (/healthz, /v1/metrics, chat) and on
+        # gpu13.hosts.near.ai:8444. check_port 8009 still probes the real engine
+        # with the canonical id. To leave the long tier, remove 8009 from the three
+        # port loops, its check_chat case, and the register_model line below.
+        register_model "z-ai/glm-5.3-flash-long" "glm-5-3-flash-long.completions.near.ai"
         # Refresh liveness after the register_model calls, before the long sleep.
         date +%s > /tmp/registrar_alive
         sleep 60
@@ -3113,8 +3121,43 @@ configs:
           location / { proxy_pass http://proxy-qwen36-35b-a3b:8000; }
       }
 
+      # :8009 - GLM-5.3 Flash. `location /` is the OpenRouter gateway's direct path
+      # (/healthz, /v1/metrics, chat) and stays a plain proxy to proxy-glm53.
+      # `= /v1/models` is a discovery-only stub for the cloud-api long-context tier:
+      # model-proxy probes it and maps the SYNTHETIC id z-ai/glm-5.3-flash-long to
+      # glm-5-3-flash-long.completions.near.ai (routing itself targets :8444 ->
+      # proxy-glm53 on the canonical id). The synthetic id is never the canonical
+      # id and must never appear in SGLang, the catalog, or any serving-path config;
+      # the OpenRouter gateway's /healthz and /v1/metrics probes and chat path are
+      # untouched (only the exact path /v1/models answers differently).
+      #
+      # The response is gated on the REAL serving path via auth_request (a
+      # zero-body subrequest to proxy-glm53's /v1/models): if the engine/proxy is
+      # down the stub returns 5xx and model-proxy's discovery drops this backend
+      # instead of seeing a healthy fake. PHASE-ORDER TRAP: a bare `return` runs in
+      # the rewrite phase, BEFORE auth_request's access phase, so the gate would be
+      # a no-op; try_files runs in the precontent phase, AFTER access, and the
+      # always-missing file falls through to the named location that holds the
+      # `return`. Static proxy_pass (no resolver in this http block), like every
+      # other upstream in this file.
       server {
           listen 8009;
+          location = /v1/models {
+              auth_request /_glm53_long_health;
+              try_files /__synthetic_models__ @glm53_long_models;
+          }
+          location @glm53_long_models {
+              default_type application/json;
+              return 200 '{"object":"list","data":[{"id":"z-ai/glm-5.3-flash-long","object":"model","owned_by":"nearai"}]}';
+          }
+          location = /_glm53_long_health {
+              internal;
+              proxy_pass http://proxy-glm53:8000/v1/models;
+              proxy_pass_request_body off;
+              proxy_set_header Content-Length "";
+              proxy_connect_timeout 2s;
+              proxy_read_timeout 4s;
+          }
           location / { proxy_pass http://proxy-glm53:8000; }
       }
 
@@ -3244,10 +3287,20 @@ configs:
           # target. Without the entry that SNI matches no vhost and falls through to
           # the first TLS server block (FLUX.2-klein), which answers /v1/models with
           # the wrong model.
+          # The glm-5-3-flash-long.* names (canonical, staging zone, rotation-SNI -i<N>
+          # and per-backend -b<hex12>) are the cloud-api long-context tier: model-proxy
+          # routes that domain to this same :8444 -> proxy-glm53 path (canonical engine
+          # id; the synthetic z-ai/glm-5.3-flash-long id only exists in the :8009
+          # discovery stub). The base `-i<N>`/`-b<hex>` regexes cannot match the long
+          # names (`-long-` follows `flash`), so the two families stay disjoint.
           server_name glm-5-3-flash.completions.near.ai
                       glm-5-3-flash.completions-stg.near.ai
                       ~^glm-5-3-flash-i\d+\.completions(-stg)?\.near\.ai$$
                       "~^glm-5-3-flash-b[0-9a-f]{12}\.completions(-stg)?\.near\.ai$$"
+                      glm-5-3-flash-long.completions.near.ai
+                      glm-5-3-flash-long.completions-stg.near.ai
+                      ~^glm-5-3-flash-long-i\d+\.completions(-stg)?\.near\.ai$$
+                      "~^glm-5-3-flash-long-b[0-9a-f]{12}\.completions(-stg)?\.near\.ai$$"
                       gpu13.hosts.near.ai;
           keepalive_timeout 1h;
           keepalive_requests 1000000;
