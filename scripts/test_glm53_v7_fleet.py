@@ -559,6 +559,119 @@ def with_qwen38_abliterated_ingress(text: str, snippets: tuple[str, ...]) -> str
     return text.replace(block, updated, 1)
 
 
+GLM53_LONG_TIER_NGINX_8009_OLD = """      server {
+          listen 8009;
+          location / { proxy_pass http://proxy-glm53:8000; }
+      }
+"""
+GLM53_LONG_TIER_NGINX_8009_NEW = r"""      # :8009 - GLM-5.3 Flash. `location /` is the OpenRouter gateway's direct path
+      # (/healthz, /v1/metrics, chat) and stays a plain proxy to proxy-glm53.
+      # `= /v1/models` is a discovery-only stub for the cloud-api long-context tier:
+      # model-proxy probes it and maps the SYNTHETIC id z-ai/glm-5.3-flash-long to
+      # glm-5-3-flash-long.completions.near.ai (routing itself targets :8444 ->
+      # proxy-glm53 on the canonical id). The synthetic id is never the canonical
+      # id and must never appear in SGLang, the catalog, or any serving-path config;
+      # the OpenRouter gateway's /healthz and /v1/metrics probes and chat path are
+      # untouched (only the exact path /v1/models answers differently).
+      #
+      # The response is gated on the REAL serving path via auth_request (a
+      # zero-body subrequest to proxy-glm53's /v1/models): if the engine/proxy is
+      # down the stub returns 5xx and model-proxy's discovery drops this backend
+      # instead of seeing a healthy fake. PHASE-ORDER TRAP: a bare `return` runs in
+      # the rewrite phase, BEFORE auth_request's access phase, so the gate would be
+      # a no-op; try_files runs in the precontent phase, AFTER access, and the
+      # always-missing file falls through to the named location that holds the
+      # `return`. Static proxy_pass (no resolver in this http block), like every
+      # other upstream in this file.
+      server {
+          listen 8009;
+          location = /v1/models {
+              auth_request /_glm53_long_health;
+              try_files /__synthetic_models__ @glm53_long_models;
+          }
+          location @glm53_long_models {
+              default_type application/json;
+              return 200 '{"object":"list","data":[{"id":"z-ai/glm-5.3-flash-long","object":"model","owned_by":"nearai"}]}';
+          }
+          location = /_glm53_long_health {
+              internal;
+              proxy_pass http://proxy-glm53:8000/v1/models;
+              proxy_pass_request_body off;
+              proxy_set_header Content-Length "";
+              proxy_connect_timeout 2s;
+              proxy_read_timeout 4s;
+          }
+          location / { proxy_pass http://proxy-glm53:8000; }
+      }
+"""
+GLM53_LONG_TIER_REGISTRAR_COMMENT_OLD = """        # GLM-5.3 Flash (:8009) is deliberately NOT registered with model-proxy.
+        # gpu13's single TP4 replica is dedicated to the OpenRouter lane, whose
+        # gateway reaches it directly on the host's plain :8009 port. Keeping it
+        # out of glm-5-3-flash.completions.near.ai keeps cloud-api traffic off a
+        # 40-slot engine the lane fills on its own, and keeps the public pool on
+        # one signing identity (this CVM is on the old KMS root; gpu04/gpu03/
+        # gpu23 are not). To rejoin the public pool, restore 8009 in the three
+        # port loops, its check_chat case, and the register_model line.
+"""
+GLM53_LONG_TIER_REGISTRAR_COMMENT_NEW = """        # GLM-5.3 Flash (:8009) is registered for the LONG-CONTEXT domain only.
+        # model-proxy discovers :8009 through the synthetic id
+        # z-ai/glm-5.3-flash-long, which the shared nginx's plain :8009 server
+        # answers on /v1/models (a discovery-only stub gated on proxy-glm53's real
+        # /v1/models; see nginx_conf). The canonical z-ai/glm-5.3-flash is NEVER
+        # registered here: model-proxy's model->domain map is one domain per model
+        # id, last-writer-wins, so doing so would put gpu13 in the base
+        # glm-5-3-flash pool and fight the other GLM-5.3 hosts' registrars each
+        # cycle.
+        # The OpenRouter gateway is unchanged: it keeps reaching the engine directly
+        # on the host's plain :8009 (/healthz, /v1/metrics, chat) and on
+        # gpu13.hosts.near.ai:8444. check_port 8009 still probes the real engine
+        # with the canonical id. To leave the long tier, remove 8009 from the three
+        # port loops, its check_chat case, and the register_model line below.
+        register_model "z-ai/glm-5.3-flash-long" "glm-5-3-flash-long.completions.near.ai"
+"""
+GLM53_LONG_TIER_SNI_OLD = r"""          server_name glm-5-3-flash.completions.near.ai
+                      glm-5-3-flash.completions-stg.near.ai
+                      ~^glm-5-3-flash-i\d+\.completions(-stg)?\.near\.ai$$
+                      "~^glm-5-3-flash-b[0-9a-f]{12}\.completions(-stg)?\.near\.ai$$"
+                      gpu13.hosts.near.ai;
+"""
+GLM53_LONG_TIER_SNI_NEW = r"""          # The glm-5-3-flash-long.* names (canonical, staging zone, rotation-SNI -i<N>
+          # and per-backend -b<hex12>) are the cloud-api long-context tier: model-proxy
+          # routes that domain to this same :8444 -> proxy-glm53 path (canonical engine
+          # id; the synthetic z-ai/glm-5.3-flash-long id only exists in the :8009
+          # discovery stub). The base `-i<N>`/`-b<hex>` regexes cannot match the long
+          # names (`-long-` follows `flash`), so the two families stay disjoint.
+          server_name glm-5-3-flash.completions.near.ai
+                      glm-5-3-flash.completions-stg.near.ai
+                      ~^glm-5-3-flash-i\d+\.completions(-stg)?\.near\.ai$$
+                      "~^glm-5-3-flash-b[0-9a-f]{12}\.completions(-stg)?\.near\.ai$$"
+                      glm-5-3-flash-long.completions.near.ai
+                      glm-5-3-flash-long.completions-stg.near.ai
+                      ~^glm-5-3-flash-long-i\d+\.completions(-stg)?\.near\.ai$$
+                      "~^glm-5-3-flash-long-b[0-9a-f]{12}\.completions(-stg)?\.near\.ai$$"
+                      gpu13.hosts.near.ai;
+"""
+
+
+def with_glm53_long_tier_registration(text: str) -> str:
+    """Apply only gpu13's long-context-tier join to the fixture: :8009 is registered under the synthetic long id only (never the canonical id), served by an auth_request-gated /v1/models stub, with the long SNI names on the existing GLM vhost."""
+    loop_old = "for port in 8002 8003 8004 8005 8006 8007 8008; do"
+    if text.count(loop_old) != 3:
+        raise AssertionError("expected three registrar port loops in the fixture")
+    text = text.replace(loop_old, "for port in 8002 8003 8004 8005 8006 8007 8008 8009; do")
+    check_old = '          8008) check_chat "$${HOST_IP}:8008" "Qwen/Qwen3.6-35B-A3B-FP8" ;;\n'
+    for old, new in (
+        (check_old, check_old + '          8009) check_chat "$${HOST_IP}:8009" "z-ai/glm-5.3-flash" ;;\n'),
+        (GLM53_LONG_TIER_REGISTRAR_COMMENT_OLD, GLM53_LONG_TIER_REGISTRAR_COMMENT_NEW),
+        (GLM53_LONG_TIER_NGINX_8009_OLD, GLM53_LONG_TIER_NGINX_8009_NEW),
+        (GLM53_LONG_TIER_SNI_OLD, GLM53_LONG_TIER_SNI_NEW),
+    ):
+        if text.count(old) != 1:
+            raise AssertionError(f"expected one long-tier fixture anchor: {old.strip().splitlines()[0]}")
+        text = text.replace(old, new, 1)
+    return text
+
+
 class Gpu13FleetTest(unittest.TestCase):
     """gpu13 deploys prod/small-models.yaml: its two GLM replicas must be the long file's v12 TP2 replicas, and nothing else may move."""
 
@@ -665,10 +778,10 @@ class Gpu13FleetTest(unittest.TestCase):
         self.assertIn('device_ids: ["6","7"]', service_block(self.small, "model-sg-glm53-w4afp8-tp2-r1b"))
 
     def test_non_glm_services_and_everything_outside_the_glm_blocks_are_byte_identical(self) -> None:
-        old = with_qwen38_abliterated_ingress(
+        old = with_glm53_long_tier_registration(with_qwen38_abliterated_ingress(
             with_qwen38_abliterated_lora(with_filter_and_coloc_on_gpu2(with_sage_on_gpu2(with_qwen38_coloc_pool(without_qwen38_gpu0_stage_b(self.old))))),
             qwen38_abliterated_ingress(self.small),
-        )
+        ))
         names = re.findall(r"^  ([a-z0-9-]+):$", self.old[self.old.index("\nservices:\n"):], re.MULTILINE)
         expected_names = [name for name in names if name != QWEN38_GPU0_SERVICE]
         expected_names.insert(expected_names.index(QWEN38_R2) + 1, COLOC_ENGINE)
@@ -988,10 +1101,10 @@ class Gpu13FleetTest(unittest.TestCase):
     def test_dashboard_labels_are_unchanged_on_gpu13(self) -> None:
         def selectors(text: str) -> list[str]:
             return [l for l in selector_lines(text) if "max_running_requests" not in l and "max_queued_requests" not in l]
-        old = with_qwen38_abliterated_ingress(
+        old = with_glm53_long_tier_registration(with_qwen38_abliterated_ingress(
             with_qwen38_abliterated_lora(with_filter_and_coloc_on_gpu2(with_sage_on_gpu2(with_qwen38_coloc_pool(without_qwen38_gpu0_stage_b(self.old))))),
             qwen38_abliterated_ingress(self.small),
-        )
+        ))
         without_coloc = self.small
         for name in (COLOC_ENGINE, *LORA_SERVICES):
             without_coloc = without_coloc.replace(service_block(without_coloc, name), "", 1)
