@@ -61,8 +61,9 @@ def rank_service(replica: str, rank: int) -> str:
 
 def engine_command(replica: str, rank: int) -> str:
     lora = json.dumps({"name": ADAPTER_ID, "path": ADAPTER_PATH, "base_model_name": BASE_ID}, separators=(",", ":"))
+    # The image entrypoint is ["vllm", "serve"]: the command starts at the model path.
     args = [
-        "vllm serve", BASE_PATH,
+        BASE_PATH,
         f"--served-model-name {BASE_ID}",
         "--trust-remote-code",
         "--tensor-parallel-size 1",
