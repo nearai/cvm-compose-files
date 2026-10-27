@@ -287,6 +287,9 @@ COLOC_BLOCK_HASHES = {
 # Levanto Sage moved in from prod/sage.yaml (gpu04 GPU 6), unchanged except the GPU: gpu13 GPU 0.
 # The filter and Qwen3.8 coloc move together to GPU 2 on gpu23.
 SAGE_FILE = ROOT / "prod/sage.yaml"
+SAGE_PULL_FILE = ROOT / "prod/sage-pull.yaml"
+SAGE_PULL_SERVICE = "sage-pull"
+SAGE_PULL_PROFILE_LINE = '    profiles: ["sage-pull"]'
 SAGE_SERVICES = ("sage-dstack", "sage")
 SAGE_HEADING = "  # ── Levanto Sage on gpu13 GPU 0"
 SAGE_GPU04_GPU = "GPU-bafbdde0-cd41-8379-fa93-149864963329"
@@ -295,6 +298,7 @@ QWEN38_R2 = "model-sg-qwen38-27b-fp8-tp1-r2"
 QWEN38_R2_DCGM = "dcgm-qwen38-27b"
 QWEN38_R2_JOBS = (f"sglang-{QWEN38_R2}", f"dcgm-{QWEN38_R2_DCGM}")
 SAGE_BLOCK_HASHES = {
+    "sage-pull": "4260252bac72486eb8c9f7f2383ca1d28ababff2db50adda7a3367805f5cad34",
     "sage-dstack": "e3020a51e7f4f6c6a02868004618e880da664a55abc6c875c1da860595f16518",
     "sage": "df1141e760d008bea56b14f6a24de27b1fcb18714cb5ccb20bf32f13e2ae1cc1",
     "networks": "f83c2c4fabfffcf0587e644bb575e4cc4c602f0fe8a032061fac8215403be193",
@@ -582,7 +586,7 @@ class Gpu13FleetTest(unittest.TestCase):
         expected_names = [name for name in expected_names if name not in (QWEN38_R2, QWEN38_R2_DCGM)]
         # Sage (pinned separately): its two services before the collector, its network and its volume.
         otelcol = expected_names.index("otelcol-contrib")
-        expected_names[otelcol:otelcol] = list(SAGE_SERVICES)
+        expected_names[otelcol:otelcol] = [SAGE_PULL_SERVICE, *SAGE_SERVICES]
         expected_names.insert(expected_names.index("default"), "sage")
         expected_names.insert(expected_names.index("certs"), "sage-data")
         self.assertEqual(
@@ -638,6 +642,22 @@ class Gpu13FleetTest(unittest.TestCase):
         self.assertEqual(new_volumes.replace("  qwen38_coloc_kernel_cache:\n", "").replace("  sage-data:\n", ""), old_volumes)
         self.assertEqual(new_volumes.count("  qwen38_coloc_kernel_cache:\n"), 1)
         self.assertEqual(new_volumes.count("  sage-data:\n"), 1)
+
+    def test_sage_pull_is_prod_sage_pull_unchanged_behind_its_own_profile(self) -> None:
+        block = service_block(self.small, SAGE_PULL_SERVICE)
+        self.assertEqual(hashlib.sha256(block.encode()).hexdigest(), SAGE_BLOCK_HASHES[SAGE_PULL_SERVICE])
+        source = service_block(SAGE_PULL_FILE.read_text(), SAGE_PULL_SERVICE).split("\nnetworks:", 1)[0]
+        source = source.replace("    container_name: sage-pull\n", "    container_name: sage-pull\n" + SAGE_PULL_PROFILE_LINE + "\n", 1)
+        source += '    logging:\n      driver: json-file\n      options:\n        max-size: "20m"\n        max-file: "3"\n'
+        lines = lambda text: [line for line in text.splitlines() if line.strip() and not line.lstrip().startswith("#")]
+        self.assertEqual(lines(block), lines(source))
+        self.assertEqual(block.count("driver: json-file"), 1)
+        self.assertEqual(block.count('restart: "no"'), 1)
+        self.assertEqual(block.count("pull_policy: missing"), 1)
+        self.assertEqual(block.count(SAGE_PULL_PROFILE_LINE), 1)
+        for name in re.findall(r"^  ([a-z0-9-]+):$", self.small[self.small.index("\nservices:\n"):], re.MULTILINE):
+            if name != SAGE_PULL_SERVICE:
+                self.assertNotIn(SAGE_PULL_PROFILE_LINE, service_block(self.small, name), name)
 
     def test_sage_moves_in_from_prod_sage_on_gpu13_gpu0_unchanged_except_the_gpu(self) -> None:
         networks = self.small.split("\nnetworks:\n", 1)[1].split("\nvolumes:\n", 1)[0]
