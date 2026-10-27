@@ -926,7 +926,10 @@ services:
 
   proxy-qwen38-27b:
     <<: *vllm-proxy-common
-    image: nearaidev/vllm-proxy-rs@sha256:e4a42b327523e304c0fc389f656ba7a02fd7b3d4a38cdc822f9288fd193a525a
+    # inference-proxy 5faff1b (#329): strict request-model match and LoRA selector
+    # refusal. The coloc engine serves the abliterated adapter too, so this proxy
+    # must keep VLLM_PROXY_STRICT_REQUEST_MODEL on.
+    image: nearaidev/vllm-proxy-rs@sha256:4937ad68d86dcc79871bd52341f2030a71e49bcafdf69d82ca287171aeb43c7b
     container_name: proxy-qwen38-27b
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
@@ -935,6 +938,7 @@ services:
       - COMPOSE_MANAGER_URL=http://compose-manager:8080
       - LOG_FORMAT=json
       - MODEL_NAME=Qwen/Qwen3.8-27B
+      - VLLM_PROXY_STRICT_REQUEST_MODEL=true
       - OHTTP_ENABLED=true
       - TOKEN=${PROXY_TOKEN}
       - FUSION_ENABLED=${FUSION_ENABLED}
@@ -989,6 +993,10 @@ services:
       --cuda-graph-max-bs 32
       --reasoning-parser qwen3
       --tool-call-parser qwen3_coder
+      --enable-lora
+      --lora-paths Qwen/Qwen3.8-27B-abliterated=/adapters/abliterated
+      --max-loras-per-batch 2
+      --max-lora-rank 1
       --port 8000
       --host 0.0.0.0
       --enable-cache-report
@@ -1008,8 +1016,11 @@ services:
     volumes:
       - hugginface_cache:/root/.cache/huggingface
       - qwen38_coloc_kernel_cache:/root/.cache/sglang
+      - lora_adapter:/adapters:ro
     depends_on:
       model-downloader-qwen38:
+        condition: service_completed_successfully
+      qwen38-lora-adapter-downloader:
         condition: service_completed_successfully
     deploy:
       resources:
@@ -1019,7 +1030,7 @@ services:
               device_ids: ["2"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:Qwen/Qwen3.8-27B-FP8","served_model:Qwen/Qwen3.8-27B","model_revision:017b9c7af6b5689d5dd426a76e0bc077eb5ca20a","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:0","gpu_pair:2","config_variant:qwen38-gpu13-gpu0-coloc-test","quantization:fp8","sglang_revision:qwen38.27b.g561c8f3","engine_image:febfb971c735"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:Qwen/Qwen3.8-27B-FP8","served_model:Qwen/Qwen3.8-27B","model_revision:017b9c7af6b5689d5dd426a76e0bc077eb5ca20a","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:0","gpu_pair:2","config_variant:qwen38-gpu13-gpu0-coloc-test","quantization:fp8","lora:abliterated-r1","sglang_revision:qwen38.27b.g561c8f3","engine_image:febfb971c735"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -1098,6 +1109,137 @@ services:
     logging: *logging-conf
     labels:
       com.datadoghq.ad.logs: '[{"source":"model-proxy-registrar","service":"model-proxy-registrar","tags":["model:Qwen/Qwen3.8-27B","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+
+  qwen38-lora-adapter-downloader:
+    <<: *downloader-common
+    container_name: qwen38-lora-adapter-downloader
+    command:
+      - |
+        set -eu
+        python3 - <<'PY'
+        import hashlib
+        import os
+        from pathlib import Path
+        from urllib.request import urlopen
+
+        base = 'https://raw.githubusercontent.com/nearai/cvm-compose-files/main/adapters/qwen38-27b-abliterated-r1'
+        files = {
+            'adapter_model.safetensors': '3dd325373e6ad720196ce6d30a5d7302d245da87ec45362c95ffcc60a36eb934',
+            'adapter_config.json': 'c2f78fe464c7c24d742e20d0fab6477647f848525736d2e5661f5bb4c66d0faf',
+        }
+        target = Path('/adapters/abliterated')
+        target.mkdir(parents=True, exist_ok=True)
+        for name, expected in files.items():
+            with urlopen(f'{base}/{name}', timeout=60) as response:
+                content = response.read()
+            actual = hashlib.sha256(content).hexdigest()
+            if actual != expected:
+                raise SystemExit(f'{name}: SHA-256 mismatch')
+            temporary = target / f'{name}.tmp'
+            temporary.write_bytes(content)
+            os.replace(temporary, target / name)
+        PY
+    volumes:
+      - lora_adapter:/adapters
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"model-downloader","service":"model-downloader","tags":["model:Qwen/Qwen3.8-27B-abliterated","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","config_variant:qwen38-lora-canary","lora:abliterated-r1"]}]'
+
+  # Public auth, signing and usage reporting for the adapter; allowlisted orgs only (default-deny).
+  # SGLang serves the colon-less adapter id as the base model, so the proxy injects lora_path.
+  proxy-qwen38-27b-abliterated:
+    <<: *vllm-proxy-common
+    # inference-proxy 5faff1b (#329), same as proxy-qwen38-27b: VLLM_PROXY_BACKEND_LORA.
+    image: nearaidev/vllm-proxy-rs@sha256:4937ad68d86dcc79871bd52341f2030a71e49bcafdf69d82ca287171aeb43c7b
+    container_name: proxy-qwen38-27b-abliterated
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - CLOUD_API_URL=https://cloud-api.near.ai
+      - CLOUD_API_USAGE_TOKEN=${CLOUD_API_USAGE_TOKEN}
+      - COMPOSE_MANAGER_URL=http://compose-manager:8080
+      - LOG_FORMAT=json
+      - MODEL_NAME=Qwen/Qwen3.8-27B-abliterated
+      - VLLM_PROXY_STRICT_REQUEST_MODEL=true
+      - VLLM_PROXY_BACKEND_LORA=Qwen/Qwen3.8-27B-abliterated
+      # Deny customer API keys until the intended organization IDs are supplied.
+      - VLLM_PROXY_ALLOWED_ORG_IDS=${QWEN38_ABLITERATED_ALLOWED_ORG_IDS:-__no_organizations__}
+      - OHTTP_ENABLED=true
+      - TOKEN=${QWEN38_ABLITERATED_PROXY_TOKEN}
+      - FUSION_ENABLED=${FUSION_ENABLED}
+      - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
+      - VLLM_BACKEND_URLS=http://model-sg-qwen38-27b-fp8-tp1-coloc:8000
+      - VLLM_PROXY_MAX_REQUEST_SIZE=104857600
+      - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
+      - USE_NV_ATTESTATION_SDK=true
+      - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
+      - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:Qwen/Qwen3.8-27B-abliterated","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8011","gpu_pair:2","config_variant:qwen38-lora-canary","lora:abliterated-r1"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "inference-proxy"
+      nearai.otel.service: "vllm-proxy"
+      nearai.otel.source: "vllm-proxy"
+      nearai.otel.container_name: "proxy-qwen38-27b-abliterated"
+      nearai.otel.port: "8000"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "Qwen/Qwen3.8-27B-abliterated"
+      nearai.otel.deployment: "small-models"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
+      nearai.otel.gpu_pair: "2"
+      nearai.otel.config_variant: "qwen38-lora-canary"
+
+  # Abliterated route and registrar stay off unless the register-abliterated profile is enabled.
+  nginx-qwen38-abliterated:
+    image: nginx@sha256:1d13701a5f9f3fb01aaa88cef2344d65b6b5bf6b7d9fa4cf0dca557a8d7702ba
+    container_name: nginx-qwen38-abliterated
+    profiles: [register-abliterated]
+    depends_on:
+      - proxy-qwen38-27b-abliterated
+    command: /bin/sh -c 'cert=/etc/letsencrypt/live/completions.near.ai/fullchain.pem; last=$$(stat -L -c %Y "$$cert" 2>/dev/null); while :; do sleep 60; cur=$$(stat -L -c %Y "$$cert" 2>/dev/null); if [ -n "$$cur" ] && [ "$$cur" != "$$last" ]; then last=$$cur; echo "$$cert changed, reloading nginx"; nginx -s reload; fi; done & while :; do sleep 6h; nginx -s reload; done & nginx -g "daemon off;"'
+    ports:
+      - "8011:8011"
+      - "8012:8012"
+    volumes:
+      - certs:/etc/letsencrypt:ro
+    configs:
+      - source: nginx_qwen38_abliterated_conf
+        target: /etc/nginx/conf.d/default.conf
+        mode: 0644
+    restart: unless-stopped
+    logging: *logging-conf
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"nginx","service":"nginx","tags":["model:Qwen/Qwen3.8-27B-abliterated","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8011","config_variant:qwen38-lora-canary","lora:abliterated-r1"]}]'
+
+  qwen38-abliterated-registrar:
+    image: curlimages/curl@sha256:d94d07ba9e7d6de898b6d96c1a072f6f8266c687af78a74f380087a0addf5d17
+    container_name: qwen38-abliterated-registrar
+    entrypoint: ["sh", "/register.sh"]
+    restart: unless-stopped
+    profiles: [register-abliterated]
+    depends_on:
+      - nginx-qwen38-abliterated
+    healthcheck:
+      test: ["CMD-SHELL", "[ $$(( $$(date +%s) - $$(cat /tmp/registrar_alive 2>/dev/null || echo 0) )) -lt 180 ]"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 1200s
+    environment:
+      - HOST_IP=${HOST_IP}
+      - HTTP_PORT=8011
+      - TLS_PORT_QWEN38_ABLITERATED=8012
+      - MODEL_PROXY_TOKEN=${MODEL_PROXY_TOKEN}
+      - PROXY_TOKEN=${QWEN38_ABLITERATED_PROXY_TOKEN}
+    configs:
+      - source: qwen38_abliterated_registrar_script
+        target: /register.sh
+        mode: 0755
+    logging: *logging-conf
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"model-proxy-registrar","service":"model-proxy-registrar","tags":["model:Qwen/Qwen3.8-27B-abliterated","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","config_variant:qwen38-lora-canary","lora:abliterated-r1"]}]'
 
   proxy-glm53:
     <<: *vllm-proxy-common
@@ -2081,6 +2223,7 @@ volumes:
       o: "size=1m,mode=0700"
   qwen38_kernel_cache:
   qwen38_coloc_kernel_cache:
+  lora_adapter:
   sage-data:
   certs:
     external: true
@@ -2498,6 +2641,25 @@ configs:
                       port: "8000"
                       gpu_pair: "2"
                       config_variant: "qwen38-gpu2-coloc-only"
+              - job_name: inference-proxy-proxy-qwen38-27b-abliterated
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['proxy-qwen38-27b-abliterated:8000']
+                    labels:
+                      service: "vllm-proxy"
+                      source: "vllm-proxy"
+                      container_name: "proxy-qwen38-27b-abliterated"
+                      model: "Qwen/Qwen3.8-27B-abliterated"
+                      deployment: "small-models"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      port: "8011"
+                      gpu_pair: "2"
+                      config_variant: "qwen38-lora-canary"
               - job_name: inference-proxy-proxy-glm53
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -3268,6 +3430,191 @@ configs:
 
       READY_URL="http://$${HOST_IP}:$${HTTP_PORT}/v1/models"
       echo "Waiting for Qwen3.8 replica to be ready (probing $$READY_URL)..."
+      ready_attempts=0
+      until curl --connect-timeout 5 --max-time 10 -sf \
+        -H "Authorization: Bearer $$INFERENCE_TOKEN" \
+        "$$READY_URL" > /dev/null 2>&1; do
+        ready_attempts=$$((ready_attempts + 1))
+        if [ "$$ready_attempts" -ge 30 ]; then
+          echo "WARN: replica not reachable after $$ready_attempts attempts; entering the guarded registration loop"
+          break
+        fi
+        echo "Replica not ready yet (attempt $$ready_attempts/30), retrying in 30s..."
+        sleep 30
+      done
+
+      while true; do
+        date +%s > /tmp/registrar_alive
+        if check_chat "$$ENDPOINT" "$$MODEL" && check_tls_route; then
+          FAIL_COUNT=0
+          register_endpoint "$$ENDPOINT" "$$TLS_PORT"
+          if [ "$$REGISTERED" = false ]; then
+            echo "Registered $$ENDPOINT (routing port $$TLS_PORT)"
+          fi
+          REGISTERED=true
+        else
+          FAIL_COUNT=$$((FAIL_COUNT + 1))
+          echo "Health check failed for $$ENDPOINT (fail count: $$FAIL_COUNT)"
+          if [ "$$REGISTERED" = true ] && [ "$$FAIL_COUNT" -ge "$$MAX_RETRIES" ]; then
+            unregister_endpoint "$$ENDPOINT"
+            REGISTERED=false
+          fi
+        fi
+
+        register_model "$$MODEL" "$$DOMAIN"
+        date +%s > /tmp/registrar_alive
+        sleep 60
+      done
+
+  nginx_qwen38_abliterated_conf:
+    content: |
+      log_format json_combined escape=json
+        '{'  '"time":"$$time_iso8601"'
+        ',"request_id":"$$http_x_request_id"'
+        ',"org_id":"$$http_x_org_id"'
+        ',"workspace_id":"$$http_x_workspace_id"'
+        ',"http_host":"$$host"'
+        ',"method":"$$request_method"'
+        ',"uri":"$$uri"'
+        ',"status":$$status'
+        ',"request_length":$$request_length'
+        ',"bytes_sent":$$bytes_sent'
+        ',"request_time":$$request_time'
+        ',"upstream_addr":"$$upstream_addr"'
+        '}';
+
+      access_log /var/log/nginx/access.log json_combined;
+
+      proxy_http_version 1.1;
+      proxy_set_header Host $$host;
+      proxy_set_header X-Real-IP $$remote_addr;
+      proxy_set_header X-Forwarded-For $$proxy_add_x_forwarded_for;
+      proxy_set_header X-Forwarded-Proto $$scheme;
+      proxy_set_header Connection '';
+      proxy_buffering off;
+      proxy_cache off;
+      proxy_read_timeout 3600s;
+      client_max_body_size 100m;
+      client_body_buffer_size 1m;
+
+      # :8011 - Qwen3.8-27B abliterated (registrar probe + health)
+      server {
+          listen 8011;
+          location / { proxy_pass http://proxy-qwen38-27b-abliterated:8000; }
+      }
+
+      ssl_certificate /etc/letsencrypt/live/completions.near.ai/fullchain.pem;
+      ssl_certificate_key /etc/letsencrypt/live/completions.near.ai/privkey.pem;
+      ssl_protocols TLSv1.2 TLSv1.3;
+
+      # :8012 - Qwen3.8-27B abliterated TLS routing port (registered with routing_port 8012).
+      server {
+          listen 8012 ssl http2;
+          server_name qwen3-8-27b-abliterated.completions.near.ai;
+          keepalive_timeout 1h;
+          keepalive_requests 1000000;
+          location ^~ /metrics { return 404; }
+          location ^~ /v1/metrics { return 404; }
+          location / { proxy_pass http://proxy-qwen38-27b-abliterated:8000; }
+      }
+
+  qwen38_abliterated_registrar_script:
+    content: |
+      #!/bin/sh
+      PROXY_URL="https://completions.near.ai"
+      TOKEN="$${MODEL_PROXY_TOKEN}"
+      INFERENCE_TOKEN="$${PROXY_TOKEN}"
+
+      if [ -z "$$TOKEN" ] || [ -z "$$INFERENCE_TOKEN" ]; then
+        echo "ERROR: MODEL_PROXY_TOKEN and PROXY_TOKEN are required for model-proxy registration"
+        exit 1
+      fi
+
+      HTTP_PORT="$${HTTP_PORT:-8011}"
+      TLS_PORT="$${TLS_PORT_QWEN38_ABLITERATED:-8012}"
+      ENDPOINT="$${HOST_IP}:$${HTTP_PORT}"
+      MODEL="Qwen/Qwen3.8-27B-abliterated"
+      DOMAIN="qwen3-8-27b-abliterated.completions.near.ai"
+      MAX_RETRIES=3
+      REGISTERED=false
+      FAIL_COUNT=0
+
+      register_endpoint() {
+        curl -sS --max-time 10 -X POST "$$PROXY_URL/register/endpoint" \
+          -H "Authorization: Bearer $$TOKEN" \
+          -H "Content-Type: application/json" \
+          -d "{\"endpoint\":\"$$1\",\"routing_port\":$$2}" || true
+      }
+
+      unregister_endpoint() {
+        curl -sS --max-time 10 -X POST "$$PROXY_URL/unregister/endpoint" \
+          -H "Authorization: Bearer $$TOKEN" \
+          -H "Content-Type: application/json" \
+          -d "{\"endpoint\":\"$$1\"}" || true
+      }
+
+      register_model() {
+        curl -sS --max-time 10 -X POST "$$PROXY_URL/register/model" \
+          -H "Authorization: Bearer $$TOKEN" \
+          -H "Content-Type: application/json" \
+          -d "{\"model\":\"$$1\",\"domain\":\"$$2\"}" || true
+      }
+
+      cleanup() {
+        echo "SIGTERM received, unregistering $$ENDPOINT"
+        unregister_endpoint "$$ENDPOINT"
+        exit 0
+      }
+      trap cleanup TERM INT
+
+      check_chat() {
+        status=$$(curl -sS --connect-timeout 10 --max-time 45 -o /dev/null -w "%{http_code}" \
+          -X POST "http://$$1/v1/chat/completions" \
+          -H "Authorization: Bearer $$INFERENCE_TOKEN" \
+          -H "Content-Type: application/json" \
+          -d "{\"model\":\"$$2\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":1}")
+        curl_status=$$?
+
+        if [ "$$curl_status" -ne 0 ]; then
+          case "$$curl_status" in
+            52|56)
+              echo "Health probe hit connection-level backpressure (curl $$curl_status); treating as alive but saturated"
+              return 0
+              ;;
+          esac
+          echo "Health probe curl failed with status $$curl_status"
+          return 1
+        fi
+
+        case "$$status" in
+          2*) return 0 ;;
+          503)
+            echo "Backend returned 503; treating as alive but saturated"
+            return 0
+            ;;
+          *)
+            echo "Backend returned HTTP $$status"
+            return 1
+            ;;
+        esac
+      }
+
+      check_tls_route() {
+        tls_status=$$(curl -skS --connect-timeout 10 --max-time 20 -o /dev/null -w "%{http_code}" \
+          --resolve "$$DOMAIN:$$TLS_PORT:$${HOST_IP}" \
+          -H "Authorization: Bearer $$INFERENCE_TOKEN" \
+          "https://$$DOMAIN:$$TLS_PORT/v1/models")
+        case "$$tls_status" in
+          2*) return 0 ;;
+          *)
+            echo "TLS routing-port check failed (https :$$TLS_PORT -> HTTP $$tls_status)"
+            return 1
+            ;;
+        esac
+      }
+
+      READY_URL="http://$${HOST_IP}:$${HTTP_PORT}/v1/models"
+      echo "Waiting for Qwen3.8 abliterated route to be ready (probing $$READY_URL)..."
       ready_attempts=0
       until curl --connect-timeout 5 --max-time 10 -sf \
         -H "Authorization: Bearer $$INFERENCE_TOKEN" \
