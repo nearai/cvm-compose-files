@@ -286,25 +286,35 @@ COLOC_BLOCK_HASHES = {
 }
 # Qwen3.8 abliterated LoRA canary (#395): the coloc engine and proxy-qwen38-27b change as modelled by
 # with_qwen38_abliterated_lora(); everything new is pinned by hash below and is gated behind the
-# register-abliterated profile (nginx, registrar) or has no public route (proxy, adapter downloader).
+# register-abliterated profile (registrar) or has no public route of its own (proxy, adapter downloader).
+# gpu13 forwards only host ports 8000-8009 and 8444, so the adapter is served through nginx-qwen38:
+# with_qwen38_abliterated_ingress() adds only the hash-pinned LORA_INGRESS snippets to nginx_qwen38_conf.
 LORA_PROXY_IMAGE = "nearaidev/vllm-proxy-rs@sha256:4937ad68d86dcc79871bd52341f2030a71e49bcafdf69d82ca287171aeb43c7b"
 LORA_SERVICES = (
     "qwen38-lora-adapter-downloader",
     "proxy-qwen38-27b-abliterated",
-    "nginx-qwen38-abliterated",
     "qwen38-abliterated-registrar",
 )
-LORA_CONFIGS = ("nginx_qwen38_abliterated_conf", "qwen38_abliterated_registrar_script")
+LORA_CONFIGS = ("qwen38_abliterated_registrar_script",)
 LORA_JOB = "inference-proxy-proxy-qwen38-27b-abliterated"
 LORA_BLOCK_HASHES = {
     "qwen38-lora-adapter-downloader": "f00890986a1cbe050f1158fc94fb46c6a2910fad7ac622387bc09f21f47e7d4b",
-    "proxy-qwen38-27b-abliterated": "ffc69b6e10b2755e02feee25114853cdef4a7bd7e9c17cbaa0bc8e930ccf7ae8",
-    "nginx-qwen38-abliterated": "4618c0f92d66874323c93732d147e59c4a90efddc7bd7048fe0af802d454fee8",
-    "qwen38-abliterated-registrar": "e5f22c0b77fad5a59fc45d6a4065f6597648bfea5b19290209ce3071fe6addbb",
-    "nginx_qwen38_abliterated_conf": "5eebd7ea6794ccf682e6dd5a252a99ad2f9c5e8edf8e5eb5102bab039bed0285",
-    "qwen38_abliterated_registrar_script": "acb1a55e418b0a05cd44b3d064d91eea77cbfe6cf4716d9a420b291680cac020",
-    LORA_JOB: "d460fc2dba76b8fa9b5222278c720637757045231b1da52336089c4c058a4c89",
+    "proxy-qwen38-27b-abliterated": "9a87a172a774968821a0fae6c0cc1a285211e9a3eb5ea4c48f218ca58f6b69e7",
+    "qwen38-abliterated-registrar": "abbc11eca5f3f296b108cc4ec308ee5c59e04a04c99f4f7a6ce691586031c895",
+    "qwen38_abliterated_registrar_script": "bf512180438d8e6258a37b59e02f9f6abc2bcab5ea79ac92b91b31b62f6afbe7",
+    LORA_JOB: "300953b485fbe7ab94916efc464b5fdbdd784fbd6c554392491da0f653f3c505",
 }
+# The abliterated server blocks in nginx_qwen38_conf: the Host-selected :8000 block (with the
+# server-names bucket size) after the base :8000 block, and the SNI-selected :8001 block after the
+# base :8001 block. Each snippet runs from its start marker up to its insertion anchor.
+LORA_INGRESS_TLS_ANCHOR = "      ssl_certificate /etc/letsencrypt/live/completions.near.ai/fullchain.pem;\n"
+LORA_INGRESS_END_ANCHOR = "  # ── TEMPORARY (gpu02 maintenance): single-endpoint registrar for Qwen3.8 ──"
+LORA_INGRESS = (
+    ("      # :8000 with Host qwen3-8-27b-abliterated", LORA_INGRESS_TLS_ANCHOR,
+     "24870b6ce54aa37fc62179522ad226db7189b0f0a325da681c07caac483c20a8"),
+    ("      # :8001 - Qwen3.8-27B abliterated", LORA_INGRESS_END_ANCHOR,
+     "b506297df6405ba52234aed0bfbb4df103ba8a18e58f91fa4506685e2c020f07"),
+)
 # Levanto Sage moved in from prod/sage.yaml (gpu04 GPU 6), unchanged except the GPU: gpu13 GPU 0.
 # The filter and Qwen3.8 coloc move together to GPU 2 on gpu23.
 SAGE_FILE = ROOT / "prod/sage.yaml"
@@ -524,6 +534,31 @@ def with_qwen38_abliterated_lora(text: str) -> str:
     return text.replace(block, updated, 1)
 
 
+def qwen38_abliterated_ingress(text: str) -> tuple[str, ...]:
+    """The LORA_INGRESS snippets as they appear in the text's nginx_qwen38_conf."""
+    block = config_block(text, "nginx_qwen38_conf")
+    snippets = []
+    for marker, anchor, _ in LORA_INGRESS:
+        if block.count(marker) != 1 or block.count(anchor) != 1:
+            raise AssertionError(f"expected one abliterated ingress snippet: {marker.strip()}")
+        start = block.index(marker)
+        snippets.append(block[start:block.index(anchor, start)])
+    return tuple(snippets)
+
+
+def with_qwen38_abliterated_ingress(text: str, snippets: tuple[str, ...]) -> str:
+    """Insert only the abliterated server blocks into the fixture's nginx_qwen38_conf, each at its anchor."""
+    block = config_block(text, "nginx_qwen38_conf")
+    updated = block
+    for (_, anchor, _), snippet in zip(LORA_INGRESS, snippets, strict=True):
+        if updated.count(anchor) != 1:
+            raise AssertionError(f"expected one abliterated ingress anchor: {anchor.strip()}")
+        updated = updated.replace(anchor, snippet + anchor, 1)
+    if text.count(block) != 1:
+        raise AssertionError("expected one nginx_qwen38_conf fixture block")
+    return text.replace(block, updated, 1)
+
+
 class Gpu13FleetTest(unittest.TestCase):
     """gpu13 deploys prod/small-models.yaml: its two GLM replicas must be the long file's v12 TP2 replicas, and nothing else may move."""
 
@@ -630,11 +665,14 @@ class Gpu13FleetTest(unittest.TestCase):
         self.assertIn('device_ids: ["6","7"]', service_block(self.small, "model-sg-glm53-w4afp8-tp2-r1b"))
 
     def test_non_glm_services_and_everything_outside_the_glm_blocks_are_byte_identical(self) -> None:
-        old = with_qwen38_abliterated_lora(with_filter_and_coloc_on_gpu2(with_sage_on_gpu2(with_qwen38_coloc_pool(without_qwen38_gpu0_stage_b(self.old)))))
+        old = with_qwen38_abliterated_ingress(
+            with_qwen38_abliterated_lora(with_filter_and_coloc_on_gpu2(with_sage_on_gpu2(with_qwen38_coloc_pool(without_qwen38_gpu0_stage_b(self.old))))),
+            qwen38_abliterated_ingress(self.small),
+        )
         names = re.findall(r"^  ([a-z0-9-]+):$", self.old[self.old.index("\nservices:\n"):], re.MULTILINE)
         expected_names = [name for name in names if name != QWEN38_GPU0_SERVICE]
         expected_names.insert(expected_names.index(QWEN38_R2) + 1, COLOC_ENGINE)
-        # The LoRA canary's four services sit right after qwen38-registrar (pinned separately).
+        # The LoRA canary's three services sit right after qwen38-registrar (pinned separately).
         lora_at = expected_names.index("qwen38-registrar") + 1
         expected_names[lora_at:lora_at] = list(LORA_SERVICES)
         # With r2 and its DCGM exporter gone, gpu23 GPU 0 stays free for Sage on gpu13 GPU 0.
@@ -704,6 +742,9 @@ class Gpu13FleetTest(unittest.TestCase):
         for name, block in lora_blocks.items():
             with self.subTest(lora_block=name):
                 self.assertEqual(hashlib.sha256(block.encode()).hexdigest(), LORA_BLOCK_HASHES[name])
+        for (marker, _, expected), snippet in zip(LORA_INGRESS, qwen38_abliterated_ingress(self.small), strict=True):
+            with self.subTest(lora_ingress=marker.strip()):
+                self.assertEqual(hashlib.sha256(snippet.encode()).hexdigest(), expected)
         old_volumes = self.old.split("\nvolumes:\n", 1)[1].split("\nconfigs:\n", 1)[0]
         new_volumes = self.small.split("\nvolumes:\n", 1)[1].split("\nconfigs:\n", 1)[0]
         self.assertEqual(
@@ -713,6 +754,29 @@ class Gpu13FleetTest(unittest.TestCase):
         self.assertEqual(new_volumes.count("  qwen38_coloc_kernel_cache:\n"), 1)
         self.assertEqual(new_volumes.count("  lora_adapter:\n"), 1)
         self.assertEqual(new_volumes.count("  sage-data:\n"), 1)
+
+    def test_qwen38_abliterated_rides_the_base_ingress_and_never_owns_an_endpoint(self) -> None:
+        # Only host ports 8000-8009 and 8444 reach gpu13's CVM: nothing may publish 8011/8012 again.
+        self.assertNotIn("nginx-qwen38-abliterated", self.small)
+        self.assertNotIn("nginx_qwen38_abliterated_conf", self.small)
+        self.assertNotRegex(self.small, r'"801[12]:801[12]"')
+        self.assertIn('    ports:\n      - "8000:8000"\n      - "8001:8001"\n', service_block(self.small, "nginx-qwen38"))
+        # nginx-qwen38 neither waits for nor fails without the abliterated proxy.
+        self.assertNotIn("abliterated", service_block(self.small, "nginx-qwen38"))
+        for snippet in qwen38_abliterated_ingress(self.small):
+            self.assertIn("resolver 127.0.0.11 valid=5s ipv6=off;", snippet)
+            self.assertIn("proxy_pass $$proxy_qwen38_abliterated;", snippet)
+            self.assertNotIn("default_server", snippet)
+        # The registrar stays opt-in, recreates nothing on up, and only maps the adapter id to its domain:
+        # model-proxy keys probes by ip:port, so any endpoint call for HOST_IP:8000 would hit base Qwen3.8.
+        registrar = service_block(self.small, "qwen38-abliterated-registrar")
+        self.assertIn("    profiles: [register-abliterated]\n", registrar)
+        self.assertNotIn("depends_on:", registrar)
+        self.assertIn("      - HTTP_PORT=8000\n      - TLS_PORT_QWEN38=8001\n", registrar)
+        script = config_block(self.small, "qwen38_abliterated_registrar_script")
+        self.assertEqual(re.findall(r"\$\$PROXY_URL/[a-z/]+", script), ["$$PROXY_URL/register/model"])
+        self.assertNotIn("unregister_endpoint", script)
+        self.assertIn('-H "Host: $$DOMAIN"', script)
 
     def test_sage_moves_in_from_prod_sage_on_gpu13_gpu0_unchanged_except_the_gpu(self) -> None:
         networks = self.small.split("\nnetworks:\n", 1)[1].split("\nvolumes:\n", 1)[0]
@@ -924,7 +988,10 @@ class Gpu13FleetTest(unittest.TestCase):
     def test_dashboard_labels_are_unchanged_on_gpu13(self) -> None:
         def selectors(text: str) -> list[str]:
             return [l for l in selector_lines(text) if "max_running_requests" not in l and "max_queued_requests" not in l]
-        old = with_qwen38_abliterated_lora(with_filter_and_coloc_on_gpu2(with_sage_on_gpu2(with_qwen38_coloc_pool(without_qwen38_gpu0_stage_b(self.old)))))
+        old = with_qwen38_abliterated_ingress(
+            with_qwen38_abliterated_lora(with_filter_and_coloc_on_gpu2(with_sage_on_gpu2(with_qwen38_coloc_pool(without_qwen38_gpu0_stage_b(self.old))))),
+            qwen38_abliterated_ingress(self.small),
+        )
         without_coloc = self.small
         for name in (COLOC_ENGINE, *LORA_SERVICES):
             without_coloc = without_coloc.replace(service_block(without_coloc, name), "", 1)
