@@ -4,7 +4,7 @@
 # docs/dsv41-lora-dep4x2-design.md (tee-bench exp 50 PR #13, exp 51 PR #14).
 #
 # NOT DEPLOYABLE YET. Before any compose_up, all of the following must hold:
-#   - ENGINE_IMAGE / PROXY_IMAGE are real digests (both are zero placeholders here);
+#   - PROXY_IMAGE is a real digest (zero placeholder here; ENGINE_IMAGE is published);
 #   - the proxy build supports VLLM_PROXY_STRICT_MODEL (inference-proxy feat/strict-model);
 #   - the Engram layout (hbm) has passed on a TDX+PPCIe host;
 #   - a one-replica CC canary has passed. Deploy from a main tag only, one replica at a time.
@@ -48,7 +48,7 @@ x-vllm-proxy-common: &vllm-proxy-common
 x-dsv41-engine-common: &dsv41-engine-common
   <<: *nvidia
   init: true
-  image: docker.io/nearaidev/vllm@sha256:0000000000000000000000000000000000000000000000000000000000000000
+  image: docker.io/nearaidev/vllm@sha256:0956859f52d262fa17084d61320c5b1ea22845825c7aab57d49ed8064cc8a396
   shm_size: 64g
   volumes:
     - huggingface_cache:/root/.cache/huggingface

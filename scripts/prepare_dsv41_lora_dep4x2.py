@@ -29,8 +29,8 @@ ADAPTER_ID: Final = "deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated"
 ADAPTER_REPO: Final = "UnderTides/DeepSeek-V4.1-Flash-1017-heretic-lora"
 ADAPTER_REVISION: Final = "196c06e3c2aad43e9688d16fa993b4333f69358a"
 # docker/vllm-dsv41-lora, published by .github/workflows/publish-vllm-dsv41-lora.yaml.
-# Placeholder until the first publish run; deploy only with the real digest.
-ENGINE_IMAGE: Final = "docker.io/nearaidev/vllm@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+# Run 40422926821 from main 0086ccb (#393), tag dsv41-lora-v0.32.0-near-v1, Trivy 0 critical.
+ENGINE_IMAGE: Final = "docker.io/nearaidev/vllm@sha256:0956859f52d262fa17084d61320c5b1ea22845825c7aab57d49ed8064cc8a396"
 # inference-proxy with VLLM_PROXY_STRICT_MODEL (feat/strict-model). Placeholder until it is
 # merged and published: an older proxy ignores the variable and would serve the adapter on the
 # base endpoint at the base price.
@@ -152,7 +152,7 @@ HEADER = f"""# DeepSeek-V4.1-Flash-1017 + abliterated LoRA: two vLLM DEP4 replic
 # docs/dsv41-lora-dep4x2-design.md (tee-bench exp 50 PR #13, exp 51 PR #14).
 #
 # NOT DEPLOYABLE YET. Before any compose_up, all of the following must hold:
-#   - ENGINE_IMAGE / PROXY_IMAGE are real digests (both are zero placeholders here);
+#   - PROXY_IMAGE is a real digest (zero placeholder here; ENGINE_IMAGE is published);
 #   - the proxy build supports VLLM_PROXY_STRICT_MODEL (inference-proxy feat/strict-model);
 #   - the Engram layout ({ENGRAM_LAYOUT}) has passed on a TDX+PPCIe host;
 #   - a one-replica CC canary has passed. Deploy from a main tag only, one replica at a time.
