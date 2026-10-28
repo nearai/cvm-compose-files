@@ -43,9 +43,8 @@ DEPLOYMENT: Final = "dsv41-flash-1017-vllm-dep8-abliterated"
 VARIANT: Final = "vllm0320-lora3p-cc2-w4a8-dep8-c8192-dspark3-mr64-engram-hbm"
 DP_SIZE: Final = 8
 RANK_PORT0: Final = 9100  # rank i serves on 9100 + i on the CVM host network
-# The engines run on the host network (NCCL over NVLink P2P, see x-dsv41-engine-common); the other
-# services stay on dstack_default and reach them through this host-gateway alias.
-ENGINE_HOST: Final = "dsv41-host"
+# The engines run on the host network (NCCL over NVLink P2P, see x-dsv41-engine-common); the services on
+# dstack_default reach rank i as model-vllm-dsv41-dp<i>:<9100+i>, each name mapped to host-gateway.
 
 HF_HUB = "/root/.cache/huggingface/hub"
 BASE_PATH = f"{HF_HUB}/models--deepseek-ai--DeepSeek-V4.1-Flash-1017/snapshots/{BASE_REVISION}"
@@ -66,7 +65,11 @@ def rank_service(rank: int) -> str:
 
 
 def rank_url(rank: int) -> str:
-    return f"http://{ENGINE_HOST}:{RANK_PORT0 + rank}"
+    return f"http://{rank_service(rank)}:{RANK_PORT0 + rank}"
+
+
+def rank_host_aliases(indent: str) -> str:
+    return "".join(f'{indent}- "{rank_service(i)}:host-gateway"\n' for i in range(DP_SIZE))
 
 
 def engine_command(rank: int) -> str:
@@ -141,7 +144,7 @@ def otel_config_block(source: str) -> str:
     jobs = []
     for rank in range(DP_SIZE):
         svc = rank_service(rank)
-        jobs.append(scrape_job(f"vllm-{svc}", f"{ENGINE_HOST}:{RANK_PORT0 + rank}", {
+        jobs.append(scrape_job(f"vllm-{svc}", f"{svc}:{RANK_PORT0 + rank}", {
             "service": "vllm", "source": "vllm", "container_name": svc, "model": BASE_ID, "served_model": BASE_ID,
             "model_revision": BASE_REVISION, "replica": "r1", "dp_rank": str(rank), "gpu": str(rank),
             "port": str(PROXIES[0][2]), **common}))
@@ -207,8 +210,7 @@ x-vllm-proxy-common: &vllm-proxy-common
   <<: *nvidia
   extra_hosts:
     - "compose-manager:host-gateway"
-    - "{ENGINE_HOST}:host-gateway"
-  volumes:
+{rank_host_aliases("    ")}  volumes:
     - /var/run/dstack.sock:/var/run/dstack.sock
     - certs:/etc/letsencrypt:ro
   restart: unless-stopped
@@ -394,7 +396,7 @@ services:
     command: ["--config=/etc/otelcol-contrib/config.yaml"]
     user: "0:0"
     extra_hosts:
-      - "{ENGINE_HOST}:host-gateway"
+{rank_host_aliases("      ")}
     mem_limit: "768m"
     environment:
       - MONITORING_INGEST_TOKEN=${{MONITORING_INGEST_TOKEN:-}}

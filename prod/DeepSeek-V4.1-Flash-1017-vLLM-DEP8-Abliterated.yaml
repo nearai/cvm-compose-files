@@ -44,7 +44,14 @@ x-vllm-proxy-common: &vllm-proxy-common
   <<: *nvidia
   extra_hosts:
     - "compose-manager:host-gateway"
-    - "dsv41-host:host-gateway"
+    - "model-vllm-dsv41-dp0:host-gateway"
+    - "model-vllm-dsv41-dp1:host-gateway"
+    - "model-vllm-dsv41-dp2:host-gateway"
+    - "model-vllm-dsv41-dp3:host-gateway"
+    - "model-vllm-dsv41-dp4:host-gateway"
+    - "model-vllm-dsv41-dp5:host-gateway"
+    - "model-vllm-dsv41-dp6:host-gateway"
+    - "model-vllm-dsv41-dp7:host-gateway"
   volumes:
     - /var/run/dstack.sock:/var/run/dstack.sock
     - certs:/etc/letsencrypt:ro
@@ -161,7 +168,7 @@ services:
       - VLLM_PROXY_STRICT_REQUEST_MODEL=1
       - OHTTP_ENABLED=true
       - TOKEN=${PROXY_TOKEN}
-      - VLLM_BACKEND_URLS=http://dsv41-host:9100,http://dsv41-host:9101,http://dsv41-host:9102,http://dsv41-host:9103,http://dsv41-host:9104,http://dsv41-host:9105,http://dsv41-host:9106,http://dsv41-host:9107
+      - VLLM_BACKEND_URLS=http://model-vllm-dsv41-dp0:9100,http://model-vllm-dsv41-dp1:9101,http://model-vllm-dsv41-dp2:9102,http://model-vllm-dsv41-dp3:9103,http://model-vllm-dsv41-dp4:9104,http://model-vllm-dsv41-dp5:9105,http://model-vllm-dsv41-dp6:9106,http://model-vllm-dsv41-dp7:9107
       # Keep append-only conversations on the rank that already holds their prefix cache.
       - VLLM_BACKEND_CONVERSATION_AFFINITY=1
       - VLLM_PROXY_MAX_REQUEST_SIZE=104857600
@@ -203,7 +210,7 @@ services:
       - VLLM_PROXY_STRICT_REQUEST_MODEL=1
       - OHTTP_ENABLED=true
       - TOKEN=${PROXY_TOKEN}
-      - VLLM_BACKEND_URLS=http://dsv41-host:9100,http://dsv41-host:9101,http://dsv41-host:9102,http://dsv41-host:9103,http://dsv41-host:9104,http://dsv41-host:9105,http://dsv41-host:9106,http://dsv41-host:9107
+      - VLLM_BACKEND_URLS=http://model-vllm-dsv41-dp0:9100,http://model-vllm-dsv41-dp1:9101,http://model-vllm-dsv41-dp2:9102,http://model-vllm-dsv41-dp3:9103,http://model-vllm-dsv41-dp4:9104,http://model-vllm-dsv41-dp5:9105,http://model-vllm-dsv41-dp6:9106,http://model-vllm-dsv41-dp7:9107
       # Keep append-only conversations on the rank that already holds their prefix cache.
       - VLLM_BACKEND_CONVERSATION_AFFINITY=1
       - VLLM_PROXY_MAX_REQUEST_SIZE=104857600
@@ -797,7 +804,15 @@ services:
     command: ["--config=/etc/otelcol-contrib/config.yaml"]
     user: "0:0"
     extra_hosts:
-      - "dsv41-host:host-gateway"
+      - "model-vllm-dsv41-dp0:host-gateway"
+      - "model-vllm-dsv41-dp1:host-gateway"
+      - "model-vllm-dsv41-dp2:host-gateway"
+      - "model-vllm-dsv41-dp3:host-gateway"
+      - "model-vllm-dsv41-dp4:host-gateway"
+      - "model-vllm-dsv41-dp5:host-gateway"
+      - "model-vllm-dsv41-dp6:host-gateway"
+      - "model-vllm-dsv41-dp7:host-gateway"
+
     mem_limit: "768m"
     environment:
       - MONITORING_INGEST_TOKEN=${MONITORING_INGEST_TOKEN:-}
@@ -954,7 +969,7 @@ configs:
                 scrape_interval: 15s
                 metrics_path: /metrics
                 static_configs:
-                  - targets: ['dsv41-host:9100']
+                  - targets: ['model-vllm-dsv41-dp0:9100']
                     labels:
                       service: "vllm"
                       source: "vllm"
@@ -978,7 +993,7 @@ configs:
                 scrape_interval: 15s
                 metrics_path: /metrics
                 static_configs:
-                  - targets: ['dsv41-host:9101']
+                  - targets: ['model-vllm-dsv41-dp1:9101']
                     labels:
                       service: "vllm"
                       source: "vllm"
@@ -1002,7 +1017,7 @@ configs:
                 scrape_interval: 15s
                 metrics_path: /metrics
                 static_configs:
-                  - targets: ['dsv41-host:9102']
+                  - targets: ['model-vllm-dsv41-dp2:9102']
                     labels:
                       service: "vllm"
                       source: "vllm"
@@ -1026,7 +1041,7 @@ configs:
                 scrape_interval: 15s
                 metrics_path: /metrics
                 static_configs:
-                  - targets: ['dsv41-host:9103']
+                  - targets: ['model-vllm-dsv41-dp3:9103']
                     labels:
                       service: "vllm"
                       source: "vllm"
@@ -1050,7 +1065,7 @@ configs:
                 scrape_interval: 15s
                 metrics_path: /metrics
                 static_configs:
-                  - targets: ['dsv41-host:9104']
+                  - targets: ['model-vllm-dsv41-dp4:9104']
                     labels:
                       service: "vllm"
                       source: "vllm"
@@ -1074,7 +1089,7 @@ configs:
                 scrape_interval: 15s
                 metrics_path: /metrics
                 static_configs:
-                  - targets: ['dsv41-host:9105']
+                  - targets: ['model-vllm-dsv41-dp5:9105']
                     labels:
                       service: "vllm"
                       source: "vllm"
@@ -1098,7 +1113,7 @@ configs:
                 scrape_interval: 15s
                 metrics_path: /metrics
                 static_configs:
-                  - targets: ['dsv41-host:9106']
+                  - targets: ['model-vllm-dsv41-dp6:9106']
                     labels:
                       service: "vllm"
                       source: "vllm"
@@ -1122,7 +1137,7 @@ configs:
                 scrape_interval: 15s
                 metrics_path: /metrics
                 static_configs:
-                  - targets: ['dsv41-host:9107']
+                  - targets: ['model-vllm-dsv41-dp7:9107']
                     labels:
                       service: "vllm"
                       source: "vllm"
