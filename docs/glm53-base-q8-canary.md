@@ -1,6 +1,8 @@
 # GLM-5.3 base tier: v10 Q8 DSA prefill, 8K chunks, ONE replica canary (gpu04 r4)
 
-Status: **prepared, not deployed.** Merging changes no running service. gpu04 changes only when an operator deploys the merged tag to it, scoped to the one service below, through the already-running compose-manager.
+> **SUPERSEDED (v10, never deployed).** The base Q8 canary now runs the **v12** image (`da8d4e4b5ec6`, the long tier's) and is followed by a fleet file. See `docs/glm53-base-v12-q8-rollout.md`. `prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8-Q8Canary.yaml` is now the v12 canary, so the v10 file, image and `-v7-q8` labels described below no longer exist on main. Kept as the record of the v10 plan and the exp 46c evidence.
+
+Status (original): **prepared, not deployed.** Merging changes no running service. gpu04 changes only when an operator deploys the merged tag to it, scoped to the one service below, through the already-running compose-manager.
 
 ## What changes
 

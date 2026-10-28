@@ -314,7 +314,7 @@ TP2_REPLICAS: Final = {
 # (sha256:fa730e6e..., #345); the rollback is the previous tag's copy of this file. The TP4 r1/r2 services above keep v6: no host
 # runs them any more and FP8 KV has not been qualified at TP4.
 # Fleet image now: glm53-hicache-w4afp8-v12 (PR #370 + CVE pins #384, publish run 39987811670, source 79de066, attested and
-# signed) = v10 + patch 15 (DSA indexer K-pool logits budget). v10 (sha256:c15a33672ade...) stays the base-tier Q8 canary image.
+# signed) = v10 + patch 15 (DSA indexer K-pool logits budget). The base tier moves to v12 too (docs/glm53-base-v12-q8-rollout.md).
 TP2_IMAGE: Final = "docker.io/nearaidev/sglang@sha256:da8d4e4b5ec667499b58a21e56050aae9bcfc4df9669b3ac27e2e20af033d681"
 TP2_ENGINE_IMAGE_LABEL: Final = TP2_IMAGE.split(":")[-1][:12]
 TP2_PRECISION: Final = "int4-weights-fp8-activations-fp8-kv"
