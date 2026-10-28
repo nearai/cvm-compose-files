@@ -47,6 +47,7 @@ RANK_PORT0: Final = 9100  # rank i serves on 9100 + i on the CVM host network
 # dstack_default reach rank i as model-vllm-dsv41-dp<i>:<9100+i>, each name mapped to host-gateway.
 
 HF_HUB = "/root/.cache/huggingface/hub"
+MAX_MODEL_LEN: Final = 1048576
 BASE_PATH = f"{HF_HUB}/models--deepseek-ai--DeepSeek-V4.1-Flash-1017/snapshots/{BASE_REVISION}"
 ADAPTER_PATH = f"{HF_HUB}/models--UnderTides--DeepSeek-V4.1-Flash-1017-heretic-lora/snapshots/{ADAPTER_REVISION}"
 
@@ -85,7 +86,7 @@ def engine_command(rank: int) -> str:
         "--enable-expert-parallel",
         "--data-parallel-address 127.0.0.1",
         "--data-parallel-rpc-port 13345",
-        "--max-model-len 1048576",
+        f"--max-model-len {MAX_MODEL_LEN}",
         "--max-num-batched-tokens 8192",
         "--max-num-seqs 64",
         "--gpu-memory-utilization 0.90",
@@ -446,14 +447,40 @@ configs:
     return "".join(out)
 
 
+STAGING_MODEL_PROXY: Final = "https://completions-stg.near.ai"
+
+
+def staging_domain(domain: str) -> str:
+    return domain.replace(".completions.near.ai", ".completions-stg.near.ai")
+
+
+def models_location(model: str) -> str:
+    # The model-proxy routes a domain to the endpoints whose GET /v1/models lists its model. Both
+    # proxies pass the engine list through, which holds both ids, so it sent one id to the proxy that
+    # refuses it (404). Each port pair lists only the id its proxy serves. The registrar's chat probe
+    # still unregisters an endpoint whose engines are down.
+    body = json.dumps(
+        {"object": "list", "data": [{"id": model, "object": "model", "owned_by": "vllm", "max_model_len": MAX_MODEL_LEN}]},
+        separators=(",", ":"),
+    )
+    return f"        location = /v1/models {{ default_type application/json; return 200 '{body}'; }}\n"
+
+
 def registrar_block() -> str:
     ports = " ".join(str(http) for _, _, http, *_ in PROXIES)
     routing = "".join(f"          {http}) echo \"$${{{env}}}\" ;;\n" for _, _, http, _, env, _ in PROXIES)
     models = "".join(f"          {http}) echo \"{model}\" ;;\n" for _, model, http, *_ in PROXIES)
-    domains = "".join(f"          {http}) echo \"{domain}\" ;;\n" for _, _, http, _, _, domain in PROXIES)
-    register = "".join(f'        register_model "{model}" "{domain}"\n' for _, model, _, _, _, domain in PROXIES)
+    domains = "".join(f"          {http}) echo \"{staging_domain(domain)}\" ;;\n" for _, _, http, _, _, domain in PROXIES)
+    register = "".join(
+        f'        register_model "{model}" "{staging_domain(domain)}"\n' for _, model, _, _, _, domain in PROXIES
+    )
     source = (ROOT / OTEL_SOURCE).read_text()
     block = source[source.index("  registrar_script:\n"):source.index("  nginx_conf:\n")]
+    # Staging only: register with the staging model-proxy under the completions-stg names. The
+    # source registrar targets the prod model-proxy, which put v0.0.523 on completions.near.ai.
+    prod_url = '      PROXY_URL="https://completions.near.ai"\n'
+    assert prod_url in block
+    block = block.replace(prod_url, f'      PROXY_URL="{STAGING_MODEL_PROXY}"\n')
     head, rest = block.split('      PORTS="8002 8006"\n', 1)
     rest = rest[rest.index("      register_endpoint() {"):]
     tail_start = rest.index('        register_model "Qwen/Qwen3.8-27B"')
@@ -477,8 +504,9 @@ def nginx_block() -> str:
     block = source[source.index("  nginx_conf:\n"):]
     head = block[:block.index("      server {\n        listen 8002;")]
     plain = "".join(
-        f"      server {{\n        listen {http};\n        location / {{ proxy_pass http://{name}:8000; }}\n      }}\n\n"
-        for name, _, http, *_ in PROXIES
+        f"      server {{\n        listen {http};\n{models_location(model)}"
+        f"        location / {{ proxy_pass http://{name}:8000; }}\n      }}\n\n"
+        for name, model, http, *_ in PROXIES
     )
     tls_head = (
         # deepseek-v4-1-flash-abliterated.completions-stg.near.ai (55 bytes) overflows the default
@@ -489,7 +517,7 @@ def nginx_block() -> str:
         "      ssl_protocols TLSv1.2 TLSv1.3;\n\n"
     )
     tls = []
-    for name, _, _, tls_port, _, domain in PROXIES:
+    for name, model, _, tls_port, _, domain in PROXIES:
         sub = domain.split(".", 1)[0]
         tls.append(
             f"      server {{\n        listen {tls_port} ssl http2;\n"
@@ -498,7 +526,8 @@ def nginx_block() -> str:
             f"                    ~^{sub}-i\\d+\\.completions(-stg)?\\.near\\.ai$$;\n"
             "        keepalive_timeout 1h;\n        keepalive_requests 1000000;\n"
             "        location ^~ /metrics { return 404; }\n        location ^~ /v1/metrics { return 404; }\n"
-            f"        location / {{ proxy_pass http://{name}:8000; }}\n      }}\n"
+            + models_location(model)
+            + f"        location / {{ proxy_pass http://{name}:8000; }}\n      }}\n"
         )
     return head + plain + tls_head + "\n".join(tls)
 
