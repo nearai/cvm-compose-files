@@ -144,6 +144,9 @@ def nginx_test_archive(config: str) -> bytes:
             TEST_PRIVATE_KEY,
             0o600,
         ),
+        # The DS4.1 DEP8 pack serves its staging names from the pack-owned stg_certs volume.
+        ("stg-certs/fullchain.pem", TEST_CERTIFICATE, 0o644),
+        ("stg-certs/privkey.pem", TEST_PRIVATE_KEY, 0o600),
     )
     with BytesIO() as buffer:
         with tarfile.open(fileobj=buffer, mode="w") as archive:
