@@ -1,0 +1,196 @@
+--- a/vllm/models/deepseek_v41/common/engram.py
++++ b/vllm/models/deepseek_v41/common/engram.py
+@@ -35,6 +35,8 @@
+ """
+ 
+ import ctypes
++import fcntl
++import time
+ import mmap
+ import os
+ import tempfile
+@@ -78,6 +80,10 @@
+ from vllm.utils.torch_utils import get_accelerator_view_from_cpu_tensor
+ 
+ logger = init_logger(__name__)
++
++# NEAR (10-27): CC-safe host Engram tables, see ParallelEngramEmbedding._near_cpu_lookup.
++_NEAR_CPU_GATHER = os.environ.get("VLLM_NEAR_ENGRAM_CPU_GATHER") == "1"
++_NEAR_READY = ("w", "s")
+ 
+ # Per-rank token slot from which the Engram DP exchange switches from peer
+ # reads to all-to-all.
+@@ -781,9 +787,65 @@
+         self.weight = storage[:weight_bytes].view(torch.float8_e4m3fn).view(-1, dim)
+         self.weight_scale_inv = storage[weight_bytes:].view(-1, dim // block_size)
+         self._views: tuple[torch.Tensor, torch.Tensor] | None = None
++
++    def _near_allocate(self, num_bytes: int) -> torch.Tensor:
++        """Map one host-wide /dev/shm table copy without registering it with CUDA.
+ 
++        The first DP-group leader to take the flock loads the table (role "load"); leaders
++        of other groups wait for its .ready markers ("wait"), and a later boot that finds
++        both markers reuses the copy ("reuse").
++        """
++        group = self.group
++        path = os.path.join(SHM_PATH, f"near_engram_{num_bytes}")
++        self._near_path = path
++        self._near_lock = None
++        role = error = None
++        if group.rank_in_group == 0:
++            try:
++                lock = open(path + ".lock", "a+")
++                try:
++                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
++                    owned = True
++                except BlockingIOError:
++                    owned = False
++                ready = all(os.path.exists(f"{path}.{p}.ready") for p in _NEAR_READY)
++                if owned and ready and os.path.getsize(path) == num_bytes:
++                    role = "reuse"
++                    lock.close()
++                elif owned:
++                    role = "load"
++                    for p in _NEAR_READY:
++                        if os.path.exists(f"{path}.{p}.ready"):
++                            os.unlink(f"{path}.{p}.ready")
++                    with open(path, "a+b") as file:
++                        file.truncate(num_bytes)
++                    self._near_lock = lock
++                else:
++                    role = "wait"
++                    lock.close()
++            except Exception as exc:
++                error = f"{type(exc).__name__}: {exc}"
++        role, error = group.broadcast_object((role, error))
++        if error is not None:
++            raise RuntimeError("NEAR Engram shared table setup failed: " + error)
++        self._near_role = role
++        deadline = time.monotonic() + 3600
++        while not (os.path.exists(path) and os.path.getsize(path) == num_bytes):
++            if time.monotonic() > deadline:
++                raise RuntimeError(f"NEAR Engram table {path} never reached {num_bytes} B")
++            time.sleep(0.5)
++        with open(path, "r+b") as file:
++            self._near_mapping = mmap.mmap(file.fileno(), num_bytes, flags=mmap.MAP_SHARED)
++        logger.info(
++            "NEAR Engram host table %s (%.2f GiB) role=%s, CPU gather (no UVA)",
++            path, num_bytes / 1024**3, role,
++        )
++        return torch.from_numpy(np.frombuffer(self._near_mapping, dtype=np.uint8))
++
+     def _allocate(self, num_bytes: int) -> torch.Tensor:
+         """Map and register one physical allocation across a node-local DP group."""
++        if _NEAR_CPU_GATHER:
++            return self._near_allocate(num_bytes)
+         group = self.group
+         with ExitStack() as stack:
+             path = error = None
+@@ -851,11 +913,37 @@
+     def load_weight(
+         self, param: torch.nn.Parameter, loaded_weight: torch.Tensor
+     ) -> None:
+-        if self.group.rank_in_group == 0:
++        if _NEAR_CPU_GATHER:
++            if self.group.rank_in_group == 0:
++                self._near_load_weight(param, loaded_weight)
++        elif self.group.rank_in_group == 0:
+             _engram_head_shard_weight_loader(param, loaded_weight)
+         # Read order may differ across ranks. Equal load counts ensure all shared
+         # weights are ready after the last weight-loader call returns.
+         torch.distributed.barrier(group=self.group.cpu_group)
++
++    def _near_load_weight(
++        self, param: torch.nn.Parameter, loaded_weight: torch.Tensor
++    ) -> None:
++        which = "w" if param.data_ptr() == self.weight.data_ptr() else "s"
++        marker = f"{self._near_path}.{which}.ready"
++        if self._near_role == "load":
++            _engram_head_shard_weight_loader(param, loaded_weight)
++            open(marker, "w").close()
++            if self._near_lock is not None and all(
++                os.path.exists(f"{self._near_path}.{p}.ready") for p in _NEAR_READY
++            ):
++                self._near_lock.close()
++                self._near_lock = None
++            return
++        waited = 0.0
++        while not os.path.exists(marker):
++            time.sleep(1.0)
++            waited += 1.0
++            if waited % 60 == 0:
++                logger.info("NEAR Engram: waiting %.0f s for %s", waited, marker)
++            if waited > 7200:
++                raise RuntimeError(f"NEAR Engram: {marker} never appeared")
+ 
+     def get_views(
+         self, weight: torch.Tensor, scales: torch.Tensor
+@@ -886,6 +974,9 @@
+     )
+     group = get_engram_dp_group()
+     assert group is not None
++    if _NEAR_CPU_GATHER:
++        # One host-wide copy shared by every DP group (see DPSharedEngramStorage).
++        return True
+     # Only the leader allocates, so every replica follows its check.
+     error = None
+     if group.rank_in_group == 0:
+@@ -978,7 +1069,7 @@
+                     "DP replicas to be co-located."
+                 )
+             self.dp_size = 1
+-        if cpu_offload and not is_uva_available():
++        if cpu_offload and not _NEAR_CPU_GATHER and not is_uva_available():
+             raise RuntimeError("Engram CPU offload requires UVA support")
+         self._views: tuple[torch.Tensor, torch.Tensor] | None = None
+         self._view_src: tuple[int, int] | None = None
+@@ -1116,6 +1207,9 @@
+         """
+         rows = indices.shape[0] * self.part_n_hash_cols
+         if not rows:
++            return
++        if _NEAR_CPU_GATHER and self.cpu_offload:
++            self._near_cpu_lookup(indices, out)
+             return
+         weight, scales = self._storage()
+         ids_stride_t, ids_stride_h = indices.stride()
+@@ -1161,7 +1255,39 @@
+             SORTED=sort,
+             PACKED=out.dtype == torch.uint8,
+             OUT_STRIDE=out.stride(0),
++        )
++
++    def _near_cpu_lookup(self, indices: torch.Tensor, out: torch.Tensor) -> None:
++        """Same output as _engram_lookup_kernel (BF16 rows, zeros for unowned ids), but
++        the rows are gathered on the CPU and copied to the GPU: the GPU never reads host
++        memory, which is unsafe in TDX + PPCIe CVMs."""
++        assert out.dtype == torch.bfloat16, "NEAR CPU gather: packed output unsupported"
++        num_tokens, local_heads = indices.shape[0], self.part_n_hash_cols
++        head_end = min(self.head_start + local_heads, self.n_hash_cols)
++        ids = indices[:, self.head_start : head_end].to(torch.int64)
++        heads = ids.shape[1]
++        local = ids - self.vocab_start_idx
++        owned = (local >= 0) & (local < self.part_num_embeddings)
++        local_cpu = torch.where(owned, local, 0).reshape(-1).cpu()
++        if self._shared_memory is not None:
++            weight_cpu = self._shared_memory.weight
++            scale_cpu = self._shared_memory.weight_scale_inv
++        else:
++            weight_cpu, scale_cpu = self.weight.data, self.weight_scale_inv.data
++        values = torch.index_select(weight_cpu.view(torch.uint8), 0, local_cpu)
++        scales = torch.index_select(scale_cpu, 0, local_cpu)
++        values = values.to(out.device).view(torch.float8_e4m3fn).float()
++        # ue8m0: the byte is the fp32 exponent field, i.e. 2 ** (byte - 127).
++        scale = torch.exp2(scales.to(out.device).float() - 127.0)
++        dim, block = self.dim, self.block_size
++        deq = (values.view(-1, dim // block, block) * scale.unsqueeze(-1)).view(
++            num_tokens, heads, dim
+         )
++        deq = deq * owned.unsqueeze(-1)
++        dest = out.view(num_tokens, local_heads, dim)
++        dest[:, :heads].copy_(deq)
++        if heads < local_heads:
++            dest[:, heads:].zero_()
+ 
+     def forward(self, indices: torch.Tensor) -> torch.Tensor:
+         """indices: [num_tokens, n_hash_cols] -> [num_tokens, n_hash_cols, dim]

@@ -1,0 +1,16 @@
+--- a/vllm/utils/platform_utils.py	2026-10-27 16:57:43
++++ b/vllm/utils/platform_utils.py	2026-10-27 16:57:43
+@@ -54,6 +54,13 @@
+     from vllm.platforms import current_platform
+ 
+     # TODO: Add more requirements for UVA if needed.
++    # NEAR (10-27): under TDX + GPU PPCIe the GPU sees a stale snapshot of pinned host
++    # memory, so UVA buffers rewritten on the host each step (V2 runner block tables,
++    # positions, ...) are read stale and decode produces NaN. Copy to device instead.
++    import os
++
++    if os.environ.get("VLLM_NEAR_DISABLE_UVA") == "1":
++        return False
+     return is_pin_memory_available() or current_platform.is_cpu()
+ 
+ 
