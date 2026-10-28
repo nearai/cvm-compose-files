@@ -29,9 +29,9 @@ ADAPTER_ID: Final = "deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated"
 ADAPTER_REPO: Final = "UnderTides/DeepSeek-V4.1-Flash-1017-heretic-lora"
 ADAPTER_REVISION: Final = "196c06e3c2aad43e9688d16fa993b4333f69358a"
 # docker/vllm-dsv41-lora with the CC patches 04 (VLLM_NEAR_DISABLE_UVA) and 05 (#401), published by
-# .github/workflows/publish-vllm-dsv41-lora.yaml from main. PLACEHOLDER until #401 is merged and published:
-# the #393 image below lacks patch 04 and returns garbage in a TDX+PPCIe CVM.
-ENGINE_IMAGE: Final = "docker.io/nearaidev/vllm@sha256:0956859f52d262fa17084d61320c5b1ea22845825c7aab57d49ed8064cc8a396"
+# .github/workflows/publish-vllm-dsv41-lora.yaml run 40627835048 from main c877152, tag
+# dsv41-lora-v0.32.0-near-v2-cc. The #393 image lacks patch 04 and returns garbage in a TDX+PPCIe CVM.
+ENGINE_IMAGE: Final = "docker.io/nearaidev/vllm@sha256:5eaa0d4637080c10958b6cd8a371ae2ebb749b7a1e19c85bcb1abb89ee2540e4"
 # inference-proxy main 5faff1b (#329: VLLM_PROXY_STRICT_REQUEST_MODEL), Build & Deploy run
 # 40425504976, pushed as :staging. An older proxy ignores the variable and would serve the adapter
 # on the base endpoint at the base price.

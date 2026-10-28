@@ -54,7 +54,7 @@ x-vllm-proxy-common: &vllm-proxy-common
 x-dsv41-engine-common: &dsv41-engine-common
   <<: *nvidia
   init: true
-  image: docker.io/nearaidev/vllm@sha256:0956859f52d262fa17084d61320c5b1ea22845825c7aab57d49ed8064cc8a396
+  image: docker.io/nearaidev/vllm@sha256:5eaa0d4637080c10958b6cd8a371ae2ebb749b7a1e19c85bcb1abb89ee2540e4
   shm_size: 64g
   # One network namespace for all ranks: in per-container bridge namespaces NCCL treats each rank
   # as its own host and runs every collective over TCP sockets instead of NVLink.
