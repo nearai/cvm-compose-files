@@ -1091,7 +1091,7 @@ W4AFP8_LONG_CONTEXT_V7_IMAGE = "docker.io/nearaidev/sglang@sha256:fa730e6e62b2ae
 # flag-gated flashmla_sparse_q8 DSA prefill on the FP8 NoPE KV layout. (The base-tier r4 Q8 canary now runs v12, not v10.)
 W4AFP8_LONG_CONTEXT_V10_IMAGE = "docker.io/nearaidev/sglang@sha256:c15a33672ade5a9f2b4f7874a746eb4114952dae7230d5baa563a02eca081b78"
 # glm53-hicache-w4afp8-v12 (#370 + CVE pins #384, publish run 39987811670, source 79de066): v10 + patch 15 (DSA indexer K-pool logits
-# budget). The long tier's TP2 replicas run it; the base-tier r4 Q8 canary stays on v10.
+# budget). The long tier's TP2 replicas run it, and so do the base-tier gpu04 r4 Q8 canary and the base V12Q8 fleet file.
 W4AFP8_LONG_CONTEXT_V12_IMAGE = "docker.io/nearaidev/sglang@sha256:da8d4e4b5ec667499b58a21e56050aae9bcfc4df9669b3ac27e2e20af033d681"
 W4AFP8_QSPLIT_CAPABLE_IMAGES = [W4AFP8_LONG_CONTEXT_V2_IMAGE, W4AFP8_LONG_CONTEXT_V3_IMAGE, W4AFP8_LONG_CONTEXT_V6_IMAGE, W4AFP8_LONG_CONTEXT_V7_IMAGE, W4AFP8_LONG_CONTEXT_V10_IMAGE, W4AFP8_LONG_CONTEXT_V12_IMAGE].freeze
 W4AFP8_LONG_CONTEXT_VARIANT = "fc91d24-long-context-w4afp8-cCHUNK-QSPLITOFFLOOPhicache-cuda-host-pooled-v1-HOSTadmission-reserve-disabled-pool-clamp-pdiPDI-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192#{OBSERVABILITY_VARIANT_SUFFIX}"

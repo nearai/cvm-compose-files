@@ -12,7 +12,8 @@ rollback) with ONLY:
   its engines' image): v7 -> glm53-hicache-w4afp8-v12, the image the long tier runs;
 - the x-sg-glm53-flash-candidate argv, which every replica merges: ARGV_EDITS below, today only
   `--dsa-prefill-backend flashmla_kv` -> `flashmla_sparse_q8` (chunk 8192, queue 32 and everything else kept);
-- the four replicas' engine_image / config_variant (-v7 -> -v12-q8) labels, in their service blocks and OTel scrape jobs.
+- the four replicas' engine_image / config_variant (-v7 -> -v12-q8) labels, in their service blocks and OTel scrape jobs;
+- comments only: the generated header, the anchor comment and COMMENT_EDITS (two v7 comment lines that name the image).
 
 ARGV_EDITS / ARGV_APPENDED are the one place to add a lever that wins later (exp 53 rejected EAGLE 3/1/4, chunk 4096, queue 64): the fleet anchor and
 the gpu04 r4 canary (scripts/prepare_glm53_base_q8_canary.py imports them) both follow. The tests pin the exact
@@ -64,6 +65,18 @@ ARGV_KEPT: Final = ("--chunked-prefill-size 8192", "--max-queued-requests 32", "
 ANCHOR_COMMENT: Final = (
     "  # v12 base fleet (docs/glm53-base-v12-q8-rollout.md): the v7 argv below with ONLY --dsa-prefill-backend\n"
     "  # flashmla_sparse_q8 (FP8/Q8 DSA prefill, 8K chunks kept); the v12 image comes from the common anchor.\n"
+)
+
+# Whole comment lines of the v7 file that would misstate this file's image, reworded in place. Each must occur exactly once.
+COMMENT_EDITS: Final = (
+    (
+        "# (4 x 325 GiB; OFF in the v7 fleet config) and the DSA indexer split. All four pin the v7 image:\n",
+        "# (4 x 325 GiB; OFF in the v7 fleet config) and the DSA indexer split. The v7 file pins the v7 image (this file: v12, top):\n",
+    ),
+    (
+        "  # the environment and the v7 image, is inherited from the common anchor.\n",
+        "  # the environment and the engine image (v12 in this file), is inherited from the common anchor.\n",
+    ),
 )
 
 HEADER: Final = (
@@ -235,6 +248,9 @@ def generate(source: str) -> str:
         service_span(out, AGGREGATOR),
         lambda block: replace_exact(block, f"\n    image: {V7_IMAGE}\n", f"\n    image: {V12_IMAGE}\n", 1, "aggregator image"),
     )
+
+    for old, new in COMMENT_EDITS:
+        out = replace_exact(out, old, new, 1, "v7 comment")
 
     live = "".join(line for line in out.splitlines(keepends=True) if not line.lstrip().startswith("#"))
     if V7_IMAGE_DIGEST in live or V7_LABEL in live:

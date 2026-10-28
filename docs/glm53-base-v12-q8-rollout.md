@@ -56,9 +56,10 @@ Sources:
 - `docker inspect proxy-glm53 --format '{{range .Config.Env}}{{println .}}{{end}}' | grep VLLM_BACKEND_URLS` must name `model-sg-glm53-w4afp8-tp2-r4`;
 - `/backends/list` must show four gpu04 handles with r4 ready;
 - the compose-manager action log should show which file and services were last deployed;
-- no `sage` project containers may be running on gpu04.
+- no `sage` project containers may be running on gpu04;
+- gpu04's collector scrapes r4: Prometheus `up{host_machine="gpu04",job="near-ai/sglang-model-sg-glm53-w4afp8-tp2-r4"}` is `1` (and r1-r3 are `1`). **Recorded 2026-10-28 00:03Z (orchestrator): r1-r4 all `1`.** Re-run the query on the day; the recorded value is not a substitute.
 
-If the proxy lacks r4, **stop**: the canary would get no traffic. Recreating `proxy-glm53` (same image; the env gains r4) interrupts in-flight gpu04 streams, so it needs Henry's go (see open decisions).
+All of these are **hard stops before the first dry run**: if any fails, do not send the canary call, dry run included. If the proxy lacks r4, the canary would get no traffic. If the collector does not scrape r4, the canary cannot be read. Recreating `proxy-glm53` (same image; the env gains r4) interrupts in-flight gpu04 streams, so it needs Henry's go (see open decisions).
 
 **Repo vs live drift (unresolved, not changed by this PR).** The repo's gpu04 file, `prod/GLM-5.3-Flash-SGL-TP2x3-W4AFP8-gpu04.yaml`, defines r1-r3 only, and its `proxy-glm53` pools only r1-r3. Live gpu04 has **four** serving replicas. **Before the canary, the operator must confirm which file gpu04 was actually deployed from**: the compose-manager action log (file and services of each deploy since #388) and the live proxy env above. Pick the canary, fleet and rollback files only after that is known. Which file is gpu04's record of truth, and whether the TP2x3 file is retired or regenerated, is **an open decision for Henry**. This PR leaves the gpu04 file untouched.
 
@@ -82,11 +83,18 @@ Every step is `POST http://<host>:8080/compose/up` with:
 
 Send it with `dry_run: true`, check the plan, then send the same call with `dry_run: false`. Ready = `/health` 200, `/backends/list` shows the replica ready, and it serves traffic.
 
+**v12 is not yet pulled on gpu03 or gpu04.** The first dry run on each host reports a "No such image" error for the v12 digest; that is expected (as in `docs/glm53-long-v10-q8-rollout.md`). The plan must still show exactly the one recreate. Before the first apply on each host (the apply pulls the image), check disk: `docker info --format '{{.DockerRootDir}}'`, then `df -h` on that path. The free space must be at least twice the size of the v7 image, which is the same image family (`docker image inspect <v7 digest> --format '{{.Size}}'`). If it is not, stop and ask Ops.
+
 1. **Canary: gpu04 r4.**
    - `file: prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8-Q8Canary.yaml`.
-   - Run the gpu04 pre-check above first, including the confirmation of which file gpu04 was deployed from.
+   - Run the gpu04 pre-check above first, including the collector query and the confirmation of which file gpu04 was deployed from. Any failure stops before the dry run.
+   - **Once r4 is ready, recreate the collector from the canary file**: `services: ["otelcol-contrib"]`, `force_recreate: true`, dry run first (plan = that one service). r4's series then carry `engine_image="da8d4e4b5ec6"` / `…-v12-q8`, and r1-r3 keep `fa730e6e62b2` / `…-v7`. This assumes the pre-check confirmed gpu04 runs the 4-replica v7 file's collector config, which differs from the canary file's only in r4's two labels. **On canary rollback**, recreate `otelcol-contrib` the same way from `prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8.yaml` (v7).
    - Bake (5-minute checklist), then reads at **2 h, the next peak, and 24 h**: r4 against gpu04 r1-r3, which stay v7.
-   - **Gate:** go to step 2 only after the canary's 24 h read passes. The lab work (exp 53) is complete and is not a further gate.
+   - **Gate:** go to step 2 only when both of these hold:
+     - the canary's 24 h read passes;
+     - Route/Ops confirm in writing that the gateway clamps or rejects the smoke-crasher inputs C08/C09/C10/C12 before they reach a base engine (see caveats).
+
+     The lab work (exp 53) is complete and is not a further gate.
 2. **gpu04 r3 -> r2 -> r1**, one at a time, `file: prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8-V12Q8.yaml`. Each gets the 5-minute bake before the next starts.
    - r4 needs no redeploy: the canary's r4 equals the fleet's r4 (tested).
    - The canary file and the fleet file differ only in r1-r3 and the aggregator/collector config, which this sequence replaces.
@@ -95,7 +103,7 @@ Send it with `dry_run: true`, check the plan, then send the same call with `dry_
    - then `services: ["otelcol-contrib"]` with `force_recreate: true`;
    - both from the fleet file, dry run first, plan = that one service.
 
-   Until then the collector keeps scraping each replica by `server_address`; only the `engine_image` / `config_variant` values lag.
+   Until then the collector keeps scraping each replica by its fixed job and target (`job="near-ai/sglang-<service>"`, target `<service>:8000`); only the `engine_image` / `config_variant` values lag.
 4. **Read gpu04 (all v12) against gpu03 (v7, r4 v8)** at **2 h and the next peak** before touching gpu03.
 5. **gpu03 r1 -> r2 -> r3 -> r4**, one at a time, `file: prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8-V12Q8.yaml`, each with the 5-minute bake. Then run the gpu03 host step, the same as step 3.
 6. **Fleet 24 h read.**
@@ -108,35 +116,48 @@ Send it with `dry_run: true`, check the plan, then send the same call with `dry_
 - clean logs;
 - serves production traffic;
 - TTFT p95 / ITL p95 against the unmigrated peers;
-- neighbours untouched.
+- neighbours untouched;
+- **ghost metrics under the mixed pair (v12 only):** until the host step, a v12 engine reports to the host's v7 `glm53-ghost-aggregator`. This pairing is untested. It can only affect the ghost-prefix metrics, not serving. Check that the aggregator's logs show no errors for the new replica and that the replica's ghost series keep updating. A gap is recorded, not a rollback; it closes at the host step.
 
 Its startup-line check changes for v12:
 - `docker ps` shows the `da8d4e4b5ec6…` digest;
 - the server args show `dsa_prefill_backend='flashmla_sparse_q8'`, `dsa_decode_backend='flashmla_kv'`, `kv_cache_dtype='fp8_e4m3'`, `chunked_prefill_size=8192`, `max_queued_requests=32`, `enable_hierarchical_cache=False`, `disable_overlap_schedule=True`.
 
-**Reads (2 h, next peak, 24 h).** Compare against the v7 replicas over the same window, at matched running. While the labels lag, filter by `host_machine` and `job="sglang-<service>"`, not by `engine_image`.
+**Reads (2 h, next peak, 24 h).** Compare against the v7 replicas over the same window, at matched running. While the labels lag, filter by `host_machine` and `job="near-ai/sglang-<service>"`, not by `engine_image`.
 - TTFT p50/p95/p99 (`sglang_time_to_first_token_seconds`) and ITL p50/p95 (`sglang_inter_token_latency_seconds`);
 - served requests and prompt/generation tok/s; running and queue depth;
 - queue-full rejections (`The request queue is full.`) and gateway `backend_queue` rejections; 5xx;
 - prefill/decode step time from `Prefill batch` / `Decode batch` log windows;
 - `docker inspect -f '{{.RestartCount}}'` stays 0; no `Traceback|CUDA error|Xid|out of memory|NCCL` in the logs.
 
-The lab expectation (exp 53, bare metal; not a gate): served req/s +5-8% and decode per stream +5-14% at saturation, and TTFT p50 -12 to -31% below or at saturation. At heavy overload TTFT moves inside the lab noise floor.
+The lab expectation (exp 53, bare metal; not a gate):
+- served req/s +4.7 to +8.5% at 1.0-2.0 conv/s (lab mix); flat on `prodbase` at 2.0;
+- decode per stream +5 to +15% at 0.5, 1.0 and 2.0, not significant at 1.5;
+- TTFT p50 -12 to -31% below or at saturation. At heavy overload TTFT moves inside the lab noise floor.
 
 ## Abort and rollback
 
 - **Abort a step, and roll back that one replica**, on:
   - an engine exit or restart, Xid, CUDA error or OOM;
-  - free memory under 2 GiB for 5 minutes;
-  - a preprocess-pool timeout storm;
+  - **free GPU memory under 2 GiB for 5 minutes:** `max_over_time(DCGM_FI_DEV_FB_FREE{host_machine="<host>", gpu=~"<a>|<b>"}[5m]) < 2048` (MiB, the replica's GPU pair) for either GPU;
+  - **a preprocess-pool timeout storm:** 5 or more log lines matching `preprocess.*timeout` (the v7 bake's clean-logs pattern) in any 5-minute window on one replica, e.g. Loki `sum(count_over_time({host="<host>", container_name="<svc>"} |~ "(?i)preprocess.*timeout" [5m])) >= 5`;
   - not serving within the bake.
-- **Latency:**
-  - **Canary:** a latency miss is recorded but is not an automatic rollback. Step 2 waits until it is understood.
-  - **Fleet steps:** TTFT p95 or ITL p95 more than 20% worse than the v7 peers over the bake stops the lane and rolls that replica back (the v7 rollout's criterion).
+- **Latency** (all compared at matched running):
+  - **Canary:** a latency miss is recorded but is not an automatic rollback, and step 2 waits until it is understood. The exception is a **hard ceiling, which is an automatic rollback of r4**:
+    - TTFT p95 more than 50% worse than gpu04 r1-r3 for 30 minutes; or
+    - queue-full rejections or 5xx at more than 2x the r1-r3 rate over the same 30 minutes.
+  - **Fleet steps:** TTFT p95 or ITL p95 more than 20% worse than the baseline over the bake stops the lane and rolls that replica back (the v7 rollout's criterion). The baseline is:
+    - the same replica in the same hour on the previous day, at matched running;
+    - plus any replicas not yet migrated, over the same window.
+
+    Late in the rollout, most peers are already v12, so a peers-only comparison is not enough.
 - **Rollback = `compose/up` of that one service, same tag, `dry_run` first:**
   - Every base replica except gpu03 r4: `file: prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8.yaml` (v7).
   - gpu03 r4: `file: prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8-V8KdaCanary.yaml`, to restore exactly what it ran (v8 KDA). The v7 file also works but drops KDA.
-- If the host's aggregator and collector were already recreated, recreate them from the v7 file too, the same way as step 3.
+- **Collector and aggregator after a rollback:**
+  - **Canary rollback (gpu04 r4):** recreate `otelcol-contrib` from the v7 file (step 1).
+  - **Single-replica rollback after a host step:** do not recreate the collector. Accept the label skew (the rolled-back replica keeps its v12 labels) and filter by `job`.
+  - **Whole-host rollback:** after all of the host's replicas are back, recreate `glm53-ghost-aggregator` and then `otelcol-contrib` (`force_recreate: true`) the same way as step 3. On gpu04 use the v7 file. On gpu03 use `prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8-V8KdaCanary.yaml`, so that r4's v8 labels come back.
 - The 2-down / one-per-host limits apply to rollbacks. A cause shared across replicas (the image) stops the whole rollout.
 
 ## Evidence
@@ -164,7 +185,7 @@ The lab expectation (exp 53, bare metal; not a gate): served req/s +5-8% and dec
 | 1.5 conv/s (v7 shed about 22%) | served req/s +7.5/+4.9%, output tok/s +11.3/+0.6%, decode +9.4/+0.4%, TPOT p95 -6/-8%, freeze300 -6.6/-1.6 pp. Served by both: TTFT p50 -14/-10%. |
 | 2.0 conv/s (v7 shed about 35%) | served req/s flat (+3.0/-0.3%), output tok/s +13.0/+8.6%, decode +13.0/+11.0%, TPOT p95 -9/-8%, freeze300 -7.5/-8.0 pp |
 
-The FP8 win holds on the prod-shaped mix. Served req/s at 2.0 is flat because both arms shed about 35%. The suite's conversations give only 29-42% cached against prod's 75%.
+The FP8 win holds on the prod-shaped mix. Served req/s at 2.0 is flat (+3.0/-0.3%, inside the floor), with v7 shedding about 35%. The suite's conversations give only 29-42% cached against prod's 75%.
 
 **A/A noise floor** (v7 vs v7, 1.5 conv/s, prod mix, 2 rounds):
 - throughput about ±3% (served req/s +1.4/-0.4%, total tok/s +2.9/-0.5%);
@@ -179,9 +200,9 @@ Against that floor:
 
 | Lever | Result | Decision |
 |---|---|---|
-| EAGLE 3/1/4 vs 4/1/5 (1.0 conv/s, n=2) | throughput -1.2 to -3.5% in both rounds; TTFT ≤ 10 s attainment lower | keep 4/1/5 |
-| Chunk 4096 vs 8192 (1.0 conv/s, R1; R2 had not landed at lock) | TTFT p95 +128 to +284% on 4-64K prompts (multi-chunk starvation); served req/s +2.0% (noise) | keep 8192 |
-| Queue 64 vs 32 (2.0 conv/s, n=2, both arms) | shed barely moves; TTFT ≤ 10 s attainment roughly halves (e.g. 42.2 → 21.5%); TTFT p50 about 2-3x | keep 32 (prod queue depth p99 is 2, max 27) |
+| EAGLE 3/1/4 vs 4/1/5 (1.0 conv/s, n=2) | no gain: throughput -1.2 to -3.5% (at or inside the ±3% floor), served req/s 0.0/0.0%, TTFT ≤ 10 s attainment lower | keep 4/1/5 |
+| Chunk 4096 vs 8192 (1.0 conv/s, n=2; R2 landed 23:43 UTC, after the lock, and confirms R1) | TTFT p95 +128 to +284% on 4-64K prompts in R1; R2: +196% at 4-16K, +180% at 16-32K, +135% at 32-64K (multi-chunk starvation). Served req/s +2.0% (R1) / +3.6% (R2), at the noise floor | keep 8192 |
+| Queue 64 vs 32 (2.0 conv/s, n=2, both arms) | shed barely moves; TTFT ≤ 10 s attainment falls 30-49% in all four comparisons (e.g. 42.2 → 21.5%); TTFT p50 1.7-3.2x | keep 32 (prod queue depth p99 is 2, max 27) |
 
 **Other results:**
 - Quality: GSM8K-100 0.99 (v12q8) vs 0.98 (v7). Smoke: 0 fatal, no new failures (crashers skipped; see caveats).
@@ -199,7 +220,7 @@ The prodbase and A/A runs are complete. The lab sets the config but does not gat
   - CVE pins.
 
   The exp 53 delta is the bundle, not Q8 alone.
-- **Smoke crashers C08/C09/C10/C12 were skipped on v12 in the lab** (as in 46c), so v12's behaviour on those inputs is unmeasured on the base argv. Prod exposure depends on whether the gateway clamps or rejects those inputs before they reach an engine. Confirm the gateway clamps with Route/Ops before the fleet steps. Note that the long tier has served the same image since #385.
+- **Smoke crashers C08/C09/C10/C12 were skipped on v12 in the lab** (as in 46c), so v12's behaviour on those inputs is unmeasured on the base argv. Prod exposure depends on whether the gateway clamps or rejects those inputs before they reach an engine. Route/Ops confirmation that the gateway clamps or rejects them is part of the step-2 gate. Note that the long tier has served the same image since #385.
 - **The lab mix is harsher than prod base:** 17% of lab requests are 32-64K against 1.6% in prod, and 56% are cached against 75%. Absolute lab numbers are pessimistic; only the arm deltas carry over. The `prodbase` cells fix the length shares but not the cache rate (29-42% cached).
 
 ## Open decisions (Henry)

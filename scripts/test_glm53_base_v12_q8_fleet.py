@@ -20,6 +20,7 @@ BODY = TARGET.split("#\n", 1)[1]  # past the generated header comment
 GPU03_LIVE = Path("prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8-V8KdaCanary.yaml")
 GPU04_LIVE = Path("prod/GLM-5.3-Flash-SGL-TP2x3-W4AFP8-gpu04.yaml")
 CANARY = Path("prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8-Q8Canary.yaml")
+LONG_CONTEXT = Path("prod/GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext.yaml")
 RUNBOOK = ROOT / "docs/glm53-base-v12-q8-rollout.md"
 V8_LABEL = "59700363c0b6"
 # Engine-side blocks a per-replica rollout replaces; the aggregator and the collector config move only in their own per-host step.
@@ -72,9 +73,20 @@ class BaseV12Q8FleetTest(unittest.TestCase):
         self.assertNotIn(gen.V12_IMAGE_DIGEST, SOURCE)
         self.assertNotIn(gen.Q8_BACKEND, SOURCE)
 
+    def test_v12_digest_is_the_long_tier_image(self):
+        # Pinned in full: a digest edit in the generator must update this literal deliberately.
+        self.assertEqual(gen.V12_IMAGE_DIGEST, "sha256:da8d4e4b5ec667499b58a21e56050aae9bcfc4df9669b3ac27e2e20af033d681")
+        self.assertEqual(gen.V12_LABEL, "da8d4e4b5ec6")
+        self.assertIn(f"    image: {gen.V12_IMAGE}\n", (ROOT / LONG_CONTEXT).read_text())
+
     def test_only_image_backend_and_labels_change(self):
         removed, added = changed_lines(SOURCE, BODY)
-        self.assertEqual([line for line in removed if is_comment(line)], [])
+        # Comments may change only by the anchor comment and the reworded v7 image lines; the header is outside BODY.
+        self.assertEqual(sorted(line for line in removed if is_comment(line)),
+                         sorted(old.rstrip("\n") for old, _ in gen.COMMENT_EDITS))
+        self.assertEqual(sorted(line for line in added if is_comment(line)),
+                         sorted([*gen.ANCHOR_COMMENT.splitlines(), *(new.rstrip("\n") for _, new in gen.COMMENT_EDITS)]))
+        removed = [line for line in removed if not is_comment(line)]
         # 2 images (common anchor, aggregator) + 1 backend + 4 replicas x 3 label lines + 4 scrape jobs x 2 label lines.
         self.assertEqual(len(removed), 23, removed)
         added = [line for line in added if not is_comment(line)]
