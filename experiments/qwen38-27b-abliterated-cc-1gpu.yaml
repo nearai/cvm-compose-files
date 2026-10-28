@@ -1,3 +1,15 @@
+# STATUS: EXPERIMENT. Lives in experiments/, not prod/ (README: only prod/ is deployed).
+# It graduates to prod/ only after the prod-ready checklist passes. Missing so far:
+#   - the 30-minute staging soak (0 request failures, model-onboarding soak harness) on a
+#     real single-GPU CC CVM; nothing has run on one yet
+#   - LoRA under CC: SGLang --enable-lora with the abliterated-r1 adapter is proven on the
+#     gpu13 PPCIe CVM only; a pinned-host-memory failure under single-GPU CC is the main
+#     unknown
+#   - --mem-fraction-static 0.85 (the gpu13 dedicated recipe, a PPCIe CVM) is unverified
+#     on the single-GPU CC CVM; check for OOM at engine start and under load
+#   - host-port forwarding: guest 8000/8444 to HOST_PORT_BASE+0/+44 on gpu31/gpu32 is
+#     untested; qualify it before MODEL_PROXY_REGISTRATION is turned on
+#
 # Qwen3.8-27B (base) AND Qwen3.8-27B-abliterated from ONE SGLang engine on ONE H200 NVL
 # in a single-GPU confidential-computing compose-manager CVM (TDX + GPU CC mode, not
 # PPCIe). First target: gpu32 GPU 7 (instance cm-gpu32-g7). The file is instance-agnostic:
@@ -37,10 +49,22 @@
 #
 # Registrars (as on gpu13):
 #   qwen38-registrar             owns the endpoint HOST_IP:B+0 with routing_port B+44 and
-#                                registers the base model. Only it unregisters, on stop.
+#                                registers the base model. Only it unregisters, on stop or
+#                                when a health check fails (see Shared-endpoint health).
 #   qwen38-abliterated-registrar only register_model for the abliterated domain; it never
 #                                registers or unregisters an endpoint.
 # Both wait for the engine /v1/models to list BOTH ids before registering anything.
+#
+# Shared-endpoint health (tradeoff): both models share ONE model-proxy endpoint, and
+# model-proxy has no per-model endpoint health or withdrawal (/unregister/model is not
+# propagated and peer sync restores the mapping). So the base registrar gates the endpoint
+# on BOTH routes each cycle: the /v1/models list, base chat + base TLS, and abliterated
+# chat (Host header through the local nginx, QWEN38_ABLITERATED_PROXY_TOKEN) + abliterated
+# TLS SNI. An abliterated failure counts toward the same 3-failure threshold and
+# unregisters the endpoint. One failing model therefore withdraws BOTH models from this
+# instance: intended and fail-closed, because a broken abliterated route would otherwise
+# keep receiving traffic through the shared endpoint. Backpressure (curl 52/56, HTTP 503)
+# counts as alive for both routes.
 #
 # GPU CC rules: cudaHostRegister fails (error 801), so nothing here uses pinned host
 # memory: no HiCache, no host KV offload, no --enable-hierarchical-cache. No gpu13 flag
@@ -74,7 +98,7 @@
 #   PROXY_TOKEN              bearer token of the BASE proxy (proxy-qwen38-27b) and of the
 #     base registrar's inference probes. The usual fleet-wide token, as on gpu13.
 #   QWEN38_ABLITERATED_PROXY_TOKEN  dedicated bearer token of the ABLITERATED proxy and of
-#     the abliterated registrar's probes. Do NOT reuse PROXY_TOKEN: the fleet-wide token
+#     the abliterated registrar's probes and the base registrar's abliterated route checks. Do NOT reuse PROXY_TOKEN: the fleet-wide token
 #     must never bypass the abliterated no-organizations default.
 #   INSTANCE_LABEL           instance name for telemetry, e.g. cm-gpu32-g7 (default unknown)
 #   HOST_PORT_BASE           host port base B, e.g. 11700 (required once registration is on)
@@ -408,7 +432,8 @@ services:
   # Owns the endpoint HOST_IP:HOST_PORT_BASE+0 (routing_port HOST_PORT_BASE+44) and
   # registers the base model. It advertises the HOST ports, never the guest ports.
   # MODEL_PROXY_REGISTRATION=disabled (default) only keeps the container idle.
-  # Its TERM handler withdraws only this endpoint.
+  # Its TERM handler withdraws only this endpoint. It also withdraws it when the
+  # abliterated route fails (shared endpoint, see the file header).
   qwen38-registrar:
     image: curlimages/curl@sha256:d94d07ba9e7d6de898b6d96c1a072f6f8266c687af78a74f380087a0addf5d17
     container_name: qwen38-registrar
@@ -432,6 +457,7 @@ services:
       - MODEL_PROXY_REGISTRATION=${MODEL_PROXY_REGISTRATION:-disabled}
       - MODEL_PROXY_TOKEN=${MODEL_PROXY_TOKEN:-}
       - PROXY_TOKEN=${PROXY_TOKEN}
+      - ABLITERATED_PROXY_TOKEN=${QWEN38_ABLITERATED_PROXY_TOKEN}
     configs:
       - source: qwen38_registrar_script
         target: /register.sh
@@ -942,9 +968,16 @@ configs:
       #!/bin/sh
       # Owns THIS instance's endpoint (host ports) and registers the base model with
       # model-proxy. Guest ports are never advertised.
+      #
+      # Tradeoff: base and abliterated share ONE endpoint and model-proxy has no per-model
+      # endpoint health or withdrawal, so each cycle checks BOTH routes (base chat + TLS,
+      # abliterated chat + TLS SNI) and any failure counts toward the same threshold. One
+      # failing model withdraws both from this instance (fail-closed, intended); an
+      # abliterated-only failure never registers on first boot.
       MODE="$${MODEL_PROXY_REGISTRATION:-disabled}"
       TOKEN="$${MODEL_PROXY_TOKEN}"
       INFERENCE_TOKEN="$${PROXY_TOKEN}"
+      ABLITERATED_TOKEN="$${ABLITERATED_PROXY_TOKEN}"
       MODEL="Qwen/Qwen3.8-27B"
       ADAPTER_MODEL="Qwen/Qwen3.8-27B-abliterated"
 
@@ -964,10 +997,12 @@ configs:
         staging)
           PROXY_URL="https://completions-stg.near.ai"
           DOMAIN="qwen3-8-27b.completions-stg.near.ai"
+          ADAPTER_DOMAIN="qwen3-8-27b-abliterated.completions-stg.near.ai"
           ;;
         production)
           PROXY_URL="https://completions.near.ai"
           DOMAIN="qwen3-8-27b.completions.near.ai"
+          ADAPTER_DOMAIN="qwen3-8-27b-abliterated.completions.near.ai"
           ;;
         *)
           echo "ERROR: MODEL_PROXY_REGISTRATION must be disabled, staging or production (got '$$MODE')"
@@ -975,8 +1010,8 @@ configs:
           ;;
       esac
 
-      if [ -z "$$TOKEN" ] || [ -z "$$INFERENCE_TOKEN" ]; then
-        echo "ERROR: MODEL_PROXY_TOKEN and PROXY_TOKEN are required for model-proxy registration"
+      if [ -z "$$TOKEN" ] || [ -z "$$INFERENCE_TOKEN" ] || [ -z "$$ABLITERATED_TOKEN" ]; then
+        echo "ERROR: MODEL_PROXY_TOKEN, PROXY_TOKEN and QWEN38_ABLITERATED_PROXY_TOKEN are required for model-proxy registration"
         exit 1
       fi
 
@@ -1057,12 +1092,16 @@ configs:
       }
       trap cleanup TERM INT
 
+      # check_chat <model> <token> [host]: a chat probe through the local nginx; the Host
+      # header (default: the local nginx name) selects the abliterated proxy.
       check_chat() {
+        chat_host="$${3:-$$LOCAL_HTTP}"
         status=$$(curl -sS --connect-timeout 10 --max-time 45 -o /dev/null -w "%{http_code}" \
           -X POST "http://$$LOCAL_HTTP/v1/chat/completions" \
-          -H "Authorization: Bearer $$INFERENCE_TOKEN" \
+          -H "Host: $$chat_host" \
+          -H "Authorization: Bearer $$2" \
           -H "Content-Type: application/json" \
-          -d "{\"model\":\"$$MODEL\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":1}")
+          -d "{\"model\":\"$$1\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":1}")
         curl_status=$$?
 
         if [ "$$curl_status" -ne 0 ]; then
@@ -1089,15 +1128,16 @@ configs:
         esac
       }
 
+      # check_tls_route <sni-domain> <token>
       check_tls_route() {
         tls_status=$$(curl -skS --connect-timeout 10 --max-time 20 -o /dev/null -w "%{http_code}" \
-          --connect-to "$$DOMAIN:$$LOCAL_TLS_PORT:$$LOCAL_TLS_HOST:$$LOCAL_TLS_PORT" \
-          -H "Authorization: Bearer $$INFERENCE_TOKEN" \
-          "https://$$DOMAIN:$$LOCAL_TLS_PORT/v1/models")
+          --connect-to "$$1:$$LOCAL_TLS_PORT:$$LOCAL_TLS_HOST:$$LOCAL_TLS_PORT" \
+          -H "Authorization: Bearer $$2" \
+          "https://$$1:$$LOCAL_TLS_PORT/v1/models")
         case "$$tls_status" in
           2*) return 0 ;;
           *)
-            echo "TLS route check failed (https :$$LOCAL_TLS_PORT -> HTTP $$tls_status)"
+            echo "TLS route check failed for $$1 (https :$$LOCAL_TLS_PORT -> HTTP $$tls_status)"
             return 1
             ;;
         esac
@@ -1144,7 +1184,16 @@ configs:
         # Nothing is registered, endpoint or model, until the list carries both ids.
         models_ok=false
         check_models_list && models_ok=true
-        if [ "$$models_ok" = true ] && check_chat && check_tls_route; then
+        # Both routes gate the shared endpoint; every check runs so each failure is logged.
+        routes_ok=false
+        if [ "$$models_ok" = true ]; then
+          routes_ok=true
+          check_chat "$$MODEL" "$$INFERENCE_TOKEN" || routes_ok=false
+          check_tls_route "$$DOMAIN" "$$INFERENCE_TOKEN" || routes_ok=false
+          check_chat "$$ADAPTER_MODEL" "$$ABLITERATED_TOKEN" "$$ADAPTER_DOMAIN" || routes_ok=false
+          check_tls_route "$$ADAPTER_DOMAIN" "$$ABLITERATED_TOKEN" || routes_ok=false
+        fi
+        if [ "$$routes_ok" = true ]; then
           FAIL_COUNT=0
           register_endpoint "$$ENDPOINT"
           if [ "$$REGISTERED" = false ]; then
