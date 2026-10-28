@@ -8,6 +8,15 @@
 # promote's zone guard refuses a completions-stg URL, but the chain still auto-merges infra-tests
 # PRs, so coordinate with Henry before that PATCH.
 #
+# TLS: the CVM's certbot cert covers only *.completions.near.ai, so cloud-stg-api rejects the
+# completions-stg names with it (certificate not valid for name). The staging names are served with a
+# *.completions-stg.near.ai cert (certbot DNS-01 on the model-proxy host, lineage dsv41-stg-dev) that
+# stg-cert-init writes into the pack-owned volume stg_certs from DSV41_STG_FULLCHAIN_B64 and
+# DSV41_STG_PRIVKEY_B64 (base64 PEM, passed as compose/up env, never committed). Both proxies report
+# that file (TLS_CERT_PATH), so the SPKI cloud-api pins is the one nginx presents. The prod-zone names
+# keep the CVM cert and no longer attest. A redeploy without the two variables keeps the cert already
+# in the volume; renew by redeploying with fresh values (about every 60 days).
+#
 # Layout: eight `vllm serve` processes, one per GPU (DP8 attention + EP8 experts, TP1, external DP
 # load balancing), Engram tables in HBM. In the gpu02 CVM A/B (10-28) this beat 2x DEP4 on
 # throughput (+15-23% at rate x8) and TTFT. Two proxies, one per model id, both over all eight
@@ -55,6 +64,10 @@ x-vllm-proxy-common: &vllm-proxy-common
   volumes:
     - /var/run/dstack.sock:/var/run/dstack.sock
     - certs:/etc/letsencrypt:ro
+    - stg_certs:/stg-certs:ro
+  depends_on:
+    stg-cert-init:
+      condition: service_completed_successfully
   restart: unless-stopped
   logging: *logging-conf
 
@@ -106,13 +119,52 @@ services:
     labels:
       com.datadoghq.ad.logs: '[{"source":"model-downloader","service":"model-downloader","tags":["model:multi","deployment:dsv41-flash-1017-vllm-dep8-abliterated","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0320-lora3p-cc2-w4a8-dep8-c8192-dspark3-mr64-engram-hbm"]}]'
 
+  stg-cert-init:
+    image: nginx@sha256:1d13701a5f9f3fb01aaa88cef2344d65b6b5bf6b7d9fa4cf0dca557a8d7702ba
+    container_name: stg-cert-init
+    restart: "no"
+    entrypoint: ["sh", "-c"]
+    # Writes the *.completions-stg.near.ai cert and key into stg_certs, which nginx and both proxies mount. The values
+    # arrive as base64 PEM in the compose/up env. Without them the cert already in the volume is kept, so a routine
+    # redeploy does not need them; a first deploy without them fails here, before any proxy starts.
+    command:
+      - |
+        set -e
+        d=/stg-certs
+        if [ -n "$$DSV41_STG_FULLCHAIN_B64" ] && [ -n "$$DSV41_STG_PRIVKEY_B64" ]; then
+          umask 077
+          printf '%s' "$$DSV41_STG_FULLCHAIN_B64" | base64 -d > $$d/fullchain.pem.new
+          printf '%s' "$$DSV41_STG_PRIVKEY_B64" | base64 -d > $$d/privkey.pem.new
+          chmod 644 $$d/fullchain.pem.new
+          mv $$d/privkey.pem.new $$d/privkey.pem
+          mv $$d/fullchain.pem.new $$d/fullchain.pem
+          echo "Wrote the staging certificate to $$d"
+        elif [ -s $$d/fullchain.pem ] && [ -s $$d/privkey.pem ]; then
+          echo "DSV41_STG_FULLCHAIN_B64 and DSV41_STG_PRIVKEY_B64 not set; keeping the staging certificate already in $$d"
+        else
+          echo "ERROR: DSV41_STG_FULLCHAIN_B64 and DSV41_STG_PRIVKEY_B64 are required to create the staging certificate" >&2
+          exit 1
+        fi
+    environment:
+      - DSV41_STG_FULLCHAIN_B64=${DSV41_STG_FULLCHAIN_B64:-}
+      - DSV41_STG_PRIVKEY_B64=${DSV41_STG_PRIVKEY_B64:-}
+    volumes:
+      - stg_certs:/stg-certs
+    logging: *logging-conf
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"stg-cert-init","service":"stg-cert-init","tags":["model:multi","deployment:dsv41-flash-1017-vllm-dep8-abliterated","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0320-lora3p-cc2-w4a8-dep8-c8192-dspark3-mr64-engram-hbm"]}]'
+
   nginx:
     image: nginx@sha256:1d13701a5f9f3fb01aaa88cef2344d65b6b5bf6b7d9fa4cf0dca557a8d7702ba
     container_name: nginx
     depends_on:
-      - proxy-dsv41
-      - proxy-dsv41-abliterated
-    command: /bin/sh -c 'cert=/etc/letsencrypt/live/completions.near.ai/fullchain.pem; last=$$(stat -L -c %Y "$$cert" 2>/dev/null); while :; do sleep 60; cur=$$(stat -L -c %Y "$$cert" 2>/dev/null); if [ -n "$$cur" ] && [ "$$cur" != "$$last" ]; then last=$$cur; echo "$$cert changed, reloading nginx"; nginx -s reload; fi; done & while :; do sleep 6h; nginx -s reload; done & nginx -g "daemon off;"'
+      stg-cert-init:
+        condition: service_completed_successfully
+      proxy-dsv41:
+        condition: service_started
+      proxy-dsv41-abliterated:
+        condition: service_started
+    command: /bin/sh -c 'certs="/etc/letsencrypt/live/completions.near.ai/fullchain.pem /stg-certs/fullchain.pem"; last=$$(stat -L -c %Y $$certs 2>/dev/null); while :; do sleep 60; cur=$$(stat -L -c %Y $$certs 2>/dev/null); if [ -n "$$cur" ] && [ "$$cur" != "$$last" ]; then last=$$cur; echo "certs changed, reloading nginx"; nginx -s reload; fi; done & while :; do sleep 6h; nginx -s reload; done & nginx -g "daemon off;"'
     ports:
       - "8000:8000"
       - "8001:8001"
@@ -120,6 +172,7 @@ services:
       - "8003:8003"
     volumes:
       - certs:/etc/letsencrypt:ro
+      - stg_certs:/stg-certs:ro
     configs:
       - source: nginx_conf
         target: /etc/nginx/conf.d/default.conf
@@ -173,7 +226,7 @@ services:
       - VLLM_BACKEND_CONVERSATION_AFFINITY=1
       - VLLM_PROXY_MAX_REQUEST_SIZE=104857600
       - VLLM_PROXY_POOL_IDLE_TIMEOUT_SECS=3
-      - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
+      - TLS_CERT_PATH=/stg-certs/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
       - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
       - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
@@ -215,7 +268,7 @@ services:
       - VLLM_BACKEND_CONVERSATION_AFFINITY=1
       - VLLM_PROXY_MAX_REQUEST_SIZE=104857600
       - VLLM_PROXY_POOL_IDLE_TIMEOUT_SECS=3
-      - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
+      - TLS_CERT_PATH=/stg-certs/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
       - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
       - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
@@ -850,6 +903,7 @@ volumes:
   huggingface_cache:
   dsv41_kernel_cache:
   humming_cache:
+  stg_certs:
   certs:
     external: true
     name: certs
@@ -1555,8 +1609,21 @@ configs:
       server {
         listen 8001 ssl http2;
         server_name deepseek-v4-1-flash.completions.near.ai
-                    deepseek-v4-1-flash.completions-stg.near.ai
-                    ~^deepseek-v4-1-flash-i\d+\.completions(-stg)?\.near\.ai$$;
+                    ~^deepseek-v4-1-flash-i\d+\.completions\.near\.ai$$;
+        keepalive_timeout 1h;
+        keepalive_requests 1000000;
+        location ^~ /metrics { return 404; }
+        location ^~ /v1/metrics { return 404; }
+        location = /v1/models { default_type application/json; return 200 '{"object":"list","data":[{"id":"deepseek-ai/DeepSeek-V4.1-Flash-1017","object":"model","owned_by":"vllm","max_model_len":1048576}]}'; }
+        location / { proxy_pass http://proxy-dsv41:8000; }
+      }
+
+      server {
+        listen 8001 ssl http2;
+        server_name deepseek-v4-1-flash.completions-stg.near.ai
+                    ~^deepseek-v4-1-flash-i\d+\.completions-stg\.near\.ai$$;
+        ssl_certificate /stg-certs/fullchain.pem;
+        ssl_certificate_key /stg-certs/privkey.pem;
         keepalive_timeout 1h;
         keepalive_requests 1000000;
         location ^~ /metrics { return 404; }
@@ -1568,8 +1635,21 @@ configs:
       server {
         listen 8003 ssl http2;
         server_name deepseek-v4-1-flash-abliterated.completions.near.ai
-                    deepseek-v4-1-flash-abliterated.completions-stg.near.ai
-                    ~^deepseek-v4-1-flash-abliterated-i\d+\.completions(-stg)?\.near\.ai$$;
+                    ~^deepseek-v4-1-flash-abliterated-i\d+\.completions\.near\.ai$$;
+        keepalive_timeout 1h;
+        keepalive_requests 1000000;
+        location ^~ /metrics { return 404; }
+        location ^~ /v1/metrics { return 404; }
+        location = /v1/models { default_type application/json; return 200 '{"object":"list","data":[{"id":"deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated","object":"model","owned_by":"vllm","max_model_len":1048576}]}'; }
+        location / { proxy_pass http://proxy-dsv41-abliterated:8000; }
+      }
+
+      server {
+        listen 8003 ssl http2;
+        server_name deepseek-v4-1-flash-abliterated.completions-stg.near.ai
+                    ~^deepseek-v4-1-flash-abliterated-i\d+\.completions-stg\.near\.ai$$;
+        ssl_certificate /stg-certs/fullchain.pem;
+        ssl_certificate_key /stg-certs/privkey.pem;
         keepalive_timeout 1h;
         keepalive_requests 1000000;
         location ^~ /metrics { return 404; }

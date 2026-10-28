@@ -169,6 +169,15 @@ HEADER = f"""# DeepSeek-V4.1-Flash-1017 + abliterated LoRA: ONE vLLM DEP8 replic
 # promote's zone guard refuses a completions-stg URL, but the chain still auto-merges infra-tests
 # PRs, so coordinate with Henry before that PATCH.
 #
+# TLS: the CVM's certbot cert covers only *.completions.near.ai, so cloud-stg-api rejects the
+# completions-stg names with it (certificate not valid for name). The staging names are served with a
+# *.completions-stg.near.ai cert (certbot DNS-01 on the model-proxy host, lineage dsv41-stg-dev) that
+# stg-cert-init writes into the pack-owned volume stg_certs from DSV41_STG_FULLCHAIN_B64 and
+# DSV41_STG_PRIVKEY_B64 (base64 PEM, passed as compose/up env, never committed). Both proxies report
+# that file (TLS_CERT_PATH), so the SPKI cloud-api pins is the one nginx presents. The prod-zone names
+# keep the CVM cert and no longer attest. A redeploy without the two variables keeps the cert already
+# in the volume; renew by redeploying with fresh values (about every 60 days).
+#
 # Layout: eight `vllm serve` processes, one per GPU (DP8 attention + EP8 experts, TP1, external DP
 # load balancing), Engram tables in HBM. In the gpu02 CVM A/B (10-28) this beat 2x DEP4 on
 # throughput (+15-23% at rate x8) and TTFT. Two proxies, one per model id, both over all eight
@@ -214,6 +223,10 @@ x-vllm-proxy-common: &vllm-proxy-common
 {rank_host_aliases("    ")}  volumes:
     - /var/run/dstack.sock:/var/run/dstack.sock
     - certs:/etc/letsencrypt:ro
+    - stg_certs:/stg-certs:ro
+  depends_on:
+    stg-cert-init:
+      condition: service_completed_successfully
   restart: unless-stopped
   logging: *logging-conf
 
@@ -265,20 +278,58 @@ services:
     labels:
       com.datadoghq.ad.logs: '[{{"source":"model-downloader","service":"model-downloader","tags":[{tags({"model": "multi"})}]}}]'
 
+  stg-cert-init:
+    image: nginx@sha256:1d13701a5f9f3fb01aaa88cef2344d65b6b5bf6b7d9fa4cf0dca557a8d7702ba
+    container_name: stg-cert-init
+    restart: "no"
+    entrypoint: ["sh", "-c"]
+    # Writes the *.completions-stg.near.ai cert and key into stg_certs, which nginx and both proxies mount. The values
+    # arrive as base64 PEM in the compose/up env. Without them the cert already in the volume is kept, so a routine
+    # redeploy does not need them; a first deploy without them fails here, before any proxy starts.
+    command:
+      - |
+        set -e
+        d=/stg-certs
+        if [ -n "$$DSV41_STG_FULLCHAIN_B64" ] && [ -n "$$DSV41_STG_PRIVKEY_B64" ]; then
+          umask 077
+          printf '%s' "$$DSV41_STG_FULLCHAIN_B64" | base64 -d > $$d/fullchain.pem.new
+          printf '%s' "$$DSV41_STG_PRIVKEY_B64" | base64 -d > $$d/privkey.pem.new
+          chmod 644 $$d/fullchain.pem.new
+          mv $$d/privkey.pem.new $$d/privkey.pem
+          mv $$d/fullchain.pem.new $$d/fullchain.pem
+          echo "Wrote the staging certificate to $$d"
+        elif [ -s $$d/fullchain.pem ] && [ -s $$d/privkey.pem ]; then
+          echo "DSV41_STG_FULLCHAIN_B64 and DSV41_STG_PRIVKEY_B64 not set; keeping the staging certificate already in $$d"
+        else
+          echo "ERROR: DSV41_STG_FULLCHAIN_B64 and DSV41_STG_PRIVKEY_B64 are required to create the staging certificate" >&2
+          exit 1
+        fi
+    environment:
+      - DSV41_STG_FULLCHAIN_B64=${{DSV41_STG_FULLCHAIN_B64:-}}
+      - DSV41_STG_PRIVKEY_B64=${{DSV41_STG_PRIVKEY_B64:-}}
+    volumes:
+      - stg_certs:/stg-certs
+    logging: *logging-conf
+    labels:
+      com.datadoghq.ad.logs: '[{{"source":"stg-cert-init","service":"stg-cert-init","tags":[{tags({"model": "multi"})}]}}]'
+
   nginx:
     image: nginx@sha256:1d13701a5f9f3fb01aaa88cef2344d65b6b5bf6b7d9fa4cf0dca557a8d7702ba
     container_name: nginx
     depends_on:
+      stg-cert-init:
+        condition: service_completed_successfully
 """)
     for name, *_ in PROXIES:
-        out.append(f"      - {name}\n")
-    out.append("""    command: /bin/sh -c 'cert=/etc/letsencrypt/live/completions.near.ai/fullchain.pem; last=$$(stat -L -c %Y "$$cert" 2>/dev/null); while :; do sleep 60; cur=$$(stat -L -c %Y "$$cert" 2>/dev/null); if [ -n "$$cur" ] && [ "$$cur" != "$$last" ]; then last=$$cur; echo "$$cert changed, reloading nginx"; nginx -s reload; fi; done & while :; do sleep 6h; nginx -s reload; done & nginx -g "daemon off;"'
+        out.append(f"      {name}:\n        condition: service_started\n")
+    out.append("""    command: /bin/sh -c 'certs="/etc/letsencrypt/live/completions.near.ai/fullchain.pem /stg-certs/fullchain.pem"; last=$$(stat -L -c %Y $$certs 2>/dev/null); while :; do sleep 60; cur=$$(stat -L -c %Y $$certs 2>/dev/null); if [ -n "$$cur" ] && [ "$$cur" != "$$last" ]; then last=$$cur; echo "certs changed, reloading nginx"; nginx -s reload; fi; done & while :; do sleep 6h; nginx -s reload; done & nginx -g "daemon off;"'
     ports:
 """)
     for _, _, http, tls, *_ in PROXIES:
         out.append(f'      - "{http}:{http}"\n      - "{tls}:{tls}"\n')
     out.append(f"""    volumes:
       - certs:/etc/letsencrypt:ro
+      - stg_certs:/stg-certs:ro
     configs:
       - source: nginx_conf
         target: /etc/nginx/conf.d/default.conf
@@ -336,7 +387,7 @@ services:
       - VLLM_BACKEND_CONVERSATION_AFFINITY=1
       - VLLM_PROXY_MAX_REQUEST_SIZE=104857600
       - VLLM_PROXY_POOL_IDLE_TIMEOUT_SECS=3
-      - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
+      - TLS_CERT_PATH=/stg-certs/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
       - WEB_CONTEXT_SEARCH_URL=${{WEB_CONTEXT_SEARCH_URL}}
       - WEB_CONTEXT_SEARCH_API_KEY=${{WEB_CONTEXT_SEARCH_API_KEY}}
@@ -435,6 +486,7 @@ volumes:
   huggingface_cache:
   dsv41_kernel_cache:
   humming_cache:
+  stg_certs:
   certs:
     external: true
     name: certs
@@ -516,19 +568,34 @@ def nginx_block() -> str:
         "      ssl_certificate_key /etc/letsencrypt/live/completions.near.ai/privkey.pem;\n"
         "      ssl_protocols TLSv1.2 TLSv1.3;\n\n"
     )
+    # One server block per zone: the staging names present the *.completions-stg.near.ai cert from stg_certs (the file
+    # both proxies report in their attestation); the prod-zone names keep the CVM's *.completions.near.ai cert.
+    stg_cert = (
+        "        ssl_certificate /stg-certs/fullchain.pem;\n"
+        "        ssl_certificate_key /stg-certs/privkey.pem;\n"
+    )
     tls = []
     for name, model, _, tls_port, _, domain in PROXIES:
         sub = domain.split(".", 1)[0]
-        tls.append(
-            f"      server {{\n        listen {tls_port} ssl http2;\n"
-            f"        server_name {domain}\n"
-            f"                    {sub}.completions-stg.near.ai\n"
-            f"                    ~^{sub}-i\\d+\\.completions(-stg)?\\.near\\.ai$$;\n"
-            "        keepalive_timeout 1h;\n        keepalive_requests 1000000;\n"
-            "        location ^~ /metrics { return 404; }\n        location ^~ /v1/metrics { return 404; }\n"
-            + models_location(model)
-            + f"        location / {{ proxy_pass http://{name}:8000; }}\n      }}\n"
-        )
+        for zone_names, cert in (
+            (
+                f"{domain}\n                    ~^{sub}-i\\d+\\.completions\\.near\\.ai$$;\n",
+                "",
+            ),
+            (
+                f"{sub}.completions-stg.near.ai\n                    ~^{sub}-i\\d+\\.completions-stg\\.near\\.ai$$;\n",
+                stg_cert,
+            ),
+        ):
+            tls.append(
+                f"      server {{\n        listen {tls_port} ssl http2;\n"
+                f"        server_name {zone_names}"
+                + cert
+                + "        keepalive_timeout 1h;\n        keepalive_requests 1000000;\n"
+                "        location ^~ /metrics { return 404; }\n        location ^~ /v1/metrics { return 404; }\n"
+                + models_location(model)
+                + f"        location / {{ proxy_pass http://{name}:8000; }}\n      }}\n"
+            )
     return head + plain + tls_head + "\n".join(tls)
 
 

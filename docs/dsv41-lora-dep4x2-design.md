@@ -86,6 +86,7 @@ Follow the existing rules:
 
 - Both ids are reachable only through the staging zone (`deepseek-v4-1-flash[-abliterated].completions-stg.near.ai`); the pack's nginx also answers those names.
 - No prod cloud-api catalog row. A cloud-stg-api row, if wanted, uses the `completions-stg` inferenceUrl.
+- TLS for the staging names: the CVM's certbot cert covers only `*.completions.near.ai` (plus `<host>.hosts.near.ai`), and cloud-api verifies hostnames, so the DEP8 pack serves the staging names with a `*.completions-stg.near.ai` cert from the pack-owned volume `stg_certs`. `stg-cert-init` writes it from `DSV41_STG_FULLCHAIN_B64` / `DSV41_STG_PRIVKEY_B64` (base64 PEM in the compose/up env; certbot lineage `dsv41-stg-dev` on the model-proxy host gpu23), and both proxies report that file as `TLS_CERT_PATH` so the SPKI cloud-api pins is the one nginx presents. The prod-zone names keep the CVM cert and do not attest. The permanent fix for a prod launch is a `*.completions-stg.near.ai` SAN on the CVM certbot request.
 - Caveat: any active `PATCH /v1/admin/models` on cloud-stg-api fires `validate_model_staging`, which auto-merges infra-tests PRs (staging and prod tests) and then runs `promote_model_prod`. The promote's zone guard refuses a `completions-stg` URL, so the model will not reach prod cloud-api, but the infra-tests prod PR would still land. Agree with Henry before that PATCH, or test by calling the proxies directly.
 
 ## Before prod
