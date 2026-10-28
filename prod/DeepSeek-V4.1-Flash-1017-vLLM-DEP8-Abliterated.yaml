@@ -1347,7 +1347,7 @@ configs:
   registrar_script:
     content: |
       #!/bin/sh
-      PROXY_URL="https://completions.near.ai"
+      PROXY_URL="https://completions-stg.near.ai"
       TOKEN="$${MODEL_PROXY_TOKEN}"
       INFERENCE_TOKEN="$${PROXY_TOKEN}"
 
@@ -1383,8 +1383,8 @@ configs:
 
       domain_for() {
         case $$1 in
-          8000) echo "deepseek-v4-1-flash.completions.near.ai" ;;
-          8002) echo "deepseek-v4-1-flash-abliterated.completions.near.ai" ;;
+          8000) echo "deepseek-v4-1-flash.completions-stg.near.ai" ;;
+          8002) echo "deepseek-v4-1-flash-abliterated.completions-stg.near.ai" ;;
           *) return 1 ;;
         esac
       }
@@ -1498,8 +1498,8 @@ configs:
           fi
         done
 
-        register_model "deepseek-ai/DeepSeek-V4.1-Flash-1017" "deepseek-v4-1-flash.completions.near.ai"
-        register_model "deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated" "deepseek-v4-1-flash-abliterated.completions.near.ai"
+        register_model "deepseek-ai/DeepSeek-V4.1-Flash-1017" "deepseek-v4-1-flash.completions-stg.near.ai"
+        register_model "deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated" "deepseek-v4-1-flash-abliterated.completions-stg.near.ai"
         date +%s > /tmp/registrar_alive
         sleep 60
       done
@@ -1537,11 +1537,13 @@ configs:
 
       server {
         listen 8000;
+        location = /v1/models { default_type application/json; return 200 '{"object":"list","data":[{"id":"deepseek-ai/DeepSeek-V4.1-Flash-1017","object":"model","owned_by":"vllm","max_model_len":1048576}]}'; }
         location / { proxy_pass http://proxy-dsv41:8000; }
       }
 
       server {
         listen 8002;
+        location = /v1/models { default_type application/json; return 200 '{"object":"list","data":[{"id":"deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated","object":"model","owned_by":"vllm","max_model_len":1048576}]}'; }
         location / { proxy_pass http://proxy-dsv41-abliterated:8000; }
       }
 
@@ -1559,6 +1561,7 @@ configs:
         keepalive_requests 1000000;
         location ^~ /metrics { return 404; }
         location ^~ /v1/metrics { return 404; }
+        location = /v1/models { default_type application/json; return 200 '{"object":"list","data":[{"id":"deepseek-ai/DeepSeek-V4.1-Flash-1017","object":"model","owned_by":"vllm","max_model_len":1048576}]}'; }
         location / { proxy_pass http://proxy-dsv41:8000; }
       }
 
@@ -1571,5 +1574,6 @@ configs:
         keepalive_requests 1000000;
         location ^~ /metrics { return 404; }
         location ^~ /v1/metrics { return 404; }
+        location = /v1/models { default_type application/json; return 200 '{"object":"list","data":[{"id":"deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated","object":"model","owned_by":"vllm","max_model_len":1048576}]}'; }
         location / { proxy_pass http://proxy-dsv41-abliterated:8000; }
       }
