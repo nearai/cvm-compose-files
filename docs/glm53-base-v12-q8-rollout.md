@@ -140,12 +140,12 @@ The lab expectation (exp 53, bare metal; not a gate):
 - **Abort a step, and roll back that one replica**, on:
   - an engine exit or restart, Xid, CUDA error or OOM;
   - **free GPU memory under 2 GiB for 5 minutes:** `max_over_time(DCGM_FI_DEV_FB_FREE{host_machine="<host>", gpu=~"<a>|<b>"}[5m]) < 2048` (MiB, the replica's GPU pair) for either GPU;
-  - **a preprocess-pool timeout storm:** 5 or more log lines matching `preprocess.*timeout` (the v7 bake's clean-logs pattern) in any 5-minute window on one replica, e.g. Loki `sum(count_over_time({host="<host>", container_name="<svc>"} |~ "(?i)preprocess.*timeout" [5m])) >= 5`;
+  - **a preprocess-pool timeout storm:** 5 or more log lines matching `preprocess.*timeout` (the v7 bake's clean-logs pattern), excluding the normal startup line `preprocess pool started: workers=4 timeout=60s`, in any 5-minute window on one replica, e.g. Loki `sum(count_over_time({host="<host>", container_name="<svc>"} |~ "(?i)preprocess.*timeout" !~ "(?i)pool started" [5m])) >= 5`;
   - not serving within the bake.
 - **Latency** (all compared at matched running):
   - **Canary:** a latency miss is recorded but is not an automatic rollback, and step 2 waits until it is understood. The exception is a **hard ceiling, which is an automatic rollback of r4**:
     - TTFT p95 more than 50% worse than gpu04 r1-r3 for 30 minutes; or
-    - queue-full rejections or 5xx at more than 2x the r1-r3 rate over the same 30 minutes.
+    - queue-full rejections or 5xx at more than 2x the r1-r3 rate over the same 30 minutes, or 20 or more such events in 30 minutes while r1-r3 have none (2x of zero is not a trigger).
   - **Fleet steps:** TTFT p95 or ITL p95 more than 20% worse than the baseline over the bake stops the lane and rolls that replica back (the v7 rollout's criterion). The baseline is:
     - the same replica in the same hour on the previous day, at matched running;
     - plus any replicas not yet migrated, over the same window.
