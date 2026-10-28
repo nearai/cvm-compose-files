@@ -28,7 +28,11 @@
 #   - GPU reserved with count: 1 (the CVM sees exactly one GPU), not device_ids "2".
 #   - Standalone: own nginx on the canonical guest ports 8000 (HTTP) and 8444 (TLS), one
 #     proxy, one registrar that owns its endpoint (gpu13 shared base's probe and 8001).
-#   - Proxy auth uses PROXY_TOKEN (gpu13 used QWEN38_ABLITERATED_PROXY_TOKEN beside base).
+#   - Proxy TOKEN and the registrar use the dedicated QWEN38_ABLITERATED_PROXY_TOKEN, as
+#     gpu13 does, so the fleet-wide PROXY_TOKEN never bypasses the no-organizations default.
+#   - nginx answers /v1/models itself with ONLY the abliterated id. The engine's
+#     --served-model-name is the base id (the LoRA is selected by the proxy), and
+#     model-proxy discovery would otherwise add this CVM to the production base pool.
 #   - Telemetry drops gpu_pair and adds instance/gpu labels from INSTANCE_LABEL.
 #
 # Ports. Guest ports are fixed by the CVM (8000-8010, 8444 TLS, 8080 compose-manager,
@@ -39,14 +43,18 @@
 # Deploy-time env (all must be set unless a default is shown):
 #   Compose-manager supplied (as on other CVMs): ENV, CVM_HOST, CVM_NAME, HOST_IP,
 #     DD_HOSTNAME, MONITORING_INGEST_TOKEN
-#   HUGGING_FACE_HUB_TOKEN, CLOUD_API_USAGE_TOKEN, PROXY_TOKEN, FUSION_ENABLED,
+#   HUGGING_FACE_HUB_TOKEN, CLOUD_API_USAGE_TOKEN, FUSION_ENABLED,
 #     FUSION_INTERNAL_BEARER_TOKEN, WEB_CONTEXT_SEARCH_URL, WEB_CONTEXT_SEARCH_API_KEY
+#   QWEN38_ABLITERATED_PROXY_TOKEN  dedicated proxy bearer token for this model (proxy
+#     TOKEN and registrar inference probes). Do NOT reuse the fleet-wide PROXY_TOKEN.
 #   INSTANCE_LABEL           instance name for telemetry, e.g. cm-gpu32-g7 (default unknown)
 #   HOST_PORT_BASE           host port base B, e.g. 11700 (required once registration is on)
 #   MODEL_PROXY_REGISTRATION disabled (default) | staging | production
 #   MODEL_PROXY_TOKEN        token for the selected model-proxy (needed unless disabled)
 #   QWEN38_ABLITERATED_ALLOWED_ORG_IDS  comma-separated org ids (default: no organizations)
 #   HOST_HTTP_PORT, HOST_TLS_PORT       optional explicit overrides of B+0 and B+44
+#   HOST_PORT_BASE and the overrides must be decimal integers without leading zeros; the
+#   resulting ports must be 1-65535. HOST_IP must be non-empty.
 #
 # Registration: disabled does nothing. staging uses https://completions-stg.near.ai and
 # the completions-stg domain. production uses https://completions.near.ai. Production
@@ -271,7 +279,7 @@ services:
       # Deny customer API keys until the intended organization IDs are supplied.
       - VLLM_PROXY_ALLOWED_ORG_IDS=${QWEN38_ABLITERATED_ALLOWED_ORG_IDS:-__no_organizations__}
       - OHTTP_ENABLED=true
-      - TOKEN=${PROXY_TOKEN}
+      - TOKEN=${QWEN38_ABLITERATED_PROXY_TOKEN}
       - FUSION_ENABLED=${FUSION_ENABLED}
       - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
       - VLLM_BACKEND_URLS=http://model-sg-qwen38-27b-fp8-tp1-lora:8000
@@ -326,6 +334,8 @@ services:
     container_name: model-proxy-registrar
     entrypoint: ["sh", "/register.sh"]
     restart: unless-stopped
+    # A TERM waits for a foreground curl (up to 45s), then unregister (10s).
+    stop_grace_period: 90s
     depends_on:
       - nginx-qwen38-abliterated
     healthcheck:
@@ -341,9 +351,9 @@ services:
       - HOST_TLS_PORT=${HOST_TLS_PORT:-}
       - MODEL_PROXY_REGISTRATION=${MODEL_PROXY_REGISTRATION:-disabled}
       - MODEL_PROXY_TOKEN=${MODEL_PROXY_TOKEN:-}
-      - PROXY_TOKEN=${PROXY_TOKEN}
+      - PROXY_TOKEN=${QWEN38_ABLITERATED_PROXY_TOKEN}
     configs:
-      - source: registrar_script
+      - source: qwen38_abliterated_registrar_script
         target: /register.sh
         mode: 0755
     logging: *logging-conf
@@ -737,9 +747,18 @@ configs:
       ssl_certificate_key /etc/letsencrypt/live/completions.near.ai/privkey.pem;
       ssl_protocols TLSv1.2 TLSv1.3;
 
+      # /v1/models is a static answer on both servers: the engine lists the BASE id
+      # (--served-model-name), and model-proxy discovery probes host B+0 /v1/models and
+      # pools this CVM under every id listed. Only the abliterated id may appear.
       # :8000 - plain HTTP (host B+0): registrar health checks and bearer-token clients.
       server {
           listen 8000;
+          location ^~ /metrics { return 404; }
+          location ^~ /v1/metrics { return 404; }
+          location = /v1/models {
+              default_type application/json;
+              return 200 '{"object":"list","data":[{"id":"Qwen/Qwen3.8-27B-abliterated","object":"model","owned_by":"nearai"}]}';
+          }
           location / { proxy_pass http://proxy-qwen38-27b-abliterated:8000; }
       }
 
@@ -755,10 +774,14 @@ configs:
           keepalive_requests 1000000;
           location ^~ /metrics { return 404; }
           location ^~ /v1/metrics { return 404; }
+          location = /v1/models {
+              default_type application/json;
+              return 200 '{"object":"list","data":[{"id":"Qwen/Qwen3.8-27B-abliterated","object":"model","owned_by":"nearai"}]}';
+          }
           location / { proxy_pass http://proxy-qwen38-27b-abliterated:8000; }
       }
 
-  registrar_script:
+  qwen38_abliterated_registrar_script:
     content: |
       #!/bin/sh
       # Registers THIS instance's host ports with model-proxy. Guest ports are never advertised.
@@ -766,11 +789,20 @@ configs:
       TOKEN="$${MODEL_PROXY_TOKEN}"
       INFERENCE_TOKEN="$${PROXY_TOKEN}"
       MODEL="Qwen/Qwen3.8-27B-abliterated"
+      BASE_MODEL="Qwen/Qwen3.8-27B"
+
+      # sleep in the background and wait on it: a TERM interrupts `wait`, so the trap runs
+      # at once instead of after the sleep (and PID 1 ignores TERM without a trap).
+      nap() {
+        sleep "$$1" &
+        wait $$!
+      }
 
       case "$$MODE" in
         disabled)
           echo "MODEL_PROXY_REGISTRATION=disabled: not registering with any model-proxy"
-          while true; do date +%s > /tmp/registrar_alive; sleep 60; done
+          trap 'exit 0' TERM INT
+          while true; do date +%s > /tmp/registrar_alive; nap 60; done
           ;;
         staging)
           PROXY_URL="https://completions-stg.near.ai"
@@ -791,17 +823,42 @@ configs:
         exit 1
       fi
 
+      if [ -z "$${HOST_IP}" ]; then
+        echo "ERROR: HOST_IP is empty; refusing to advertise an endpoint without a host address"
+        exit 1
+      fi
+
+      # Decimal integer, 1-5 digits, no leading zero (so no octal reading in $$(( ))).
+      is_port_number() {
+        case "$$1" in
+          ""|*[!0-9]*|0*) return 1 ;;
+        esac
+        [ "$${#1}" -le 5 ]
+      }
+
+      for pair in HOST_PORT_BASE:"$${HOST_PORT_BASE}" HOST_HTTP_PORT:"$${HOST_HTTP_PORT}" HOST_TLS_PORT:"$${HOST_TLS_PORT}"; do
+        value="$${pair#*:}"
+        if [ -n "$$value" ] && ! is_port_number "$$value"; then
+          echo "ERROR: $${pair%%:*}='$$value' must be a decimal integer without leading zeros"
+          exit 1
+        fi
+      done
+
       # Host ports: HOST_PORT_BASE+0 (HTTP) and +44 (TLS), unless overridden explicitly.
       if [ -z "$${HOST_HTTP_PORT}" ] || [ -z "$${HOST_TLS_PORT}" ]; then
-        case "$${HOST_PORT_BASE}" in
-          ""|*[!0-9]*)
-            echo "ERROR: set HOST_PORT_BASE (e.g. 11700) or both HOST_HTTP_PORT and HOST_TLS_PORT"
-            exit 1
-            ;;
-        esac
+        if [ -z "$${HOST_PORT_BASE}" ]; then
+          echo "ERROR: set HOST_PORT_BASE (e.g. 11700) or both HOST_HTTP_PORT and HOST_TLS_PORT"
+          exit 1
+        fi
       fi
       HTTP_PORT="$${HOST_HTTP_PORT:-$$((HOST_PORT_BASE + 0))}"
       TLS_PORT="$${HOST_TLS_PORT:-$$((HOST_PORT_BASE + 44))}"
+      for port in "$$HTTP_PORT" "$$TLS_PORT"; do
+        if [ "$$port" -lt 1 ] || [ "$$port" -gt 65535 ]; then
+          echo "ERROR: resulting host port $$port is outside 1-65535"
+          exit 1
+        fi
+      done
       ENDPOINT="$${HOST_IP}:$${HTTP_PORT}"
 
       # Health checks run against the local nginx (guest ports), not the advertised host
@@ -889,6 +946,22 @@ configs:
         esac
       }
 
+      # Registration guard: discovery must never see the base id on this CVM. Returns 0 when
+      # the served list omits it, 1 when the list cannot be fetched, 2 when it leaks.
+      check_models_list() {
+        models_body=$$(curl -sS --connect-timeout 10 --max-time 20 \
+          -H "Authorization: Bearer $$INFERENCE_TOKEN" \
+          "http://$$LOCAL_HTTP/v1/models") || return 1
+        quote='"'
+        escaped_base="Qwen\\/Qwen3.8-27B"
+        case "$$models_body" in
+          *"$$quote$$BASE_MODEL$$quote"*|*"$$quote$$escaped_base$$quote"*)
+            return 2
+            ;;
+        esac
+        return 0
+      }
+
       READY_URL="http://$${LOCAL_HTTP}/v1/models"
       echo "Waiting for the engine to be ready (probing $$READY_URL)..."
       ready_attempts=0
@@ -901,12 +974,23 @@ configs:
           break
         fi
         echo "Engine not ready yet (attempt $$ready_attempts/30), retrying in 30s..."
-        sleep 30
+        nap 30
       done
 
       while true; do
         date +%s > /tmp/registrar_alive
-        if check_chat && check_tls_route; then
+        check_models_list
+        models_status=$$?
+        if [ "$$models_status" -eq 2 ]; then
+          echo "ERROR: /v1/models lists the base id $$BASE_MODEL; refusing to register $$ENDPOINT"
+          if [ "$$REGISTERED" = true ]; then
+            unregister_endpoint "$$ENDPOINT"
+            REGISTERED=false
+          fi
+          nap 60
+          continue
+        fi
+        if [ "$$models_status" -eq 0 ] && check_chat && check_tls_route; then
           FAIL_COUNT=0
           register_endpoint "$$ENDPOINT"
           if [ "$$REGISTERED" = false ]; then
@@ -924,5 +1008,5 @@ configs:
 
         register_model "$$MODEL" "$$DOMAIN"
         date +%s > /tmp/registrar_alive
-        sleep 60
+        nap 60
       done
