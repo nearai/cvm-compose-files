@@ -43,7 +43,10 @@
 #                 server is also the TLS default_server (gpu13's base block is the first,
 #                 hence the default, on :8001), so the instance's direct host name and
 #                 unknown SNI reach the base proxy, which only serves the base id.
-#   /metrics and /v1/metrics return 404 on every server.
+#   /v1/metrics is open on the plain :8000 default server only (proxied to the base
+#   proxy), because model-proxy samples capacity from {probe}/v1/metrics; this matches
+#   gpu13's nginx-qwen38 :8000. /metrics stays private (404) on every server, and
+#   /v1/metrics is 404 on the :8000 abliterated Host server and every TLS :8444 server.
 # model-proxy discovery maps both models' domains to (HOST_IP:B+0 probe, routing port
 # B+44) and nginx picks the proxy by SNI.
 #
@@ -899,11 +902,11 @@ configs:
 
       # :8000 - base Qwen3.8-27B (host B+0): model-proxy's probe and the base registrar.
       # Default server, so the probe (no Host match) reaches the base proxy, whose
-      # /v1/models is the engine list and carries both ids.
+      # /v1/models is the engine list and carries both ids. /v1/metrics is proxied here
+      # (not 404) for model-proxy capacity sampling, as on gpu13; /metrics stays private.
       server {
           listen 8000 default_server;
           location ^~ /metrics { return 404; }
-          location ^~ /v1/metrics { return 404; }
           location / { proxy_pass http://proxy-qwen38-27b:8000; }
       }
 
