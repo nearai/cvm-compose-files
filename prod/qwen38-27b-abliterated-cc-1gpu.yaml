@@ -1,5 +1,8 @@
-# STATUS: EXPERIMENT. Lives in experiments/, not prod/ (README: only prod/ is deployed).
-# It graduates to prod/ only after the prod-ready checklist passes. Missing so far:
+# STATUS: STAGING-GATED. In prod/ so compose-manager can deploy it from a vX.Y.Z tag
+# (cvm-ansible-playbooks' deploy workflow accepts only prod/ files; AGENT.md forbids
+# deploying experiments/). The README soak gate is enforced by MODEL_PROXY_REGISTRATION,
+# which defaults to `disabled`: a deployed instance takes no model-proxy traffic until it
+# is set to `staging`, and must not be set to `production` until all of these pass:
 #   - the 30-minute staging soak (0 request failures, model-onboarding soak harness) on a
 #     real single-GPU CC CVM; nothing has run on one yet
 #   - LoRA under CC: SGLang --enable-lora with the abliterated-r1 adapter is proven on the
