@@ -89,6 +89,11 @@ def engine_command(rank: int) -> str:
         f"--max-model-len {MAX_MODEL_LEN}",
         "--max-num-batched-tokens 8192",
         "--max-num-seqs 64",
+        # Bounded queue, like the GLM base replicas (64 running + 32 queued): each rank's API server counts its
+        # running + waiting requests and answers 503 "engine is currently busy" past 96. The proxy forwards the
+        # 503, and cloud-api retries other backends and then returns 429 service_overloaded. Without it the
+        # queue is unbounded and an overload ends in client timeouts.
+        "--max-num-queued-reqs 96",
         "--gpu-memory-utilization 0.90",
         "--enable-prompt-tokens-details",
         "--tokenizer-mode deepseek_v41",
