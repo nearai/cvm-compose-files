@@ -127,3 +127,18 @@ Before switching, complete the gates above: 24 h soak, load matrix, refusal eval
 6. Verify one backend per prod domain on the prod model-proxy nodes gpu23 and cpu05, and the rewritten `-stg` domains on staging. Check strict TLS and that attestation SPKI matches nginx's certificate on the prod names. Complete one chat per id through cloud-stg-api and one per id through cloud-api.
 
 Rollback uses the same scoped compose/up from tag `v0.0.527` with its staging-only file; add `stg-cert-init` to the services. The `work_stg_certs` volume still holds the certificate. Then PATCH the cloud-stg-api rows back to their `-stg` URLs.
+
+## Back to 2 × DEP4 for availability (decided 10-30)
+
+- **Decision (Pierre, 10-30):** give up DEP8's throughput (+8% at rate ×4, +15% at ×8 in the A/B above) so that one replica keeps serving while the other restarts or redeploys. With DEP8, a crashed rank or a redeploy takes the model down for ~15 min. Both replicas share one host, so a host or CVM failure still takes both down.
+- **Pack:** `prod/DeepSeek-V4.1-Flash-1017-vLLM-DEP4x2-Abliterated.yaml`. The DEP8 generator renders it as a second layout, so the engine stack, proxies, queue limit and priority settings stay identical (`scripts/prepare_dsv41_lora_dep8.py`, `DEP4X2`).
+  - r1 = dp0-3 on GPUs 0-3, r2 = dp4-7 on GPUs 4-7. Each replica has its own DP coordinator (`--data-parallel-rpc-port` 13345 / 13445) and master port (`VLLM_DP_MASTER_PORT` 29600 / 29700), and no rank depends on the other replica's containers.
+  - **Engram tables:** host RAM through image patch 05 (`VLLM_NEAR_ENGRAM_CPU_GATHER=1`, `cpu_offload` + `dp_shared_memory`, PIECEWISE graphs). The GPU never reads host memory, so the 10-27 `nvidia_uvm` panic (UVA reads) does not apply; this is the layout the A/B ran in the dev CVM.
+  - **The one shared resource:** one `/dev/shm/near_engram_*` copy for both replicas. A restarting replica's leader takes the flock, finds both `.ready` markers and maps the copy as-is ("reuse"); it never truncates or rewrites it. Only a missing marker makes a leader reload, and that rewrites the same bytes.
+  - gpu-memory 0.85, as in the lab.
+- **Proxies:** both list all eight ranks. A stopped replica refuses connections, and `VLLM_BACKEND_CONNECT_FAILOVER=1` retries those on another rank. The health checker (`/health` every 5 s, 3 failures) then drops the replica.
+- **To verify on gpu02 after the deploy** (no other CC host is free):
+  1. Under steady load, `docker stop` all of r1's ranks: r2's TTFT and throughput hold, with no client errors beyond requests in flight on r1.
+  2. Start r1 again: r2 holds during r1's weight load, kernel builds and graph capture (CPU, page cache and PCIe contention).
+  3. Kill one rank of r1: check whether r1's other ranks exit or hang with `/health` still 200. A hang would leave the proxy sending traffic to the stuck ranks.
+  4. Both model ids on both replicas (17*23), and the abliterated id still answers a prompt the base id refuses.
