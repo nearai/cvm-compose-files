@@ -4,9 +4,15 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   validate:
-    runs-on: [self-hosted, infra]
+    # Same-repo pushes/PRs run on the dedicated CI runner (ci-build-1, no deploy
+    # credentials). Fork PRs fall back to GitHub-hosted so untrusted code never
+    # reaches a self-hosted host.
+    runs-on: ${{ (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","ci-cvm-validate"]') || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
 
