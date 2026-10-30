@@ -32,10 +32,11 @@ ADAPTER_REVISION: Final = "196c06e3c2aad43e9688d16fa993b4333f69358a"
 # .github/workflows/publish-vllm-dsv41-lora.yaml run 40627835048 from main c877152, tag
 # dsv41-lora-v0.32.0-near-v2-cc. The #393 image lacks patch 04 and returns garbage in a TDX+PPCIe CVM.
 ENGINE_IMAGE: Final = "docker.io/nearaidev/vllm@sha256:5eaa0d4637080c10958b6cd8a371ae2ebb749b7a1e19c85bcb1abb89ee2540e4"
-# inference-proxy main 5faff1b (#329: VLLM_PROXY_STRICT_REQUEST_MODEL), Build & Deploy run
-# 40425504976, pushed as :staging. An older proxy ignores the variable and would serve the adapter
-# on the base endpoint at the base price.
-PROXY_IMAGE: Final = "nearaidev/vllm-proxy-rs@sha256:4937ad68d86dcc79871bd52341f2030a71e49bcafdf69d82ca287171aeb43c7b"
+# inference-proxy main 166a7b7 (#335: VLLM_PROXY_PRIORITY_LOWER_FIRST; also carries #329:
+# VLLM_PROXY_STRICT_REQUEST_MODEL), Build & Deploy run 41119935413, signed and attested. An older proxy
+# ignores either variable: without #329 it serves the adapter on the base endpoint at the base price,
+# without #335 vLLM runs the OpenRouter lane and reseller orgs ahead of cloud-api.
+PROXY_IMAGE: Final = "nearaidev/vllm-proxy-rs@sha256:a99b89aa41a7c416cd2cb3e83f92d18afa66fcb1444780e35e6cf7fa9dc19a9d"
 # Engram tables (186 GiB FP8) in HBM, sharded across the eight DP ranks (~23 GiB each). DEP8 leaves 18M KV
 # tokens per rank at gpu-memory 0.90. Host-memory layouts are unsafe in TDX+PPCIe CVMs (stale UVA reads, the
 # nvidia_uvm CC fault-decrypt panic of 10-27); see tee-bench #16.
