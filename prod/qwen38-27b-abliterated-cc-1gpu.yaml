@@ -238,6 +238,7 @@ services:
       - SYS_NICE
     container_name: model-sg-qwen38-27b-fp8-tp1-lora
     image: lmsysorg/sglang@sha256:febfb971c7352570fc445c466ebd6ffc9d896024958e544a60f2137fd85856b1
+    # No --enable-mixed-chunk: with extra_buffer it caches stale GDN state and prefix hits return empty answers (sglang#39342).
     command: >
       sglang serve
       --trust-remote-code
@@ -250,7 +251,6 @@ services:
       --mm-attention-backend fa3
       --chunked-prefill-size 8192
       --max-prefill-tokens 8192
-      --enable-mixed-chunk
       --max-mamba-cache-size 320
       --max-running-requests 64
       --max-queued-requests 128
@@ -316,7 +316,7 @@ services:
       nearai.otel.quantization: "fp8"
       nearai.otel.chunk_size: "8192"
       nearai.otel.max_prefill_tokens: "8192"
-      nearai.otel.mixed_chunk: "1"
+      nearai.otel.mixed_chunk: "0"
       nearai.otel.mem_fraction_static: "0.85"
       nearai.otel.max_mamba_cache_size: "320"
       nearai.otel.max_running_requests: "64"
