@@ -4,11 +4,12 @@
 # dependencies = []
 # ///
 # How to run: uv run scripts/prepare_dsv41_lora_dep8.py --write
-"""Generate one DeepSeek-V4.1-Flash-1017 DEP8 pack for prod and staging on an 8x H200 CVM.
+"""Generate the DeepSeek-V4.1-Flash-1017 packs for prod and staging on an 8x H200 CVM.
 
+Two layouts of the same engine stack: one DEP8 replica, and two DEP4 replicas (2xDEP4).
 The telemetry collector config is copied verbatim from the multi-model pack
 prod/qwen36-qwen38.yaml; everything else is written here.
-`--write` regenerates the target; `--check` diffs a stale target.
+`--write` regenerates both targets; `--check` diffs a stale target.
 Design and open gates: docs/dsv41-lora-dep4x2-design.md ("DEP8 in CVMs" section).
 """
 
@@ -17,11 +18,10 @@ import difflib
 import json
 import sys
 from pathlib import Path
-from typing import Final
+from typing import Final, NamedTuple
 
 ROOT = Path(__file__).resolve().parents[1]
 OTEL_SOURCE = Path("prod/qwen36-qwen38.yaml")
-TARGET: Final = Path("prod/DeepSeek-V4.1-Flash-1017-vLLM-DEP8-Abliterated.yaml")
 
 BASE_ID: Final = "deepseek-ai/DeepSeek-V4.1-Flash-1017"
 BASE_REVISION: Final = "1bae0e1088993b9b82de08f59de5be5a34e42170"
@@ -37,12 +37,45 @@ ENGINE_IMAGE: Final = "docker.io/nearaidev/vllm@sha256:5eaa0d4637080c10958b6cd8a
 # ignores either variable: without #329 it serves the adapter on the base endpoint at the base price,
 # without #335 vLLM runs the OpenRouter lane and reseller orgs ahead of cloud-api.
 PROXY_IMAGE: Final = "nearaidev/vllm-proxy-rs@sha256:a99b89aa41a7c416cd2cb3e83f92d18afa66fcb1444780e35e6cf7fa9dc19a9d"
+GPUS: Final = 8
+
+
+class Layout(NamedTuple):
+    target: Path
+    deployment: str
+    variant: str
+    title: str
+    # (replica name, global ranks); rank i always runs on GPU i and serves on RANK_PORT0 + i.
+    replicas: tuple[tuple[str, tuple[int, ...]], ...]
+    # Engram tables in host RAM (one /dev/shm copy shared by every replica, read by image patch 05's CPU
+    # gather) instead of HBM.
+    host_engram: bool
+
+
 # Engram tables (186 GiB FP8) in HBM, sharded across the eight DP ranks (~23 GiB each). DEP8 leaves 18M KV
-# tokens per rank at gpu-memory 0.90. Host-memory layouts are unsafe in TDX+PPCIe CVMs (stale UVA reads, the
-# nvidia_uvm CC fault-decrypt panic of 10-27); see tee-bench #16.
-DEPLOYMENT: Final = "dsv41-flash-1017-vllm-dep8-abliterated"
-VARIANT: Final = "vllm0320-lora3p-cc2-w4a8-dep8-c8192-dspark3-mr64-engram-hbm"
-DP_SIZE: Final = 8
+# tokens per rank at gpu-memory 0.90. GPU reads of host memory are unsafe in TDX+PPCIe CVMs (stale UVA reads,
+# the nvidia_uvm CC fault-decrypt panic of 10-27); see tee-bench #16.
+DEP8: Final = Layout(
+    Path("prod/DeepSeek-V4.1-Flash-1017-vLLM-DEP8-Abliterated.yaml"),
+    "dsv41-flash-1017-vllm-dep8-abliterated",
+    "vllm0320-lora3p-cc2-w4a8-dep8-c8192-dspark3-mr64-engram-hbm",
+    "ONE vLLM DEP8 replica",
+    (("r1", tuple(range(GPUS))),),
+    False,
+)
+# A DEP4 replica cannot hold the tables next to its weights (82 GiB/GPU; tables in HBM left no KV pool on
+# v0.0.517), so both replicas share one host copy. Patch 05 gathers rows on the CPU and copies them to the
+# GPU, so the GPU never reads host memory. Pierre 10-30: trade DEP8's throughput (+8-15% in the gpu02 A/B of
+# 10-28) for a second replica that keeps serving while the other restarts.
+DEP4X2: Final = Layout(
+    Path("prod/DeepSeek-V4.1-Flash-1017-vLLM-DEP4x2-Abliterated.yaml"),
+    "dsv41-flash-1017-vllm-dep4x2-abliterated",
+    "vllm0320-lora3p-cc2-w4a8-dep4x2-c8192-dspark3-mr64-engram-host-cpugather",
+    "TWO vLLM DEP4 replicas (r1 GPUs 0-3, r2 GPUs 4-7)",
+    (("r1", (0, 1, 2, 3)), ("r2", (4, 5, 6, 7))),
+    True,
+)
+LAYOUTS: Final = (DEP8, DEP4X2)
 RANK_PORT0: Final = 9100  # rank i serves on 9100 + i on the CVM host network
 # The engines run on the host network (NCCL over NVLink P2P, see x-dsv41-engine-common); the services on
 # dstack_default reach rank i as model-vllm-dsv41-dp<i>:<9100+i>, each name mapped to host-gateway.
@@ -71,10 +104,19 @@ def rank_url(rank: int) -> str:
 
 
 def rank_host_aliases(indent: str) -> str:
-    return "".join(f'{indent}- "{rank_service(i)}:host-gateway"\n' for i in range(DP_SIZE))
+    return "".join(f'{indent}- "{rank_service(i)}:host-gateway"\n' for i in range(GPUS))
 
 
-def engine_command(rank: int) -> str:
+def replica_of(layout: Layout, rank: int) -> tuple[int, str, tuple[int, ...]]:
+    """(replica index, replica name, the replica's global ranks) for a global rank."""
+    for index, (name, ranks) in enumerate(layout.replicas):
+        if rank in ranks:
+            return index, name, ranks
+    raise ValueError(f"rank {rank} is in no replica")
+
+
+def engine_command(layout: Layout, rank: int) -> str:
+    index, _, ranks = replica_of(layout, rank)
     lora = json.dumps({"name": ADAPTER_ID, "path": ADAPTER_PATH, "base_model_name": BASE_ID}, separators=(",", ":"))
     # The image entrypoint is ["vllm", "serve"]: the command starts at the model path.
     args = [
@@ -82,11 +124,12 @@ def engine_command(rank: int) -> str:
         f"--served-model-name {BASE_ID}",
         "--trust-remote-code",
         "--tensor-parallel-size 1",
-        f"--data-parallel-size {DP_SIZE}",
-        f"--data-parallel-rank {rank}",
+        f"--data-parallel-size {len(ranks)}",
+        f"--data-parallel-rank {ranks.index(rank)}",
         "--enable-expert-parallel",
         "--data-parallel-address 127.0.0.1",
-        "--data-parallel-rpc-port 13345",
+        # One coordinator port per replica: every rank shares the host network.
+        f"--data-parallel-rpc-port {13345 + 100 * index}",
         f"--max-model-len {MAX_MODEL_LEN}",
         "--max-num-batched-tokens 8192",
         "--max-num-seqs 64",
@@ -101,7 +144,8 @@ def engine_command(rank: int) -> str:
         # preemption victims; the queue limit above refuses every priority alike, so the gateway's budget for
         # this model keeps the lane from filling it.
         "--scheduling-policy priority",
-        "--gpu-memory-utilization 0.90",
+        # 2xDEP4 keeps the lab's 0.85: host-Engram ranks need room outside vLLM's pool for the gathered rows.
+        f"--gpu-memory-utilization {'0.85' if layout.host_engram else '0.90'}",
         "--enable-prompt-tokens-details",
         "--tokenizer-mode deepseek_v41",
         "--reasoning-parser deepseek_v41",
@@ -110,26 +154,33 @@ def engine_command(rank: int) -> str:
         """--speculative-config '{"method":"dspark","num_speculative_tokens":3}'""",
         "--enable-lora --max-loras 1 --max-cpu-loras 1 --max-lora-rank 8 --lora-target-modules wo_b",
         f"--lora-modules '{lora}'",
-        """--engram-config '{"cpu_offload":false,"embedding_across_dp":true}'""",
     ]
+    if layout.host_engram:
+        args += [
+            """--engram-config '{"cpu_offload":true,"dp_shared_memory":true}'""",
+            # The CPU gather syncs on the hash ids, so it must run eagerly between piecewise graphs.
+            """--compilation-config '{"cudagraph_mode":"PIECEWISE"}'""",
+        ]
+    else:
+        args.append("""--engram-config '{"cpu_offload":false,"embedding_across_dp":true}'""")
     args += ["--host 0.0.0.0", f"--port {RANK_PORT0 + rank}"]
     return "\n      ".join(args)
 
 
-def tags(extra: dict[str, str]) -> str:
-    base = {"deployment": DEPLOYMENT, "env": "${ENV}", "host": "${CVM_HOST}", "ip": "${HOST_IP}",
-            "ppcie": "true", "config_variant": VARIANT}
+def tags(layout: Layout, extra: dict[str, str]) -> str:
+    base = {"deployment": layout.deployment, "env": "${ENV}", "host": "${CVM_HOST}", "ip": "${HOST_IP}",
+            "ppcie": "true", "config_variant": layout.variant}
     return ",".join(f'"{k}:{v}"' for k, v in {**extra, **base}.items())
 
 
-def otel_labels(service: str, job: str, source: str, container: str, port: str, model: str) -> str:
+def otel_labels(layout: Layout, service: str, job: str, source: str, container: str, port: str, model: str) -> str:
     rows = {
         "nearai.otel.scrape": "true", "nearai.otel.job": job, "nearai.otel.service": service,
         "nearai.otel.source": source, "nearai.otel.container_name": container, "nearai.otel.port": port,
-        "nearai.otel.path": "/metrics", "nearai.otel.model": model, "nearai.otel.deployment": DEPLOYMENT,
+        "nearai.otel.path": "/metrics", "nearai.otel.model": model, "nearai.otel.deployment": layout.deployment,
         "nearai.otel.env": "${ENV}", "nearai.otel.host": "${CVM_HOST}", "nearai.otel.host_machine": "${CVM_HOST}",
         "nearai.otel.cvm_name": "${CVM_NAME}", "nearai.otel.ip": "${HOST_IP}", "nearai.otel.ppcie": "true",
-        "nearai.otel.config_variant": VARIANT,
+        "nearai.otel.config_variant": layout.variant,
     }
     return "".join(f'      {k}: "{v}"\n' for k, v in rows.items())
 
@@ -146,21 +197,22 @@ def scrape_job(job: str, target: str, labels: dict[str, str]) -> str:
     )
 
 
-def otel_config_block(source: str) -> str:
+def otel_config_block(layout: Layout, source: str) -> str:
     """The collector config of OTEL_SOURCE with its scrape jobs replaced by this file's services."""
     block = source[source.index("  otelcol_app_config:\n"):source.index("  registrar_script:\n")]
     marker = "            scrape_configs:\n"
     head, rest = block.split(marker, 1)
     tail = "\n" + rest[rest.index("        prometheus/self:\n"):]
     common = {"env": "${ENV}", "host": "${CVM_HOST}", "host_machine": "${CVM_HOST}", "cvm_name": "${CVM_NAME}",
-              "ip": "${HOST_IP}", "ppcie": "true", "deployment": DEPLOYMENT, "config_variant": VARIANT}
+              "ip": "${HOST_IP}", "ppcie": "true", "deployment": layout.deployment, "config_variant": layout.variant}
     jobs = []
-    for rank in range(DP_SIZE):
+    for rank in range(GPUS):
         svc = rank_service(rank)
+        _, replica, ranks = replica_of(layout, rank)
         jobs.append(scrape_job(f"vllm-{svc}", f"{svc}:{RANK_PORT0 + rank}", {
             "service": "vllm", "source": "vllm", "container_name": svc, "model": BASE_ID, "served_model": BASE_ID,
-            "model_revision": BASE_REVISION, "replica": "r1", "dp_rank": str(rank), "gpu": str(rank),
-            "port": str(PROXIES[0][2]), **common}))
+            "model_revision": BASE_REVISION, "replica": replica, "dp_rank": str(ranks.index(rank)),
+            "gpu": str(rank), "port": str(PROXIES[0][2]), **common}))
     jobs.append(scrape_job("dcgm-dcgm-dsv41", "dcgm-dsv41:9400", {
         "service": "dcgm-exporter", "source": "dcgm-exporter", "container_name": "dcgm-dsv41", "model": BASE_ID,
         "port": "9400", **common}))
@@ -171,7 +223,28 @@ def otel_config_block(source: str) -> str:
     return head + marker + "".join(jobs) + tail
 
 
-HEADER = f"""# DeepSeek-V4.1-Flash-1017 + abliterated LoRA: ONE vLLM DEP8 replica on one 8x H200 TDX+PPCIe CVM (gpu02).
+LAYOUT_NOTES: Final = {
+    DEP8.target: """\
+# Layout: eight `vllm serve` processes, one per GPU (DP8 attention + EP8 experts, TP1, external DP
+# load balancing), Engram tables in HBM. In the gpu02 CVM A/B (10-28) this beat 2x DEP4 on
+# throughput (+15-23% at rate x8) and TTFT. Two proxies, one per model id, both over all eight
+# ranks; each refuses the other id (VLLM_PROXY_STRICT_REQUEST_MODEL=1).
+""",
+    DEP4X2.target: """\
+# Layout: eight `vllm serve` processes, one per GPU, in two independent DEP4 replicas (DP4 attention +
+# EP4 experts, TP1, external DP load balancing): r1 = dp0-3 on GPUs 0-3, r2 = dp4-7 on GPUs 4-7, each
+# with its own DP coordinator and master port. Engram tables: one host copy in /dev/shm shared by both
+# replicas (image patch 05: flock-elected loader, reused as-is when a replica restarts; CPU gather + H2D
+# copy). DEP8 was 8-15% faster in the gpu02 A/B (10-28), but a rank failure or redeploy there takes the
+# model down; here the other replica keeps serving. Two proxies, one per model id, both over all eight
+# ranks; each refuses the other id (VLLM_PROXY_STRICT_REQUEST_MODEL=1) and retries a refused connection
+# on another rank (VLLM_BACKEND_CONNECT_FAILOVER=1) until health checks drop a stopped replica.
+""",
+}
+
+
+def header(layout: Layout) -> str:
+    return f"""# DeepSeek-V4.1-Flash-1017 + abliterated LoRA: {layout.title} on one 8x H200 TDX+PPCIe CVM (gpu02).
 # Generated by scripts/prepare_dsv41_lora_dep8.py (do not hand-edit). Design, evidence and open gates:
 # docs/dsv41-lora-dep4x2-design.md; CVM bring-up and the DEP8-vs-2xDEP4 A/B: tee-bench #16.
 #
@@ -188,11 +261,7 @@ HEADER = f"""# DeepSeek-V4.1-Flash-1017 + abliterated LoRA: ONE vLLM DEP8 replic
 # which must be unlisted and per-org (cloud-api #1237). promote_model.py does not copy isListed:
 # never promote the abliterated id with it.
 #
-# Layout: eight `vllm serve` processes, one per GPU (DP8 attention + EP8 experts, TP1, external DP
-# load balancing), Engram tables in HBM. In the gpu02 CVM A/B (10-28) this beat 2x DEP4 on
-# throughput (+15-23% at rate x8) and TTFT. Two proxies, one per model id, both over all eight
-# ranks; each refuses the other id (VLLM_PROXY_STRICT_REQUEST_MODEL=1).
-# TDX+PPCIe requirements, all found on the gpu02 dev CVM (10-27):
+{LAYOUT_NOTES[layout.target]}# TDX+PPCIe requirements, all found on the gpu02 dev CVM (10-27):
 #   - VLLM_NEAR_DISABLE_UVA=1 (image patch 04): the GPU reads stale pinned host memory, so vLLM's
 #     UVA input buffers corrupt decode (NaN logits, garbage text).
 #   - Host network and all GPUs visible per rank: in per-container namespaces NCCL ran over TCP sockets.
@@ -203,9 +272,9 @@ HEADER = f"""# DeepSeek-V4.1-Flash-1017 + abliterated LoRA: ONE vLLM DEP8 replic
 #
 """
 
-def render() -> str:
+def render(layout: Layout = DEP8) -> str:
     source = (ROOT / OTEL_SOURCE).read_text()
-    out: list[str] = [HEADER]
+    out: list[str] = [header(layout)]
     out.append(f"""x-logging-conf: &logging-conf
   driver: "json-file"
   options:
@@ -281,7 +350,7 @@ services:
       - HF_TOKEN=${{HUGGING_FACE_HUB_TOKEN}}
     logging: *logging-conf
     labels:
-      com.datadoghq.ad.logs: '[{{"source":"model-downloader","service":"model-downloader","tags":[{tags({"model": "multi"})}]}}]'
+      com.datadoghq.ad.logs: '[{{"source":"model-downloader","service":"model-downloader","tags":[{tags(layout, {"model": "multi"})}]}}]'
 
 """)
     out.append(f"""  nginx:
@@ -305,7 +374,7 @@ services:
     restart: unless-stopped
     logging: *logging-conf
     labels:
-      com.datadoghq.ad.logs: '[{{"source":"nginx","service":"nginx","tags":[{tags({"model": "multi"})}]}}]'
+      com.datadoghq.ad.logs: '[{{"source":"nginx","service":"nginx","tags":[{tags(layout, {"model": "multi"})}]}}]'
 
   model-proxy-registrar:
     image: curlimages/curl@sha256:d94d07ba9e7d6de898b6d96c1a072f6f8266c687af78a74f380087a0addf5d17
@@ -331,10 +400,15 @@ services:
         mode: 0755
     logging: *logging-conf
     labels:
-      com.datadoghq.ad.logs: '[{{"source":"model-proxy-registrar","service":"model-proxy-registrar","tags":[{tags({"model": "multi"})}]}}]'
+      com.datadoghq.ad.logs: '[{{"source":"model-proxy-registrar","service":"model-proxy-registrar","tags":[{tags(layout, {"model": "multi"})}]}}]'
 
 """)
-    backends = ",".join(rank_url(i) for i in range(DP_SIZE))
+    backends = ",".join(rank_url(i) for i in range(GPUS))
+    failover = (
+        "      # A stopped replica refuses connections until health checks drop it: retry those on another rank.\n"
+        "      - VLLM_BACKEND_CONNECT_FAILOVER=1\n"
+        if len(layout.replicas) > 1 else ""
+    )
     for name, model, http, *_ in PROXIES:
         allowlist = (
             "      # Deny customer API keys sent directly to this proxy until the intended organization IDs are supplied.\n"
@@ -361,21 +435,30 @@ services:
       - VLLM_BACKEND_URLS={backends}
       # Keep append-only conversations on the rank that already holds their prefix cache.
       - VLLM_BACKEND_CONVERSATION_AFFINITY=1
-      - VLLM_PROXY_MAX_REQUEST_SIZE=104857600
+{failover}      - VLLM_PROXY_MAX_REQUEST_SIZE=104857600
       - VLLM_PROXY_POOL_IDLE_TIMEOUT_SECS=3
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
       - WEB_CONTEXT_SEARCH_URL=${{WEB_CONTEXT_SEARCH_URL}}
       - WEB_CONTEXT_SEARCH_API_KEY=${{WEB_CONTEXT_SEARCH_API_KEY}}
     labels:
-      com.datadoghq.ad.logs: '[{{"source":"vllm-proxy","service":"vllm-proxy","tags":[{tags({"model": model, "port": str(http)})}]}}]'
-{otel_labels("vllm-proxy", "inference-proxy", "vllm-proxy", name, "8000", model)}
+      com.datadoghq.ad.logs: '[{{"source":"vllm-proxy","service":"vllm-proxy","tags":[{tags(layout, {"model": model, "port": str(http)})}]}}]'
+{otel_labels(layout, "vllm-proxy", "inference-proxy", "vllm-proxy", name, "8000", model)}
 """)
-    for rank in range(DP_SIZE):
+    for rank in range(GPUS):
         svc = rank_service(rank)
+        index, replica, ranks = replica_of(layout, rank)
         depends = "      model-downloader:\n        condition: service_completed_successfully\n"
-        if rank:
-            depends += f"      {rank_service(0)}:\n        condition: service_started\n"
+        if rank != ranks[0]:
+            depends += f"      {rank_service(ranks[0])}:\n        condition: service_started\n"
+        replica_env = ""
+        if layout.host_engram:
+            replica_env += (
+                "      # Image patch 05: Engram rows gathered on the CPU from the shared /dev/shm copy.\n"
+                "      - VLLM_NEAR_ENGRAM_CPU_GATHER=1\n"
+            )
+        if len(layout.replicas) > 1:
+            replica_env += f"      - VLLM_DP_MASTER_PORT={29600 + 100 * index}\n"
         out.append(f"""  {svc}:
     <<: *dsv41-engine-common
     container_name: {svc}
@@ -390,15 +473,15 @@ services:
       - 'VLLM_HUMMING_INPUT_QUANT_CONFIG={{"dtype":"float8e4m3","quant_mode":"dynamic_token"}}'
       # Image patch 04: copy per-step inputs to the GPU; under TDX+PPCIe the GPU reads stale host memory.
       - VLLM_NEAR_DISABLE_UVA=1
-      # nvcc on the CPU instead of humming's nvrtc helper (a CUDA context per kernel, which queues under CC).
+{replica_env}      # nvcc on the CPU instead of humming's nvrtc helper (a CUDA context per kernel, which queues under CC).
       - HUMMING_COMPILER=nvcc
       - HUMMING_CACHE_DIR=/root/.cache/humming/dp{rank}
       - HUMMING_MAX_PARALLEL_BUILD_WORKERS=8
     command: >
-      {engine_command(rank)}
+      {engine_command(layout, rank)}
     labels:
-      com.datadoghq.ad.logs: '[{{"source":"vllm","service":"vllm","tags":[{tags({"model": BASE_ID, "replica": "r1", "dp_rank": str(rank), "gpu": str(rank)})}]}}]'
-{otel_labels("vllm", "vllm", "vllm", svc, str(RANK_PORT0 + rank), BASE_ID)}
+      com.datadoghq.ad.logs: '[{{"source":"vllm","service":"vllm","tags":[{tags(layout, {"model": BASE_ID, "replica": replica, "dp_rank": str(ranks.index(rank)), "gpu": str(rank)})}]}}]'
+{otel_labels(layout, "vllm", "vllm", "vllm", svc, str(RANK_PORT0 + rank), BASE_ID)}
 """)
     out.append(f"""  dcgm-dsv41:
     image: nvcr.io/nvidia/k8s/dcgm-exporter@sha256:ed594cf53fe6942e84b07b0740cdcbb249fa4b39cb21feeebf93881ae51f0b5e
@@ -416,8 +499,8 @@ services:
     restart: unless-stopped
     logging: *logging-conf
     labels:
-      com.datadoghq.ad.logs: '[{{"source":"dcgm-exporter","service":"dcgm-exporter","tags":[{tags({"model": BASE_ID})}]}}]'
-{otel_labels("dcgm-exporter", "dcgm", "dcgm-exporter", "dcgm-dsv41", "9400", BASE_ID)}
+      com.datadoghq.ad.logs: '[{{"source":"dcgm-exporter","service":"dcgm-exporter","tags":[{tags(layout, {"model": BASE_ID})}]}}]'
+{otel_labels(layout, "dcgm-exporter", "dcgm", "dcgm-exporter", "dcgm-dsv41", "9400", BASE_ID)}
   otelcol-contrib:
     image: otel/opentelemetry-collector-contrib@sha256:85ac41c2db88d0df9bd6145e608a3cb023f5d8443868adbfbbf66efb51087917
     container_name: otelcol-contrib
@@ -450,7 +533,7 @@ services:
         max-size: "20m"
         max-file: "3"
     labels:
-      com.datadoghq.ad.logs: '[{{"source":"otelcol-contrib","service":"otelcol-contrib","tags":[{tags({"model": "multi"})}]}}]'
+      com.datadoghq.ad.logs: '[{{"source":"otelcol-contrib","service":"otelcol-contrib","tags":[{tags(layout, {"model": "multi"})}]}}]'
 
 networks:
   default:
@@ -468,7 +551,7 @@ volumes:
 
 configs:
 """)
-    out.append(otel_config_block(source))
+    out.append(otel_config_block(layout, source))
     out.append(registrar_block())
     out.append(nginx_block())
     return "".join(out)
@@ -555,16 +638,20 @@ def main() -> int:
     mode.add_argument("--write", action="store_true")
     mode.add_argument("--check", action="store_true")
     args = parser.parse_args()
-    rendered = render()
-    path = ROOT / TARGET
-    if args.write:
-        path.write_text(rendered)
-        return 0
-    current = path.read_text() if path.exists() else ""
-    if current != rendered:
-        sys.stdout.writelines(difflib.unified_diff(current.splitlines(True), rendered.splitlines(True), str(TARGET), "rendered"))
-        return 1
-    return 0
+    stale = 0
+    for layout in LAYOUTS:
+        rendered = render(layout)
+        path = ROOT / layout.target
+        if args.write:
+            path.write_text(rendered)
+            continue
+        current = path.read_text() if path.exists() else ""
+        if current != rendered:
+            sys.stdout.writelines(
+                difflib.unified_diff(current.splitlines(True), rendered.splitlines(True), str(layout.target), "rendered")
+            )
+            stale = 1
+    return stale
 
 
 if __name__ == "__main__":
