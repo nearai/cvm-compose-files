@@ -175,6 +175,8 @@ services:
       - MODEL_NAME=deepseek-ai/DeepSeek-V4.1-Flash-1017
       # Refuse the other model id: this proxy attests, bills and access-controls only deepseek-ai/DeepSeek-V4.1-Flash-1017.
       - VLLM_PROXY_STRICT_REQUEST_MODEL=1
+      # vLLM runs the lowest priority first: write the negated value (see --scheduling-policy on the ranks).
+      - VLLM_PROXY_PRIORITY_LOWER_FIRST=1
       - OHTTP_ENABLED=true
       - TOKEN=${PROXY_TOKEN}
       - VLLM_BACKEND_URLS=http://model-vllm-dsv41-dp0:9100,http://model-vllm-dsv41-dp1:9101,http://model-vllm-dsv41-dp2:9102,http://model-vllm-dsv41-dp3:9103,http://model-vllm-dsv41-dp4:9104,http://model-vllm-dsv41-dp5:9105,http://model-vllm-dsv41-dp6:9106,http://model-vllm-dsv41-dp7:9107
@@ -217,6 +219,8 @@ services:
       - MODEL_NAME=deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated
       # Refuse the other model id: this proxy attests, bills and access-controls only deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated.
       - VLLM_PROXY_STRICT_REQUEST_MODEL=1
+      # vLLM runs the lowest priority first: write the negated value (see --scheduling-policy on the ranks).
+      - VLLM_PROXY_PRIORITY_LOWER_FIRST=1
       # Deny customer API keys sent directly to this proxy until the intended organization IDs are supplied.
       # cloud-api's pool token and the registrar probe (config tokens) are not affected.
       - VLLM_PROXY_ALLOWED_ORG_IDS=${DSV41_ABLITERATED_ALLOWED_ORG_IDS:-__no_organizations__}
@@ -284,6 +288,7 @@ services:
       --max-num-batched-tokens 8192
       --max-num-seqs 64
       --max-num-queued-reqs 96
+      --scheduling-policy priority
       --gpu-memory-utilization 0.90
       --enable-prompt-tokens-details
       --tokenizer-mode deepseek_v41
@@ -351,6 +356,7 @@ services:
       --max-num-batched-tokens 8192
       --max-num-seqs 64
       --max-num-queued-reqs 96
+      --scheduling-policy priority
       --gpu-memory-utilization 0.90
       --enable-prompt-tokens-details
       --tokenizer-mode deepseek_v41
@@ -418,6 +424,7 @@ services:
       --max-num-batched-tokens 8192
       --max-num-seqs 64
       --max-num-queued-reqs 96
+      --scheduling-policy priority
       --gpu-memory-utilization 0.90
       --enable-prompt-tokens-details
       --tokenizer-mode deepseek_v41
@@ -485,6 +492,7 @@ services:
       --max-num-batched-tokens 8192
       --max-num-seqs 64
       --max-num-queued-reqs 96
+      --scheduling-policy priority
       --gpu-memory-utilization 0.90
       --enable-prompt-tokens-details
       --tokenizer-mode deepseek_v41
@@ -552,6 +560,7 @@ services:
       --max-num-batched-tokens 8192
       --max-num-seqs 64
       --max-num-queued-reqs 96
+      --scheduling-policy priority
       --gpu-memory-utilization 0.90
       --enable-prompt-tokens-details
       --tokenizer-mode deepseek_v41
@@ -619,6 +628,7 @@ services:
       --max-num-batched-tokens 8192
       --max-num-seqs 64
       --max-num-queued-reqs 96
+      --scheduling-policy priority
       --gpu-memory-utilization 0.90
       --enable-prompt-tokens-details
       --tokenizer-mode deepseek_v41
@@ -686,6 +696,7 @@ services:
       --max-num-batched-tokens 8192
       --max-num-seqs 64
       --max-num-queued-reqs 96
+      --scheduling-policy priority
       --gpu-memory-utilization 0.90
       --enable-prompt-tokens-details
       --tokenizer-mode deepseek_v41
@@ -753,6 +764,7 @@ services:
       --max-num-batched-tokens 8192
       --max-num-seqs 64
       --max-num-queued-reqs 96
+      --scheduling-policy priority
       --gpu-memory-utilization 0.90
       --enable-prompt-tokens-details
       --tokenizer-mode deepseek_v41

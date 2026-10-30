@@ -105,6 +105,22 @@ class GeneratedPackTest(unittest.TestCase):
             with self.subTest(rank=rank):
                 self.assertEqual(blocks[f"model-vllm-dsv41-dp{rank}"].count("--max-num-queued-reqs 96"), 1)
 
+    def test_priority_scheduling_needs_the_negating_proxy(self) -> None:
+        # Without the negation vLLM would run the OpenRouter lane (-1) and reseller orgs (-2) before cloud-api (0).
+        rendered = TARGET.read_text()
+        blocks = service_blocks(rendered)
+        for rank in range(8):
+            with self.subTest(rank=rank):
+                self.assertEqual(blocks[f"model-vllm-dsv41-dp{rank}"].count("--scheduling-policy priority"), 1)
+        for name in ("proxy-dsv41", "proxy-dsv41-abliterated"):
+            with self.subTest(proxy=name):
+                self.assertIn("VLLM_PROXY_PRIORITY_LOWER_FIRST=1", blocks[name])
+        # 5faff1b predates VLLM_PROXY_PRIORITY_LOWER_FIRST and would ignore it.
+        self.assertFalse(
+            "4937ad68d86dcc79871bd52341f2030a71e49bcafdf69d82ca287171aeb43c7b" in rendered,
+            "pin a proxy build that supports VLLM_PROXY_PRIORITY_LOWER_FIRST",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

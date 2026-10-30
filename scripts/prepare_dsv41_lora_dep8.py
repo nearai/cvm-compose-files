@@ -94,6 +94,12 @@ def engine_command(rank: int) -> str:
         # 503, and cloud-api retries other backends and then returns 429 service_overloaded. Without it the
         # queue is unbounded and an overload ends in client timeouts.
         "--max-num-queued-reqs 96",
+        # cloud-api ahead of the OpenRouter lane, like GLM: the proxy sets every request's `priority` and vLLM runs
+        # the lowest value first, so the proxies negate it (VLLM_PROXY_PRIORITY_LOWER_FIRST=1) and the lane's -1
+        # and reseller orgs' -2 run after cloud-api's 0. Only reorders the waiting queue and picks KV-pressure
+        # preemption victims; the queue limit above refuses every priority alike, so the gateway's budget for
+        # this model keeps the lane from filling it.
+        "--scheduling-policy priority",
         "--gpu-memory-utilization 0.90",
         "--enable-prompt-tokens-details",
         "--tokenizer-mode deepseek_v41",
@@ -347,6 +353,8 @@ services:
       - MODEL_NAME={model}
       # Refuse the other model id: this proxy attests, bills and access-controls only {model}.
       - VLLM_PROXY_STRICT_REQUEST_MODEL=1
+      # vLLM runs the lowest priority first: write the negated value (see --scheduling-policy on the ranks).
+      - VLLM_PROXY_PRIORITY_LOWER_FIRST=1
 {allowlist}      - OHTTP_ENABLED=true
       - TOKEN=${{PROXY_TOKEN}}
       - VLLM_BACKEND_URLS={backends}
