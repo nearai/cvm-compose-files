@@ -279,10 +279,11 @@ PRIVACY_FILTER_PIN_COMMENTS = (
 )
 COLOC_ENGINE = "model-sg-qwen38-27b-fp8-tp1-coloc"
 COLOC_ENGINE_JOB = f"sglang-{COLOC_ENGINE}"
+# #412 drops --enable-mixed-chunk from the coloc engine (sglang#39342) and sets its mixed_chunk labels to "0".
 COLOC_BLOCK_HASHES = {
     "x-privacy-filter-common": "8b0fa38844cc279cf27d02250fd37ecb7125a4e2fd0dec08fb66f4f35ee55c9e",
-    COLOC_ENGINE: "4626f8853da71304d3b8a1bd625a2f10febb6e27adeb7d161dacf832043e84d2",
-    COLOC_ENGINE_JOB: "1727948d4fab3e8c7d13d4d65b3057c8d788892ae264a323ea4c32baf4449c9a",
+    COLOC_ENGINE: "a057ca06502045a1f7e64ae9713ba0c028e2c2d84e5684f35d15b66917c690ce",
+    COLOC_ENGINE_JOB: "a8c604d31d02f41660c072a66dd1ba22b566c9e977af5a32229c044e265ef086",
 }
 # Qwen3.8 abliterated LoRA canary (#395): the coloc engine and proxy-qwen38-27b change as modelled by
 # with_qwen38_abliterated_lora(); everything new is pinned by hash below and is gated behind the
@@ -672,6 +673,26 @@ def with_glm53_long_tier_registration(text: str) -> str:
     return text
 
 
+QWEN38_NO_MIXED_CHUNK_COMMENT = (
+    "  # No --enable-mixed-chunk: with extra_buffer it caches stale GDN state and prefix hits"
+    " return empty answers (sglang#39342).\n"
+)
+
+
+def with_qwen38_no_mixed_chunk(text: str) -> str:
+    """Apply only #412's edit to x-qwen3-8-27b-dedicated: mixed chunk off (sglang#39342), with its comment."""
+    block = anchor_block(text, "x-qwen3-8-27b-dedicated")
+    command = "\n  command: >\n"
+    flag = "\n      --enable-mixed-chunk\n"
+    for old in (command, flag):
+        if block.count(old) != 1:
+            raise AssertionError(f"expected one mixed-chunk fixture line: {old.strip()}")
+    updated = block.replace(command, "\n" + QWEN38_NO_MIXED_CHUNK_COMMENT + command[1:], 1).replace(flag, "\n", 1)
+    if text.count(block) != 1:
+        raise AssertionError("expected one Qwen3.8 dedicated fixture anchor")
+    return text.replace(block, updated, 1)
+
+
 class Gpu13FleetTest(unittest.TestCase):
     """gpu13 deploys prod/small-models.yaml: its two GLM replicas must be the long file's v12 TP2 replicas, and nothing else may move."""
 
@@ -778,10 +799,10 @@ class Gpu13FleetTest(unittest.TestCase):
         self.assertIn('device_ids: ["6","7"]', service_block(self.small, "model-sg-glm53-w4afp8-tp2-r1b"))
 
     def test_non_glm_services_and_everything_outside_the_glm_blocks_are_byte_identical(self) -> None:
-        old = with_glm53_long_tier_registration(with_qwen38_abliterated_ingress(
+        old = with_qwen38_no_mixed_chunk(with_glm53_long_tier_registration(with_qwen38_abliterated_ingress(
             with_qwen38_abliterated_lora(with_filter_and_coloc_on_gpu2(with_sage_on_gpu2(with_qwen38_coloc_pool(without_qwen38_gpu0_stage_b(self.old))))),
             qwen38_abliterated_ingress(self.small),
-        ))
+        )))
         names = re.findall(r"^  ([a-z0-9-]+):$", self.old[self.old.index("\nservices:\n"):], re.MULTILINE)
         expected_names = [name for name in names if name != QWEN38_GPU0_SERVICE]
         expected_names.insert(expected_names.index(QWEN38_R2) + 1, COLOC_ENGINE)

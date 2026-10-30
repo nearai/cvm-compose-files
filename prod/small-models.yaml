@@ -117,6 +117,7 @@ x-qwen3-8-27b-dedicated: &qwen3-8-27b-dedicated
   cap_add:
     - SYS_NICE
   image: lmsysorg/sglang@sha256:febfb971c7352570fc445c466ebd6ffc9d896024958e544a60f2137fd85856b1
+  # No --enable-mixed-chunk: with extra_buffer it caches stale GDN state and prefix hits return empty answers (sglang#39342).
   command: >
       sglang serve
       --trust-remote-code
@@ -129,7 +130,6 @@ x-qwen3-8-27b-dedicated: &qwen3-8-27b-dedicated
       --mm-attention-backend fa3
       --chunked-prefill-size 8192
       --max-prefill-tokens 8192
-      --enable-mixed-chunk
       --max-mamba-cache-size 320
       --max-running-requests 64
       --max-queued-requests 128
@@ -974,6 +974,7 @@ services:
   model-sg-qwen38-27b-fp8-tp1-coloc:
     <<: *qwen3-8-27b-dedicated
     container_name: model-sg-qwen38-27b-fp8-tp1-coloc
+    # No --enable-mixed-chunk: with extra_buffer it caches stale GDN state and prefix hits return empty answers (sglang#39342).
     command: >
       sglang serve
       --trust-remote-code
@@ -986,7 +987,6 @@ services:
       --mm-attention-backend fa3
       --chunked-prefill-size 4096
       --max-prefill-tokens 4096
-      --enable-mixed-chunk
       --max-mamba-cache-size 128
       --max-running-requests 32
       --max-queued-requests 64
@@ -1053,7 +1053,7 @@ services:
       nearai.otel.quantization: "fp8"
       nearai.otel.chunk_size: "4096"
       nearai.otel.max_prefill_tokens: "4096"
-      nearai.otel.mixed_chunk: "1"
+      nearai.otel.mixed_chunk: "0"
       nearai.otel.mem_fraction_static: "0.50"
       nearai.otel.max_mamba_cache_size: "128"
       nearai.otel.max_running_requests: "32"
@@ -2603,7 +2603,7 @@ configs:
                       quantization: "fp8"
                       chunk_size: "4096"
                       max_prefill_tokens: "4096"
-                      mixed_chunk: "1"
+                      mixed_chunk: "0"
                       mem_fraction_static: "0.50"
                       max_mamba_cache_size: "128"
                       max_running_requests: "32"
