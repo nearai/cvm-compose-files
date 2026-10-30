@@ -1,8 +1,9 @@
 # STATUS: EXPERIMENT host, PRODUCTION traffic: bare-metal (non-TEE) OpenRouter capacity on gpu31; not deployable through
 # compose-manager/KMS.
 #
-# 4x gpt-oss-120b, one TP1 replica per GPU (GPUs 4-7), on the gpu31 lab host (180.94.16.204, CC off). GPUs 0-3 are left
-# to other work (1-GPU CVMs, experiments) and are never referenced here. OpenRouter traffic only, through the OpenRouter
+# 8x gpt-oss-120b, one TP1 replica per GPU (GPUs 0-7), on the gpu31 lab host (180.94.16.204, CC off). r1-r4 have
+# run on GPUs 4-7 since 2026-10-15 (#356); r5-r8 on GPUs 0-3 were added 2026-10-29. The host is now the
+# lane's alone: GPUs 0-3 are no longer left to other work. OpenRouter traffic only, through the OpenRouter
 # gateway: gpt-oss-120b runs non-TEE because it is only for OpenRouter users.
 #
 # Same layout as the gpu32 OpenRouter pack (cvm-compose-files #347; gpt-oss ran there until 2026-10-08):
@@ -26,6 +27,31 @@
 # #355), on vLLM v0.31.0 and without #355's CPU KV offload; the reasons are next to the engine command below.
 #
 #   cd /data/gpu31-openrouter && sudo docker compose --env-file .env -f compose.yaml -p openrouter up -d
+#
+# Adding r5-r8 (2026-10-29): the gateway refused 6.2% of gpt-oss requests in the prior 24 h, 98% at its 384 budget
+# (4 x 96). OpenRouter's new provider routing penalises 429s and learns a load cap from where they start. Raising the
+# per-engine bound to 128 made output tokens slower (~80 ms vs ~62 ms at 96) without adding output capacity. Eight
+# engines at 64 each provide 512 slots while keeping each engine below the measured 96-request load.
+# r5-r8 copy r4 without CPU KV offload. r1-r3 hold ~124 GiB host RSS each; r4 holds ~24 GiB. Four offload replicas
+# would add ~497 GiB host memory, versus ~97 GiB for four r4-style replicas. GPUs 0-3 are on NUMA node 1; containers
+# have no memory or cpuset limit, and a co-located experiment's node-1 fill OOM-killed r1's EngineCore on 2026-10-23.
+# Offload has not engaged at this lane's GPU KV use (under 7% at 96 requests on 2026-10-16; 17-24% at 128), and use
+# at 64 is lower still. To enable it later, use *gptoss-offload-env and *gptoss-offload-command as r2/r3 do.
+# Before deploying, free GPUs 0-3: on 2026-10-29 a bare-metal torchrun sweep (minirl exp006) used ~116 GiB per GPU;
+# vLLM at --gpu-memory-utilization 0.93 needs ~134 GiB. Start only the new engines, without dependencies:
+#   sudo docker compose --env-file .env -f compose.yaml -p openrouter up -d --no-deps \
+#     model-vllm-gptoss-120b-mxfp4-tp1-r5 model-vllm-gptoss-120b-mxfp4-tp1-r6 \
+#     model-vllm-gptoss-120b-mxfp4-tp1-r7 model-vllm-gptoss-120b-mxfp4-tp1-r8
+# Wait until all four are healthy in docker ps (healthcheck start period 900 s). Then recreate only the proxy:
+#   sudo docker compose --env-file .env -f compose.yaml -p openrouter up -d --no-deps proxy-gptoss-120b
+# Its changed environment recreates the container; nginx on 8002 gets connection refused for a few seconds and the
+# gateway sees the backend down. Do this in a quiet minute. Then recreate telemetry without traffic impact:
+#   sudo docker compose --env-file .env -f compose.yaml -p openrouter up -d --no-deps dcgm-gptoss-120b otelcol-contrib
+# Never run bare up -d while engines serve: first use up -d --dry-run and confirm r1-r4 are not listed for recreation.
+# This file leaves r1-r4's rendered configuration unchanged. Raise the gateway budget from 384 to 512 separately in
+# nearai/cvm-ansible-playbooks vars/openrouter_gateway.yaml only AFTER this pack is live; until then it still caps at
+# 384. Roll back by restoring the previous four-backend proxy list at 96 and recreating only proxy-gptoss-120b, then
+# stop and rm r5-r8.
 
 x-logging-conf: &logging-conf
   driver: "json-file"
@@ -142,12 +168,14 @@ x-proxy-env: &proxy-env
   # tunnel, so the default would cap the whole lane at 100 req/s; the gateway's admission budget is the real limit.
   RATE_LIMIT_PER_SECOND: "1000"
   RATE_LIMIT_BURST_SIZE: "2000"
-  # At most 96 requests in flight per engine (inference-proxy #309). When all four are full the proxy answers 429
-  # `overloaded` with Retry-After at once instead of sending the request, so a gateway budget above 4 x 96 gives fast
-  # refusals, not slower streams. 96 per engine is where the lane ran at about 62 ms per output token on 2026-10-16
-  # (gateway budget 384); 128 per engine (budget 512) was about 80 ms with no more output tokens. The engines keep
-  # --max-num-seqs 1024, above the bound, so they never queue or refuse on their own.
-  VLLM_BACKEND_MAX_INFLIGHT: "96"
+  # At most 64 requests in flight per engine (inference-proxy #309), eight engines, so the lane's bound is 8 x 64 =
+  # 512, the gateway's budget once it is raised. When all eight are full the proxy answers 429 `overloaded` with
+  # Retry-After at once instead of sending the request, so a gateway budget above 8 x 64 gives fast refusals, not
+  # slower streams. History on four engines (2026-10-16): 96 per engine ran at about 62 ms per output token (gateway
+  # budget 384); 128 per engine (budget 512) was about 80 ms with no more output tokens. 64 per engine keeps every
+  # stream below the 96 figure; the capacity comes from the four added engines. The engines keep --max-num-seqs 1024,
+  # above the bound, so they never queue or refuse on their own.
+  VLLM_BACKEND_MAX_INFLIGHT: "64"
   # Retry a request once on another engine when the chosen one refuses the connection before anything was sent (an
   # engine restarting). Restarts cost 250-420 502s per engine without it on 2026-10-16.
   VLLM_BACKEND_CONNECT_FAILOVER: "1"
@@ -185,7 +213,7 @@ services:
     <<: *vllm-proxy-common
     container_name: proxy-gptoss-120b
     ports: ["127.0.0.1:18002:8000"]
-    environment: {<<: *proxy-env, MODEL_NAME: openai/gpt-oss-120b, VLLM_BACKEND_URLS: "http://model-vllm-gptoss-120b-mxfp4-tp1-r1:8000,http://model-vllm-gptoss-120b-mxfp4-tp1-r2:8000,http://model-vllm-gptoss-120b-mxfp4-tp1-r3:8000,http://model-vllm-gptoss-120b-mxfp4-tp1-r4:8000"}
+    environment: {<<: *proxy-env, MODEL_NAME: openai/gpt-oss-120b, VLLM_BACKEND_URLS: "http://model-vllm-gptoss-120b-mxfp4-tp1-r1:8000,http://model-vllm-gptoss-120b-mxfp4-tp1-r2:8000,http://model-vllm-gptoss-120b-mxfp4-tp1-r3:8000,http://model-vllm-gptoss-120b-mxfp4-tp1-r4:8000,http://model-vllm-gptoss-120b-mxfp4-tp1-r5:8000,http://model-vllm-gptoss-120b-mxfp4-tp1-r6:8000,http://model-vllm-gptoss-120b-mxfp4-tp1-r7:8000,http://model-vllm-gptoss-120b-mxfp4-tp1-r8:8000"}
     labels:
       com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:openai/gpt-oss-120b","deployment:gptoss-openrouter-gpu31","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
       nearai.otel.scrape: "true"
@@ -207,7 +235,8 @@ services:
   model-vllm-gptoss-120b-mxfp4-tp1-r1:
     <<: *gptoss-engine
     container_name: model-vllm-gptoss-120b-mxfp4-tp1-r1
-    # r1-r3: + 100 GiB CPU KV offload through vLLM's simple offload connector; r4 stays without it as the live control.
+    # r1-r3: + 100 GiB CPU KV offload through vLLM's simple offload connector; r4-r8 stay without it (r4 as the live
+    # control; r5-r8 for the host memory reasons in the header).
     # The two lists below are the gptoss-engine ones plus three lines (YAML merge cannot append to a list); r2 and r3 reuse
     # them through the gptoss-offload-env/-command anchors. r1 canary since 2026-10-15 05:00Z: stable, same TTFT/ITL/errors
     # as r2-r4 at the 192 in-flight gateway budget (GPU KV under 6%, so offload rarely engages yet). VLLM_USE_SIMPLE_KV_OFFLOAD=1 makes --kv-offloading-backend native load
@@ -329,10 +358,99 @@ services:
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.gpu: "7"
 
+  # r5-r8 (GPUs 0-3, 2026-10-29): r4's configuration, no CPU KV offload; see the header.
+  model-vllm-gptoss-120b-mxfp4-tp1-r5:
+    <<: *gptoss-engine
+    container_name: model-vllm-gptoss-120b-mxfp4-tp1-r5
+    deploy: {resources: {reservations: {devices: [{driver: nvidia, device_ids: ["0"], capabilities: [gpu]}]}}}
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:openai/gpt-oss-120b","deployment:gptoss-openrouter-gpu31","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "vllm"
+      nearai.otel.service: "vllm"
+      nearai.otel.source: "vllm"
+      nearai.otel.container_name: "model-vllm-gptoss-120b-mxfp4-tp1-r5"
+      nearai.otel.port: "8000"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "openai/gpt-oss-120b"
+      nearai.otel.deployment: "gptoss-openrouter-gpu31"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
+      nearai.otel.gpu: "0"
+
+  model-vllm-gptoss-120b-mxfp4-tp1-r6:
+    <<: *gptoss-engine
+    container_name: model-vllm-gptoss-120b-mxfp4-tp1-r6
+    deploy: {resources: {reservations: {devices: [{driver: nvidia, device_ids: ["1"], capabilities: [gpu]}]}}}
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:openai/gpt-oss-120b","deployment:gptoss-openrouter-gpu31","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "vllm"
+      nearai.otel.service: "vllm"
+      nearai.otel.source: "vllm"
+      nearai.otel.container_name: "model-vllm-gptoss-120b-mxfp4-tp1-r6"
+      nearai.otel.port: "8000"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "openai/gpt-oss-120b"
+      nearai.otel.deployment: "gptoss-openrouter-gpu31"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
+      nearai.otel.gpu: "1"
+
+  model-vllm-gptoss-120b-mxfp4-tp1-r7:
+    <<: *gptoss-engine
+    container_name: model-vllm-gptoss-120b-mxfp4-tp1-r7
+    deploy: {resources: {reservations: {devices: [{driver: nvidia, device_ids: ["2"], capabilities: [gpu]}]}}}
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:openai/gpt-oss-120b","deployment:gptoss-openrouter-gpu31","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "vllm"
+      nearai.otel.service: "vllm"
+      nearai.otel.source: "vllm"
+      nearai.otel.container_name: "model-vllm-gptoss-120b-mxfp4-tp1-r7"
+      nearai.otel.port: "8000"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "openai/gpt-oss-120b"
+      nearai.otel.deployment: "gptoss-openrouter-gpu31"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
+      nearai.otel.gpu: "2"
+
+  model-vllm-gptoss-120b-mxfp4-tp1-r8:
+    <<: *gptoss-engine
+    container_name: model-vllm-gptoss-120b-mxfp4-tp1-r8
+    deploy: {resources: {reservations: {devices: [{driver: nvidia, device_ids: ["3"], capabilities: [gpu]}]}}}
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:openai/gpt-oss-120b","deployment:gptoss-openrouter-gpu31","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "vllm"
+      nearai.otel.service: "vllm"
+      nearai.otel.source: "vllm"
+      nearai.otel.container_name: "model-vllm-gptoss-120b-mxfp4-tp1-r8"
+      nearai.otel.port: "8000"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "openai/gpt-oss-120b"
+      nearai.otel.deployment: "gptoss-openrouter-gpu31"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
+      nearai.otel.gpu: "3"
+
   dcgm-gptoss-120b:
     <<: *dcgm-common
     container_name: dcgm-gptoss-120b
-    deploy: {resources: {reservations: {devices: [{driver: nvidia, device_ids: ["4", "5", "6", "7"], capabilities: [gpu]}]}}}
+    deploy: {resources: {reservations: {devices: [{driver: nvidia, device_ids: ["0", "1", "2", "3", "4", "5", "6", "7"], capabilities: [gpu]}]}}}
     labels:
       com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:openai/gpt-oss-120b","deployment:gptoss-openrouter-gpu31","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
       nearai.otel.scrape: "true"
@@ -349,7 +467,7 @@ services:
       nearai.otel.host_machine: "${CVM_HOST}"
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
-      nearai.otel.gpus: "4-7"
+      nearai.otel.gpus: "0-7"
 
   nginx:
     image: nginx@sha256:1d13701a5f9f3fb01aaa88cef2344d65b6b5bf6b7d9fa4cf0dca557a8d7702ba
@@ -677,6 +795,82 @@ configs:
                       port: "8000"
                       served_model: "openai/gpt-oss-120b"
                       gpu: "7"
+              - job_name: vllm-model-vllm-gptoss-120b-mxfp4-tp1-r5
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['model-vllm-gptoss-120b-mxfp4-tp1-r5:8000']
+                    labels:
+                      service: "vllm"
+                      source: "vllm"
+                      container_name: "model-vllm-gptoss-120b-mxfp4-tp1-r5"
+                      model: "openai/gpt-oss-120b"
+                      deployment: "gptoss-openrouter-gpu31"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      port: "8000"
+                      served_model: "openai/gpt-oss-120b"
+                      gpu: "0"
+              - job_name: vllm-model-vllm-gptoss-120b-mxfp4-tp1-r6
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['model-vllm-gptoss-120b-mxfp4-tp1-r6:8000']
+                    labels:
+                      service: "vllm"
+                      source: "vllm"
+                      container_name: "model-vllm-gptoss-120b-mxfp4-tp1-r6"
+                      model: "openai/gpt-oss-120b"
+                      deployment: "gptoss-openrouter-gpu31"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      port: "8000"
+                      served_model: "openai/gpt-oss-120b"
+                      gpu: "1"
+              - job_name: vllm-model-vllm-gptoss-120b-mxfp4-tp1-r7
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['model-vllm-gptoss-120b-mxfp4-tp1-r7:8000']
+                    labels:
+                      service: "vllm"
+                      source: "vllm"
+                      container_name: "model-vllm-gptoss-120b-mxfp4-tp1-r7"
+                      model: "openai/gpt-oss-120b"
+                      deployment: "gptoss-openrouter-gpu31"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      port: "8000"
+                      served_model: "openai/gpt-oss-120b"
+                      gpu: "2"
+              - job_name: vllm-model-vllm-gptoss-120b-mxfp4-tp1-r8
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['model-vllm-gptoss-120b-mxfp4-tp1-r8:8000']
+                    labels:
+                      service: "vllm"
+                      source: "vllm"
+                      container_name: "model-vllm-gptoss-120b-mxfp4-tp1-r8"
+                      model: "openai/gpt-oss-120b"
+                      deployment: "gptoss-openrouter-gpu31"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      port: "8000"
+                      served_model: "openai/gpt-oss-120b"
+                      gpu: "3"
               - job_name: dcgm-dcgm-gptoss-120b
                 scrape_interval: 15s
                 metrics_path: /metrics
