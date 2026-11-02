@@ -280,9 +280,10 @@ PRIVACY_FILTER_PIN_COMMENTS = (
 COLOC_ENGINE = "model-sg-qwen38-27b-fp8-tp1-coloc"
 COLOC_ENGINE_JOB = f"sglang-{COLOC_ENGINE}"
 # #412 drops --enable-mixed-chunk from the coloc engine (sglang#39342) and sets its mixed_chunk labels to "0".
+# The /health generation is then switched off on the coloc engine (SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION=0, as GLM-5.3 #274).
 COLOC_BLOCK_HASHES = {
     "x-privacy-filter-common": "8b0fa38844cc279cf27d02250fd37ecb7125a4e2fd0dec08fb66f4f35ee55c9e",
-    COLOC_ENGINE: "a057ca06502045a1f7e64ae9713ba0c028e2c2d84e5684f35d15b66917c690ce",
+    COLOC_ENGINE: "59dd9e4ff8b31a7cf0c63b61568efb735a78130d95a62ce1ea9294fdf40f6055",
     COLOC_ENGINE_JOB: "a8c604d31d02f41660c072a66dd1ba22b566c9e977af5a32229c044e265ef086",
 }
 # Qwen3.8 abliterated LoRA canary (#395): the coloc engine and proxy-qwen38-27b change as modelled by
@@ -693,6 +694,39 @@ def with_qwen38_no_mixed_chunk(text: str) -> str:
     return text.replace(block, updated, 1)
 
 
+QWEN38_PROBE_BACKPRESSURE_ARM = (
+    "            52|56)\n"
+    '              echo "Health probe hit connection-level backpressure (curl $$curl_status); treating as alive but saturated"\n'
+    "              return 0\n"
+    "              ;;\n"
+)
+QWEN38_PROBE_TIMEOUT_ARM = (
+    "            28)\n"
+    "              # A 1-token probe queues behind long prefills and can pass 45 s on a healthy\n"
+    "              # engine: on 2026-11-02 ~250K-token prompts withdrew both Qwen3.8 replicas\n"
+    "              # this way. /v1/models answers from the HTTP layer, so 2xx means busy, not\n"
+    "              # dead. Same rule as the GLM-5.3 registrars (#277).\n"
+    "              if curl -sf --connect-timeout 5 --max-time 10 \\\n"
+    '                -H "Authorization: Bearer $$INFERENCE_TOKEN" \\\n'
+    '                "http://$$1/v1/models" > /dev/null 2>&1; then\n'
+    '                echo "Health probe timed out but /v1/models is live; treating as alive but saturated"\n'
+    "                return 0\n"
+    "              fi\n"
+    '              echo "Health probe timed out and /v1/models is unreachable"\n'
+    "              return 1\n"
+    "              ;;\n"
+)
+
+
+def with_qwen38_probe_timeout_saturated(text: str) -> str:
+    """Apply only the qwen38-registrar edit: a probe timeout counts as busy when /v1/models answers (GLM-5.3 #277)."""
+    block = config_block(text, "qwen38_registrar_script")
+    if block.count(QWEN38_PROBE_BACKPRESSURE_ARM) != 1 or text.count(block) != 1:
+        raise AssertionError("expected one qwen38-registrar backpressure arm in the fixture")
+    updated = block.replace(QWEN38_PROBE_BACKPRESSURE_ARM, QWEN38_PROBE_BACKPRESSURE_ARM + QWEN38_PROBE_TIMEOUT_ARM, 1)
+    return text.replace(block, updated, 1)
+
+
 class Gpu13FleetTest(unittest.TestCase):
     """gpu13 deploys prod/small-models.yaml: its two GLM replicas must be the long file's v12 TP2 replicas, and nothing else may move."""
 
@@ -799,10 +833,10 @@ class Gpu13FleetTest(unittest.TestCase):
         self.assertIn('device_ids: ["6","7"]', service_block(self.small, "model-sg-glm53-w4afp8-tp2-r1b"))
 
     def test_non_glm_services_and_everything_outside_the_glm_blocks_are_byte_identical(self) -> None:
-        old = with_qwen38_no_mixed_chunk(with_glm53_long_tier_registration(with_qwen38_abliterated_ingress(
+        old = with_qwen38_probe_timeout_saturated(with_qwen38_no_mixed_chunk(with_glm53_long_tier_registration(with_qwen38_abliterated_ingress(
             with_qwen38_abliterated_lora(with_filter_and_coloc_on_gpu2(with_sage_on_gpu2(with_qwen38_coloc_pool(without_qwen38_gpu0_stage_b(self.old))))),
             qwen38_abliterated_ingress(self.small),
-        )))
+        ))))
         names = re.findall(r"^  ([a-z0-9-]+):$", self.old[self.old.index("\nservices:\n"):], re.MULTILINE)
         expected_names = [name for name in names if name != QWEN38_GPU0_SERVICE]
         expected_names.insert(expected_names.index(QWEN38_R2) + 1, COLOC_ENGINE)
@@ -1122,10 +1156,10 @@ class Gpu13FleetTest(unittest.TestCase):
     def test_dashboard_labels_are_unchanged_on_gpu13(self) -> None:
         def selectors(text: str) -> list[str]:
             return [l for l in selector_lines(text) if "max_running_requests" not in l and "max_queued_requests" not in l]
-        old = with_glm53_long_tier_registration(with_qwen38_abliterated_ingress(
+        old = with_qwen38_probe_timeout_saturated(with_glm53_long_tier_registration(with_qwen38_abliterated_ingress(
             with_qwen38_abliterated_lora(with_filter_and_coloc_on_gpu2(with_sage_on_gpu2(with_qwen38_coloc_pool(without_qwen38_gpu0_stage_b(self.old))))),
             qwen38_abliterated_ingress(self.small),
-        ))
+        )))
         without_coloc = self.small
         for name in (COLOC_ENGINE, *LORA_SERVICES):
             without_coloc = without_coloc.replace(service_block(without_coloc, name), "", 1)
