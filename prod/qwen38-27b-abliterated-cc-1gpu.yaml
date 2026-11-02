@@ -274,6 +274,9 @@ services:
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
       - OPENBLAS_L2_SIZE=2097152
       - NCCL_DEBUG=WARN
+      # /health answers without a 1-token generation. That generation queues behind
+      # long prefills and fails the proxy's 3 s probe on a busy engine (as GLM-5.3, #274).
+      - SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION=0
     volumes:
       - hugginface_cache:/root/.cache/huggingface
       - qwen38_kernel_cache:/root/.cache/sglang
@@ -1115,6 +1118,21 @@ configs:
             52|56)
               echo "Health probe hit connection-level backpressure (curl $$curl_status); treating as alive but saturated"
               return 0
+              ;;
+            28)
+              # A 1-token probe queues behind long prefills and can pass 45 s on a healthy
+              # engine: on 2026-11-02 ~250K-token prompts withdrew both Qwen3.8 replicas
+              # this way. /v1/models answers from the HTTP layer, so 2xx means busy, not
+              # dead. Same rule as the GLM-5.3 registrars (#277).
+              if curl -sf --connect-timeout 5 --max-time 10 \
+                -H "Host: $$chat_host" \
+                -H "Authorization: Bearer $$2" \
+                "http://$$LOCAL_HTTP/v1/models" > /dev/null 2>&1; then
+                echo "Health probe timed out but /v1/models is live; treating as alive but saturated"
+                return 0
+              fi
+              echo "Health probe timed out and /v1/models is unreachable"
+              return 1
               ;;
           esac
           echo "Health probe curl failed with status $$curl_status"
