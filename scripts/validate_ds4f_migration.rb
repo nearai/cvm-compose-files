@@ -101,11 +101,18 @@ scalar_strings = lambda do |value|
   else [value.to_s]
   end
 end
-assert.call(scalar_strings.call(small).none? { |value| value.match?(/dsv4|deepseek|ds4f/i) }, 'gpu13 rendered configuration must not contain retired DS4F identities')
-gpu13_glm = { 'model-sg-glm53-w4afp8-tp2-r1a' => %w[4 5], 'model-sg-glm53-w4afp8-tp2-r1b' => %w[6 7] }
-gpu13_glm.each { |name, devices| assert.call(small_ids.call(name) == devices, "gpu13 GLM replica #{name} must use GPUs #{devices.join(',')}") }
-assert.call(!small_services.key?('model-sg-glm53-fp8-tp4'), 'gpu13 must no longer run the TP4 GLM replica (replaced by two TP2 replicas)')
-assert.call(small_ids.call('dcgm-glm53') == %w[4 5 6 7], 'gpu13 GLM exporter must use GPUs 4-7')
+assert.call(scalar_strings.call(small).none? { |value| value.match?(/ds4f|dsv4(?!1)|deepseek[-_.]?v4[-_.]flash/i) }, 'gpu13 rendered configuration must not contain retired DS4F identities')
+assert.call(small_services.keys.none? { |name| name.include?('glm53') }, 'gpu13 must have no GLM service')
+assert.call(!small.fetch('volumes').key?('ghost'), 'gpu13 must have no ghost volume')
+ranks = (4..7).map { |gpu| "model-vllm-dsv41-dp#{gpu}" }
+ranks.each_with_index do |name, index|
+  engine = small_services.fetch(name)
+  env = engine.fetch('environment')
+  assert.call(engine['network_mode'] == 'host', "gpu13 #{name} must use host networking")
+  assert.call(env.include?("CUDA_VISIBLE_DEVICES=#{index + 4}"), "gpu13 #{name} must use GPU #{index + 4}")
+  assert.call(env.include?('CUDA_DEVICE_ORDER=PCI_BUS_ID'), "gpu13 #{name} must set CUDA_DEVICE_ORDER=PCI_BUS_ID")
+end
+assert.call(small_ids.call('dcgm-dsv41') == %w[4 5 6 7], 'gpu13 DS4.1 exporter must use GPUs 4-7')
 shared_gpu3 = %w[
   model-sg-flux2-klein-4b-tp1
   model-vllm-qwen3vl-30b-a3b-fp8-tp1
@@ -119,179 +126,9 @@ shared_gpu3.each do |name|
 end
 assert.call(!small_services.key?('dcgm-shared-gpu7'), 'Retired gpu13 shared GPU 7 exporter must be absent')
 small_services.each do |name, service|
-  device_ids = service.dig('deploy', 'resources', 'reservations', 'devices')&.flat_map { |device| device.fetch('device_ids') } || []
+  device_ids = service.dig('deploy', 'resources', 'reservations', 'devices')&.flat_map { |device| device.fetch('device_ids', []) } || []
   next unless device_ids.any? { |id| %w[4 5 6 7].include?(id) }
 
-  assert.call((gpu13_glm.keys + %w[dcgm-glm53]).include?(name), "Unexpected gpu13 GPU 4-7 claim: #{name}")
+  assert.call(name == 'dcgm-dsv41', "Unexpected gpu13 GPU 4-7 claim: #{name}")
 end
-# gpu13's GLM is two memory-optimized TP2/EP2 replicas (GPUs 4,5 and 6,7) with the same
-# per-replica argv as the long-context file's tp2-r2a/r2b (W4AFP8 + HiCache, campaign-2 L2 base):
-# prod/GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext.yaml, docs/long-context-glm53-2xtp2-rollout.md.
-# The #330 overlap-off canary ended when the TP4 replica was replaced; the v7+ fleet config (v12 now) runs overlap OFF again (asserted below).
-gpu13_variant = 'fc91d24-long-context-w4afp8-c16384-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host325g-memopt-fp8kv-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-gpu13-h200-tp2-ep2-eagle-fixed-4-1-5-mr16q8-strict-budget8192-obs-v1-v12-q8'
-gpu13_ports = {}
-gpu13_glm.each_key do |name|
-  engine = small_services.fetch(name)
-  assert.call(engine['image'] == 'docker.io/nearaidev/sglang@sha256:da8d4e4b5ec667499b58a21e56050aae9bcfc4df9669b3ac27e2e20af033d681', "v12 gpu13 GLM image changed: #{name}")
-  command = engine.fetch('command').to_s.split.each_slice(1).to_a.flatten.join(' ')
-  assert.call(command.include?('--model-path /root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/snapshots/99f1fa70408c52b007d4fd69e02e5a522422e755'), "gpu13 GLM must serve the qualified W4AFP8 snapshot: #{name}")
-  {
-    '--tp-size' => '2', '--ep-size' => '2', '--mem-fraction-static' => '0.86',
-    '--max-running-requests' => '16', '--max-queued-requests' => '8',
-    '--chunked-prefill-size' => '16384', '--max-prefill-tokens' => '32768', '--prefill-decode-interval' => '2',
-    '--cuda-graph-max-bs-decode' => '16', '--speculative-num-steps' => '4', '--speculative-eagle-topk' => '1',
-    '--speculative-num-draft-tokens' => '5', '--max-mamba-cache-size' => '330', '--mamba-ssm-dtype' => 'bfloat16',
-    '--kv-cache-dtype' => 'fp8_e4m3', '--dsa-prefill-backend' => 'flashmla_sparse_q8', '--dsa-decode-backend' => 'flashmla_kv'
-  }.each do |flag, value|
-    assert.call(command.match?(/(^| )#{Regexp.escape(flag)} #{Regexp.escape(value)}( |$)/), "gpu13 GLM runtime flag changed on #{name}: #{flag} #{value}")
-  end
-  # v7 fleet config: overlap scheduling is OFF (exactly once) and EAGLE is the fixed 4/1/5 arm: adaptive may not return.
-  assert.call(command.scan('--disable-overlap-schedule').length == 1, "gpu13 GLM #{name} must set --disable-overlap-schedule exactly once (v7 fleet config)")
-  assert.call(command.scan('--kv-cache-dtype').length == 1 && command.scan('--dsa-prefill-backend').length == 1 && command.scan('--dsa-decode-backend').length == 1, "gpu13 GLM #{name} must set the FP8 KV flags exactly once")
-  assert.call(!command.include?('--speculative-adaptive'), "gpu13 GLM #{name} must use fixed EAGLE 4/1/5, not adaptive")
-  assert.call(command.scan('--chunked-prefill-size').length == 1, "gpu13 GLM #{name} must set the chunk exactly once")
-  [
-    '--enable-hierarchical-cache', '--hicache-write-policy write_through',
-    '--hicache-io-backend direct', '--hicache-mem-layout page_first_direct'
-  ].each { |flag| assert.call(command.include?(flag), "gpu13 GLM HiCache contract changed on #{name}: #{flag}") }
-  port = command[/--dist-init-addr (\S+)/, 1]
-  assert.call(port && !gpu13_ports.key?(port), "gpu13 GLM #{name} needs a unique --dist-init-addr, got #{port.inspect}")
-  gpu13_ports[port] = name
-  env = engine.fetch('environment')
-  %w[SGLANG_PREPROCESS_WORKERS=4 SGLANG_PREPROCESS_TIMEOUT_S=60 SGLANG_PREPROCESS_LOG_SLOW_S=5 SGLANG_TOOL_SCHEMA_MAX_DEPTH=32 SGLANG_TOOL_SCHEMA_MAX_NODES=25000].each do |entry|
-    assert.call(env.count(entry) == 1, "gpu13 GLM #{name} must set #{entry} exactly once (v7 fleet config)")
-  end
-  assert.call(env.none? { |entry| entry.to_s.start_with?('NEAR_SELF_PROFILE', 'NEAR_PROFILE') }, "gpu13 GLM #{name} must not enable profiling")
-  assert.call(env.count('SGLANG_DSA_INDEXER_QSPLIT=1') == 1, "gpu13 GLM #{name} must enable DSA indexer query split exactly once")
-  [
-    "SGLANG_HICACHE_RAM_BUDGET=${GLM53_#{name.end_with?('a') ? 'R1A' : 'R1B'}_HICACHE_RAM_BUDGET:-325GiB}",
-    'SGLANG_HICACHE_CUDA_HOST_MEMORY=${GLM53_HICACHE_CUDA_HOST_MEMORY:-1}'
-  ].each { |entry| assert.call(env.include?(entry), "gpu13 GLM HiCache host-memory contract changed on #{name}: #{entry}") }
-  # The admission reserve crashed gpu02's long r2 with a Prefill OOM on 2026-09-18 and is unsafe
-  # on the long tier; every long arm runs without it.
-  %w[SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE SGLANG_ADMISSION_RESERVE_MAX_FRACTION].each do |var|
-    assert.call(env.none? { |entry| entry.to_s.start_with?("#{var}=") }, "gpu13 GLM #{name} must not set #{var}: the admission reserve is unsafe on the long tier")
-  end
-end
-# Both replicas must run the identical argv apart from the rendezvous port (r1b carries a full copy of the command), and the identical environment apart from the budget variable.
-argv_without_port = ->(name) { small_services.fetch(name).fetch('command').to_s.gsub(/--dist-init-addr \S+/, '').split }
-assert.call(argv_without_port.call('model-sg-glm53-w4afp8-tp2-r1a') == argv_without_port.call('model-sg-glm53-w4afp8-tp2-r1b'), 'gpu13 GLM replicas must have identical argv apart from --dist-init-addr')
-# Opt-in observability (docker/sglang-glm53-hicache-w4afp8 ghost-prefix-cache.diff and
-# kv-tier-metrics.diff), required on every GLM-5.3 prod replica: the ghost prefix cache in shared
-# mode (one key and socket on the tmpfs ghost volume, a distinct replica name per engine), the KV
-# tier metrics, and one glm53-ghost-aggregator sidecar per CVM on the engines' image, scraped like
-# the engines. Same values as scripts/glm53_observability.py and scripts/validate_glm53_prod_config.rb.
-ghost_service = 'glm53-ghost-aggregator'
-ghost_socket = '/ghost/aggregator.sock'
-{ 'model-sg-glm53-w4afp8-tp2-r1a' => 'r1a', 'model-sg-glm53-w4afp8-tp2-r1b' => 'r1b' }.each do |name, replica|
-  engine = small_services.fetch(name)
-  env = engine.fetch('environment')
-  [
-    'SGLANG_GHOST_CACHE=1',
-    'SGLANG_GHOST_CACHE_SAMPLE=16',
-    'SGLANG_GHOST_CACHE_KEY_FILE=/ghost/key',
-    "SGLANG_GHOST_CACHE_SOCKET=#{ghost_socket}",
-    "SGLANG_GHOST_CACHE_REPLICA=#{replica}",
-    'SGLANG_KV_TIER_METRICS=1'
-  ].each do |entry|
-    key = entry.split('=', 2).first
-    assert.call(env.count(entry) == 1 && env.count { |e| e.to_s.start_with?("#{key}=") } == 1,
-                "gpu13 GLM #{name} must set #{entry} exactly once (opt-in observability is required on every replica)")
-  end
-  assert.call(engine.fetch('volumes').include?('ghost:/ghost'), "gpu13 GLM #{name} must mount ghost:/ghost")
-end
-ghost = small_services[ghost_service]
-assert.call(!ghost.nil?, "gpu13 must run the #{ghost_service} sidecar")
-assert.call(small_services.keys.count { |name| name.include?('ghost-aggregator') } == 1, "gpu13 must run exactly one #{ghost_service}")
-assert.call(gpu13_glm.keys.all? { |name| ghost['image'] == small_services.fetch(name)['image'] }, "gpu13 #{ghost_service} must run the GLM engines' image")
-ghost_argv = Array(ghost['entrypoint']) + Array(ghost['command'])
-assert.call(ghost_argv == ['python3', '-m', 'sglang.srt.observability.ghost_aggregator', '--socket', ghost_socket, '--port', '9464',
-                           '--sample', '16', '--model-name', 'z-ai/glm-5.3-flash'], "gpu13 #{ghost_service} argv changed")
-assert.call(ghost['volumes'] == ['ghost:/ghost'] && ghost['runtime'] == 'runc' && !ghost.key?('deploy') && !ghost.key?('ports'),
-            "gpu13 #{ghost_service} must mount only ghost:/ghost, run under runc, and claim no GPU or port")
-assert.call(small.dig('volumes', 'ghost', 'driver_opts', 'type') == 'tmpfs', 'gpu13 ghost volume must be tmpfs')
-# Checked after the per-replica observability asserts so a missing variable names its replica.
-env_without_budget = ->(name) { small_services.fetch(name).fetch('environment').reject { |entry| entry.start_with?('SGLANG_HICACHE_RAM_BUDGET=', 'SGLANG_GHOST_CACHE_REPLICA=') } }
-assert.call(env_without_budget.call('model-sg-glm53-w4afp8-tp2-r1a') == env_without_budget.call('model-sg-glm53-w4afp8-tp2-r1b'), 'gpu13 GLM replicas must have identical environment apart from the HiCache budget variable and the ghost-cache replica name')
-# Nothing else in the file may reuse a GLM rendezvous port.
-small_services.each do |name, service|
-  next if gpu13_glm.key?(name)
-
-  assert.call(!service.fetch('command', '').to_s.match?(/--dist-init-addr 127\.0\.0\.1:2951\d/), "gpu13 #{name} must not reuse a GLM dist-init port")
-end
-small_proxy = small_services.fetch('proxy-glm53')
-assert.call(small_proxy['image'] == 'nearaidev/vllm-proxy-rs@sha256:e4a42b327523e304c0fc389f656ba7a02fd7b3d4a38cdc822f9288fd193a525a', 'Qualified gpu13 GLM proxy image changed')
-assert.call(small_proxy.fetch('environment').include?('VLLM_BACKEND_URLS=http://model-sg-glm53-w4afp8-tp2-r1a:8000,http://model-sg-glm53-w4afp8-tp2-r1b:8000'), 'gpu13 GLM proxy must pool both TP2 replicas')
-assert.call(small_proxy.fetch('environment').include?('VLLM_BACKEND_CONVERSATION_AFFINITY=1'), 'gpu13 GLM affinity contract changed')
-dcgm_image = 'nvcr.io/nvidia/k8s/dcgm-exporter@sha256:ed594cf53fe6942e84b07b0740cdcbb249fa4b39cb21feeebf93881ae51f0b5e'
-assert.call(small_services.fetch('dcgm-glm53')['image'] == dcgm_image, 'gpu13 GLM exporter image must be pinned')
-assert.call(small_services.fetch('dcgm-shared-gpu3')['image'] == dcgm_image, 'gpu13 shared DCGM image must be pinned')
-registrar = small.fetch('configs').fetch('registrar_script').fetch('content')
-nginx = small.fetch('configs').fetch('nginx_conf').fetch('content')
-assert.call(small_services.fetch('nginx').fetch('ports').map(&:to_s).include?('8009:8009'), 'gpu13 nginx must publish host port 8009')
-# GLM (:8009) serves the OpenRouter gateway directly on the host port AND joins the
-# cloud-api long-context tier. The registrar probes :8009 with the canonical engine
-# id but registers it ONLY under the synthetic long id / long domain; registering the
-# canonical id would put gpu13 in the base glm-5-3-flash pool and fight the other
-# hosts' registrars (model-proxy's model->domain map is one domain per id). Comments
-# are stripped first so explanatory text is not a false match.
-registrar_code = registrar.lines.reject { |line| line.strip.start_with?('#') }.join
-assert.call(registrar_code.scan(/for port in 8002 8003 8004 8005 8006 8007 8008 8009; do/).length == 3, 'gpu13 registrar must cover :8009 in all three port loops')
-assert.call(registrar_code.include?('8009) check_chat "${HOST_IP}:8009" "z-ai/glm-5.3-flash" ;;'.gsub('$', '$$')), 'gpu13 registrar must probe :8009 with the canonical GLM id')
-assert.call(registrar_code.include?('register_model "z-ai/glm-5.3-flash-long" "glm-5-3-flash-long.completions.near.ai"'), 'gpu13 registrar must register GLM under the long-context domain via the synthetic id')
-assert.call(!registrar.match?(/register_model "z-ai\/glm-5\.3-flash" /), 'gpu13 registrar must never register the canonical GLM id (base pool)')
-assert.call(!registrar.match?(/glm-5-3-flash\.completions\.near\.ai/), 'gpu13 registrar must not reference the base GLM domain')
-glm_8009 = nginx[/^server \{\n\s+listen 8009;\n(?:.*\n)*?^\}$/]
-assert.call(!glm_8009.nil?, 'gpu13 nginx must define the :8009 server')
-assert.call(glm_8009.include?('location / { proxy_pass http://proxy-glm53:8000; }'), 'gpu13 nginx port 8009 must route to the GLM proxy')
-assert.call(glm_8009.include?('location = /v1/models {') && glm_8009.include?('auth_request /_glm53_long_health;') && glm_8009.include?('try_files /__synthetic_models__ @glm53_long_models;'), 'gpu13 :8009 /v1/models stub must be gated on the real serving path (auth_request + try_files, never a bare return)')
-assert.call(glm_8009.scan(/location = \/v1\/models \{[^}]*return /).empty?, 'gpu13 :8009 /v1/models must not use a bare return (it would skip auth_request)')
-assert.call(glm_8009.include?('proxy_pass http://proxy-glm53:8000/v1/models;') && glm_8009.include?('internal;'), 'gpu13 :8009 health gate must be an internal static proxy_pass to proxy-glm53 /v1/models')
-assert.call(glm_8009.include?('return 200 \'{"object":"list","data":[{"id":"z-ai/glm-5.3-flash-long","object":"model","owned_by":"nearai"}]}\';'), 'gpu13 :8009 stub must advertise only the synthetic long id')
-nginx_code = nginx.lines.reject { |line| line.strip.start_with?('#') }.join
-assert.call(nginx_code.scan('z-ai/glm-5.3-flash-long').length == 1 && glm_8009.scan('z-ai/glm-5.3-flash-long').length == 1, 'the synthetic long id must appear only in the :8009 discovery stub')
-assert.call(nginx.match?(/server_name glm-5-3-flash\.completions\.near\.ai.*?location \/ \{ proxy_pass http:\/\/proxy-glm53:8000; \}/m), 'gpu13 GLM SNI must route to the GLM proxy')
-glm_sni = nginx[/server_name glm-5-3-flash\.completions\.near\.ai.*?location \/ \{ proxy_pass http:\/\/proxy-glm53:8000; \}/m]
-assert.call(glm_sni.include?('"~^glm-5-3-flash-b[0-9a-f]{12}\.completions(-stg)?\.near\.ai$$"'), 'gpu13 GLM SNI must accept model-proxy backend handles')
-assert.call(glm_sni.include?('gpu13.hosts.near.ai;'), 'gpu13 GLM SNI must accept the direct OpenRouter TLS hostname')
-[
-  'glm-5-3-flash-long.completions.near.ai',
-  'glm-5-3-flash-long.completions-stg.near.ai',
-  '~^glm-5-3-flash-long-i\d+\.completions(-stg)?\.near\.ai$$',
-  '"~^glm-5-3-flash-long-b[0-9a-f]{12}\.completions(-stg)?\.near\.ai$$"'
-].each { |name| assert.call(glm_sni.scan(name).length == 1, "gpu13 GLM SNI must accept the long-context name exactly once: #{name}") }
-# The host-level name must resolve to GLM alone: in any other TLS vhost it would
-# hand the OpenRouter lane a different model.
-tls_server_blocks = nginx.scan(/^server \{\n(?:.*\n)*?^\}$/).select { |block| block.include?('listen 443 ssl') }
-host_name_blocks = tls_server_blocks.select { |block| block.include?('gpu13.hosts.near.ai') }
-assert.call(host_name_blocks.length == 1 && host_name_blocks.first.include?('proxy_pass http://proxy-glm53:8000;'), 'gpu13.hosts.near.ai must be bound to the GLM vhost only')
-assert.call(tls_server_blocks.count { |block| block.include?('glm-5-3-flash-long') } == 1 && tls_server_blocks.count { |block| block.include?('glm-5-3-flash') } == 1, 'the GLM long-context names must be bound to the one GLM TLS vhost only')
-small_jobs = YAML.safe_load(small.fetch('configs').fetch('otelcol_app_config').fetch('content')).dig('receivers', 'prometheus/apps', 'config', 'scrape_configs')
-%w[sglang-model-sg-glm53-w4afp8-tp2-r1a sglang-model-sg-glm53-w4afp8-tp2-r1b dcgm-dcgm-glm53 dcgm-dcgm-shared-gpu3 inference-proxy-proxy-glm53 ghost-aggregator-glm53-ghost-aggregator].each do |job|
-  assert.call(small_jobs.any? { |entry| entry['job_name'] == job }, "gpu13 OTel scrape missing: #{job}")
-end
-ghost_jobs = small_jobs.select { |entry| entry['job_name'] == 'ghost-aggregator-glm53-ghost-aggregator' }
-assert.call(ghost_jobs.length == 1 && ghost_jobs.first.dig('static_configs', 0, 'targets') == ['glm53-ghost-aggregator:9464'], 'gpu13 ghost aggregator scrape job must be one job targeting glm53-ghost-aggregator:9464')
-# Each replica's OTel label, scrape job and log tag must carry the same truthful config_variant,
-# its own instance and gpu_pair, and the proxy and exporter must advertise the same variant.
-{ 'model-sg-glm53-w4afp8-tp2-r1a' => ['1a', '4-5'], 'model-sg-glm53-w4afp8-tp2-r1b' => ['1b', '6-7'] }.each do |name, (instance, pair)|
-  labels = small_services.fetch(name).fetch('labels')
-  log_tags = JSON.parse(labels.fetch('com.datadoghq.ad.logs')).flat_map { |entry| Array(entry['tags']) }
-  scrape = small_jobs.find { |entry| entry['job_name'] == "sglang-#{name}" }
-  scrape_labels = scrape.dig('static_configs', 0, 'labels')
-  assert.call(scrape.dig('static_configs', 0, 'targets') == ["#{name}:8000"], "gpu13 #{name} scrape target changed")
-  variants = [labels['nearai.otel.config_variant'], scrape_labels['config_variant'], *log_tags.select { |tag| tag.start_with?('config_variant:') }.map { |tag| tag.sub('config_variant:', '') }]
-  assert.call(variants.length == 3 && variants.all? { |variant| variant == gpu13_variant }, "gpu13 #{name} config_variant must be the TP2 variant on the label, scrape job and log tag, got #{variants.inspect}")
-  assert.call(labels['nearai.otel.instance'] == instance && scrape_labels['instance'] == instance && log_tags.include?("instance:#{instance}"), "gpu13 #{name} instance must be #{instance}")
-  assert.call(labels['nearai.otel.gpu_pair'] == pair && scrape_labels['gpu_pair'] == pair && log_tags.include?("gpu_pair:#{pair}"), "gpu13 #{name} gpu_pair must be #{pair}")
-  assert.call(labels['nearai.otel.max_running_requests'] == '16' && scrape_labels['max_running_requests'] == '16' && log_tags.include?('max_running_requests:16') && labels['nearai.otel.max_queued_requests'] == '8' && scrape_labels['max_queued_requests'] == '8' && log_tags.include?('max_queued_requests:8'), "gpu13 #{name} max_running/max_queued must be 16/8 on the OTel labels, scrape job and log tags")
-end
-%w[proxy-glm53 dcgm-glm53].each do |name|
-  assert.call(small_services.fetch(name).fetch('labels')['nearai.otel.config_variant'] == gpu13_variant, "gpu13 #{name} config_variant must match the TP2 engines")
-end
-%w[inference-proxy-proxy-glm53 dcgm-dcgm-glm53].each do |job|
-  entry = small_jobs.find { |candidate| candidate['job_name'] == job }
-  assert.call(entry.dig('static_configs', 0, 'labels', 'config_variant') == gpu13_variant, "gpu13 scrape job #{job} config_variant must match the TP2 engines")
-end
-
-puts 'DS4F migration and gpu13 GLM replacement allocation, telemetry and registrar contracts OK'
+puts 'DS4F migration and gpu13 DS4.1 allocation contracts OK'
