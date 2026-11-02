@@ -975,6 +975,10 @@ services:
     <<: *qwen3-8-27b-dedicated
     container_name: model-sg-qwen38-27b-fp8-tp1-coloc
     # No --enable-mixed-chunk: with extra_buffer it caches stale GDN state and prefix hits return empty answers (sglang#39342).
+    # FA3 (2026-11-02, measured on bare metal gpu31 with the LoRA stack, tee-bench evidence/gpu31-exp55-qwen38-lora-mix).
+    # Its workspace memory on this shared GPU is not measured: watch GPU 2 FB used against the 134 GiB abort rule
+    # in docs/gpu13-gpu0-privacy-filter-qwen38-coloc-test.md. Mamba 128 and mem 0.50 are deliberately unchanged.
+    # A later --mamba-ssm-dtype bfloat16 is a one-line addition here.
     command: >
       sglang serve
       --trust-remote-code
@@ -983,7 +987,7 @@ services:
       --served-model-name Qwen/Qwen3.8-27B
       --tp 1
       --mem-fraction-static 0.50
-      --attention-backend flashinfer
+      --attention-backend fa3
       --mm-attention-backend fa3
       --chunked-prefill-size 4096
       --max-prefill-tokens 4096
@@ -1030,7 +1034,7 @@ services:
               device_ids: ["2"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:Qwen/Qwen3.8-27B-FP8","served_model:Qwen/Qwen3.8-27B","model_revision:017b9c7af6b5689d5dd426a76e0bc077eb5ca20a","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:0","gpu_pair:2","config_variant:qwen38-gpu13-gpu0-coloc-test","quantization:fp8","lora:abliterated-r1","sglang_revision:qwen38.27b.g561c8f3","engine_image:febfb971c735"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:Qwen/Qwen3.8-27B-FP8","served_model:Qwen/Qwen3.8-27B","model_revision:017b9c7af6b5689d5dd426a76e0bc077eb5ca20a","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:0","gpu_pair:2","config_variant:qwen38-gpu2-coloc-fa3","quantization:fp8","lora:abliterated-r1","sglang_revision:qwen38.27b.g561c8f3","engine_image:febfb971c735"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -1049,7 +1053,7 @@ services:
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.instance: "0"
       nearai.otel.gpu_pair: "2"
-      nearai.otel.config_variant: "qwen38-gpu13-gpu0-coloc-test"
+      nearai.otel.config_variant: "qwen38-gpu2-coloc-fa3"
       nearai.otel.quantization: "fp8"
       nearai.otel.chunk_size: "4096"
       nearai.otel.max_prefill_tokens: "4096"

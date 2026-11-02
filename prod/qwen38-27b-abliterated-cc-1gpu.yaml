@@ -1,3 +1,17 @@
+# 2026-11-02 engine tuning (model-sg-qwen38-27b-fp8-tp1-lora only): --attention-backend
+# flashinfer -> fa3 and --max-mamba-cache-size 320 -> 192; engine config_variant is now
+# qwen38-abl-cc-1gpu-fa3-m192 (proxies, registrars and dcgm keep qwen38-abl-cc-1gpu). Why:
+# with LoRA on, the old argv hits a KV-cache cliff under long-prompt load (691k KV tokens,
+# ~3% cache hit); mamba 192 gives 991k KV tokens and fa3 further cuts TTFT/ITL and holds at
+# 1.4x load where flashinfer collapses. Same image (qwen38.27b.g561c8f3); needle 16k-200k,
+# arithmetic, greedy parity and adapter-active screens unchanged. Prod 7-day mamba slots on
+# gpu32 GPU 7: max ~192, p99 ~76. Evidence: tee-bench evidence/gpu31-exp55-qwen38-lora-mix.
+# FA3 + mamba 192 were measured on bare metal (gpu31), NOT yet under single-GPU CC: the
+# first deploy is a watched canary (cache hit rate, queue depth, FB used).
+# Not included yet: --enable-priority-scheduling (needs an inference-proxy change first)
+# and --mamba-ssm-dtype bfloat16 (under test; add it as one line next to
+# --max-mamba-cache-size and bump the engine config_variant).
+#
 # STATUS: STAGING-GATED. In prod/ so compose-manager can deploy it from a vX.Y.Z tag
 # (cvm-ansible-playbooks' deploy workflow accepts only prod/ files; AGENT.md forbids
 # deploying experiments/). The README soak gate is enforced by MODEL_PROXY_REGISTRATION,
@@ -247,11 +261,11 @@ services:
       --served-model-name Qwen/Qwen3.8-27B
       --tp 1
       --mem-fraction-static 0.85
-      --attention-backend flashinfer
+      --attention-backend fa3
       --mm-attention-backend fa3
       --chunked-prefill-size 8192
       --max-prefill-tokens 8192
-      --max-mamba-cache-size 320
+      --max-mamba-cache-size 192
       --max-running-requests 64
       --max-queued-requests 128
       --reasoning-parser qwen3
@@ -294,7 +308,7 @@ services:
     stop_grace_period: 5m
     logging: *logging-conf
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:Qwen/Qwen3.8-27B-FP8","served_model:Qwen/Qwen3.8-27B","model_revision:017b9c7af6b5689d5dd426a76e0bc077eb5ca20a","deployment:qwen38-abliterated-cc-1gpu","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:${INSTANCE_LABEL:-unknown}","config_variant:qwen38-abl-cc-1gpu","quantization:fp8","lora:abliterated-r1","sglang_revision:qwen38.27b.g561c8f3","engine_image:febfb971c735"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:Qwen/Qwen3.8-27B-FP8","served_model:Qwen/Qwen3.8-27B","model_revision:017b9c7af6b5689d5dd426a76e0bc077eb5ca20a","deployment:qwen38-abliterated-cc-1gpu","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:${INSTANCE_LABEL:-unknown}","config_variant:qwen38-abl-cc-1gpu-fa3-m192","quantization:fp8","lora:abliterated-r1","sglang_revision:qwen38.27b.g561c8f3","engine_image:febfb971c735"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -312,7 +326,7 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.instance: "${INSTANCE_LABEL:-unknown}"
-      nearai.otel.config_variant: "qwen38-abl-cc-1gpu"
+      nearai.otel.config_variant: "qwen38-abl-cc-1gpu-fa3-m192"
       nearai.otel.quantization: "fp8"
       nearai.otel.chunk_size: "8192"
       nearai.otel.max_prefill_tokens: "8192"
@@ -687,7 +701,7 @@ configs:
                       ip: "${HOST_IP}"
                       port: "8000"
                       instance: "${INSTANCE_LABEL:-unknown}"
-                      config_variant: "qwen38-abl-cc-1gpu"
+                      config_variant: "qwen38-abl-cc-1gpu-fa3-m192"
                       quantization: "fp8"
                       sglang_revision: "qwen38.27b.g561c8f3"
                       engine_image: "febfb971c735"
