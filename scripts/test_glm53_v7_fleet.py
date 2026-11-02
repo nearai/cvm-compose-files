@@ -280,10 +280,12 @@ PRIVACY_FILTER_PIN_COMMENTS = (
 COLOC_ENGINE = "model-sg-qwen38-27b-fp8-tp1-coloc"
 COLOC_ENGINE_JOB = f"sglang-{COLOC_ENGINE}"
 # #412 drops --enable-mixed-chunk from the coloc engine (sglang#39342) and sets its mixed_chunk labels to "0".
+# #417 then changes the coloc engine backend to fa3, mamba cache 128 -> 96 and config_variant to qwen38-gpu2-coloc-fa3-m96
+# (engine labels and scrape job); x-privacy-filter-common is unchanged.
 COLOC_BLOCK_HASHES = {
     "x-privacy-filter-common": "8b0fa38844cc279cf27d02250fd37ecb7125a4e2fd0dec08fb66f4f35ee55c9e",
-    COLOC_ENGINE: "a057ca06502045a1f7e64ae9713ba0c028e2c2d84e5684f35d15b66917c690ce",
-    COLOC_ENGINE_JOB: "a8c604d31d02f41660c072a66dd1ba22b566c9e977af5a32229c044e265ef086",
+    COLOC_ENGINE: "5a8889ffb9018f6857a2bec4e53edaed86e5f2e7c9adc6cc29ce3a3116841f77",
+    COLOC_ENGINE_JOB: "1dfc003c9ee580555423c6481d9862484ebf25006fa1450c8afbba7269369e10",
 }
 # Qwen3.8 abliterated LoRA canary (#395): the coloc engine and proxy-qwen38-27b change as modelled by
 # with_qwen38_abliterated_lora(); everything new is pinned by hash below and is gated behind the

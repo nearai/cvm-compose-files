@@ -2,16 +2,26 @@
 # flashinfer -> fa3 and --max-mamba-cache-size 320 -> 192; engine config_variant is now
 # qwen38-abl-cc-1gpu-fa3-m192 (proxies, registrars and dcgm keep qwen38-abl-cc-1gpu). Why:
 # with LoRA on, the old argv hits a KV-cache cliff under long-prompt load (691k KV tokens,
-# ~3% cache hit); mamba 192 gives 991k KV tokens and fa3 further cuts TTFT/ITL and holds at
-# 1.4x load where flashinfer collapses. Same image (qwen38.27b.g561c8f3); needle 16k-200k,
-# arithmetic, greedy parity and adapter-active screens unchanged. Prod 7-day mamba slots on
-# gpu32 GPU 7: max ~192, p99 ~76. Evidence: tee-bench evidence/gpu31-exp55-qwen38-lora-mix.
+# ~3% cache hit); mamba 192 gives 991k KV tokens. Evidence: tee-bench
+# evidence/gpu31-exp55-qwen38-lora-mix, bare metal gpu31, same image (qwen38.27b.g561c8f3).
+# On the coloc shape (r7: mem 0.50, chunk 4096) fa3 alone raised cache hit 3.5% -> 15% and cut
+# TTFT(<64k) p50 121 s -> 40 s; this file's shape was measured in the earlier exp55 runs (needle 16k-200k,
+# arithmetic, greedy parity, adapter-active screens unchanged). r8 probes (FI/m320 vs FA3/m192:
+# thinking-on split, tool calls, refusal base 40/40 and abliterated 1/40 on both, CJK echo) were identical and
+# passing; bursts of 64-96 concurrent short requests: 0 errors, 0 empty. Prod 7-day mamba slots on
+# gpu32 GPU 7: max ~192, p99 ~76; running p99 19, max 64.
+# Effective concurrency: mamba slots cap admission at about 3 slots/request. FA3/m192 peaked at 38 running
+# (mamba_usage plateau 0.60) with the rest queued; FI/m320 reached 64. So 192 ~ 38 effective, not 64.
+# Slot exhaustion queues, it does not error.
 # FA3 + mamba 192 were measured on bare metal (gpu31), NOT yet under single-GPU CC: the
-# first deploy is a watched canary (cache hit rate, queue depth, FB used).
+# first deploy is a watched canary on gpu32 (cache hit rate, queue depth, FB used). Roll back to the
+# previous tag (flashinfer, mamba 320) on: FB used > 135 GiB, engine restart or OOM, TTFT/ITL
+# regression vs the pre-deploy baseline, queue growth, or mamba_usage >= 0.95 sustained.
 # Not included yet: --enable-priority-scheduling (needs an inference-proxy change first)
 # and --mamba-ssm-dtype bfloat16 (under test; add it as one line next to
 # --max-mamba-cache-size and bump the engine config_variant).
 #
+# The STATUS block below is superseded: gpu32 GPU 7 has served prod with this file since 2026-10-29.
 # STATUS: STAGING-GATED. In prod/ so compose-manager can deploy it from a vX.Y.Z tag
 # (cvm-ansible-playbooks' deploy workflow accepts only prod/ files; AGENT.md forbids
 # deploying experiments/). The README soak gate is enforced by MODEL_PROXY_REGISTRATION,
@@ -93,7 +103,7 @@
 #
 # Deviations from gpu13:
 #   - GPU gets the whole H200: sizing follows the gpu13 dedicated recipe
-#     (x-qwen3-8-27b-dedicated: mem-fraction 0.85, chunk/prefill 8192, mamba cache 320,
+#     (x-qwen3-8-27b-dedicated: mem-fraction 0.85, chunk/prefill 8192, mamba cache 192,
 #     64 running / 128 queued) instead of the 0.50 coloc values, plus the LoRA flags.
 #   - GPU reserved with count: 1 (the CVM sees exactly one GPU), not device_ids "2".
 #   - Standalone: own nginx on the canonical guest ports 8000 (HTTP) and 8444 (TLS) in
@@ -332,7 +342,7 @@ services:
       nearai.otel.max_prefill_tokens: "8192"
       nearai.otel.mixed_chunk: "0"
       nearai.otel.mem_fraction_static: "0.85"
-      nearai.otel.max_mamba_cache_size: "320"
+      nearai.otel.max_mamba_cache_size: "192"
       nearai.otel.max_running_requests: "64"
       nearai.otel.max_queued_requests: "128"
       nearai.otel.sglang_revision: "qwen38.27b.g561c8f3"

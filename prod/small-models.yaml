@@ -975,9 +975,22 @@ services:
     <<: *qwen3-8-27b-dedicated
     container_name: model-sg-qwen38-27b-fp8-tp1-coloc
     # No --enable-mixed-chunk: with extra_buffer it caches stale GDN state and prefix hits return empty answers (sglang#39342).
-    # FA3 (2026-11-02, measured on bare metal gpu31 with the LoRA stack, tee-bench evidence/gpu31-exp55-qwen38-lora-mix).
-    # Its workspace memory on this shared GPU is not measured: watch GPU 2 FB used against the 134 GiB abort rule
-    # in docs/gpu13-gpu0-privacy-filter-qwen38-coloc-test.md. Mamba 128 and mem 0.50 are deliberately unchanged.
+    # 2026-11-02 engine tuning: --attention-backend flashinfer -> fa3 and --max-mamba-cache-size 128 -> 96;
+    # config_variant qwen38-gpu2-coloc-fa3-m96 (was qwen38-gpu13-gpu0-coloc-test). Mem 0.50, chunk 4096,
+    # 32 running and --cuda-graph-max-bs 32 are unchanged. Measured on bare metal gpu31 (NOT under CC, NOT beside
+    # the privacy filter), same image, this shape, tee-bench evidence/gpu31-exp55-qwen38-lora-mix r7:
+    #   flashinfer/mamba 128: KV 343,654 tokens, 3.5% cache hit, TTFT(<64k) p50 121 s
+    #   fa3 only:             15% hit, 40 s
+    #   fa3 + mamba 96:       KV 418,822 tokens, 55% hit, 0.50 s
+    # FB peak was 73.2-73.5 GiB in every cell, so FA3 added no memory over flashinfer there; on this shared GPU it
+    # is still unmeasured: watch GPU 2 FB used against the 134 GiB abort rule in
+    # docs/gpu13-gpu0-privacy-filter-qwen38-coloc-test.md. exp55 r8 probes (thinking-on split, tool calls, refusal,
+    # CJK echo, 64-96 concurrent bursts: 0 errors, 0 empty) passed on the gpu32 shape, not on this one.
+    # Effective concurrency: mamba slots cap admission at about 3 slots/request, so mamba 96 admits ~19 running
+    # requests (gpu13 running p99 17, max 25); the rest queue. Exhaustion queues, it does not error.
+    # Canary on gpu13 only after gpu32 holds. Roll back to the previous tag (flashinfer, mamba 128) on: GPU 2 FB used
+    # > 134 GiB, engine restart or OOM, TTFT/ITL regression vs the pre-deploy baseline, queue growth, or
+    # mamba_usage >= 0.95 sustained.
     # A later --mamba-ssm-dtype bfloat16 is a one-line addition here.
     command: >
       sglang serve
@@ -991,7 +1004,7 @@ services:
       --mm-attention-backend fa3
       --chunked-prefill-size 4096
       --max-prefill-tokens 4096
-      --max-mamba-cache-size 128
+      --max-mamba-cache-size 96
       --max-running-requests 32
       --max-queued-requests 64
       --cuda-graph-max-bs 32
@@ -1034,7 +1047,7 @@ services:
               device_ids: ["2"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:Qwen/Qwen3.8-27B-FP8","served_model:Qwen/Qwen3.8-27B","model_revision:017b9c7af6b5689d5dd426a76e0bc077eb5ca20a","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:0","gpu_pair:2","config_variant:qwen38-gpu2-coloc-fa3","quantization:fp8","lora:abliterated-r1","sglang_revision:qwen38.27b.g561c8f3","engine_image:febfb971c735"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:Qwen/Qwen3.8-27B-FP8","served_model:Qwen/Qwen3.8-27B","model_revision:017b9c7af6b5689d5dd426a76e0bc077eb5ca20a","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:0","gpu_pair:2","config_variant:qwen38-gpu2-coloc-fa3-m96","quantization:fp8","lora:abliterated-r1","sglang_revision:qwen38.27b.g561c8f3","engine_image:febfb971c735"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -1053,13 +1066,13 @@ services:
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.instance: "0"
       nearai.otel.gpu_pair: "2"
-      nearai.otel.config_variant: "qwen38-gpu2-coloc-fa3"
+      nearai.otel.config_variant: "qwen38-gpu2-coloc-fa3-m96"
       nearai.otel.quantization: "fp8"
       nearai.otel.chunk_size: "4096"
       nearai.otel.max_prefill_tokens: "4096"
       nearai.otel.mixed_chunk: "0"
       nearai.otel.mem_fraction_static: "0.50"
-      nearai.otel.max_mamba_cache_size: "128"
+      nearai.otel.max_mamba_cache_size: "96"
       nearai.otel.max_running_requests: "32"
       nearai.otel.max_queued_requests: "64"
       nearai.otel.sglang_revision: "qwen38.27b.g561c8f3"
@@ -2603,13 +2616,13 @@ configs:
                       instance: "0"
                       gpu_pair: "2"
                       model_revision: "017b9c7af6b5689d5dd426a76e0bc077eb5ca20a"
-                      config_variant: "qwen38-gpu13-gpu0-coloc-test"
+                      config_variant: "qwen38-gpu2-coloc-fa3-m96"
                       quantization: "fp8"
                       chunk_size: "4096"
                       max_prefill_tokens: "4096"
                       mixed_chunk: "0"
                       mem_fraction_static: "0.50"
-                      max_mamba_cache_size: "128"
+                      max_mamba_cache_size: "96"
                       max_running_requests: "32"
                       max_queued_requests: "64"
                       sglang_revision: "qwen38.27b.g561c8f3"
