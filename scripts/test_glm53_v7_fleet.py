@@ -331,6 +331,13 @@ SAGE_BLOCK_HASHES = {
     "sage": "565179a5e7269379838d9f338acd130ebaeeb73898ad1dc04ae325435ea1ac66",
     "networks": "f83c2c4fabfffcf0587e644bb575e4cc4c602f0fe8a032061fac8215403be193",
 }
+# Our DCGM exporter on Sage's GPU, right after sage, and its scrape job after the shared GPU 3 one. Both pinned whole.
+SAGE_DCGM = "dcgm-sage"
+SAGE_DCGM_JOB = "dcgm-dcgm-sage"
+SAGE_DCGM_HASHES = {
+    SAGE_DCGM: "d2cb844e85d4c39dbc6e4f2d8fa200fdd6d8355ca6d20897e0505046424bdf38",
+    SAGE_DCGM_JOB: "624dc7edca59fc555701ad51006cc6771d423a962abc59e838e66a5161d057a0",
+}
 
 
 def without_privacy_filter_pin(block: str) -> str:
@@ -814,6 +821,7 @@ class Gpu13FleetTest(unittest.TestCase):
         # Sage (pinned separately): its two services before the collector, its network and its volume.
         otelcol = expected_names.index("otelcol-contrib")
         expected_names[otelcol:otelcol] = list(SAGE_SERVICES)
+        expected_names.insert(expected_names.index("otelcol-contrib"), SAGE_DCGM)
         expected_names.insert(expected_names.index("default"), "sage")
         expected_names.insert(expected_names.index("certs"), "sage-data")
         self.assertEqual(
@@ -853,6 +861,7 @@ class Gpu13FleetTest(unittest.TestCase):
         # The abliterated proxy's scrape job follows the base proxy's (pinned separately).
         index = expected_jobs.index("inference-proxy-proxy-qwen38-27b") + 1
         expected_jobs[index:index] = [LORA_JOB]
+        expected_jobs.insert(expected_jobs.index("dcgm-dcgm-shared-gpu3") + 1, SAGE_DCGM_JOB)
         self.assertEqual(expected_jobs, list(new_jobs))
         for key in old_jobs:
             if "glm53" not in key:
@@ -932,6 +941,19 @@ class Gpu13FleetTest(unittest.TestCase):
                 new_lines = [l for l in block.splitlines()
                              if l.strip() and not l.lstrip().startswith("#")]
                 self.assertEqual(new_lines, old_lines)
+
+    def test_sage_dcgm_exporter_watches_only_sages_gpu_and_needs_no_sage_values(self) -> None:
+        block, job = service_block(self.small, SAGE_DCGM), jobs_of(self.small)[SAGE_DCGM_JOB]
+        for name, text in ((SAGE_DCGM, block), (SAGE_DCGM_JOB, job)):
+            with self.subTest(block=name):
+                self.assertEqual(hashlib.sha256(text.encode()).hexdigest(), SAGE_DCGM_HASHES[name])
+        # The same GPU as sage, by UUID, and nothing of Sage's: no SAGE_* values, volumes, network or dstack socket.
+        self.assertIn(f'              device_ids: ["{SAGE_GPU}"]\n', block)
+        self.assertIn(f'              device_ids: ["{SAGE_GPU}"]\n', service_block(self.small, "sage"))
+        self.assertIn("    <<: *dcgm-common\n", block)
+        for needle in ("${SAGE_", "volumes:", "networks:", "dstack.sock", "profiles:", "depends_on:"):
+            self.assertNotIn(needle, block)
+        self.assertIn("- targets: ['dcgm-sage:9400']", job)
 
     def test_privacy_filter_pins_transformers(self) -> None:
         self.assertIn(PRIVACY_FILTER_TRANSFORMERS_PIN, anchor_block(self.small, "x-privacy-filter-common"))
@@ -1127,9 +1149,9 @@ class Gpu13FleetTest(unittest.TestCase):
             qwen38_abliterated_ingress(self.small),
         ))
         without_coloc = self.small
-        for name in (COLOC_ENGINE, *LORA_SERVICES):
+        for name in (COLOC_ENGINE, *LORA_SERVICES, SAGE_DCGM):
             without_coloc = without_coloc.replace(service_block(without_coloc, name), "", 1)
-        for name in (COLOC_ENGINE_JOB, LORA_JOB):
+        for name in (COLOC_ENGINE_JOB, LORA_JOB, SAGE_DCGM_JOB):
             without_coloc = without_coloc.replace("              " + jobs_of(without_coloc)[name], "", 1)
         self.assertEqual(selectors(without_coloc), selectors(old))
         old_jobs, new_jobs = jobs_of(old), jobs_of(without_lora_configs(self.small))
@@ -1139,6 +1161,7 @@ class Gpu13FleetTest(unittest.TestCase):
         expected_jobs = [key for key in expected_jobs if key not in QWEN38_R2_JOBS]
         index = expected_jobs.index("inference-proxy-proxy-qwen38-27b") + 1
         expected_jobs[index:index] = [LORA_JOB]
+        expected_jobs.insert(expected_jobs.index("dcgm-dcgm-shared-gpu3") + 1, SAGE_DCGM_JOB)
         self.assertEqual(expected_jobs, list(new_jobs))
         for key in old_jobs:
             self.assertEqual(
