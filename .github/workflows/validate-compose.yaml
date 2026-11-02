@@ -4,9 +4,23 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
+# One dedicated runner serves this job: a newer push to the same ref cancels
+# the superseded run instead of queueing behind it.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   validate:
-    runs-on: [self-hosted, infra]
+    # Same-repo pushes/PRs run on the dedicated CI runner (ci-build-1, label
+    # ci-cvm-validate, no deploy credentials); fork PRs fall back to
+    # GitHub-hosted. A fork could edit this expression, so the enforcement is a
+    # root-owned job-started hook on that runner that refuses fork pull requests.
+    runs-on: ${{ (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","ci-cvm-validate"]') || 'ubuntu-latest' }}
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -34,15 +48,11 @@ jobs:
             ruby:3.3-alpine \
             ruby scripts/validate_proxy_environment.rb
 
+      # Stdlib-only script (Python >= 3.11) run on the host, so it can start its
+      # pinned nginx sibling container without mounting docker.sock into another
+      # container.
       - name: Validate streaming HTTP/2 keepalive contracts
-        run: |
-          docker run --rm \
-            -v "$PWD:/repo" \
-            -v /var/run/docker.sock:/var/run/docker.sock \
-            -v "$(command -v docker):/usr/local/bin/docker:ro" \
-            -w /repo \
-            python:3.12-slim \
-            python3 scripts/validate_streaming_keepalive.py
+        run: python3 scripts/validate_streaming_keepalive.py
 
       - name: Validate public metrics isolation
         run: |
