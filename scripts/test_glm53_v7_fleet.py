@@ -284,9 +284,10 @@ COLOC_ENGINE_JOB = f"sglang-{COLOC_ENGINE}"
 # #412 drops --enable-mixed-chunk from the coloc engine (sglang#39342) and sets its mixed_chunk labels to "0".
 # #417 then changes the coloc engine backend to fa3, mamba cache 128 -> 96 and config_variant to qwen38-gpu2-coloc-fa3-m96
 # (engine labels and scrape job); x-privacy-filter-common is unchanged.
+# #416 then switches the /health generation off on the coloc engine (SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION=0, as GLM-5.3 #274).
 COLOC_BLOCK_HASHES = {
     "x-privacy-filter-common": "8b0fa38844cc279cf27d02250fd37ecb7125a4e2fd0dec08fb66f4f35ee55c9e",
-    COLOC_ENGINE: "5a8889ffb9018f6857a2bec4e53edaed86e5f2e7c9adc6cc29ce3a3116841f77",
+    COLOC_ENGINE: "0a00164559930897ec8182d441c6109aa1250a5e2ae1396cc152dc7d086444f2",
     COLOC_ENGINE_JOB: "1dfc003c9ee580555423c6481d9862484ebf25006fa1450c8afbba7269369e10",
 }
 # Qwen3.8 abliterated LoRA canary (#395): the coloc engine and proxy-qwen38-27b change as modelled by
@@ -704,6 +705,39 @@ def with_qwen38_no_mixed_chunk(text: str) -> str:
     return text.replace(block, updated, 1)
 
 
+QWEN38_PROBE_BACKPRESSURE_ARM = (
+    "            52|56)\n"
+    '              echo "Health probe hit connection-level backpressure (curl $$curl_status); treating as alive but saturated"\n'
+    "              return 0\n"
+    "              ;;\n"
+)
+QWEN38_PROBE_TIMEOUT_ARM = (
+    "            28)\n"
+    "              # A 1-token probe queues behind long prefills and can pass 45 s on a healthy\n"
+    "              # engine: on 2026-11-02 ~250K-token prompts withdrew both Qwen3.8 replicas\n"
+    "              # this way. /v1/models answers from the HTTP layer, so 2xx means busy, not\n"
+    "              # dead. Same rule as the GLM-5.3 registrars (#277).\n"
+    "              if curl -sf --connect-timeout 5 --max-time 10 \\\n"
+    '                -H "Authorization: Bearer $$INFERENCE_TOKEN" \\\n'
+    '                "http://$$1/v1/models" > /dev/null 2>&1; then\n'
+    '                echo "Health probe timed out but /v1/models is live; treating as alive but saturated"\n'
+    "                return 0\n"
+    "              fi\n"
+    '              echo "Health probe timed out and /v1/models is unreachable"\n'
+    "              return 1\n"
+    "              ;;\n"
+)
+
+
+def with_qwen38_probe_timeout_saturated(text: str) -> str:
+    """Apply only the qwen38-registrar edit: a probe timeout counts as busy when /v1/models answers (GLM-5.3 #277)."""
+    block = config_block(text, "qwen38_registrar_script")
+    if block.count(QWEN38_PROBE_BACKPRESSURE_ARM) != 1 or text.count(block) != 1:
+        raise AssertionError("expected one qwen38-registrar backpressure arm in the fixture")
+    updated = block.replace(QWEN38_PROBE_BACKPRESSURE_ARM, QWEN38_PROBE_BACKPRESSURE_ARM + QWEN38_PROBE_TIMEOUT_ARM, 1)
+    return text.replace(block, updated, 1)
+
+
 class Gpu13FleetTest(unittest.TestCase):
     """gpu13 keeps its non-migration small-model services and GPU 0-3 contracts."""
 
@@ -763,10 +797,10 @@ class Gpu13FleetTest(unittest.TestCase):
         return namespace, exit_calls
 
     def test_non_glm_services_and_everything_outside_the_glm_blocks_are_byte_identical(self) -> None:
-        old = with_qwen38_no_mixed_chunk(with_glm53_long_tier_registration(with_qwen38_abliterated_ingress(
+        old = with_qwen38_probe_timeout_saturated(with_qwen38_no_mixed_chunk(with_glm53_long_tier_registration(with_qwen38_abliterated_ingress(
             with_qwen38_abliterated_lora(with_filter_and_coloc_on_gpu2(with_sage_on_gpu2(with_qwen38_coloc_pool(without_qwen38_gpu0_stage_b(self.old))))),
             qwen38_abliterated_ingress(self.small),
-        )))
+        ))))
         names = re.findall(r"^  ([a-z0-9-]+):$", self.old[self.old.index("\nservices:\n"):], re.MULTILINE)
         expected_names = [name for name in names if name != QWEN38_GPU0_SERVICE]
         expected_names.insert(expected_names.index(QWEN38_R2) + 1, COLOC_ENGINE)
@@ -1099,10 +1133,10 @@ class Gpu13FleetTest(unittest.TestCase):
                     self.assertNotRegex(block, r'device_ids:\s*\[[^\]]*"0"')
 
     def test_dashboard_labels_are_unchanged_on_gpu13(self) -> None:
-        old = with_glm53_long_tier_registration(with_qwen38_abliterated_ingress(
+        old = with_qwen38_probe_timeout_saturated(with_glm53_long_tier_registration(with_qwen38_abliterated_ingress(
             with_qwen38_abliterated_lora(with_filter_and_coloc_on_gpu2(with_sage_on_gpu2(with_qwen38_coloc_pool(without_qwen38_gpu0_stage_b(self.old))))),
             qwen38_abliterated_ingress(self.small),
-        ))
+        )))
         old_jobs, new_jobs = jobs_of(old), jobs_of(without_lora_configs(self.small))
         expected_jobs = [key for key in jobs_of(self.old) if key != QWEN38_GPU0_JOB]
         index = expected_jobs.index(f"sglang-{QWEN38_R2}") + 1
