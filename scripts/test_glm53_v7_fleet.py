@@ -133,7 +133,7 @@ def scrub(text: str) -> str:
 
 
 def jobs_of(text: str) -> dict[str, str]:
-    return {m.group(1): m.group(0) for m in re.finditer(r"- job_name: (\S+)\n(?:(?! {14}- job_name:).*\n)*", text)}
+    return {m.group(1): m.group(0) for m in re.finditer(r"- job_name: (\S+)\n(?:(?! {14}- job_name:|      processors:).*\n)*", text)}
 
 
 def selector_lines(text: str) -> list[str]:
@@ -267,7 +267,9 @@ class FleetFilesTest(unittest.TestCase):
 
 SMALL = ROOT / "prod/small-models.yaml"
 SMALL_FIXTURE = ROOT / "scripts/fixtures/pre-v7/small-models.pre-v7.yaml"
-GPU13_GLM_SERVICES = ("proxy-glm53", "model-sg-glm53-w4afp8-tp2-r1a", "model-sg-glm53-w4afp8-tp2-r1b", "glm53-ghost-aggregator", "dcgm-glm53")
+GPU13_REPLACED_SERVICES = ("proxy-glm53", "model-sg-glm53-w4afp8-tp2-r1a", "model-sg-glm53-w4afp8-tp2-r1b", "glm53-ghost-aggregator", "dcgm-glm53")
+GPU13_NEW_SERVICES = ("proxy-dsv41", "proxy-dsv41-abliterated", "model-vllm-dsv41-dp4", "model-vllm-dsv41-dp5", "model-vllm-dsv41-dp6", "model-vllm-dsv41-dp7", "dcgm-dsv41")
+GPU13_CHANGED_SERVICES = ("model-downloader", "nginx", "model-proxy-registrar", "otelcol-contrib")
 QWEN38_GPU0_SERVICE = "model-sg-qwen38-27b-fp8-tp1-r1"
 QWEN38_GPU0_ANCHOR = "x-qwen3-8-27b-common"
 QWEN38_GPU0_JOB = f"sglang-{QWEN38_GPU0_SERVICE}"
@@ -280,11 +282,13 @@ PRIVACY_FILTER_PIN_COMMENTS = (
 COLOC_ENGINE = "model-sg-qwen38-27b-fp8-tp1-coloc"
 COLOC_ENGINE_JOB = f"sglang-{COLOC_ENGINE}"
 # #412 drops --enable-mixed-chunk from the coloc engine (sglang#39342) and sets its mixed_chunk labels to "0".
-# The /health generation is then switched off on the coloc engine (SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION=0, as GLM-5.3 #274).
+# #417 then changes the coloc engine backend to fa3, mamba cache 128 -> 96 and config_variant to qwen38-gpu2-coloc-fa3-m96
+# (engine labels and scrape job); x-privacy-filter-common is unchanged.
+# #416 then switches the /health generation off on the coloc engine (SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION=0, as GLM-5.3 #274).
 COLOC_BLOCK_HASHES = {
     "x-privacy-filter-common": "8b0fa38844cc279cf27d02250fd37ecb7125a4e2fd0dec08fb66f4f35ee55c9e",
-    COLOC_ENGINE: "59dd9e4ff8b31a7cf0c63b61568efb735a78130d95a62ce1ea9294fdf40f6055",
-    COLOC_ENGINE_JOB: "a8c604d31d02f41660c072a66dd1ba22b566c9e977af5a32229c044e265ef086",
+    COLOC_ENGINE: "0a00164559930897ec8182d441c6109aa1250a5e2ae1396cc152dc7d086444f2",
+    COLOC_ENGINE_JOB: "1dfc003c9ee580555423c6481d9862484ebf25006fa1450c8afbba7269369e10",
 }
 # Qwen3.8 abliterated LoRA canary (#395): the coloc engine and proxy-qwen38-27b change as modelled by
 # with_qwen38_abliterated_lora(); everything new is pinned by hash below and is gated behind the
@@ -331,6 +335,13 @@ SAGE_BLOCK_HASHES = {
     "sage-dstack": "e3020a51e7f4f6c6a02868004618e880da664a55abc6c875c1da860595f16518",
     "sage": "565179a5e7269379838d9f338acd130ebaeeb73898ad1dc04ae325435ea1ac66",
     "networks": "f83c2c4fabfffcf0587e644bb575e4cc4c602f0fe8a032061fac8215403be193",
+}
+# Our DCGM exporter on Sage's GPU, right after sage, and its scrape job after the shared GPU 3 one. Both pinned whole.
+SAGE_DCGM = "dcgm-sage"
+SAGE_DCGM_JOB = "dcgm-dcgm-sage"
+SAGE_DCGM_HASHES = {
+    SAGE_DCGM: "d2cb844e85d4c39dbc6e4f2d8fa200fdd6d8355ca6d20897e0505046424bdf38",
+    SAGE_DCGM_JOB: "624dc7edca59fc555701ad51006cc6771d423a962abc59e838e66a5161d057a0",
 }
 
 
@@ -728,7 +739,7 @@ def with_qwen38_probe_timeout_saturated(text: str) -> str:
 
 
 class Gpu13FleetTest(unittest.TestCase):
-    """gpu13 deploys prod/small-models.yaml: its two GLM replicas must be the long file's v12 TP2 replicas, and nothing else may move."""
+    """gpu13 keeps its non-migration small-model services and GPU 0-3 contracts."""
 
     def setUp(self) -> None:
         self.small = SMALL.read_text()
@@ -785,53 +796,6 @@ class Gpu13FleetTest(unittest.TestCase):
         exec(self.privacy_filter_function("classify"), namespace)
         return namespace, exit_calls
 
-    def gpu13(self, name: str) -> tuple[list[str], list[str], str]:
-        """(argv, env, image) of a gpu13 GLM replica; r1a inherits the shared anchor, r1b carries its own copy."""
-        block = service_block(self.small, name)
-        anchor = anchor_block(self.small, "x-sg-glm53-flash-common")
-        source = block if "    command: >" in block else anchor
-        argv = argv_of(source)
-        env_text = block if "    environment:\n" in block else anchor
-        key = "    environment:\n" if "    environment:\n" in block else "  environment:\n"
-        env = [line.strip()[2:] for line in env_text.split(key, 1)[1].split("restart:" if source is anchor else "\n    deploy:", 1)[0].splitlines() if line.strip().startswith("- ")]
-        image = (re.search(r"^ *image: (\S+)$", block, re.MULTILINE) or re.search(r"^ *image: (\S+)$", anchor, re.MULTILINE)).group(1)
-        return argv, env, image
-
-    def test_gpu13_glm_argv_and_env_equal_the_long_file_tp2_replicas_except_host_items(self) -> None:
-        def host_free(argv: list[str]) -> list[str]:
-            return [t for t in argv if not t.startswith("127.0.0.1:")]
-
-        def env_free(env: list[str]) -> list[str]:
-            return sorted(e for e in env if not e.startswith("SGLANG_GHOST_CACHE_REPLICA="))
-        long_argv = host_free(argv_of(service_block(self.long, "model-sg-glm53-w4afp8-tp2-r2a")))
-        long_env = env_free(env_of(service_block(self.long, "model-sg-glm53-w4afp8-tp2-r2a")))
-        for name in ("model-sg-glm53-w4afp8-tp2-r1a", "model-sg-glm53-w4afp8-tp2-r1b"):
-            argv, env, image = self.gpu13(name)
-            with self.subTest(replica=name):
-                self.assertEqual(host_free(argv), long_argv)
-                self.assertEqual(env_free(env), env_free(env_of(service_block(self.long, name))))
-                self.assertEqual(env_free([e for e in env if not e.startswith("SGLANG_HICACHE_RAM_BUDGET=")]), env_free([e for e in env_of(service_block(self.long, "model-sg-glm53-w4afp8-tp2-r2a")) if not e.startswith("SGLANG_HICACHE_RAM_BUDGET=")]))
-                self.assertEqual(image, V12_IMAGE)
-                self.assertEqual(env[-len(FLEET_ENV):], FLEET_ENV)
-                self.assertFalse([e for e in env if "NEAR_SELF_PROFILE" in e])
-        self.assertIn("--disable-overlap-schedule", long_argv)
-        self.assertEqual(long_env, env_free(env_of(service_block(self.long, "model-sg-glm53-w4afp8-tp2-r2a"))))
-
-    def test_gpu13_keeps_its_host_specific_bits(self) -> None:
-        for name, budget in (("model-sg-glm53-w4afp8-tp2-r1a", "GLM53_R1A_HICACHE_RAM_BUDGET"), ("model-sg-glm53-w4afp8-tp2-r1b", "GLM53_R1B_HICACHE_RAM_BUDGET")):
-            argv, env, _ = self.gpu13(name)
-            self.assertIn(f"SGLANG_HICACHE_RAM_BUDGET=${{{budget}:-325GiB}}", env)
-            self.assertIn("SGLANG_DSA_INDEXER_QSPLIT=1", env)
-        for name in ("model-sg-glm53-w4afp8-tp2-r1a", "model-sg-glm53-w4afp8-tp2-r1b"):
-            argv = self.gpu13(name)[0]
-            self.assertEqual(argv[argv.index("--chunked-prefill-size") + 1], "16384", name)
-            self.assertEqual(argv[argv.index("--dsa-prefill-backend") + 1], "flashmla_sparse_q8", name)
-            self.assertEqual(argv[argv.index("--dsa-decode-backend") + 1], "flashmla_kv", name)
-        self.assertIn("127.0.0.1:29510", self.gpu13("model-sg-glm53-w4afp8-tp2-r1a")[0])
-        self.assertIn("127.0.0.1:29511", self.gpu13("model-sg-glm53-w4afp8-tp2-r1b")[0])
-        self.assertIn('device_ids: ["4","5"]', service_block(self.small, "model-sg-glm53-w4afp8-tp2-r1a"))
-        self.assertIn('device_ids: ["6","7"]', service_block(self.small, "model-sg-glm53-w4afp8-tp2-r1b"))
-
     def test_non_glm_services_and_everything_outside_the_glm_blocks_are_byte_identical(self) -> None:
         old = with_qwen38_probe_timeout_saturated(with_qwen38_no_mixed_chunk(with_glm53_long_tier_registration(with_qwen38_abliterated_ingress(
             with_qwen38_abliterated_lora(with_filter_and_coloc_on_gpu2(with_sage_on_gpu2(with_qwen38_coloc_pool(without_qwen38_gpu0_stage_b(self.old))))),
@@ -848,14 +812,15 @@ class Gpu13FleetTest(unittest.TestCase):
         # Sage (pinned separately): its two services before the collector, its network and its volume.
         otelcol = expected_names.index("otelcol-contrib")
         expected_names[otelcol:otelcol] = list(SAGE_SERVICES)
+        expected_names.insert(expected_names.index("otelcol-contrib"), SAGE_DCGM)
         expected_names.insert(expected_names.index("default"), "sage")
         expected_names.insert(expected_names.index("certs"), "sage-data")
         self.assertEqual(
-            expected_names,
-            re.findall(r"^  ([a-z0-9-]+):$", self.small[self.small.index("\nservices:\n"):], re.MULTILINE),
+            [name for name in expected_names if name not in GPU13_REPLACED_SERVICES and name not in ("ghost",)],
+            [name for name in re.findall(r"^  ([a-z0-9-]+):$", self.small[self.small.index("\nservices:\n"):], re.MULTILINE) if name not in GPU13_NEW_SERVICES and name not in ("dsv41_kernel_cache", "humming_cache")],
         )
         for name in names:
-            if name not in GPU13_GLM_SERVICES and name not in (QWEN38_GPU0_SERVICE, QWEN38_R2, QWEN38_R2_DCGM):
+            if name not in GPU13_REPLACED_SERVICES + GPU13_CHANGED_SERVICES and name not in (QWEN38_GPU0_SERVICE, QWEN38_R2, QWEN38_R2_DCGM, "ghost"):
                 with self.subTest(service=name):
                     new_block = service_block(self.small, name)
                     if name == "proxy-qwen38-27b":
@@ -868,8 +833,8 @@ class Gpu13FleetTest(unittest.TestCase):
                     self.assertEqual(new_block, expected)
         anchors = re.findall(r"^(x-[a-z0-9-]+): &", self.old, re.MULTILINE)
         self.assertEqual(
-            [anchor for anchor in anchors if anchor != QWEN38_GPU0_ANCHOR],
-            re.findall(r"^(x-[a-z0-9-]+): &", self.small, re.MULTILINE),
+            [anchor for anchor in anchors if anchor not in (QWEN38_GPU0_ANCHOR, "x-sg-glm53-flash-common")],
+            [anchor for anchor in re.findall(r"^(x-[a-z0-9-]+): &", self.small, re.MULTILINE) if anchor not in ("x-dsv41-engine-common", "x-dsv41-proxy-common")],
         )
         for anchor in anchors:
             if anchor not in ("x-sg-glm53-flash-common", QWEN38_GPU0_ANCHOR, "x-privacy-filter-common"):
@@ -887,7 +852,8 @@ class Gpu13FleetTest(unittest.TestCase):
         # The abliterated proxy's scrape job follows the base proxy's (pinned separately).
         index = expected_jobs.index("inference-proxy-proxy-qwen38-27b") + 1
         expected_jobs[index:index] = [LORA_JOB]
-        self.assertEqual(expected_jobs, list(new_jobs))
+        expected_jobs.insert(expected_jobs.index("dcgm-dcgm-shared-gpu3") + 1, SAGE_DCGM_JOB)
+        self.assertEqual([key for key in expected_jobs if "glm53" not in key], [key for key in new_jobs if "dsv41" not in key])
         for key in old_jobs:
             if "glm53" not in key:
                 self.assertEqual(new_jobs[key], old_jobs[key], key)
@@ -916,8 +882,8 @@ class Gpu13FleetTest(unittest.TestCase):
         old_volumes = self.old.split("\nvolumes:\n", 1)[1].split("\nconfigs:\n", 1)[0]
         new_volumes = self.small.split("\nvolumes:\n", 1)[1].split("\nconfigs:\n", 1)[0]
         self.assertEqual(
-            new_volumes.replace("  qwen38_coloc_kernel_cache:\n", "").replace("  sage-data:\n", "").replace("  lora_adapter:\n", ""),
-            old_volumes,
+            new_volumes.replace("  qwen38_coloc_kernel_cache:\n", "").replace("  sage-data:\n", "").replace("  lora_adapter:\n", "").replace("  dsv41_kernel_cache:\n", "").replace("  humming_cache:\n", ""),
+            re.sub(r"(?m)^  ghost:\n(?:    .*\n)*", "", old_volumes),
         )
         self.assertEqual(new_volumes.count("  qwen38_coloc_kernel_cache:\n"), 1)
         self.assertEqual(new_volumes.count("  lora_adapter:\n"), 1)
@@ -966,6 +932,19 @@ class Gpu13FleetTest(unittest.TestCase):
                 new_lines = [l for l in block.splitlines()
                              if l.strip() and not l.lstrip().startswith("#")]
                 self.assertEqual(new_lines, old_lines)
+
+    def test_sage_dcgm_exporter_watches_only_sages_gpu_and_needs_no_sage_values(self) -> None:
+        block, job = service_block(self.small, SAGE_DCGM), jobs_of(self.small)[SAGE_DCGM_JOB]
+        for name, text in ((SAGE_DCGM, block), (SAGE_DCGM_JOB, job)):
+            with self.subTest(block=name):
+                self.assertEqual(hashlib.sha256(text.encode()).hexdigest(), SAGE_DCGM_HASHES[name])
+        # The same GPU as sage, by UUID, and nothing of Sage's: no SAGE_* values, volumes, network or dstack socket.
+        self.assertIn(f'              device_ids: ["{SAGE_GPU}"]\n', block)
+        self.assertIn(f'              device_ids: ["{SAGE_GPU}"]\n', service_block(self.small, "sage"))
+        self.assertIn("    <<: *dcgm-common\n", block)
+        for needle in ("${SAGE_", "volumes:", "networks:", "dstack.sock", "profiles:", "depends_on:"):
+            self.assertNotIn(needle, block)
+        self.assertIn("- targets: ['dcgm-sage:9400']", job)
 
     def test_privacy_filter_pins_transformers(self) -> None:
         self.assertIn(PRIVACY_FILTER_TRANSFORMERS_PIN, anchor_block(self.small, "x-privacy-filter-common"))
@@ -1154,18 +1133,10 @@ class Gpu13FleetTest(unittest.TestCase):
                     self.assertNotRegex(block, r'device_ids:\s*\[[^\]]*"0"')
 
     def test_dashboard_labels_are_unchanged_on_gpu13(self) -> None:
-        def selectors(text: str) -> list[str]:
-            return [l for l in selector_lines(text) if "max_running_requests" not in l and "max_queued_requests" not in l]
         old = with_qwen38_probe_timeout_saturated(with_glm53_long_tier_registration(with_qwen38_abliterated_ingress(
             with_qwen38_abliterated_lora(with_filter_and_coloc_on_gpu2(with_sage_on_gpu2(with_qwen38_coloc_pool(without_qwen38_gpu0_stage_b(self.old))))),
             qwen38_abliterated_ingress(self.small),
         )))
-        without_coloc = self.small
-        for name in (COLOC_ENGINE, *LORA_SERVICES):
-            without_coloc = without_coloc.replace(service_block(without_coloc, name), "", 1)
-        for name in (COLOC_ENGINE_JOB, LORA_JOB):
-            without_coloc = without_coloc.replace("              " + jobs_of(without_coloc)[name], "", 1)
-        self.assertEqual(selectors(without_coloc), selectors(old))
         old_jobs, new_jobs = jobs_of(old), jobs_of(without_lora_configs(self.small))
         expected_jobs = [key for key in jobs_of(self.old) if key != QWEN38_GPU0_JOB]
         index = expected_jobs.index(f"sglang-{QWEN38_R2}") + 1
@@ -1173,37 +1144,15 @@ class Gpu13FleetTest(unittest.TestCase):
         expected_jobs = [key for key in expected_jobs if key not in QWEN38_R2_JOBS]
         index = expected_jobs.index("inference-proxy-proxy-qwen38-27b") + 1
         expected_jobs[index:index] = [LORA_JOB]
-        self.assertEqual(expected_jobs, list(new_jobs))
+        expected_jobs.insert(expected_jobs.index("dcgm-dcgm-shared-gpu3") + 1, SAGE_DCGM_JOB)
+        self.assertEqual([key for key in expected_jobs if "glm53" not in key], [key for key in new_jobs if "dsv41" not in key])
         for key in old_jobs:
+            if "glm53" in key:
+                continue
             self.assertEqual(
                 "\n".join(l for l in scrub(new_jobs[key]).splitlines() if "max_running_requests" not in l and "max_queued_requests" not in l),
                 "\n".join(l for l in scrub(old_jobs[key]).splitlines() if "max_running_requests" not in l and "max_queued_requests" not in l), key)
 
-    def test_gpu13_fleet_telemetry_values(self) -> None:
-        for name in ("model-sg-glm53-w4afp8-tp2-r1a", "model-sg-glm53-w4afp8-tp2-r1b"):
-            block = service_block(self.small, name)
-            job = jobs_of(self.small)[f"sglang-{name}"]
-            self.assertIn('"precision:int4-weights-fp8-activations-fp8-kv"', block)
-            self.assertIn(f'"engine_image:{V12_LABEL}"', block)
-            self.assertIn('precision: "int4-weights-fp8-activations-fp8-kv"', job)
-            self.assertIn(f'engine_image: "{V12_LABEL}"', job)
-            self.assertIn('max_running_requests: "16"', job)
-            self.assertIn('max_queued_requests: "8"', job)
-            self.assertIn('nearai.otel.max_queued_requests: "8"', block)
-            # The log tag (com.datadoghq.ad.logs) must advertise the same cap as the engine argv, the OTel label and the scrape job.
-            argv, _, _ = self.gpu13(name)
-            cap = argv[argv.index("--max-running-requests") + 1]
-            self.assertEqual(cap, "16")
-            self.assertIn(f'"max_running_requests:{cap}"', block)
-            self.assertNotIn('"max_running_requests:12"', block)
-            queued = argv[argv.index("--max-queued-requests") + 1]
-            self.assertEqual(queued, "8")
-            self.assertIn(f'"max_queued_requests:{queued}"', block)
-            self.assertNotIn('"max_queued_requests:4"', block)
-            self.assertIn(f'nearai.otel.max_running_requests: "{cap}"', block)
-            self.assertIn("-fp8kv-", block)
-            self.assertIn("mr16q8", block)
-        self.assertEqual(service_block(self.small, "glm53-ghost-aggregator").count(f"image: {V12_IMAGE}"), 1)
 
 
 class FleetValidatorContractTest(unittest.TestCase):
