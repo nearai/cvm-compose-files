@@ -842,7 +842,8 @@ services:
     # inference-proxy 5faff1b (#329): strict request-model match and LoRA selector
     # refusal. The coloc engine serves the abliterated adapter too, so this proxy
     # must keep VLLM_PROXY_STRICT_REQUEST_MODEL on.
-    image: nearaidev/vllm-proxy-rs@sha256:4937ad68d86dcc79871bd52341f2030a71e49bcafdf69d82ca287171aeb43c7b
+    # Image is now inference-proxy 41e8602f (#336): adds the opt-in size tiers below.
+    image: nearaidev/vllm-proxy-rs@sha256:00664bd652b34e5054a566353b5ab635cfe9474ed7046aae7e14bfa60f68b17f
     container_name: proxy-qwen38-27b
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
@@ -858,6 +859,9 @@ services:
       - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
       - VLLM_BACKEND_URLS=http://model-sg-qwen38-27b-fp8-tp1-coloc:8000
       - VLLM_PROXY_MAX_REQUEST_SIZE=104857600
+      # Size tiers (inference-proxy #336): <=16k prompt tokens jump ahead, >64k go last. Needs the
+      # engine's --enable-priority-scheduling; without it SGLang ignores the priority field.
+      - VLLM_PROXY_PRIORITY_SIZE_TIERS=16000:10,65536:5,*:0
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
       - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
@@ -904,6 +908,8 @@ services:
     # Canary on gpu13 only after gpu32 holds. Roll back to the previous tag (flashinfer, mamba 128) on: GPU 2 FB used
     # > 134 GiB, engine restart or OOM, TTFT/ITL regression vs the pre-deploy baseline, queue growth, or
     # mamba_usage >= 0.95 sustained.
+    # 2026-11-03: --enable-priority-scheduling --disable-priority-preemption, paired with the size tiers on both
+    # Qwen3.8 proxies (inference-proxy #336); config_variant qwen38-gpu2-coloc-fa3-m96-prio. exp55 R10 basis.
     # A later --mamba-ssm-dtype bfloat16 is a one-line addition here.
     command: >
       sglang serve
@@ -918,6 +924,8 @@ services:
       --chunked-prefill-size 4096
       --max-prefill-tokens 4096
       --max-mamba-cache-size 96
+      --enable-priority-scheduling
+      --disable-priority-preemption
       --max-running-requests 32
       --max-queued-requests 64
       --cuda-graph-max-bs 32
@@ -963,7 +971,7 @@ services:
               device_ids: ["2"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:Qwen/Qwen3.8-27B-FP8","served_model:Qwen/Qwen3.8-27B","model_revision:017b9c7af6b5689d5dd426a76e0bc077eb5ca20a","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:0","gpu_pair:2","config_variant:qwen38-gpu2-coloc-fa3-m96","quantization:fp8","lora:abliterated-r1","sglang_revision:qwen38.27b.g561c8f3","engine_image:febfb971c735"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:Qwen/Qwen3.8-27B-FP8","served_model:Qwen/Qwen3.8-27B","model_revision:017b9c7af6b5689d5dd426a76e0bc077eb5ca20a","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:0","gpu_pair:2","config_variant:qwen38-gpu2-coloc-fa3-m96-prio","quantization:fp8","lora:abliterated-r1","sglang_revision:qwen38.27b.g561c8f3","engine_image:febfb971c735"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -982,7 +990,7 @@ services:
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.instance: "0"
       nearai.otel.gpu_pair: "2"
-      nearai.otel.config_variant: "qwen38-gpu2-coloc-fa3-m96"
+      nearai.otel.config_variant: "qwen38-gpu2-coloc-fa3-m96-prio"
       nearai.otel.quantization: "fp8"
       nearai.otel.chunk_size: "4096"
       nearai.otel.max_prefill_tokens: "4096"
@@ -1082,7 +1090,8 @@ services:
   proxy-qwen38-27b-abliterated:
     <<: *vllm-proxy-common
     # inference-proxy 5faff1b (#329), same as proxy-qwen38-27b: VLLM_PROXY_BACKEND_LORA.
-    image: nearaidev/vllm-proxy-rs@sha256:4937ad68d86dcc79871bd52341f2030a71e49bcafdf69d82ca287171aeb43c7b
+    # Image is now inference-proxy 41e8602f (#336): adds the opt-in size tiers below.
+    image: nearaidev/vllm-proxy-rs@sha256:00664bd652b34e5054a566353b5ab635cfe9474ed7046aae7e14bfa60f68b17f
     container_name: proxy-qwen38-27b-abliterated
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
@@ -1101,6 +1110,9 @@ services:
       - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
       - VLLM_BACKEND_URLS=http://model-sg-qwen38-27b-fp8-tp1-coloc:8000
       - VLLM_PROXY_MAX_REQUEST_SIZE=104857600
+      # Size tiers (inference-proxy #336): <=16k prompt tokens jump ahead, >64k go last. Needs the
+      # engine's --enable-priority-scheduling; without it SGLang ignores the priority field.
+      - VLLM_PROXY_PRIORITY_SIZE_TIERS=16000:10,65536:5,*:0
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
       - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
@@ -2718,7 +2730,7 @@ configs:
                       instance: "0"
                       gpu_pair: "2"
                       model_revision: "017b9c7af6b5689d5dd426a76e0bc077eb5ca20a"
-                      config_variant: "qwen38-gpu2-coloc-fa3-m96"
+                      config_variant: "qwen38-gpu2-coloc-fa3-m96-prio"
                       quantization: "fp8"
                       chunk_size: "4096"
                       max_prefill_tokens: "4096"
