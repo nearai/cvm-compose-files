@@ -126,6 +126,11 @@ jobs:
           docker run --rm -v "$PWD:/repo:ro" -w /repo ruby:3.3-alpine \
             sh -c 'apk add --no-cache python3 >/dev/null && python3 scripts/prepare_dsv41_lora_dep8.py --check && python3 -m scripts.test_dsv41_lora_dep8'
 
+      - name: Validate gpu13 DeepSeek-V4.1 DEP4 ranks
+        run: |
+          docker run --rm -v "$PWD:/repo:ro" -w /repo ruby:3.3-alpine \
+            sh -c 'apk add --no-cache python3 >/dev/null && python3 -m scripts.test_gpu13_dsv41_dep4'
+
       - name: Validate GLM-5.3 W4AFP8 4x TP2 base canary file
         run: |
           docker run --rm -v "$PWD:/repo:ro" -w /repo ruby:3.3-alpine \
