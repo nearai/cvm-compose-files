@@ -102,14 +102,15 @@ scalar_strings = lambda do |value|
   end
 end
 assert.call(scalar_strings.call(small).none? { |value| value.match?(/ds4f|dsv4(?!1)|deepseek[-_.]?v4[-_.]flash/i) }, 'gpu13 rendered configuration must not contain retired DS4F identities')
-assert.call(small_services.keys.none? { |name| name.include?('glm53') }, 'gpu13 must have no GLM service')
-assert.call(!small.fetch('volumes').key?('ghost'), 'gpu13 must have no ghost volume')
+assert.call(small_services.keys.none? { |name| name.include?('glm') }, 'gpu13 must have no GLM service')
+assert.call(small.dig('volumes', 'ghost').nil?, 'gpu13 must have no ghost volume')
 ranks = (4..7).map { |gpu| "model-vllm-dsv41-dp#{gpu}" }
-ranks.each_with_index do |name, index|
+(4..7).each do |gpu|
+  name = "model-vllm-dsv41-dp#{gpu}"
   engine = small_services.fetch(name)
   env = engine.fetch('environment')
   assert.call(engine['network_mode'] == 'host', "gpu13 #{name} must use host networking")
-  assert.call(env.include?("CUDA_VISIBLE_DEVICES=#{index + 4}"), "gpu13 #{name} must use GPU #{index + 4}")
+  assert.call(env.include?("CUDA_VISIBLE_DEVICES=#{gpu}"), "gpu13 #{name} must use GPU #{gpu}")
   assert.call(env.include?('CUDA_DEVICE_ORDER=PCI_BUS_ID'), "gpu13 #{name} must set CUDA_DEVICE_ORDER=PCI_BUS_ID")
 end
 assert.call(small_ids.call('dcgm-dsv41') == %w[4 5 6 7], 'gpu13 DS4.1 exporter must use GPUs 4-7')
@@ -130,5 +131,15 @@ small_services.each do |name, service|
   next unless device_ids.any? { |id| %w[4 5 6 7].include?(id) }
 
   assert.call(name == 'dcgm-dsv41', "Unexpected gpu13 GPU 4-7 claim: #{name}")
+end
+# The DS4.1 ranks claim their GPU through CUDA_VISIBLE_DEVICES, not device_ids, so
+# a service doing the same on GPUs 4-7 would also collide with them.
+small_services.each do |name, service|
+  env = service['environment']
+  env = env.map { |key, value| "#{key}=#{value}" } if env.is_a?(Hash)
+  visible = Array(env).map(&:to_s).grep(/\ACUDA_VISIBLE_DEVICES=/).flat_map { |entry| entry.split('=', 2).last.split(',') }
+  next unless visible.any? { |id| %w[4 5 6 7].include?(id.strip) }
+
+  assert.call(ranks.include?(name), "Unexpected gpu13 GPU 4-7 claim via CUDA_VISIBLE_DEVICES: #{name}")
 end
 puts 'DS4F migration and gpu13 DS4.1 allocation contracts OK'
