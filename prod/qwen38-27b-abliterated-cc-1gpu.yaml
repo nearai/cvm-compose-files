@@ -17,8 +17,10 @@
 # first deploy is a watched canary on gpu32 (cache hit rate, queue depth, FB used). Roll back to the
 # previous tag (flashinfer, mamba 320) on: FB used > 135 GiB, engine restart or OOM, TTFT/ITL
 # regression vs the pre-deploy baseline, queue growth, or mamba_usage >= 0.95 sustained.
-# Not included yet: --enable-priority-scheduling (needs an inference-proxy change first)
-# and --mamba-ssm-dtype bfloat16 (under test; add it as one line next to
+# 2026-11-03: --enable-priority-scheduling --disable-priority-preemption on the engine plus
+# inference-proxy 41e8602f (#336) size tiers on both proxies; engine config_variant gains -prio.
+# exp55 R10 (gpu31, no preemption): <16k p95 TTFT ~127 s -> ~19-24 s, >=64k p95 +10-15%, 0 errors.
+# Not included yet: --mamba-ssm-dtype bfloat16 (under test; add it as one line next to
 # --max-mamba-cache-size and bump the engine config_variant).
 #
 # The STATUS block below is superseded: gpu32 GPU 7 has served prod with this file since 2026-10-29.
@@ -178,7 +180,7 @@ x-nvidia: &nvidia
       hard: 65535
 
 x-vllm-proxy-common: &vllm-proxy-common
-  image: nearaidev/vllm-proxy-rs@sha256:4937ad68d86dcc79871bd52341f2030a71e49bcafdf69d82ca287171aeb43c7b
+  image: nearaidev/vllm-proxy-rs@sha256:00664bd652b34e5054a566353b5ab635cfe9474ed7046aae7e14bfa60f68b17f
   user: root
   privileged: true
   <<: *nvidia
@@ -276,6 +278,8 @@ services:
       --chunked-prefill-size 8192
       --max-prefill-tokens 8192
       --max-mamba-cache-size 192
+      --enable-priority-scheduling
+      --disable-priority-preemption
       --max-running-requests 64
       --max-queued-requests 128
       --reasoning-parser qwen3
@@ -321,7 +325,7 @@ services:
     stop_grace_period: 5m
     logging: *logging-conf
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:Qwen/Qwen3.8-27B-FP8","served_model:Qwen/Qwen3.8-27B","model_revision:017b9c7af6b5689d5dd426a76e0bc077eb5ca20a","deployment:qwen38-abliterated-cc-1gpu","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:${INSTANCE_LABEL:-unknown}","config_variant:qwen38-abl-cc-1gpu-fa3-m192","quantization:fp8","lora:abliterated-r1","sglang_revision:qwen38.27b.g561c8f3","engine_image:febfb971c735"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:Qwen/Qwen3.8-27B-FP8","served_model:Qwen/Qwen3.8-27B","model_revision:017b9c7af6b5689d5dd426a76e0bc077eb5ca20a","deployment:qwen38-abliterated-cc-1gpu","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:${INSTANCE_LABEL:-unknown}","config_variant:qwen38-abl-cc-1gpu-fa3-m192-prio","quantization:fp8","lora:abliterated-r1","sglang_revision:qwen38.27b.g561c8f3","engine_image:febfb971c735"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -339,7 +343,7 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.instance: "${INSTANCE_LABEL:-unknown}"
-      nearai.otel.config_variant: "qwen38-abl-cc-1gpu-fa3-m192"
+      nearai.otel.config_variant: "qwen38-abl-cc-1gpu-fa3-m192-prio"
       nearai.otel.quantization: "fp8"
       nearai.otel.chunk_size: "8192"
       nearai.otel.max_prefill_tokens: "8192"
@@ -370,6 +374,9 @@ services:
       - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
       - VLLM_BACKEND_URLS=http://model-sg-qwen38-27b-fp8-tp1-lora:8000
       - VLLM_PROXY_MAX_REQUEST_SIZE=104857600
+      # Size tiers (inference-proxy #336): <=16k prompt tokens jump ahead, >64k go last. Needs the
+      # engine's --enable-priority-scheduling; without it SGLang ignores the priority field.
+      - VLLM_PROXY_PRIORITY_SIZE_TIERS=16000:10,65536:5,*:0
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
       - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
@@ -416,6 +423,9 @@ services:
       - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
       - VLLM_BACKEND_URLS=http://model-sg-qwen38-27b-fp8-tp1-lora:8000
       - VLLM_PROXY_MAX_REQUEST_SIZE=104857600
+      # Size tiers (inference-proxy #336): <=16k prompt tokens jump ahead, >64k go last. Needs the
+      # engine's --enable-priority-scheduling; without it SGLang ignores the priority field.
+      - VLLM_PROXY_PRIORITY_SIZE_TIERS=16000:10,65536:5,*:0
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
       - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
@@ -714,7 +724,7 @@ configs:
                       ip: "${HOST_IP}"
                       port: "8000"
                       instance: "${INSTANCE_LABEL:-unknown}"
-                      config_variant: "qwen38-abl-cc-1gpu-fa3-m192"
+                      config_variant: "qwen38-abl-cc-1gpu-fa3-m192-prio"
                       quantization: "fp8"
                       sglang_revision: "qwen38.27b.g561c8f3"
                       engine_image: "febfb971c735"

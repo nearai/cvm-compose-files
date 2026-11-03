@@ -285,10 +285,11 @@ COLOC_ENGINE_JOB = f"sglang-{COLOC_ENGINE}"
 # #417 then changes the coloc engine backend to fa3, mamba cache 128 -> 96 and config_variant to qwen38-gpu2-coloc-fa3-m96
 # (engine labels and scrape job); x-privacy-filter-common is unchanged.
 # #416 then switches the /health generation off on the coloc engine (SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION=0, as GLM-5.3 #274).
+# #336's rollout then adds --enable-priority-scheduling --disable-priority-preemption and config_variant qwen38-gpu2-coloc-fa3-m96-prio.
 COLOC_BLOCK_HASHES = {
     "x-privacy-filter-common": "8b0fa38844cc279cf27d02250fd37ecb7125a4e2fd0dec08fb66f4f35ee55c9e",
-    COLOC_ENGINE: "0a00164559930897ec8182d441c6109aa1250a5e2ae1396cc152dc7d086444f2",
-    COLOC_ENGINE_JOB: "1dfc003c9ee580555423c6481d9862484ebf25006fa1450c8afbba7269369e10",
+    COLOC_ENGINE: "c3e9e78f1a90b07c0718f650908947432f48306c67bf66f78d44f5fdf854b37f",
+    COLOC_ENGINE_JOB: "db7bc6714299369ba55174e6536a28747c32830d2ce3803dcefb43347b28e3b7",
 }
 # Qwen3.8 abliterated LoRA canary (#395): the coloc engine and proxy-qwen38-27b change as modelled by
 # with_qwen38_abliterated_lora(); everything new is pinned by hash below and is gated behind the
@@ -296,6 +297,15 @@ COLOC_BLOCK_HASHES = {
 # gpu13 forwards only host ports 8000-8009 and 8444, so the adapter is served through nginx-qwen38:
 # with_qwen38_abliterated_ingress() adds only the hash-pinned LORA_INGRESS snippets to nginx_qwen38_conf.
 LORA_PROXY_IMAGE = "nearaidev/vllm-proxy-rs@sha256:4937ad68d86dcc79871bd52341f2030a71e49bcafdf69d82ca287171aeb43c7b"
+# #336 size tiers: both Qwen3.8 proxies move to inference-proxy 41e8602f and gain VLLM_PROXY_PRIORITY_SIZE_TIERS;
+# the coloc engine gains --enable-priority-scheduling --disable-priority-preemption and the -prio config_variant.
+PRIORITY_PROXY_IMAGE = "nearaidev/vllm-proxy-rs@sha256:00664bd652b34e5054a566353b5ab635cfe9474ed7046aae7e14bfa60f68b17f"
+PRIORITY_IMAGE_COMMENT = "    # Image is now inference-proxy 41e8602f (#336): adds the opt-in size tiers below.\n"
+PRIORITY_TIERS_ENV = (
+    "      # Size tiers (inference-proxy #336): <=16k prompt tokens jump ahead, >64k go last. Needs the\n"
+    "      # engine's --enable-priority-scheduling; without it SGLang ignores the priority field.\n"
+    "      - VLLM_PROXY_PRIORITY_SIZE_TIERS=16000:10,65536:5,*:0\n"
+)
 LORA_SERVICES = (
     "qwen38-lora-adapter-downloader",
     "proxy-qwen38-27b-abliterated",
@@ -305,7 +315,7 @@ LORA_CONFIGS = ("qwen38_abliterated_registrar_script",)
 LORA_JOB = "inference-proxy-proxy-qwen38-27b-abliterated"
 LORA_BLOCK_HASHES = {
     "qwen38-lora-adapter-downloader": "f00890986a1cbe050f1158fc94fb46c6a2910fad7ac622387bc09f21f47e7d4b",
-    "proxy-qwen38-27b-abliterated": "9a87a172a774968821a0fae6c0cc1a285211e9a3eb5ea4c48f218ca58f6b69e7",
+    "proxy-qwen38-27b-abliterated": "68c4957ceba8a122026d548162b10829ba88f4e8de083df68f24a936a1b13ccd",
     "qwen38-abliterated-registrar": "abbc11eca5f3f296b108cc4ec308ee5c59e04a04c99f4f7a6ce691586031c895",
     "qwen38_abliterated_registrar_script": "bf512180438d8e6258a37b59e02f9f6abc2bcab5ea79ac92b91b31b62f6afbe7",
     LORA_JOB: "300953b485fbe7ab94916efc464b5fdbdd784fbd6c554392491da0f653f3c505",
@@ -738,6 +748,20 @@ def with_qwen38_probe_timeout_saturated(text: str) -> str:
     return text.replace(block, updated, 1)
 
 
+def with_qwen38_priority_tiers(text: str) -> str:
+    """Apply only #336's edit to proxy-qwen38-27b: the 41e8602f image (with its comment) and the size-tier env."""
+    block = service_block(text, "proxy-qwen38-27b")
+    image = f"    image: {LORA_PROXY_IMAGE}\n"
+    size = "      - VLLM_PROXY_MAX_REQUEST_SIZE=104857600\n"
+    for old in (image, size):
+        if block.count(old) != 1:
+            raise AssertionError(f"expected one size-tier fixture line: {old}")
+    updated = block.replace(image, PRIORITY_IMAGE_COMMENT + f"    image: {PRIORITY_PROXY_IMAGE}\n", 1).replace(size, size + PRIORITY_TIERS_ENV, 1)
+    if text.count(block) != 1:
+        raise AssertionError("expected one size-tier fixture block")
+    return text.replace(block, updated, 1)
+
+
 class Gpu13FleetTest(unittest.TestCase):
     """gpu13 keeps its non-migration small-model services and GPU 0-3 contracts."""
 
@@ -797,10 +821,10 @@ class Gpu13FleetTest(unittest.TestCase):
         return namespace, exit_calls
 
     def test_non_glm_services_and_everything_outside_the_glm_blocks_are_byte_identical(self) -> None:
-        old = with_qwen38_probe_timeout_saturated(with_qwen38_no_mixed_chunk(with_glm53_long_tier_registration(with_qwen38_abliterated_ingress(
+        old = with_qwen38_priority_tiers(with_qwen38_probe_timeout_saturated(with_qwen38_no_mixed_chunk(with_glm53_long_tier_registration(with_qwen38_abliterated_ingress(
             with_qwen38_abliterated_lora(with_filter_and_coloc_on_gpu2(with_sage_on_gpu2(with_qwen38_coloc_pool(without_qwen38_gpu0_stage_b(self.old))))),
             qwen38_abliterated_ingress(self.small),
-        ))))
+        )))))
         names = re.findall(r"^  ([a-z0-9-]+):$", self.old[self.old.index("\nservices:\n"):], re.MULTILINE)
         expected_names = [name for name in names if name != QWEN38_GPU0_SERVICE]
         expected_names.insert(expected_names.index(QWEN38_R2) + 1, COLOC_ENGINE)
@@ -1133,10 +1157,10 @@ class Gpu13FleetTest(unittest.TestCase):
                     self.assertNotRegex(block, r'device_ids:\s*\[[^\]]*"0"')
 
     def test_dashboard_labels_are_unchanged_on_gpu13(self) -> None:
-        old = with_qwen38_probe_timeout_saturated(with_glm53_long_tier_registration(with_qwen38_abliterated_ingress(
+        old = with_qwen38_priority_tiers(with_qwen38_probe_timeout_saturated(with_glm53_long_tier_registration(with_qwen38_abliterated_ingress(
             with_qwen38_abliterated_lora(with_filter_and_coloc_on_gpu2(with_sage_on_gpu2(with_qwen38_coloc_pool(without_qwen38_gpu0_stage_b(self.old))))),
             qwen38_abliterated_ingress(self.small),
-        )))
+        ))))
         old_jobs, new_jobs = jobs_of(old), jobs_of(without_lora_configs(self.small))
         expected_jobs = [key for key in jobs_of(self.old) if key != QWEN38_GPU0_JOB]
         index = expected_jobs.index(f"sglang-{QWEN38_R2}") + 1
