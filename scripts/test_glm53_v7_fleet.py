@@ -343,7 +343,7 @@ QWEN38_R2_DCGM = "dcgm-qwen38-27b"
 QWEN38_R2_JOBS = (f"sglang-{QWEN38_R2}", f"dcgm-{QWEN38_R2_DCGM}")
 SAGE_BLOCK_HASHES = {
     "sage-dstack": "e3020a51e7f4f6c6a02868004618e880da664a55abc6c875c1da860595f16518",
-    "sage": "565179a5e7269379838d9f338acd130ebaeeb73898ad1dc04ae325435ea1ac66",
+    "sage": "861f05c6f005debbc099403efd9a48880b865a5a361838408ea668864855ae7f",
     "networks": "f83c2c4fabfffcf0587e644bb575e4cc4c602f0fe8a032061fac8215403be193",
 }
 # Our DCGM exporter on Sage's GPU, right after sage, and its scrape job after the shared GPU 3 one. Both pinned whole.
