@@ -910,6 +910,16 @@ services:
     # mamba_usage >= 0.95 sustained.
     # 2026-11-03: --enable-priority-scheduling --disable-priority-preemption, paired with the size tiers on both
     # Qwen3.8 proxies (inference-proxy #336); config_variant qwen38-gpu2-coloc-fa3-m96-prio. exp55 R10 basis.
+    # 2026-11-03: --mem-fraction-static 0.50 -> 0.65 (bf16 KV unchanged); config_variant
+    # qwen38-gpu2-coloc-fa3-m96-prio-mem065. gpu31 bare metal, this argv alone on a GPU (tee-bench exp55 r15/r15b/r15c):
+    # KV 418,822 -> 760,905 tokens; FB peak 76.7-77.2 -> 98.1-98.5 GB (+20.6-21.2 GiB). At the r7 coloc load (3 seeds
+    # pooled): <16k TTFT p95 0.88x, >=64k p50 0.73x, prefix-cached share +8.9 pts, 0 errors. Under 2x overload (r10)
+    # short TTFT is worse (p95 21 -> 31 s) because more long requests run at once.
+    # GPU 2 budget: 0.65 x 139.4 GiB + ~5.6 GiB engine overhead ~= 96.2 GiB, plus the privacy filter's 36 GiB cap
+    # (GPU_MEM_LIMIT_GB) = ~132 GiB worst case, under the 134 GiB abort rule. 7-day observed GPU 2 peak at 0.50 was
+    # 100 GiB. SGLang sizes KV from free memory at start, so KV is smaller by whatever the filter holds then.
+    # Roll back to 0.50 on: GPU 2 FB used > 134 GiB, engine or filter OOM/restart, filter gpu_memory_pressure 503s.
+    # fp8 KV was tested and rejected (exp55 r14: long-context multi-hop accuracy drop).
     # A later --mamba-ssm-dtype bfloat16 is a one-line addition here.
     command: >
       sglang serve
@@ -918,7 +928,7 @@ services:
       --revision 017b9c7af6b5689d5dd426a76e0bc077eb5ca20a
       --served-model-name Qwen/Qwen3.8-27B
       --tp 1
-      --mem-fraction-static 0.50
+      --mem-fraction-static 0.65
       --attention-backend fa3
       --mm-attention-backend fa3
       --chunked-prefill-size 4096
@@ -971,7 +981,7 @@ services:
               device_ids: ["2"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:Qwen/Qwen3.8-27B-FP8","served_model:Qwen/Qwen3.8-27B","model_revision:017b9c7af6b5689d5dd426a76e0bc077eb5ca20a","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:0","gpu_pair:2","config_variant:qwen38-gpu2-coloc-fa3-m96-prio","quantization:fp8","lora:abliterated-r1","sglang_revision:qwen38.27b.g561c8f3","engine_image:febfb971c735"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:Qwen/Qwen3.8-27B-FP8","served_model:Qwen/Qwen3.8-27B","model_revision:017b9c7af6b5689d5dd426a76e0bc077eb5ca20a","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:0","gpu_pair:2","config_variant:qwen38-gpu2-coloc-fa3-m96-prio-mem065","quantization:fp8","lora:abliterated-r1","sglang_revision:qwen38.27b.g561c8f3","engine_image:febfb971c735"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -990,12 +1000,12 @@ services:
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.instance: "0"
       nearai.otel.gpu_pair: "2"
-      nearai.otel.config_variant: "qwen38-gpu2-coloc-fa3-m96-prio"
+      nearai.otel.config_variant: "qwen38-gpu2-coloc-fa3-m96-prio-mem065"
       nearai.otel.quantization: "fp8"
       nearai.otel.chunk_size: "4096"
       nearai.otel.max_prefill_tokens: "4096"
       nearai.otel.mixed_chunk: "0"
-      nearai.otel.mem_fraction_static: "0.50"
+      nearai.otel.mem_fraction_static: "0.65"
       nearai.otel.max_mamba_cache_size: "96"
       nearai.otel.max_running_requests: "32"
       nearai.otel.max_queued_requests: "64"
@@ -2730,12 +2740,12 @@ configs:
                       instance: "0"
                       gpu_pair: "2"
                       model_revision: "017b9c7af6b5689d5dd426a76e0bc077eb5ca20a"
-                      config_variant: "qwen38-gpu2-coloc-fa3-m96-prio"
+                      config_variant: "qwen38-gpu2-coloc-fa3-m96-prio-mem065"
                       quantization: "fp8"
                       chunk_size: "4096"
                       max_prefill_tokens: "4096"
                       mixed_chunk: "0"
-                      mem_fraction_static: "0.50"
+                      mem_fraction_static: "0.65"
                       max_mamba_cache_size: "96"
                       max_running_requests: "32"
                       max_queued_requests: "64"
