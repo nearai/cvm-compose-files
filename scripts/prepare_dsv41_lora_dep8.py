@@ -50,6 +50,9 @@ class Layout(NamedTuple):
     # Engram tables in host RAM (one /dev/shm copy shared by every replica, read by image patch 05's CPU
     # gather) instead of HBM.
     host_engram: bool
+    # combo2x (gpu31 lever lab 2026-11-04, tee-bench evidence in docs/gpu13-dsv41-dep4.md): DSpark 5 with
+    # probabilistic drafting and block verification, and 8 torch threads per rank.
+    combo2x: bool = False
 
 
 # Engram tables (186 GiB FP8) in HBM, sharded across the eight DP ranks (~23 GiB each). DEP8 leaves 18M KV
@@ -58,10 +61,11 @@ class Layout(NamedTuple):
 DEP8: Final = Layout(
     Path("prod/DeepSeek-V4.1-Flash-1017-vLLM-DEP8-Abliterated.yaml"),
     "dsv41-flash-1017-vllm-dep8-abliterated",
-    "vllm0320-lora3p-cc2-w4a8-dep8-c8192-dspark3-mr64-engram-hbm",
+    "vllm0320-lora3p-cc2-w4a8-dep8-c8192-dspark5pb-mr64-engram-hbm-omp8",
     "ONE vLLM DEP8 replica",
     (("r1", tuple(range(GPUS))),),
     False,
+    True,
 )
 # A DEP4 replica cannot hold the tables next to its weights (82 GiB/GPU; tables in HBM left no KV pool on
 # v0.0.517), so both replicas share one host copy. Patch 05 gathers rows on the CPU and copies them to the
@@ -115,6 +119,14 @@ def replica_of(layout: Layout, rank: int) -> tuple[int, str, tuple[int, ...]]:
     raise ValueError(f"rank {rank} is in no replica")
 
 
+# DSpark 5, drafts sampled from the draft distribution, verified as a block: mean accepted length 2.7 -> 3.5
+# on the gpu31 lab's prod-mix load (InferenceX's setting; its golden AL with thinking on is 3.51).
+SPEC_COMBO2X: Final = (
+    """--speculative-config '{"method":"dspark","num_speculative_tokens":5,"draft_sample_method":"probabilistic","""
+    """"rejection_sample_method":"block","enable_adaptive_verification":false}'"""
+)
+
+
 def engine_command(layout: Layout, rank: int) -> str:
     index, _, ranks = replica_of(layout, rank)
     lora = json.dumps({"name": ADAPTER_ID, "path": ADAPTER_PATH, "base_model_name": BASE_ID}, separators=(",", ":"))
@@ -151,7 +163,7 @@ def engine_command(layout: Layout, rank: int) -> str:
         "--reasoning-parser deepseek_v41",
         "--tool-call-parser deepseek_v41",
         "--enable-auto-tool-choice",
-        """--speculative-config '{"method":"dspark","num_speculative_tokens":3}'""",
+        SPEC_COMBO2X if layout.combo2x else """--speculative-config '{"method":"dspark","num_speculative_tokens":3}'""",
         "--enable-lora --max-loras 1 --max-cpu-loras 1 --max-lora-rank 8 --lora-target-modules wo_b",
         f"--lora-modules '{lora}'",
     ]
@@ -459,6 +471,12 @@ services:
             )
         if len(layout.replicas) > 1:
             replica_env += f"      - VLLM_DP_MASTER_PORT={29600 + 100 * index}\n"
+        if layout.combo2x:
+            replica_env += (
+                "      # vLLM gives each worker 1 torch thread, which made weight loading single-threaded; 8 per rank\n"
+                "      # (gpu31 lab 2026-11-04: weight load 330 s -> 45 s).\n"
+                "      - OMP_NUM_THREADS=8\n"
+            )
         out.append(f"""  {svc}:
     <<: *dsv41-engine-common
     container_name: {svc}
