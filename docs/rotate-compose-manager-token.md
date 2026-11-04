@@ -105,17 +105,17 @@ compose-manager again. A timestamped backup
 followed by the same recreate command in the mechanism writeup) is the
 fallback if the compose file itself cannot be re-run.
 
-## Give Brave a heads-up before running
+## Give the external verifier's owners a heads-up before running
 
-Brave's public verifier watches the attestation report's append-only actions
+The external verifier watches the attestation report's append-only actions
 log, which records every `compose_up` (`timestamp`, `action`, `tag`,
 `commit`, `file`, `file_sha256`, `services`) — it will see this rotation
 happen (file `prod/rotate-compose-manager-token.yaml`) even though the token
 **value** is never recorded there or anywhere else (`env` values only ever
 reach compose-manager's short-lived per-call temp env file, deleted when the
 request's stream ends — never written to git, the action log, or any log
-line). Coordinate with Brave before running this in prod so an expected
-`compose_up` entry doesn't read as a surprise.
+line). Coordinate with the external verifier's owners before running this in
+prod so an expected `compose_up` entry doesn't read as a surprise.
 
 ## Inner script
 

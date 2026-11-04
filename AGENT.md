@@ -194,7 +194,7 @@ Key vars and what breaks if omitted:
 - `PROXY_TOKEN` — Bearer auth for inference-proxy. Missing → 401.
 - `CLOUD_API_USAGE_TOKEN` — usage reporting to `/v1/internal/usage`. Missing → reporting silently skipped (no fallback; legacy `/v1/usage` was removed).
 - `MODEL_PROXY_TOKEN` — registrar auth for model-proxy. Missing → backend disappears from `/backends/count`.
-- `WEB_CONTEXT_SEARCH_URL` / `WEB_CONTEXT_SEARCH_API_KEY` — Brave web search agent loop. Missing → 400s.
+- `WEB_CONTEXT_SEARCH_URL` / `WEB_CONTEXT_SEARCH_API_KEY` — web search agent loop. Missing → 400s.
 - `HUGGING_FACE_HUB_TOKEN` — gated model downloads.
 - `MONITORING_INGEST_TOKEN` — OTel collector export auth. Missing → metrics don't ship.
 - `HOST_IP`, `CVM_HOST`, `CVM_NAME`, `DD_HOSTNAME`, `ENV` — labeling. Missing → Grafana log and metric dimensions are empty or incomplete.
