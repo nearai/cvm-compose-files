@@ -1,0 +1,142 @@
+--- a/vllm/models/deepseek_v41/common/engram.py
++++ b/vllm/models/deepseek_v41/common/engram.py
+@@ -83,6 +83,9 @@
+ 
+ # NEAR (10-27): CC-safe host Engram tables, see ParallelEngramEmbedding._near_cpu_lookup.
+ _NEAR_CPU_GATHER = os.environ.get("VLLM_NEAR_ENGRAM_CPU_GATHER") == "1"
++# NEAR (11-04): one host sync per step for every Engram layer, gather into pinned
++# buffers, async H2D. Copies only: the GPU still never reads host memory.
++_NEAR_FAST_GATHER = _NEAR_CPU_GATHER and os.environ.get("VLLM_NEAR_ENGRAM_FAST_GATHER") == "1"
+ _NEAR_READY = ("w", "s")
+ 
+ # Per-rank token slot from which the Engram DP exchange switches from peer
+@@ -1289,6 +1292,57 @@
+         if heads < local_heads:
+             dest[:, heads:].zero_()
+ 
++    def _near_bufs(self, n: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
++        bufs = getattr(self, "_near_pinned", None)
++        if bufs is None or bufs[0].shape[0] < n:
++            cap = max(n, 1 << 16)
++            bufs = (
++                torch.empty((cap, self.dim), dtype=torch.uint8, pin_memory=True),
++                torch.empty((cap, self.dim // self.block_size), dtype=torch.uint8, pin_memory=True),
++                torch.empty((cap,), dtype=torch.bool, pin_memory=True),
++            )
++            self._near_pinned = bufs
++        return bufs
++
++    def near_lookup_cpu_ids(self, ids_cpu: torch.Tensor, out: torch.Tensor) -> None:
++        """_near_cpu_lookup with the hash ids already on the host (one sync per step for
++        all layers): gather into this table's pinned buffers, copy to the GPU without
++        blocking, dequantize there. Each layer owns its buffers, and the next step's
++        host sync orders their reuse after these copies."""
++        num_tokens, local_heads = ids_cpu.shape[0], self.part_n_hash_cols
++        if num_tokens == 0:
++            return
++        head_end = min(self.head_start + local_heads, self.n_hash_cols)
++        ids = ids_cpu[:, self.head_start : head_end].to(torch.int64)
++        heads = ids.shape[1]
++        local = ids - self.vocab_start_idx
++        owned = (local >= 0) & (local < self.part_num_embeddings)
++        local = torch.where(owned, local, 0).reshape(-1)
++        n = local.numel()
++        if self._shared_memory is not None:
++            weight_cpu = self._shared_memory.weight
++            scale_cpu = self._shared_memory.weight_scale_inv
++        else:
++            weight_cpu, scale_cpu = self.weight.data, self.weight_scale_inv.data
++        vbuf, sbuf, obuf = self._near_bufs(n)
++        vals, scs, own = vbuf[:n], sbuf[:n], obuf[:n]
++        torch.index_select(weight_cpu.view(torch.uint8), 0, local, out=vals)
++        torch.index_select(scale_cpu, 0, local, out=scs)
++        own.copy_(owned.reshape(-1))
++        dev = out.device
++        values = vals.to(dev, non_blocking=True).view(torch.float8_e4m3fn).float()
++        scale = torch.exp2(scs.to(dev, non_blocking=True).float() - 127.0)
++        keep = own.to(dev, non_blocking=True)
++        dim, block = self.dim, self.block_size
++        deq = (values.view(-1, dim // block, block) * scale.unsqueeze(-1)).view(
++            num_tokens, heads, dim
++        )
++        deq = deq * keep.view(num_tokens, heads, 1)
++        dest = out.view(num_tokens, local_heads, dim)
++        dest[:, :heads].copy_(deq)
++        if heads < local_heads:
++            dest[:, heads:].zero_()
++
+     def forward(self, indices: torch.Tensor) -> torch.Tensor:
+         """indices: [num_tokens, n_hash_cols] -> [num_tokens, n_hash_cols, dim]
+         bf16, gathered from all shards for this replica's tokens."""
+@@ -1514,6 +1568,25 @@
+     tl.store(scales + layer * scales_stride + offset, scale)
+ 
+ 
++# Engram layers staged by near_stage_engram_rows; set by the model (module-level so
++# the eager-break replay closure only carries tensors).
++_NEAR_STAGE_ENGRAMS: list = []
++
++
++@eager_break_during_capture
++def near_stage_engram_rows(gathered_hashes: torch.Tensor) -> None:
++    """NEAR fast gather for every Engram layer of this step: one host sync, then
++    each layer gathers into its pinned buffers and copies to its staging rows.
++    Eager break: the host sync and copies stay outside captured CUDA graphs, and
++    the outputs are the layers' fixed staging buffers."""
++    engrams = _NEAR_STAGE_ENGRAMS
++    if not engrams or gathered_hashes.shape[0] == 0:
++        return
++    hashes_cpu = gathered_hashes.cpu()
++    for engram in engrams:
++        engram.near_prepare_embeddings_cpu(hashes_cpu[:, engram.layer_hash_index])
++
++
+ class EngramBatch(nn.Module):
+     """Stage every Engram layer's WKV input as MXFP8 with one exchange.
+ 
+@@ -1728,6 +1801,14 @@
+         if self._prefetch_stream is None:
+             self._prefetch_stream = torch.cuda.Stream(device=self.staged_rows.device)
+         self._prefetch_done = torch.cuda.Event()
++
++    def near_prepare_embeddings_cpu(self, hash_ids_cpu: torch.Tensor) -> None:
++        """NEAR fast gather: stage rows from host-side hash ids (see near_lookup_cpu_ids)."""
++        rows = self.staged_rows[: hash_ids_cpu.shape[0]]
++        assert rows.shape[0] == hash_ids_cpu.shape[0], "engram staging buffer too small"
++        self.embed_tokens.near_lookup_cpu_ids(hash_ids_cpu, rows)
++        if self._prefetch_done is not None:
++            self._prefetch_done.record(torch.cuda.current_stream())
+ 
+     def prepare_embeddings(self, hash_ids: torch.Tensor) -> None:
+         """Look up, or prefetch from host memory, rows before the decoder layers
+--- a/vllm/models/deepseek_v41/nvidia/model.py
++++ b/vllm/models/deepseek_v41/nvidia/model.py
+@@ -98,6 +98,8 @@
+ from vllm.v1.attention.backends.registry import AttentionBackendEnum
+ from vllm.v1.worker.ubatching import dbo_current_ubatch_id
+ 
++from ..common import engram as _near_engram_mod
++from ..common.engram import _NEAR_FAST_GATHER, near_stage_engram_rows
+ from ..common.engram import (
+     Engram,
+     EngramBatch,
+@@ -986,12 +988,19 @@
+                     gathered_hashes = gather_engram_hashes(
+                         engram_hashes, dp_shared_memory=self.engram_dp_shared_memory
+                     )
++                    near_engrams = []
+                     for layer in islice(self.layers, self.start_layer, self.end_layer):
+                         engram = getattr(layer, "engram", None)
+                         if engram is not None:
++                            if _NEAR_FAST_GATHER and engram.embed_tokens.cpu_offload:
++                                near_engrams.append(engram)
++                                continue
+                             engram.prepare_embeddings(
+                                 gathered_hashes[:, engram.layer_hash_index]
+                             )
++                    if near_engrams:
++                        _near_engram_mod._NEAR_STAGE_ENGRAMS[:] = near_engrams
++                        near_stage_engram_rows(gathered_hashes)
+ 
+         full_num_tokens = positions.shape[0]
+         if self.use_sequence_parallel:

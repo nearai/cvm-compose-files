@@ -14,12 +14,15 @@ LABEL nearai.vllm.cc_disable_uva="nearai; VLLM_NEAR_DISABLE_UVA=1: under TDX + G
 LABEL nearai.vllm.cc_disable_uva_patch_sha256="c1372a40c99bac3774f38756f32b696bb3e0324badb527f857e3ff88285f4ba5"
 LABEL nearai.vllm.engram_cpu_gather="nearai; VLLM_NEAR_ENGRAM_CPU_GATHER=1: host Engram tables shared in /dev/shm, CPU gather + H2D copy instead of GPU reads of host memory"
 LABEL nearai.vllm.engram_cpu_gather_patch_sha256="2d8c7e4c47ee6ed72a456e053768811a0f11d82d1ace2ee4b4246879ece53575"
+LABEL nearai.vllm.engram_fast_gather="nearai; VLLM_NEAR_ENGRAM_FAST_GATHER=1 (with CPU gather): one host sync per step for every Engram layer, gather into pinned buffers, async H2D"
+LABEL nearai.vllm.engram_fast_gather_patch_sha256="5c85bc4f5ebcf67f58251495dd10e53ecc7ba5fc09c6b5484a38fe53e4e06c02"
 
 COPY 01-dsv41-supports-lora-wo-b.patch /tmp/01-dsv41-supports-lora-wo-b.patch
 COPY 02-moe-lora-only-when-targeted.patch /tmp/02-moe-lora-only-when-targeted.patch
 COPY 03-decoder-replay-lora-rows.patch /tmp/03-decoder-replay-lora-rows.patch
 COPY 04-cc-disable-uva.patch /tmp/04-cc-disable-uva.patch
 COPY 05-engram-cpu-gather.patch /tmp/05-engram-cpu-gather.patch
+COPY 06-engram-fast-gather.patch /tmp/06-engram-fast-gather.patch
 COPY security-upgrades.txt /tmp/security-upgrades.txt
 
 # The patches are against the image's own files: refuse to build if any upstream file differs.
@@ -34,6 +37,8 @@ RUN cd /usr/local/lib/python3.12/dist-packages \
     && echo "2d8c7e4c47ee6ed72a456e053768811a0f11d82d1ace2ee4b4246879ece53575  /tmp/05-engram-cpu-gather.patch" | sha256sum --check --strict \
     && echo "9501968a99185c29094610e252d00569afae20e59313c8e2e197e07370500aef  vllm/utils/platform_utils.py" | sha256sum --check --strict \
     && echo "80d6f14973c99be431029e0fba4a6a784a428501bd6ba1726cff0879e0e1627f  vllm/models/deepseek_v41/common/engram.py" | sha256sum --check --strict \
+    && echo "5c85bc4f5ebcf67f58251495dd10e53ecc7ba5fc09c6b5484a38fe53e4e06c02  /tmp/06-engram-fast-gather.patch" | sha256sum --check --strict \
+    && echo "5fe8b4a758ab586dd24ac218873a2c064cd3d72687b196dec4edf1b5e53f83a3  vllm/models/deepseek_v41/nvidia/model.py" | sha256sum --check --strict \
     && patch -p1 --dry-run < /tmp/01-dsv41-supports-lora-wo-b.patch \
     && patch -p1 < /tmp/01-dsv41-supports-lora-wo-b.patch \
     && patch -p1 --dry-run < /tmp/02-moe-lora-only-when-targeted.patch \
@@ -44,21 +49,27 @@ RUN cd /usr/local/lib/python3.12/dist-packages \
     && patch -p1 < /tmp/04-cc-disable-uva.patch \
     && patch -p1 --dry-run < /tmp/05-engram-cpu-gather.patch \
     && patch -p1 < /tmp/05-engram-cpu-gather.patch \
+    && echo "ac135d9f372084c4795b7e97ddba41cc40007a6e02fabfe23d1ee1f137bc33cf  vllm/models/deepseek_v41/common/engram.py" | sha256sum --check --strict \
+    && patch -p1 --dry-run < /tmp/06-engram-fast-gather.patch \
+    && patch -p1 < /tmp/06-engram-fast-gather.patch \
     && grep -Fq 'SupportsLoRA,' vllm/models/deepseek_v41/nvidia/vl_model.py \
     && grep -Fq 'def _is_moe_lora_target' vllm/model_executor/layers/fused_moe/layer.py \
     && grep -Fq 'replay graphs hold no LoRA mapping' vllm/models/deepseek_v41/decoder_replay_layers.py \
     && grep -Fq 'VLLM_NEAR_DISABLE_UVA' vllm/utils/platform_utils.py \
     && grep -Fq 'def _near_cpu_lookup' vllm/models/deepseek_v41/common/engram.py \
+    && grep -Fq 'def near_stage_engram_rows' vllm/models/deepseek_v41/common/engram.py \
+    && grep -Fq 'near_stage_engram_rows(gathered_hashes)' vllm/models/deepseek_v41/nvidia/model.py \
     && python3 -m compileall -q \
         vllm/models/deepseek_v41/nvidia/vl_model.py \
         vllm/model_executor/layers/fused_moe/layer.py \
         vllm/models/deepseek_v41/decoder_replay_layers.py \
         vllm/utils/platform_utils.py \
         vllm/models/deepseek_v41/common/engram.py \
+        vllm/models/deepseek_v41/nvidia/model.py \
     && echo "00772204fb79e8dd9e83f82bd042ac3898075603d480ef7f171a28d9d48760b4  /tmp/security-upgrades.txt" | sha256sum --check --strict \
     && python3 -m pip install --no-cache-dir --no-deps --require-hashes -r /tmp/security-upgrades.txt \
     && python3 -c "import certifi; assert certifi.__version__ == '2026.10.18'" \
     && python3 -c "from pip._vendor import certifi; assert certifi.__version__ >= '2026.10.18'" \
     && uv --version | grep -Fq "uv 0.13.4" \
     && rm /tmp/01-dsv41-supports-lora-wo-b.patch /tmp/02-moe-lora-only-when-targeted.patch /tmp/03-decoder-replay-lora-rows.patch \
-        /tmp/04-cc-disable-uva.patch /tmp/05-engram-cpu-gather.patch /tmp/security-upgrades.txt
+        /tmp/04-cc-disable-uva.patch /tmp/05-engram-cpu-gather.patch /tmp/06-engram-fast-gather.patch /tmp/security-upgrades.txt
