@@ -19,6 +19,7 @@
 # regression vs the pre-deploy baseline, queue growth, or mamba_usage >= 0.95 sustained.
 # 2026-11-03: --enable-priority-scheduling --disable-priority-preemption on the engine plus
 # inference-proxy 41e8602f (#336) size tiers on both proxies; engine config_variant gains -prio.
+# 2026-11-04: both proxies move to inference-proxy 53d79441 (#337), which keeps #336's size tiers.
 # exp55 R10 (gpu31, no preemption): <16k p95 TTFT ~127 s -> ~19-24 s, >=64k p95 +10-15%, 0 errors.
 # Not included yet: --mamba-ssm-dtype bfloat16 (under test; add it as one line next to
 # --max-mamba-cache-size and bump the engine config_variant).
@@ -180,7 +181,7 @@ x-nvidia: &nvidia
       hard: 65535
 
 x-vllm-proxy-common: &vllm-proxy-common
-  image: nearaidev/vllm-proxy-rs@sha256:00664bd652b34e5054a566353b5ab635cfe9474ed7046aae7e14bfa60f68b17f
+  image: nearaidev/vllm-proxy-rs@sha256:0be4ee8f40a2bf71a6e2fab1e780ad1a6e738ffb2085553f1ed4b85fcb944207
   user: root
   privileged: true
   <<: *nvidia
