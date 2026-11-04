@@ -63,7 +63,7 @@ services:
       retries: 30
 
   sage:
-    image: levantolabs/sage2-hopper-pod@sha256:32934a4b64a1290226f774c1c605b8c0baaa6dc619f5ec7aa381d9e50e5a3d50
+    image: levantolabs/sage2-hopper-pod@sha256:2385b14dfb6bbe6acf9edfae6268d4e23eca1250c8bb2c816f1b09d60eba1cca
     container_name: sage
     pull_policy: never
     restart: unless-stopped
@@ -84,6 +84,8 @@ services:
       SAGE_LOG_AWS_SECRET_ACCESS_KEY: ${SAGE_LOG_AWS_SECRET_ACCESS_KEY}
       # Enables Sage's content-free /internal/diagnostics endpoint.
       SAGE_ADMIN_TOKEN: ${SAGE_ADMIN_TOKEN}
+      # Web search key for Sage's grounding (Levanto's key). Empty or unset turns grounding off.
+      BRAVE_API_KEY: ${SAGE_SEARCH_API_KEY}
       # Same GPU as device_ids below (exactly one GPU, as the image requires).
       NVIDIA_VISIBLE_DEVICES: GPU-bafbdde0-cd41-8379-fa93-149864963329
     volumes:
