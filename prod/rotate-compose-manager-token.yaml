@@ -61,8 +61,9 @@
 #     report_data records only {timestamp, action, tag, commit, file,
 #     file_sha256, services} — never env values (verified: DeploymentAction in
 #     src/main.rs has no env field, and the `info!` call that logs env_files
-#     logs only their paths). Brave's public verifier DOES see the compose_up
-#     action itself (file + file_sha256) — give Brave a heads-up before running.
+#     logs only their paths). The external verifier DOES see the compose_up
+#     action itself (file + file_sha256) — give the external verifier's owners
+#     a heads-up before running.
 #
 # Exit codes from the `rotate-token` container (compose/up's own response only
 # confirms the container STARTED — check the container's own exit code via

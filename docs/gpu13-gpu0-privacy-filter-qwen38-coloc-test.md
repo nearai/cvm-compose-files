@@ -56,9 +56,9 @@ PR #382 changes the `proxy-qwen38-27b` image and also edits `prod/small-models.y
 
 If the abort rule fires, `compose/down` only `model-sg-qwen38-27b-fp8-tp1-coloc`, then follow up with a PR removing it from the pool. Before `compose/down`, dry-run `compose/up` on the same merged tag and file so Compose Manager has that checkout; `compose/down` does not check out a tag and ignores `dry_run`. Confirm the engine is gone and the filter continues to classify; with r2 removed, Qwen3.8 is unserved on that host until it is placed again. The hardened filter can stay.
 
-## Brave
+## External verifier
 
-gpu13's small-models file is already not approvable for Brave, and gpu13 is not sampled. This trial has no Brave impact.
+gpu13's small-models file is already not approvable for the external verifier, and gpu13 is not sampled. This trial has no external verifier impact.
 
 ## Scope of the result
 
