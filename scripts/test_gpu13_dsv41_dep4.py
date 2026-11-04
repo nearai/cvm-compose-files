@@ -50,17 +50,44 @@ def environment(block: str) -> list[str]:
     return [line.strip()[2:] for line in env.splitlines() if line.strip().startswith("- ")]
 
 
+# gpu13's only intended differences from gpu02's r2 ranks (combo4, gpu31 lab 2026-11-04):
+# 8 torch threads per rank, patch 06 fast Engram gather, DSpark 5 probabilistic + block.
+COMBO4_ENV_OLD: Final = "      - VLLM_NEAR_ENGRAM_CPU_GATHER=1\n"
+COMBO4_ENV_RE: Final = re.compile(
+    r"      - VLLM_NEAR_ENGRAM_CPU_GATHER=1\n"
+    r"      # gpu13 only \(combo4.*\n(?:      #.*\n)*      - OMP_NUM_THREADS=8\n"
+    r"      # gpu13 only: image patch 06.*\n(?:      #.*\n)*      - VLLM_NEAR_ENGRAM_FAST_GATHER=1\n"
+)
+COMBO4_SPEC: Final = (
+    """--speculative-config '{"method":"dspark","num_speculative_tokens":3}'""",
+    """--speculative-config '{"method":"dspark","num_speculative_tokens":5,"draft_sample_method":"probabilistic","rejection_sample_method":"block","enable_adaptive_verification":false}'""",
+)
+COMBO4_VARIANT: Final = (
+    "dep4x2-c8192-dspark3-mr64-engram-host-cpugather",
+    "dep4x2-c8192-dspark5pb-mr64-engram-host-cpugather-omp8-fastgather",
+)
+
+
+def undo_combo4(case: unittest.TestCase, block: str) -> str:
+    """Revert exactly the combo4 changes in one gpu13 rank block; each must appear once (labels twice)."""
+    block, count = COMBO4_ENV_RE.subn(COMBO4_ENV_OLD, block)
+    case.assertEqual(count, 1)
+    case.assertEqual(block.count(COMBO4_SPEC[1]), 1)
+    case.assertEqual(block.count(COMBO4_VARIANT[1]), 2)
+    return block.replace(COMBO4_SPEC[1], COMBO4_SPEC[0]).replace(COMBO4_VARIANT[1], COMBO4_VARIANT[0])
+
+
 class Gpu13Dsv41Dep4Test(unittest.TestCase):
     def setUp(self) -> None:
         self.small = (ROOT / SMALL).read_text()
         self.pack = (ROOT / PACK).read_text()
 
-    def test_rank_blocks_match_gpu02_r2_with_device_order(self) -> None:
+    def test_rank_blocks_match_gpu02_r2_with_device_order_and_combo4(self) -> None:
         gpu13 = service_blocks(self.small)
         gpu02 = service_blocks(self.pack)
         for name in RANKS:
             with self.subTest(rank=name):
-                block = gpu13[name]
+                block = undo_combo4(self, gpu13[name])
                 self.assertEqual(block.count("      - CUDA_DEVICE_ORDER=PCI_BUS_ID\n"), 1)
                 self.assertRegex(block, r"(?m)^      - CUDA_VISIBLE_DEVICES=[4-7]\n      # gpu13 only:")
                 stripped = re.sub(r"      # gpu13 only:.*\n(?:      #.*\n)*      - CUDA_DEVICE_ORDER=PCI_BUS_ID\n", "", block, count=1)

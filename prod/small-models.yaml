@@ -1283,6 +1283,12 @@ services:
       - VLLM_NEAR_DISABLE_UVA=1
       # Image patch 05: Engram rows gathered on the CPU from the shared /dev/shm copy.
       - VLLM_NEAR_ENGRAM_CPU_GATHER=1
+      # gpu13 only (combo4, gpu31 lab 2026-11-04): vLLM gives each worker 1 torch thread, which made the
+      # Engram CPU gather and weight loading single-threaded; 8 per rank (weight load 330 s -> 45 s).
+      - OMP_NUM_THREADS=8
+      # gpu13 only: image patch 06, one host sync per step for both Engram layers, pinned buffers, async H2D.
+      # A no-op on images without patch 06.
+      - VLLM_NEAR_ENGRAM_FAST_GATHER=1
       - VLLM_DP_MASTER_PORT=29700
       # nvcc on the CPU instead of humming's nvrtc helper (a CUDA context per kernel, which queues under CC).
       - HUMMING_COMPILER=nvcc
@@ -1309,7 +1315,7 @@ services:
       --reasoning-parser deepseek_v41
       --tool-call-parser deepseek_v41
       --enable-auto-tool-choice
-      --speculative-config '{"method":"dspark","num_speculative_tokens":3}'
+      --speculative-config '{"method":"dspark","num_speculative_tokens":5,"draft_sample_method":"probabilistic","rejection_sample_method":"block","enable_adaptive_verification":false}'
       --enable-lora --max-loras 1 --max-cpu-loras 1 --max-lora-rank 8 --lora-target-modules wo_b
       --lora-modules '{"name":"deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated","path":"/root/.cache/huggingface/hub/models--UnderTides--DeepSeek-V4.1-Flash-1017-heretic-lora/snapshots/196c06e3c2aad43e9688d16fa993b4333f69358a","base_model_name":"deepseek-ai/DeepSeek-V4.1-Flash-1017"}'
       --engram-config '{"cpu_offload":true,"dp_shared_memory":true}'
@@ -1317,7 +1323,7 @@ services:
       --host 0.0.0.0
       --port 9104
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:deepseek-ai/DeepSeek-V4.1-Flash-1017","replica:r2","dp_rank:0","gpu:4","deployment:dsv41-flash-1017-vllm-dep4x2-abliterated","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0320-lora3p-cc2-w4a8-dep4x2-c8192-dspark3-mr64-engram-host-cpugather"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:deepseek-ai/DeepSeek-V4.1-Flash-1017","replica:r2","dp_rank:0","gpu:4","deployment:dsv41-flash-1017-vllm-dep4x2-abliterated","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0320-lora3p-cc2-w4a8-dep4x2-c8192-dspark5pb-mr64-engram-host-cpugather-omp8-fastgather"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
@@ -1333,7 +1339,7 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.ppcie: "true"
-      nearai.otel.config_variant: "vllm0320-lora3p-cc2-w4a8-dep4x2-c8192-dspark3-mr64-engram-host-cpugather"
+      nearai.otel.config_variant: "vllm0320-lora3p-cc2-w4a8-dep4x2-c8192-dspark5pb-mr64-engram-host-cpugather-omp8-fastgather"
 
   model-vllm-dsv41-dp5:
     <<: *dsv41-engine-common
@@ -1358,6 +1364,12 @@ services:
       - VLLM_NEAR_DISABLE_UVA=1
       # Image patch 05: Engram rows gathered on the CPU from the shared /dev/shm copy.
       - VLLM_NEAR_ENGRAM_CPU_GATHER=1
+      # gpu13 only (combo4, gpu31 lab 2026-11-04): vLLM gives each worker 1 torch thread, which made the
+      # Engram CPU gather and weight loading single-threaded; 8 per rank (weight load 330 s -> 45 s).
+      - OMP_NUM_THREADS=8
+      # gpu13 only: image patch 06, one host sync per step for both Engram layers, pinned buffers, async H2D.
+      # A no-op on images without patch 06.
+      - VLLM_NEAR_ENGRAM_FAST_GATHER=1
       - VLLM_DP_MASTER_PORT=29700
       # nvcc on the CPU instead of humming's nvrtc helper (a CUDA context per kernel, which queues under CC).
       - HUMMING_COMPILER=nvcc
@@ -1384,7 +1396,7 @@ services:
       --reasoning-parser deepseek_v41
       --tool-call-parser deepseek_v41
       --enable-auto-tool-choice
-      --speculative-config '{"method":"dspark","num_speculative_tokens":3}'
+      --speculative-config '{"method":"dspark","num_speculative_tokens":5,"draft_sample_method":"probabilistic","rejection_sample_method":"block","enable_adaptive_verification":false}'
       --enable-lora --max-loras 1 --max-cpu-loras 1 --max-lora-rank 8 --lora-target-modules wo_b
       --lora-modules '{"name":"deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated","path":"/root/.cache/huggingface/hub/models--UnderTides--DeepSeek-V4.1-Flash-1017-heretic-lora/snapshots/196c06e3c2aad43e9688d16fa993b4333f69358a","base_model_name":"deepseek-ai/DeepSeek-V4.1-Flash-1017"}'
       --engram-config '{"cpu_offload":true,"dp_shared_memory":true}'
@@ -1392,7 +1404,7 @@ services:
       --host 0.0.0.0
       --port 9105
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:deepseek-ai/DeepSeek-V4.1-Flash-1017","replica:r2","dp_rank:1","gpu:5","deployment:dsv41-flash-1017-vllm-dep4x2-abliterated","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0320-lora3p-cc2-w4a8-dep4x2-c8192-dspark3-mr64-engram-host-cpugather"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:deepseek-ai/DeepSeek-V4.1-Flash-1017","replica:r2","dp_rank:1","gpu:5","deployment:dsv41-flash-1017-vllm-dep4x2-abliterated","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0320-lora3p-cc2-w4a8-dep4x2-c8192-dspark5pb-mr64-engram-host-cpugather-omp8-fastgather"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
@@ -1408,7 +1420,7 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.ppcie: "true"
-      nearai.otel.config_variant: "vllm0320-lora3p-cc2-w4a8-dep4x2-c8192-dspark3-mr64-engram-host-cpugather"
+      nearai.otel.config_variant: "vllm0320-lora3p-cc2-w4a8-dep4x2-c8192-dspark5pb-mr64-engram-host-cpugather-omp8-fastgather"
 
   model-vllm-dsv41-dp6:
     <<: *dsv41-engine-common
@@ -1433,6 +1445,12 @@ services:
       - VLLM_NEAR_DISABLE_UVA=1
       # Image patch 05: Engram rows gathered on the CPU from the shared /dev/shm copy.
       - VLLM_NEAR_ENGRAM_CPU_GATHER=1
+      # gpu13 only (combo4, gpu31 lab 2026-11-04): vLLM gives each worker 1 torch thread, which made the
+      # Engram CPU gather and weight loading single-threaded; 8 per rank (weight load 330 s -> 45 s).
+      - OMP_NUM_THREADS=8
+      # gpu13 only: image patch 06, one host sync per step for both Engram layers, pinned buffers, async H2D.
+      # A no-op on images without patch 06.
+      - VLLM_NEAR_ENGRAM_FAST_GATHER=1
       - VLLM_DP_MASTER_PORT=29700
       # nvcc on the CPU instead of humming's nvrtc helper (a CUDA context per kernel, which queues under CC).
       - HUMMING_COMPILER=nvcc
@@ -1459,7 +1477,7 @@ services:
       --reasoning-parser deepseek_v41
       --tool-call-parser deepseek_v41
       --enable-auto-tool-choice
-      --speculative-config '{"method":"dspark","num_speculative_tokens":3}'
+      --speculative-config '{"method":"dspark","num_speculative_tokens":5,"draft_sample_method":"probabilistic","rejection_sample_method":"block","enable_adaptive_verification":false}'
       --enable-lora --max-loras 1 --max-cpu-loras 1 --max-lora-rank 8 --lora-target-modules wo_b
       --lora-modules '{"name":"deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated","path":"/root/.cache/huggingface/hub/models--UnderTides--DeepSeek-V4.1-Flash-1017-heretic-lora/snapshots/196c06e3c2aad43e9688d16fa993b4333f69358a","base_model_name":"deepseek-ai/DeepSeek-V4.1-Flash-1017"}'
       --engram-config '{"cpu_offload":true,"dp_shared_memory":true}'
@@ -1467,7 +1485,7 @@ services:
       --host 0.0.0.0
       --port 9106
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:deepseek-ai/DeepSeek-V4.1-Flash-1017","replica:r2","dp_rank:2","gpu:6","deployment:dsv41-flash-1017-vllm-dep4x2-abliterated","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0320-lora3p-cc2-w4a8-dep4x2-c8192-dspark3-mr64-engram-host-cpugather"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:deepseek-ai/DeepSeek-V4.1-Flash-1017","replica:r2","dp_rank:2","gpu:6","deployment:dsv41-flash-1017-vllm-dep4x2-abliterated","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0320-lora3p-cc2-w4a8-dep4x2-c8192-dspark5pb-mr64-engram-host-cpugather-omp8-fastgather"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
@@ -1483,7 +1501,7 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.ppcie: "true"
-      nearai.otel.config_variant: "vllm0320-lora3p-cc2-w4a8-dep4x2-c8192-dspark3-mr64-engram-host-cpugather"
+      nearai.otel.config_variant: "vllm0320-lora3p-cc2-w4a8-dep4x2-c8192-dspark5pb-mr64-engram-host-cpugather-omp8-fastgather"
 
   model-vllm-dsv41-dp7:
     <<: *dsv41-engine-common
@@ -1508,6 +1526,12 @@ services:
       - VLLM_NEAR_DISABLE_UVA=1
       # Image patch 05: Engram rows gathered on the CPU from the shared /dev/shm copy.
       - VLLM_NEAR_ENGRAM_CPU_GATHER=1
+      # gpu13 only (combo4, gpu31 lab 2026-11-04): vLLM gives each worker 1 torch thread, which made the
+      # Engram CPU gather and weight loading single-threaded; 8 per rank (weight load 330 s -> 45 s).
+      - OMP_NUM_THREADS=8
+      # gpu13 only: image patch 06, one host sync per step for both Engram layers, pinned buffers, async H2D.
+      # A no-op on images without patch 06.
+      - VLLM_NEAR_ENGRAM_FAST_GATHER=1
       - VLLM_DP_MASTER_PORT=29700
       # nvcc on the CPU instead of humming's nvrtc helper (a CUDA context per kernel, which queues under CC).
       - HUMMING_COMPILER=nvcc
@@ -1534,7 +1558,7 @@ services:
       --reasoning-parser deepseek_v41
       --tool-call-parser deepseek_v41
       --enable-auto-tool-choice
-      --speculative-config '{"method":"dspark","num_speculative_tokens":3}'
+      --speculative-config '{"method":"dspark","num_speculative_tokens":5,"draft_sample_method":"probabilistic","rejection_sample_method":"block","enable_adaptive_verification":false}'
       --enable-lora --max-loras 1 --max-cpu-loras 1 --max-lora-rank 8 --lora-target-modules wo_b
       --lora-modules '{"name":"deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated","path":"/root/.cache/huggingface/hub/models--UnderTides--DeepSeek-V4.1-Flash-1017-heretic-lora/snapshots/196c06e3c2aad43e9688d16fa993b4333f69358a","base_model_name":"deepseek-ai/DeepSeek-V4.1-Flash-1017"}'
       --engram-config '{"cpu_offload":true,"dp_shared_memory":true}'
@@ -1542,7 +1566,7 @@ services:
       --host 0.0.0.0
       --port 9107
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:deepseek-ai/DeepSeek-V4.1-Flash-1017","replica:r2","dp_rank:3","gpu:7","deployment:dsv41-flash-1017-vllm-dep4x2-abliterated","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0320-lora3p-cc2-w4a8-dep4x2-c8192-dspark3-mr64-engram-host-cpugather"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:deepseek-ai/DeepSeek-V4.1-Flash-1017","replica:r2","dp_rank:3","gpu:7","deployment:dsv41-flash-1017-vllm-dep4x2-abliterated","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0320-lora3p-cc2-w4a8-dep4x2-c8192-dspark5pb-mr64-engram-host-cpugather-omp8-fastgather"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
@@ -1558,7 +1582,7 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.ppcie: "true"
-      nearai.otel.config_variant: "vllm0320-lora3p-cc2-w4a8-dep4x2-c8192-dspark3-mr64-engram-host-cpugather"
+      nearai.otel.config_variant: "vllm0320-lora3p-cc2-w4a8-dep4x2-c8192-dspark5pb-mr64-engram-host-cpugather-omp8-fastgather"
 
   # --- FLUX x1 (GPU 3, shared with small models) ---
 
