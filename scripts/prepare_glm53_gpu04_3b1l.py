@@ -92,6 +92,13 @@ def block(text: str, start: str, end: str, what: str) -> str:
     return text[i:j]
 
 
+def quoted_value(text: str, marker: str, what: str) -> str:
+    """The double-quoted value following `marker`; the marker must occur exactly once."""
+    if text.count(marker) != 1:
+        raise SystemExit(f"{what}: marker {marker!r} not found exactly once")
+    return text.split(marker, 1)[1].split('"', 1)[0]
+
+
 def long_replica(long_text: str) -> str:
     r2b = block(
         long_text,
@@ -122,7 +129,7 @@ def long_replica(long_text: str) -> str:
 
 def generate(text: str, long_text: str) -> str:
     l4 = long_replica(long_text)
-    long_variant = l4.split('nearai.otel.config_variant: "', 1)[1].split('"', 1)[0]
+    long_variant = quoted_value(l4, 'nearai.otel.config_variant: "', "l4 variant")
 
     # --- engines: r4 -> l4 ---
     r4 = block(
@@ -150,7 +157,7 @@ def generate(text: str, long_text: str) -> str:
         f"VLLM_BACKEND_URLS=http://{LONG_L4}:8000\n",
         "long proxy pool",
     )
-    long_proxy = once(long_proxy, '"port:8000"]}]', f'"port:{LONG_HTTP_PORT}","tier:long"]}}]', "long proxy log port")
+    long_proxy = once(long_proxy, '"port:8000"]}]', '"port:8000","tier:long"]}]', "long proxy log tag")
     long_proxy = once(long_proxy, 'nearai.otel.container_name: "proxy-glm53"', f'nearai.otel.container_name: "{LONG_PROXY}"', "long proxy otel name")
     text = text.replace(proxy, base_proxy + long_proxy)
 
@@ -206,7 +213,7 @@ def generate(text: str, long_text: str) -> str:
     new_job = job.replace(BASE_R4, LONG_L4)
     new_job = once(new_job, 'deployment: "glm53-flash-sgl-tp2x4"', 'deployment: "glm53-flash-sgl-tp4"', "l4 job deployment")
     new_job = once(new_job, 'instance: "4"', 'instance: "l4"', "l4 job instance")
-    base_variant = new_job.split('config_variant: "', 1)[1].split('"', 1)[0]
+    base_variant = quoted_value(new_job, 'config_variant: "', "l4 job base variant")
     new_job = once(new_job, f'config_variant: "{base_variant}"', f'config_variant: "{long_variant}"', "l4 job variant")
     text = text.replace(job, new_job)
     proxy_job = block(
@@ -216,7 +223,7 @@ def generate(text: str, long_text: str) -> str:
         "proxy scrape job",
     )
     long_job = proxy_job.replace("proxy-glm53", LONG_PROXY)
-    long_job = once(long_job, 'port: "8000"', f'port: "{LONG_HTTP_PORT}"', "long proxy job port")
+    long_job = once(long_job, '      port: "8000"\n', '      port: "8000"\n                      tier: "long"\n', "long proxy job tier")
     text = text.replace(proxy_job, proxy_job + long_job)
 
     return HEADER + text
@@ -408,6 +415,8 @@ NGINX_LONG_TLS: Final = """\
 
 
 def nginx(text: str) -> str:
+    if text.count("  nginx_conf:\n") != 1:
+        raise SystemExit("nginx conf: '  nginx_conf:' section marker not found exactly once")
     conf_start = text.index("  nginx_conf:\n")
     head, conf = text[:conf_start], text[conf_start:]
     conf = once(

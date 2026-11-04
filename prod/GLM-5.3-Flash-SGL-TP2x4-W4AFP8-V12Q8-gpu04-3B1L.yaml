@@ -577,7 +577,7 @@ services:
       - REPLICA_STATE_REDIS_CA_CERT=${REPLICA_STATE_REDIS_CA_CERT:-}
       - REPLICA_STATE_HOST_ID=${CVM_HOST:-}
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:z-ai/glm-5.3-flash","deployment:glm53-flash-sgl-tp2x4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8001","tier:long"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:z-ai/glm-5.3-flash","deployment:glm53-flash-sgl-tp2x4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","tier:long"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "inference-proxy"
       nearai.otel.service: "vllm-proxy"
@@ -1615,7 +1615,8 @@ configs:
                       host_machine: "${CVM_HOST}"
                       cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
-                      port: "8001"
+                      port: "8000"
+                      tier: "long"
         prometheus/self:
           config:
             scrape_configs:
