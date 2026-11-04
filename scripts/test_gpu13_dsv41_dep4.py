@@ -77,6 +77,15 @@ def undo_combo4(case: unittest.TestCase, block: str) -> str:
     return block.replace(COMBO4_SPEC[1], COMBO4_SPEC[0]).replace(COMBO4_VARIANT[1], COMBO4_VARIANT[0])
 
 
+# gpu13 runs the patch 06 image (fast Engram gather); gpu02's packs keep the previous digest.
+GPU02_IMAGE: Final = "docker.io/nearaidev/vllm@sha256:5eaa0d4637080c10958b6cd8a371ae2ebb749b7a1e19c85bcb1abb89ee2540e4"
+GPU13_IMAGE_BLOCK: Final = (
+    "  # gpu13 only: dsv41-lora-v0.32.0-near-v3-fastgather (image patch 06, #427; publish run 41890284727).\n"
+    "  # gpu02 stays on 5eaa0d46 until gpu13 has run combo4 for about 24 h.\n"
+    "  image: docker.io/nearaidev/vllm@sha256:8353a657f8edbc68637e30371ffacb94713d4e844faf3f73a77d820d5dfdfaae\n"
+)
+
+
 class Gpu13Dsv41Dep4Test(unittest.TestCase):
     def setUp(self) -> None:
         self.small = (ROOT / SMALL).read_text()
@@ -110,8 +119,9 @@ class Gpu13Dsv41Dep4Test(unittest.TestCase):
                 self.assertEqual(expected_labels.count(f'"port:{gpu02_port}"'), 1)
                 self.assertEqual(actual_labels, expected_labels.replace(f'"port:{gpu02_port}"', '"port:8009"'))
 
-    def test_engine_anchor_matches_gpu02_except_cache_volume(self) -> None:
+    def test_engine_anchor_matches_gpu02_except_cache_volume_and_patch06_image(self) -> None:
         expected = anchor(self.pack, "x-dsv41-engine-common").replace("huggingface_cache:/root/.cache/huggingface", "hugginface_cache:/root/.cache/huggingface")
+        expected = expected.replace(f"  image: {GPU02_IMAGE}\n", GPU13_IMAGE_BLOCK)
         self.assertEqual(anchor(self.small, "x-dsv41-engine-common"), expected)
 
     def test_downloader_revisions_match_gpu02(self) -> None:

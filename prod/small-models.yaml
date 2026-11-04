@@ -209,7 +209,9 @@ x-downloader-common: &downloader-common
 x-dsv41-engine-common: &dsv41-engine-common
   <<: *nvidia
   init: true
-  image: docker.io/nearaidev/vllm@sha256:5eaa0d4637080c10958b6cd8a371ae2ebb749b7a1e19c85bcb1abb89ee2540e4
+  # gpu13 only: dsv41-lora-v0.32.0-near-v3-fastgather (image patch 06, #427; publish run 41890284727).
+  # gpu02 stays on 5eaa0d46 until gpu13 has run combo4 for about 24 h.
+  image: docker.io/nearaidev/vllm@sha256:8353a657f8edbc68637e30371ffacb94713d4e844faf3f73a77d820d5dfdfaae
   shm_size: 64g
   # One network namespace for all ranks: in per-container bridge namespaces NCCL treats each rank
   # as its own host and runs every collective over TCP sockets instead of NVLink.
