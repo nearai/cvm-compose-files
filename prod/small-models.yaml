@@ -27,7 +27,7 @@ x-vllm-common: &vllm-common
   logging: *logging-conf
 
 x-vllm-proxy-common: &vllm-proxy-common
-  image: nearaidev/vllm-proxy-rs@sha256:e4a42b327523e304c0fc389f656ba7a02fd7b3d4a38cdc822f9288fd193a525a
+  image: nearaidev/vllm-proxy-rs@sha256:0be4ee8f40a2bf71a6e2fab1e780ad1a6e738ffb2085553f1ed4b85fcb944207
   user: root
   privileged: true
   <<: *nvidia
@@ -41,7 +41,7 @@ x-vllm-proxy-common: &vllm-proxy-common
 
 x-dsv41-proxy-common: &dsv41-proxy-common
   <<: *vllm-proxy-common
-  image: nearaidev/vllm-proxy-rs@sha256:a99b89aa41a7c416cd2cb3e83f92d18afa66fcb1444780e35e6cf7fa9dc19a9d
+  image: nearaidev/vllm-proxy-rs@sha256:0be4ee8f40a2bf71a6e2fab1e780ad1a6e738ffb2085553f1ed4b85fcb944207
   extra_hosts:
     - "compose-manager:host-gateway"
     - "model-vllm-dsv41-dp4:host-gateway"
@@ -842,8 +842,8 @@ services:
     # inference-proxy 5faff1b (#329): strict request-model match and LoRA selector
     # refusal. The coloc engine serves the abliterated adapter too, so this proxy
     # must keep VLLM_PROXY_STRICT_REQUEST_MODEL on.
-    # Image is now inference-proxy 41e8602f (#336): adds the opt-in size tiers below.
-    image: nearaidev/vllm-proxy-rs@sha256:00664bd652b34e5054a566353b5ab635cfe9474ed7046aae7e14bfa60f68b17f
+    # This image is inference-proxy 53d79441 (#337). It includes #336's opt-in size tiers below.
+    image: nearaidev/vllm-proxy-rs@sha256:0be4ee8f40a2bf71a6e2fab1e780ad1a6e738ffb2085553f1ed4b85fcb944207
     container_name: proxy-qwen38-27b
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
@@ -1090,8 +1090,8 @@ services:
   proxy-qwen38-27b-abliterated:
     <<: *vllm-proxy-common
     # inference-proxy 5faff1b (#329), same as proxy-qwen38-27b: VLLM_PROXY_BACKEND_LORA.
-    # Image is now inference-proxy 41e8602f (#336): adds the opt-in size tiers below.
-    image: nearaidev/vllm-proxy-rs@sha256:00664bd652b34e5054a566353b5ab635cfe9474ed7046aae7e14bfa60f68b17f
+    # This image is inference-proxy 53d79441 (#337). It includes #336's opt-in size tiers below.
+    image: nearaidev/vllm-proxy-rs@sha256:0be4ee8f40a2bf71a6e2fab1e780ad1a6e738ffb2085553f1ed4b85fcb944207
     container_name: proxy-qwen38-27b-abliterated
     environment:
       - NVIDIA_VISIBLE_DEVICES=all

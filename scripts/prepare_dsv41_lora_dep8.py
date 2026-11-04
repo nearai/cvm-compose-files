@@ -32,11 +32,11 @@ ADAPTER_REVISION: Final = "196c06e3c2aad43e9688d16fa993b4333f69358a"
 # .github/workflows/publish-vllm-dsv41-lora.yaml run 40627835048 from main c877152, tag
 # dsv41-lora-v0.32.0-near-v2-cc. The #393 image lacks patch 04 and returns garbage in a TDX+PPCIe CVM.
 ENGINE_IMAGE: Final = "docker.io/nearaidev/vllm@sha256:5eaa0d4637080c10958b6cd8a371ae2ebb749b7a1e19c85bcb1abb89ee2540e4"
-# inference-proxy main 166a7b7 (#335: VLLM_PROXY_PRIORITY_LOWER_FIRST; also carries #329:
-# VLLM_PROXY_STRICT_REQUEST_MODEL), Build & Deploy run 41119935413, signed and attested. An older proxy
-# ignores either variable: without #329 it serves the adapter on the base endpoint at the base price,
-# without #335 vLLM runs the OpenRouter lane and reseller orgs ahead of cloud-api.
-PROXY_IMAGE: Final = "nearaidev/vllm-proxy-rs@sha256:a99b89aa41a7c416cd2cb3e83f92d18afa66fcb1444780e35e6cf7fa9dc19a9d"
+# inference-proxy main 53d79441 (#337) is signed and attested. It includes #329's
+# VLLM_PROXY_STRICT_REQUEST_MODEL and #335's VLLM_PROXY_PRIORITY_LOWER_FIRST.
+# Without #329 the proxy serves the adapter on the base endpoint at the base price.
+# Without #335 vLLM runs the OpenRouter lane and reseller orgs ahead of cloud-api.
+PROXY_IMAGE: Final = "nearaidev/vllm-proxy-rs@sha256:0be4ee8f40a2bf71a6e2fab1e780ad1a6e738ffb2085553f1ed4b85fcb944207"
 GPUS: Final = 8
 
 

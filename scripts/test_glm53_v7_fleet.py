@@ -41,6 +41,7 @@ V12_LABEL = "da8d4e4b5ec6"
 V6_IMAGE = "docker.io/nearaidev/sglang@sha256:9c6ddd4319c4ab00e351d8650459e68b8830e36ffcc029d67fa5e19d0ac3ed17"
 OLD_PROXY_IMAGE = "nearaidev/vllm-proxy-rs@sha256:d61357da39918a57126864a451eaf054f06a6989c03fe9a1666f7e6374ba6907"
 NEW_PROXY_IMAGE = "nearaidev/vllm-proxy-rs@sha256:e4a42b327523e304c0fc389f656ba7a02fd7b3d4a38cdc822f9288fd193a525a"
+SMALL_PROXY_IMAGE = "nearaidev/vllm-proxy-rs@sha256:0be4ee8f40a2bf71a6e2fab1e780ad1a6e738ffb2085553f1ed4b85fcb944207"
 FLEET_ENV = [
     "SGLANG_PREPROCESS_WORKERS=4",
     "SGLANG_PREPROCESS_TIMEOUT_S=60",
@@ -299,8 +300,8 @@ COLOC_BLOCK_HASHES = {
 LORA_PROXY_IMAGE = "nearaidev/vllm-proxy-rs@sha256:4937ad68d86dcc79871bd52341f2030a71e49bcafdf69d82ca287171aeb43c7b"
 # #336 size tiers: both Qwen3.8 proxies move to inference-proxy 41e8602f and gain VLLM_PROXY_PRIORITY_SIZE_TIERS;
 # the coloc engine gains --enable-priority-scheduling --disable-priority-preemption and the -prio config_variant.
-PRIORITY_PROXY_IMAGE = "nearaidev/vllm-proxy-rs@sha256:00664bd652b34e5054a566353b5ab635cfe9474ed7046aae7e14bfa60f68b17f"
-PRIORITY_IMAGE_COMMENT = "    # Image is now inference-proxy 41e8602f (#336): adds the opt-in size tiers below.\n"
+PRIORITY_PROXY_IMAGE = SMALL_PROXY_IMAGE
+PRIORITY_IMAGE_COMMENT = "    # This image is inference-proxy 53d79441 (#337). It includes #336's opt-in size tiers below.\n"
 PRIORITY_TIERS_ENV = (
     "      # Size tiers (inference-proxy #336): <=16k prompt tokens jump ahead, >64k go last. Needs the\n"
     "      # engine's --enable-priority-scheduling; without it SGLang ignores the priority field.\n"
@@ -315,7 +316,7 @@ LORA_CONFIGS = ("qwen38_abliterated_registrar_script",)
 LORA_JOB = "inference-proxy-proxy-qwen38-27b-abliterated"
 LORA_BLOCK_HASHES = {
     "qwen38-lora-adapter-downloader": "f00890986a1cbe050f1158fc94fb46c6a2910fad7ac622387bc09f21f47e7d4b",
-    "proxy-qwen38-27b-abliterated": "68c4957ceba8a122026d548162b10829ba88f4e8de083df68f24a936a1b13ccd",
+    "proxy-qwen38-27b-abliterated": "ad75730ae703aed24c528d33449a97325e07e40db22bee1cc1ae3d2d29b074b2",
     "qwen38-abliterated-registrar": "abbc11eca5f3f296b108cc4ec308ee5c59e04a04c99f4f7a6ce691586031c895",
     "qwen38_abliterated_registrar_script": "bf512180438d8e6258a37b59e02f9f6abc2bcab5ea79ac92b91b31b62f6afbe7",
     LORA_JOB: "300953b485fbe7ab94916efc464b5fdbdd784fbd6c554392491da0f653f3c505",
@@ -749,7 +750,7 @@ def with_qwen38_probe_timeout_saturated(text: str) -> str:
 
 
 def with_qwen38_priority_tiers(text: str) -> str:
-    """Apply only #336's edit to proxy-qwen38-27b: the 41e8602f image (with its comment) and the size-tier env."""
+    """Apply #336's size-tier edit to proxy-qwen38-27b with the current #337 image and comment."""
     block = service_block(text, "proxy-qwen38-27b")
     image = f"    image: {LORA_PROXY_IMAGE}\n"
     size = "      - VLLM_PROXY_MAX_REQUEST_SIZE=104857600\n"
@@ -853,7 +854,7 @@ class Gpu13FleetTest(unittest.TestCase):
                         new_block = new_block.split(SAGE_HEADING, 1)[0].rstrip("\n") + "\n"
                     expected = service_block(old, name)
                     if name == "proxy-qwen38-27b":
-                        expected = expected.replace(OLD_PROXY_IMAGE, NEW_PROXY_IMAGE)
+                        expected = expected.replace(OLD_PROXY_IMAGE, SMALL_PROXY_IMAGE)
                     self.assertEqual(new_block, expected)
         anchors = re.findall(r"^(x-[a-z0-9-]+): &", self.old, re.MULTILINE)
         self.assertEqual(
@@ -865,7 +866,7 @@ class Gpu13FleetTest(unittest.TestCase):
                 new_block = anchor_block(self.small, anchor)
                 expected = anchor_block(old, anchor)
                 if anchor == "x-vllm-proxy-common":
-                    expected = expected.replace(OLD_PROXY_IMAGE, NEW_PROXY_IMAGE)
+                    expected = expected.replace(OLD_PROXY_IMAGE, SMALL_PROXY_IMAGE)
                 self.assertEqual(new_block, expected, anchor)
         # The coloc scrape job is pinned separately; every old non-GLM job stays identical.
         old_jobs, new_jobs = jobs_of(old), jobs_of(without_lora_configs(self.small))
