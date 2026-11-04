@@ -101,6 +101,19 @@ class GeneratedPackTest(unittest.TestCase):
             with self.subTest(proxy=name):
                 self.assertIn("VLLM_PROXY_STRICT_REQUEST_MODEL=1", blocks[name])
 
+    def test_dep8_runs_combo2x_and_dep4x2_keeps_dspark3(self) -> None:
+        dep8 = service_blocks(generator.render(generator.DEP8))
+        dep4x2 = service_blocks(generator.render(generator.DEP4X2))
+        for rank in range(8):
+            with self.subTest(rank=rank):
+                block = dep8[f"model-vllm-dsv41-dp{rank}"]
+                self.assertIn('"num_speculative_tokens":5,"draft_sample_method":"probabilistic","rejection_sample_method":"block"', block)
+                self.assertEqual(block.count("      - OMP_NUM_THREADS=8\n"), 1)
+                self.assertIn("dspark5pb-mr64-engram-hbm-omp8", block)
+                other = dep4x2[f"model-vllm-dsv41-dp{rank}"]
+                self.assertIn('''--speculative-config \'{"method":"dspark","num_speculative_tokens":3}\'''', other)
+                self.assertNotIn("OMP_NUM_THREADS", other)
+
     def test_all_eight_ranks_keep_queue_limit(self) -> None:
         rendered = self.rendered()
         self.assertEqual(rendered.count("--max-num-queued-reqs 96"), 8)
