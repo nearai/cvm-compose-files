@@ -359,7 +359,7 @@ class GeneratorTest(unittest.TestCase):
         # overwrites every request's priority. Repoint the shared proxy image
         # at a different digest and confirm the gate names the proxy.
         self.activate()
-        needle = 'nearaidev/vllm-proxy-rs@sha256:e4a42b327523e304c0fc389f656ba7a02fd7b3d4a38cdc822f9288fd193a525a'
+        needle = 'nearaidev/vllm-proxy-rs@sha256:0be4ee8f40a2bf71a6e2fab1e780ad1a6e738ffb2085553f1ed4b85fcb944207'
         other = 'nearaidev/vllm-proxy-rs@sha256:' + 'a' * 64
         for path in (self.canonical_path, self.candidate_path):
             text = path.read_text()
