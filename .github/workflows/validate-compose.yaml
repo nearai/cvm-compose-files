@@ -179,6 +179,15 @@ jobs:
             ghcr.io/astral-sh/uv:python3.11-bookworm-slim@sha256:4f5d923c9dcea037f57bda425dd209f3ec643da2f0b74227f68d09dab0b3bb36 \
             sh -c 'python3 scripts/prepare_glm53_gpu04_tp2x3.py --check'
 
+      - name: Validate GLM-5.3 gpu04 mixed-tier file (3 base + 1 long)
+        # Pure file checks: digest-pinned image, no network, read-only root, no capabilities, bounded runtime.
+        timeout-minutes: 10
+        run: |
+          docker run --rm --network none --read-only --cap-drop ALL --tmpfs /tmp \
+            -e PYTHONDONTWRITEBYTECODE=1 -v "$PWD:/repo:ro" -w /repo \
+            ghcr.io/astral-sh/uv:python3.11-bookworm-slim@sha256:4f5d923c9dcea037f57bda425dd209f3ec643da2f0b74227f68d09dab0b3bb36 \
+            sh -c 'python3 scripts/prepare_glm53_gpu04_3b1l.py --check && python3 -m scripts.test_glm53_gpu04_3b1l'
+
       - name: Validate docker compose files
         # Compose files reference env vars that are populated at deploy time
         # by compose-manager (or the operator). CI doesn't have the real
