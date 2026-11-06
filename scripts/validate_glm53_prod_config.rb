@@ -1372,7 +1372,7 @@ def validate_w4afp8_tp2_canary(errors, label, services, collector, replicas)
     end
     unless actual_argv == expected_argv
       drift = ((actual_argv - expected_argv) + (expected_argv - actual_argv)).uniq
-      errors << "#{label} #{name} argv must be the v12 fleet TP2 argv exactly (tp2/ep2, 0.86, 330 mamba slots, bf16 state, fixed EAGLE 4/1/5, FP8 KV with flashmla_sparse_q8 prefill and flashmla_kv decode, 16 running/8 queued, graphs 16, overlap off, chunk 16384, write_through, --dist-init-addr #{spec['dist_init']}); differing tokens: #{drift.first(8).join(' ')}"
+      errors << "#{label} #{name} argv must be the v12 fleet TP2 argv exactly (tp2/ep2, 0.86, 330 mamba slots, bf16 state, fixed EAGLE 4/1/5, FP8 KV with flashmla_sparse_q8 prefill and flashmla_kv decode, 16 running/8 queued, graphs 16, overlap off, chunk 16384, HiCache off, --dist-init-addr #{spec['dist_init']}); differing tokens: #{drift.first(8).join(' ')}"
     end
     validate_fp8_kv_pairing(errors, "#{label} #{name}", actual_argv, prefill: "flashmla_sparse_q8")
     errors << "#{label} #{name} must set --disable-overlap-schedule exactly once" unless actual_argv.count("--disable-overlap-schedule") == 1

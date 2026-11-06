@@ -14,9 +14,9 @@ Why: since gpu13 left the GLM long tier (2026-11-03), gpu23 is the only long hos
 The output is a full copy of prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8-V12Q8.yaml (the v12 base fleet file; gpu04 runs it
 today and it stays the rollback) with ONLY:
 - base replica r4 (GPUs 6-7) replaced by `model-sg-glm53-w4afp8-tp2-l4`, a copy of gpu23's long replica r2b from
-  prod/GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext.yaml (same v12 image, Q8 prefill, 16K chunks, 16 running, HiCache
-  325 GiB) with its own container, ghost-replica and instance names and ONE argv change: --max-queued-requests 8 -> 32
-  (see LONG_QUEUE below);
+  prod/GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext.yaml (same v12 image, Q8 prefill, 16K chunks, 16 running, and the
+  host cache tier OFF since 2026-11-06 - see docs/glm53-long-hicache-off.md) with its own container, ghost-replica
+  and instance names and ONE argv change: --max-queued-requests 8 -> 32 (see LONG_QUEUE below);
 - proxy-glm53 pooling r1-r3, and a second proxy, proxy-glm53-long, pooling l4 only;
 - nginx publishing :8001 (long discovery stub + the gateway's probe and health paths, proxied to proxy-glm53-long)
   and a TLS vhost that sends the glm-5-3-flash-long.* names to proxy-glm53-long; the base vhost becomes
@@ -65,7 +65,8 @@ HEADER: Final = """\
 #     SYNTHETIC id z-ai/glm-5.3-flash-long, gated on proxy-glm53-long) on glm-5-3-flash-long.completions.near.ai.
 #     Both endpoints route to :8444; nginx splits them by SNI (glm-5-3-flash-long.* -> proxy-glm53-long, anything
 #     else -> proxy-glm53). The canonical id is never registered under the long domain.
-#   - l4 is gpu23's long replica r2b (v12, Q8 prefill, 16K chunks, 16 running, HiCache 325 GiB) with
+#   - l4 is gpu23's long replica r2b (v12, Q8 prefill, 16K chunks, 16 running, host cache tier OFF since
+#     2026-11-06 - see docs/glm53-long-hicache-off.md) with
 #     --max-queued-requests 32 instead of 8, so the OpenRouter gateway's saturated threshold (16 queued) steers
 #     new long conversations away from it before the engine refuses.
 # ROLLBACK: redeploy prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8-V12Q8.yaml (r4 back on GPUs 6-7, proxy-glm53 with r1-r4,

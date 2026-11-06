@@ -7,7 +7,8 @@
 #     SYNTHETIC id z-ai/glm-5.3-flash-long, gated on proxy-glm53-long) on glm-5-3-flash-long.completions.near.ai.
 #     Both endpoints route to :8444; nginx splits them by SNI (glm-5-3-flash-long.* -> proxy-glm53-long, anything
 #     else -> proxy-glm53). The canonical id is never registered under the long domain.
-#   - l4 is gpu23's long replica r2b (v12, Q8 prefill, 16K chunks, 16 running, HiCache 325 GiB) with
+#   - l4 is gpu23's long replica r2b (v12, Q8 prefill, 16K chunks, 16 running, host cache tier OFF since
+#     2026-11-06 - see docs/glm53-long-hicache-off.md) with
 #     --max-queued-requests 32 instead of 8, so the OpenRouter gateway's saturated threshold (16 queued) steers
 #     new long conversations away from it before the engine refuses.
 # ROLLBACK: redeploy prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8-V12Q8.yaml (r4 back on GPUs 6-7, proxy-glm53 with r1-r4,
