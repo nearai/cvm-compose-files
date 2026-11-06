@@ -269,7 +269,9 @@ class FleetFilesTest(unittest.TestCase):
 SMALL = ROOT / "prod/small-models.yaml"
 SMALL_FIXTURE = ROOT / "scripts/fixtures/pre-v7/small-models.pre-v7.yaml"
 GPU13_REPLACED_SERVICES = ("proxy-glm53", "model-sg-glm53-w4afp8-tp2-r1a", "model-sg-glm53-w4afp8-tp2-r1b", "glm53-ghost-aggregator", "dcgm-glm53")
-GPU13_NEW_SERVICES = ("proxy-dsv41", "proxy-dsv41-abliterated", "model-vllm-dsv41-dp4", "model-vllm-dsv41-dp5", "model-vllm-dsv41-dp6", "model-vllm-dsv41-dp7", "dcgm-dsv41")
+# gpu13 GPUs 4-7 run two v12 BASE replicas (gpu04 r1/r2 copies, scripts/prepare_gpu13_glm53_base.py; pinned by
+# scripts/test_gpu13_glm53_base.py) in place of the fixture's long pair.
+GPU13_NEW_SERVICES = ("proxy-glm53", "model-sg-glm53-w4afp8-tp2-r1", "model-sg-glm53-w4afp8-tp2-r2", "glm53-ghost-aggregator", "dcgm-glm53")
 GPU13_CHANGED_SERVICES = ("model-downloader", "nginx", "model-proxy-registrar", "otelcol-contrib")
 QWEN38_GPU0_SERVICE = "model-sg-qwen38-27b-fp8-tp1-r1"
 QWEN38_GPU0_ANCHOR = "x-qwen3-8-27b-common"
@@ -842,7 +844,7 @@ class Gpu13FleetTest(unittest.TestCase):
         expected_names.insert(expected_names.index("certs"), "sage-data")
         self.assertEqual(
             [name for name in expected_names if name not in GPU13_REPLACED_SERVICES and name not in ("ghost",)],
-            [name for name in re.findall(r"^  ([a-z0-9-]+):$", self.small[self.small.index("\nservices:\n"):], re.MULTILINE) if name not in GPU13_NEW_SERVICES and name not in ("dsv41_kernel_cache", "humming_cache")],
+            [name for name in re.findall(r"^  ([a-z0-9-]+):$", self.small[self.small.index("\nservices:\n"):], re.MULTILINE) if name not in GPU13_NEW_SERVICES and name not in ("ghost",)],
         )
         for name in names:
             if name not in GPU13_REPLACED_SERVICES + GPU13_CHANGED_SERVICES and name not in (QWEN38_GPU0_SERVICE, QWEN38_R2, QWEN38_R2_DCGM, "ghost"):
@@ -859,7 +861,7 @@ class Gpu13FleetTest(unittest.TestCase):
         anchors = re.findall(r"^(x-[a-z0-9-]+): &", self.old, re.MULTILINE)
         self.assertEqual(
             [anchor for anchor in anchors if anchor not in (QWEN38_GPU0_ANCHOR, "x-sg-glm53-flash-common")],
-            [anchor for anchor in re.findall(r"^(x-[a-z0-9-]+): &", self.small, re.MULTILINE) if anchor not in ("x-dsv41-engine-common", "x-dsv41-proxy-common")],
+            [anchor for anchor in re.findall(r"^(x-[a-z0-9-]+): &", self.small, re.MULTILINE) if anchor not in ("x-sg-glm53-flash-common", "x-sg-glm53-flash-candidate")],
         )
         for anchor in anchors:
             if anchor not in ("x-sg-glm53-flash-common", QWEN38_GPU0_ANCHOR, "x-privacy-filter-common"):
@@ -878,7 +880,7 @@ class Gpu13FleetTest(unittest.TestCase):
         index = expected_jobs.index("inference-proxy-proxy-qwen38-27b") + 1
         expected_jobs[index:index] = [LORA_JOB]
         expected_jobs.insert(expected_jobs.index("dcgm-dcgm-shared-gpu3") + 1, SAGE_DCGM_JOB)
-        self.assertEqual([key for key in expected_jobs if "glm53" not in key], [key for key in new_jobs if "dsv41" not in key])
+        self.assertEqual([key for key in expected_jobs if "glm53" not in key], [key for key in new_jobs if "glm53" not in key])
         for key in old_jobs:
             if "glm53" not in key:
                 self.assertEqual(new_jobs[key], old_jobs[key], key)
@@ -907,7 +909,7 @@ class Gpu13FleetTest(unittest.TestCase):
         old_volumes = self.old.split("\nvolumes:\n", 1)[1].split("\nconfigs:\n", 1)[0]
         new_volumes = self.small.split("\nvolumes:\n", 1)[1].split("\nconfigs:\n", 1)[0]
         self.assertEqual(
-            new_volumes.replace("  qwen38_coloc_kernel_cache:\n", "").replace("  sage-data:\n", "").replace("  lora_adapter:\n", "").replace("  dsv41_kernel_cache:\n", "").replace("  humming_cache:\n", ""),
+            re.sub(r"(?m)^  ghost:\n(?:    .*\n)*", "", new_volumes.replace("  qwen38_coloc_kernel_cache:\n", "").replace("  sage-data:\n", "").replace("  lora_adapter:\n", "")),
             re.sub(r"(?m)^  ghost:\n(?:    .*\n)*", "", old_volumes),
         )
         self.assertEqual(new_volumes.count("  qwen38_coloc_kernel_cache:\n"), 1)
@@ -1170,7 +1172,7 @@ class Gpu13FleetTest(unittest.TestCase):
         index = expected_jobs.index("inference-proxy-proxy-qwen38-27b") + 1
         expected_jobs[index:index] = [LORA_JOB]
         expected_jobs.insert(expected_jobs.index("dcgm-dcgm-shared-gpu3") + 1, SAGE_DCGM_JOB)
-        self.assertEqual([key for key in expected_jobs if "glm53" not in key], [key for key in new_jobs if "dsv41" not in key])
+        self.assertEqual([key for key in expected_jobs if "glm53" not in key], [key for key in new_jobs if "glm53" not in key])
         for key in old_jobs:
             if "glm53" in key:
                 continue

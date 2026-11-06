@@ -50,7 +50,7 @@ class Layout(NamedTuple):
     # Engram tables in host RAM (one /dev/shm copy shared by every replica, read by image patch 05's CPU
     # gather) instead of HBM.
     host_engram: bool
-    # combo2x (gpu31 lever lab 2026-11-04, tee-bench evidence in docs/gpu13-dsv41-dep4.md): DSpark 5 with
+    # combo2x (gpu31 lever lab 2026-11-04, lab table in docs/gpu13-dsv41-dep4.md at tag v0.0.547): DSpark 5 with
     # probabilistic drafting and block verification, and 8 torch threads per rank.
     combo2x: bool = False
 
