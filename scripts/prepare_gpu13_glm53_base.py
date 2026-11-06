@@ -185,12 +185,13 @@ def glm_pieces(glm: str) -> dict[str, str]:
     jobs = block(glm, f"{JOB}sglang-{R1}\n", f"{JOB}sglang-{PREFIX}r3\n", "engine jobs")
     if jobs.count('                      port: "8000"\n') != 2:
         raise SystemExit("engine jobs: expected two port labels")
-    jobs = jobs.replace('                      port: "8000"\n', '                      port: "8009"\n')
+    # gpu13 is a Protected-PCIe board: every GPU 4-7 job carried ppcie: "true" (as the DS4.1 jobs did).
+    jobs = jobs.replace('                      port: "8000"\n', '                      port: "8009"\n                      ppcie: "true"\n')
     jobs += block(glm, f"{JOB}ghost-aggregator-glm53-ghost-aggregator\n", f"{JOB}dcgm-dcgm-glm53\n", "aggregator job")
     dcgm_job = block(glm, f"{JOB}dcgm-dcgm-glm53\n", f"{JOB}inference-proxy-proxy-glm53\n", "dcgm job")
-    dcgm_job += '                      gpu_pair: "4-7"\n'
+    dcgm_job += '                      gpu_pair: "4-7"\n                      ppcie: "true"\n'
     proxy_job = block(glm, f"{JOB}inference-proxy-proxy-glm53\n", f"{JOB}inference-proxy-proxy-glm53-long\n", "proxy job")
-    proxy_job = once(proxy_job, '                      port: "8000"\n', '                      port: "8009"\n', "proxy job port")
+    proxy_job = once(proxy_job, '                      port: "8000"\n', '                      port: "8009"\n                      ppcie: "true"\n', "proxy job port")
     return {
         "anchors": once(anchors, "x-sg-glm53-flash-common: &sg-glm53-flash-common\n", "x-sg-glm53-flash-common: &sg-glm53-flash-common\n" + ANCHOR_NOTE, "anchor note"),
         "services": once(proxy, "  proxy-glm53:\n", "  proxy-glm53:\n" + SERVICES_NOTE, "proxy note") + r1 + r2 + aggregator,
