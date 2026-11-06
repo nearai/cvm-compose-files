@@ -130,7 +130,7 @@ Rollback uses the same scoped compose/up from tag `v0.0.527` with its staging-on
 
 ## Back to 2 × DEP4 for availability (decided 10-30)
 
-The gpu13 copy of the r2 DEP4 replica has its own [rollout checklist](gpu13-dsv41-dep4.md).
+gpu13 ran a copy of the r2 DEP4 replica until 2026-11; its GPUs 4-7 now run GLM-5.3 base ([runbook](gpu13-glm53-base-gpu4-7.md)). The DEP4 rollout checklist and combo4 lab table are in git history (`docs/gpu13-dsv41-dep4.md` before this change).
 
 - **Decision (Pierre, 10-30):** give up DEP8's throughput (+8% at rate ×4, +15% at ×8 in the A/B above) so that one replica keeps serving while the other restarts or redeploys. With DEP8, a crashed rank or a redeploy takes the model down for ~15 min. Both replicas share one host, so a host or CVM failure still takes both down.
 - **Pack:** `prod/DeepSeek-V4.1-Flash-1017-vLLM-DEP4x2-Abliterated.yaml`. The DEP8 generator renders it as a second layout, so the engine stack, proxies, queue limit and priority settings stay identical (`scripts/prepare_dsv41_lora_dep8.py`, `DEP4X2`).

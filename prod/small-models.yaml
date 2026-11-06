@@ -39,16 +39,6 @@ x-vllm-proxy-common: &vllm-proxy-common
   restart: unless-stopped
   logging: *logging-conf
 
-x-dsv41-proxy-common: &dsv41-proxy-common
-  <<: *vllm-proxy-common
-  image: nearaidev/vllm-proxy-rs@sha256:0be4ee8f40a2bf71a6e2fab1e780ad1a6e738ffb2085553f1ed4b85fcb944207
-  extra_hosts:
-    - "compose-manager:host-gateway"
-    - "model-vllm-dsv41-dp4:host-gateway"
-    - "model-vllm-dsv41-dp5:host-gateway"
-    - "model-vllm-dsv41-dp6:host-gateway"
-    - "model-vllm-dsv41-dp7:host-gateway"
-
 x-vllm-env:
   environment: &vllm-env
     - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
@@ -206,32 +196,188 @@ x-downloader-common: &downloader-common
   restart: "no"
   logging: *logging-conf
 
-x-dsv41-engine-common: &dsv41-engine-common
+x-sg-glm53-flash-common: &sg-glm53-flash-common
+  # GLM-5.3 Flash BASE tier on GPUs 4-7: gpu04's v12 base engine (prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8-V12Q8-gpu04-3B1L.yaml),
+  # copied by scripts/prepare_gpu13_glm53_base.py. Keep the argv byte-identical to the base fleet's.
   <<: *nvidia
   init: true
-  # gpu13 only: dsv41-lora-v0.32.0-near-v3-fastgather (image patch 06, #427; publish run 41890284727).
-  # gpu02 stays on 5eaa0d46 until gpu13 has run combo4 for about 24 h.
-  image: docker.io/nearaidev/vllm@sha256:8353a657f8edbc68637e30371ffacb94713d4e844faf3f73a77d820d5dfdfaae
-  shm_size: 64g
-  # One network namespace for all ranks: in per-container bridge namespaces NCCL treats each rank
-  # as its own host and runs every collective over TCP sockets instead of NVLink.
-  network_mode: host
+  image: docker.io/nearaidev/sglang@sha256:da8d4e4b5ec667499b58a21e56050aae9bcfc4df9669b3ac27e2e20af033d681
+  command: >
+      sglang serve
+      --model-path /root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/snapshots/99f1fa70408c52b007d4fd69e02e5a522422e755
+      --served-model-name z-ai/glm-5.3-flash
+      --tp-size 2
+      --ep-size 2
+      --mem-fraction-static 0.80
+      --max-running-requests 32
+      --max-queued-requests 8
+      --enable-priority-scheduling
+      --disable-priority-preemption
+      --chunked-prefill-size 8192
+      --max-prefill-tokens 32768
+      --prefill-decode-interval 1
+      --cuda-graph-max-bs-decode 32
+      --dsa-prefill-backend tilelang
+      --dsa-decode-backend tilelang
+      --kv-cache-dtype bfloat16
+      --speculative-algorithm EAGLE
+      --speculative-num-steps 5
+      --speculative-eagle-topk 1
+      --speculative-num-draft-tokens 6
+      --speculative-adaptive
+      --reasoning-parser glm45
+      --enable-strict-thinking
+      --grammar-backend xgrammar
+      --tool-call-parser glm47
+      --chat-template /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/3f1971b7b5f7a528c9c4ef6212c8785298a8c24a/chat_template.jinja
+      --context-length 1048576
+      --dist-init-addr 127.0.0.1:29510
+      --watchdog-timeout 1800
+      --host 0.0.0.0
+      --port 8000
+      --enable-metrics
+      --enable-cache-report
+      --log-requests-level 0
+      --disable-fast-image-processor
+      --limit-mm-data-per-request '{"image": 64}'
+      --enable-hierarchical-cache
+      --hicache-write-policy write_through_selective
+      --hicache-io-backend direct
+      --hicache-mem-layout page_first_direct
+      --max-mamba-cache-size 165
+      --mamba-ssm-dtype bfloat16
   volumes:
+    - kernel_cache:/root/.cache
     - hugginface_cache:/root/.cache/huggingface
-    - dsv41_kernel_cache:/root/.cache/vllm
-    - humming_cache:/root/.cache/humming
-  # Every rank sees all GPUs (NCCL P2P needs its peers) and picks its own with CUDA_VISIBLE_DEVICES.
-  deploy:
-    resources:
-      reservations:
-        devices:
-          - driver: nvidia
-            count: all
-            capabilities: [gpu]
+    - ghost:/ghost
+  environment:
+    - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+    # Local snapshot path; nothing is fetched at engine start.
+    - HF_HUB_OFFLINE=1
+    - TRANSFORMERS_OFFLINE=1
+    - HF_HUB_DISABLE_TELEMETRY=1
+    - DO_NOT_TRACK=1
+    - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    # gpu13: CUDA's device order must equal the NVML order used by device_ids (as for every GPU service in this file).
+    - CUDA_DEVICE_ORDER=PCI_BUS_ID
+    - OPENBLAS_L2_SIZE=2097152
+    - NCCL_DEBUG=WARN
+    - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+    - TORCHINDUCTOR_CACHE_DIR=/root/.cache/torchinductor
+    - TRITON_CACHE_DIR=/root/.cache/triton
+    # Persist tilelang's DSA kernel JIT cache: it defaults to /root/.tilelang, outside
+    # the kernel_cache volume, so every restart re-paid ~22-24 compiles at 8-9 s each
+    # with the whole engine frozen (2026-09-12..16 capacity campaign).
+    - TILELANG_CACHE_DIR=/root/.cache/tilelang
+    # /health must not run a generation: at this pin health_generate submits a real
+    # 1-token request that queues behind any in-flight long prefill, so the CVM
+    # proxy's 3 s probe times out, the replica flaps unhealthy, and the conversation
+    # affinity pin is skipped (full re-prefill on the other replica). nearai/infra#234.
+    - SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION=0
+    # Admission-reserve v10 (carried by this image): reserve up to 4096 tokens of each
+    # 8192-token prefill chunk for waiting requests, sized on their uncached extend length,
+    # bounded so the in-flight long prefill keeps >=25% of the chunk, and refunded when no
+    # waiter used it. Pairs with --prefill-decode-interval 1 so admitted requests also decode.
+    # Measured (2026-09-12..16 campaign): <=2K prompts p95 TTFT 19.6 s -> 0.6 s; cost ITL p90
+    # 30 -> ~240 ms, median unchanged. The patch is inert with the reserve unset (rollback).
+    # NEVER set SGLANG_ADMISSION_RESERVE_MIN_WAIT_S (wall-clock gate desyncs the TP ranks; v10
+    # raises) or SGLANG_ADMISSION_RESERVE_MIN_ITERS (unmeasured in production).
+    - SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE=4096
+    - SGLANG_ADMISSION_RESERVE_MAX_FRACTION=0.75
+    - SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE=1
+    # v7 fleet: HiCache is OFF (no --enable-hierarchical-cache in the argv), so the HiCache variables below are
+    # unread, exactly as gpu03 r3 runs. They stay so re-enabling is an argv-only change.
+    # HiCache host tier: a fixed 325 GiB per replica across its two TP ranks, 1,300 GiB for
+    # the four replicas (the lab arm's DRAM total per 8 GPUs; ~5.87M tokens per replica). A
+    # percentage would resolve against MemAvailable at each start, so the replicas started
+    # later would get less; startup fails if it exceeds available RAM minus 10 GiB.
+    - SGLANG_HICACHE_RAM_BUDGET=${GLM53_HICACHE_RAM_BUDGET:-325GiB}
+    # CUDA-owned host memory (cudaMallocHost). Must stay 1 on TEE hosts: 0 selects
+    # cudaHostRegister, which fails with CUDA error 801 under HCC/PPCIe.
+    - SGLANG_HICACHE_CUDA_HOST_MEMORY=${GLM53_HICACHE_CUDA_HOST_MEMORY:-1}
+    - SGLANG_HICACHE_POOLED_TRANSFERS=1
+    - SGLANG_HICACHE_STAGING_PAGES=64
+    # DSA indexer query split. Each TP rank scores 1/TP of a prefill chunk's rows instead of
+    # all of them, so the fp32 logits buffer -- sized new_tokens x total_context -- shrinks
+    # by TP (halves at TP2). gpu02's long-tier r1 crashed on 2026-09-25 without it:
+    # deep_gemm.fp8_mqa_logits asked for 11.96 GiB with 11.88 GiB free at ~392K context
+    # (dsa_indexer_kpool.py:919). This is a MITIGATION, not the fix: it divides the buffer
+    # by TP and does not bound it. The real fix is calling _should_chunk_mqa_logits
+    # (defined, unused, at dsa_indexer_kpool.py:862) and chunking against free memory.
+    - SGLANG_DSA_INDEXER_QSPLIT=1
+    # Opt-in observability (docker/sglang-glm53-hicache-w4afp8 v6; older images ignore it).
+    # TP rank 0 only, off the serving path. The ghost prefix cache hashes each finished
+    # request's pages into keyed digests (a 1/16 sample; tokens never leave the engine)
+    # on a background thread and exports sglang:ghost_*. Every engine in this CVM shares the
+    # key on the in-memory ghost volume and sends its digests to glm53-ghost-aggregator,
+    # without ever blocking: if the aggregator is down the sends are dropped and counted.
+    # The KV tier metrics export sglang:kv_tier_* (VRAM/DRAM evictions, load-backs, tier sizes).
+    - SGLANG_GHOST_CACHE=1
+    - SGLANG_GHOST_CACHE_SAMPLE=16
+    - SGLANG_GHOST_CACHE_KEY_FILE=/ghost/key
+    - SGLANG_GHOST_CACHE_SOCKET=/ghost/aggregator.sock
+    - SGLANG_GHOST_CACHE_REPLICA=r1
+    - SGLANG_KV_TIER_METRICS=1
+    # v7 (opt-in in the image): the preprocess pool (SGLANG_PREPROCESS_WORKERS=0 is the old single-thread path)
+    # and the tool-schema caps (0 = off). Profiling is off (no self-profile variables).
+    - SGLANG_PREPROCESS_WORKERS=4
+    - SGLANG_PREPROCESS_TIMEOUT_S=60
+    - SGLANG_PREPROCESS_LOG_SLOW_S=5
+    - SGLANG_TOOL_SCHEMA_MAX_DEPTH=32
+    - SGLANG_TOOL_SCHEMA_MAX_NODES=25000
   restart: unless-stopped
-  # Under CC, killing a rank mid-kernel can leave its GPU unusable until the VM is rebuilt.
-  stop_grace_period: 10m
+  stop_grace_period: 5m
   logging: *logging-conf
+
+x-sg-glm53-flash-candidate: &sg-glm53-flash-candidate
+  # v12 base fleet (docs/glm53-base-v12-q8-rollout.md): the v7 argv below with ONLY --dsa-prefill-backend
+  # flashmla_sparse_q8 (FP8/Q8 DSA prefill, 8K chunks kept); the v12 image comes from the common anchor.
+  # v7 fleet argv for every replica (tee-bench exp 25-32): the previous argv with mem 0.86, EAGLE fixed
+  # 4/1/5 (no adaptive), FP8 KV with both DSA backends flashmla_kv, 64 running / graph batch 64, 380 mamba
+  # slots (5 per running request), the overlap scheduler off, and HiCache OFF (the four HiCache flags are
+  # removed, as gpu03 r3 runs it; the HiCache environment stays and is unread). Everything else, including
+  # the environment and the engine image (v12 in this file), is inherited from the common anchor.
+  <<: *sg-glm53-flash-common
+  command: >
+      sglang serve
+      --model-path /root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/snapshots/99f1fa70408c52b007d4fd69e02e5a522422e755
+      --served-model-name z-ai/glm-5.3-flash
+      --tp-size 2
+      --ep-size 2
+      --mem-fraction-static 0.86
+      --max-running-requests 64
+      --max-queued-requests 32
+      --enable-priority-scheduling
+      --disable-priority-preemption
+      --chunked-prefill-size 8192
+      --max-prefill-tokens 32768
+      --prefill-decode-interval 2
+      --cuda-graph-max-bs-decode 64
+      --dsa-prefill-backend flashmla_sparse_q8
+      --dsa-decode-backend flashmla_kv
+      --kv-cache-dtype fp8_e4m3
+      --speculative-algorithm EAGLE
+      --speculative-num-steps 4
+      --speculative-eagle-topk 1
+      --speculative-num-draft-tokens 5
+      --reasoning-parser glm45
+      --enable-strict-thinking
+      --grammar-backend xgrammar
+      --tool-call-parser glm47
+      --chat-template /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/3f1971b7b5f7a528c9c4ef6212c8785298a8c24a/chat_template.jinja
+      --context-length 1048576
+      --dist-init-addr 127.0.0.1:29510
+      --watchdog-timeout 1800
+      --host 0.0.0.0
+      --port 8000
+      --enable-metrics
+      --enable-cache-report
+      --log-requests-level 0
+      --disable-fast-image-processor
+      --limit-mm-data-per-request '{"image": 64}'
+      --max-mamba-cache-size 380
+      --mamba-ssm-dtype bfloat16
+      --disable-overlap-schedule
 
 x-dcgm-common: &dcgm-common
   image: nvcr.io/nvidia/k8s/dcgm-exporter@sha256:ed594cf53fe6942e84b07b0740cdcbb249fa4b39cb21feeebf93881ae51f0b5e
@@ -613,18 +759,21 @@ services:
   model-downloader:
     <<: *downloader-common
     container_name: model-downloader
-    # ~475 GiB for the base checkpoint (incl. 186 GiB Engram tables) plus a 4 MB adapter.
-    # Keep >=500 GiB free on the CVM ZFS model-cache volume /dstack/persistent, not host /data;
+    # The GLM-5.3 Flash snapshots gpu04's base file fetches (W4AFP8 ~165 GiB plus the zai-org repo and its
+    # corrected chat template); a no-op when gpu13's cache still holds them. Keep >=250 GiB free on the CVM ZFS
+    # model-cache volume /dstack/persistent, not host /data;
     # check system_filesystem_usage_bytes{host="gpu13-compose-manager",mountpoint="/dstack/persistent"}.
-    # Evict old zai-org/GLM-5.3-Flash and graphistry/GLM-5.3-Flash-W4AFP8
-    # checkpoints with hf-cleanup after the switch if cache headroom is needed.
+    # The DeepSeek-V4.1 checkpoint (~475 GiB) can be evicted with hf-cleanup
+    # (MODEL_NAME=deepseek-ai/DeepSeek-V4.1-Flash-1017) once the DS4.1 ranks are gone.
     command:
       - |
         set -e
-        echo "Downloading deepseek-ai/DeepSeek-V4.1-Flash-1017..."
-        uvx --from 'huggingface_hub[hf_xet]' hf download deepseek-ai/DeepSeek-V4.1-Flash-1017 --revision 1bae0e1088993b9b82de08f59de5be5a34e42170
-        echo "Downloading UnderTides/DeepSeek-V4.1-Flash-1017-heretic-lora..."
-        uvx --from 'huggingface_hub[hf_xet]' hf download UnderTides/DeepSeek-V4.1-Flash-1017-heretic-lora --revision 196c06e3c2aad43e9688d16fa993b4333f69358a
+        echo "Downloading zai-org/GLM-5.3-Flash..."
+        uvx --from 'huggingface_hub[hf_xet]' hf download zai-org/GLM-5.3-Flash --revision 84c6a6aa9497188e15a635ba793b0f95a79b1033
+        echo "Downloading corrected GLM-5.3-Flash chat template..."
+        uvx --from 'huggingface_hub[hf_xet]' hf download zai-org/GLM-5.3-Flash chat_template.jinja --revision 3f1971b7b5f7a528c9c4ef6212c8785298a8c24a
+        echo "Downloading graphistry/GLM-5.3-Flash-W4AFP8..."
+        uvx --from 'huggingface_hub[hf_xet]' hf download graphistry/GLM-5.3-Flash-W4AFP8 --revision 99f1fa70408c52b007d4fd69e02e5a522422e755
         echo "Download complete."
     volumes:
       - hugginface_cache:/root/.cache/huggingface
@@ -695,8 +844,7 @@ services:
     container_name: nginx
     depends_on:
       - proxy-qwen36-35b-a3b
-      - proxy-dsv41
-      - proxy-dsv41-abliterated
+      - proxy-glm53
       - proxy-flux2-klein-4b
       - proxy-qwen3vl-30b-a3b
       - proxy-qwen3-embedding-0.6b
@@ -1169,422 +1317,254 @@ services:
     labels:
       com.datadoghq.ad.logs: '[{"source":"model-proxy-registrar","service":"model-proxy-registrar","tags":["model:Qwen/Qwen3.8-27B-abliterated","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","config_variant:qwen38-lora-canary","lora:abliterated-r1"]}]'
 
-  proxy-dsv41:
-    <<: *dsv41-proxy-common
-    container_name: proxy-dsv41
+  proxy-glm53:
+    # GLM-5.3 Flash BASE tier x2 (GPUs 4,5 and 6,7), behind nginx :8009 / :8444: gpu04's v12 base replicas r1/r2,
+    # byte for byte except the GPUs. Registered on glm-5-3-flash.completions.near.ai (base) only.
+    # Runbook and rollback: docs/gpu13-glm53-base-gpu4-7.md.
+    <<: *vllm-proxy-common
+    container_name: proxy-glm53
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - CLOUD_API_URL=https://cloud-api.near.ai
       - CLOUD_API_USAGE_TOKEN=${CLOUD_API_USAGE_TOKEN}
       - COMPOSE_MANAGER_URL=http://compose-manager:8080
       - LOG_FORMAT=json
-      - MODEL_NAME=deepseek-ai/DeepSeek-V4.1-Flash-1017
-      # Refuse the other model id: this proxy attests, bills and access-controls only deepseek-ai/DeepSeek-V4.1-Flash-1017.
-      - VLLM_PROXY_STRICT_REQUEST_MODEL=1
-      # vLLM runs the lowest priority first: write the negated value (see --scheduling-policy on the ranks).
-      - VLLM_PROXY_PRIORITY_LOWER_FIRST=1
+      - MODEL_NAME=z-ai/glm-5.3-flash
       - OHTTP_ENABLED=true
       - TOKEN=${PROXY_TOKEN}
-      - VLLM_BACKEND_URLS=http://model-vllm-dsv41-dp4:9104,http://model-vllm-dsv41-dp5:9105,http://model-vllm-dsv41-dp6:9106,http://model-vllm-dsv41-dp7:9107
-      # Keep append-only conversations on the rank that already holds their prefix cache.
+      - FUSION_ENABLED=${FUSION_ENABLED}
+      - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
+      - VLLM_BACKEND_URLS=http://model-sg-glm53-w4afp8-tp2-r1:8000,http://model-sg-glm53-w4afp8-tp2-r2:8000
+      # Keep append-only conversations on the replica that already holds their prefix cache
+      # (inference-proxy #227); new conversations still balance by least-connections.
       - VLLM_BACKEND_CONVERSATION_AFFINITY=1
-      # A stopped replica refuses connections until health checks drop it: retry those on another rank.
-      - VLLM_BACKEND_CONNECT_FAILOVER=1
       - VLLM_PROXY_MAX_REQUEST_SIZE=104857600
+      # Drop pooled upstream connections after 3 s idle. The engines' uvicorn closes an idle
+      # keep-alive connection after 5 s (SGLANG_TIMEOUT_KEEP_ALIVE default) while this proxy
+      # keeps one for 60 s by default, so a health probe could reuse a connection the engine
+      # had already closed: it fails at once and counts toward the 3 misses that mark a
+      # replica unhealthy. It applies to every pooled connection of this proxy (engines,
+      # cloud-api, compose-manager); each reconnects after 3 s idle.
       - VLLM_PROXY_POOL_IDLE_TIMEOUT_SECS=3
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
       - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
       - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
+      # Replica-state publishing (inference-proxy #274): off unless the host's deploy env sets
+      # REPLICA_STATE_REDIS_URL; a bad value logs one error and disables only this feature.
+      - REPLICA_STATE_REDIS_URL=${REPLICA_STATE_REDIS_URL:-}
+      - REPLICA_STATE_REDIS_CA_CERT=${REPLICA_STATE_REDIS_CA_CERT:-}
+      - REPLICA_STATE_HOST_ID=${CVM_HOST:-}
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:deepseek-ai/DeepSeek-V4.1-Flash-1017","port:8009","deployment:dsv41-flash-1017-vllm-dep4x2-abliterated","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0320-lora3p-cc2-w4a8-dep4x2-c8192-dspark3-mr64-engram-host-cpugather"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:z-ai/glm-5.3-flash","deployment:glm53-flash-sgl-tp2x4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8009"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "inference-proxy"
       nearai.otel.service: "vllm-proxy"
       nearai.otel.source: "vllm-proxy"
-      nearai.otel.container_name: "proxy-dsv41"
+      nearai.otel.container_name: "proxy-glm53"
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
-      nearai.otel.model: "deepseek-ai/DeepSeek-V4.1-Flash-1017"
-      nearai.otel.deployment: "dsv41-flash-1017-vllm-dep4x2-abliterated"
+      nearai.otel.model: "z-ai/glm-5.3-flash"
+      nearai.otel.deployment: "glm53-flash-sgl-tp2x4"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
       nearai.otel.host_machine: "${CVM_HOST}"
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
-      nearai.otel.ppcie: "true"
-      nearai.otel.config_variant: "vllm0320-lora3p-cc2-w4a8-dep4x2-c8192-dspark3-mr64-engram-host-cpugather"
 
-  proxy-dsv41-abliterated:
-    <<: *dsv41-proxy-common
-    container_name: proxy-dsv41-abliterated
-    environment:
-      - NVIDIA_VISIBLE_DEVICES=all
-      - CLOUD_API_URL=https://cloud-api.near.ai
-      - CLOUD_API_USAGE_TOKEN=${CLOUD_API_USAGE_TOKEN}
-      - COMPOSE_MANAGER_URL=http://compose-manager:8080
-      - LOG_FORMAT=json
-      - MODEL_NAME=deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated
-      # Refuse the other model id: this proxy attests, bills and access-controls only deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated.
-      - VLLM_PROXY_STRICT_REQUEST_MODEL=1
-      # vLLM runs the lowest priority first: write the negated value (see --scheduling-policy on the ranks).
-      - VLLM_PROXY_PRIORITY_LOWER_FIRST=1
-      # Deny customer API keys sent directly to this proxy until the intended organization IDs are supplied.
-      # cloud-api's pool token and the registrar probe (config tokens) are not affected.
-      - VLLM_PROXY_ALLOWED_ORG_IDS=${DSV41_ABLITERATED_ALLOWED_ORG_IDS:-__no_organizations__}
-      - OHTTP_ENABLED=true
-      - TOKEN=${PROXY_TOKEN}
-      - VLLM_BACKEND_URLS=http://model-vllm-dsv41-dp4:9104,http://model-vllm-dsv41-dp5:9105,http://model-vllm-dsv41-dp6:9106,http://model-vllm-dsv41-dp7:9107
-      # Keep append-only conversations on the rank that already holds their prefix cache.
-      - VLLM_BACKEND_CONVERSATION_AFFINITY=1
-      # A stopped replica refuses connections until health checks drop it: retry those on another rank.
-      - VLLM_BACKEND_CONNECT_FAILOVER=1
-      - VLLM_PROXY_MAX_REQUEST_SIZE=104857600
-      - VLLM_PROXY_POOL_IDLE_TIMEOUT_SECS=3
-      - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
-      - USE_NV_ATTESTATION_SDK=true
-      - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
-      - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
+  # --- GLM-5.3-Flash engine replica 1 (SGLang TP2, GPUs 4-5) ---
+  model-sg-glm53-w4afp8-tp2-r1:
+    <<: *sg-glm53-flash-candidate
+    container_name: model-sg-glm53-w4afp8-tp2-r1
+    depends_on:
+      model-downloader:
+        condition: service_completed_successfully
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["4","5"]
+              capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated","port:8009","deployment:dsv41-flash-1017-vllm-dep4x2-abliterated","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0320-lora3p-cc2-w4a8-dep4x2-c8192-dspark3-mr64-engram-host-cpugather"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-fp8-kv","deployment:glm53-flash-sgl-tp2x4","config_variant:w4afp8-qsplit-hicacheoff-mamba380-fp8kv-memopt086-mr64-c8192-admission-reserve-v10-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192-obs-v1-v12-q8","request_logging:disabled","engine_image:da8d4e4b5ec6","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8009","instance:1"]}]'
       nearai.otel.scrape: "true"
-      nearai.otel.job: "inference-proxy"
-      nearai.otel.service: "vllm-proxy"
-      nearai.otel.source: "vllm-proxy"
-      nearai.otel.container_name: "proxy-dsv41-abliterated"
+      nearai.otel.job: "sglang"
+      nearai.otel.service: "sglang"
+      nearai.otel.source: "sglang"
+      nearai.otel.container_name: "model-sg-glm53-w4afp8-tp2-r1"
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
-      nearai.otel.model: "deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated"
-      nearai.otel.deployment: "dsv41-flash-1017-vllm-dep4x2-abliterated"
+      nearai.otel.model: "z-ai/glm-5.3-flash"
+      nearai.otel.model_path: "graphistry/GLM-5.3-Flash-W4AFP8"
+      nearai.otel.served_model: "z-ai/glm-5.3-flash"
+      nearai.otel.deployment: "glm53-flash-sgl-tp2x4"
+      nearai.otel.config_variant: "w4afp8-qsplit-hicacheoff-mamba380-fp8kv-memopt086-mr64-c8192-admission-reserve-v10-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192-obs-v1-v12-q8"
+      nearai.otel.thinking_budget_policy: "default8192-public-to-native"
+      nearai.otel.request_logging: "disabled"
+      nearai.otel.engine_image: "da8d4e4b5ec6"
+      nearai.otel.instance: "1"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
       nearai.otel.host_machine: "${CVM_HOST}"
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
-      nearai.otel.ppcie: "true"
-      nearai.otel.config_variant: "vllm0320-lora3p-cc2-w4a8-dep4x2-c8192-dspark3-mr64-engram-host-cpugather"
 
-  model-vllm-dsv41-dp4:
-    <<: *dsv41-engine-common
-    container_name: model-vllm-dsv41-dp4
+  # --- GLM-5.3-Flash engine replica 2 (SGLang TP2, GPUs 6-7) ---
+  model-sg-glm53-w4afp8-tp2-r2:
+    <<: *sg-glm53-flash-candidate
+    container_name: model-sg-glm53-w4afp8-tp2-r2
+    environment:
+      - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+      # Local snapshot path; nothing is fetched at engine start.
+      - HF_HUB_OFFLINE=1
+      - TRANSFORMERS_OFFLINE=1
+      - HF_HUB_DISABLE_TELEMETRY=1
+      - DO_NOT_TRACK=1
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      # gpu13: CUDA's device order must equal the NVML order used by device_ids (as for every GPU service in this file).
+      - CUDA_DEVICE_ORDER=PCI_BUS_ID
+      - OPENBLAS_L2_SIZE=2097152
+      - NCCL_DEBUG=WARN
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+      - TORCHINDUCTOR_CACHE_DIR=/root/.cache/torchinductor
+      - TRITON_CACHE_DIR=/root/.cache/triton
+      # Persist tilelang's DSA kernel JIT cache: it defaults to /root/.tilelang, outside
+      # the kernel_cache volume, so every restart re-paid ~22-24 compiles at 8-9 s each
+      # with the whole engine frozen (2026-09-12..16 capacity campaign).
+      - TILELANG_CACHE_DIR=/root/.cache/tilelang
+      # /health must not run a generation: at this pin health_generate submits a real
+      # 1-token request that queues behind any in-flight long prefill, so the CVM
+      # proxy's 3 s probe times out, the replica flaps unhealthy, and the conversation
+      # affinity pin is skipped (full re-prefill on the other replica). nearai/infra#234.
+      - SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION=0
+      # Admission-reserve v10 (carried by this image): reserve up to 4096 tokens of each
+      # 8192-token prefill chunk for waiting requests, sized on their uncached extend length,
+      # bounded so the in-flight long prefill keeps >=25% of the chunk, and refunded when no
+      # waiter used it. Pairs with --prefill-decode-interval 1 so admitted requests also decode.
+      # Measured (2026-09-12..16 campaign): <=2K prompts p95 TTFT 19.6 s -> 0.6 s; cost ITL p90
+      # 30 -> ~240 ms, median unchanged. The patch is inert with the reserve unset (rollback).
+      # NEVER set SGLANG_ADMISSION_RESERVE_MIN_WAIT_S (wall-clock gate desyncs the TP ranks; v10
+      # raises) or SGLANG_ADMISSION_RESERVE_MIN_ITERS (unmeasured in production).
+      - SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE=4096
+      - SGLANG_ADMISSION_RESERVE_MAX_FRACTION=0.75
+      - SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE=1
+      # v7 fleet: HiCache is OFF (no --enable-hierarchical-cache in the argv), so the HiCache variables below are
+      # unread, exactly as gpu03 r3 runs. They stay so re-enabling is an argv-only change.
+      # HiCache host tier: a fixed 325 GiB per replica across its two TP ranks, 1,300 GiB for
+      # the four replicas (the lab arm's DRAM total per 8 GPUs; ~5.87M tokens per replica). A
+      # percentage would resolve against MemAvailable at each start, so the replicas started
+      # later would get less; startup fails if it exceeds available RAM minus 10 GiB.
+      - SGLANG_HICACHE_RAM_BUDGET=${GLM53_HICACHE_RAM_BUDGET:-325GiB}
+      # CUDA-owned host memory (cudaMallocHost). Must stay 1 on TEE hosts: 0 selects
+      # cudaHostRegister, which fails with CUDA error 801 under HCC/PPCIe.
+      - SGLANG_HICACHE_CUDA_HOST_MEMORY=${GLM53_HICACHE_CUDA_HOST_MEMORY:-1}
+      - SGLANG_HICACHE_POOLED_TRANSFERS=1
+      - SGLANG_HICACHE_STAGING_PAGES=64
+      # DSA indexer query split. Each TP rank scores 1/TP of a prefill chunk's rows instead of
+      # all of them, so the fp32 logits buffer -- sized new_tokens x total_context -- shrinks
+      # by TP (halves at TP2). gpu02's long-tier r1 crashed on 2026-09-25 without it:
+      # deep_gemm.fp8_mqa_logits asked for 11.96 GiB with 11.88 GiB free at ~392K context
+      # (dsa_indexer_kpool.py:919). This is a MITIGATION, not the fix: it divides the buffer
+      # by TP and does not bound it. The real fix is calling _should_chunk_mqa_logits
+      # (defined, unused, at dsa_indexer_kpool.py:862) and chunking against free memory.
+      - SGLANG_DSA_INDEXER_QSPLIT=1
+      # Opt-in observability (docker/sglang-glm53-hicache-w4afp8 v6; older images ignore it).
+      # TP rank 0 only, off the serving path. The ghost prefix cache hashes each finished
+      # request's pages into keyed digests (a 1/16 sample; tokens never leave the engine)
+      # on a background thread and exports sglang:ghost_*. Every engine in this CVM shares the
+      # key on the in-memory ghost volume and sends its digests to glm53-ghost-aggregator,
+      # without ever blocking: if the aggregator is down the sends are dropped and counted.
+      # The KV tier metrics export sglang:kv_tier_* (VRAM/DRAM evictions, load-backs, tier sizes).
+      - SGLANG_GHOST_CACHE=1
+      - SGLANG_GHOST_CACHE_SAMPLE=16
+      - SGLANG_GHOST_CACHE_KEY_FILE=/ghost/key
+      - SGLANG_GHOST_CACHE_SOCKET=/ghost/aggregator.sock
+      - SGLANG_GHOST_CACHE_REPLICA=r2
+      - SGLANG_KV_TIER_METRICS=1
+      # v7 (opt-in in the image): the preprocess pool (SGLANG_PREPROCESS_WORKERS=0 is the old single-thread path)
+      # and the tool-schema caps (0 = off). Profiling is off (no self-profile variables).
+      - SGLANG_PREPROCESS_WORKERS=4
+      - SGLANG_PREPROCESS_TIMEOUT_S=60
+      - SGLANG_PREPROCESS_LOG_SLOW_S=5
+      - SGLANG_TOOL_SCHEMA_MAX_DEPTH=32
+      - SGLANG_TOOL_SCHEMA_MAX_NODES=25000
     depends_on:
       model-downloader:
         condition: service_completed_successfully
-    environment:
-      - CUDA_VISIBLE_DEVICES=4
-      # gpu13 only: GPUs 0-3 serve other models, so CUDA's index must equal the NVML index used by
-      # every device_ids in this file (CUDA's default FASTEST_FIRST order is not guaranteed to).
-      - CUDA_DEVICE_ORDER=PCI_BUS_ID
-      - HF_HUB_OFFLINE=1
-      - PYTHONUNBUFFERED=1
-      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
-      - NCCL_DEBUG=WARN
-      # W4A8: MXFP4 expert weights with FP8 activations on Hopper FP8 tensor cores (exp 50).
-      - 'VLLM_HUMMING_INPUT_QUANT_CONFIG={"dtype":"float8e4m3","quant_mode":"dynamic_token"}'
-      # Image patch 04: copy per-step inputs to the GPU; under TDX+PPCIe the GPU reads stale host memory.
-      - VLLM_NEAR_DISABLE_UVA=1
-      # Image patch 05: Engram rows gathered on the CPU from the shared /dev/shm copy.
-      - VLLM_NEAR_ENGRAM_CPU_GATHER=1
-      # gpu13 only (combo4, gpu31 lab 2026-11-04): vLLM gives each worker 1 torch thread, which made the
-      # Engram CPU gather and weight loading single-threaded; 8 per rank (weight load 330 s -> 45 s).
-      - OMP_NUM_THREADS=8
-      # gpu13 only: image patch 06, one host sync per step for both Engram layers, pinned buffers, async H2D.
-      # A no-op on images without patch 06.
-      - VLLM_NEAR_ENGRAM_FAST_GATHER=1
-      - VLLM_DP_MASTER_PORT=29700
-      # nvcc on the CPU instead of humming's nvrtc helper (a CUDA context per kernel, which queues under CC).
-      - HUMMING_COMPILER=nvcc
-      - HUMMING_CACHE_DIR=/root/.cache/humming/dp4
-      - HUMMING_MAX_PARALLEL_BUILD_WORKERS=8
-    command: >
-      /root/.cache/huggingface/hub/models--deepseek-ai--DeepSeek-V4.1-Flash-1017/snapshots/1bae0e1088993b9b82de08f59de5be5a34e42170
-      --served-model-name deepseek-ai/DeepSeek-V4.1-Flash-1017
-      --trust-remote-code
-      --tensor-parallel-size 1
-      --data-parallel-size 4
-      --data-parallel-rank 0
-      --enable-expert-parallel
-      --data-parallel-address 127.0.0.1
-      --data-parallel-rpc-port 13445
-      --max-model-len 1048576
-      --max-num-batched-tokens 8192
-      --max-num-seqs 64
-      --max-num-queued-reqs 96
-      --scheduling-policy priority
-      --gpu-memory-utilization 0.85
-      --enable-prompt-tokens-details
-      --tokenizer-mode deepseek_v41
-      --reasoning-parser deepseek_v41
-      --tool-call-parser deepseek_v41
-      --enable-auto-tool-choice
-      --speculative-config '{"method":"dspark","num_speculative_tokens":5,"draft_sample_method":"probabilistic","rejection_sample_method":"block","enable_adaptive_verification":false}'
-      --enable-lora --max-loras 1 --max-cpu-loras 1 --max-lora-rank 8 --lora-target-modules wo_b
-      --lora-modules '{"name":"deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated","path":"/root/.cache/huggingface/hub/models--UnderTides--DeepSeek-V4.1-Flash-1017-heretic-lora/snapshots/196c06e3c2aad43e9688d16fa993b4333f69358a","base_model_name":"deepseek-ai/DeepSeek-V4.1-Flash-1017"}'
-      --engram-config '{"cpu_offload":true,"dp_shared_memory":true}'
-      --compilation-config '{"cudagraph_mode":"PIECEWISE"}'
-      --host 0.0.0.0
-      --port 9104
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["6","7"]
+              capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:deepseek-ai/DeepSeek-V4.1-Flash-1017","replica:r2","dp_rank:0","gpu:4","deployment:dsv41-flash-1017-vllm-dep4x2-abliterated","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0320-lora3p-cc2-w4a8-dep4x2-c8192-dspark5pb-mr64-engram-host-cpugather-omp8-fastgather"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-fp8-kv","deployment:glm53-flash-sgl-tp2x4","config_variant:w4afp8-qsplit-hicacheoff-mamba380-fp8kv-memopt086-mr64-c8192-admission-reserve-v10-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192-obs-v1-v12-q8","request_logging:disabled","engine_image:da8d4e4b5ec6","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8009","instance:2"]}]'
       nearai.otel.scrape: "true"
-      nearai.otel.job: "vllm"
-      nearai.otel.service: "vllm"
-      nearai.otel.source: "vllm"
-      nearai.otel.container_name: "model-vllm-dsv41-dp4"
-      nearai.otel.port: "9104"
+      nearai.otel.job: "sglang"
+      nearai.otel.service: "sglang"
+      nearai.otel.source: "sglang"
+      nearai.otel.container_name: "model-sg-glm53-w4afp8-tp2-r2"
+      nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
-      nearai.otel.model: "deepseek-ai/DeepSeek-V4.1-Flash-1017"
-      nearai.otel.deployment: "dsv41-flash-1017-vllm-dep4x2-abliterated"
+      nearai.otel.model: "z-ai/glm-5.3-flash"
+      nearai.otel.model_path: "graphistry/GLM-5.3-Flash-W4AFP8"
+      nearai.otel.served_model: "z-ai/glm-5.3-flash"
+      nearai.otel.deployment: "glm53-flash-sgl-tp2x4"
+      nearai.otel.config_variant: "w4afp8-qsplit-hicacheoff-mamba380-fp8kv-memopt086-mr64-c8192-admission-reserve-v10-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192-obs-v1-v12-q8"
+      nearai.otel.thinking_budget_policy: "default8192-public-to-native"
+      nearai.otel.request_logging: "disabled"
+      nearai.otel.engine_image: "da8d4e4b5ec6"
+      nearai.otel.instance: "2"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
       nearai.otel.host_machine: "${CVM_HOST}"
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
-      nearai.otel.ppcie: "true"
-      nearai.otel.config_variant: "vllm0320-lora3p-cc2-w4a8-dep4x2-c8192-dspark5pb-mr64-engram-host-cpugather-omp8-fastgather"
 
-  model-vllm-dsv41-dp5:
-    <<: *dsv41-engine-common
-    container_name: model-vllm-dsv41-dp5
-    depends_on:
-      model-downloader:
-        condition: service_completed_successfully
-      model-vllm-dsv41-dp4:
-        condition: service_started
+  # --- Ghost prefix cache aggregator: one per CVM, CPU only ---
+  # Both GLM engines in this CVM send their sampled page digests (keyed hashes, never tokens)
+  # to /ghost/aggregator.sock on the in-memory ghost volume. This process keeps one LRU across
+  # them and exports sglang:ghost_pool_* on :9464: per replica, the reuse one pooled cache
+  # would have served and the reuse seen only on another replica. It runs the engines' image so
+  # both move together. Serving never depends on it: the engines do not wait for it, and an
+  # image without ghost-prefix-cache.diff makes only this container exit and restart.
+  glm53-ghost-aggregator:
+    image: docker.io/nearaidev/sglang@sha256:da8d4e4b5ec667499b58a21e56050aae9bcfc4df9669b3ac27e2e20af033d681
+    container_name: glm53-ghost-aggregator
+    runtime: runc
+    init: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 3g
+    cpus: 1
     environment:
-      - CUDA_VISIBLE_DEVICES=5
-      # gpu13 only: GPUs 0-3 serve other models, so CUDA's index must equal the NVML index used by
-      # every device_ids in this file (CUDA's default FASTEST_FIRST order is not guaranteed to).
-      - CUDA_DEVICE_ORDER=PCI_BUS_ID
-      - HF_HUB_OFFLINE=1
-      - PYTHONUNBUFFERED=1
-      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
-      - NCCL_DEBUG=WARN
-      # W4A8: MXFP4 expert weights with FP8 activations on Hopper FP8 tensor cores (exp 50).
-      - 'VLLM_HUMMING_INPUT_QUANT_CONFIG={"dtype":"float8e4m3","quant_mode":"dynamic_token"}'
-      # Image patch 04: copy per-step inputs to the GPU; under TDX+PPCIe the GPU reads stale host memory.
-      - VLLM_NEAR_DISABLE_UVA=1
-      # Image patch 05: Engram rows gathered on the CPU from the shared /dev/shm copy.
-      - VLLM_NEAR_ENGRAM_CPU_GATHER=1
-      # gpu13 only (combo4, gpu31 lab 2026-11-04): vLLM gives each worker 1 torch thread, which made the
-      # Engram CPU gather and weight loading single-threaded; 8 per rank (weight load 330 s -> 45 s).
-      - OMP_NUM_THREADS=8
-      # gpu13 only: image patch 06, one host sync per step for both Engram layers, pinned buffers, async H2D.
-      # A no-op on images without patch 06.
-      - VLLM_NEAR_ENGRAM_FAST_GATHER=1
-      - VLLM_DP_MASTER_PORT=29700
-      # nvcc on the CPU instead of humming's nvrtc helper (a CUDA context per kernel, which queues under CC).
-      - HUMMING_COMPILER=nvcc
-      - HUMMING_CACHE_DIR=/root/.cache/humming/dp5
-      - HUMMING_MAX_PARALLEL_BUILD_WORKERS=8
-    command: >
-      /root/.cache/huggingface/hub/models--deepseek-ai--DeepSeek-V4.1-Flash-1017/snapshots/1bae0e1088993b9b82de08f59de5be5a34e42170
-      --served-model-name deepseek-ai/DeepSeek-V4.1-Flash-1017
-      --trust-remote-code
-      --tensor-parallel-size 1
-      --data-parallel-size 4
-      --data-parallel-rank 1
-      --enable-expert-parallel
-      --data-parallel-address 127.0.0.1
-      --data-parallel-rpc-port 13445
-      --max-model-len 1048576
-      --max-num-batched-tokens 8192
-      --max-num-seqs 64
-      --max-num-queued-reqs 96
-      --scheduling-policy priority
-      --gpu-memory-utilization 0.85
-      --enable-prompt-tokens-details
-      --tokenizer-mode deepseek_v41
-      --reasoning-parser deepseek_v41
-      --tool-call-parser deepseek_v41
-      --enable-auto-tool-choice
-      --speculative-config '{"method":"dspark","num_speculative_tokens":5,"draft_sample_method":"probabilistic","rejection_sample_method":"block","enable_adaptive_verification":false}'
-      --enable-lora --max-loras 1 --max-cpu-loras 1 --max-lora-rank 8 --lora-target-modules wo_b
-      --lora-modules '{"name":"deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated","path":"/root/.cache/huggingface/hub/models--UnderTides--DeepSeek-V4.1-Flash-1017-heretic-lora/snapshots/196c06e3c2aad43e9688d16fa993b4333f69358a","base_model_name":"deepseek-ai/DeepSeek-V4.1-Flash-1017"}'
-      --engram-config '{"cpu_offload":true,"dp_shared_memory":true}'
-      --compilation-config '{"cudagraph_mode":"PIECEWISE"}'
-      --host 0.0.0.0
-      --port 9105
+      - NVIDIA_VISIBLE_DEVICES=void
+      - PYTHONDONTWRITEBYTECODE=1
+    entrypoint: ["python3", "-m", "sglang.srt.observability.ghost_aggregator"]
+    command: ["--socket", "/ghost/aggregator.sock", "--port", "9464", "--sample", "16", "--model-name", "z-ai/glm-5.3-flash"]
+    volumes:
+      - ghost:/ghost
+    restart: unless-stopped
+    logging: *logging-conf
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:deepseek-ai/DeepSeek-V4.1-Flash-1017","replica:r2","dp_rank:1","gpu:5","deployment:dsv41-flash-1017-vllm-dep4x2-abliterated","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0320-lora3p-cc2-w4a8-dep4x2-c8192-dspark5pb-mr64-engram-host-cpugather-omp8-fastgather"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang-ghost-aggregator","service":"sglang-ghost-aggregator","tags":["model:z-ai/glm-5.3-flash","served_model:z-ai/glm-5.3-flash","deployment:glm53-flash-sgl-tp2x4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
       nearai.otel.scrape: "true"
-      nearai.otel.job: "vllm"
-      nearai.otel.service: "vllm"
-      nearai.otel.source: "vllm"
-      nearai.otel.container_name: "model-vllm-dsv41-dp5"
-      nearai.otel.port: "9105"
+      nearai.otel.job: "ghost-aggregator"
+      nearai.otel.service: "sglang-ghost-aggregator"
+      nearai.otel.source: "sglang-ghost-aggregator"
+      nearai.otel.container_name: "glm53-ghost-aggregator"
+      nearai.otel.port: "9464"
       nearai.otel.path: "/metrics"
-      nearai.otel.model: "deepseek-ai/DeepSeek-V4.1-Flash-1017"
-      nearai.otel.deployment: "dsv41-flash-1017-vllm-dep4x2-abliterated"
+      nearai.otel.model: "z-ai/glm-5.3-flash"
+      nearai.otel.served_model: "z-ai/glm-5.3-flash"
+      nearai.otel.deployment: "glm53-flash-sgl-tp2x4"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
       nearai.otel.host_machine: "${CVM_HOST}"
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
-      nearai.otel.ppcie: "true"
-      nearai.otel.config_variant: "vllm0320-lora3p-cc2-w4a8-dep4x2-c8192-dspark5pb-mr64-engram-host-cpugather-omp8-fastgather"
-
-  model-vllm-dsv41-dp6:
-    <<: *dsv41-engine-common
-    container_name: model-vllm-dsv41-dp6
-    depends_on:
-      model-downloader:
-        condition: service_completed_successfully
-      model-vllm-dsv41-dp4:
-        condition: service_started
-    environment:
-      - CUDA_VISIBLE_DEVICES=6
-      # gpu13 only: GPUs 0-3 serve other models, so CUDA's index must equal the NVML index used by
-      # every device_ids in this file (CUDA's default FASTEST_FIRST order is not guaranteed to).
-      - CUDA_DEVICE_ORDER=PCI_BUS_ID
-      - HF_HUB_OFFLINE=1
-      - PYTHONUNBUFFERED=1
-      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
-      - NCCL_DEBUG=WARN
-      # W4A8: MXFP4 expert weights with FP8 activations on Hopper FP8 tensor cores (exp 50).
-      - 'VLLM_HUMMING_INPUT_QUANT_CONFIG={"dtype":"float8e4m3","quant_mode":"dynamic_token"}'
-      # Image patch 04: copy per-step inputs to the GPU; under TDX+PPCIe the GPU reads stale host memory.
-      - VLLM_NEAR_DISABLE_UVA=1
-      # Image patch 05: Engram rows gathered on the CPU from the shared /dev/shm copy.
-      - VLLM_NEAR_ENGRAM_CPU_GATHER=1
-      # gpu13 only (combo4, gpu31 lab 2026-11-04): vLLM gives each worker 1 torch thread, which made the
-      # Engram CPU gather and weight loading single-threaded; 8 per rank (weight load 330 s -> 45 s).
-      - OMP_NUM_THREADS=8
-      # gpu13 only: image patch 06, one host sync per step for both Engram layers, pinned buffers, async H2D.
-      # A no-op on images without patch 06.
-      - VLLM_NEAR_ENGRAM_FAST_GATHER=1
-      - VLLM_DP_MASTER_PORT=29700
-      # nvcc on the CPU instead of humming's nvrtc helper (a CUDA context per kernel, which queues under CC).
-      - HUMMING_COMPILER=nvcc
-      - HUMMING_CACHE_DIR=/root/.cache/humming/dp6
-      - HUMMING_MAX_PARALLEL_BUILD_WORKERS=8
-    command: >
-      /root/.cache/huggingface/hub/models--deepseek-ai--DeepSeek-V4.1-Flash-1017/snapshots/1bae0e1088993b9b82de08f59de5be5a34e42170
-      --served-model-name deepseek-ai/DeepSeek-V4.1-Flash-1017
-      --trust-remote-code
-      --tensor-parallel-size 1
-      --data-parallel-size 4
-      --data-parallel-rank 2
-      --enable-expert-parallel
-      --data-parallel-address 127.0.0.1
-      --data-parallel-rpc-port 13445
-      --max-model-len 1048576
-      --max-num-batched-tokens 8192
-      --max-num-seqs 64
-      --max-num-queued-reqs 96
-      --scheduling-policy priority
-      --gpu-memory-utilization 0.85
-      --enable-prompt-tokens-details
-      --tokenizer-mode deepseek_v41
-      --reasoning-parser deepseek_v41
-      --tool-call-parser deepseek_v41
-      --enable-auto-tool-choice
-      --speculative-config '{"method":"dspark","num_speculative_tokens":5,"draft_sample_method":"probabilistic","rejection_sample_method":"block","enable_adaptive_verification":false}'
-      --enable-lora --max-loras 1 --max-cpu-loras 1 --max-lora-rank 8 --lora-target-modules wo_b
-      --lora-modules '{"name":"deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated","path":"/root/.cache/huggingface/hub/models--UnderTides--DeepSeek-V4.1-Flash-1017-heretic-lora/snapshots/196c06e3c2aad43e9688d16fa993b4333f69358a","base_model_name":"deepseek-ai/DeepSeek-V4.1-Flash-1017"}'
-      --engram-config '{"cpu_offload":true,"dp_shared_memory":true}'
-      --compilation-config '{"cudagraph_mode":"PIECEWISE"}'
-      --host 0.0.0.0
-      --port 9106
-    labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:deepseek-ai/DeepSeek-V4.1-Flash-1017","replica:r2","dp_rank:2","gpu:6","deployment:dsv41-flash-1017-vllm-dep4x2-abliterated","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0320-lora3p-cc2-w4a8-dep4x2-c8192-dspark5pb-mr64-engram-host-cpugather-omp8-fastgather"]}]'
-      nearai.otel.scrape: "true"
-      nearai.otel.job: "vllm"
-      nearai.otel.service: "vllm"
-      nearai.otel.source: "vllm"
-      nearai.otel.container_name: "model-vllm-dsv41-dp6"
-      nearai.otel.port: "9106"
-      nearai.otel.path: "/metrics"
-      nearai.otel.model: "deepseek-ai/DeepSeek-V4.1-Flash-1017"
-      nearai.otel.deployment: "dsv41-flash-1017-vllm-dep4x2-abliterated"
-      nearai.otel.env: "${ENV}"
-      nearai.otel.host: "${CVM_HOST}"
-      nearai.otel.host_machine: "${CVM_HOST}"
-      nearai.otel.cvm_name: "${CVM_NAME}"
-      nearai.otel.ip: "${HOST_IP}"
-      nearai.otel.ppcie: "true"
-      nearai.otel.config_variant: "vllm0320-lora3p-cc2-w4a8-dep4x2-c8192-dspark5pb-mr64-engram-host-cpugather-omp8-fastgather"
-
-  model-vllm-dsv41-dp7:
-    <<: *dsv41-engine-common
-    container_name: model-vllm-dsv41-dp7
-    depends_on:
-      model-downloader:
-        condition: service_completed_successfully
-      model-vllm-dsv41-dp4:
-        condition: service_started
-    environment:
-      - CUDA_VISIBLE_DEVICES=7
-      # gpu13 only: GPUs 0-3 serve other models, so CUDA's index must equal the NVML index used by
-      # every device_ids in this file (CUDA's default FASTEST_FIRST order is not guaranteed to).
-      - CUDA_DEVICE_ORDER=PCI_BUS_ID
-      - HF_HUB_OFFLINE=1
-      - PYTHONUNBUFFERED=1
-      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
-      - NCCL_DEBUG=WARN
-      # W4A8: MXFP4 expert weights with FP8 activations on Hopper FP8 tensor cores (exp 50).
-      - 'VLLM_HUMMING_INPUT_QUANT_CONFIG={"dtype":"float8e4m3","quant_mode":"dynamic_token"}'
-      # Image patch 04: copy per-step inputs to the GPU; under TDX+PPCIe the GPU reads stale host memory.
-      - VLLM_NEAR_DISABLE_UVA=1
-      # Image patch 05: Engram rows gathered on the CPU from the shared /dev/shm copy.
-      - VLLM_NEAR_ENGRAM_CPU_GATHER=1
-      # gpu13 only (combo4, gpu31 lab 2026-11-04): vLLM gives each worker 1 torch thread, which made the
-      # Engram CPU gather and weight loading single-threaded; 8 per rank (weight load 330 s -> 45 s).
-      - OMP_NUM_THREADS=8
-      # gpu13 only: image patch 06, one host sync per step for both Engram layers, pinned buffers, async H2D.
-      # A no-op on images without patch 06.
-      - VLLM_NEAR_ENGRAM_FAST_GATHER=1
-      - VLLM_DP_MASTER_PORT=29700
-      # nvcc on the CPU instead of humming's nvrtc helper (a CUDA context per kernel, which queues under CC).
-      - HUMMING_COMPILER=nvcc
-      - HUMMING_CACHE_DIR=/root/.cache/humming/dp7
-      - HUMMING_MAX_PARALLEL_BUILD_WORKERS=8
-    command: >
-      /root/.cache/huggingface/hub/models--deepseek-ai--DeepSeek-V4.1-Flash-1017/snapshots/1bae0e1088993b9b82de08f59de5be5a34e42170
-      --served-model-name deepseek-ai/DeepSeek-V4.1-Flash-1017
-      --trust-remote-code
-      --tensor-parallel-size 1
-      --data-parallel-size 4
-      --data-parallel-rank 3
-      --enable-expert-parallel
-      --data-parallel-address 127.0.0.1
-      --data-parallel-rpc-port 13445
-      --max-model-len 1048576
-      --max-num-batched-tokens 8192
-      --max-num-seqs 64
-      --max-num-queued-reqs 96
-      --scheduling-policy priority
-      --gpu-memory-utilization 0.85
-      --enable-prompt-tokens-details
-      --tokenizer-mode deepseek_v41
-      --reasoning-parser deepseek_v41
-      --tool-call-parser deepseek_v41
-      --enable-auto-tool-choice
-      --speculative-config '{"method":"dspark","num_speculative_tokens":5,"draft_sample_method":"probabilistic","rejection_sample_method":"block","enable_adaptive_verification":false}'
-      --enable-lora --max-loras 1 --max-cpu-loras 1 --max-lora-rank 8 --lora-target-modules wo_b
-      --lora-modules '{"name":"deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated","path":"/root/.cache/huggingface/hub/models--UnderTides--DeepSeek-V4.1-Flash-1017-heretic-lora/snapshots/196c06e3c2aad43e9688d16fa993b4333f69358a","base_model_name":"deepseek-ai/DeepSeek-V4.1-Flash-1017"}'
-      --engram-config '{"cpu_offload":true,"dp_shared_memory":true}'
-      --compilation-config '{"cudagraph_mode":"PIECEWISE"}'
-      --host 0.0.0.0
-      --port 9107
-    labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:deepseek-ai/DeepSeek-V4.1-Flash-1017","replica:r2","dp_rank:3","gpu:7","deployment:dsv41-flash-1017-vllm-dep4x2-abliterated","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0320-lora3p-cc2-w4a8-dep4x2-c8192-dspark5pb-mr64-engram-host-cpugather-omp8-fastgather"]}]'
-      nearai.otel.scrape: "true"
-      nearai.otel.job: "vllm"
-      nearai.otel.service: "vllm"
-      nearai.otel.source: "vllm"
-      nearai.otel.container_name: "model-vllm-dsv41-dp7"
-      nearai.otel.port: "9107"
-      nearai.otel.path: "/metrics"
-      nearai.otel.model: "deepseek-ai/DeepSeek-V4.1-Flash-1017"
-      nearai.otel.deployment: "dsv41-flash-1017-vllm-dep4x2-abliterated"
-      nearai.otel.env: "${ENV}"
-      nearai.otel.host: "${CVM_HOST}"
-      nearai.otel.host_machine: "${CVM_HOST}"
-      nearai.otel.cvm_name: "${CVM_NAME}"
-      nearai.otel.ip: "${HOST_IP}"
-      nearai.otel.ppcie: "true"
-      nearai.otel.config_variant: "vllm0320-lora3p-cc2-w4a8-dep4x2-c8192-dspark5pb-mr64-engram-host-cpugather-omp8-fastgather"
 
   # --- FLUX x1 (GPU 3, shared with small models) ---
 
@@ -2065,9 +2045,9 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
-  dcgm-dsv41:
+  dcgm-glm53:
     <<: *dcgm-common
-    container_name: dcgm-dsv41
+    container_name: dcgm-glm53
     deploy:
       resources:
         reservations:
@@ -2076,16 +2056,16 @@ services:
               device_ids: ["4","5","6","7"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:deepseek-ai/DeepSeek-V4.1-Flash-1017","deployment:dsv41-flash-1017-vllm-dep4x2-abliterated","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","gpu_pair:4-7","config_variant:vllm0320-lora3p-cc2-w4a8-dep4x2-c8192-dspark3-mr64-engram-host-cpugather"]}]'
+      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:z-ai/glm-5.3-flash","deployment:glm53-flash-sgl-tp2x4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","gpu_pair:4-7"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "dcgm"
       nearai.otel.service: "dcgm-exporter"
       nearai.otel.source: "dcgm-exporter"
-      nearai.otel.container_name: "dcgm-dsv41"
+      nearai.otel.container_name: "dcgm-glm53"
       nearai.otel.port: "9400"
       nearai.otel.path: "/metrics"
-      nearai.otel.model: "deepseek-ai/DeepSeek-V4.1-Flash-1017"
-      nearai.otel.deployment: "dsv41-flash-1017-vllm-dep4x2-abliterated"
+      nearai.otel.model: "z-ai/glm-5.3-flash"
+      nearai.otel.deployment: "glm53-flash-sgl-tp2x4"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
       nearai.otel.host_machine: "${CVM_HOST}"
@@ -2093,7 +2073,6 @@ services:
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.ppcie: "true"
       nearai.otel.gpu_pair: "4-7"
-      nearai.otel.config_variant: "vllm0320-lora3p-cc2-w4a8-dep4x2-c8192-dspark3-mr64-engram-host-cpugather"
 
   # GPU 3 is shared across FLUX, Qwen3-VL, embedding, reranker, whisper — DCGM
   # metrics here cannot be attributed to one model, so
@@ -2290,11 +2269,6 @@ services:
       - DD_HOSTNAME=${DD_HOSTNAME:-unknown}
       - ENV=${ENV:-unknown}
       - HOST_IP=${HOST_IP:-unknown}
-    extra_hosts:
-      - "model-vllm-dsv41-dp4:host-gateway"
-      - "model-vllm-dsv41-dp5:host-gateway"
-      - "model-vllm-dsv41-dp6:host-gateway"
-      - "model-vllm-dsv41-dp7:host-gateway"
     expose:
       - "4317"
       - "4318"
@@ -2331,8 +2305,12 @@ volumes:
   hugginface_cache:
   vllm_cache:
   kernel_cache:
-  dsv41_kernel_cache:
-  humming_cache:
+  ghost:
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: "size=1m,mode=0700"
   qwen38_kernel_cache:
   qwen38_coloc_kernel_cache:
   lora_adapter:
@@ -2450,102 +2428,74 @@ configs:
                       ip: "${HOST_IP}"
                       port: "8008"
                       instance: "1"
-              - job_name: vllm-model-vllm-dsv41-dp4
+              - job_name: sglang-model-sg-glm53-w4afp8-tp2-r1
                 scrape_interval: 15s
                 metrics_path: /metrics
                 static_configs:
-                  - targets: ['model-vllm-dsv41-dp4:9104']
+                  - targets: ['model-sg-glm53-w4afp8-tp2-r1:8000']
                     labels:
-                      service: "vllm"
-                      source: "vllm"
-                      container_name: "model-vllm-dsv41-dp4"
-                      model: "deepseek-ai/DeepSeek-V4.1-Flash-1017"
-                      served_model: "deepseek-ai/DeepSeek-V4.1-Flash-1017"
-                      model_revision: "1bae0e1088993b9b82de08f59de5be5a34e42170"
-                      replica: "r2"
-                      dp_rank: "0"
-                      gpu: "4"
-                      port: "8009"
+                      service: "sglang"
+                      source: "sglang"
+                      container_name: "model-sg-glm53-w4afp8-tp2-r1"
+                      model: "z-ai/glm-5.3-flash"
+                      model_path: "graphistry/GLM-5.3-Flash-W4AFP8"
+                      served_model: "z-ai/glm-5.3-flash"
+                      precision: "int4-weights-fp8-activations-fp8-kv"
+                      deployment: "glm53-flash-sgl-tp2x4"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
                       host_machine: "${CVM_HOST}"
                       cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
-                      ppcie: "true"
-                      deployment: "dsv41-flash-1017-vllm-dep4x2-abliterated"
-                      config_variant: "vllm0320-lora3p-cc2-w4a8-dep4x2-c8192-dspark3-mr64-engram-host-cpugather"
-              - job_name: vllm-model-vllm-dsv41-dp5
+                      port: "8009"
+                      instance: "1"
+                      config_variant: "w4afp8-qsplit-hicacheoff-mamba380-fp8kv-memopt086-mr64-c8192-admission-reserve-v10-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192-obs-v1-v12-q8"
+                      thinking_budget_policy: "default8192-public-to-native"
+                      request_logging: "disabled"
+                      engine_image: "da8d4e4b5ec6"
+              - job_name: sglang-model-sg-glm53-w4afp8-tp2-r2
                 scrape_interval: 15s
                 metrics_path: /metrics
                 static_configs:
-                  - targets: ['model-vllm-dsv41-dp5:9105']
+                  - targets: ['model-sg-glm53-w4afp8-tp2-r2:8000']
                     labels:
-                      service: "vllm"
-                      source: "vllm"
-                      container_name: "model-vllm-dsv41-dp5"
-                      model: "deepseek-ai/DeepSeek-V4.1-Flash-1017"
-                      served_model: "deepseek-ai/DeepSeek-V4.1-Flash-1017"
-                      model_revision: "1bae0e1088993b9b82de08f59de5be5a34e42170"
-                      replica: "r2"
-                      dp_rank: "1"
-                      gpu: "5"
-                      port: "8009"
+                      service: "sglang"
+                      source: "sglang"
+                      container_name: "model-sg-glm53-w4afp8-tp2-r2"
+                      model: "z-ai/glm-5.3-flash"
+                      model_path: "graphistry/GLM-5.3-Flash-W4AFP8"
+                      served_model: "z-ai/glm-5.3-flash"
+                      precision: "int4-weights-fp8-activations-fp8-kv"
+                      deployment: "glm53-flash-sgl-tp2x4"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
                       host_machine: "${CVM_HOST}"
                       cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
-                      ppcie: "true"
-                      deployment: "dsv41-flash-1017-vllm-dep4x2-abliterated"
-                      config_variant: "vllm0320-lora3p-cc2-w4a8-dep4x2-c8192-dspark3-mr64-engram-host-cpugather"
-              - job_name: vllm-model-vllm-dsv41-dp6
+                      port: "8009"
+                      instance: "2"
+                      config_variant: "w4afp8-qsplit-hicacheoff-mamba380-fp8kv-memopt086-mr64-c8192-admission-reserve-v10-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192-obs-v1-v12-q8"
+                      thinking_budget_policy: "default8192-public-to-native"
+                      request_logging: "disabled"
+                      engine_image: "da8d4e4b5ec6"
+              - job_name: ghost-aggregator-glm53-ghost-aggregator
                 scrape_interval: 15s
                 metrics_path: /metrics
                 static_configs:
-                  - targets: ['model-vllm-dsv41-dp6:9106']
+                  - targets: ['glm53-ghost-aggregator:9464']
                     labels:
-                      service: "vllm"
-                      source: "vllm"
-                      container_name: "model-vllm-dsv41-dp6"
-                      model: "deepseek-ai/DeepSeek-V4.1-Flash-1017"
-                      served_model: "deepseek-ai/DeepSeek-V4.1-Flash-1017"
-                      model_revision: "1bae0e1088993b9b82de08f59de5be5a34e42170"
-                      replica: "r2"
-                      dp_rank: "2"
-                      gpu: "6"
-                      port: "8009"
+                      service: "sglang-ghost-aggregator"
+                      source: "sglang-ghost-aggregator"
+                      container_name: "glm53-ghost-aggregator"
+                      model: "z-ai/glm-5.3-flash"
+                      served_model: "z-ai/glm-5.3-flash"
+                      deployment: "glm53-flash-sgl-tp2x4"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
                       host_machine: "${CVM_HOST}"
                       cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
-                      ppcie: "true"
-                      deployment: "dsv41-flash-1017-vllm-dep4x2-abliterated"
-                      config_variant: "vllm0320-lora3p-cc2-w4a8-dep4x2-c8192-dspark3-mr64-engram-host-cpugather"
-              - job_name: vllm-model-vllm-dsv41-dp7
-                scrape_interval: 15s
-                metrics_path: /metrics
-                static_configs:
-                  - targets: ['model-vllm-dsv41-dp7:9107']
-                    labels:
-                      service: "vllm"
-                      source: "vllm"
-                      container_name: "model-vllm-dsv41-dp7"
-                      model: "deepseek-ai/DeepSeek-V4.1-Flash-1017"
-                      served_model: "deepseek-ai/DeepSeek-V4.1-Flash-1017"
-                      model_revision: "1bae0e1088993b9b82de08f59de5be5a34e42170"
-                      replica: "r2"
-                      dp_rank: "3"
-                      gpu: "7"
-                      port: "8009"
-                      env: "${ENV}"
-                      host: "${CVM_HOST}"
-                      host_machine: "${CVM_HOST}"
-                      cvm_name: "${CVM_NAME}"
-                      ip: "${HOST_IP}"
-                      ppcie: "true"
-                      deployment: "dsv41-flash-1017-vllm-dep4x2-abliterated"
-                      config_variant: "vllm0320-lora3p-cc2-w4a8-dep4x2-c8192-dspark3-mr64-engram-host-cpugather"
+                      port: "9464"
               - job_name: sglang-model-sg-flux2-klein-4b-tp1
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -2666,26 +2616,27 @@ configs:
                       cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "9400"
-              - job_name: dcgm-dcgm-dsv41
+              - job_name: dcgm-dcgm-glm53
                 scrape_interval: 15s
+                scrape_timeout: 10s
                 metrics_path: /metrics
                 static_configs:
-                  - targets: ['dcgm-dsv41:9400']
+                  - targets: ['dcgm-glm53:9400']
                     labels:
                       service: "dcgm-exporter"
                       source: "dcgm-exporter"
-                      container_name: "dcgm-dsv41"
-                      model: "deepseek-ai/DeepSeek-V4.1-Flash-1017"
-                      port: "9400"
+                      container_name: "dcgm-glm53"
+                      model: "z-ai/glm-5.3-flash"
+                      model_path: "graphistry/GLM-5.3-Flash-W4AFP8"
+                      served_model: "z-ai/glm-5.3-flash"
+                      deployment: "glm53-flash-sgl-tp2x4"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
                       host_machine: "${CVM_HOST}"
                       cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
-                      ppcie: "true"
+                      port: "9400"
                       gpu_pair: "4-7"
-                      deployment: "dsv41-flash-1017-vllm-dep4x2-abliterated"
-                      config_variant: "vllm0320-lora3p-cc2-w4a8-dep4x2-c8192-dspark3-mr64-engram-host-cpugather"
               - job_name: dcgm-dcgm-shared-gpu3
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -2807,44 +2758,23 @@ configs:
                       port: "8000"
                       gpu_pair: "2"
                       config_variant: "qwen38-lora-canary"
-              - job_name: inference-proxy-proxy-dsv41
+              - job_name: inference-proxy-proxy-glm53
                 scrape_interval: 15s
                 metrics_path: /metrics
                 static_configs:
-                  - targets: ['proxy-dsv41:8000']
+                  - targets: ['proxy-glm53:8000']
                     labels:
                       service: "vllm-proxy"
                       source: "vllm-proxy"
-                      container_name: "proxy-dsv41"
-                      model: "deepseek-ai/DeepSeek-V4.1-Flash-1017"
-                      port: "8009"
+                      container_name: "proxy-glm53"
+                      model: "z-ai/glm-5.3-flash"
+                      deployment: "glm53-flash-sgl-tp2x4"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
                       host_machine: "${CVM_HOST}"
                       cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
-                      ppcie: "true"
-                      deployment: "dsv41-flash-1017-vllm-dep4x2-abliterated"
-                      config_variant: "vllm0320-lora3p-cc2-w4a8-dep4x2-c8192-dspark3-mr64-engram-host-cpugather"
-              - job_name: inference-proxy-proxy-dsv41-abliterated
-                scrape_interval: 15s
-                metrics_path: /metrics
-                static_configs:
-                  - targets: ['proxy-dsv41-abliterated:8000']
-                    labels:
-                      service: "vllm-proxy"
-                      source: "vllm-proxy"
-                      container_name: "proxy-dsv41-abliterated"
-                      model: "deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated"
                       port: "8009"
-                      env: "${ENV}"
-                      host: "${CVM_HOST}"
-                      host_machine: "${CVM_HOST}"
-                      cvm_name: "${CVM_NAME}"
-                      ip: "${HOST_IP}"
-                      ppcie: "true"
-                      deployment: "dsv41-flash-1017-vllm-dep4x2-abliterated"
-                      config_variant: "vllm0320-lora3p-cc2-w4a8-dep4x2-c8192-dspark3-mr64-engram-host-cpugather"
               - job_name: inference-proxy-proxy-flux2-klein-4b
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -3137,8 +3067,9 @@ configs:
           > /dev/null 2>&1
       }
 
-      # A bounded vLLM queue can return 503 or close a connection under load.
-      # Keep the DS4.1 endpoint registered in either case, as gpu02 does.
+      # A bounded engine queue can return 503 or close a connection under load.
+      # Keep the GLM endpoint registered in either case: the OpenRouter gateway and the
+      # proxy's own saturation handling steer around a full replica.
       check_chat_saturated() {
         endpoint=$$1
         model=$$2
@@ -3156,11 +3087,11 @@ configs:
         if [ "$$curl_status" -ne 0 ]; then
           case "$$curl_status" in
             52|56)
-              echo "DS4.1 chat probe for $$model via $$endpoint hit connection-level backpressure (curl $$curl_status); treating as alive but saturated"
+              echo "Chat probe for $$model via $$endpoint hit connection-level backpressure (curl $$curl_status); treating as alive but saturated"
               return 0
               ;;
             *)
-              echo "DS4.1 chat probe for $$model via $$endpoint failed (curl exit $$curl_status)"
+              echo "Chat probe for $$model via $$endpoint failed (curl exit $$curl_status)"
               return 1
               ;;
           esac
@@ -3168,11 +3099,11 @@ configs:
         case "$$status" in
           2*) return 0 ;;
           503)
-            echo "DS4.1 chat probe for $$model via $$endpoint returned HTTP 503; treating as alive but saturated"
+            echo "Chat probe for $$model via $$endpoint returned HTTP 503; treating as alive but saturated"
             return 0
             ;;
           *)
-            echo "DS4.1 chat probe for $$model via $$endpoint failed (HTTP $$status)"
+            echo "Chat probe for $$model via $$endpoint failed (HTTP $$status)"
             return 1
             ;;
         esac
@@ -3209,10 +3140,8 @@ configs:
           8006) check_models "$${HOST_IP}:8006" ;;
           8007) check_models "$${HOST_IP}:8007" ;;
           8008) check_chat "$${HOST_IP}:8008" "Qwen/Qwen3.6-35B-A3B-FP8" ;;
-          8009) check_chat_saturated "$${HOST_IP}:8009" "deepseek-ai/DeepSeek-V4.1-Flash-1017" \
-                  && check_chat_saturated "$${HOST_IP}:8009" "deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated" "deepseek-v4-1-flash-abliterated.completions.near.ai" \
-                  && check_tls_route "deepseek-v4-1-flash.completions.near.ai" \
-                  && check_tls_route "deepseek-v4-1-flash-abliterated.completions.near.ai" ;;
+          8009) check_chat_saturated "$${HOST_IP}:8009" "z-ai/glm-5.3-flash" \
+                  && check_tls_route "glm-5-3-flash.completions.near.ai" ;;
         esac
       }
 
@@ -3271,11 +3200,9 @@ configs:
         register_model "openai/whisper-large-v3" "whisper-large-v3.completions.near.ai"
         register_model "openai/privacy-filter" "privacy-filter.completions.near.ai"
         register_model "Qwen/Qwen3.6-35B-A3B-FP8" "qwen3-6-35b.completions.near.ai"
-        # model-proxy discovers both ids on HOST_IP:8009 from nginx's gated stub.
-        # Both domains route to :8444, where nginx selects the proxy by SNI.
-        # These mappings are identical to gpu02's to avoid last-writer-wins drift.
-        register_model "deepseek-ai/DeepSeek-V4.1-Flash-1017" "deepseek-v4-1-flash.completions.near.ai"
-        register_model "deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated" "deepseek-v4-1-flash-abliterated.completions.near.ai"
+        # GLM-5.3 Flash (:8009, base tier). model-proxy's model->domain map is one domain per id,
+        # last-writer-wins: this is the same mapping gpu03 and gpu04 register, never the long domain.
+        register_model "z-ai/glm-5.3-flash" "glm-5-3-flash.completions.near.ai"
         # Refresh liveness after the register_model calls, before the long sleep.
         date +%s > /tmp/registrar_alive
         sleep 60
@@ -3355,35 +3282,12 @@ configs:
           location / { proxy_pass http://proxy-qwen36-35b-a3b:8000; }
       }
 
-      # :8009 carries both DS4.1 ids because all host ports 8000-8010 and 8444
-      # are already taken. Discovery is gated on the real base serving path.
-      # A bare return runs in rewrite BEFORE auth_request's access phase; try_files
-      # runs in precontent AFTER access, then the named location can return the stub.
+      # :8009 - GLM-5.3 Flash base tier (proxy-glm53 pools r1 and r2 on GPUs 4-7). model-proxy discovers the
+      # canonical z-ai/glm-5.3-flash here and routes the base domain to :8444; the OpenRouter gateway probes
+      # /healthz and /v1/metrics on this port directly.
       server {
           listen 8009;
-          location = /v1/models {
-              auth_request /_dsv41_health;
-              try_files /__synthetic_models__ @dsv41_models;
-          }
-          location @dsv41_models {
-              default_type application/json;
-              return 200 '{"object":"list","data":[{"id":"deepseek-ai/DeepSeek-V4.1-Flash-1017","object":"model","owned_by":"vllm","max_model_len":1048576},{"id":"deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated","object":"model","owned_by":"vllm","max_model_len":1048576}]}';
-          }
-          location = /_dsv41_health {
-              internal;
-              proxy_pass http://proxy-dsv41:8000/v1/models;
-              proxy_pass_request_body off;
-              proxy_set_header Content-Length "";
-              proxy_connect_timeout 2s;
-              proxy_read_timeout 4s;
-          }
-          location / { proxy_pass http://proxy-dsv41:8000; }
-      }
-
-      server {
-          listen 8009;
-          server_name deepseek-v4-1-flash-abliterated.completions.near.ai;
-          location / { proxy_pass http://proxy-dsv41-abliterated:8000; }
+          location / { proxy_pass http://proxy-glm53:8000; }
       }
 
       # ── TLS server blocks (port 443 = host 8444) ──
@@ -3503,32 +3407,17 @@ configs:
 
       server {
           listen 443 ssl http2;
-          # These base names cannot match the abliterated -iN or -b<hex12> names.
-          # gpu13.hosts.near.ai is no longer used by the OpenRouter lane and falls through.
-          server_name deepseek-v4-1-flash.completions.near.ai
-                      deepseek-v4-1-flash.completions-stg.near.ai
-                      ~^deepseek-v4-1-flash-i\d+\.completions(-stg)?\.near\.ai$$
-                      "~^deepseek-v4-1-flash-b[0-9a-f]{12}\.completions(-stg)?\.near\.ai$$";
+          # Base names only (canonical, staging, rotation -i<N>, per-backend -b<hex12>). The -long-* names are not
+          # served here: gpu13 is not a long-tier host.
+          server_name glm-5-3-flash.completions.near.ai
+                      glm-5-3-flash.completions-stg.near.ai
+                      ~^glm-5-3-flash-i\d+\.completions(-stg)?\.near\.ai$$
+                      "~^glm-5-3-flash-b[0-9a-f]{12}\.completions(-stg)?\.near\.ai$$";
           keepalive_timeout 1h;
           keepalive_requests 1000000;
           location ^~ /metrics { return 404; }
           location ^~ /v1/metrics { return 404; }
-          location = /v1/models { default_type application/json; return 200 '{"object":"list","data":[{"id":"deepseek-ai/DeepSeek-V4.1-Flash-1017","object":"model","owned_by":"vllm","max_model_len":1048576}]}'; }
-          location / { proxy_pass http://proxy-dsv41:8000; }
-      }
-
-      server {
-          listen 443 ssl http2;
-          server_name deepseek-v4-1-flash-abliterated.completions.near.ai
-                      deepseek-v4-1-flash-abliterated.completions-stg.near.ai
-                      ~^deepseek-v4-1-flash-abliterated-i\d+\.completions(-stg)?\.near\.ai$$
-                      "~^deepseek-v4-1-flash-abliterated-b[0-9a-f]{12}\.completions(-stg)?\.near\.ai$$";
-          keepalive_timeout 1h;
-          keepalive_requests 1000000;
-          location ^~ /metrics { return 404; }
-          location ^~ /v1/metrics { return 404; }
-          location = /v1/models { default_type application/json; return 200 '{"object":"list","data":[{"id":"deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated","object":"model","owned_by":"vllm","max_model_len":1048576}]}'; }
-          location / { proxy_pass http://proxy-dsv41-abliterated:8000; }
+          location / { proxy_pass http://proxy-glm53:8000; }
       }
 
   # ── TEMPORARY (gpu02 maintenance): dedicated ingress for Qwen3.8 on :8000/:8001 ──
