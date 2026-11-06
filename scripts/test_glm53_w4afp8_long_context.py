@@ -171,15 +171,17 @@ class GeneratedFileTest(unittest.TestCase):
             with self.subTest(replica=suffix):
                 for flag in ("--tp-size 2", "--ep-size 2", "--mem-fraction-static 0.86", "--max-mamba-cache-size 330", "--max-running-requests 16", "--cuda-graph-max-bs-decode 16",
                              "--kv-cache-dtype fp8_e4m3", "--dsa-prefill-backend flashmla_sparse_q8", "--dsa-decode-backend flashmla_kv", "--disable-overlap-schedule",
-                             "--enable-hierarchical-cache",
                              "--max-queued-requests 8", "--speculative-num-steps 4", "--speculative-eagle-topk 1", "--speculative-num-draft-tokens 5",
-                             "--mamba-ssm-dtype bfloat16", "--chunked-prefill-size 16384", "--hicache-write-policy write_through",
+                             "--mamba-ssm-dtype bfloat16", "--chunked-prefill-size 16384",
                              f"--dist-init-addr {spec['dist_init']}"):
                     self.assertIn(f"\n        {flag}\n", service)
                 for forbidden in ("--speculative-adaptive", "ADMISSION_RESERVE", "NEAR_SELF_PROFILE", "--kv-cache-dtype bfloat16", "--dsa-prefill-backend tilelang"):
                     self.assertNotIn(forbidden, service)
-                self.assertIn(f"${{{spec['budget_var']}:-325GiB}}", service)
-                self.assertEqual(2 * 325, 650)  # r2 default is 650 GiB
+                # HiCache OFF since 2026-11-06: no flags and no host-RAM budget on a TP2 long replica.
+                for forbidden in ("--enable-hierarchical-cache", "--hicache-write-policy", "--hicache-io-backend",
+                                  "--hicache-mem-layout", "SGLANG_HICACHE_RAM_BUDGET"):
+                    self.assertNotIn(forbidden, service)
+                self.assertNotIn(f"${{{spec['budget_var']}:-325GiB}}", service)
 
     def test_observability_is_on_every_replica_with_one_aggregator(self) -> None:
         # Every GLM engine in the file (TP4 r1/r2 and the gpu02 TP2 pair r2a/r2b) carries the full
@@ -434,11 +436,12 @@ class ValidatorContractTest(unittest.TestCase):
                 ("--dsa-prefill-backend flashmla_sparse_q8", "--dsa-prefill-backend flashmla_kv", argv),
                 ("--dsa-decode-backend flashmla_kv", "--dsa-decode-backend tilelang", argv),
                 ("        --disable-overlap-schedule\n", "", argv),
-                ("        --enable-hierarchical-cache\n", "", argv),
+                # HiCache must stay OFF: adding any of it back is drift (docs/glm53-long-hicache-off.md).
+                ("        --disable-overlap-schedule\n", "        --disable-overlap-schedule\n        --enable-hierarchical-cache\n", "must keep HiCache OFF"),
                 ("--speculative-num-steps 4", "--speculative-num-steps 5", argv),
                 ("--speculative-num-draft-tokens 5", "--speculative-num-draft-tokens 6", argv),
                 ("--tp-size 2", "--tp-size 4", argv),
-                ("--hicache-write-policy write_through", "--hicache-write-policy write_through_selective", argv),
+                ("        --max-mamba-cache-size 330\n", "        --max-mamba-cache-size 330\n        --hicache-write-policy write_through\n", "must keep HiCache OFF"),
                 ("--chunked-prefill-size 16384", "--chunked-prefill-size 32768", "must not enable prefill chunks above 16384"),
                 ("--mamba-ssm-dtype bfloat16\n", "--mamba-ssm-dtype bfloat16\n        --speculative-adaptive\n", "must not set --speculative-adaptive"),
                 ("--mamba-ssm-dtype bfloat16\n", "--mamba-ssm-dtype bfloat16\n        --disable-overlap-schedule\n", "must set --disable-overlap-schedule exactly once"),
@@ -449,19 +452,20 @@ class ValidatorContractTest(unittest.TestCase):
                     self.assert_fails(self.valid[:start] + block.replace(before, after, 1) + self.valid[end:], message)
 
     def test_tp2_canary_rejects_environment_pinning_and_telemetry_drift(self) -> None:
-        for name, devices, wrong_devices, budget, instance in (
-            (R2A, '["4","5"]', '["4","6"]', "${GLM53_R2A_HICACHE_RAM_BUDGET:-325GiB}", "2a"),
-            (R2B, '["6","7"]', '["0","1"]', "${GLM53_R2B_HICACHE_RAM_BUDGET:-325GiB}", "2b"),
-            (R1A, '["0","1"]', '["0","2"]', "${GLM53_R1A_HICACHE_RAM_BUDGET:-325GiB}", "1a"),
-            (R1B, '["2","3"]', '["4","5"]', "${GLM53_R1B_HICACHE_RAM_BUDGET:-325GiB}", "1b"),
+        for name, devices, wrong_devices, instance in (
+            (R2A, '["4","5"]', '["4","6"]', "2a"),
+            (R2B, '["6","7"]', '["0","1"]', "2b"),
+            (R1A, '["0","1"]', '["0","2"]', "1a"),
+            (R1B, '["2","3"]', '["4","5"]', "1b"),
         ):
             start, end = tp2_bounds(self.valid, name)
             block = self.valid[start:end]
             cases = (
                 (f"device_ids: {devices}", f"device_ids: {wrong_devices}", "must use GPU device_ids"),
                 ("    environment:\n", "    environment:\n      - SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE=4096\n", "must not set admission-reserve environment"),
-                (budget, budget.replace("325GiB", "650GiB"), "environment must be the long-context environment plus per-replica"),
-                ("      - SGLANG_DSA_INDEXER_QSPLIT=1\n", "", "environment must be the long-context environment plus per-replica"),
+                # Re-adding the host-RAM budget is drift: HiCache is off, so the replica must not carry it.
+                ("    environment:\n", "    environment:\n      - SGLANG_HICACHE_RAM_BUDGET=325GiB\n", "environment must be the long-context environment with NO SGLANG_HICACHE_RAM_BUDGET"),
+                ("      - SGLANG_DSA_INDEXER_QSPLIT=1\n", "", "environment must be the long-context environment with NO SGLANG_HICACHE_RAM_BUDGET"),
                 (f'nearai.otel.instance: "{instance}"', 'nearai.otel.instance: "9"', "nearai.otel.instance must be"),
                 ("nearai.otel.gpu_pair:", "nearai.otel.gpu_pairx:", "nearai.otel.gpu_pair must be"),
                 (f'nearai.otel.config_variant: "{TP2_VARIANT}"', 'nearai.otel.config_variant: "x"', "nearai.otel.config_variant must be"),

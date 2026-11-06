@@ -77,8 +77,7 @@ LONG_ARGV = """
     --chat-template /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/3f1971b7b5f7a528c9c4ef6212c8785298a8c24a/chat_template.jinja
     --context-length 1048576 --dist-init-addr 127.0.0.1:29512 --watchdog-timeout 1800 --host 0.0.0.0 --port 8000
     --enable-metrics --enable-cache-report --log-requests-level 0 --disable-fast-image-processor
-    --limit-mm-data-per-request '{"image": 64}' --enable-hierarchical-cache --hicache-write-policy write_through
-    --hicache-io-backend direct --hicache-mem-layout page_first_direct --max-mamba-cache-size 330 --mamba-ssm-dtype bfloat16
+    --limit-mm-data-per-request '{"image": 64}' --max-mamba-cache-size 330 --mamba-ssm-dtype bfloat16
     --disable-overlap-schedule
 """
 BASE_FILE = ROOT / base_generator.TARGET
@@ -190,8 +189,8 @@ class FleetFilesTest(unittest.TestCase):
                 self.assertEqual(value("--chunked-prefill-size"), "16384")
                 self.assertEqual((value("--max-running-requests"), value("--max-queued-requests"), value("--cuda-graph-max-bs-decode")), ("16", "8", "16"))
                 self.assertEqual(argv.count("--disable-overlap-schedule"), 1)
-                self.assertIn("--enable-hierarchical-cache", argv)
-                self.assertEqual(value("--hicache-write-policy"), "write_through")
+                # HiCache OFF on the long tier since 2026-11-06 (docs/glm53-long-hicache-off.md).
+                self.assertEqual([tok for tok in argv if tok.startswith(("--hicache", "--enable-hierarchical-cache"))], [])
                 env = env_of(block)
                 self.assertEqual(env[-len(FLEET_ENV):], FLEET_ENV)
         for tp4 in ("model-sg-glm53-w4afp8-tp4-r1", "model-sg-glm53-w4afp8-tp4-r2"):
@@ -1224,7 +1223,7 @@ class FleetValidatorContractTest(unittest.TestCase):
         self.assert_fails("long", long.replace(env, env + "      - NEAR_SELF_PROFILE=1\n", 1), "must not enable profiling anywhere")
         self.assert_fails("base", base.replace("      --disable-overlap-schedule\n\nx-dcgm-common", "      --disable-overlap-schedule\n      --enable-hierarchical-cache\n\nx-dcgm-common", 1), "must run with HiCache off")
         self.assert_fails("base", base.replace("      - SGLANG_PREPROCESS_WORKERS=4\n", "", 1), "environment must be the W4AFP8 base engine environment plus")
-        self.assert_fails("long", long.replace("      - SGLANG_PREPROCESS_WORKERS=4\n", "", 1), "environment must be the long-context environment plus")
+        self.assert_fails("long", long.replace("      - SGLANG_PREPROCESS_WORKERS=4\n", "", 1), "environment must be the long-context environment with NO SGLANG_HICACHE_RAM_BUDGET")
         self.assert_fails("base", base.replace("  image: " + V7_IMAGE + "\n", "  image: " + V6_IMAGE + "\n", 1), "image must be")
         self.assert_fails("long", long.replace(f"    image: {V12_IMAGE}\n", f"    image: {V6_IMAGE}\n", 1), "image must be")
 

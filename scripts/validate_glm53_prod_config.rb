@@ -1145,25 +1145,26 @@ W4AFP8_LONG_CONTEXT_HICACHE_ENV = HICACHE_ENV.merge("SGLANG_HICACHE_RAM_BUDGET" 
 # adds the K-pool indexer logits budget, #370). The file is shared by gpu02 and gpu23, so the TP4 r1/r2 above stay defined (v6; a host not
 # yet converted keeps deploying them) and these four TP2 services start in their place (same GPUs, so a TP4 replica and its pair
 # are never up together). Lab-validated (tee-bench exp 19/29): mem 0.86, 330 mamba slots, fixed EAGLE 4/1/5; v7 adds FP8 KV
-# (flashmla_kv prefill and decode), 16 running / 8 queued with decode graphs 16, the overlap scheduler off, HiCache ON (write_through,
-# the long tier is at 84% of its infinite-cache ceiling), the preprocess pool and tool-schema caps, and NO profiling.
+# (flashmla_kv prefill and decode), 16 running / 8 queued with decode graphs 16, the overlap scheduler off, HiCache OFF since 2026-11-06
+# (CUDA illegal-memory-access crashes in EAGLE verify; see docs/glm53-long-hicache-off.md), the preprocess pool and
+# tool-schema caps, and NO profiling.
 W4AFP8_TP2_CANARY_REPLICAS = {
   "model-sg-glm53-w4afp8-tp2-r2a" => { "devices" => %w[4 5], "dist_init" => "127.0.0.1:29512", "instance" => "2a", "gpu_pair" => "4-5",
-                                       "budget" => "${GLM53_R2A_HICACHE_RAM_BUDGET:-325GiB}", "ghost_replica" => "r2a" },
+                                       "ghost_replica" => "r2a" },
   "model-sg-glm53-w4afp8-tp2-r2b" => { "devices" => %w[6 7], "dist_init" => "127.0.0.1:29513", "instance" => "2b", "gpu_pair" => "6-7",
-                                       "budget" => "${GLM53_R2B_HICACHE_RAM_BUDGET:-325GiB}", "ghost_replica" => "r2b" },
+                                       "ghost_replica" => "r2b" },
   # Long-context 2xTP2 rollout: the same pair in r1's place (GPUs 0-3).
   "model-sg-glm53-w4afp8-tp2-r1a" => { "devices" => %w[0 1], "dist_init" => "127.0.0.1:29514", "instance" => "1a", "gpu_pair" => "0-1",
-                                       "budget" => "${GLM53_R1A_HICACHE_RAM_BUDGET:-325GiB}", "ghost_replica" => "r1a" },
+                                       "ghost_replica" => "r1a" },
   "model-sg-glm53-w4afp8-tp2-r1b" => { "devices" => %w[2 3], "dist_init" => "127.0.0.1:29515", "instance" => "1b", "gpu_pair" => "2-3",
-                                       "budget" => "${GLM53_R1B_HICACHE_RAM_BUDGET:-325GiB}", "ghost_replica" => "r1b" },
+                                       "ghost_replica" => "r1b" },
 }.freeze
 # Each TP2 replica replaces one TP4 replica and must stay inside that replica's GPUs.
 W4AFP8_TP2_PARENT = {
   "model-sg-glm53-w4afp8-tp2-r1a" => "model-sg-glm53-w4afp8-tp4-r1", "model-sg-glm53-w4afp8-tp2-r1b" => "model-sg-glm53-w4afp8-tp4-r1",
   "model-sg-glm53-w4afp8-tp2-r2a" => "model-sg-glm53-w4afp8-tp4-r2", "model-sg-glm53-w4afp8-tp2-r2b" => "model-sg-glm53-w4afp8-tp4-r2",
 }.freeze
-W4AFP8_TP2_CANARY_VARIANT = "fc91d24-long-context-w4afp8-c16384-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host325g-memopt-fp8kv-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-mr16q8-strict-budget8192#{OBSERVABILITY_VARIANT_SUFFIX}-v12-q8"
+W4AFP8_TP2_CANARY_VARIANT = "fc91d24-long-context-w4afp8-c16384-qsplit-offloop-v3-hicacheoff-memopt-fp8kv-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-mr16q8-strict-budget8192#{OBSERVABILITY_VARIANT_SUFFIX}-v12-q8"
 W4AFP8_TP2_CANARY_ARGV = Shellwords.split(<<~'ARGV').freeze
   sglang serve
   --model-path /root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/snapshots/99f1fa70408c52b007d4fd69e02e5a522422e755
@@ -1185,14 +1186,12 @@ W4AFP8_TP2_CANARY_ARGV = Shellwords.split(<<~'ARGV').freeze
   --watchdog-timeout 1800 --host 0.0.0.0 --port 8000
   --enable-metrics --enable-cache-report --log-requests-level 0
   --disable-fast-image-processor --limit-mm-data-per-request '{"image": 64}'
-  --enable-hierarchical-cache --hicache-write-policy write_through
-  --hicache-io-backend direct --hicache-mem-layout page_first_direct
   --max-mamba-cache-size 330 --mamba-ssm-dtype bfloat16
   --disable-overlap-schedule
 ARGV
 # Flags that must never appear on a TP2 fleet replica: adaptive EAGLE is replaced by the fixed 4/1/5 arm (the overlap scheduler is
 # OFF on the fleet, so --disable-overlap-schedule is part of the argv above and checked exactly once).
-W4AFP8_TP2_CANARY_FORBIDDEN_FLAGS = %w[--speculative-adaptive].freeze
+W4AFP8_TP2_CANARY_FORBIDDEN_FLAGS = %w[--speculative-adaptive --enable-hierarchical-cache].freeze
 # The proxy pool is host-overridable; its default MUST stay r1 + r2 so a host that has not
 # converted (and never sets GLM53_BACKEND_URLS) keeps its exact current backend list.
 W4AFP8_PROXY_BACKENDS_DEFAULT = "http://model-sg-glm53-w4afp8-tp4-r1:8000,http://model-sg-glm53-w4afp8-tp4-r2:8000"
@@ -1377,7 +1376,11 @@ def validate_w4afp8_tp2_canary(errors, label, services, collector, replicas)
     end
     validate_fp8_kv_pairing(errors, "#{label} #{name}", actual_argv, prefill: "flashmla_sparse_q8")
     errors << "#{label} #{name} must set --disable-overlap-schedule exactly once" unless actual_argv.count("--disable-overlap-schedule") == 1
-    errors << "#{label} #{name} must keep HiCache ON (write_through)" unless actual_argv.include?("--enable-hierarchical-cache") && actual_argv.each_cons(2).include?(["--hicache-write-policy", "write_through"])
+    # HiCache OFF since 2026-11-06 (docs/glm53-long-hicache-off.md): the long tier is the only tier that
+    # crashed with CUDA "illegal memory access" in EAGLE verify, and the host tier is the only thing that
+    # distinguishes it from the base tier on the same image. Assert it stays off until #19177 ships.
+    hicache_flags = actual_argv.select { |token| token == "--enable-hierarchical-cache" || token.start_with?("--hicache") }
+    errors << "#{label} #{name} must keep HiCache OFF; found #{hicache_flags.join(' ')}" unless hicache_flags.empty?
     run_cap = actual_argv.each_cons(2).find { |flag, _| flag == "--max-running-requests" }&.last.to_i
     slots = actual_argv.each_cons(2).find { |flag, _| flag == "--max-mamba-cache-size" }&.last.to_i
     errors << "#{label} #{name} --max-mamba-cache-size #{slots} cannot hold #{run_cap} running requests (needs >= 5 slots each)" if slots < 5 * run_cap
@@ -1389,8 +1392,11 @@ def validate_w4afp8_tp2_canary(errors, label, services, collector, replicas)
     end
 
     env = environment_map(service)
+    # HiCache OFF on the TP2 long replicas since 2026-11-06: the host tier is never allocated, so the
+    # replica must NOT carry SGLANG_HICACHE_RAM_BUDGET. The remaining SGLANG_HICACHE_* keys are inert.
     expected_env = reference_env.merge(W4AFP8_LONG_CONTEXT_HICACHE_ENV)
-                                .merge("SGLANG_HICACHE_RAM_BUDGET" => spec["budget"], W4AFP8_QSPLIT_ENV => "1")
+                                .reject { |key, _| key == "SGLANG_HICACHE_RAM_BUDGET" }
+                                .merge(W4AFP8_QSPLIT_ENV => "1")
                                 .merge(observability_env(spec["ghost_replica"]))
                                 .merge(V7_FLEET_ENV)
     reserve = env.keys & ADMISSION_RESERVE_ENV
@@ -1398,7 +1404,7 @@ def validate_w4afp8_tp2_canary(errors, label, services, collector, replicas)
     (env.keys & FORBIDDEN_ENV).each { |key| errors << "#{label} #{name} must not set #{key}" }
     unless env == expected_env
       diff = (env.to_a - expected_env.to_a) + (expected_env.to_a - env.to_a)
-      errors << "#{label} #{name} environment must be the long-context environment plus per-replica SGLANG_HICACHE_RAM_BUDGET=#{spec['budget']}, #{W4AFP8_QSPLIT_ENV}=1, the observability environment and #{V7_FLEET_ENV.map { |key, value| "#{key}=#{value}" }.join(' ')} (no profiling); differing: #{diff.map { |key, value| "#{key}=#{value}" }.uniq.join(' ')}"
+      errors << "#{label} #{name} environment must be the long-context environment with NO SGLANG_HICACHE_RAM_BUDGET (HiCache off), plus #{W4AFP8_QSPLIT_ENV}=1, the observability environment and #{V7_FLEET_ENV.map { |key, value| "#{key}=#{value}" }.join(' ')} (no profiling); differing: #{diff.map { |key, value| "#{key}=#{value}" }.uniq.join(' ')}"
     end
 
     device_ids = Array(service.dig("deploy", "resources", "reservations", "devices", 0, "device_ids")).map(&:to_s)

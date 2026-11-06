@@ -106,9 +106,14 @@ HEADER: Final = (
     "# GLM-5.3 Flash LONG-CONTEXT TIER, v12 FLEET CONFIG (gpu02 and gpu23; gpu13 mirrors it in small-models.yaml): the one long\n"
     "# config every host of the tier deploys. The four TP2 replicas r1a/r1b/r2a/r2b run the glm53-hicache-w4afp8-v12 image (v10 + K-pool indexer logits budget) with\n"
     "# FP8 KV, Q8 DSA prefill (flashmla_sparse_q8) with 16384-token chunks and flashmla_kv decode (docs/glm53-long-v10-q8-rollout.md),\n"
-    f"# {TP2_MAX_RUNNING} running / {TP2_MAX_QUEUED} queued requests with {TP2_MAX_RUNNING} decode graphs, the overlap scheduler off, HiCache ON (write_through, 325 GiB\n"
-    "# per replica: the long tier is at 84% of its infinite-cache ceiling, so the cache stays), the preprocess pool and the\n"
+    f"# {TP2_MAX_RUNNING} running / {TP2_MAX_QUEUED} queued requests with {TP2_MAX_RUNNING} decode graphs, the overlap scheduler off, HiCache OFF since\n"
+    "# 2026-11-06 (it was write_through at 325 GiB per replica), the preprocess pool and the\n"
     "# tool-schema caps, and no profiling (no NEAR_SELF_PROFILE*). v7 history: docs/glm53-v7-fleet-rollout.md.\n"
+    "# WHY HICACHE IS OFF: it is the only difference between the long tier, which has been crashing with CUDA\n"
+    "# 'illegal memory access' in EAGLE v2 verify since 2026-11-02, and the base tier on the same image, which\n"
+    "# has not. This image still carries the open upstream TODO that sgl-project/sglang#19177 closes, so CUDA\n"
+    "# graphs are replayed while a HiCache host->device load is still writing device KV pages. The long tier\n"
+    "# gives up its host-cache hits until that patch is validated. See docs/glm53-long-hicache-off.md.\n"
     f"# The TP4 r1/r2 services below are kept unchanged on the v6 image ({IMAGE.split(':')[-1][:12]}) for hosts not yet on TP2; none is\n"
     "# deployed by the fleet. ROLLBACK (v12): redeploy the previous tag's copy of this file (v10 image) for the\n"
     "# same service.\n"
@@ -329,7 +334,7 @@ V7_ENVIRONMENT: Final = (
 TP2_HICACHE_BUDGET: Final = "325GiB"
 TP2_MAMBA_CACHE: Final = "330"
 TP2_VARIANT: Final = (
-    "fc91d24-long-context-w4afp8-c16384-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host325g"
+    "fc91d24-long-context-w4afp8-c16384-qsplit-offloop-v3-hicacheoff"
     "-memopt-fp8kv-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-"
     f"mr{TP2_MAX_RUNNING}q{TP2_MAX_QUEUED}-strict-budget8192"
     + obs.VARIANT_SUFFIX
@@ -352,6 +357,25 @@ TP2_FLAG_CHANGES: Final = {
     "--speculative-num-steps 5": "--speculative-num-steps 4",
     "--speculative-num-draft-tokens 6": "--speculative-num-draft-tokens 5",
     "--speculative-adaptive": None,
+    # HiCache OFF on the TP2 long replicas (2026-11-06). These four flags are dropped and no
+    # SGLANG_HICACHE_RAM_BUDGET is set, so the host tier is never allocated.
+    # WHY: every CUDA "illegal memory access" crash on the long tier since 2026-11-02 landed in
+    # EAGLE v2 verify (set_mamba_track_indices_from_reqs). Only HiCache replicas crash; no base
+    # replica has, on the same v12 image. The crash line itself is safe (the ping-pong buffer is
+    # width 1 under --disable-overlap-schedule and the gather index is pinned to 0), so the fault
+    # is asynchronous, from an earlier kernel. The engine never disables CUDA graph replay while a
+    # HiCache host->device load is still writing device KV pages: the TODO that upstream
+    # sgl-project/sglang#19177 closes is still open in this image in managers/scheduler.py
+    # ("todo (zhiqiang): disable cuda graph execution if hicache loading triggered").
+    # Turning the host tier off removes the race until that patch is validated and shipped.
+    # COST: the long tier loses host-cache hits (gpu23 served 33-347M host-source cached tokens
+    # per 6 h), so long-prompt prefill gets more expensive. Watch long-tier 429s: they feed
+    # OpenRouter's learned capacity cap.
+    # ROLLBACK: delete these four entries and restore the budget block in tp2_service().
+    "--enable-hierarchical-cache": None,
+    "--hicache-write-policy write_through": None,
+    "--hicache-io-backend direct": None,
+    "--hicache-mem-layout page_first_direct": None,
 }
 BACKEND_URLS_R1_R2: Final = f"http://{SERVICE_PREFIX}1:8000,http://{SERVICE_PREFIX}2:8000"
 # The value gpu02's compose-manager env map sets for GLM53_BACKEND_URLS during the 2xTP2 canary.
@@ -525,10 +549,10 @@ def tp2_service(r2: str, suffix: str) -> str:
     comment_end = environment.index(budget_line) + len(budget_line)
     environment = (
         environment[:comment_start]
-        + "      # HiCache host tier: 325 GiB per TP2 replica across its two TP ranks (half of r2's 650 GiB; the\n"
-        + "      # pair takes what the TP4 r2 took, and two pairs take 1300 GiB per host, more than 406 + 650 for r1 + r2). Fixed (not a percentage) so the replica started\n"
-        + "      # second does not get less; startup fails if it exceeds available RAM minus 10 GiB.\n"
-        + f"      - SGLANG_HICACHE_RAM_BUDGET=${{{spec['budget_var']}:-{TP2_HICACHE_BUDGET}}}\n"
+        + "      # HiCache host tier: OFF since 2026-11-06 (TP2_FLAG_CHANGES in the generator says why).\n"
+        + "      # The four hierarchical-cache switches are dropped from the argv, so no host tier is\n"
+        + f"      # allocated and this replica carries no host-RAM budget variable. It was {TP2_HICACHE_BUDGET} per\n"
+        + f"      # TP2 replica across its two TP ranks ({spec['budget_var']}); restore that line to roll back.\n"
         + environment[comment_end:]
     )
     environment += (
