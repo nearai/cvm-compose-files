@@ -437,11 +437,11 @@ class ValidatorContractTest(unittest.TestCase):
                 ("--dsa-decode-backend flashmla_kv", "--dsa-decode-backend tilelang", argv),
                 ("        --disable-overlap-schedule\n", "", argv),
                 # HiCache must stay OFF: adding any of it back is drift (docs/glm53-long-hicache-off.md).
-                ("        --disable-overlap-schedule\n", "        --disable-overlap-schedule\n        --enable-hierarchical-cache\n", "must keep HiCache OFF"),
+                ("        --disable-overlap-schedule\n", "        --disable-overlap-schedule\n        --enable-hierarchical-cache\n", "must run with HiCache off"),
                 ("--speculative-num-steps 4", "--speculative-num-steps 5", argv),
                 ("--speculative-num-draft-tokens 5", "--speculative-num-draft-tokens 6", argv),
                 ("--tp-size 2", "--tp-size 4", argv),
-                ("        --max-mamba-cache-size 330\n", "        --max-mamba-cache-size 330\n        --hicache-write-policy write_through\n", "must keep HiCache OFF"),
+                ("        --max-mamba-cache-size 330\n", "        --max-mamba-cache-size 330\n        --hicache-write-policy write_through\n", "must run with HiCache off"),
                 ("--chunked-prefill-size 16384", "--chunked-prefill-size 32768", "must not enable prefill chunks above 16384"),
                 ("--mamba-ssm-dtype bfloat16\n", "--mamba-ssm-dtype bfloat16\n        --speculative-adaptive\n", "must not set --speculative-adaptive"),
                 ("--mamba-ssm-dtype bfloat16\n", "--mamba-ssm-dtype bfloat16\n        --disable-overlap-schedule\n", "must set --disable-overlap-schedule exactly once"),

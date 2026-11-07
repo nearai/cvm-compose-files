@@ -1379,8 +1379,7 @@ def validate_w4afp8_tp2_canary(errors, label, services, collector, replicas)
     # HiCache OFF since 2026-11-06 (docs/glm53-long-hicache-off.md): the long tier is the only tier that
     # crashed with CUDA "illegal memory access" in EAGLE verify, and the host tier is the only thing that
     # distinguishes it from the base tier on the same image. Assert it stays off until #19177 ships.
-    hicache_flags = actual_argv.select { |token| token == "--enable-hierarchical-cache" || token.start_with?("--hicache") }
-    errors << "#{label} #{name} must keep HiCache OFF; found #{hicache_flags.join(' ')}" unless hicache_flags.empty?
+    validate_hicache_off(errors, "#{label} #{name}", actual_argv)
     run_cap = actual_argv.each_cons(2).find { |flag, _| flag == "--max-running-requests" }&.last.to_i
     slots = actual_argv.each_cons(2).find { |flag, _| flag == "--max-mamba-cache-size" }&.last.to_i
     errors << "#{label} #{name} --max-mamba-cache-size #{slots} cannot hold #{run_cap} running requests (needs >= 5 slots each)" if slots < 5 * run_cap
