@@ -7,7 +7,8 @@
 #     SYNTHETIC id z-ai/glm-5.3-flash-long, gated on proxy-glm53-long) on glm-5-3-flash-long.completions.near.ai.
 #     Both endpoints route to :8444; nginx splits them by SNI (glm-5-3-flash-long.* -> proxy-glm53-long, anything
 #     else -> proxy-glm53). The canonical id is never registered under the long domain.
-#   - l4 is gpu23's long replica r2b (v12, Q8 prefill, 16K chunks, 16 running, HiCache 325 GiB) with
+#   - l4 is gpu23's long replica r2b (v12, Q8 prefill, 16K chunks, 16 running, host cache tier OFF since
+#     2026-11-06 - see docs/glm53-long-hicache-off.md) with
 #     --max-queued-requests 32 instead of 8, so the OpenRouter gateway's saturated threshold (16 queued) steers
 #     new long conversations away from it before the engine refuses.
 # ROLLBACK: redeploy prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8-V12Q8.yaml (r4 back on GPUs 6-7, proxy-glm53 with r1-r4,
@@ -897,10 +898,6 @@ services:
         --log-requests-level 0
         --disable-fast-image-processor
         --limit-mm-data-per-request '{"image": 64}'
-        --enable-hierarchical-cache
-        --hicache-write-policy write_through
-        --hicache-io-backend direct
-        --hicache-mem-layout page_first_direct
         --max-mamba-cache-size 330
         --mamba-ssm-dtype bfloat16
         --disable-overlap-schedule
@@ -929,10 +926,10 @@ services:
       # No admission reserve on the long tier (see the header); --prefill-decode-interval
       # is set per replica, independently of the inert reserve patch.
       - SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE=1
-      # HiCache host tier: 325 GiB per TP2 replica across its two TP ranks (half of r2's 650 GiB; the
-      # pair takes what the TP4 r2 took, and two pairs take 1300 GiB per host, more than 406 + 650 for r1 + r2). Fixed (not a percentage) so the replica started
-      # second does not get less; startup fails if it exceeds available RAM minus 10 GiB.
-      - SGLANG_HICACHE_RAM_BUDGET=${GLM53_L4_HICACHE_RAM_BUDGET:-325GiB}
+      # HiCache host tier: OFF since 2026-11-06 (TP2_FLAG_CHANGES in the generator says why).
+      # The four hierarchical-cache switches are dropped from the argv, so no host tier is
+      # allocated and this replica carries no host-RAM budget variable. It was 325GiB per
+      # TP2 replica across its two TP ranks (GLM53_L4_HICACHE_RAM_BUDGET); restore that line to roll back.
       # CUDA-owned host memory (cudaMallocHost). Must stay 1 on TEE hosts: 0 selects
       # cudaHostRegister, which fails with CUDA error 801 under HCC/PPCIe.
       - SGLANG_HICACHE_CUDA_HOST_MEMORY=${GLM53_HICACHE_CUDA_HOST_MEMORY:-1}
@@ -978,7 +975,7 @@ services:
               device_ids: ["6","7"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-fp8-kv","deployment:glm53-flash-sgl-tp4","config_variant:fc91d24-long-context-w4afp8-c16384-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host325g-memopt-fp8kv-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-mr16q32-strict-budget8192-obs-v1-v12-q8","request_logging:disabled","engine_image:da8d4e4b5ec6","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:l4","gpu_pair:6-7"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-fp8-kv","deployment:glm53-flash-sgl-tp4","config_variant:fc91d24-long-context-w4afp8-c16384-qsplit-offloop-v3-hicacheoff-memopt-fp8kv-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-mr16q32-strict-budget8192-obs-v1-v12-q8","request_logging:disabled","engine_image:da8d4e4b5ec6","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:l4","gpu_pair:6-7"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -990,7 +987,7 @@ services:
       nearai.otel.model_path: "graphistry/GLM-5.3-Flash-W4AFP8"
       nearai.otel.served_model: "z-ai/glm-5.3-flash"
       nearai.otel.deployment: "glm53-flash-sgl-tp4"
-      nearai.otel.config_variant: "fc91d24-long-context-w4afp8-c16384-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host325g-memopt-fp8kv-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-mr16q32-strict-budget8192-obs-v1-v12-q8"
+      nearai.otel.config_variant: "fc91d24-long-context-w4afp8-c16384-qsplit-offloop-v3-hicacheoff-memopt-fp8kv-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-mr16q32-strict-budget8192-obs-v1-v12-q8"
       nearai.otel.thinking_budget_policy: "default8192-public-to-native"
       nearai.otel.request_logging: "disabled"
       nearai.otel.engine_image: "da8d4e4b5ec6"
@@ -1540,7 +1537,7 @@ configs:
                       ip: "${HOST_IP}"
                       port: "8000"
                       instance: "l4"
-                      config_variant: "fc91d24-long-context-w4afp8-c16384-qsplit-offloop-v3-hicache-cuda-host-pooled-v1-host325g-memopt-fp8kv-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-mr16q32-strict-budget8192-obs-v1-v12-q8"
+                      config_variant: "fc91d24-long-context-w4afp8-c16384-qsplit-offloop-v3-hicacheoff-memopt-fp8kv-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-mr16q32-strict-budget8192-obs-v1-v12-q8"
                       thinking_budget_policy: "default8192-public-to-native"
                       request_logging: "disabled"
                       engine_image: "da8d4e4b5ec6"

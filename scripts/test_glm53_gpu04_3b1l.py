@@ -51,7 +51,10 @@ class Gpu04MixedTier(unittest.TestCase):
         self.assertIn('device_ids: ["6","7"]', l4)
         self.assertIn("SGLANG_GHOST_CACHE_REPLICA=l4", l4)
         self.assertNotIn("SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE", l4)
-        self.assertIn("--enable-hierarchical-cache", l4)
+        # HiCache OFF on the long tier since 2026-11-06 (docs/glm53-long-hicache-off.md);
+        # l4 inherits that from gpu23's r2b, which the argv diff above already pins.
+        self.assertNotIn("--enable-hierarchical-cache", l4)
+        self.assertNotIn("SGLANG_HICACHE_RAM_BUDGET", l4)
 
     def test_proxy_pools(self) -> None:
         base = re.search(r"VLLM_BACKEND_URLS=(\S+)", self.svc["proxy-glm53"]).group(1)
