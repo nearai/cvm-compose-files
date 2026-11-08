@@ -443,7 +443,7 @@ services:
       # vLLM runs the lowest priority first: write the negated value (see --scheduling-policy on the ranks).
       - VLLM_PROXY_PRIORITY_LOWER_FIRST=1
 {allowlist}      - OHTTP_ENABLED=true
-      - TOKEN=${{PROXY_TOKEN}}
+      - TOKEN=${{PROXY_TOKEN}}${{PROXY_TOKEN_NEXT:+,${{PROXY_TOKEN_NEXT}}}}
       - VLLM_BACKEND_URLS={backends}
       # Keep append-only conversations on the rank that already holds their prefix cache.
       - VLLM_BACKEND_CONVERSATION_AFFINITY=1

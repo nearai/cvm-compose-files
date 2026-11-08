@@ -192,6 +192,8 @@ The gpu-manager dashboard (`https://gpu-manager.infra.near.ai`) is the source of
 Key vars and what breaks if omitted:
 
 - `PROXY_TOKEN` — Bearer auth for inference-proxy. Missing → 401.
+- `PROXY_TOKEN_NEXT` — optional second inference-proxy token accepted during rotation.
+- `QWEN38_ABLITERATED_PROXY_TOKEN_NEXT` — optional second token accepted by the abliterated Qwen3.8 inference-proxy during rotation (`QWEN38_ABLITERATED_PROXY_TOKEN` is that proxy's own token).
 - `CLOUD_API_USAGE_TOKEN` — usage reporting to `/v1/internal/usage`. Missing → reporting silently skipped (no fallback; legacy `/v1/usage` was removed).
 - `MODEL_PROXY_TOKEN` — registrar auth for model-proxy. Missing → backend disappears from `/backends/count`.
 - `WEB_CONTEXT_SEARCH_URL` / `WEB_CONTEXT_SEARCH_API_KEY` — web search agent loop. Missing → 400s.
