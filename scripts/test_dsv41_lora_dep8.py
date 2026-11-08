@@ -4,8 +4,9 @@
 # dependencies = []
 # ///
 # How to run: python3 -m scripts.test_dsv41_lora_dep8
-"""Contracts for the generated DS4.1 prod and staging packs (DEP8 and 2xDEP4)."""
+"""Contracts for the generated DS4.1 prod and staging packs (DEP8, 2xDEP4) and the one-host DEP8 Profile pack."""
 
+import difflib
 import unittest
 from pathlib import Path
 from typing import Final
@@ -181,6 +182,119 @@ class GeneratedDep4x2PackTest(GeneratedPackTest):
                 self.assertIn("VLLM_BACKEND_CONNECT_FAILOVER=1\n", blocks[name])
                 urls = ",".join(f"http://model-vllm-dsv41-dp{r}:{9100 + r}" for r in range(8))
                 self.assertIn(f"VLLM_BACKEND_URLS={urls}\n", blocks[name])
+
+
+
+PROFILER_FLAG: Final = (
+    """--profiler-config '{"profiler":"torch","torch_profiler_dir":"/traces","torch_profiler_with_stack":false,"""
+    """"torch_profiler_record_shapes":false,"ignore_frontend":true}'"""
+)
+NGINX_DENY: Final = "        location ~ ^/(v1/)?(start|stop)_profile { return 403; }\n"
+RANK_TRACE_VOLUMES: Final = (
+    "    volumes:\n      - huggingface_cache:/root/.cache/huggingface\n"
+    "      - dsv41_kernel_cache:/root/.cache/vllm\n      - humming_cache:/root/.cache/humming\n"
+    "      - dsv41-traces:/traces\n"
+)
+
+
+class GeneratedProfilePackTest(GeneratedPackTest):
+    """Every DEP8 contract, plus: the Profile pack differs from DEP8 only by the profiling additions."""
+
+    layout = generator.DEP8_PROFILE
+
+    def test_profiler_flag_traces_volume_and_nccl_init_log_on_all_ranks(self) -> None:
+        blocks = service_blocks(self.rendered())
+        for rank in range(8):
+            block = blocks[f"model-vllm-dsv41-dp{rank}"]
+            with self.subTest(rank=rank):
+                self.assertEqual(block.count(PROFILER_FLAG), 1)
+                self.assertEqual(block.count(RANK_TRACE_VOLUMES), 1)
+                self.assertIn("      - NCCL_DEBUG=INFO\n      - NCCL_DEBUG_SUBSYS=INIT\n", block)
+                self.assertNotIn("NCCL_DEBUG=WARN", block)
+        self.assertIn("\nvolumes:\n", self.rendered())
+        self.assertIn("\n  dsv41-traces:\n", self.rendered())
+
+    def test_normal_packs_have_no_profiler(self) -> None:
+        for layout in (generator.DEP8, generator.DEP4X2):
+            rendered = generator.render(layout)
+            for absent in ("--profiler-config", "dsv41-traces", "dsv41-profiler", "NCCL_DEBUG=INFO", "_profile"):
+                with self.subTest(layout=layout.deployment, absent=absent):
+                    self.assertNotIn(absent, rendered)
+
+    def test_nginx_denies_profile_routes_in_every_server_block(self) -> None:
+        nginx = self.rendered().split("  nginx_conf:\n", 1)[1]
+        server_blocks = nginx.split("      server {\n")[1:]
+        self.assertEqual(len(server_blocks), 4)
+        for block in server_blocks:
+            with self.subTest(block=block.split("\n", 1)[0]):
+                self.assertEqual(block.count(NGINX_DENY), 1)
+
+    def test_profiler_service_is_a_one_shot_on_the_engine_image(self) -> None:
+        block = service_blocks(self.rendered())["dsv41-profiler"]
+        self.assertIn(f"    image: {generator.ENGINE_IMAGE}\n", block)
+        self.assertIn('    restart: "no"\n', block)
+        self.assertIn("    network_mode: host\n", block)
+        self.assertIn('    entrypoint: ["python3", "/profile_summary.py"]\n', block)
+        self.assertIn("      - dsv41-traces:/traces\n", block)
+        self.assertIn("      - PROFILE_DELAY_S=900\n      - PROFILE_DUR_S=3\n", block)
+        self.assertIn("logging: *logging-conf", block)
+        self.assertIn('"source":"dsv41-profiler"', block)
+        for absent in ("runtime:", "nvidia", "reservations", "<<:"):
+            self.assertNotIn(absent, block)
+
+    def test_profile_summary_config_embeds_the_script(self) -> None:
+        rendered = self.rendered()
+        self.assertIn("      - source: profile_summary\n        target: /profile_summary.py\n", rendered)
+        config = rendered.split("  profile_summary:\n    content: |\n", 1)[1].split("  nginx_conf:\n", 1)[0]
+        script = (ROOT / "scripts/dsv41_profile_summary.py").read_text()
+        self.assertEqual(config.replace("$$", "$"), "".join(f"      {l}" if l.strip() else "\n" for l in script.splitlines(True)) + "\n")
+
+    def test_only_the_profiling_additions_differ_from_dep8(self) -> None:
+        dep8 = generator.render(generator.DEP8)
+        profile = self.rendered()
+        # The two whole-block additions are checked on their own; the rest is diffed line by line.
+        block = service_blocks(profile)["dsv41-profiler"]
+        self.assertEqual(profile.count(block), 1)
+        profile = profile.replace(block, "")
+        start = profile.index("  profile_summary:\n")
+        profile = profile[:start] + profile[profile.index("  nginx_conf:\n"):]
+        removed: list[str] = []
+        added: list[str] = []
+        for line in difflib.unified_diff(dep8.splitlines(True), profile.splitlines(True), n=0):
+            if line.startswith(("---", "+++", "@@")):
+                continue
+            (added if line[0] == "+" else removed).append(line[1:])
+        variant, profile_variant = generator.DEP8.variant, generator.DEP8_PROFILE.variant
+        self.assertEqual(profile_variant, variant + "-profile")
+        rank_volume_lines = set(RANK_TRACE_VOLUMES.splitlines(True))
+        allowed_added = {
+            "      - NCCL_DEBUG=INFO\n", "      - NCCL_DEBUG_SUBSYS=INIT\n", NGINX_DENY, "  dsv41-traces:\n",
+            "      # Profile pack: the boot log names NCCL's transport (P2P/CUMEM vs SHM/NET).\n",
+            f"      {PROFILER_FLAG}\n",
+        } | rank_volume_lines
+        for line in added:
+            with self.subTest(added=line[:80]):
+                self.assertTrue(
+                    line in allowed_added or line.startswith("#") or profile_variant in line,
+                    f"unexpected added line: {line!r}",
+                )
+        for line in removed:
+            with self.subTest(removed=line[:80]):
+                self.assertTrue(
+                    line == "      - NCCL_DEBUG=WARN\n" or line.startswith("#") or variant in line,
+                    f"unexpected removed line: {line!r}",
+                )
+        self.assertEqual(added.count(NGINX_DENY), 4)
+        self.assertEqual(added.count(f"      {PROFILER_FLAG}\n"), 8)
+        self.assertEqual(removed.count("      - NCCL_DEBUG=WARN\n"), 8)
+        self.assertEqual(added.count("  dsv41-traces:\n"), 1)
+        self.assertEqual(added.count("      - dsv41-traces:/traces\n"), 8)
+        # Variant-labelled lines change only by the suffix (config_variant labels and Datadog tags).
+        self.assertEqual(
+            sorted(l.replace(profile_variant, variant) for l in added if profile_variant in l),
+            sorted(l for l in removed if variant in l),
+        )
+        self.assertEqual(profile.replace(profile_variant, variant).count("--profiler-config"), 8)
 
 
 if __name__ == "__main__":
