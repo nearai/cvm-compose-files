@@ -30,7 +30,7 @@ x-vllm-common: &vllm-common
   logging: *logging-conf
 
 x-vllm-proxy-common: &vllm-proxy-common
-  image: nearaidev/vllm-proxy-rs@sha256:b183677a5d32267539b9b21ec45327a4f3be0a013afeb608c68c4d76e9472e36
+  image: nearaidev/vllm-proxy-rs@sha256:7a295d6f746e7434c6f05a02a68fed171f320a3d57cbaedef38d1a9465bb327e
   user: root
   privileged: true
   <<: *nvidia
@@ -328,7 +328,7 @@ services:
 
   proxy-dsv4-flash:
     <<: *vllm-proxy-common
-    image: nearaidev/vllm-proxy-rs@sha256:16d422ba7d3dd25b1f4f3b56e62b976655803ae9dc0a588cf0c4efe4abdcc9ea
+    image: nearaidev/vllm-proxy-rs@sha256:7a295d6f746e7434c6f05a02a68fed171f320a3d57cbaedef38d1a9465bb327e
     container_name: proxy-dsv4-flash
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
