@@ -765,7 +765,7 @@ services:
       - LOG_FORMAT=json
       - MODEL_NAME=Qwen/Qwen3.6-35B-A3B-FP8
       - OHTTP_ENABLED=true
-      - TOKEN=${PROXY_TOKEN}
+      - TOKEN=${PROXY_TOKEN}${PROXY_TOKEN_NEXT:+,${PROXY_TOKEN_NEXT}}
       - FUSION_ENABLED=${FUSION_ENABLED}
       - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
       - VLLM_BACKEND_URLS=http://model-sg-qwen36-35b-a3b-fp8-tp1-r1:8000
@@ -856,7 +856,7 @@ services:
       - MODEL_NAME=Qwen/Qwen3.8-27B
       - VLLM_PROXY_STRICT_REQUEST_MODEL=true
       - OHTTP_ENABLED=true
-      - TOKEN=${PROXY_TOKEN}
+      - TOKEN=${PROXY_TOKEN}${PROXY_TOKEN_NEXT:+,${PROXY_TOKEN_NEXT}}
       - FUSION_ENABLED=${FUSION_ENABLED}
       - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
       - VLLM_BACKEND_URLS=http://model-sg-qwen38-27b-fp8-tp1-coloc:8000
@@ -1184,7 +1184,7 @@ services:
       # vLLM runs the lowest priority first: write the negated value (see --scheduling-policy on the ranks).
       - VLLM_PROXY_PRIORITY_LOWER_FIRST=1
       - OHTTP_ENABLED=true
-      - TOKEN=${PROXY_TOKEN}
+      - TOKEN=${PROXY_TOKEN}${PROXY_TOKEN_NEXT:+,${PROXY_TOKEN_NEXT}}
       - VLLM_BACKEND_URLS=http://model-vllm-dsv41-dp4:9104,http://model-vllm-dsv41-dp5:9105,http://model-vllm-dsv41-dp6:9106,http://model-vllm-dsv41-dp7:9107
       # Keep append-only conversations on the rank that already holds their prefix cache.
       - VLLM_BACKEND_CONVERSATION_AFFINITY=1
@@ -1233,7 +1233,7 @@ services:
       # cloud-api's pool token and the registrar probe (config tokens) are not affected.
       - VLLM_PROXY_ALLOWED_ORG_IDS=${DSV41_ABLITERATED_ALLOWED_ORG_IDS:-__no_organizations__}
       - OHTTP_ENABLED=true
-      - TOKEN=${PROXY_TOKEN}
+      - TOKEN=${PROXY_TOKEN}${PROXY_TOKEN_NEXT:+,${PROXY_TOKEN_NEXT}}
       - VLLM_BACKEND_URLS=http://model-vllm-dsv41-dp4:9104,http://model-vllm-dsv41-dp5:9105,http://model-vllm-dsv41-dp6:9106,http://model-vllm-dsv41-dp7:9107
       # Keep append-only conversations on the rank that already holds their prefix cache.
       - VLLM_BACKEND_CONVERSATION_AFFINITY=1
@@ -1599,7 +1599,7 @@ services:
       - LOG_FORMAT=json
       - MODEL_NAME=black-forest-labs/FLUX.2-klein-4B
       - OHTTP_ENABLED=true
-      - TOKEN=${PROXY_TOKEN}
+      - TOKEN=${PROXY_TOKEN}${PROXY_TOKEN_NEXT:+,${PROXY_TOKEN_NEXT}}
       - FUSION_ENABLED=${FUSION_ENABLED}
       - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
       - VLLM_BASE_URL=http://model-sg-flux2-klein-4b-tp1:8000
@@ -1657,7 +1657,7 @@ services:
       - LOG_FORMAT=json
       - MODEL_NAME=Qwen/Qwen3-VL-30B-A3B-Instruct
       - OHTTP_ENABLED=true
-      - TOKEN=${PROXY_TOKEN}
+      - TOKEN=${PROXY_TOKEN}${PROXY_TOKEN_NEXT:+,${PROXY_TOKEN_NEXT}}
       - FUSION_ENABLED=${FUSION_ENABLED}
       - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
       - VLLM_BASE_URL=http://model-vllm-qwen3vl-30b-a3b-fp8-tp1:8000
@@ -1742,7 +1742,7 @@ services:
       - LOG_FORMAT=json
       - MODEL_NAME=Qwen/Qwen3-Embedding-0.6B
       - OHTTP_ENABLED=true
-      - TOKEN=${PROXY_TOKEN}
+      - TOKEN=${PROXY_TOKEN}${PROXY_TOKEN_NEXT:+,${PROXY_TOKEN_NEXT}}
       - FUSION_ENABLED=${FUSION_ENABLED}
       - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
       - VLLM_BASE_URL=http://model-vllm-qwen3-embedding-0.6b-tp1:8000
@@ -1815,7 +1815,7 @@ services:
       - LOG_FORMAT=json
       - MODEL_NAME=Qwen/Qwen3-Reranker-0.6B
       - OHTTP_ENABLED=true
-      - TOKEN=${PROXY_TOKEN}
+      - TOKEN=${PROXY_TOKEN}${PROXY_TOKEN_NEXT:+,${PROXY_TOKEN_NEXT}}
       - FUSION_ENABLED=${FUSION_ENABLED}
       - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
       - VLLM_BASE_URL=http://model-vllm-qwen3-reranker-0.6b-tp1:8000
@@ -1894,7 +1894,7 @@ services:
       - LOG_FORMAT=json
       - MODEL_NAME=openai/whisper-large-v3
       - OHTTP_ENABLED=true
-      - TOKEN=${PROXY_TOKEN}
+      - TOKEN=${PROXY_TOKEN}${PROXY_TOKEN_NEXT:+,${PROXY_TOKEN_NEXT}}
       - FUSION_ENABLED=${FUSION_ENABLED}
       - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
       - VLLM_BASE_URL=http://model-vllm-whisper-large-v3-tp1:8000
@@ -1976,7 +1976,7 @@ services:
       - LOG_FORMAT=json
       - MODEL_NAME=openai/privacy-filter
       - OHTTP_ENABLED=true
-      - TOKEN=${PROXY_TOKEN}
+      - TOKEN=${PROXY_TOKEN}${PROXY_TOKEN_NEXT:+,${PROXY_TOKEN_NEXT}}
       - FUSION_ENABLED=${FUSION_ENABLED}
       - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
       - VLLM_BASE_URL=http://model-privacy-filter:8000

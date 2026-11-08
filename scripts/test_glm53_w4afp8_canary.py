@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 CANDIDATE = ROOT / "prod/GLM-5.3-Flash-SGL-TP4-W4AFP8-Canary.yaml"
 GENERATOR = ROOT / "scripts/prepare_glm53_w4afp8_canary.py"
 PROMOTED_IMAGE: Final = "docker.io/nearaidev/sglang@sha256:8bce6a7cc872a80faded3bd1ef0a64873a1d7abae34c94e5358775ca21f133cc"
-LONG_CONTEXT_SHA256: Final = "6635fcec585acac83748af0ed732c323c5b93eefec941d89a9cdf72e4ba33041"
+LONG_CONTEXT_SHA256: Final = "f43dd971fd31d63c53b5d5afc00d782e997fdfb79e37d93c55347c3c964014c4"
 
 
 class CommittedCanaryTest(unittest.TestCase):

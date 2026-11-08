@@ -222,7 +222,7 @@ services:
       - LOG_FORMAT=json
       - MODEL_NAME=Qwen/Qwen3.8-27B
       - OHTTP_ENABLED=true
-      - TOKEN=${PROXY_TOKEN}
+      - TOKEN=${PROXY_TOKEN}${PROXY_TOKEN_NEXT:+,${PROXY_TOKEN_NEXT}}
       - FUSION_ENABLED=${FUSION_ENABLED}
       - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
       - VLLM_BACKEND_URLS=http://model-sg-qwen38-27b-fp8-tp1-r1:8000,http://model-sg-qwen38-27b-fp8-tp1-r2:8000
@@ -263,7 +263,7 @@ services:
       - LOG_FORMAT=json
       - MODEL_NAME=Qwen/Qwen3.6-35B-A3B-FP8
       - OHTTP_ENABLED=true
-      - TOKEN=${PROXY_TOKEN}
+      - TOKEN=${PROXY_TOKEN}${PROXY_TOKEN_NEXT:+,${PROXY_TOKEN_NEXT}}
       - FUSION_ENABLED=${FUSION_ENABLED}
       - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
       - VLLM_BACKEND_URLS=http://model-sg-qwen36-35b-a3b-fp8-tp1:8000,http://model-sg-qwen36-35b-a3b-fp8-tp1-r2:8000

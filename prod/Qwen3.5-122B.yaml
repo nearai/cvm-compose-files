@@ -174,7 +174,7 @@ services:
       - LOG_FORMAT=json
       - MODEL_NAME=Qwen/Qwen3.5-122B-A10B
       - OHTTP_ENABLED=true
-      - TOKEN=${PROXY_TOKEN}
+      - TOKEN=${PROXY_TOKEN}${PROXY_TOKEN_NEXT:+,${PROXY_TOKEN_NEXT}}
       - FUSION_ENABLED=${FUSION_ENABLED}
       - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
       - VLLM_BACKEND_URLS=http://model-sg-qwen35-122b-fp8-tp4-r1:8000,http://model-sg-qwen35-122b-fp8-tp4-r2:8000

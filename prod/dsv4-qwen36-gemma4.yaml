@@ -338,7 +338,7 @@ services:
       - LOG_FORMAT=json
       - MODEL_NAME=deepseek-ai/DeepSeek-V4-Flash
       - OHTTP_ENABLED=true
-      - TOKEN=${PROXY_TOKEN}
+      - TOKEN=${PROXY_TOKEN}${PROXY_TOKEN_NEXT:+,${PROXY_TOKEN_NEXT}}
       - FUSION_ENABLED=${FUSION_ENABLED}
       - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
       - VLLM_BASE_URL=http://model-vllm-dsv4-flash-fp4-dp4:8000
@@ -426,7 +426,7 @@ services:
       - LOG_FORMAT=json
       - MODEL_NAME=Qwen/Qwen3.6-27B-FP8
       - OHTTP_ENABLED=true
-      - TOKEN=${PROXY_TOKEN}
+      - TOKEN=${PROXY_TOKEN}${PROXY_TOKEN_NEXT:+,${PROXY_TOKEN_NEXT}}
       - FUSION_ENABLED=${FUSION_ENABLED}
       - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
       - VLLM_BASE_URL=http://model-sg-qwen36-27b-fp8-tp1:8000
@@ -491,7 +491,7 @@ services:
       - LOG_FORMAT=json
       - MODEL_NAME=Qwen/Qwen3.6-35B-A3B-FP8
       - OHTTP_ENABLED=true
-      - TOKEN=${PROXY_TOKEN}
+      - TOKEN=${PROXY_TOKEN}${PROXY_TOKEN_NEXT:+,${PROXY_TOKEN_NEXT}}
       - FUSION_ENABLED=${FUSION_ENABLED}
       - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
       - VLLM_BASE_URL=http://model-sg-qwen36-35b-a3b-fp8-tp1:8000
@@ -556,7 +556,7 @@ services:
       - LOG_FORMAT=json
       - MODEL_NAME=google/gemma-4-31B-it
       - OHTTP_ENABLED=true
-      - TOKEN=${PROXY_TOKEN}
+      - TOKEN=${PROXY_TOKEN}${PROXY_TOKEN_NEXT:+,${PROXY_TOKEN_NEXT}}
       - FUSION_ENABLED=${FUSION_ENABLED}
       - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
       - VLLM_BACKEND_URLS=http://model-vllm-gemma4-31b-fp8-tp1-r1:8000,http://model-vllm-gemma4-31b-fp8-tp1-r2:8000
