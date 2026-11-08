@@ -317,7 +317,7 @@ LORA_CONFIGS = ("qwen38_abliterated_registrar_script",)
 LORA_JOB = "inference-proxy-proxy-qwen38-27b-abliterated"
 LORA_BLOCK_HASHES = {
     "qwen38-lora-adapter-downloader": "f00890986a1cbe050f1158fc94fb46c6a2910fad7ac622387bc09f21f47e7d4b",
-    "proxy-qwen38-27b-abliterated": "126ad89762e1796cf41ff3e017b8c0da3544d5a45a3a9f55a1c345f49dc369a7",
+    "proxy-qwen38-27b-abliterated": "9e987939c1a8d3b71efca79b497039671b4a3cfb4839fbf87f44cf5f54e04bf4",
     "qwen38-abliterated-registrar": "abbc11eca5f3f296b108cc4ec308ee5c59e04a04c99f4f7a6ce691586031c895",
     "qwen38_abliterated_registrar_script": "bf512180438d8e6258a37b59e02f9f6abc2bcab5ea79ac92b91b31b62f6afbe7",
     LORA_JOB: "300953b485fbe7ab94916efc464b5fdbdd784fbd6c554392491da0f653f3c505",
