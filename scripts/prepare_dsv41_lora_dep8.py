@@ -36,7 +36,7 @@ ENGINE_IMAGE: Final = "docker.io/nearaidev/vllm@sha256:5eaa0d4637080c10958b6cd8a
 # VLLM_PROXY_STRICT_REQUEST_MODEL and #335's VLLM_PROXY_PRIORITY_LOWER_FIRST.
 # Without #329 the proxy serves the adapter on the base endpoint at the base price.
 # Without #335 vLLM runs the OpenRouter lane and reseller orgs ahead of cloud-api.
-PROXY_IMAGE: Final = "nearaidev/vllm-proxy-rs@sha256:0be4ee8f40a2bf71a6e2fab1e780ad1a6e738ffb2085553f1ed4b85fcb944207"
+PROXY_IMAGE: Final = "nearaidev/vllm-proxy-rs@sha256:7a295d6f746e7434c6f05a02a68fed171f320a3d57cbaedef38d1a9465bb327e"
 GPUS: Final = 8
 
 
