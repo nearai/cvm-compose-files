@@ -617,13 +617,25 @@ def registrar_block() -> str:
     return head + middle + rest
 
 
+def proxy_location(name: str) -> str:
+    # Resolved per request via the resolver in the shared nginx head (OTEL_SOURCE), so a recreated
+    # proxy container is picked up without waiting for a reload.
+    var = "proxy_" + name.removeprefix("proxy-").replace("-", "_")
+    return (
+        "        location / {\n"
+        f"            set $${var} http://{name}:8000;\n"
+        f"            proxy_pass $${var};\n"
+        "        }\n"
+    )
+
+
 def nginx_block() -> str:
     source = (ROOT / OTEL_SOURCE).read_text()
     block = source[source.index("  nginx_conf:\n"):]
     head = block[:block.index("      server {\n        listen 8002;")]
     plain = "".join(
         f"      server {{\n        listen {http};\n{models_location(model)}"
-        f"        location / {{ proxy_pass http://{name}:8000; }}\n      }}\n\n"
+        f"{proxy_location(name)}      }}\n\n"
         for name, model, http, *_ in PROXIES
     )
     tls_head = (
@@ -645,7 +657,7 @@ def nginx_block() -> str:
             "        keepalive_timeout 1h;\n        keepalive_requests 1000000;\n"
             "        location ^~ /metrics { return 404; }\n        location ^~ /v1/metrics { return 404; }\n"
             + models_location(model)
-            + f"        location / {{ proxy_pass http://{name}:8000; }}\n      }}\n"
+            + f"{proxy_location(name)}      }}\n"
         )
     return head + plain + tls_head + "\n".join(tls)
 

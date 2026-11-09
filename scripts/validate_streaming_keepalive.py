@@ -28,7 +28,8 @@ HTTP2_ON: Final = re.compile(r"\bhttp2\s+on\s*;")
 KEEPALIVE_TIMEOUT: Final = re.compile(r"\bkeepalive_timeout\s+[^;]+;")
 KEEPALIVE_REQUESTS: Final = re.compile(r"\bkeepalive_requests\s+\d+;")
 PROXY_PASS: Final = re.compile(
-    r"\bproxy_pass\s+(?:(?:https?)://)?([A-Za-z0-9_.-]+)(?::\d+)?(?=[/;\s])"
+    r"\b(?:proxy_pass\s+(?:https?://)?|set\s+\$\$?\w+\s+https?://)"
+    r"([A-Za-z0-9_.-]+)(?::\d+)?(?=[/;\s])"
 )
 SERVER_START: Final = re.compile(r"\bserver\s*\{")
 NGINX_COMMENT: Final = re.compile(r"#.*$", re.MULTILINE)

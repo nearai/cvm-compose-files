@@ -121,6 +121,7 @@ def long_replica(long_text: str) -> str:
     r2b = once(r2b, "SGLANG_GHOST_CACHE_REPLICA=r2b", "SGLANG_GHOST_CACHE_REPLICA=l4", "l4 ghost replica")
     r2b = once(r2b, "GLM53_R2B_HICACHE_RAM_BUDGET", "GLM53_L4_HICACHE_RAM_BUDGET", "l4 hicache budget var")
     r2b = once(r2b, '"instance:2b"', '"instance:l4"', "l4 log instance")
+    r2b = once(r2b, '"port:8000"', f'"port:{LONG_HTTP_PORT}"', "l4 log port")
     r2b = once(r2b, 'nearai.otel.instance: "2b"', 'nearai.otel.instance: "l4"', "l4 otel instance")
     r2b = r2b.replace("-mr16q8-", f"-mr16q{LONG_QUEUE}-")
     if f"-mr16q{LONG_QUEUE}-" not in r2b:
@@ -158,7 +159,7 @@ def generate(text: str, long_text: str) -> str:
         f"VLLM_BACKEND_URLS=http://{LONG_L4}:8000\n",
         "long proxy pool",
     )
-    long_proxy = once(long_proxy, '"port:8000"]}]', '"port:8000","tier:long"]}]', "long proxy log tag")
+    long_proxy = once(long_proxy, '"port:8000"]}]', f'"port:{LONG_HTTP_PORT}","tier:long"]}}]', "long proxy log tag")
     long_proxy = once(long_proxy, 'nearai.otel.container_name: "proxy-glm53"', f'nearai.otel.container_name: "{LONG_PROXY}"', "long proxy otel name")
     text = text.replace(proxy, base_proxy + long_proxy)
 
@@ -216,6 +217,7 @@ def generate(text: str, long_text: str) -> str:
     new_job = once(new_job, 'instance: "4"', 'instance: "l4"', "l4 job instance")
     base_variant = quoted_value(new_job, 'config_variant: "', "l4 job base variant")
     new_job = once(new_job, f'config_variant: "{base_variant}"', f'config_variant: "{long_variant}"', "l4 job variant")
+    new_job = once(new_job, '      port: "8000"\n', f'      port: "{LONG_HTTP_PORT}"\n', "l4 job public port")
     text = text.replace(job, new_job)
     proxy_job = block(
         text,
@@ -224,7 +226,7 @@ def generate(text: str, long_text: str) -> str:
         "proxy scrape job",
     )
     long_job = proxy_job.replace("proxy-glm53", LONG_PROXY)
-    long_job = once(long_job, '      port: "8000"\n', '      port: "8000"\n                      tier: "long"\n', "long proxy job tier")
+    long_job = once(long_job, '      port: "8000"\n', f'      port: "{LONG_HTTP_PORT}"\n                      tier: "long"\n', "long proxy job tier")
     text = text.replace(proxy_job, proxy_job + long_job)
 
     return HEADER + text
