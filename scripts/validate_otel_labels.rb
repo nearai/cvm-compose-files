@@ -110,7 +110,7 @@ end
 
 def public_ports_by_proxy(compose)
   content = compose.dig("configs", "nginx_conf", "content").to_s
-  content.scan(/listen\s+(\d+);(?:(?!listen\s+\d+;).)*?proxy_pass\s+http:\/\/([^:;]+):8000;/m)
+  content.scan(/listen\s+(\d+);(?:(?!listen\s+\d+;).)*?(?:proxy_pass|set\s+\$\$\w+)\s+http:\/\/([^:;]+):8000;/m)
          .each_with_object({}) do |(port, proxy_service), memo|
     memo[proxy_service] ||= port
   end

@@ -1591,16 +1591,28 @@ configs:
       client_max_body_size 100m;
       client_body_buffer_size 1m;
 
+      # Resolve the proxy upstreams through Docker's embedded DNS at request time
+      # (proxy_pass with a variable) instead of once at startup, so a recreated
+      # proxy container with a new IP is picked up immediately rather than at
+      # the next 6-hourly reload.
+      resolver 127.0.0.11 valid=5s ipv6=off;
+
       server {
         listen 8000;
         location = /v1/models { default_type application/json; return 200 '{"object":"list","data":[{"id":"deepseek-ai/DeepSeek-V4.1-Flash-1017","object":"model","owned_by":"vllm","max_model_len":1048576}]}'; }
-        location / { proxy_pass http://proxy-dsv41:8000; }
+        location / {
+            set $$proxy_dsv41 http://proxy-dsv41:8000;
+            proxy_pass $$proxy_dsv41;
+        }
       }
 
       server {
         listen 8002;
         location = /v1/models { default_type application/json; return 200 '{"object":"list","data":[{"id":"deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated","object":"model","owned_by":"vllm","max_model_len":1048576}]}'; }
-        location / { proxy_pass http://proxy-dsv41-abliterated:8000; }
+        location / {
+            set $$proxy_dsv41_abliterated http://proxy-dsv41-abliterated:8000;
+            proxy_pass $$proxy_dsv41_abliterated;
+        }
       }
 
       server_names_hash_bucket_size 128;
@@ -1618,7 +1630,10 @@ configs:
         location ^~ /metrics { return 404; }
         location ^~ /v1/metrics { return 404; }
         location = /v1/models { default_type application/json; return 200 '{"object":"list","data":[{"id":"deepseek-ai/DeepSeek-V4.1-Flash-1017","object":"model","owned_by":"vllm","max_model_len":1048576}]}'; }
-        location / { proxy_pass http://proxy-dsv41:8000; }
+        location / {
+            set $$proxy_dsv41 http://proxy-dsv41:8000;
+            proxy_pass $$proxy_dsv41;
+        }
       }
 
       server {
@@ -1631,5 +1646,8 @@ configs:
         location ^~ /metrics { return 404; }
         location ^~ /v1/metrics { return 404; }
         location = /v1/models { default_type application/json; return 200 '{"object":"list","data":[{"id":"deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated","object":"model","owned_by":"vllm","max_model_len":1048576}]}'; }
-        location / { proxy_pass http://proxy-dsv41-abliterated:8000; }
+        location / {
+            set $$proxy_dsv41_abliterated http://proxy-dsv41-abliterated:8000;
+            proxy_pass $$proxy_dsv41_abliterated;
+        }
       }
