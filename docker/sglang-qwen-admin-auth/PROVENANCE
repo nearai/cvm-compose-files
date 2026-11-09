@@ -1,0 +1,30 @@
+Purpose: require an admin key on SGLang control endpoints and keep keys out of readbacks, logs and dumps.
+
+Origins: SGLang upstream #41322 (endpoint auth) and #48518 (credential redaction), adapted to each base. The two patches are specific to the revisions below.
+
+qwen36-v0516
+  Base: lmsysorg/sglang:v0.5.16-cu129@sha256:984699c298a95b73c469b2191403ddc85fd780506e13c39c4afff3845e27bc6c
+  Revision: fdebc938f7f4d16fe6b9f55dcd9a767cf0899ea1
+  Patch: admin-auth-redaction-v0.5.16.diff
+  Readbacks and dumps:
+    entrypoints/http_server.py: /server_info and /get_server_info, including internal_states.
+    entrypoints/engine.py: get_server_info, including internal_states; both server_args log lines use the redacting representation.
+    entrypoints/grpc_bridge.py: get_server_info.
+    managers/tokenizer_manager.py: request and crash dump server_args; crash dump launch_command.
+    managers/scheduler.py: get_internal_state supplies internal_states and the global server args log uses the redacting representation.
+    server_args.py: redacting ServerArgs representation and helpers for mappings and command arguments.
+
+qwen38-c4271c3f
+  Base: lmsysorg/sglang@sha256:febfb971c7352570fc445c466ebd6ffc9d896024958e544a60f2137fd85856b1
+  Revision: c4271c3fe1262fc2adbd162c33b25de5255251c5
+  Patch: admin-auth-redaction-c4271c3f.diff
+  Readbacks and dumps:
+    entrypoints/http_server.py: /server_info and /get_server_info, including internal_states and resolved configuration.
+    entrypoints/engine.py: get_server_info, including internal_states and resolved configuration; both server_args log lines use the redacting representation.
+    entrypoints/grpc_bridge.py: get_server_info, including resolved configuration.
+    managers/tokenizer_manager.py: request and crash dump server_args, config_updates and resolved_config; crash dump launch_command.
+    managers/scheduler.py and runtime_context.py: get_internal_state supplies resolved internal_states to the Python readbacks above.
+    server_args.py: redacting ServerArgs representation and helpers for mappings and command arguments.
+  Optional embedded Rust ingress: SGLANG_RUST_SERVER defaults to false. managers/rust_server.py passes the full configuration to the embedded server, which has its own server-info path. Its implementation was not included in the available tree; this patch does not establish redaction or authentication behavior on that path.
+
+Rollback: use the corresponding base image digest above in the engine configuration and redeploy that engine using the normal rollout process.

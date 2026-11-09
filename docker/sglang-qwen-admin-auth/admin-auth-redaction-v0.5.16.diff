@@ -1,0 +1,155 @@
+diff --git a/python/sglang/srt/entrypoints/engine.py b/python/sglang/srt/entrypoints/engine.py
+index 5c15853..2429305 100644
+--- a/python/sglang/srt/entrypoints/engine.py
++++ b/python/sglang/srt/entrypoints/engine.py
+@@ -95,3 +95,3 @@ from sglang.srt.parser.template_manager import TemplateManager
+ from sglang.srt.plugins import load_plugins
+-from sglang.srt.server_args import PortArgs, ServerArgs
++from sglang.srt.server_args import PortArgs, ServerArgs, redact_server_args_secrets
+ from sglang.srt.utils import (
+@@ -1004,5 +1004,10 @@ class Engine(EngineScoreMixin, EngineBase):
+             {
+-                **dataclasses.asdict(self.tokenizer_manager.server_args),
++                **redact_server_args_secrets(
++                    dataclasses.asdict(self.tokenizer_manager.server_args)
++                ),
+                 **self._scheduler_init_result.scheduler_infos[0],
+-                "internal_states": internal_states,
++                "internal_states": [
++                    redact_server_args_secrets(s) if isinstance(s, dict) else s
++                    for s in internal_states
++                ],
+                 "version": __version__,
+diff --git a/python/sglang/srt/entrypoints/grpc_bridge.py b/python/sglang/srt/entrypoints/grpc_bridge.py
+index fa0ab61..020a102 100644
+--- a/python/sglang/srt/entrypoints/grpc_bridge.py
++++ b/python/sglang/srt/entrypoints/grpc_bridge.py
+@@ -17,2 +17,3 @@ from pydantic import ValidationError
+ 
++from sglang.srt.server_args import redact_server_args_secrets
+ from sglang.srt.utils.msgspec_utils import msgspec_to_builtins
+@@ -387,3 +388,5 @@ class RuntimeHandle:
+     def get_server_info(self) -> str:
+-        result: Dict[str, Any] = dataclasses.asdict(self.server_args)
++        result: Dict[str, Any] = redact_server_args_secrets(
++            dataclasses.asdict(self.server_args)
++        )
+         result.update(self.scheduler_info)
+diff --git a/python/sglang/srt/entrypoints/http_server.py b/python/sglang/srt/entrypoints/http_server.py
+index 51c85e6..4967aab 100644
+--- a/python/sglang/srt/entrypoints/http_server.py
++++ b/python/sglang/srt/entrypoints/http_server.py
+@@ -163,3 +163,3 @@ from sglang.srt.parser.reasoning_parser import ReasoningParser
+ from sglang.srt.parser.template_manager import TemplateManager
+-from sglang.srt.server_args import PortArgs, ServerArgs
++from sglang.srt.server_args import PortArgs, ServerArgs, redact_server_args_secrets
+ from sglang.srt.utils import (
+@@ -755,5 +755,8 @@ async def server_info():
+         {
+-            **dataclasses.asdict(server_args),
++            **redact_server_args_secrets(dataclasses.asdict(server_args)),
+             **_global_state.scheduler_info,
+-            "internal_states": internal_states,
++            "internal_states": [
++                    redact_server_args_secrets(s) if isinstance(s, dict) else s
++                    for s in internal_states
++                ],
+             "version": __version__,
+@@ -1115,2 +1118,3 @@ async def stop_profile_async():
+ @app.api_route("/set_trace_level", methods=["GET", "POST"])
++@auth_level(AuthLevel.ADMIN_OPTIONAL)
+ def set_trace_level(level: int = Query(..., ge=0)):
+@@ -1487,2 +1491,3 @@ async def load_lora_adapter(
+ @app.api_route("/load_lora_adapter_from_tensors", methods=["POST"])
++@auth_level(AuthLevel.ADMIN_OPTIONAL)
+ async def load_lora_adapter_from_tensors(
+diff --git a/python/sglang/srt/managers/tokenizer_manager.py b/python/sglang/srt/managers/tokenizer_manager.py
+index 60b35ea..c37dca2 100644
+--- a/python/sglang/srt/managers/tokenizer_manager.py
++++ b/python/sglang/srt/managers/tokenizer_manager.py
+@@ -114,2 +114,4 @@ from sglang.srt.sampling.sampling_params import SamplingParams
+ from sglang.srt.server_args import (
++    redact_secret_cli_args,
++    redact_server_args_secrets,
+     PortArgs,
+@@ -2587,2 +2589,9 @@ class TokenizerManager(TokenizerControlMixin, TokenizerManagerScoreMixin):
+ 
++    def _server_args_for_dump(self) -> Optional[Dict[str, Any]]:
++        try:
++            return redact_server_args_secrets(dataclasses.asdict(self.server_args))
++        except Exception as e:
++            logger.error(f"Failed to snapshot server_args for the dump: {e!r}")
++            return None
++
+     def _dump_data_to_file(
+@@ -2592,3 +2601,3 @@ class TokenizerManager(TokenizerControlMixin, TokenizerManagerScoreMixin):
+         to_dump_with_server_args = {
+-            "server_args": self.server_args,
++            "server_args": self._server_args_for_dump(),
+             "requests": data_list.copy(),
+@@ -2673,5 +2682,5 @@ class TokenizerManager(TokenizerControlMixin, TokenizerManagerScoreMixin):
+                 data_to_dump_with_server_args = {
+-                    "server_args": self.server_args,
++                    "server_args": self._server_args_for_dump(),
+                     "requests": data_to_dump,
+-                    "launch_command": " ".join(sys.argv),
++                    "launch_command": " ".join(redact_secret_cli_args(sys.argv)),
+                 }
+diff --git a/python/sglang/srt/server_args.py b/python/sglang/srt/server_args.py
+index 838b925..35713a5 100644
+--- a/python/sglang/srt/server_args.py
++++ b/python/sglang/srt/server_args.py
+@@ -410,2 +410,36 @@ def add_linear_attn_kernel_backend_choices(choices):
+ 
++SERVER_ARGS_SECRET_FIELD_NAMES = frozenset(
++    {"api_key", "admin_api_key", "ssl_keyfile_password"}
++)
++_SECRET_CLI_FLAGS = frozenset(
++    "--" + name.replace("_", "-") for name in SERVER_ARGS_SECRET_FIELD_NAMES
++)
++_REDACTED = "<redacted>"
++
++
++def redact_server_args_secrets(values: Dict[str, Any]) -> Dict[str, Any]:
++    redacted = dict(values)
++    for name in SERVER_ARGS_SECRET_FIELD_NAMES:
++        if redacted.get(name) is not None:
++            redacted[name] = _REDACTED
++    return redacted
++
++
++def redact_secret_cli_args(argv: List[str]) -> List[str]:
++    out: List[str] = []
++    hide_next = False
++    for arg in argv:
++        if hide_next:
++            out.append(_REDACTED)
++            hide_next = False
++        elif arg in _SECRET_CLI_FLAGS:
++            out.append(arg)
++            hide_next = True
++        elif "=" in arg and arg.split("=", 1)[0] in _SECRET_CLI_FLAGS:
++            out.append(arg.split("=", 1)[0] + "=" + _REDACTED)
++        else:
++            out.append(arg)
++    return out
++
++
+ @dataclasses.dataclass
+@@ -2878,2 +2912,16 @@ class ServerArgs:
+ 
++    def __repr__(self) -> str:
++        values = ", ".join(
++            f"{field.name}="
++            + (
++                repr(_REDACTED)
++                if field.name in SERVER_ARGS_SECRET_FIELD_NAMES
++                and getattr(self, field.name, None) is not None
++                else repr(getattr(self, field.name, None))
++            )
++            for field in dataclasses.fields(self)
++            if field.repr
++        )
++        return f"{type(self).__name__}({values})"
++
+     def __post_init__(self):
