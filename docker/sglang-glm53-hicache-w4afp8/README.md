@@ -31,6 +31,17 @@ token count (v8) and a flag-gated Q8 DSA prefill path for the FP8 NoPE KV layout
 | `tool-schema-depth-cap.diff` | new here (opt-in, `SGLANG_TOOL_SCHEMA_MAX_DEPTH` / `_MAX_NODES`) | new `utils/tool_schema_guard.py` plus one call in `OpenAIServingChat._validate_request` |
 | `kda-zero-sync.diff` | new here (v8, unconditional; tee-bench exp 37) | the logical token count in `KDAAttnBackend.forward_extend` (`layers/attention/linear/kda_backend.py`) only |
 | `dsa-q8-flashmla-sparse.diff` | tee-bench exp 33 Q8 prefill overlay (v9, flag-gated: `--dsa-prefill-backend flashmla_sparse_q8`; tee-bench exp 45b) | `forward_extend` KPool top-k pad and `_forward_flashmla_sparse_q8kv8` head width in `dsa_backend.py`, KPool allowlist in `dsa/dsa_backend_kpool.py` |
+| `admin-auth-redaction.diff` | v13, backport of upstream sglang #41322 + #48518 (unconditional, applied last) | admin auth on `/set_trace_level` and `/load_lora_adapter_from_tensors`; `api_key` / `admin_api_key` / `ssl_keyfile_password` redacted from `/server_info`, `/get_server_info`, the `server_args=` log lines, gRPC server info, crash/request dumps and `ServerArgs.__repr__` |
+
+## Admin key and credential redaction (v13)
+
+SGLang's `--admin-api-key` (in fc91d24) gates the admin endpoints (weight updates, `/flush_cache`,
+`/abort_request`, profiling, ...) while chat, `/v1/loads`, `/health` and `/metrics` stay open. On
+v12 it was not safe to turn on: `/server_info` (open) returned the key in clear, the engine logged it
+in its `server_args=` line, and `/load_lora_adapter_from_tensors` and `/set_trace_level` were not
+gated. `admin-auth-redaction.diff` closes those (upstream fixed them on 09-30 and 11-07, after the
+fork was cut). See `docs/glm53-v13-admin-key.md` for the launch change and rollout.
+Test: `test_admin_auth_redaction.py` (test-cpu.sh step 18); it fails on the v12 sources.
 
 ## DSA indexer query split (opt-in)
 

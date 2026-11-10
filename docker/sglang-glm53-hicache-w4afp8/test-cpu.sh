@@ -554,4 +554,15 @@ with tempfile.TemporaryDirectory() as d:
 EOF
 echo "step 17 OK: pillow 13 imports and round-trips an RGB image through PNG and sglang load_image"
 
+# 18. Admin auth and credential redaction (admin-auth-redaction.diff, v13; upstream sglang #41322 + #48518).
+# With only --admin-api-key set (the v13 launch form), /set_trace_level and /load_lora_adapter_from_tensors
+# need the admin key (401 without it) like the weight-update endpoints already did, while /health,
+# /metrics, /v1/loads, /v1/models, chat, completions and /server_info stay open for inference-proxy and the
+# scrapers. /server_info and /get_server_info (top level and internal_states), the engine's server_args=
+# log lines, the crash/request dumps, their launch_command and ServerArgs.__repr__ never carry the keys.
+# Static checks run the changed functions on stubs; --live checks the real FastAPI app's route levels and a
+# real /server_info call on a stubbed engine state. It fails on the v12 (unpatched) sources.
+python3 "$RECIPE_DIR/test_admin_auth_redaction.py" --root "$PWD/python/sglang/srt" --live | tail -n 1
+echo "step 18 OK: admin-only endpoints need the admin key, serving and scrape paths stay open, and no readback, log or dump carries the keys"
+
 echo "GLM-5.3 W4AFP8 combined-image CPU checks passed"
