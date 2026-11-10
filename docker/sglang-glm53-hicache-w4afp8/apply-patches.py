@@ -1,7 +1,8 @@
 """Apply the reviewed W4AFP8 loader, pool-clamp, DSA indexer query-split, event-loop offload,
 event-loop stall-dump, ghost prefix cache, KV tier metrics, self-profiling hook, FP8 KV for NoPE DSA,
 opt-in preprocess process pool, opt-in tool-schema size cap, host-side KDA token count, flashmla_sparse_q8
-DSA prefill (Q8) and K-pool indexer logits budget patches to exact production source bytes."""
+DSA prefill (Q8), K-pool indexer logits budget and admin-auth/credential-redaction patches to exact
+production source bytes."""
 
 import ast
 import hashlib
@@ -39,6 +40,11 @@ PATCHES: Final = {
     # Stacked on dsa-indexer-qsplit.diff: it edits dsa/dsa_indexer_kpool.py as that diff leaves it (its
     # context is those after-bytes, which no later patch touches). Only the K-pool prefill logits paths change.
     "dsa-indexer-kpool-logits-budget.diff": "ce6132c0b91999bddfac62197ef17d8517329b8ccb1729d1e6023134b8c2f7b4",
+    # Last (v13): edits entrypoints/http_server.py as left by event-loop-stall-dump.diff and preprocess-pool.diff,
+    # and managers/tokenizer_manager.py as left by sglang-pr30771.diff and shm-off-loop.diff (its context is
+    # those after-bytes), plus server_args.py, entrypoints/engine.py and entrypoints/grpc_bridge.py, which no
+    # earlier patch touches. Admin auth on two endpoints and credential redaction (upstream #41322, #48518).
+    "admin-auth-redaction.diff": "563d9d30ba47e8afc6570857d7d94f964d08a0a97ff8e2479dd59eece137753e",
 }
 MANIFEST: Final = json.loads((CONTEXT / "source-manifest.json").read_text())
 

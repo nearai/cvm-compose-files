@@ -15,7 +15,7 @@ on:
           - w4afp8
           - hicache-w4afp8
       tag:
-        description: Docker Hub tag; empty derives the per-variant default (glm53-admission-reserve-v10, glm53-hicache-admission-reserve-v10, glm53-pool-clamp-v1, glm53-hicache-pool-clamp-v1, glm53-w4afp8-pool-clamp-v1, glm53-hicache-w4afp8-v12)
+        description: Docker Hub tag; empty derives the per-variant default (glm53-admission-reserve-v10, glm53-hicache-admission-reserve-v10, glm53-pool-clamp-v1, glm53-hicache-pool-clamp-v1, glm53-w4afp8-pool-clamp-v1, glm53-hicache-w4afp8-v13)
         required: false
         type: string
         default: ''
@@ -119,12 +119,12 @@ jobs:
             hicache-w4afp8)
               echo "BUILD_CONTEXT=docker/sglang-glm53-hicache-w4afp8" >> "$GITHUB_ENV"
               echo "BASE_DIGEST=sha256:3eccc30709f5719c81084d1264f03ca5354b3059ec4cff62f0c5ff88c309680c" >> "$GITHUB_ENV"
-              echo "EXPECTED_DOCKERFILE_SHA256=fa1882bd0a24688577745db6586f611125312e2da99ea710f638c905b2d32b06" >> "$GITHUB_ENV"
-              echo "EXPECTED_PROVENANCE_SHA256=e0058b78d7fddb8b05951feb5b10376ffac7c9e4967e242c68d88d9887f7ce6c" >> "$GITHUB_ENV"
-              echo "EXPECTED_SHA256SUMS_SHA256=5177f7144502137dc56d341ec37fa6a9e47763e34619b7c7bbe754e94f9cee37" >> "$GITHUB_ENV"
+              echo "EXPECTED_DOCKERFILE_SHA256=88efa93ce02c1dfef5d268afdbfa7bcc5b74e8f2d1abcc15a4e95b60cabefac4" >> "$GITHUB_ENV"
+              echo "EXPECTED_PROVENANCE_SHA256=a19a5af67302ca80162f74d83ec8f5956819f33390bf565aa6075bca1b42710e" >> "$GITHUB_ENV"
+              echo "EXPECTED_SHA256SUMS_SHA256=50b461904b3000281e3740d055833ca8d78b28ed148d76ecd95ac47f98983d72" >> "$GITHUB_ENV"
               echo "TEST_SCRIPT=/usr/share/nearai/glm53-hicache-w4afp8/test-cpu.sh" >> "$GITHUB_ENV"
               echo "EVIDENCE_PREFIX=glm53-hicache-w4afp8" >> "$GITHUB_ENV"
-              DEFAULT_TAG=glm53-hicache-w4afp8-v12
+              DEFAULT_TAG=glm53-hicache-w4afp8-v13
               ;;
             *)
               echo "Unknown variant: $VARIANT" >&2
@@ -253,6 +253,11 @@ jobs:
           if [[ "$VARIANT" == "w4afp8" || "$VARIANT" == "hicache-w4afp8" ]]; then
             LABEL_CHECK="$LABEL_CHECK"' and
              .config.Labels["nearai.sglang.w4afp8_loader_patch"] == "modules-to-not-convert-v1"'
+          fi
+          if [[ "$VARIANT" == "hicache-w4afp8" ]]; then
+            # v13: admin auth on /set_trace_level and /load_lora_adapter_from_tensors + credential redaction.
+            LABEL_CHECK="$LABEL_CHECK"' and
+             .config.Labels["nearai.sglang.admin_auth_redaction"] == "v1-upstream-41322-48518"'
           fi
 
           jq -e --arg source_revision "$SOURCE_REVISION" \
@@ -458,6 +463,7 @@ jobs:
             fi
             if [[ "$VARIANT" == "hicache-w4afp8" ]]; then
               echo '- HiCache: opt-in via --enable-hierarchical-cache plus SGLANG_HICACHE_*.'
+              echo '- v13 admin auth + credential redaction (upstream #41322, #48518): safe to launch with --admin-api-key; see docs/glm53-v13-admin-key.md.'
               echo '- QUALIFICATION CAVEAT: the HCC/PPCIe (TEE-host) HiCache allocator path is NOT soak-tested. It was qualified on gpu31, which reports CC status OFF, so cudaMallocHost vs cudaHostRegister was never exercised. On a TEE host SGLANG_HICACHE_CUDA_HOST_MEMORY must stay 1; 0 fails with CUDA error 801. See the image PROVENANCE before pinning this digest for a TEE deployment.'
             fi
             echo '- Promotion: pin this digest and enable the reviewed admission-reserve settings in a separate PR.'
