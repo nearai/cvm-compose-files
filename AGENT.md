@@ -20,8 +20,8 @@ Files were moved from the repo root into `prod/` and `experiments/` in this PR. 
 
 ## File naming
 
-- **Prod single-model**: `prod/<Model>.yaml` — e.g. `prod/GLM-5.2-SGL-FP8-TP8.yaml`. The name encodes model + engine + quant + TP. Be specific: `-SGL-FP8-TP8` is more useful than bare `GLM-5.2.yaml` when multiple configs for the same model exist.
-- **Prod multi-model pack**: `prod/<model1>-<model2>-<model3>.yaml` — e.g. `prod/dsv4-qwen36-gemma4.yaml`. Lowercased short names, hyphen-joined.
+- **Prod single-model**: `prod/<Model>.yaml` — e.g. `prod/GLM-5.3-Flash-SGL-TP4-W4AFP8.yaml`. The name encodes model + engine + quant + TP. Be specific: `-SGL-TP4-W4AFP8` is more useful than bare `GLM-5.3-Flash.yaml` when multiple configs for the same model exist.
+- **Prod multi-model pack**: `prod/<model1>-<model2>-<model3>.yaml` — e.g. `prod/qwen36-qwen38.yaml`. Lowercased short names, hyphen-joined.
 - **Experiment**: `experiments/<Model>-<variant>-test.yaml` — e.g. `experiments/GLM-5.1-AWQ-4bit-test.yaml`. The `-test` suffix is mandatory for anything not meeting the prod-ready checklist.
 - **Operational utility**: root-level, descriptive — `cleanup-hf-model.yaml`. These are added to `EXCLUDED_FILES` in the validator.
 
@@ -56,7 +56,7 @@ Rules:
 
 `MODEL_NAME` (inference-proxy env var) and `--served-model-name` (engine flag) are what API consumers see in requests and responses. They must be set to the **stable model identifier**, not the HuggingFace checkpoint path. The checkpoint (`--model-path`, `--revision`) is an internal detail: you can swap it for a different quantization without changing anything visible to callers.
 
-GLM-5.2 is the canonical example: both `prod/GLM-5.2-SGL-FP8-TP8.yaml` (checkpoint `zai-org/GLM-5.2-FP8`) and `prod/GLM-5.2-W4AFP8-SGL-TP8.yaml` (checkpoint `PhalaCloud/GLM-5.2-W4AFP8`) set `MODEL_NAME=z-ai/glm-5.2` and `--served-model-name z-ai/glm-5.2`. A caller switching from one to the other sees no difference.
+GLM-5.3 Flash is the canonical example: both `prod/GLM-5.3-Flash-SGL-TP4.yaml` (official checkpoint) and `prod/GLM-5.3-Flash-SGL-TP4-W4AFP8.yaml` (checkpoint `graphistry/GLM-5.3-Flash-W4AFP8`) set `MODEL_NAME=z-ai/glm-5.3-flash` and `--served-model-name z-ai/glm-5.3-flash`. A caller switching from one to the other sees no difference.
 
 ### Choosing a served model name
 
@@ -77,7 +77,7 @@ If you need a name correction, open an issue, coordinate the cloud-api model tab
 
 The SNI domain (`server_name` in nginx, first arg to `register_model`) is also a stable external identifier. Rules:
 
-1. **No quantization, no variant suffix.** Both GLM-5.2 configs use `glm-5-2.completions.near.ai`. If a model has multiple alternative configs, they share one domain — only one is deployed at a time.
+1. **No quantization, no variant suffix.** All GLM-5.3 Flash configs share one domain. If a model has multiple alternative configs, they share one domain — only one is deployed at a time.
 2. **Format**: lowercase, digits, hyphens — `<model-shortname>.completions.near.ai`. Use dots in version numbers as hyphens (e.g., `glm-5-2`, `qwen3-6-27b`).
 3. **Derive from the model name, not the checkpoint.** `gpt-oss-120b.completions.near.ai` not `gpt-oss-120b-fp8.completions.near.ai`.
 4. **Never reuse a domain for a different model.** Once a domain is live, callers cache it. Retiring a model means removing its domain registration; do not reassign it.
@@ -99,14 +99,14 @@ A config graduates from `experiments/` to `prod/` only when **all** pass:
 1. **Soaked ≥30 min in staging, 0 failures.** Against the model-onboarding soak harness. Non-negotiable — catches detokenizer-wedge and queue-saturation bugs that smoke tests miss.
 2. **Full monitoring stack.** Every model config includes: `inference-proxy`, `proxy-nginx`, `model-proxy-registrar`, `model-downloader`, `dcgm-exporter`, `otelcol-contrib`, and the model engine. Services retain `com.datadoghq.ad.logs` metadata for the OTel log pipeline and carry the correct `nearai.otel.*` scrape labels. CI enforces the contract (see [Monitoring label contract](#monitoring-label-contract)).
 3. **Digest-pinned images.** Every `image:` is `name@sha256:…`. No `:latest`, `:dev`, or bare tags. HuggingFace model pinned via `--revision <sha>`. Required for KMS attestation reproducibility.
-4. **Registrar healthcheck + readiness probe.** `model-proxy-registrar` has the `/tmp/registrar_alive` liveness healthcheck (180s threshold, `start_period: 1200s`) and the 30-attempt readiness probe before entering the registration loop. Canonical pattern in `prod/GLM-5.2-SGL-FP8-TP8.yaml` (cvm-compose-files#57).
+4. **Registrar healthcheck + readiness probe.** `model-proxy-registrar` has the `/tmp/registrar_alive` liveness healthcheck (180s threshold, `start_period: 1200s`) and the 30-attempt readiness probe before entering the registration loop. Canonical pattern in `prod/GLM-5.3-Flash-SGL-TP4.yaml` (introduced in cvm-compose-files#57).
 5. **Graceful drain in nginx.** TLS `server` block: `keepalive_timeout 1h; keepalive_requests 1000000;`. Prevents H2 connection churn that causes signature 404s when cloud-api's bucket-pinned connection lands on a different backend after a model-proxy L4 rebalance.
 
 If a config fails any item, it stays in `experiments/` with a `# STATUS: EXPERIMENT — <reason>` header.
 
 ## Compose file structure
 
-Every prod config follows this service set (copy from `prod/GLM-5.2-SGL-FP8-TP8.yaml` as the canonical template):
+Every prod config follows this service set (copy from `prod/GLM-5.3-Flash-SGL-TP4.yaml` as the canonical template):
 
 | Service | Role | Required in prod |
 |---------|------|------------------|
@@ -239,9 +239,9 @@ CI runs all four on every push/PR. A failing check blocks merge.
 
 ## Common pitfalls
 
-- **`extends:` / `include:` across files break `compose/up` — every deployable file must be self-contained.** compose-manager fetches only the requested file from GitHub (`fetch_github_file` in its `src/main.rs`) into `/app/work/<path>`, so a cross-file `extends: {file: ../cleanup-hf-model.yaml}` or a top-level `include:` fails at config load with `open /app/work/cleanup-hf-model.yaml: no such file or directory` — even for a service behind a `profiles:` gate, because `extends` resolves before profiles apply. Inline the service instead (see `hf-cleanup` in `prod/qwen35-dsv4-flash.yaml`).
+- **`extends:` / `include:` across files break `compose/up` — every deployable file must be self-contained.** compose-manager fetches only the requested file from GitHub (`fetch_github_file` in its `src/main.rs`) into `/app/work/<path>`, so a cross-file `extends: {file: ../cleanup-hf-model.yaml}` or a top-level `include:` fails at config load with `open /app/work/cleanup-hf-model.yaml: no such file or directory` — even for a service behind a `profiles:` gate, because `extends` resolves before profiles apply. Inline the service instead (see `hf-cleanup` in `prod/small-models.yaml`).
 - **Proxy services must not `depends_on` model services — CI-enforced.** `depends_on` makes `docker compose up <service>` implicitly start (or recreate) the listed dependencies. During operational tasks like a proxy-only restart or an nginx reload, this can unexpectedly recreate a healthy model container — dropping in-flight requests and triggering a 15-30 min cold start. `scripts/validate_proxy_dependencies.rb` (CI-enforced) rejects any proxy service (`proxy-*`, `vllm-proxy-*`) with a `depends_on` on a model service (`model-*`). The `model-* → model-downloader` dependency (download-before-serve) is allowed; only the proxy→model direction is banned. The readiness probe in `model-proxy-registrar` gates registration instead (the registrar polls until the backend is up before registering). If you ever need a proxy→model dependency for a special case, document it in the config header and pass explicit `services:` lists in `compose/up` calls to scope what gets touched — but the CI validator will block it until the rule is updated.
-- **`build:` configs need `docker compose build` first.** `prod/GLM-5.1-SGL-AWQ-TP4.yaml` uses an inline Dockerfile (`x-awq-build`) to patch SGLang for the QuantTrio AWQ checkpoint. Deploy requires `docker compose build` before `up`, and compose-manager's `compose/up` may not trigger a build automatically. Pre-build on the host, then deploy.
+- **`build:` configs need `docker compose build` first.** A file with an inline Dockerfile (the retired GLM-5.1 AWQ config used `x-awq-build` to patch SGLang) needs a build. Deploy requires `docker compose build` before `up`, and compose-manager's `compose/up` may not trigger a build automatically. Pre-build on the host, then deploy.
 - **Moving a service's `proxy_pass` upstream without restarting nginx.** CVM nginx resolves `proxy_pass` hostnames at boot only. If you recreate proxy containers (new Docker IPs), nginx keeps routing to the old IPs. Always include `nginx` in the services list when recreating proxy containers, or force-recreate nginx immediately after.
 - **`--max-queued-requests` too high on SGLang.** The queue is a brief overflow buffer, not a backlog. If it's large enough to hold requests for seconds, TTFB explodes and cloud-api times out. Pick a value ≈ "how many requests can complete in the fail-over window." GLM-5.1 uses 8.
 - **Forgetting `--enable-cache-report` (SGLang) / `--enable-prompt-tokens-details` (vLLM).** Without these, `cached_tokens` is silently null/absent and cache-hit billing is wrong. See `infra-docs/docs/inference.md` → Cached Token Reporting.

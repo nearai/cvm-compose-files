@@ -277,6 +277,8 @@ def nginx(text: str) -> str:
 
 def generate(text: str, glm: str) -> str:
     pieces = glm_pieces(glm)
+    # nginx serves nothing on :80 (no server block listens there), so it is not published.
+    text = once(text, '    ports:\n      - "80:80"\n      - "8002:8002"\n', '    ports:\n      - "8002:8002"\n', "unused nginx :80")
     out = replace_block(text, "x-dsv41-proxy-common: &dsv41-proxy-common\n", "x-vllm-env:\n", "", "dsv41 proxy anchor")
     out = replace_block(out, "x-dsv41-engine-common: &dsv41-engine-common\n", "x-dcgm-common: &dcgm-common\n", pieces["anchors"], "dsv41 engine anchor")
     out = once(

@@ -9,10 +9,9 @@ Deployed by `compose-manager` (running inside each inference CVM) which checks o
 ```
 .
 ├── prod/                  # Production-ready configs. Only these are deployable to prod.
-│   ├── GLM-5.2-SGL-FP8-TP8.yaml
-│   ├── GLM-5.2-W4AFP8-SGL-TP8.yaml
-│   ├── small-models.yaml
-│   └── dsv4-qwen36-gemma4.yaml
+│   ├── GLM-5.3-Flash-SGL-TP4.yaml
+│   ├── DeepSeek-V4.1-Flash-1017-vLLM-DEP8-Abliterated.yaml
+│   └── small-models.yaml
 ├── experiments/           # Work-in-progress: AWQ/int4/nvfp4 quantization sweeps,
 │                          # otel test harnesses, alternative engine configs.
 │                          # NOT deployable to prod. Soak in staging only.
@@ -30,7 +29,7 @@ A config in `experiments/` graduates to `prod/` only when **all** of the followi
 1. **Soaked in staging.** Ran on a real CVM under load for ≥30 min with 0 request failures, against the model-onboarding soak harness (see `ansible-playbooks/docs/model-onboarding-workflow.md`). The 30-min soak is the gate, not a suggestion — it catches the detokenizer-wedge / queue-saturation class of bugs that don't surface in a smoke test.
 2. **Full monitoring stack present.** Every model config must include: `inference-proxy`, `proxy-nginx`, `model-proxy-registrar`, `model-downloader`, `dcgm-exporter`, `otelcol-contrib`, and the model engine service — with retained `com.datadoghq.ad.logs` metadata for the OTel log pipeline and the correct `nearai.otel.*` scrape labels. The CI validator (`scripts/validate_otel_labels.rb`) enforces the label contract.
 3. **Digest-pinned images.** Every `image:` field uses `@sha256:…`, never `:latest`, `:dev`, or a bare tag. The HuggingFace model is pinned to a specific `--revision` (commit SHA). This is required for attestation reproducibility — the compose hash is registered with the KMS contract.
-4. **Registrar healthcheck + readiness probe.** The `model-proxy-registrar` service has the liveness healthcheck (`/tmp/registrar_alive` marker, 180s threshold) and the 30-attempt readiness probe before registration. See `prod/GLM-5.2-SGL-FP8-TP8.yaml` for the canonical pattern (added in cvm-compose-files#57 to surface silent registrar failures).
+4. **Registrar healthcheck + readiness probe.** The `model-proxy-registrar` service has the liveness healthcheck (`/tmp/registrar_alive` marker, 180s threshold) and the 30-attempt readiness probe before registration. See `prod/GLM-5.3-Flash-SGL-TP4.yaml` for the canonical pattern (added in cvm-compose-files#57 to surface silent registrar failures).
 5. **Graceful drain in nginx.** The TLS `server` block sets `keepalive_timeout 1h` + `keepalive_requests 1000000` so H2 connections from cloud-api survive long idle gaps. Without this, the next request opens a new TCP via model-proxy's L4 LB, may land on a different backend, and the signature 404s.
 
 If a config fails any item, it stays in `experiments/` with a header comment documenting what's missing and why.
@@ -63,7 +62,7 @@ curl -sS -X POST -H "Authorization: Bearer $COMPOSE_MANAGER_TOKEN" \
        \"services\":[],\"env\":$ENV_JSON,\"force_recreate\":false}"
 ```
 
-The `file` path is relative to the repo root and **includes the `prod/` prefix** (e.g. `"prod/GLM-5.2-SGL-FP8-TP8.yaml"`).
+The `file` path is relative to the repo root and **includes the `prod/` prefix** (e.g. `"prod/GLM-5.3-Flash-SGL-TP4.yaml"`).
 
 Full deploy recipes (graceful drain for slow-shutdown models, env-var fetch, force-recreate recovery) are in [`infra-docs/docs/deployment.md`](../infra-docs/docs/deployment.md).
 
@@ -73,12 +72,7 @@ Full deploy recipes (graceful drain for slow-shutdown models, env-var fetch, for
 
 | Config | Models served | Notes |
 |--------|---------------|-------|
-| `prod/GLM-5.2-SGL-FP8-TP8.yaml` | `z-ai/glm-5.2` | SGLang TP8, 1M context, official FP8. gpu23 + gpu04. |
-| `prod/GLM-5.2-W4AFP8-SGL-TP8.yaml` | `z-ai/glm-5.2` | SGLang TP8, 4-bit (PhalaCloud W4AFP8, 368GB vs 755GB FP8) — same model, serves the full 1M context FP8 can't fit, MTP on. **Alternative** to the FP8 config; deploy one or the other. Startup-hang under CC noted in header (under investigation). |
-| `prod/GLM-5.1-SGL-AWQ-TP4.yaml` | `zai-org/GLM-5.1-FP8` | SGLang 2× TP4 (AWQ W4A16). gpu03 + gpu13 + gpu26. Uses `build:` (inline SGLang patch) — see header. Replaced the archived FP8 TP8 config. |
 | `prod/qwen36-qwen38.yaml` | Qwen3.8, Qwen3.6 | gpu02 Qwen-only recipe: two Qwen3.8 replicas on GPUs 2–3 and two Qwen3.6 replicas on GPUs 4–5. Not yet applied; see the [maintenance handoff](docs/gpu02-upgrade.md). |
-| `prod/GLM-5.1-DSV4-Migration.yaml` | `zai-org/GLM-5.1-FP8`, `deepseek-ai/DeepSeek-V4-Flash` | Retained gpu03 allocation: GLM5.1 on GPUs 0–3, DS4F on GPUs 4–5 and 6–7. |
-| `prod/Qwen3.5-122B.yaml` | `Qwen/Qwen3.5-122B-A10B` | SGLang 2× TP4 on the official FP8 checkpoint. gpu30. |
 | `prod/GLM-5.3-Flash-SGL-TP4.yaml` | `z-ai/glm-5.3-flash` | Canonical 8x H200 deployment shared by matching hosts: two independent SGLang TP4/EP4 replicas pooled behind one inference proxy, **no HiCache on either replica**. Uses the qualified upstream-derived runtime as a GitHub-built, provenance-attested, cosign-signed immutable digest, with the admission-reserve v10 scheduler fix (signed derivative image, `docker/sglang-glm53-admission-reserve`) with `--prefill-decode-interval 1`; BF16 KV cache; bounded concurrency/queueing; adaptive EAGLE speculation; full 1M context; CPU multimodal preprocessing; conversation affinity; payload-free engine logging; and the enhanced full-host DCGM collector. Its `model-downloader` (like every dedicated GLM-5.3 Flash TP4 file's, and now `prod/small-models.yaml`'s too) also pre-stages the `graphistry/GLM-5.3-Flash-W4AFP8` snapshot (~165 GiB; keep ≥250 GiB free on the model-cache volume), so a host can move to a W4AFP8 file paying only the engine cold start. |
 | `prod/GLM-5.3-Flash-SGL-TP4-W4AFP8.yaml` | `z-ai/glm-5.3-flash` | Base-tier hosts (gpu03, gpu04; gpu23 currently runs the long-context file instead, per Prometheus 2026-10-06) on W4AFP8, generated by `scripts/prepare_glm53_w4afp8_base.py` from the canonical file (do not hand-edit). Both replicas run the qualified gpu31 campaign-2 arm B5: `graphistry/GLM-5.3-Flash-W4AFP8@99f1fa7` on the signed `docker/sglang-glm53-w4afp8` image `8bce6a7c…` with exactly the argv gpu02's W4AFP8 r1 runs (4096-token chunks, `--max-prefill-tokens 32768`, no `--revision`, no `--moe-runner-backend`) plus the canonical admission reserve (4096 / 0.75); no HiCache. Everything else, routing included, is byte-identical to the canonical file, which stays the rollback. Roll out one host at a time with [the runbook](docs/glm53-w4afp8-base-rollout.md). |
 | `prod/GLM-5.3-Flash-SGL-TP4-HiCache.yaml` | `z-ai/glm-5.3-flash` | HiCache canary variant of the canonical file above (generated by `scripts/prepare_glm53_hicache_canary.py`, do not hand-edit): r1 stays the unchanged control, r2 runs the signed HiCache+admission-reserve derivative image (HCC-safe HiCache with CUDA-owned host memory — `cudaMallocHost`, no `cudaHostRegister`, no Unified Memory — plus the admission-reserve v10 patch). r2's RAM budget and CUDA host allocator (`GLM53_HICACHE_RAM_BUDGET`, `GLM53_HICACHE_CUDA_HOST_MEMORY`) are deployment-overridable, with safe defaults (80%, enabled) in the file. Deploy only on hosts explicitly selected for the HiCache canary; every other host keeps the canonical file. |
@@ -87,11 +81,9 @@ Full deploy recipes (graceful drain for slow-shutdown models, env-var fetch, for
 | `prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8.yaml` | `z-ai/glm-5.3-flash` | **v7 fleet config of the base tier (gpu03, gpu04)**, generated by `scripts/prepare_glm53_w4afp8_tp2x4.py` (do not hand-edit). Four TP2/EP2 replicas r1-r4, all on the `glm53-hicache-w4afp8-v7` image (`fa730e6e62b2`): FP8 KV with `flashmla_kv` prefill and decode, 64 running / 380 mamba slots, overlap scheduler off, **HiCache off** (as gpu03 r3 runs it), the preprocess pool and tool-schema caps, profiling off. The proxy pool, soak relay, DCGM, ghost aggregator and OTel jobs keep every dashboard label. Roll out and roll back with [the runbook](docs/glm53-v7-fleet-rollout.md). |
 | `prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8-V12Q8.yaml` | `z-ai/glm-5.3-flash` | **v12 + Q8 DSA prefill base fleet file (gpu03, gpu04), prepared, not deployed**, generated by `scripts/prepare_glm53_base_v12_q8_fleet.py` from the v7 fleet file above (do not hand-edit). Only the engine and ghost-aggregator image (`glm53-hicache-w4afp8-v12`, `da8d4e4b5ec6`), `--dsa-prefill-backend flashmla_sparse_q8` (chunk 8192 and queue 32 kept) and the replicas' `engine_image` / `config_variant` (`-v12-q8`) labels differ. The gpu04 r4 canary is `prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8-Q8Canary.yaml`. Deploy one replica at a time; the v7 file is the rollback ([runbook](docs/glm53-base-v12-q8-rollout.md)). |
 | `prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8-V12Q8-gpu04-3B1L.yaml` | `z-ai/glm-5.3-flash` | **gpu04 mixed-tier file: 3 base + 1 long-context replica**, generated by `scripts/prepare_glm53_gpu04_3b1l.py` from the v12 base fleet file and gpu23's long replica r2b (do not hand-edit). r1-r3 (GPUs 0-5) stay base behind `proxy-glm53`; `model-sg-glm53-w4afp8-tp2-l4` (GPUs 6-7, gpu23's r2b argv with queue 32) serves the long tier behind `proxy-glm53-long`, advertised on `:8001` and split from base by SNI on `:8444`. Rollback = the v12 fleet file ([runbook](docs/gpu04-glm53-3base-1long.md)). |
-| `prod/qwen35-dsv4-flash.yaml` | `z-ai/glm-5.3-flash`, `deepseek-ai/DeepSeek-V4-Flash` | **Superseded** by `prod/GLM-5.3-Flash-SGL-TP4.yaml` for GLM-5.3-Flash (the vLLM Hopper path yields non-finite logits); delete once the replacement pack is live. Legacy filename and Qwen service keys were retained for an orphan-free in-place rollout. |
 | `prod/small-models.yaml` | FLUX.2-klein, Qwen3-VL-30B, Qwen3-Embedding, Qwen3-Reranker, whisper-large-v3, privacy-filter, Qwen3.6-35B-A3B-FP8, Qwen3.8-27B, GLM-5.3-Flash | gpu13 small-model pack: Sage and the privacy filter / Qwen3.8 co-location on GPU 0, Qwen3.6 on GPUs 1-2, the remaining small models on GPU 3, and two GLM-5.3 Flash **base** TP2 replicas on GPUs 4-7 (`model-sg-glm53-w4afp8-tp2-r1` on 4,5 and `-r2` on 6,7: gpu04's v12 base replicas byte for byte, behind `proxy-glm53` on :8009/:8444, registered on the base domain only). The GLM part is generated by `scripts/prepare_gpu13_glm53_base.py` (do not hand-edit those blocks; `scripts/test_gpu13_glm53_base.py`); see the [runbook](docs/gpu13-glm53-base-gpu4-7.md). Until v0.0.547 GPUs 4-7 ran a DeepSeek-V4.1 DEP4 replica. |
-| `prod/dsv4-qwen36-gemma4.yaml` | DeepSeek-V4-Flash, Qwen3.6-27B-FP8, google/gemma-4-31B-it, Qwen3.6-35B-A3B-FP8 | gpu04 mixed pack: DeepSeek-V4-Flash FP4 TP4 target-only with sparse prefill and overlap scheduling enabled on GPUs 0–3, Qwen3.6 TP1 services on GPUs 4–5, and two Gemma 4 TP1 replicas on GPUs 6–7. |
 
-Configs in `experiments/` are WIP (AWQ/int4/nvfp4 quantization sweeps, otel test harnesses, alternative engine configs) and are not deployed to prod. See their header comments for status. `experiments/GLM-5.1-FP8-TP8-archived.yaml` is the previous GLM-5.1 prod config (SGLang TP8, official FP8) — superseded by `prod/GLM-5.1-SGL-AWQ-TP4.yaml`, kept for reference.
+Configs in `experiments/` are WIP (AWQ/int4/nvfp4 quantization sweeps, otel test harnesses, alternative engine configs) and are not deployed to prod. See their header comments for status. `experiments/GLM-5.1-FP8-TP8-archived.yaml` is the previous GLM-5.1 prod config (SGLang TP8, official FP8) — kept for reference.
 
 ## CI
 
@@ -126,6 +118,6 @@ The end-to-end onboarding flow (staging `PATCH /v1/admin/models` → auto-genera
 1. **Choose the served model name and SNI domain first** — see [`AGENT.md` → Model naming and SNI domains](AGENT.md#model-naming-and-sni-domains). These are external identifiers: prefer the OpenRouter slug, no quantization suffix, no variant info. Pick them before writing the config so they don't need changing later.
 2. Start the config in `experiments/<Model>-<variant>.yaml`. Copy from the closest existing prod config as a template.
 3. Pin the image digests and HF `--revision`.
-4. Add the retained `com.datadoghq.ad.logs` metadata and OTel scrape labels (copy from `prod/GLM-5.2-SGL-FP8-TP8.yaml` — the label set is exact).
+4. Add the retained `com.datadoghq.ad.logs` metadata and OTel scrape labels (copy from `prod/GLM-5.3-Flash-SGL-TP4.yaml` — the label set is exact).
 5. Soak in staging. Iterate.
 6. When the checklist passes, move to `prod/` and open a PR. CI validates; the merge auto-tags.
