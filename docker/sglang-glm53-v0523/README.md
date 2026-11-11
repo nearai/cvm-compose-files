@@ -65,5 +65,31 @@ The fork-era Mamba checkpoint grid was not carried either. Upstream reverted it 
 - All 19 flags of the prod long-tier argv exist with the same meaning (field definitions moved to `arg_groups/fields/`). `--disable-fast-image-processor` still logs a deprecation warning, as on the fork.
 - Upstream's logits-budget chunking calls `mem_get_info` per large call, not once per device. This could add per-step cost under TDX+PPCIe; measure it.
 
+## Required launch change: prefill CUDA graphs off
+
+With prod's `--mem-fraction-static 0.86`, v0.5.23's default breakable prefill graphs run out of memory during warmup. The failure is `torch.OutOfMemoryError` in `kda_extend_in_graph`, seen on gpu31 on 2026-11-10. Compose files that move to this image must add `--cuda-graph-backend-prefill disabled`, which is the fork's behaviour. Re-enabling them is a separate memory-budget experiment.
+
+## GPU A/B (gpu31 GPUs 0-1, bare metal, 2026-11-10/11)
+
+Both arms used the prod long-tier r1a argv and env (TP2/EP2, FP8 KV, Q8 DSA prefill, EAGLE 4/1/5, HiCache off), the same GPUs and the same harness. The v0.5.23 arm also had `--cuda-graph-backend-prefill disabled`. Results are in `gpu31:/data/glm53-v0523-20261110/res/{v0523,v12}`.
+
+| | v12 (`da8d4e4b`, fork) | v0.5.23 (this recipe) |
+|---|---|---|
+| boot to ready | 360-422 s | 405 s |
+| GSM8K-200 (no thinking, concurrency 8) | 0.980 | 0.985 |
+| passkey 128K | 3/3 | 3/3 |
+| smoke | 6/7 (image error still carries the URL path) | 7/7 |
+| bench: random-ids ~8K in / 600 out, 160 req, concurrency 16 | 1.27 req/s, 563 out tok/s | 1.39 req/s, 618 out tok/s |
+| median TTFT / TPOT, P99 TTFT | 551 ms / 28.3 ms, 4.82 s | 486 ms / 27.3 ms, 4.89 s |
+| engine Traceback / CUDA error / OOM | 0 | 0 |
+
+The smoke test checks: health, models, chat, `thinking_token_budget` enforced, a client `rid` prefix plus disconnect leaving the victim request untouched (CVE-2026-112266), no credentials in `/server_info`, and the image 4xx error keeping the proxy's `NNN Client Error … for url:` shape with the host only.
+
+The throughput difference is a single run with no noise floor, so treat it as "no regression", not as a gain. This was not run under TDX+PPCIe; that happens on the gpu23 canary.
+
+Harness notes:
+- With prod's `--max-queued-requests 8`, a burst of more than 8 requests gets 503 "queue is full" before admission. Quality checks must stay at concurrency 8 or below.
+- `bench_serving`'s `random` dataset downloads ShareGPT; offline, use `random-ids`.
+
 ## Tests
 `test-cpu.sh` (CPU only) runs the recipe checks plus the upstream unit tests that the series adds or edits. The recipe tests were ported to the v0.5.23 APIs. The redaction, log-redaction and rid tests fail on stock v0.5.23 and pass on this tree.
