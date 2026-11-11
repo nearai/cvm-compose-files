@@ -72,7 +72,7 @@ jobs:
           git merge-base --is-ancestor "$SOURCE_REVISION" origin/main
 
           test "$(sha256sum "$BUILD_CONTEXT/Dockerfile" | awk '{print $1}')" = \
-            c22b6e0fc60494ca3c2d9694e6c92996c6820f15777bda806458618a41398d56
+            045b4fbd68d85bd2515038a93184bef6db491e27029e57497cd06490a660f890
           test "$(sha256sum "$BUILD_CONTEXT/SHA256SUMS" | awk '{print $1}')" = \
             2d4ea5f7be64317a667e9727f4460e6afd7b85d57c7c3707d4a7e2f06161d5b4
           (cd "$BUILD_CONTEXT" && sha256sum --check --strict SHA256SUMS)

@@ -25,6 +25,8 @@ LABEL nearai.security.cve_2026_86793="fixed-upstream-v0.5.23"
 LABEL nearai.security.cve_2026_15969="fixed-upstream-v0.5.23"
 LABEL nearai.security.cve_2026_15977="redaction-patch"
 LABEL nearai.security.cve_2026_112266="rid-abort-exact-match-patch"
+LABEL nearai.security.linux_libc_dev="6.8.0-149.149"
+LABEL nearai.security.cargo_build_cache="removed"
 
 COPY PROVENANCE README.md SHA256SUMS SERIES apply-patches.py test-cpu.sh security-requirements.txt \
      /usr/share/nearai/glm53-v0523/
@@ -43,3 +45,18 @@ RUN test -n "$BUILD_SOURCE_REVISION" \
              /opt/nvidia/nsight-systems-cli/2026.4.1/target-linux-x64/plugins/efa_metrics/nic_sampler \
     && test ! -e /opt/nvidia/nsight-compute/2025.3.1/host/target-linux-x64/plugins/efa_metrics/nic_sampler \
     && test ! -e /opt/nvidia/nsight-systems-cli/2026.4.1/target-linux-x64/plugins/efa_metrics/nic_sampler
+
+# Base-image remediation for the publish gate (fixable criticals):
+# - linux-libc-dev (kernel UAPI headers, not executed in containers) upgraded to the exact noble-security fix.
+# - The cargo registry cache and the radix-tree crate's lockfile/target dir are build-time only: the image
+#   sets SGLANG_RUST_BUILD_MODE=never and loads the bundled mem_cache extension, which links no zip code.
+RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends --only-upgrade \
+        linux-libc-dev=6.8.0-149.149 \
+    && rm -rf /var/lib/apt/lists/* \
+    && test "$(dpkg-query -W -f='${Version}' linux-libc-dev)" = "6.8.0-149.149" \
+    && test "$SGLANG_RUST_BUILD_MODE" = "never" \
+    && rm -rf /root/.cargo/registry \
+              /sgl-workspace/sglang/rust/sglang-radix-tree/Cargo.lock \
+              /sgl-workspace/sglang/rust/sglang-radix-tree/target \
+    && python3 -c "import sglang.srt.mem_cache.rust_tree_core.extension as e; assert e.RustUnifiedTreeCoreBinding"
