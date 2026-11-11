@@ -1,0 +1,19 @@
+base_image=lmsysorg/sglang@sha256:b1259f3ea3275f66237c498ea388919729018bc9f01c3d638391e06e2cf3f469
+base_image_linux_amd64_manifest=sha256:2dbe4c7f53230b09aaa8fa41891c13c51d9d2e253f486a70822aaf08783fff75
+source_repository=https://github.com/sgl-project/sglang
+source_revision=e00930c5489053f26d86b179cee0d087f846acbb
+source_build=https://github.com/sgl-project/sglang/actions/runs/36824467195
+source_image_tag=lmsysorg/sglang:v0.5.21
+runtime_overlay=w4afp8-loader-patch-and-security-hardening
+loader_patch_file=docker/sglang-glm53-v0521-w4afp8/modules-to-not-convert.diff
+loader_patch_sha256=29764baa3e464d2272ea85f2e254392c2a61a3fc61a51f8d33b5910ce0cd8d00
+loader_patch_scope=W4AFp8Config.from_config propagates checkpoint exclusion keys to ignored_layers
+patched_source=python/sglang/srt/layers/quantization/w4afp8.py before=21e9c527c9b83e350cdc35ce2bc62891cda1550934b2a5d302f0f807f752f125 after=039316192fb40a2aefe425102734d821c98e4c6c22a32ee51df21e47c315603d
+security_python_requirement=nltk==3.10.3 sha256:ff9598a8e20518ee0d557745890cc4435b9578489e2dcbc69c4f81fa060caf7c
+security_python_requirement=defusedxml==0.7.1 sha256:a352e7e428770286cc899e2542b6cdaedb2b4953ff269a210103ec58f6198a61
+removed_runtime_artifact=any */plugins/efa_metrics/nic_sampler under /opt/nvidia (CVE-2025-68121)
+experimental_allocator=absent
+hicache=not patched; the fork's HCC-safe HiCache patch is intentionally excluded (HiCache is off for PD prefill)
+compose_scope=no Compose file is changed by this recipe
+promotion=pin the published digest in a separate promotion PR before use
+build_recipe=docker/sglang-glm53-v0521-w4afp8/Dockerfile
