@@ -1,0 +1,32 @@
+diff --git a/python/sglang/srt/mem_cache/prefill_budget.py b/python/sglang/srt/mem_cache/prefill_budget.py
+index 7737277c83..8f76996497 100644
+--- a/python/sglang/srt/mem_cache/prefill_budget.py
++++ b/python/sglang/srt/mem_cache/prefill_budget.py
+@@ -141,8 +141,26 @@ class PrefillBudget:
+ 
+     def available_chunk_tokens(self, chunk_limit: int) -> int | None:
+         available = min(chunk_limit, int(self.remaining_total))
++        if available > 0:
++            return available
+         # Single-pool continuation must make progress to release its KV.
+-        return available if available > 0 else chunk_limit
++        # remaining_total can go negative purely because total_offset is a
++        # PROJECTION of decode for the whole running batch (~CLIP_MAX_NEW_TOKENS
++        # per running request, independent of prompt size), so it exceeds the
++        # free pool long before the pool is actually empty. Restoring the full
++        # chunk budget here ignores the pool entirely and asks alloc_extend for
++        # tokens that do not exist, which raises "Prefill out of memory" and
++        # kills the engine (seen on the GLM-5.3 Flash long-context tier:
++        # rem_total=-23, avail=2304, evictable=0 -> alloc 4096).
++        # Keep the chunked request progressing, but never ask for more than the
++        # allocator can serve, keeping one page of margin as the SWA budget
++        # does. If not even one page is free, park this chunk (None) and retry
++        # next pass -- the same early return add_chunked_req already takes for
++        # the SWA budgets.
++        servable = self._available_and_evictable() - self.page_size
++        clamped = max(min(chunk_limit, servable), 0)
++        clamped = clamped // self.page_size * self.page_size
++        return clamped if clamped > 0 else None
+ 
+     def fit_chunk(
+         self,
