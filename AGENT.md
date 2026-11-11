@@ -101,12 +101,13 @@ A config graduates from `experiments/` to `prod/` only when **all** pass:
 3. **Digest-pinned images.** Every `image:` is `name@sha256:…`. No `:latest`, `:dev`, or bare tags. HuggingFace model pinned via `--revision <sha>`. Required for KMS attestation reproducibility.
 4. **Registrar healthcheck + readiness probe.** `model-proxy-registrar` has the `/tmp/registrar_alive` liveness healthcheck (180s threshold, `start_period: 1200s`) and the 30-attempt readiness probe before entering the registration loop. Canonical pattern in `prod/GLM-5.2-SGL-FP8-TP8.yaml` (cvm-compose-files#57).
 5. **Graceful drain in nginx.** TLS `server` block: `keepalive_timeout 1h; keepalive_requests 1000000;`. Prevents H2 connection churn that causes signature 404s when cloud-api's bucket-pinned connection lands on a different backend after a model-proxy L4 rebalance.
+6. **Replica-state publishing.** Every `inference-proxy` service uses a proxy image built with inference-proxy #274 or newer and carries the three `REPLICA_STATE_*` env lines (see [Replica-state publishing](#replica-state-publishing)). Warn-only in CI for existing files; required for new ones.
 
 If a config fails any item, it stays in `experiments/` with a `# STATUS: EXPERIMENT — <reason>` header.
 
 ## Compose file structure
 
-Every prod config follows this service set (copy from `prod/GLM-5.2-SGL-FP8-TP8.yaml` as the canonical template):
+Every prod config follows this service set (copy from `prod/GLM-5.2-SGL-FP8-TP8.yaml` as the canonical template). The canonical template for **new** files must also include the `REPLICA_STATE_*` env lines on the inference-proxy service ([Replica-state publishing](#replica-state-publishing)); if the template you copy lacks them, add them (and a #274+ proxy digest, e.g. from `prod/GLM-5.3-Flash-SGL-TP4.yaml`).
 
 | Service | Role | Required in prod |
 |---------|------|------------------|
@@ -139,6 +140,24 @@ Every file defines these anchors and reuses them via `<<: *anchor`:
 - `kernel_cache` — DeepGemm JIT cache (SGLang). Must be a named volume, not tmpfs.
 - `certs` — Let's Encrypt certs, mounted `:ro` into nginx and the proxy.
 - `otelcol_app_storage` — OTel collector storage. **Validator requires this volume to exist.**
+
+## Replica-state publishing
+
+New inference-proxy services publish replica state (inference-proxy #274) so cloud-api's smart placement covers the model with no code change. Put these lines in the proxy `environment:` (copy from `prod/GLM-5.3-Flash-SGL-TP4.yaml`, which also has the pinned #274 image digest):
+
+```yaml
+# Replica-state publishing (inference-proxy #274): off unless the host's deploy env sets
+# REPLICA_STATE_REDIS_URL; a bad value logs one error and disables only this feature.
+- REPLICA_STATE_REDIS_URL=${REPLICA_STATE_REDIS_URL:-}
+- REPLICA_STATE_REDIS_CA_CERT=${REPLICA_STATE_REDIS_CA_CERT:-}
+- REPLICA_STATE_HOST_ID=${CVM_HOST:-}
+```
+
+- **Per-host enablement.** A host turns it on by setting `REPLICA_STATE_REDIS_URL` and `REPLICA_STATE_REDIS_CA_CERT` in its compose-manager deploy env. Its public IP must also be in `allowed_hosts` in infra-aws `envs/shared/valkey/network.tf`.
+- **Backend order.** cloud-api's replica index is the position in `VLLM_BACKEND_URLS`; keep that order stable.
+- **All hosts must publish.** cloud-api places a model smartly only when EVERY host registered under its domain publishes; otherwise legacy routing continues.
+- **SGLang only.** Only SGLang engines are read today. vLLM hosts publish nothing useful until a proxy adapter exists.
+- **Enforcement.** `scripts/validate_proxy_environment.rb` emits a CI warning (not a failure) for `prod/` proxies missing `REPLICA_STATE_REDIS_URL`. Existing files adopt the lines when next edited.
 
 ## Monitoring label contract
 
