@@ -19,6 +19,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Test publisher provenance verification
+        run: |
+          docker run --rm -v "$PWD:/repo:ro" -w /repo ruby:3.3-alpine \
+            sh -c 'apk add --no-cache python3 jq >/dev/null && python3 scripts/test_publisher_provenance.py'
+
       - name: Validate OTel label contracts
         run: |
           docker run --rm \

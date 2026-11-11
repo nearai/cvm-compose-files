@@ -160,6 +160,8 @@ jobs:
             --entrypoint=bash "$IMAGE_IMMUTABLE_REF" \
             /usr/share/nearai/glm53-hicache/test-cpu.sh | tee cpu-tests.txt
 
+      # Normalize current SLSA v1 and older v0.2 provenance so resume_digest
+      # keeps the same source, revision, context, and base-image policy.
       - name: Verify embedded BuildKit provenance and SBOM
         env:
           SOURCE_REVISION: ${{ inputs.source_revision }}
@@ -169,7 +171,23 @@ jobs:
             --format '{{json .Provenance.SLSA}}' \
             "$IMAGE_IMMUTABLE_REF" > buildkit-provenance.json
           jq -e --arg source_revision "$SOURCE_REVISION" \
-            '.buildType == "https://mobyproject.org/buildkit@v1" and
+            '(if has("buildDefinition") or has("runDetails") then
+               if has("buildType") or has("metadata") or has("materials") or
+                  .buildDefinition.buildType != "https://github.com/moby/buildkit/blob/master/docs/attestations/slsa-definitions.md" or
+                  (.runDetails.metadata | type) != "object" or
+                  (.buildDefinition.resolvedDependencies | type) != "array"
+               then error("Unsupported or mixed BuildKit provenance schema")
+               else {
+                 buildType: "https://mobyproject.org/buildkit@v1",
+                 metadata: {
+                   buildStartedOn: .runDetails.metadata.startedOn,
+                   buildFinishedOn: .runDetails.metadata.finishedOn,
+                   "https://mobyproject.org/buildkit@v1#metadata": .runDetails.metadata.buildkit_metadata
+                 },
+                 materials: .buildDefinition.resolvedDependencies
+               } end
+             else . end) |
+             .buildType == "https://mobyproject.org/buildkit@v1" and
              .metadata.buildStartedOn != null and
              .metadata.buildFinishedOn != null and
              .metadata["https://mobyproject.org/buildkit@v1#metadata"].vcs.source == "https://github.com/nearai/cvm-compose-files" and
