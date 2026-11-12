@@ -7,8 +7,7 @@ and without touching any model container**. It only recreates the single
 
 Verified against `nearai/compose-manager` at commit `8e07c35` (prod tag
 `prod-20260702-8e07c35`, the pinned digest running on every compose-manager
-CVM as of 2026-09-25) and `nearai/cvm-ansible-playbooks`
-`cvm_configurations/compose-manager.yaml.j2`. See the compose file's own
+CVM as of 2026-09-25) and the compose-manager service template in the private ops repo. See the compose file's own
 header comment for the full mechanism writeup.
 
 ## Always scope the request to its own project
@@ -256,8 +255,8 @@ exit 0
 `LAUNCHER_HEALTH_TIMEOUT` are not passed in explicitly — `docker exec` into
 an already-running container automatically inherits that container's own
 environment, so this script reads them live from `compose-manager-launcher`
-itself (`cvm_configurations/compose-manager.yaml.j2` in
-`nearai/cvm-ansible-playbooks` sets all six on that service today). The
+itself (the compose-manager service template in the private ops repo sets all six
+on that service). The
 defaults shown after `:-` match `launcher.sh`'s own defaults at `8e07c35` and
 only apply if a future launcher build drops one of these vars entirely.
 

@@ -1,5 +1,159 @@
 [
   {
+    "rule": "layout.ext",
+    "path": "adapters/qwen38-27b-abliterated-r1/adapter_model.safetensors",
+    "sha256": "f913e7fe37f0c0ce19a8eb6ef859b4d8887f9449eee725630b8e2b6eec105c33",
+    "reason": "LoRA adapter weights fetched at runtime by the qwen38 deployables",
+    "remove_when": "the adapter is repinned to a Hugging Face revision and adapters/ is deleted"
+  },
+  {
+    "rule": "layout.size",
+    "path": "adapters/qwen38-27b-abliterated-r1/adapter_model.safetensors",
+    "sha256": "f913e7fe37f0c0ce19a8eb6ef859b4d8887f9449eee725630b8e2b6eec105c33",
+    "reason": "LoRA adapter weights fetched at runtime by the qwen38 deployables",
+    "remove_when": "the adapter is repinned to a Hugging Face revision and adapters/ is deleted"
+  },
+  {
+    "rule": "pins.digest",
+    "path": "cleanup-hf-model.yaml",
+    "sha256": "d3dfed77bb64d7d29a735783a2a90e9a1979dacbe1b8dead996d9ebc78544336",
+    "reason": "utility image pinned by tag only",
+    "remove_when": "the file moves to prod/ with a digest-pinned image"
+  },
+  {
+    "rule": "pins.digest",
+    "path": "prod/DeepSeek-V4.1-Flash-1017-vLLM-DEP8-Abliterated.yaml",
+    "sha256": "9dcd945c608f77ac55d0026d57d2e617d98b911b4a54e7f9ad4cce9c83a87d43",
+    "reason": "image carries a tag next to its digest; the digest decides what runs",
+    "remove_when": "next functional change of this file"
+  },
+  {
+    "rule": "pins.digest",
+    "path": "prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8-V12Q8.yaml",
+    "sha256": "9dcd945c608f77ac55d0026d57d2e617d98b911b4a54e7f9ad4cce9c83a87d43",
+    "reason": "image carries a tag next to its digest; the digest decides what runs",
+    "remove_when": "next functional change of this file"
+  },
+  {
+    "rule": "pins.digest",
+    "path": "prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8-V12Q8.yaml",
+    "sha256": "a2116dc4f7b9160acd4574cb3028d9148d5ece77065865a15c2eee123ceb75fc",
+    "reason": "image carries a tag next to its digest; the digest decides what runs",
+    "remove_when": "next functional change of this file"
+  },
+  {
+    "rule": "pins.digest",
+    "path": "prod/GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext.yaml",
+    "sha256": "9dcd945c608f77ac55d0026d57d2e617d98b911b4a54e7f9ad4cce9c83a87d43",
+    "reason": "image carries a tag next to its digest; the digest decides what runs",
+    "remove_when": "next functional change of this file"
+  },
+  {
+    "rule": "pins.digest",
+    "path": "prod/GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext.yaml",
+    "sha256": "a2116dc4f7b9160acd4574cb3028d9148d5ece77065865a15c2eee123ceb75fc",
+    "reason": "image carries a tag next to its digest; the digest decides what runs",
+    "remove_when": "next functional change of this file"
+  },
+  {
+    "rule": "pins.digest",
+    "path": "prod/qwen38-27b-abliterated-cc-1gpu.yaml",
+    "sha256": "9dcd945c608f77ac55d0026d57d2e617d98b911b4a54e7f9ad4cce9c83a87d43",
+    "reason": "image carries a tag next to its digest; the digest decides what runs",
+    "remove_when": "next functional change of this file"
+  },
+  {
+    "rule": "pins.digest",
+    "path": "prod/rotate-compose-manager-token.yaml",
+    "sha256": "f3a747fd9f31c7f7e7c0d4deff2ce85561bf0756eebf0fd73b2e06fb1c611294",
+    "reason": "image carries a tag next to its digest; the digest decides what runs",
+    "remove_when": "next functional change of this file"
+  },
+  {
+    "rule": "pins.digest",
+    "path": "prod/small-models.yaml",
+    "sha256": "9dcd945c608f77ac55d0026d57d2e617d98b911b4a54e7f9ad4cce9c83a87d43",
+    "reason": "image carries a tag next to its digest; the digest decides what runs",
+    "remove_when": "next functional change of this file"
+  },
+  {
+    "rule": "pins.digest",
+    "path": "prod/small-models.yaml",
+    "sha256": "a2116dc4f7b9160acd4574cb3028d9148d5ece77065865a15c2eee123ceb75fc",
+    "reason": "image carries a tag next to its digest; the digest decides what runs",
+    "remove_when": "next functional change of this file"
+  },
+  {
+    "rule": "pins.digest",
+    "path": "prod/small-models.yaml",
+    "sha256": "aae2a2c45e005cb655ef2c5d23e17bee0a0350d3d3e0d36f4216a9a83a050b7e",
+    "reason": "image is built on the host from an inline Dockerfile",
+    "remove_when": "the image is published from a build dir and pinned by digest"
+  },
+  {
+    "rule": "pins.digest",
+    "path": "prod/small-models.yaml",
+    "sha256": "acf2a14d229a7978f6d41635691cd873dd04061198461d24178d292d67c50311",
+    "reason": "image is built on the host from an inline Dockerfile",
+    "remove_when": "the image is published from a build dir and pinned by digest"
+  },
+  {
+    "rule": "pins.hf-revision",
+    "path": "prod/small-models.yaml",
+    "sha256": "de63e2d3f0ade1b53d66e1d6cce9e377203130a65985ad92a1d21859548fcb13",
+    "reason": "engine loads a model without a pinned revision",
+    "remove_when": "the engine pins --revision at its next functional change of this file"
+  },
+  {
+    "rule": "pins.raw-key",
+    "path": "prod/small-models.yaml",
+    "sha256": "43230bf33499a3c292df6a0a5b309833a206f8333d5feb1d9d7612c3e1b6eb97",
+    "reason": "image is built on the host from an inline Dockerfile",
+    "remove_when": "the image is published from a build dir and pinned by digest"
+  },
+  {
+    "rule": "pins.raw-key",
+    "path": "prod/small-models.yaml",
+    "sha256": "a6c694f7f099bd7fa51fdb02e9fd7bedb0d155fb6b2b9523bc12bff5aeea83ab",
+    "reason": "image is built on the host from an inline Dockerfile",
+    "remove_when": "the image is published from a build dir and pinned by digest"
+  },
+  {
+    "rule": "pins.raw-key",
+    "path": "prod/small-models.yaml",
+    "sha256": "28eb769da442bb99c3b7a246d8a889c4fe1bb01cd6cf5ca2a5c6d21beab20243",
+    "reason": "image is built on the host from an inline Dockerfile",
+    "remove_when": "the image is published from a build dir and pinned by digest"
+  },
+  {
+    "rule": "pins.raw-key",
+    "path": "prod/small-models.yaml",
+    "sha256": "bedf68897f0b713834418b187e304e6493eed30ec0c38782febbe888a469f921",
+    "reason": "image is built on the host from an inline Dockerfile",
+    "remove_when": "the image is published from a build dir and pinned by digest"
+  },
+  {
+    "rule": "pins.remote-code",
+    "path": "prod/small-models.yaml",
+    "sha256": "de63e2d3f0ade1b53d66e1d6cce9e377203130a65985ad92a1d21859548fcb13",
+    "reason": "engine loads a model without a pinned revision",
+    "remove_when": "the engine pins --revision at its next functional change of this file"
+  },
+  {
+    "rule": "pins.url",
+    "path": "prod/qwen38-27b-abliterated-cc-1gpu.yaml",
+    "sha256": "c51102ada03635206b1e48eab26034b6580bf794242f0c5590a540ec25334c01",
+    "reason": "adapter download follows a branch; the file is sha256-checked and fails closed",
+    "remove_when": "the adapter is repinned to a Hugging Face revision"
+  },
+  {
+    "rule": "pins.url",
+    "path": "prod/small-models.yaml",
+    "sha256": "c51102ada03635206b1e48eab26034b6580bf794242f0c5590a540ec25334c01",
+    "reason": "adapter download follows a branch; the file is sha256-checked and fails closed",
+    "remove_when": "the adapter is repinned to a Hugging Face revision"
+  },
+  {
     "rule": "privacy.no-log-flag",
     "path": "prod/DeepSeek-V4.1-Flash-1017-vLLM-DEP8-Abliterated.yaml",
     "sha256": "aea11172cab6d7ce7f5ae8c1acb22e1938fc2ea33dab5fd8fb0164b46cf181c4",
@@ -82,5 +236,201 @@
     "sha256": "c666cc98f9bec2aff66adbfd677eff31c4a8ebfeed84b036801ddf7ceb51b0a2",
     "reason": "vLLM engine sets no request-logging flag and relies on the engine default, which is off",
     "remove_when": "the service sets --no-enable-log-requests at its next functional change"
+  },
+  {
+    "rule": "privacy.secret",
+    "path": "prod/DeepSeek-V4.1-Flash-1017-vLLM-DEP8-Abliterated.yaml",
+    "sha256": "f7d0f341f8b10a367451ef84db806e19be3b3e13e23e974b5103cb3cee0cf24a",
+    "reason": "secret has an empty default, so the service starts without it",
+    "remove_when": "next functional change of this file"
+  },
+  {
+    "rule": "privacy.secret",
+    "path": "prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8-V12Q8.yaml",
+    "sha256": "f7d0f341f8b10a367451ef84db806e19be3b3e13e23e974b5103cb3cee0cf24a",
+    "reason": "secret has an empty default, so the service starts without it",
+    "remove_when": "next functional change of this file"
+  },
+  {
+    "rule": "privacy.secret",
+    "path": "prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8-V12Q8.yaml",
+    "sha256": "7eb56f77442ae1c2a4e9b016cccc58b9cb7d218ab9813b8e8e93b59fa3024429",
+    "reason": "secret is interpolated into an embedded proxy config",
+    "remove_when": "next functional change of this file"
+  },
+  {
+    "rule": "privacy.secret",
+    "path": "prod/GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext.yaml",
+    "sha256": "f7d0f341f8b10a367451ef84db806e19be3b3e13e23e974b5103cb3cee0cf24a",
+    "reason": "secret has an empty default, so the service starts without it",
+    "remove_when": "next functional change of this file"
+  },
+  {
+    "rule": "privacy.secret",
+    "path": "prod/GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext.yaml",
+    "sha256": "7eb56f77442ae1c2a4e9b016cccc58b9cb7d218ab9813b8e8e93b59fa3024429",
+    "reason": "secret is interpolated into an embedded proxy config",
+    "remove_when": "next functional change of this file"
+  },
+  {
+    "rule": "privacy.secret",
+    "path": "prod/qwen38-27b-abliterated-cc-1gpu.yaml",
+    "sha256": "1d394342dd61b197f099b9b08b72491598a61e34d7d2b02e3ccbdadd6df1c526",
+    "reason": "secret has an empty default, so the service starts without it",
+    "remove_when": "next functional change of this file"
+  },
+  {
+    "rule": "privacy.secret",
+    "path": "prod/qwen38-27b-abliterated-cc-1gpu.yaml",
+    "sha256": "f7d0f341f8b10a367451ef84db806e19be3b3e13e23e974b5103cb3cee0cf24a",
+    "reason": "secret has an empty default, so the service starts without it",
+    "remove_when": "next functional change of this file"
+  },
+  {
+    "rule": "privacy.secret",
+    "path": "prod/small-models.yaml",
+    "sha256": "f7d0f341f8b10a367451ef84db806e19be3b3e13e23e974b5103cb3cee0cf24a",
+    "reason": "secret has an empty default, so the service starts without it",
+    "remove_when": "next functional change of this file"
+  },
+  {
+    "rule": "public.domain",
+    "path": "prod/DeepSeek-V4.1-Flash-1017-vLLM-DEP8-Abliterated.yaml",
+    "sha256": "2857d6988af093f27ae2d89387c18ed6e11a009c52b2d96df637c2936a9b2918",
+    "reason": "internal telemetry endpoint inside an embedded config",
+    "remove_when": "next functional change of this file"
+  },
+  {
+    "rule": "public.domain",
+    "path": "prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8-V12Q8.yaml",
+    "sha256": "2857d6988af093f27ae2d89387c18ed6e11a009c52b2d96df637c2936a9b2918",
+    "reason": "internal telemetry endpoint inside an embedded config",
+    "remove_when": "next functional change of this file"
+  },
+  {
+    "rule": "public.domain",
+    "path": "prod/GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext.yaml",
+    "sha256": "2857d6988af093f27ae2d89387c18ed6e11a009c52b2d96df637c2936a9b2918",
+    "reason": "internal telemetry endpoint inside an embedded config",
+    "remove_when": "next functional change of this file"
+  },
+  {
+    "rule": "public.domain",
+    "path": "prod/qwen38-27b-abliterated-cc-1gpu.yaml",
+    "sha256": "2857d6988af093f27ae2d89387c18ed6e11a009c52b2d96df637c2936a9b2918",
+    "reason": "internal telemetry endpoint inside an embedded config",
+    "remove_when": "next functional change of this file"
+  },
+  {
+    "rule": "public.domain",
+    "path": "prod/small-models.yaml",
+    "sha256": "2857d6988af093f27ae2d89387c18ed6e11a009c52b2d96df637c2936a9b2918",
+    "reason": "internal telemetry endpoint inside an embedded config",
+    "remove_when": "next functional change of this file"
+  },
+  {
+    "rule": "public.host",
+    "path": "ci/services.allow.json",
+    "sha256": "3df652fa134ce1d531f646fc300c4c756bf4f5c493769c0e5bab83028b92abde",
+    "reason": "service name of a live deployable",
+    "remove_when": "the service is renamed in the next generation of its file"
+  },
+  {
+    "rule": "public.host",
+    "path": "prod/qwen38-27b-abliterated-cc-1gpu.yaml",
+    "sha256": "59178b1ff54e9a695f7a1ea9ef583e9fe21fb474c952810f75663b1d1a558e1b",
+    "reason": "host name inside a config value, label or service name",
+    "remove_when": "next functional change of this file"
+  },
+  {
+    "rule": "public.host",
+    "path": "prod/small-models.yaml",
+    "sha256": "59178b1ff54e9a695f7a1ea9ef583e9fe21fb474c952810f75663b1d1a558e1b",
+    "reason": "host name inside a config value, label or service name",
+    "remove_when": "next functional change of this file"
+  },
+  {
+    "rule": "public.host",
+    "path": "prod/small-models.yaml",
+    "sha256": "60b2beb23f44244d5c112fbe8b152c1d5134f958be1a2bd5452ae3adf7434ce4",
+    "reason": "host name inside a config value, label or service name",
+    "remove_when": "next functional change of this file"
+  },
+  {
+    "rule": "public.host",
+    "path": "prod/small-models.yaml",
+    "sha256": "499347dbfdb478e6d715de968eae4aaa24869c9a0fac21506eb4a537c1bbf726",
+    "reason": "host name inside a config value, label or service name",
+    "remove_when": "next functional change of this file"
+  },
+  {
+    "rule": "public.host",
+    "path": "prod/small-models.yaml",
+    "sha256": "3df652fa134ce1d531f646fc300c4c756bf4f5c493769c0e5bab83028b92abde",
+    "reason": "host name inside a config value, label or service name",
+    "remove_when": "next functional change of this file"
+  },
+  {
+    "rule": "public.host",
+    "path": "prod/small-models.yaml",
+    "sha256": "0279f1430f7fc9bba3f5cb350380477a93f92f375b6e38748a0385cc3e41abbd",
+    "reason": "host name inside a config value, label or service name",
+    "remove_when": "next functional change of this file"
+  },
+  {
+    "rule": "public.host",
+    "path": "prod/small-models.yaml",
+    "sha256": "f652e8b86af83646fcf7426e614963ca06ea18eeb2bb50bf6b9a72082ac54a09",
+    "reason": "host name inside a config value, label or service name",
+    "remove_when": "next functional change of this file"
+  },
+  {
+    "rule": "public.repo",
+    "path": ".github/workflows/publish-glm53-fc91d24.yaml",
+    "sha256": "dc156df5bc7e8e3c9c82e2a8073e22a6c8d3a7c1c3aafd7deaa77ba99ecb69cf",
+    "reason": "build input clones a fork; changing it changes the published image",
+    "remove_when": "the engine fork moves to a public project repo"
+  },
+  {
+    "rule": "public.repo",
+    "path": "prod/small-models.yaml",
+    "sha256": "bd0062f36798023232fd1e9aac15590a1c5ddca453e7db383b909266b94dbadd",
+    "reason": "private repository reference inside an embedded script",
+    "remove_when": "next functional change of this file"
+  },
+  {
+    "rule": "public.repo",
+    "path": "prod/small-models.yaml",
+    "sha256": "12d4f230f06dab17949ba36ba571492d3d00be0cf2743349cccabf70c752c8db",
+    "reason": "private repository reference inside an embedded script",
+    "remove_when": "next functional change of this file"
+  },
+  {
+    "rule": "public.runner",
+    "path": ".github/workflows/publish-glm53-admission-reserve.yaml",
+    "sha256": "b480d89d621f723e2ea12f56a62780420da29d0dd2556af4551c2c141ecaca4b",
+    "reason": "image builds run on a non-GitHub-hosted runner",
+    "remove_when": "image builds move to GitHub-hosted runners"
+  },
+  {
+    "rule": "public.runner",
+    "path": ".github/workflows/publish-glm53-fc91d24.yaml",
+    "sha256": "b480d89d621f723e2ea12f56a62780420da29d0dd2556af4551c2c141ecaca4b",
+    "reason": "image builds run on a non-GitHub-hosted runner",
+    "remove_when": "image builds move to GitHub-hosted runners"
+  },
+  {
+    "rule": "public.runner",
+    "path": ".github/workflows/publish-glm53-hicache.yaml",
+    "sha256": "b480d89d621f723e2ea12f56a62780420da29d0dd2556af4551c2c141ecaca4b",
+    "reason": "image builds run on a non-GitHub-hosted runner",
+    "remove_when": "image builds move to GitHub-hosted runners"
+  },
+  {
+    "rule": "public.runner",
+    "path": ".github/workflows/publish-vllm-dsv41-lora.yaml",
+    "sha256": "b480d89d621f723e2ea12f56a62780420da29d0dd2556af4551c2c141ecaca4b",
+    "reason": "image builds run on a non-GitHub-hosted runner",
+    "remove_when": "image builds move to GitHub-hosted runners"
   }
 ]

@@ -1,42 +1,26 @@
 name: Auto Tag on Merge
 
-# Creates incrementing v0.0.<patch> annotated tags on pushes to main (merged
-# PRs). Version-number order is kept consistent with main's first-parent
-# history: the newest commit always gets the highest number, so a deployer that
-# treats the highest v0.0.N tag as "latest" never selects an older commit.
-#
-# Note on deployment: compose-manager enforces MIN_TAG_AGE_HOURS (>2h, gated on
-# the *commit* date — see docs/deployment.md). A tag created here points at the
-# fresh merge commit, so it only becomes deployable ~2h after merge. For an
-# immediate deploy, use the backdate-tag flow instead of this auto-tag.
-
+# Tags every first-parent commit on main as v0.0.<N>, oldest first, so the
+# highest tag is always the newest commit.
 on:
   push:
     branches: [main]
 
-permissions:
-  contents: write
+permissions: {}
 
-# NOTE: deliberately NO `concurrency` group. A concurrency group only keeps one
-# pending run, so a burst of merges drops the middle run and that commit never
-# gets tagged. Instead each run backfills *every* untagged first-parent commit
-# up to its own HEAD, oldest-first, and is made race-safe by the push-without-
-# --force retry below. Two properties follow:
-#   * completeness — every merged commit ends up tagged (a later run backfills
-#     anything an earlier/dropped run missed);
-#   * monotonic order — because commits are tagged strictly oldest->newest with
-#     an incrementing counter, an older commit can never receive a higher number
-#     than a newer one, even when runs overlap (the push lock assigns the lower
-#     number to the older commit regardless of which run wins the race).
-
+# No concurrency group: it would drop queued runs. Each run tags every untagged
+# commit up to its own HEAD, and the push without --force settles races.
 jobs:
   tag:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          fetch-depth: 0          # need full history + all tags
+          fetch-depth: 0
           fetch-tags: true
+          persist-credentials: true
 
       - name: Tag untagged first-parent commits in order
         run: |
@@ -70,7 +54,7 @@ jobs:
           # Tag each commit oldest -> newest, claiming the next free version.
           for c in $commits; do
             tagged=""
-            for attempt in $(seq 1 10); do
+            for _ in $(seq 1 10); do
               git fetch --tags --force --quiet
 
               # Re-check on EVERY attempt (not just once up front): a concurrent
