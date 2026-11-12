@@ -17,9 +17,9 @@ ROOT = Path(__file__).resolve().parents[1]
 SOURCE = (ROOT / gen.SOURCE).read_text()
 TARGET = (ROOT / gen.TARGET).read_text()
 BODY = TARGET.split("#\n", 1)[1]  # past the generated header comment
-# The fleet file as rendered without gpu03's r4 v0.5.23 canary: every v7 -> v12 confinement test runs on it, and the
-# canary test below pins what r4 adds on top.
-V12 = gen.generate(SOURCE, v0523_canary=False)
+# The fleet file as rendered on v12 (before v0.5.23): every v7 -> v12 confinement test runs on it, and the v0.5.23
+# test below pins what moving all four replicas adds on top.
+V12 = gen.generate(SOURCE, v0523=False)
 V12_BODY = V12.split("#\n", 1)[1]
 GPU03_LIVE = Path("prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8-V8KdaCanary.yaml")
 GPU04_LIVE = Path("prod/GLM-5.3-Flash-SGL-TP2x3-W4AFP8-gpu04.yaml")
@@ -108,7 +108,7 @@ class BaseV12Q8FleetTest(unittest.TestCase):
 
     def test_argv_differs_from_v7_only_in_the_prefill_backend(self):
         # Pinned on purpose: a lever added to ARGV_EDITS / ARGV_APPENDED later must update this line deliberately.
-        v7, v12 = anchor_tokens(SOURCE), anchor_tokens(TARGET)
+        v7, v12 = anchor_tokens(SOURCE), anchor_tokens(V12)  # v0.5.23 adds one flag on top (test_v0523_on_all_four_replicas)
         self.assertEqual(len(v7), len(v12))
         self.assertEqual([(a, b) for a, b in zip(v7, v12) if a != b], [("flashmla_kv", "flashmla_sparse_q8")])
         value = lambda flag: v12[v12.index(flag) + 1]
@@ -139,30 +139,24 @@ class BaseV12Q8FleetTest(unittest.TestCase):
         self.assertEqual(V12.count('engine_image: "da8d4e4b5ec6"'), 8)
         self.assertEqual(V12.count("-obs-v1-v12-q8\""), 12)
 
-    def test_v0523_canary_touches_only_r4(self):
-        # Against the canary-free render, only the header, r4's service block and r4's scrape job change.
-        self.assertEqual(TARGET.split("#\n", 1)[1], V12_BODY.replace(block(V12_BODY, gen.V0523_CANARY_REPLICA), block(BODY, gen.V0523_CANARY_REPLICA)).replace(
-            V12_BODY[V12_BODY.index(f"- job_name: sglang-{gen.V0523_CANARY_REPLICA}\n"):].split("- job_name:", 2)[1],
-            BODY[BODY.index(f"- job_name: sglang-{gen.V0523_CANARY_REPLICA}\n"):].split("- job_name:", 2)[1]))
-        for name in gen.REPLICAS[:3]:
-            self.assertEqual(block(TARGET, name), block(V12, name), name)
-        r4_v12, r4 = block(V12, gen.V0523_CANARY_REPLICA), block(TARGET, gen.V0523_CANARY_REPLICA)
-        self.assertIn(f"\n    image: {gen.V0523_CANARY_IMAGE}\n", r4)
-        argv = r4.split("\n    command: >\n", 1)[1]
-        argv_lines = []
-        for line in argv.splitlines():
-            if not line.startswith("        "):
-                break
-            argv_lines.append(line)
-        tokens = " ".join(argv_lines).split()
-        self.assertEqual(tokens, anchor_tokens(V12) + ["--cuda-graph-backend-prefill", "disabled"])
-        self.assertEqual(r4.count(gen.V0523_CANARY_LABEL), 3)  # image digest + log tag + OTel label
-        self.assertEqual(r4.count("-v0523-canary\""), 2)  # log tag + OTel label
-        self.assertEqual(r4.count("-v0523-canary\","), 1)
-        self.assertNotIn(gen.V12_LABEL, r4)
-        self.assertEqual(TARGET.count(gen.V0523_CANARY_IMAGE), 2)  # header + r4 (aggregator stays v12)
+    def test_v0523_on_all_four_replicas(self):
+        # Against the v12 render: the common image, one extra argv flag, and each replica's two labels change.
+        expected = V12_BODY.replace(f"\n  image: {gen.V12_IMAGE}\n", f"\n  image: {gen.V0523_IMAGE}\n", 1).replace(
+            "      --disable-overlap-schedule\n", "      --disable-overlap-schedule\n      --cuda-graph-backend-prefill disabled\n", 1)
+        expected = expected.replace(f'engine_image:{gen.V12_LABEL}"', f'engine_image:{gen.V0523_LABEL}"').replace(
+            f'engine_image: "{gen.V12_LABEL}"', f'engine_image: "{gen.V0523_LABEL}"').replace(f'{gen.V12_VARIANT_SUFFIX}"', f'{gen.V0523_SUFFIX}"')
+        self.assertEqual(BODY, expected)
+        self.assertEqual(anchor_tokens(TARGET), anchor_tokens(V12) + ["--cuda-graph-backend-prefill", "disabled"])
+        for name in gen.REPLICAS:
+            with self.subTest(replica=name):
+                r = block(TARGET, name)
+                self.assertNotIn("\n    image:", r)
+                self.assertNotIn("\n    command:", r)
+                self.assertNotIn(gen.V12_LABEL, r)
+                self.assertEqual(r.count(f'{gen.V0523_SUFFIX}"'), 2)  # log tag + OTel label
+        self.assertEqual(TARGET.count(gen.V0523_IMAGE), 2)  # header + common anchor (aggregator stays v12)
         self.assertIn(gen.V12_IMAGE, block(TARGET, gen.AGGREGATOR))
-        self.assertNotEqual(r4, r4_v12)
+        self.assertNotIn(f'{gen.V12_VARIANT_SUFFIX}"', TARGET)
 
     def test_dashboard_selectors_unchanged(self):
         for key in ("deployment", "host_machine", "server_address", "container_name", "instance", "service", "precision"):

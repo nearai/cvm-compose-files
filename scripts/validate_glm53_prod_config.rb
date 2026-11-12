@@ -760,15 +760,14 @@ W4AFP8_TP2X4_V12Q8_FILE = File.join(ROOT, "prod", "GLM-5.3-Flash-SGL-TP2x4-W4AFP
 W4AFP8_V12_IMAGE = "docker.io/nearaidev/sglang@sha256:da8d4e4b5ec667499b58a21e56050aae9bcfc4df9669b3ac27e2e20af033d681"
 W4AFP8_TP2X4_V12Q8_IMAGE = W4AFP8_V12_IMAGE
 W4AFP8_TP2X4_V12Q8_VARIANT = "w4afp8-qsplit-hicacheoff-mamba380-fp8kv-memopt086-mr64-c8192-admission-reserve-v10-pdi#{W4AFP8_TP2X4_CANDIDATE_PDI}-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192#{OBSERVABILITY_VARIANT_SUFFIX}-v12-q8"
-# gpu03 r4 canary: SGLang v0.5.23 (scripts/prepare_glm53_base_v12_q8_fleet.py V0523_CANARY_*), the same image as the long
-# tier's r2b canary. Only r4; the argv is the fleet argv plus the one flag v0.5.23 needs.
-W4AFP8_TP2X4_V12Q8_CANARIES = {
-  "model-sg-glm53-w4afp8-tp2-r4" => {
-    "image" => "docker.io/nearaidev/sglang@sha256:050b1adf961c8621264d14696d24645f70d1a675509ad400a72ccfb1a3fddcb2",
-    "extra_argv" => ["--cuda-graph-backend-prefill", "disabled"],
-    "variant" => W4AFP8_TP2X4_V12Q8_VARIANT.delete_suffix("-v12-q8") + "-v0523-canary",
-  },
+# SGLang v0.5.23 on all four gpu03 base replicas (scripts/prepare_glm53_base_v12_q8_fleet.py V0523_*): the v12 argv plus
+# the one flag v0.5.23 needs. The ghost aggregator stays on v12.
+W4AFP8_TP2X4_V12Q8_V0523 = {
+  "image" => "docker.io/nearaidev/sglang@sha256:050b1adf961c8621264d14696d24645f70d1a675509ad400a72ccfb1a3fddcb2",
+  "extra_argv" => ["--cuda-graph-backend-prefill", "disabled"],
+  "variant" => W4AFP8_TP2X4_V12Q8_VARIANT.delete_suffix("-v12-q8") + "-v0523",
 }.freeze
+W4AFP8_TP2X4_V12Q8_CANARIES = W4AFP8_TP2X4_REPLICAS.keys.to_h { |name| [name, W4AFP8_TP2X4_V12Q8_V0523] }.freeze
 W4AFP8_TP2X4_V12Q8_ARGV = Shellwords.split(<<~'ARGV').freeze
   sglang serve
   --model-path /root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/snapshots/99f1fa70408c52b007d4fd69e02e5a522422e755
@@ -850,7 +849,7 @@ def w4afp8_tp2x4_view(errors, file_label, compose, replica_names)
   )
 end
 
-# canaries: { replica name => { "image" =>, "extra_argv" => [...], "variant" => } } for single-replica image canaries; every
+# canaries: { replica name => { "image" =>, "extra_argv" => [...], "variant" => } } for replicas on another image; every
 # other replica must run `image` with the candidate argv exactly.
 def validate_w4afp8_tp2x4(errors, compose, base, raw, label: "W4AFP8 4x TP2", image: W4AFP8_TP2X4_IMAGE, fleet_name: "v7 fleet",
                           candidate_argv: W4AFP8_TP2X4_CANDIDATE_ARGV, candidate_variant: W4AFP8_TP2X4_CANDIDATE_VARIANT, prefill: "flashmla_kv",
@@ -881,7 +880,7 @@ def validate_w4afp8_tp2x4(errors, compose, base, raw, label: "W4AFP8 4x TP2", im
   base_env = environment_map(base.dig("services", W4AFP8_BASE_REPLICAS.keys.first) || {}).merge(W4AFP8_TP2X4_EXTRA_ENV)
   collector = load_embedded_yaml(errors, "#{label} file otelcol_app_config", compose.dig("configs", "otelcol_app_config", "content"))
   (canaries.keys - W4AFP8_TP2X4_REPLICAS.keys).each { |name| errors << "#{label} canary #{name} is not a replica" }
-  errors << "#{label} allows at most one canary replica" if canaries.length > 1
+  errors << "#{label} canaries must all use one image, argv and variant" if canaries.values.uniq.length > 1
   replicas = {}
   W4AFP8_TP2X4_REPLICAS.each do |name, spec|
     service = services[name]
