@@ -21,9 +21,10 @@ GLOB = re.compile(r"^[A-Za-z0-9._-]+(?:/[A-Za-z0-9._*-]+)*$")
 AGENT_FM = re.compile(r"\A---\nname: ([^\n]*)\ndescription: ([^\n]*)\ntools: ([^\n]*)\nmodel: ([^\n]*)\n---\n")
 READ_ONLY = {"Read", "Grep", "Glob"}
 MODELS = {"inherit", "sonnet", "opus", "haiku"}
-DENY = re.compile(r"^(Read|Edit|Bash)\([^()\n]+\)$")
-# Secret reads stay denied for the Read tool and for Bash; dropping one is a gate change.
-REQUIRED_DENY = {
+DENY = re.compile(r"^(Read|Edit|Bash|WebFetch)\([^()\n]+\)$|^WebFetch$")
+# Secret reads, outward actions and history rewrites stay denied; dropping one is a gate change.
+# Bash patterns are a guardrail, not a boundary; branch and tag protection live in GitHub rulesets.
+SECRET_DENY = {
     "Read(**/.env*)", "Edit(**/.env*)", "Read(**/*.pem)", "Edit(**/*.pem)", "Read(**/*.key)", "Edit(**/*.key)",
     "Read(**/*.p12)", "Read(**/*.pfx)", "Read(**/id_rsa*)", "Read(**/id_ecdsa*)", "Read(**/id_ed25519*)",
     "Read(**/.netrc)", "Read(**/*kubeconfig*)", "Read(**/.docker/config.json)", "Read(~/.ssh/**)",
@@ -32,8 +33,22 @@ REQUIRED_DENY = {
     "Bash(*.env*)", "Bash(*.pem*)", "Bash(*.key)", "Bash(*.key *)", "Bash(*.p12*)", "Bash(*.pfx*)",
     "Bash(*id_rsa*)", "Bash(*id_ecdsa*)", "Bash(*id_ed25519*)", "Bash(*.netrc*)", "Bash(*kubeconfig*)",
     "Bash(*.ssh/*)", "Bash(*.aws/*)", "Bash(*.kube/*)", "Bash(*.docker/config.json*)", "Bash(*huggingface/token*)",
-    "Bash(*gh/hosts.yml*)", "Bash(gh auth token*)",
+    "Bash(*gh/hosts.yml*)", "Bash(gh auth token*)", "Bash(gh auth status --show-token*)",
+    "Bash(gh auth status * --show-token*)", "Bash(gh auth status -t*)", "Bash(gh auth status * -t*)",
+    "Bash(printenv*)", "Bash(env)",
 }
+OUTWARD_DENY = {
+    "Bash(gh pr review*)", "Bash(gh pr merge*)", "Bash(gh pr comment*)", "Bash(gh issue*)", "Bash(gh gist*)",
+    "Bash(gh api*)", "Bash(curl*)", "Bash(wget*)", "WebFetch",
+}
+HISTORY_DENY = {
+    "Bash(git push --force*)", "Bash(git push * --force*)", "Bash(git push -f*)", "Bash(git push * -f*)",
+    "Bash(git push +*)", "Bash(git push * +*)", "Bash(git push --delete*)", "Bash(git push * --delete*)",
+    "Bash(git push :*)", "Bash(git push * :*)", "Bash(git -C * push*)", "Bash(git -c * push*)",
+    "Bash(git tag -d*)", "Bash(git tag * -d*)", "Bash(git tag -f*)", "Bash(git tag * -f*)",
+    "Bash(git tag --delete*)", "Bash(git tag --force*)",
+}
+REQUIRED_DENY = SECRET_DENY | OUTWARD_DENY | HISTORY_DENY
 SPAN = re.compile(r"`([^`\n]+)`|\]\(([^)\s]+)\)")
 REPO_PATH = re.compile(r"^(?:prod|docker|ci|docs|scripts|adapters|\.github|\.claude)/|^[A-Z]+\.md$")
 DUP_MIN = 40
@@ -131,7 +146,7 @@ def check_settings(text):
     for e in deny:
         if not DENY.match(e):
             out.append(Finding(SETTINGS, find_line(text, re.escape(json.dumps(e))), "claude.settings",
-                               "deny entry is not Read(), Edit() or Bash()", key=e))
+                               "deny entry is not Read(), Edit(), Bash() or WebFetch", key=e))
     if len(set(deny)) != len(deny):
         out.append(Finding(SETTINGS, 0, "claude.settings", "duplicate deny entry"))
     for e in sorted(REQUIRED_DENY - set(deny)):
@@ -230,7 +245,15 @@ CASES = [
      _settings(deny=sorted(REQUIRED_DENY - {"Read(**/.env*)"})), None),
     ("settings without a required Bash deny", "claude.settings",
      _settings(deny=sorted(REQUIRED_DENY - {"Bash(*.env*)"})), None),
-    ("settings deny of another tool", "claude.settings", _settings(deny=sorted(REQUIRED_DENY) + ["WebFetch(x)"]), None),
+    ("settings without an outward-action deny", "claude.settings",
+     _settings(deny=sorted(REQUIRED_DENY - {"Bash(gh pr merge*)"})), None),
+    ("settings without the WebFetch deny", "claude.settings", _settings(deny=sorted(REQUIRED_DENY - {"WebFetch"})),
+     None),
+    ("settings without a history deny", "claude.settings", _settings(deny=sorted(REQUIRED_DENY - {"Bash(git -C * push*)"})),
+     None),
+    ("settings with a scoped WebFetch deny", None, _settings(deny=sorted(REQUIRED_DENY) + ["WebFetch(domain:x.org)"]),
+     None),
+    ("settings deny of another tool", "claude.settings", _settings(deny=sorted(REQUIRED_DENY) + ["Task(x)"]), None),
     ("rule file not linked from AGENTS.md", "claude.ref", _with(".claude/rules/ci.md", OK_RULE), None),
     ("stale path in AGENTS.md", "claude.ref", _with(AGENTS, FILES[AGENTS] + "- `ci/common.py`\n"), None),
     ("rule repeats AGENTS.md", "claude.dup", _with(".claude/rules/prod.md", OK_RULE + LONG), None),
