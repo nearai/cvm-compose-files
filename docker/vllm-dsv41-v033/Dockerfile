@@ -17,7 +17,7 @@ LABEL nearai.vllm.engram_cpu_gather_patch_sha256="b2cdaf320f7d19213e6e0b71f63d3c
 LABEL nearai.vllm.engram_fast_gather_patch_sha256="9f8a001ac8121f43f7cf99e9b506133961b81cf35f99e7c05e6a5cb201bdb111"
 LABEL nearai.vllm.engram_peer_reads_kill_switch="nearai; VLLM_NEAR_ENGRAM_PEER_READS=0 keeps the v0.32 DP-collective Engram lookup instead of v0.33 peer-HBM reads (#62091)"
 LABEL nearai.vllm.engram_peer_reads_kill_switch_patch_sha256="3b2e41d848877c4556b84eb46ff91ffdd20f05ef25f64ada9e5753799681f3c7"
-LABEL nearai.security.upgrades="none needed: the v0.33.0 base ships certifi 2026.10.23, pip 26.2.2 and uv 0.13.6"
+LABEL nearai.security.upgrades="python packages: none needed (the v0.33.0 base ships certifi 2026.10.23, pip 26.2.2 and uv 0.13.6); OS: linux-libc-dev 6.8.0-149.149"
 LABEL nearai.security.linux_libc_dev="6.8.0-149.149"
 
 COPY 01-dsv41-supports-lora-wo-b.patch 02-moe-lora-only-when-targeted.patch 03-decoder-replay-lora-rows.patch \
