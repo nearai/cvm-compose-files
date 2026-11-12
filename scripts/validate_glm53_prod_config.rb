@@ -1117,10 +1117,10 @@ W4AFP8_LONG_CONTEXT_V10_IMAGE = "docker.io/nearaidev/sglang@sha256:c15a33672ade5
 # glm53-hicache-w4afp8-v12 (#370 + CVE pins #384, publish run 39987811670, source 79de066): v10 + patch 15 (DSA indexer K-pool logits
 # budget). The long tier's TP2 replicas run it, and so do the base-tier gpu04 r4 Q8 canary and the base V12Q8 fleet file.
 W4AFP8_LONG_CONTEXT_V12_IMAGE = W4AFP8_V12_IMAGE
-# r2b canary: SGLang v0.5.23 (docker/sglang-glm53-v0523, PR #446) on ONE long-tier TP2 replica; r1a/r1b/r2a stay on v12.
-# Same value as V0523_CANARY_IMAGE in scripts/prepare_glm53_w4afp8_long_context.py (attested publish-glm53-v0523 digest).
-W4AFP8_LONG_CONTEXT_V0523_CANARY_IMAGE = "docker.io/nearaidev/sglang@sha256:050b1adf961c8621264d14696d24645f70d1a675509ad400a72ccfb1a3fddcb2"
-W4AFP8_QSPLIT_CAPABLE_IMAGES = [W4AFP8_LONG_CONTEXT_V2_IMAGE, W4AFP8_LONG_CONTEXT_V3_IMAGE, W4AFP8_LONG_CONTEXT_V6_IMAGE, W4AFP8_LONG_CONTEXT_V7_IMAGE, W4AFP8_LONG_CONTEXT_V10_IMAGE, W4AFP8_LONG_CONTEXT_V12_IMAGE, W4AFP8_LONG_CONTEXT_V0523_CANARY_IMAGE].freeze  # v0.5.23: patch 06-dsa-indexer-qsplit
+# SGLang v0.5.23 (docker/sglang-glm53-v0523, PR #446) on all four long-tier TP2 replicas. Same value as V0523_IMAGE in
+# scripts/prepare_glm53_w4afp8_long_context.py (attested publish-glm53-v0523 digest).
+W4AFP8_LONG_CONTEXT_V0523_IMAGE = "docker.io/nearaidev/sglang@sha256:050b1adf961c8621264d14696d24645f70d1a675509ad400a72ccfb1a3fddcb2"
+W4AFP8_QSPLIT_CAPABLE_IMAGES = [W4AFP8_LONG_CONTEXT_V2_IMAGE, W4AFP8_LONG_CONTEXT_V3_IMAGE, W4AFP8_LONG_CONTEXT_V6_IMAGE, W4AFP8_LONG_CONTEXT_V7_IMAGE, W4AFP8_LONG_CONTEXT_V10_IMAGE, W4AFP8_LONG_CONTEXT_V12_IMAGE, W4AFP8_LONG_CONTEXT_V0523_IMAGE].freeze  # v0.5.23: patch 06-dsa-indexer-qsplit
 W4AFP8_LONG_CONTEXT_VARIANT = "fc91d24-long-context-w4afp8-cCHUNK-QSPLITOFFLOOPhicache-cuda-host-pooled-v1-HOSTadmission-reserve-disabled-pool-clamp-pdiPDI-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192#{OBSERVABILITY_VARIANT_SUFFIX}"
 W4AFP8_QSPLIT_ENV = "SGLANG_DSA_INDEXER_QSPLIT"
 # c16384 is only memory-safe WITH the split: without it a concurrent long burst left 0.04-0.65 GB
@@ -1175,11 +1175,8 @@ W4AFP8_LONG_CONTEXT_HICACHE_ENV = HICACHE_ENV.merge("SGLANG_HICACHE_RAM_BUDGET" 
 W4AFP8_TP2_CANARY_REPLICAS = {
   "model-sg-glm53-w4afp8-tp2-r2a" => { "devices" => %w[4 5], "dist_init" => "127.0.0.1:29512", "instance" => "2a", "gpu_pair" => "4-5",
                                        "ghost_replica" => "r2a" },
-  # r2b is the SGLang v0.5.23 canary: its own image, labels and one extra flag (v0.5.23's default breakable prefill CUDA
-  # graphs OOM at warmup at 0.86). Everything else is the fleet TP2 contract below.
   "model-sg-glm53-w4afp8-tp2-r2b" => { "devices" => %w[6 7], "dist_init" => "127.0.0.1:29513", "instance" => "2b", "gpu_pair" => "6-7",
-                                       "ghost_replica" => "r2b", "image" => W4AFP8_LONG_CONTEXT_V0523_CANARY_IMAGE,
-                                       "extra_argv" => %w[--cuda-graph-backend-prefill disabled], "variant" => :v0523_canary },
+                                       "ghost_replica" => "r2b" },
   # Long-context 2xTP2 rollout: the same pair in r1's place (GPUs 0-3).
   "model-sg-glm53-w4afp8-tp2-r1a" => { "devices" => %w[0 1], "dist_init" => "127.0.0.1:29514", "instance" => "1a", "gpu_pair" => "0-1",
                                        "ghost_replica" => "r1a" },
@@ -1192,7 +1189,9 @@ W4AFP8_TP2_PARENT = {
   "model-sg-glm53-w4afp8-tp2-r2a" => "model-sg-glm53-w4afp8-tp4-r2", "model-sg-glm53-w4afp8-tp2-r2b" => "model-sg-glm53-w4afp8-tp4-r2",
 }.freeze
 W4AFP8_TP2_CANARY_VARIANT = "fc91d24-long-context-w4afp8-c16384-qsplit-offloop-v3-hicacheoff-memopt-fp8kv-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-mr16q8-strict-budget8192#{OBSERVABILITY_VARIANT_SUFFIX}-v12-q8"
-W4AFP8_TP2_V0523_CANARY_VARIANT = "#{W4AFP8_TP2_CANARY_VARIANT.sub(/\Afc91d24-/, 'sglang-v0523-').delete_suffix('-v12-q8')}-v0523-canary"
+W4AFP8_TP2_V0523_VARIANT = "#{W4AFP8_TP2_CANARY_VARIANT.sub(/\Afc91d24-/, 'sglang-v0523-').delete_suffix('-v12-q8')}-v0523"
+# v0.5.23's default breakable prefill CUDA graphs OOM at warmup at 0.86, so every TP2 replica adds this to the v12 argv.
+W4AFP8_TP2_V0523_EXTRA_ARGV = %w[--cuda-graph-backend-prefill disabled].freeze
 W4AFP8_TP2_CANARY_ARGV = Shellwords.split(<<~'ARGV').freeze
   sglang serve
   --model-path /root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/snapshots/99f1fa70408c52b007d4fd69e02e5a522422e755
@@ -1388,12 +1387,12 @@ def validate_w4afp8_tp2_canary(errors, label, services, collector, replicas)
     next errors << "#{label} missing services.#{name}" if service.nil?
 
     tp2_services[name] = service
-    expected_image = spec.fetch("image", W4AFP8_LONG_CONTEXT_V12_IMAGE)
-    expected_variant = spec["variant"] == :v0523_canary ? W4AFP8_TP2_V0523_CANARY_VARIANT : W4AFP8_TP2_CANARY_VARIANT
+    expected_image = W4AFP8_LONG_CONTEXT_V0523_IMAGE
+    expected_variant = W4AFP8_TP2_V0523_VARIANT
     engine_image_label = expected_image.split(":").last[0, 12]
     errors << "#{label} #{name} image must be #{expected_image}" unless service["image"] == expected_image
     errors << "#{label} #{name} must use the prebuilt signed image, not a host-local build" if service.key?("build")
-    expected_argv = W4AFP8_TP2_CANARY_ARGV.map { |token| token == "DIST_INIT" ? spec["dist_init"] : token } + spec.fetch("extra_argv", [])
+    expected_argv = W4AFP8_TP2_CANARY_ARGV.map { |token| token == "DIST_INIT" ? spec["dist_init"] : token } + W4AFP8_TP2_V0523_EXTRA_ARGV
     actual_argv = begin
       Shellwords.split(command_text(service))
     rescue ArgumentError => error
@@ -1402,7 +1401,7 @@ def validate_w4afp8_tp2_canary(errors, label, services, collector, replicas)
     end
     unless actual_argv == expected_argv
       drift = ((actual_argv - expected_argv) + (expected_argv - actual_argv)).uniq
-      errors << "#{label} #{name} argv must be the v12 fleet TP2 argv exactly#{spec.key?('extra_argv') ? " plus #{spec['extra_argv'].join(' ')}" : ''} (tp2/ep2, 0.86, 330 mamba slots, bf16 state, fixed EAGLE 4/1/5, FP8 KV with flashmla_sparse_q8 prefill and flashmla_kv decode, 16 running/8 queued, graphs 16, overlap off, chunk 16384, HiCache off, --dist-init-addr #{spec['dist_init']}); differing tokens: #{drift.first(8).join(' ')}"
+      errors << "#{label} #{name} argv must be the v12 fleet TP2 argv exactly plus #{W4AFP8_TP2_V0523_EXTRA_ARGV.join(' ')} (tp2/ep2, 0.86, 330 mamba slots, bf16 state, fixed EAGLE 4/1/5, FP8 KV with flashmla_sparse_q8 prefill and flashmla_kv decode, 16 running/8 queued, graphs 16, overlap off, chunk 16384, HiCache off, --dist-init-addr #{spec['dist_init']}); differing tokens: #{drift.first(8).join(' ')}"
     end
     validate_fp8_kv_pairing(errors, "#{label} #{name}", actual_argv, prefill: "flashmla_sparse_q8")
     errors << "#{label} #{name} must set --disable-overlap-schedule exactly once" unless actual_argv.count("--disable-overlap-schedule") == 1
@@ -1549,12 +1548,6 @@ def cross_file_view(errors, file_label, compose)
 end
 
 errors = []
-# Hard gate (review on #447): the r2b canary digest must be a real published image. The all-zero placeholder
-# cannot be pulled, so a merge with it would break the next deploy of this file; fail CI until it is filled.
-if W4AFP8_LONG_CONTEXT_V0523_CANARY_IMAGE.end_with?("sha256:" + "0" * 64)
-  errors << "W4AFP8_LONG_CONTEXT_V0523_CANARY_IMAGE is still the all-zero placeholder: fill it with the publish-glm53-v0523 digest " \
-            "(and V0523_CANARY_IMAGE in scripts/prepare_glm53_w4afp8_long_context.py), then regenerate with --write"
-end
 
 hicache_present = File.exist?(HICACHE_FILE)
 released_present = File.exist?(RELEASED_IMAGE_FILE)
