@@ -120,5 +120,7 @@ Everything here is public and copied by others: files, branches, tags, PRs, revi
   for comment-only or refactor changes; for image bumps the `main` publish run and the signature
   verification; for deletions the deployment-manager check; every new sink, port, mount, env var,
   moved default or removed safety line named.
+- CI tool pins (`COMPOSE_IMAGE` in `ci/lib/common.py`, action SHAs and `*_IMAGE` in `ci.yaml` and
+  `auto-tag.yaml`) are bumped by hand, no bot: monthly and on a security advisory, as a gate change.
 - Never change a gate in the same PR as a change it checks or reviews. Entries in `ci/data/` (waivers,
   allowlists, legacy line removals, expected findings) may ride along and are listed under Gates in the PR.
