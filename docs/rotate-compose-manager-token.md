@@ -5,12 +5,6 @@ a running compose-manager CVM's `BEARER_TOKEN` **without restarting the CVM
 and without touching any model container**. It only recreates the single
 `compose-manager` container inside its own app-compose project (`dstack`).
 
-Verified against `nearai/compose-manager` at commit `8e07c35` (prod tag
-`prod-20260702-8e07c35`, the pinned digest running on every compose-manager
-CVM as of 2026-09-25) and `nearai/cvm-ansible-playbooks`
-`cvm_configurations/compose-manager.yaml.j2`. See the compose file's own
-header comment for the full mechanism writeup.
-
 ## Always scope the request to its own project
 
 Set the API field `"project": "cm-token-rotate"` explicitly on every
@@ -256,22 +250,5 @@ exit 0
 `LAUNCHER_HEALTH_TIMEOUT` are not passed in explicitly — `docker exec` into
 an already-running container automatically inherits that container's own
 environment, so this script reads them live from `compose-manager-launcher`
-itself (`cvm_configurations/compose-manager.yaml.j2` in
-`nearai/cvm-ansible-playbooks` sets all six on that service today). The
-defaults shown after `:-` match `launcher.sh`'s own defaults at `8e07c35` and
-only apply if a future launcher build drops one of these vars entirely.
-
-This mechanism was validated end-to-end against a local Docker sandbox
-standing in for a compose-manager CVM (a fake `compose-manager-launcher` with
-the same mounts/env, a stand-in `compose-manager` service that checks a
-bearer token on its own `/docker/ps`, `docker compose ... up`/`--dry-run` run
-for real, not just `docker compose config`) across three scenarios before
-this file was opened for review:
-1. a clean rotation (exit `0`; new token accepted, old token now `401`);
-2. compose-manager never becoming healthy at all (exit `3`; simulated via an
-   unreachable health URL);
-3. compose-manager coming back healthy but the token override **not** taking
-   effect (exit `2`; simulated by making the stand-in's `/docker/ps` keep
-   accepting only the old token regardless of what `BEARER_TOKEN` it was
-   recreated with) — this is the scenario `/version` alone can never catch,
-   which is why `wait_new_token_accepted` exists.
+itself. The defaults shown after `:-` match `launcher.sh`'s own defaults and
+only apply if a launcher build drops one of these vars entirely.

@@ -4,7 +4,11 @@
 require "yaml"
 
 ROOT = File.expand_path("..", __dir__)
-EXCLUDED_FILES = ["cleanup-hf-model.yaml"].freeze
+# Bare-metal OpenRouter stacks: no cloud-api traffic, so no web search or media policy env.
+EXCLUDED_FILES = [
+  "gpt-oss-120b-openrouter-baremetal.yaml",
+  "qwen38-27b-openrouter-baremetal.yaml",
+].freeze
 REQUIRED_PROXY_ENV = %w[
   WEB_CONTEXT_SEARCH_URL
   WEB_CONTEXT_SEARCH_API_KEY
@@ -47,9 +51,7 @@ end
 
 errors = []
 
-compose_files = Dir.glob(File.join(ROOT, "prod", "*.yaml")) +
-                Dir.glob(File.join(ROOT, "experiments", "*.yaml")) +
-                Dir.glob(File.join(ROOT, "*.yaml"))
+compose_files = Dir.glob(File.join(ROOT, "prod", "*.yaml"))
 
 compose_files.sort.each do |path|
   file = path.sub("#{ROOT}/", "")

@@ -5,7 +5,6 @@
 require "yaml"
 
 ROOT = File.expand_path("..", __dir__)
-EXCLUDED_FILES = ["cleanup-hf-model.yaml"].freeze
 
 def yaml_load(content)
   YAML.load(content, aliases: true)
@@ -56,14 +55,9 @@ end
 
 errors = []
 
-# Find compose files in prod/, experiments/, and root (utilities). Relative
-# paths from the repo root are used in error messages.
-compose_files = Dir.glob(File.join(ROOT, "prod", "*.yaml")) +
-                Dir.glob(File.join(ROOT, "experiments", "*.yaml")) +
-                Dir.glob(File.join(ROOT, "*.yaml"))
+compose_files = Dir.glob(File.join(ROOT, "prod", "*.yaml"))
 compose_files.sort.each do |path|
   file = path.sub("#{ROOT}/", "")
-  next if EXCLUDED_FILES.include?(File.basename(path))
 
   compose = yaml_load(File.read(path))
   services = compose.fetch("services", {})

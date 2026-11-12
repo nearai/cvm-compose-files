@@ -2,7 +2,6 @@
 require "yaml"
 
 ROOT = File.expand_path("..", __dir__)
-EXCLUDED_FILES = ["cleanup-hf-model.yaml"].freeze
 AUTH_HEADER = 'Authorization: Bearer $$INFERENCE_TOKEN'.freeze
 INFERENCE_TOKEN = 'INFERENCE_TOKEN="$${PROXY_TOKEN}"'.freeze
 PROXY_TOKEN_ENV = "${PROXY_TOKEN}".freeze
@@ -67,7 +66,6 @@ compose_files = Dir.glob(File.join(ROOT, "prod", "*.yaml"))
 
 compose_files.sort.each do |path|
   file = path.sub("#{ROOT}/", "")
-  next if EXCLUDED_FILES.include?(File.basename(path))
 
   compose = yaml_load(File.read(path))
   services = compose.fetch("services", {})
