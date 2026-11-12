@@ -294,10 +294,12 @@ COLOC_ENGINE_JOB = f"sglang-{COLOC_ENGINE}"
 # (engine labels and scrape job); x-privacy-filter-common is unchanged.
 # #416 then switches the /health generation off on the coloc engine (SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION=0, as GLM-5.3 #274).
 # #336's rollout then adds --enable-priority-scheduling --disable-priority-preemption and config_variant qwen38-gpu2-coloc-fa3-m96-prio.
+# The KV-capacity change then raises --mem-fraction-static 0.50 -> 0.65 (engine argv and labels, scrape job label)
+# and config_variant to qwen38-gpu2-coloc-fa3-m96-prio-mem065.
 COLOC_BLOCK_HASHES = {
     "x-privacy-filter-common": "8b0fa38844cc279cf27d02250fd37ecb7125a4e2fd0dec08fb66f4f35ee55c9e",
-    COLOC_ENGINE: "c3e9e78f1a90b07c0718f650908947432f48306c67bf66f78d44f5fdf854b37f",
-    COLOC_ENGINE_JOB: "db7bc6714299369ba55174e6536a28747c32830d2ce3803dcefb43347b28e3b7",
+    COLOC_ENGINE: "4b097ebf2873753aa43ba1d1a5cfe27928f56e8c0c55ee3e491a4c963dc67c0f",
+    COLOC_ENGINE_JOB: "8a2323548bd6e1bf35b54bdc04d278362808b84d541e1a6f8348a2f127c8ea0d",
 }
 # Qwen3.8 abliterated LoRA canary (#395): the coloc engine and proxy-qwen38-27b change as modelled by
 # with_qwen38_abliterated_lora(); everything new is pinned by hash below and is gated behind the
