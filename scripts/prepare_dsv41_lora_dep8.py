@@ -6,10 +6,11 @@
 # How to run: uv run scripts/prepare_dsv41_lora_dep8.py --write
 """Generate the DeepSeek-V4.1-Flash-1017 packs for prod and staging on an 8x H200 CVM.
 
-Two layouts of the same engine stack: one DEP8 replica, and two DEP4 replicas (2xDEP4).
+Two layouts of the same engine stack: one DEP8 replica, and two DEP4 replicas (2xDEP4). A third file,
+DEP8_PROFILE, is DEP8 plus a one-shot in-CVM kernel profile (docs/dsv41-dep8-profile.md); it is for one host.
 The telemetry collector config is copied verbatim from the multi-model pack
 prod/qwen36-qwen38.yaml; everything else is written here.
-`--write` regenerates both targets; `--check` diffs a stale target.
+`--write` regenerates every target; `--check` diffs a stale target.
 Design and open gates: docs/dsv41-lora-dep4x2-design.md ("DEP8 in CVMs" section).
 """
 
@@ -21,6 +22,7 @@ from pathlib import Path
 from typing import Final, NamedTuple
 
 ROOT = Path(__file__).resolve().parents[1]
+PROFILE_SUMMARY_SOURCE = Path("scripts/dsv41_profile_summary.py")
 OTEL_SOURCE = Path("prod/qwen36-qwen38.yaml")
 
 BASE_ID: Final = "deepseek-ai/DeepSeek-V4.1-Flash-1017"
@@ -53,6 +55,8 @@ class Layout(NamedTuple):
     # combo2x (gpu31 lever lab 2026-11-04, lab table in docs/gpu13-dsv41-dep4.md at tag v0.0.547): DSpark 5 with
     # probabilistic drafting and block verification, and 8 torch threads per rank.
     combo2x: bool = False
+    # DEP8 Profile pack: torch profiler on every rank, NCCL init logging, and the one-shot dsv41-profiler service.
+    profile: bool = False
 
 
 # Engram tables (186 GiB FP8) in HBM, sharded across the eight DP ranks (~23 GiB each). DEP8 leaves 18M KV
@@ -79,7 +83,15 @@ DEP4X2: Final = Layout(
     (("r1", (0, 1, 2, 3)), ("r2", (4, 5, 6, 7))),
     True,
 )
-LAYOUTS: Final = (DEP8, DEP4X2)
+# Same stack as DEP8 plus the profiling additions; the deployment name stays DEP8's, the config_variant gets
+# "-profile" so its metrics are separable from prod.
+DEP8_PROFILE: Final = DEP8._replace(
+    target=Path("prod/DeepSeek-V4.1-Flash-1017-vLLM-DEP8-Abliterated-Profile.yaml"),
+    variant=DEP8.variant + "-profile",
+    title="ONE vLLM DEP8 replica with a one-shot kernel profile (PROFILE pack, one host only)",
+    profile=True,
+)
+LAYOUTS: Final = (DEP8, DEP4X2, DEP8_PROFILE)
 RANK_PORT0: Final = 9100  # rank i serves on 9100 + i on the CVM host network
 # The engines run on the host network (NCCL over NVLink P2P, see x-dsv41-engine-common); the services on
 # dstack_default reach rank i as model-vllm-dsv41-dp<i>:<9100+i>, each name mapped to host-gateway.
@@ -118,6 +130,13 @@ def replica_of(layout: Layout, rank: int) -> tuple[int, str, tuple[int, ...]]:
             return index, name, ranks
     raise ValueError(f"rank {rank} is in no replica")
 
+
+PROFILER_CONFIG: Final = (
+    # Field names from vllm/config/profiler.py in the engine image (orchestrator-verified, except ignore_frontend,
+    # which the brief added). Every rank writes flat into the shared /traces volume.
+    """--profiler-config '{"profiler":"torch","torch_profiler_dir":"/traces","torch_profiler_with_stack":false,"""
+    """"torch_profiler_record_shapes":false,"ignore_frontend":true}'"""
+)
 
 # DSpark 5, drafts sampled from the draft distribution, verified as a block: mean accepted length 2.7 -> 3.5
 # on the gpu31 lab's prod-mix load (InferenceX's setting; its golden AL with thinking on is 3.51).
@@ -175,6 +194,8 @@ def engine_command(layout: Layout, rank: int) -> str:
         ]
     else:
         args.append("""--engram-config '{"cpu_offload":false,"embedding_across_dp":true}'""")
+    if layout.profile:
+        args.append(PROFILER_CONFIG)
     args += ["--host 0.0.0.0", f"--port {RANK_PORT0 + rank}"]
     return "\n      ".join(args)
 
@@ -241,6 +262,16 @@ LAYOUT_NOTES: Final = {
 # load balancing), Engram tables in HBM. In the gpu02 CVM A/B (10-28) this beat 2x DEP4 on
 # throughput (+15-23% at rate x8) and TTFT. Two proxies, one per model id, both over all eight
 # ranks; each refuses the other id (VLLM_PROXY_STRICT_REQUEST_MODEL=1).
+""",
+    DEP8_PROFILE.target: """\
+# PROFILE PACK, ONE HOST ONLY: DEP8 (below) plus a torch profiler on every rank (/traces volume,
+# NCCL_DEBUG=INFO for the boot-log transport) and the one-shot dsv41-profiler service, which waits for
+# the ranks and 900 s, profiles 3 s of live decode, prints per-rank aggregates to stdout (Loki), deletes the
+# traces and exits. With the profiler on, the ranks serve /start_profile and /stop_profile on 9100-9107
+# (host network, not in the CVM port map); nginx answers 403 for them on every port. Do not run this
+# file as the standing prod file: docs/dsv41-dep8-profile.md. Layout otherwise as DEP8: eight `vllm serve`
+# processes, one per GPU (DP8 attention + EP8 experts, TP1, external DP load balancing), Engram tables in
+# HBM. Two proxies, one per model id, both over all eight ranks.
 """,
     DEP4X2.target: """\
 # Layout: eight `vllm serve` processes, one per GPU, in two independent DEP4 replicas (DP4 attention +
@@ -481,17 +512,28 @@ services:
                 "      # (gpu31 lab 2026-11-04: weight load 330 s -> 45 s).\n"
                 "      - OMP_NUM_THREADS=8\n"
             )
+        # A YAML merge replaces lists, so the profile layout re-lists the common volumes next to /traces.
+        rank_volumes = (
+            "    volumes:\n      - huggingface_cache:/root/.cache/huggingface\n"
+            "      - dsv41_kernel_cache:/root/.cache/vllm\n      - humming_cache:/root/.cache/humming\n"
+            "      - dsv41-traces:/traces\n"
+            if layout.profile else ""
+        )
+        nccl_env = (
+            "      # Profile pack: the boot log names NCCL's transport (P2P/CUMEM vs SHM/NET).\n"
+            "      - NCCL_DEBUG=INFO\n      - NCCL_DEBUG_SUBSYS=INIT\n"
+            if layout.profile else "      - NCCL_DEBUG=WARN\n"
+        )
         out.append(f"""  {svc}:
     <<: *dsv41-engine-common
     container_name: {svc}
     depends_on:
-{depends}    environment:
+{depends}{rank_volumes}    environment:
       - CUDA_VISIBLE_DEVICES={rank}
       - HF_HUB_OFFLINE=1
       - PYTHONUNBUFFERED=1
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
-      - NCCL_DEBUG=WARN
-      # W4A8: MXFP4 expert weights with FP8 activations on Hopper FP8 tensor cores (exp 50).
+{nccl_env}      # W4A8: MXFP4 expert weights with FP8 activations on Hopper FP8 tensor cores (exp 50).
       - 'VLLM_HUMMING_INPUT_QUANT_CONFIG={{"dtype":"float8e4m3","quant_mode":"dynamic_token"}}'
       # Image patch 04: copy per-step inputs to the GPU; under TDX+PPCIe the GPU reads stale host memory.
       - VLLM_NEAR_DISABLE_UVA=1
@@ -505,6 +547,8 @@ services:
       com.datadoghq.ad.logs: '[{{"source":"vllm","service":"vllm","tags":[{tags(layout, {"model": BASE_ID, "replica": replica, "dp_rank": str(ranks.index(rank)), "gpu": str(rank)})}]}}]'
 {otel_labels(layout, "vllm", "vllm", "vllm", svc, str(RANK_PORT0 + rank), BASE_ID)}
 """)
+    if layout.profile:
+        out.append(profiler_service(layout))
     out.append(f"""  dcgm-dsv41:
     image: nvcr.io/nvidia/k8s/dcgm-exporter@sha256:ed594cf53fe6942e84b07b0740cdcbb249fa4b39cb21feeebf93881ae51f0b5e
     container_name: dcgm-dsv41
@@ -567,7 +611,7 @@ volumes:
   huggingface_cache:
   dsv41_kernel_cache:
   humming_cache:
-  certs:
+{"  dsv41-traces:\n" if layout.profile else ""}  certs:
     external: true
     name: certs
 
@@ -575,8 +619,45 @@ configs:
 """)
     out.append(otel_config_block(layout, source))
     out.append(registrar_block())
-    out.append(nginx_block())
+    if layout.profile:
+        out.append(profile_summary_config())
+    out.append(nginx_block(layout))
     return "".join(out)
+
+
+def profiler_service(layout: Layout) -> str:
+    """One-shot: waits for the ranks, profiles ~PROFILE_DUR_S of decode, prints aggregates only, deletes traces."""
+    return f"""  dsv41-profiler:
+    image: {ENGINE_IMAGE}
+    container_name: dsv41-profiler
+    # Same host network as the ranks (they bind 9100-9107 there); no GPU, no restart.
+    network_mode: host
+    entrypoint: ["python3", "/profile_summary.py"]
+    restart: "no"
+    environment:
+      - PROFILE_DELAY_S=900
+      - PROFILE_DUR_S=3
+    volumes:
+      - dsv41-traces:/traces
+    configs:
+      - source: profile_summary
+        target: /profile_summary.py
+        mode: 0555
+    logging: *logging-conf
+    labels:
+      com.datadoghq.ad.logs: '[{{"source":"dsv41-profiler","service":"dsv41-profiler","tags":[{tags(layout, {"model": BASE_ID})}]}}]'
+
+"""
+
+
+def profile_summary_config() -> str:
+    script = (ROOT / PROFILE_SUMMARY_SOURCE).read_text().replace("$", "$$")
+    body = "".join(f"      {line}" if line.strip() else "\n" for line in script.splitlines(True))
+    return f"  profile_summary:\n    content: |\n{body}\n"
+
+
+# With the profiler enabled every rank serves these routes: refuse them (and /v1/ variants) at the edge.
+PROFILE_DENY: Final = "        location ~ ^/(v1/)?(start|stop)_profile { return 403; }\n"
 
 
 def models_location(model: str) -> str:
@@ -621,12 +702,13 @@ def registrar_block() -> str:
     return head + middle + rest
 
 
-def nginx_block() -> str:
+def nginx_block(layout: Layout = DEP8) -> str:
+    deny = PROFILE_DENY if layout.profile else ""
     source = (ROOT / OTEL_SOURCE).read_text()
     block = source[source.index("  nginx_conf:\n"):]
     head = block[:block.index("      server {\n        listen 8002;")]
     plain = "".join(
-        f"      server {{\n        listen {http};\n{models_location(model)}"
+        f"      server {{\n        listen {http};\n{models_location(model)}{deny}"
         f"        location / {{ proxy_pass http://{name}:8000; }}\n      }}\n\n"
         for name, model, http, *_ in PROXIES
     )
@@ -649,6 +731,7 @@ def nginx_block() -> str:
             "        keepalive_timeout 1h;\n        keepalive_requests 1000000;\n"
             "        location ^~ /metrics { return 404; }\n        location ^~ /v1/metrics { return 404; }\n"
             + models_location(model)
+            + deny
             + f"        location / {{ proxy_pass http://{name}:8000; }}\n      }}\n"
         )
     return head + plain + tls_head + "\n".join(tls)
