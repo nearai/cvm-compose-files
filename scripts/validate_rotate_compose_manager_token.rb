@@ -3,8 +3,7 @@
 # the one-shot compose-manager BEARER_TOKEN rotation tool. Excluded from the
 # normal serving-stack contracts (validate_otel_labels.rb) since it is a
 # maintenance tool, not a model stack -- this script is its replacement
-# safety net, mirroring validate_migration_gpu_preflight.rb for the other
-# root-owned one-shot maintenance file in this repo.
+# safety net.
 
 require "base64"
 require "digest"
@@ -124,10 +123,9 @@ def each_yaml_string(value, path, &block)
 end
 
 # Self-test the guard itself against synthetic fixtures before trusting it
-# to judge the real file -- mirrors validate_migration_gpu_preflight.rb
-# always running its own embedded tests as part of a normal invocation (no
-# separate spec file or flag needed; this always runs when CI runs this
-# script).
+# to judge the real file. The embedded tests run as part of a normal
+# invocation (no separate spec file or flag needed; this always runs when CI
+# runs this script).
 def assert_interpolations(label, text, expected_tokens)
   found = unescaped_compose_interpolations(text).map { |f| f[:token] }
   return if found == expected_tokens
