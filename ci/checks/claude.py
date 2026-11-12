@@ -69,8 +69,15 @@ def glob_rx(g):
 
 
 def norm(line):
+    """Lowercase words only: list markers, punctuation, markup and spacing do not count."""
     s = re.sub(r"^\s*(?:[-*]\s+|\d+\.\s+|#+\s+)?(?:\[[ x]\]\s+)?", "", line)
-    return re.sub(r"\s+", " ", s).strip().lower()
+    return re.sub(r"[^a-z0-9]+", " ", s.lower()).strip()
+
+
+def sentences(text):
+    """Sentences and list items of a markdown file, joined across wrapped lines and normalised."""
+    parts = re.split(r"(?<=[.;!?])\s+|\n\s*\n|\n(?=\s*(?:[-*#]|\d+\.)\s)", text)
+    return {norm(x) for x in parts}
 
 
 def exists(head, p):
@@ -176,12 +183,18 @@ def check(ctx):
         for n, ref in refs(p, head.text(p)):
             if not exists(head, ref):
                 out.append(Finding(p, n, "claude.ref", "referenced path does not exist", key=ref))
-    seen = {norm(l) for l in agents_text.split("\n")}
+    # A line that repeats AGENTS.md text, or an AGENTS.md sentence restated with other wrapping.
+    whole = f" {norm(agents_text)} "
+    said = {x for x in sentences(agents_text) if len(x) >= DUP_MIN}
     for p in rules + agents:
-        for n, line in enumerate(head.text(p).split("\n"), 1):
+        text = head.text(p)
+        for n, line in enumerate(text.split("\n"), 1):
             s = norm(line)
-            if len(s) >= DUP_MIN and s in seen:
+            if len(s) >= DUP_MIN and f" {s} " in whole:
                 out.append(Finding(p, n, "claude.dup", "line repeats AGENTS.md; state it in one file", key=s))
+        flat = f" {norm(text)} "
+        for s in sorted(x for x in said if f" {x} " in flat):
+            out.append(Finding(p, 0, "claude.dup", "restates a sentence of AGENTS.md; state it in one file", key=s))
     return out
 
 
@@ -257,4 +270,10 @@ CASES = [
     ("rule file not linked from AGENTS.md", "claude.ref", _with(".claude/rules/ci.md", OK_RULE), None),
     ("stale path in AGENTS.md", "claude.ref", _with(AGENTS, FILES[AGENTS] + "- `ci/common.py`\n"), None),
     ("rule repeats AGENTS.md", "claude.dup", _with(".claude/rules/prod.md", OK_RULE + LONG), None),
+    ("rule repeats AGENTS.md with other markup", "claude.dup", _with(".claude/rules/prod.md", OK_RULE + (
+        "* every deployable is **pinned**, and listed once in the `status-table`\n")), None),
+    ("agent restates AGENTS.md wrapped", "claude.dup", _with(".claude/agents/rev.md", OK_AGENT + (
+        "Every deployable is pinned and listed\nonce in the status table.\n")), None),
+    ("rule quotes part of an AGENTS.md line", "claude.dup", _with(".claude/rules/prod.md", OK_RULE + (
+        "- Deployable is pinned and listed once in the status table.\n")), None),
 ]
