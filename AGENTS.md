@@ -11,7 +11,7 @@ build sources and model revisions, except where VERIFYING.md lists a known gap.
 
 ## Layout
 - `prod/` every deployable compose file, flat: serving, pack (`pack-*`) and utility (`util-*`) files.
-- `docker/<dir>/` build context of one published image. Never edited once merged.
+- `docker/<dir>/` build context of one published image. Its build inputs never change once merged.
 - `ci/` the gate: `run.py`, `lib/`, `checks/` (one guard each), `config/` (tool configs), `templates/`;
   and `ci/data/`, data files that ride along with the changes they record. No other subdirs.
 - `docs/` usage docs, at most one per deployable: `docs/<file stem>.md`.
@@ -55,7 +55,9 @@ Read the rule file for a path before you change files under it; Claude Code also
   with `egress: true` (the value can choose where data goes) or `egress: false`.
 - No IPs, internal domains, host or runner names or private repo names in files, paths, commit
   messages, branch names or PR text. Comments follow the policy below. No inline linter ignores.
-- Existing build dirs, `adapters/` and existing publish workflows are only ever deleted, never edited.
+- Build inputs of merged build dirs, `adapters/` and existing publish workflows are only ever deleted,
+  never edited. Build inputs: the Dockerfile, what it copies, files in `SHA256SUMS` or `SERIES`, files
+  a publish workflow names. Other `.md` files there may be edited; the public-text rules scan them.
 - A new image is a new `docker/<dir>/` plus `.github/workflows/publish-<dir>.yaml` in one PR. CI lints
   a publish workflow only until it merges; its jobs run only in the protected `publish` env, never on PRs.
 - The README status table lists every deployable once with the served names it `serves`; at most

@@ -196,6 +196,64 @@ def image_rows(tree):
     return rows
 
 
+# ---------------------------------------------------------------- build dirs
+
+SUM_LINE = re.compile(r"^[0-9a-f]{64}\s+\*?(\S+)\s*$")
+
+
+def build_inputs(tree, d):
+    """Files of build dir `d` that its build or a publish workflow reads, relative to the dir.
+
+    None means every file: a COPY source the parser cannot bound (`.`, globs, variables) or no publish
+    workflow that names the dir. Lists name files by relative path or by base name; both count.
+    """
+    prefix = f"docker/{d}/"
+    files = {p[len(prefix):] for p in tree.paths if p.startswith(prefix)}
+    names = {"Dockerfile", "SHA256SUMS", "SERIES"}
+    for listing in ("SHA256SUMS", "SERIES"):
+        if listing in files:
+            names.update(m.group(1) for m in map(SUM_LINE.match, tree.text(prefix + listing).splitlines()) if m)
+    dirs = []
+    if "Dockerfile" in files:
+        text = re.sub(r"\\\n", " ", tree.text(prefix + "Dockerfile"))
+        for line in text.splitlines():
+            words = line.split()
+            if not words or words[0].upper() not in ("COPY", "ADD"):
+                continue
+            args = words[1:]
+            if any(a.startswith("--from") for a in args):
+                continue
+            args = [a for a in args if not a.startswith("--")]
+            if args and args[0].startswith("["):
+                args = json.loads(" ".join(args))
+            for src in args[:-1]:
+                if re.match(r"^[a-z]+://", src):
+                    continue
+                src = src[2:] if src.startswith("./") else src
+                if src in ("", ".") or re.search(r"[*?\[$]", src):
+                    return None
+                if src.endswith("/") or any(f.startswith(src + "/") for f in files):
+                    dirs.append(src.rstrip("/") + "/")
+                names.add(src)
+    flows = [tree.text(p) for p in tree.paths if re.fullmatch(r"\.github/workflows/publish-[^/]+\.yaml", p)]
+    flows = [t for t in flows if re.search(rf"docker/{re.escape(d)}(?![\w.-])", t)]
+    if not flows:
+        return None
+    for f in files:
+        if any(re.search(rf"(?<![\w.-]){re.escape(f)}(?![\w.-])", t) for t in flows):
+            names.add(f)
+    return {f for f in files if f in names or os.path.basename(f) in names or any(f.startswith(x) for x in dirs)}
+
+
+def editable_doc(tree, path):
+    """True for a Markdown file in a build dir that neither the build nor a publish workflow reads."""
+    m = re.fullmatch(r"docker/([^/]+)/(.+\.md)", path)
+    if not m:
+        return False
+    inputs = build_inputs(tree, m.group(1))
+    return inputs is not None and m.group(2) not in inputs
+
+
 # ---------------------------------------------------------------- YAML text
 
 BLOCK_HDR = re.compile(r"""^(\s*)(?:-\s+|[^#'"\s][^#]*?:\s+|['"][^'"]*['"]:\s+|-\s+[^#'"\s][^#]*?:\s+)[|>][-+0-9]*\s*(#.*)?$""")

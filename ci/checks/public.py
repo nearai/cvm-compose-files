@@ -7,7 +7,7 @@ import re
 
 from common import (
     IP_ALLOW, IP_ALLOW_PREFIX, LIFECYCLE, ORG, ORG_PUBLIC_REPOS, PUBLIC_HOSTS, PUBLIC_OWNERS, RUNNERS, Finding,
-    YamlError, is_text, parse_yaml, sha256, yaml_comments,
+    YamlError, editable_doc, is_text, parse_yaml, sha256, yaml_comments,
 )
 
 RULES = [
@@ -160,7 +160,9 @@ def check(ctx):
         base_build = {p.split("/")[1] for p in ctx.base.paths if p.startswith("docker/") and p.count("/") >= 2}
     for p in head.paths:
         out += [f for f in text_findings(p, p, ("public.ip", "public.domain", "public.host"))]
-        if p.startswith("docker/") and (base_build is None or p.split("/")[1] in base_build):
+        # Build inputs of merged dirs are frozen and predate the guard; docs nothing reads are scanned.
+        if p.startswith("docker/") and (base_build is None or p.split("/")[1] in base_build) \
+                and not editable_doc(head, p):
             continue
         data = head.data(p)
         if not is_text(data):
@@ -241,6 +243,10 @@ CASES = [
      {"pr": {"title": "repo: " + "x" * 62, "number": "1234"}}),
     ("three comment lines", "public.comment", dict(FILES, **{P: FILES[P] + "# a\n# b\n"}), None, None, None, {}),
     ("commented-out key", "public.comment", dict(FILES, **{P: FILES[P] + "# image: nginx\n"}), None, None, None, {}),
+    ("host name in an unread build-dir doc", "public.host",
+     dict(FILES, **{"docker/sglang-x-r1/Dockerfile": "FROM a\n", "docker/sglang-x-r1/README.md": f"Built on {_HOST}.\n",
+                    ".github/workflows/publish-sglang-x-r1.yaml": "env:\n  CTX: docker/sglang-x-r1\n"}),
+     {"docker/sglang-x-r1/Dockerfile": "FROM a\n"}, None, None, {}),
     ("history in a comment", "public.comment", dict(FILES, **{P: FILES[P] + "# We previously used x.\n"}), None, None,
      None, {}),
 ]

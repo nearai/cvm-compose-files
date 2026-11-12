@@ -176,5 +176,6 @@ Gaps that are not exceptions:
   such an image has a signature only.
 - Repository settings applied at merge: a `v*` tag ruleset blocks moving and deleting tags, but
   maintainers can create tags, so check that a tag's commit is on `main` (step 1).
-- Build dirs that existed before the CI guards are not scanned by the public-text rules and may hold
-  internal references.
+- Build inputs of build dirs that existed before the CI guards are frozen, not scanned by the
+  public-text rules, and hold internal references (host names, internal domains, repo names). Docs
+  in those dirs that no build reads are scanned.
