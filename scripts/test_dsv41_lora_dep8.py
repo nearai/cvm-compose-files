@@ -114,6 +114,21 @@ class GeneratedPackTest(unittest.TestCase):
                 self.assertIn('''--speculative-config \'{"method":"dspark","num_speculative_tokens":3}\'''', other)
                 self.assertNotIn("OMP_NUM_THREADS", other)
 
+    def test_dep8_runs_vllm033_with_peer_reads_off_and_dep4x2_keeps_vllm032(self) -> None:
+        dep8 = generator.render(generator.DEP8)
+        dep4x2 = generator.render(generator.DEP4X2)
+        self.assertIn(f"  image: {generator.ENGINE_IMAGE_V033}\n", dep8)
+        self.assertNotIn(generator.ENGINE_IMAGE, dep8)
+        self.assertNotIn("vllm0320", dep8)
+        self.assertIn(f"  image: {generator.ENGINE_IMAGE}\n", dep4x2)
+        self.assertNotIn("VLLM_NEAR_ENGRAM_PEER_READS", dep4x2)
+        blocks = service_blocks(dep8)
+        for rank in range(8):
+            with self.subTest(rank=rank):
+                block = blocks[f"model-vllm-dsv41-dp{rank}"]
+                self.assertEqual(block.count("      - VLLM_NEAR_ENGRAM_PEER_READS=0\n"), 1)
+                self.assertIn("vllm0330-", block)
+
     def test_all_eight_ranks_keep_queue_limit(self) -> None:
         rendered = self.rendered()
         self.assertEqual(rendered.count("--max-num-queued-reqs 96"), 8)
@@ -171,7 +186,7 @@ class GeneratedDep4x2PackTest(GeneratedPackTest):
                 self.assertIn("""--engram-config '{"cpu_offload":true,"dp_shared_memory":true}'""", block)
                 self.assertIn("""--compilation-config '{"cudagraph_mode":"PIECEWISE"}'""", block)
         # Patch 05 is only in the CC image; the #393 image would read the host tables through UVA.
-        self.assertIn(generator.ENGINE_IMAGE, rendered)
+        self.assertIn(self.layout.image, rendered)
         self.assertNotIn("0956859f52d262fa17084d61320c5b1ea22845825c7aab57d49ed8064cc8a396", rendered)
 
     def test_proxies_fail_over_from_a_stopped_replica(self) -> None:

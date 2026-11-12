@@ -32,6 +32,8 @@ ADAPTER_REVISION: Final = "196c06e3c2aad43e9688d16fa993b4333f69358a"
 # .github/workflows/publish-vllm-dsv41-lora.yaml run 40627835048 from main c877152, tag
 # dsv41-lora-v0.32.0-near-v2-cc. The #393 image lacks patch 04 and returns garbage in a TDX+PPCIe CVM.
 ENGINE_IMAGE: Final = "docker.io/nearaidev/vllm@sha256:5eaa0d4637080c10958b6cd8a371ae2ebb749b7a1e19c85bcb1abb89ee2540e4"
+# docker/vllm-dsv41-v033: vLLM 0.33 with patches 01-07 (07 = VLLM_NEAR_ENGRAM_PEER_READS), attested publish on main.
+ENGINE_IMAGE_V033: Final = "docker.io/nearaidev/vllm@sha256:a744ada2a362e2548a88527432da1662aa027012226d9e0ed4fce9cda1e6f0bd"
 # inference-proxy main 53d79441 (#337) is signed and attested. It includes #329's
 # VLLM_PROXY_STRICT_REQUEST_MODEL and #335's VLLM_PROXY_PRIORITY_LOWER_FIRST.
 # Without #329 the proxy serves the adapter on the base endpoint at the base price.
@@ -53,6 +55,7 @@ class Layout(NamedTuple):
     # combo2x (gpu31 lever lab 2026-11-04, lab table in docs/gpu13-dsv41-dep4.md at tag v0.0.547): DSpark 5 with
     # probabilistic drafting and block verification, and 8 torch threads per rank.
     combo2x: bool = False
+    image: str = ENGINE_IMAGE
 
 
 # Engram tables (186 GiB FP8) in HBM, sharded across the eight DP ranks (~23 GiB each). DEP8 leaves 18M KV
@@ -61,11 +64,12 @@ class Layout(NamedTuple):
 DEP8: Final = Layout(
     Path("prod/DeepSeek-V4.1-Flash-1017-vLLM-DEP8-Abliterated.yaml"),
     "dsv41-flash-1017-vllm-dep8-abliterated",
-    "vllm0320-lora3p-cc2-w4a8-dep8-c8192-dspark5pb-mr64-engram-hbm-omp8",
+    "vllm0330-lora3p-cc2-w4a8-dep8-c8192-dspark5pb-mr64-engram-hbm-omp8",
     "ONE vLLM DEP8 replica",
     (("r1", tuple(range(GPUS))),),
     False,
     True,
+    ENGINE_IMAGE_V033,
 )
 # A DEP4 replica cannot hold the tables next to its weights (82 GiB/GPU; tables in HBM left no KV pool on
 # v0.0.517), so both replicas share one host copy. Patch 05 gathers rows on the CPU and copies them to the
@@ -319,7 +323,7 @@ x-vllm-proxy-common: &vllm-proxy-common
 x-dsv41-engine-common: &dsv41-engine-common
   <<: *nvidia
   init: true
-  image: {ENGINE_IMAGE}
+  image: {layout.image}
   shm_size: 64g
   # One network namespace for all ranks: in per-container bridge namespaces NCCL treats each rank
   # as its own host and runs every collective over TCP sockets instead of NVLink.
@@ -467,6 +471,10 @@ services:
         depends = "      model-downloader:\n        condition: service_completed_successfully\n"
         if rank != ranks[0]:
             depends += f"      {rank_service(ranks[0])}:\n        condition: service_started\n"
+        peer_reads_env = (
+            "      # Image patch 07: v0.33 peer-HBM Engram reads (torch symmetric memory) fail with one GPU per rank.\n"
+            "      - VLLM_NEAR_ENGRAM_PEER_READS=0\n"
+        ) if layout.image == ENGINE_IMAGE_V033 else ""
         replica_env = ""
         if layout.host_engram:
             replica_env += (
@@ -495,7 +503,7 @@ services:
       - 'VLLM_HUMMING_INPUT_QUANT_CONFIG={{"dtype":"float8e4m3","quant_mode":"dynamic_token"}}'
       # Image patch 04: copy per-step inputs to the GPU; under TDX+PPCIe the GPU reads stale host memory.
       - VLLM_NEAR_DISABLE_UVA=1
-{replica_env}      # nvcc on the CPU instead of humming's nvrtc helper (a CUDA context per kernel, which queues under CC).
+{peer_reads_env}{replica_env}      # nvcc on the CPU instead of humming's nvrtc helper (a CUDA context per kernel, which queues under CC).
       - HUMMING_COMPILER=nvcc
       - HUMMING_CACHE_DIR=/root/.cache/humming/dp{rank}
       - HUMMING_MAX_PARALLEL_BUILD_WORKERS=8
