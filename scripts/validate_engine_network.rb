@@ -62,11 +62,12 @@ end
 
 # Collector configs mounted by the service, parsed from the compose `configs`.
 def collector_configs(compose, service)
-  (service["configs"] || []).filter_map do |entry|
+  configs = (service["configs"] || []).map do |entry|
     source = entry.is_a?(Hash) ? entry["source"] : entry
     content = compose.dig("configs", source.to_s, "content")
     content && yaml_load(content.gsub("$$", "$"))
   end
+  configs.compact
 end
 
 def otlp_endpoints(config)
@@ -112,15 +113,35 @@ end
 # Service names the proxies in this file send requests to.
 def proxy_backends(file, services, errors)
   by_container = services.to_h { |name, service| [service["container_name"].to_s, name] }
-  services.select { |_, s| s["image"].to_s.match?(PROXY_IMAGE) }.flat_map do |name, service|
+  found = services.select { |_, s| s["image"].to_s.match?(PROXY_IMAGE) }.flat_map do |name, service|
     env = environment(service)
-    BACKEND_ENV.flat_map { |key| env[key].to_s.split(",") }.filter_map do |url|
-      host = url.strip[%r{\A\w+://([^:/]+)}, 1]
+    BACKEND_ENV.flat_map { |key| env[key].to_s.split(",", -1) if env.key?(key) }.compact.map do |raw|
+      url = raw.strip
+      # Scheme optional; the host is a name, an IPv4 address or a bracketed IPv6 address.
+      host = url[%r{\A(?:\w+://)?(\[[^\]]+\]|[^:/\[\]$]+)(?::\d+)?(?:/.*)?\z}, 1]
       backend = services.key?(host) ? host : by_container[host]
-      errors << "#{file}: services.#{name}: backend #{host} is not a service in this file" unless backend
+      errors << "#{file}: services.#{name}: backend URL #{url.inspect} does not name a service in this file" unless backend
       backend
     end
   end
+  found.compact
+end
+
+def engine_errors(where, service, networks)
+  errors = []
+  nets = network_names(service)
+  errors << "#{where}: must list its networks explicitly" if nets.empty?
+  errors << "#{where}: network_mode is not allowed" if service.key?("network_mode")
+  errors << "#{where}: must not publish ports" if service.key?("ports")
+  nets.each do |net|
+    errors << "#{where}: network #{net} is not internal" unless networks.dig(net, "internal") == true
+  end
+  env = environment(service)
+  FORBIDDEN_ENV.each do |key|
+    errors << "#{where}: #{key} must not be set" if env.key?(key)
+  end
+  errors << "#{where}: HF_HUB_OFFLINE must be the literal 1" unless env["HF_HUB_OFFLINE"] == "1"
+  errors
 end
 
 def check(file, compose, pending = [])
@@ -130,25 +151,19 @@ def check(file, compose, pending = [])
   backends = proxy_backends(file, services, errors)
   detected = services.select { |name, s| s["image"].to_s.match?(ENGINE_IMAGE) || backends.include?(name) }
   errors << "#{file}: no engine service found" if detected.empty?
-  (pending - detected.keys).each { |name| errors << "#{file}: pending service #{name} is not an engine in this file" }
+  pending.each do |name|
+    if !detected.key?(name)
+      errors << "#{file}: pending service #{name} is not an engine in this file"
+    elsif engine_errors(name, detected[name], networks).empty?
+      errors << "#{file}: pending service #{name} follows the contract now; remove it from the pending list"
+    end
+  end
   engines = detected.reject { |name, _| pending.include?(name) }
   engine_networks = engines.values.flat_map { |service| network_names(service) }.uniq
   errors.concat(check_members(file, compose, engine_networks, engines))
 
   engines.each do |name, service|
-    where = "#{file}: services.#{name}"
-    nets = network_names(service)
-    errors << "#{where}: must list its networks explicitly" if nets.empty?
-    errors << "#{where}: network_mode is not allowed" if service.key?("network_mode")
-    errors << "#{where}: must not publish ports" if service.key?("ports")
-    nets.each do |net|
-      errors << "#{where}: network #{net} is not internal" unless networks.dig(net, "internal") == true
-    end
-    env = environment(service)
-    FORBIDDEN_ENV.each do |key|
-      errors << "#{where}: #{key} must not be set" if env.key?(key)
-    end
-    errors << "#{where}: HF_HUB_OFFLINE must be the literal 1" unless env["HF_HUB_OFFLINE"] == "1"
+    errors.concat(engine_errors("#{file}: services.#{name}", service, networks))
   end
   errors
 end
@@ -192,8 +207,24 @@ if ARGV.first == "--self-test"
   raise "self-test: pending engine rejected" unless check("custom", custom, ["custom"]).empty?
   raise "self-test: stale pending entry accepted" unless check("custom", custom, %w[custom gone]).length == 1
 
+  compliant = Marshal.load(Marshal.dump(custom))
+  compliant["services"]["custom"].merge!("networks" => ["eng"], "environment" => ["HF_HUB_OFFLINE=1"])
+  stale = check("custom", compliant, ["custom"]).select { |error| error.include?("follows the contract now") }
+  raise "self-test: compliant pending engine accepted" unless stale.length == 1
+
   custom["services"]["proxy"]["environment"] = ["VLLM_BACKEND_URLS=http://e:8000,http://elsewhere:8000"]
   raise "self-test: unknown backend accepted" unless check("custom", custom, ["custom"]).length == 2
+
+  # Backends the parser must handle: no scheme, container name, and the forms it must refuse by URL.
+  custom["services"]["proxy"]["environment"] = ["VLLM_BACKEND_URLS=custom-engine:8000,e:8000"]
+  raise "self-test: scheme-less backend not resolved" unless check("custom", custom, ["custom"]).empty?
+  { "http://${ENGINE_HOST}:8000" => "http://${ENGINE_HOST}:8000", "http://e:8000," => "",
+    "http://[fd00::2]:8000" => "http://[fd00::2]:8000" }.each do |value, shown|
+    custom["services"]["proxy"]["environment"] = ["VLLM_BACKEND_URLS=#{value}"]
+    found = check("custom", custom).select { |error| error.include?("backend URL") }
+    raise "self-test: backend #{value} accepted" unless found.length == 1
+    raise "self-test: backend error does not show the URL" unless found.first.include?(shown.inspect)
+  end
 
   puts "Engine isolation self-tests OK"
   exit 0

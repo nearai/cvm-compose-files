@@ -299,7 +299,7 @@ COLOC_ENGINE_JOB = f"sglang-{COLOC_ENGINE}"
 # x-privacy-filter-common then runs the MoE experts as grouped GEMMs (PRIVACY_EXPERTS_IMPL=grouped_mm).
 COLOC_BLOCK_HASHES = {
     "x-privacy-filter-common": "c421728515cbffa9449ab5a4cfa925bea5b922c9d5b805a79b38ce1416be7492",
-    COLOC_ENGINE: "25919629004512762d03dc1647798e5ecde3a95be75f75718e782a73287a1a69",
+    COLOC_ENGINE: "e29b3cb3b7deddc3906385c0675e9b8590097cf9bfd3958059ace86b834f735b",
     COLOC_ENGINE_JOB: "fe072375f6e7445e4bddf78ed32dab91346f46f2dcdfc85bf3c753855c8c7e4e",
 }
 # gpu13's stock engines move to SGLang v0.5.23 (docker/sglang-v0523-secure) and
@@ -342,7 +342,7 @@ LORA_CONFIGS = ("qwen38_abliterated_registrar_script",)
 LORA_JOB = "inference-proxy-proxy-qwen38-27b-abliterated"
 LORA_BLOCK_HASHES = {
     "qwen38-lora-adapter-downloader": "f00890986a1cbe050f1158fc94fb46c6a2910fad7ac622387bc09f21f47e7d4b",
-    "proxy-qwen38-27b-abliterated": "b34b3f733da5ec299ef82f672d6964e6fb6bb472f54bf7ae95b4df181c01bb5c",
+    "proxy-qwen38-27b-abliterated": "6c7fbc21f673cfaed5c3762f49dd4ab095257ea90a69d9072240293f282be677",
     "qwen38-abliterated-registrar": "abbc11eca5f3f296b108cc4ec308ee5c59e04a04c99f4f7a6ce691586031c895",
     "qwen38_abliterated_registrar_script": "bf512180438d8e6258a37b59e02f9f6abc2bcab5ea79ac92b91b31b62f6afbe7",
     LORA_JOB: "300953b485fbe7ab94916efc464b5fdbdd784fbd6c554392491da0f653f3c505",
@@ -825,16 +825,18 @@ def with_latest_engines(text: str, small: str) -> str:
 # and the networks block are pinned by hash above; the probe is pinned here.
 ENGINE_NETWORK = "engine-qwen38"
 ENGINE_PROBE = "engine-egress-probe"
-ENGINE_PROBE_HASH = "b4441905f0856ba812a11ede187eed080f5ffef7535fc9f453058e96e546de26"
+ENGINE_PROBE_HASH = "c596c28ccf11433ad3ebdd8ce3e830c8d4a98bce0c96c304486b420f59cbd153"
 ENGINE_NETWORK_JOIN = "    networks:\n      - default\n      - engine-qwen38\n"
+# The proxies start only after the probe passes.
+ENGINE_PROBE_GATE = "    depends_on:\n      engine-egress-probe:\n        condition: service_completed_successfully\n"
 
 
 def with_qwen38_engine_network(text: str) -> str:
-    """Join proxy-qwen38-27b to the engine network, right after its container name."""
+    """Join proxy-qwen38-27b to the engine network and gate it on the probe, right after its container name."""
     name = "    container_name: proxy-qwen38-27b\n"
     if text.count(name) != 1:
         raise AssertionError("expected one proxy-qwen38-27b container name in the fixture")
-    return text.replace(name, name + ENGINE_NETWORK_JOIN, 1)
+    return text.replace(name, name + ENGINE_NETWORK_JOIN + ENGINE_PROBE_GATE, 1)
 
 
 class Gpu13FleetTest(unittest.TestCase):
@@ -974,7 +976,10 @@ class Gpu13FleetTest(unittest.TestCase):
             self.assertIn(ENGINE_NETWORK_JOIN, service_block(self.small, name), name)
         probe = service_block(self.small, ENGINE_PROBE)
         self.assertEqual(hashlib.sha256(probe.encode()).hexdigest(), ENGINE_PROBE_HASH)
-        self.assertIn("    networks:\n      - engine-qwen38\n    entrypoint:\n", probe)
+        self.assertIn('    networks:\n      - engine-qwen38\n    extra_hosts:\n      - "compose-manager:host-gateway"\n    entrypoint:\n', probe)
+        for name in ("proxy-qwen38-27b", "proxy-qwen38-27b-abliterated"):
+            self.assertIn(ENGINE_NETWORK_JOIN + ENGINE_PROBE_GATE, service_block(self.small, name), name)
+        self.assertEqual(self.small.count(ENGINE_PROBE_GATE), 2)
         # No other service joins the engine network.
         self.assertEqual(self.small.count("      - engine-qwen38\n"), 5)
         collector = config_block(self.small, "otelcol_app_config")

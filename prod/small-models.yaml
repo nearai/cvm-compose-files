@@ -1024,6 +1024,9 @@ services:
     networks:
       - default
       - engine-qwen38
+    depends_on:
+      engine-egress-probe:
+        condition: service_completed_successfully
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - CLOUD_API_URL=https://cloud-api.near.ai
@@ -1076,8 +1079,12 @@ services:
     container_name: model-sg-qwen38-27b-fp8-tp1-coloc
     # The engine sits on an internal network only: it has no route out of the CVM
     # and no DNS for outside names. The proxies fetch remote media for it
-    # (VLLM_PROXY_INLINE_MEDIA) and it loads weights from the local cache. It has
-    # its own IPC namespace, so /dev/shm is sized here.
+    # (VLLM_PROXY_INLINE_MEDIA). It starts offline and reads only local volumes:
+    # the weights from hugginface_cache, where model-downloader-qwen38 puts the
+    # whole repository at the pinned revision, the adapter from lora_adapter, and
+    # kernels it compiles itself into qwen38_coloc_kernel_cache.
+    # It has its own IPC namespace, so /dev/shm is sized here instead of being
+    # the host's. Measured peak use is under 1 GiB at the admission limit.
     networks:
       - engine-qwen38
     ipc: private
@@ -1290,6 +1297,9 @@ services:
     networks:
       - default
       - engine-qwen38
+    depends_on:
+      engine-egress-probe:
+        condition: service_completed_successfully
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - CLOUD_API_URL=https://cloud-api.near.ai
@@ -2359,22 +2369,41 @@ services:
       nearai.otel.ip: "${HOST_IP}"
 
   engine-egress-probe:
-    # One-shot check from inside the engine network: every outbound attempt must
-    # fail. The result is one log line (PASS or FAIL).
+    # One-shot check from inside the engine network. It fails when the network
+    # has a default route, when the host answers on the network's own first
+    # address or on host-gateway, or when an outside address or name is
+    # reachable. It logs one PASS or FAIL line, and the Qwen3.8 proxies start
+    # only after it passes.
     image: curlimages/curl@sha256:d94d07ba9e7d6de898b6d96c1a072f6f8266c687af78a74f380087a0addf5d17
     container_name: engine-egress-probe
     restart: "no"
     networks:
       - engine-qwen38
+    extra_hosts:
+      - "compose-manager:host-gateway"
     entrypoint:
       - sh
       - -c
       - |
         fail=0
-        gateway=$$(hostname -i | awk '{print $$1}' | sed 's/[0-9]*$$/1/')
-        for url in https://1.1.1.1 https://huggingface.co http://169.254.169.254 http://compose-manager:8080 "http://$$gateway:8080"; do
-          if curl -s -o /dev/null -m 5 "$$url"; then echo "engine-egress-probe reached $$url"; fail=1; fi
+        reached() { echo "engine-egress-probe reached $$1"; fail=1; }
+        if ip -4 route | grep -q '^default'; then echo "engine-egress-probe found a default route"; fail=1; fi
+        subnet=$$(ip -4 route | awk '$$1 ~ "/" {print $$1; exit}')
+        base=$${subnet%/*}
+        if [ -z "$$base" ]; then
+          echo "engine-egress-probe found no network to test"; fail=1
+        else
+          gateway="$${base%.*}.$$(( $${base##*.} + 1 ))"
+          for host in "$$gateway" compose-manager; do
+            for port in 22 80 8000 8001 8080 8444; do
+              if nc -z -w 3 "$$host" "$$port" 2>/dev/null; then reached "$$host:$$port"; fi
+            done
+          done
+        fi
+        for target in "1.1.1.1 443" "1.1.1.1 53" "169.254.169.254 80"; do
+          if nc -z -w 3 $$target 2>/dev/null; then reached "$$target"; fi
         done
+        if curl -s -o /dev/null -m 5 https://huggingface.co; then reached https://huggingface.co; fi
         if nslookup huggingface.co >/dev/null 2>&1; then echo "engine-egress-probe resolved an outside name"; fail=1; fi
         if [ "$$fail" = 0 ]; then echo "engine-egress-probe PASS: no route out"; else echo "engine-egress-probe FAIL"; fi
         exit "$$fail"
