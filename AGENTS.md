@@ -10,23 +10,21 @@ build sources and model revisions, except where VERIFYING.md lists a known gap.
 
 ## Layout
 - `prod/` every deployable compose file, flat: serving, pack (`pack-*`) and utility (`util-*`) files.
-- `docker/<dir>/` build context of one published image. Never edited once published.
-- `ci/` the gate: `run.py`, `lib/`, `checks/` (one guard each), `config/` (tool configs), `templates/`.
-  `ci/data/` holds the data files that ride along with the changes they record.
+- `docker/<dir>/` build context of one published image. Never edited once merged.
+- `ci/` the gate: `run.py`, `lib/`, `checks/` (one guard each), `config/` (tool configs), `templates/`;
+  and `ci/data/`, data files that ride along with the changes they record. No other subdirs.
 - `docs/` usage docs, at most one per deployable: `docs/<file stem>.md`.
 - `.github/` `ci.yaml`, `auto-tag.yaml`, `publish-<docker dir>.yaml` workflows, PR template.
 - Legacy, listed in `ci/data/legacy.txt`, shrinking: older deployable and publish workflow names,
-  `scripts/` (old validators, no new files), `adapters/` (removed after repinning), root
-  `cleanup-hf-model.yaml`.
-- No other top-level dirs, no subdirs in `prod/`, no other subdirs in `ci/`.
+  `scripts/` (old validators, no new files), root `cleanup-hf-model.yaml`, and `adapters/`, kept
+  until no release tag that may be redeployed for rollback still fetches from `main`.
+- No other top-level dirs.
 
 ## Commands
-`ci/run.py` renders through the digest-pinned compose image set in `ci/lib/common.py`, the same one CI
-uses. Do not judge a change with a locally installed compose version.
-- Render one file: `python3 ci/run.py --render prod/<f>.yaml`
+`ci/run.py` renders with the pinned compose image in `ci/lib/common.py`, as CI does; never local compose.
 - All guards: `python3 ci/run.py --base origin/main`. Self-tests: `python3 ci/run.py --self-test`.
 - Findings on the real tree are pinned in `ci/data/expected.json`; update it with `--write-expected`.
-- Show a change is a no-op: `python3 ci/run.py --noop origin/main` (empty output).
+- Render one file: `--render prod/<f>.yaml`. Show a change is a no-op: `--noop origin/main` (empty).
 
 ## Hard rules (CI fails)
 - Paths follow the layout rules in `ci/checks/layout.py` or are listed in `ci/data/legacy.txt`, which
@@ -35,9 +33,8 @@ uses. Do not judge a change with a locally installed compose version.
 - Every model is pinned to a 40-hex revision. `--trust-remote-code` only with a pinned revision.
 - No `build`, `dockerfile_inline`, `extends`, `include` or `env_file` in deployable files.
 - No runtime fetch from a branch. URLs pin a 40-hex commit or revision.
-- New SGLang engines set `--log-requests-level 0`. New vLLM engines keep the logging flags of
-  `ci/templates/vllm.yaml`, which sets an explicit disabling flag only if the pinned vLLM has one.
-  Existing engines without an explicit flag are listed exceptions and appear in VERIFYING.md.
+- Every SGLang engine sets `--log-requests-level 0` and every vLLM engine `--no-enable-log-requests`,
+  each exactly once. Engines without it are listed exceptions and appear in VERIFYING.md.
 - No service on an SGLang or vLLM image, whatever its role, enables request logging, profiling,
   tracing or dumps by flag or env, or logs at debug.
 - Privileged mode, devices, sockets, host mounts and published ports are listed per service in
@@ -46,8 +43,8 @@ uses. Do not judge a change with a locally installed compose version.
 - No IPs, internal domains, host or runner names or private repo names in files, paths, commit
   messages, branch names or PR text. Comments follow the policy below. No inline linter ignores.
 - Existing build dirs, `adapters/` and existing publish workflows are only ever deleted, never edited.
-- A new image is a new `docker/<dir>/` plus `.github/workflows/publish-<dir>.yaml` in one PR. Publish
-  jobs run only in the protected publish environment and never on pull requests.
+- A new image is a new `docker/<dir>/` plus `.github/workflows/publish-<dir>.yaml` in one PR. CI lints
+  a publish workflow only until it merges; its jobs run only in the protected `publish` env, never on PRs.
 - The README status table lists every deployable once with the served names it `serves`; at most
   one candidate per serving group.
 - New paths follow Naming. Service key == `container_name`. Served names never change in place.
@@ -55,9 +52,10 @@ uses. Do not judge a change with a locally installed compose version.
   `reason`, `remove_when`. Never copy the matched text into the entry or the PR.
 
 ## Naming and versioning
-Lowercase, `-` between tokens. No lifecycle words (new, old, test, canary, candidate, final, v2, dates)
-and no host names in file or workflow names. CI checks paths, service keys and served-name stability;
-the rest is shown in the templates and checked in review.
+Lowercase, `-` between tokens. No lifecycle words (new, old, test, canary, candidate, final, `v<N>`,
+dates) and no host names in `prod/` or `docs/` paths or in workflow, job or step `name:` fields.
+Version tokens are allowed in `docker/` dir names and so in `publish-<dir>.yaml` file names. CI
+checks paths, service-key equality and served-name stability; review checks the rest.
 - Serving file: `prod/<checkpoint>-<engine>-<topology>[-<tier>].yaml`. `checkpoint` = lowercased HF repo
   name; `engine` = `sglang` | `vllm`; `topology` = `tp<N>` | `dep<N>` | `dp<N>`, `x<R>` for replicas;
   `tier` only to tell two files apart (`base`, `long`).
@@ -67,15 +65,14 @@ the rest is shown in the templates and checked in review.
 - Serving and pack files set no top-level `name:`; utility files set `name:` to the file stem.
 - Service keys: `model-sg-*`, `model-vllm-*`, `proxy-*`, `model-proxy-registrar*`, `model-downloader*`,
   `nginx*`, `dcgm-*`, `sidecar-*`, `otelcol-contrib`, `hf-cleanup`.
-- Served model name: `<family>-<size>[-long|-abliterated]`, no engine, layout or quantization tokens.
-  Domain label = served name with `.` replaced by `-`.
+- Served names are public API IDs and never change for a live model. A new model serves its upstream
+  Hugging Face `org/repo` ID; quantization, engine and topology never appear in a served name.
 - Engine labels: `served_model`, `model_path`, `deployment` (= file stem), `engine_image`, `instance`,
   `config_variant`; change `config_variant` when image, command or env changes.
 - Model pin: the engine loads `models--<org>--<repo>/snapshots/<40hex>` offline; the downloader
   fetches the same repo at the same `--revision`. Env names `UPPER_SNAKE`.
-- Config revision = release tag `v0.0.N` (auto-tag only) plus the file path. No version in names or files.
-- New compose file: copy `ci/templates/sglang.yaml` or `ci/templates/vllm.yaml` and keep its line-1
-  header form, key order and service order.
+- Config revision = release tag `v0.0.N` (auto-tag only) plus the file path; never in file names.
+- New compose file: copy a file in `ci/templates/`; keep its line-1 header form, key and service order.
 
 ## Retention and lifecycle
 - Status is `live` or `candidate`, only in the README table, never in a compose file.
@@ -116,8 +113,9 @@ Everything here is public and copied by others: files, branches, tags, PRs, revi
 - Title and commit subjects: `<prod|docker|ci|docs|repo>: <summary>`, at most 72 chars counting the
   ` (#N)` squash adds; merge commits from updating a branch are exempt.
 - Squash merge only. No force-push after review starts. Never move or delete tags or rewrite history.
-- Merging needs `all-green` and one approval from a non-author (two for `ci/` changes; settings
-  cannot enforce that per path). A new push dismisses approvals. Agents never approve their own work.
+- Merging needs `all-green` and one approval from a non-author, two for gate changes (`ci/` outside
+  `ci/data/`, `ci.yaml`); a `ci/data/`-only change, `expected.json` included, needs one. Settings
+  cannot enforce that per path. A new push dismisses approvals. Agents never approve their own work.
 - Evidence in the PR body: `ci/run.py` green; rendered-diff note for `prod/` changes; `--noop` output
   for comment-only or refactor changes; for image bumps the `main` publish run and the signature
   verification; for deletions the deployment-manager check; every new sink, port, mount, env var,
@@ -128,6 +126,7 @@ Everything here is public and copied by others: files, branches, tags, PRs, revi
 
 ## Reviewer checklist (every push, state the head SHA)
 - [ ] Read the rendered diff, not only the YAML.
+- [ ] `expected.json`: a probe line that loses a rule means a weaker guard; reject unless justified.
 - [ ] Image bump: digest from a `main` publish run, signature verifies, no tag-only refs.
 - [ ] New sink, endpoint, port, mount or env var; moved default; removed safety line.
 - [ ] Gate edited together with the thing it gates; waiver text in the PR, not `ci/data/exceptions.json`.

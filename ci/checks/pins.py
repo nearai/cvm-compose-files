@@ -142,8 +142,8 @@ def check_rows(ctx, rows, base_rows):
             out.append(Finding(IMAGES, n, "pins.rows", "row must be: repo@sha256:<64> tag dir commit"))
             continue
         _, tag, d, commit = parts
-        if not (commit in ("-", "inferred") or SHA40.match(commit)) or (d == "-") != (tag == "-"):
-            out.append(Finding(IMAGES, n, "pins.rows", "commit must be 40 hex, inferred or -; dir and tag go together"))
+        if not (commit == "-" or SHA40.match(commit)) or (d == "-") != (tag == "-"):
+            out.append(Finding(IMAGES, n, "pins.rows", "commit must be 40 hex or -; dir and tag go together"))
         if base_rows is not None and ref not in base_rows and d != "-":
             engine = ref.split("@")[0].rsplit("/", 1)[-1].split(":")[0]
             if d != f"{engine}-{tag}" or not any(p.startswith(f"docker/{d}/") for p in head.paths):

@@ -88,7 +88,9 @@ jobs:
       - name: Render and validate embedded OTel collector configs
         run: |
           set -euo pipefail
-          for f in prod/*.yaml cleanup-hf-model.yaml ci/templates/*.yaml; do
+          deployables="$(python3 ci/run.py --list-deployables)"
+          mapfile -t files <<< "$deployables"
+          for f in "${files[@]}" ci/templates/*.yaml; do
             echo "render $f"
             python3 ci/run.py --render "$f" > "$RUNNER_TEMP/rendered.json"
             config="$(jq -r '.configs.otelcol_app_config.content // empty' "$RUNNER_TEMP/rendered.json")"
@@ -122,28 +124,31 @@ jobs:
         run: python3 scripts/validate_streaming_keepalive.py
 
   lint:
+    needs: [base]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
           persist-credentials: false
 
       - name: yamllint
         run: docker run --rm --network none -v "$PWD:/code:ro" -w /code "$YAMLLINT_IMAGE" yamllint -c ci/config/yamllint.yaml .
 
+      # A publish workflow is linted in the PR that adds it. Once it exists at the base commit it is
+      # frozen (frozen.edit), so findings in it could not be fixed in place.
       - name: actionlint and zizmor
+        env:
+          BASE: ${{ needs.base.outputs.sha }}
         run: |
           set -euo pipefail
           files=(.github/workflows/ci.yaml .github/workflows/auto-tag.yaml)
           for f in .github/workflows/publish-*.yaml; do
-            case "$f" in
-              */publish-glm53-admission-reserve.yaml | */publish-glm53-fc91d24.yaml | */publish-glm53-hicache.yaml | \
-              */publish-glm53-v0523.yaml | */publish-sglang-v0523-secure.yaml | */publish-vllm-dsv41-lora.yaml | \
-              */publish-vllm-dsv41-v033.yaml) ;;
-              *) files+=("$f") ;;
-            esac
+            if [ -z "$BASE" ] || ! git cat-file -e "$BASE:$f" 2>/dev/null; then
+              files+=("$f")
+            fi
           done
           docker run --rm --network none -v "$PWD:/repo:ro" -w /repo "$ACTIONLINT_IMAGE" "${files[@]}"
           docker run --rm --network none -v "$PWD:/repo:ro" -w /repo "$ZIZMOR_IMAGE" --offline "${files[@]}"

@@ -5,11 +5,13 @@ attestation are the proof.
 
 ## What the proof covers
 
-- **The compose file is not in the hardware measurement.** A host's measured configuration covers its
-  base services only. The host's deployment manager keeps its own record of what it applied (release
-  tag, commit, file path, SHA-256 of the file bytes at that tag). That record is the manager's report,
-  not a hardware attestation, and environment values supplied at deploy time are not part of it. This
-  repo does not publish it, and how to obtain it is not documented here yet.
+- **Deployment record.** The compose file is not in the hardware measurement. The host's deployment
+  manager, [compose-manager](https://github.com/nearai/compose-manager), records each file it applies:
+  release tag, commit, file path and SHA-256 of the file bytes at that tag. Its
+  `GET /v1/attestation/report` returns that record with a TDX quote whose report data commits to the
+  record's hash and a nonce the caller may choose. The record is as trustworthy as the measured
+  manager. Environment values supplied at deploy time are not part of it. The endpoint is served by
+  each host's manager; this repo does not publish host addresses.
 - **Images** are pinned by digest, except the cases counted under Known gaps. An image built here can
   be checked against its signature, its provenance and its build dir at the recorded source commit.
 - **Privacy** here means one thing: the serving containers must not write prompts or outputs to their
@@ -19,8 +21,8 @@ attestation are the proof.
   services on other images (nginx, the collector, GPU exporters, downloaders, registrars, `sage`,
   `model-privacy-filter`), and it cannot see what any image logs by default.
 
-Start from what the host's attestation reports: a release tag `v0.0.N` and a file path. Always verify by
-digest. Image tags on the registry can be moved; digests cannot.
+Start from the deployment record: a release tag `v0.0.N`, a file path and the file's SHA-256. Always
+verify by digest. Image tags on the registry can be moved; digests cannot.
 
 ## 1. Tag and path to file
 
@@ -33,8 +35,8 @@ git show v0.0.N:prod/<file>.yaml > deployed.yaml
 sha256sum deployed.yaml
 ```
 
-Compare the hash with the file hash in the host's deployment record. The file at a tag can differ from
-the file at `HEAD`; verify the tagged bytes.
+Compare the hash with `file_sha256` in the deployment record. The file at a tag can differ from the
+file at `HEAD`; verify the tagged bytes.
 
 ## 2. File to image digests
 
@@ -78,8 +80,8 @@ docker buildx imagetools inspect "$IMG" --format '{{json .Provenance.SLSA}}' \
   | jq '.metadata["https://mobyproject.org/buildkit@v1#metadata"].vcs'
 ```
 
-`revision` is the source commit and `localdir:context` the build dir. Check out that commit and read the
-build dir there, not at `HEAD`; a build dir at `HEAD` can hold later, unpublished changes:
+`revision` is the source commit and `localdir:context` the build dir. Read the build dir at that
+commit, not at `HEAD`; several images were built from one dir at different commits:
 
 ```sh
 git merge-base --is-ancestor <revision> origin/main && echo on-main
@@ -164,9 +166,12 @@ nothing in this repo binds a host to a file. Deviations CI detects in live files
 | `public.runner` | 4 | publish workflows on a self-hosted runner |
 
 Gaps that are not exceptions:
-- The logging rules check flags and env only, on services the guards classify as SGLang or vLLM by key, image, command or role (see What the
-  proof covers). Only engines must set an explicit no-log flag; other services on those images, such as
-  every `role: aux` entry in `ci/data/services.allow.json`, are checked for flags and env that enable logging.
+- The logging rules check flags and env only, on services the guards classify as SGLang or vLLM by
+  key, image, command or role (see What the proof covers). Only engines must set an explicit no-log
+  flag; other services on those images, such as every `role: aux` entry in
+  `ci/data/services.allow.json`, are checked for flags and env that enable logging.
+- actionlint and zizmor check a publish workflow only until it merges. Publish workflows that exist
+  at the base commit are frozen and not linted, so findings in them stay.
 - Two vLLM publish workflows skip the provenance attestation when resuming from an already pushed digest;
   such an image has a signature only.
 - Repository settings applied at merge: a `v*` tag ruleset blocks moving and deleting tags, but

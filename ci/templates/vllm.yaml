@@ -1,4 +1,4 @@
-# qwen3-embedding-0.6b | vLLM | tp1
+# Qwen/Qwen3-Embedding-0.6B | vLLM | tp1
 services:
   model-downloader:
     image: ghcr.io/astral-sh/uv@sha256:4f5d923c9dcea037f57bda425dd209f3ec643da2f0b74227f68d09dab0b3bb36
@@ -23,7 +23,7 @@ services:
     command:
       - /root/.cache/huggingface/hub/models--Qwen--Qwen3-Embedding-0.6B/snapshots/97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3
       - --served-model-name
-      - qwen3-embedding-0.6b
+      - Qwen/Qwen3-Embedding-0.6B
       - --runner
       - pooling
       - --host
@@ -34,7 +34,7 @@ services:
     environment:
       HF_HUB_OFFLINE: "1"
     labels:
-      served_model: qwen3-embedding-0.6b
+      served_model: Qwen/Qwen3-Embedding-0.6B
       model_path: Qwen/Qwen3-Embedding-0.6B
       deployment: template-vllm
       engine_image: nearaidev/vllm

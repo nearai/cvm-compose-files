@@ -4,6 +4,7 @@
   run.py [--base <rev>]   all guards; diff rules need a base
   run.py --self-test      every rule against built-in red and green inputs
   run.py --render <file>  rendered compose JSON of one file
+  run.py --list-deployables  every deployable compose file, one per line
   run.py --noop <rev>     rendered diff of every deployable between <rev> and the working tree
   run.py --write-expected rewrite ci/data/expected.json from the working tree
 """
@@ -336,11 +337,15 @@ def main():
     ap.add_argument("--self-test", action="store_true")
     ap.add_argument("--base")
     ap.add_argument("--render")
+    ap.add_argument("--list-deployables", action="store_true")
     ap.add_argument("--noop")
     ap.add_argument("--write-expected", action="store_true")
     a = ap.parse_args()
     if a.self_test:
         return self_test()
+    if a.list_deployables:
+        print("\n".join(Tree().deployables()))
+        return 0
     if a.render:
         sa = load_json(Tree(), SERVICES, {})
         print(json.dumps(render_dir(ROOT, a.render, env_lines(sa)), indent=2, sort_keys=True))

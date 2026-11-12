@@ -27,7 +27,7 @@ downloaders and monitoring. Hosts run a file from a release tag `v0.0.N`.
 | path | contents |
 |---|---|
 | `prod/` | every deployable compose file, flat |
-| `docker/<dir>/` | build context of one published image; frozen once published (read it at the image's source commit) |
+| `docker/<dir>/` | build context of one published image; frozen once merged (read it at the image's source commit) |
 | `ci/` | the gate: `run.py`, guards in `checks/`, `lib/`, tool configs in `config/`, two templates in `templates/` |
 | `ci/data/` | allowlists, waivers, the legacy list and expected findings; they change with what they record |
 | `docs/` | usage docs, at most one per deployable |
