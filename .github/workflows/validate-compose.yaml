@@ -7,22 +7,22 @@ on:
 permissions:
   contents: read
 
-# One dedicated runner serves this job: a newer push to the same ref cancels
-# the superseded run instead of queueing behind it.
+# A newer push to the same ref cancels the superseded validation run.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   validate:
-    # Same-repo pushes/PRs run on the dedicated CI runner (ci-build-1, label
-    # ci-cvm-validate, no deploy credentials); fork PRs fall back to
-    # GitHub-hosted. A fork could edit this expression, so the enforcement is a
-    # root-owned job-started hook on that runner that refuses fork pull requests.
-    runs-on: ${{ (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","ci-cvm-validate"]') || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+
+      - name: Test publisher provenance verification
+        run: |
+          docker run --rm -v "$PWD:/repo:ro" -w /repo ruby:3.3-alpine \
+            sh -c 'apk add --no-cache python3 jq >/dev/null && python3 scripts/test_publisher_provenance.py'
 
       - name: Validate OTel label contracts
         run: |

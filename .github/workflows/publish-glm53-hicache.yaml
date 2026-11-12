@@ -35,7 +35,7 @@ jobs:
       attestations: write
       artifact-metadata: write
       id-token: write
-    runs-on: [self-hosted, infra]
+    runs-on: ubuntu_large_x64
     timeout-minutes: 120
     defaults:
       run:
@@ -79,6 +79,9 @@ jobs:
             da4f3668374d32ecf880c369fad149e64cf37c921b5473c4d498261210894652
 
           echo "IMAGE_REF=${REGISTRY}/${IMAGE_REPOSITORY}:${IMAGE_TAG}" >> "$GITHUB_ENV"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Log in to Docker Hub
         uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v3.7.0
@@ -157,6 +160,8 @@ jobs:
             --entrypoint=bash "$IMAGE_IMMUTABLE_REF" \
             /usr/share/nearai/glm53-hicache/test-cpu.sh | tee cpu-tests.txt
 
+      # Normalize current SLSA v1 and older v0.2 provenance so resume_digest
+      # keeps the same source, revision, context, and base-image policy.
       - name: Verify embedded BuildKit provenance and SBOM
         env:
           SOURCE_REVISION: ${{ inputs.source_revision }}
@@ -166,7 +171,23 @@ jobs:
             --format '{{json .Provenance.SLSA}}' \
             "$IMAGE_IMMUTABLE_REF" > buildkit-provenance.json
           jq -e --arg source_revision "$SOURCE_REVISION" \
-            '.buildType == "https://mobyproject.org/buildkit@v1" and
+            '(if has("buildDefinition") or has("runDetails") then
+               if has("buildType") or has("metadata") or has("materials") or
+                  .buildDefinition.buildType != "https://github.com/moby/buildkit/blob/master/docs/attestations/slsa-definitions.md" or
+                  (.runDetails.metadata | type) != "object" or
+                  (.buildDefinition.resolvedDependencies | type) != "array"
+               then error("Unsupported or mixed BuildKit provenance schema")
+               else {
+                 buildType: "https://mobyproject.org/buildkit@v1",
+                 metadata: {
+                   buildStartedOn: .runDetails.metadata.startedOn,
+                   buildFinishedOn: .runDetails.metadata.finishedOn,
+                   "https://mobyproject.org/buildkit@v1#metadata": .runDetails.metadata.buildkit_metadata
+                 },
+                 materials: .buildDefinition.resolvedDependencies
+               } end
+             else . end) |
+             .buildType == "https://mobyproject.org/buildkit@v1" and
              .metadata.buildStartedOn != null and
              .metadata.buildFinishedOn != null and
              .metadata["https://mobyproject.org/buildkit@v1#metadata"].vcs.source == "https://github.com/nearai/cvm-compose-files" and
