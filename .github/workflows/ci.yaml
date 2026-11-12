@@ -183,7 +183,7 @@ jobs:
           run() {
             docker run --rm --network none -v "$PWD:/repo:ro" -w /repo \
               -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0=/repo \
-              "$GITLEAKS_IMAGE" "$@" --config ci/config/gitleaks.toml --gitleaks-ignore-path ci/data/gitleaks.ignore --redact --verbose --no-banner
+              "$GITLEAKS_IMAGE" "$@" --config ci/config/gitleaks.toml --redact --verbose --no-banner
           }
           run dir .
           if [ -n "$BASE" ]; then

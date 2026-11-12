@@ -39,7 +39,7 @@ FIXED = {
     "ci/checks/layout.py", "ci/checks/status.py", "ci/checks/pins.py", "ci/checks/privacy.py", "ci/checks/public.py",
     "ci/checks/frozen.py", "ci/checks/claude.py",
     "ci/data/legacy.txt", "ci/data/images.allow", "ci/data/services.allow.json", "ci/data/public.json",
-    "ci/data/exceptions.json", "ci/data/expected.json", "ci/data/gitleaks.ignore",
+    "ci/data/exceptions.json", "ci/data/expected.json",
     "ci/config/yamllint.yaml", "ci/config/gitleaks.toml",
     "ci/templates/sglang.yaml", "ci/templates/vllm.yaml",
 }
