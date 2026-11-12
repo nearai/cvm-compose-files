@@ -18,7 +18,8 @@ AGENT = re.compile(r"^\.claude/agents/([a-z][a-z0-9-]*)\.md$")
 RULE_FM = re.compile(r'\A---\npaths:\n((?:  - "[^"\n]+"\n)+)---\n')
 GLOB = re.compile(r"^[A-Za-z0-9._-]+(?:/[A-Za-z0-9._*-]+)*$")
 # A missing tools: line inherits every tool, so the field is required and read-only.
-AGENT_FM = re.compile(r"\A---\nname: ([^\n]*)\ndescription: ([^\n]*)\ntools: ([^\n]*)\nmodel: ([^\n]*)\n---\n")
+AGENT_FM = re.compile(
+    r"\A---\nname: ([^\n]*)\ndescription: ([^\n]*)\ntools: ([^\n]*)\nmodel: ([^\n]*)\nmaxTurns: ([^\n]*)\n---\n")
 READ_ONLY = {"Read", "Grep", "Glob"}
 MODELS = {"inherit", "sonnet", "opus", "haiku"}
 DENY = re.compile(r"^(Read|Edit|Bash|WebFetch)\([^()\n]+\)$|^WebFetch$")
@@ -123,8 +124,9 @@ def check_agent(head, p):
     text, out = head.text(p), []
     m = AGENT_FM.match(text)
     if not m:
-        return [Finding(p, 1, "claude.agent", "frontmatter must be exactly name, description, tools, model")]
-    name, desc, tools, model = m.groups()
+        return [Finding(p, 1, "claude.agent",
+                        "frontmatter must be exactly name, description, tools, model, maxTurns")]
+    name, desc, tools, model, turns = m.groups()
     if name != AGENT.match(p).group(1):
         out.append(Finding(p, 2, "claude.agent", "name must equal the file stem"))
     if not desc or len(desc) > 300 or re.search(r": | #|^[\"'&*!|>%@`\[{]", desc):
@@ -133,6 +135,8 @@ def check_agent(head, p):
         out.append(Finding(p, 4, "claude.agent", "tools must be a subset of Read, Grep, Glob"))
     if model not in MODELS:
         out.append(Finding(p, 5, "claude.agent", f"model must be one of {', '.join(sorted(MODELS))}"))
+    if not re.fullmatch(r"[1-9][0-9]?", turns):
+        out.append(Finding(p, 6, "claude.agent", "maxTurns must be a number from 1 to 99"))
     if "\n## Output\n" not in text[m.end():]:
         out.append(Finding(p, 0, "claude.agent", "body needs an ## Output section"))
     if re.search(r"(?m)^@\S", text):
@@ -200,7 +204,7 @@ def check(ctx):
 
 OK_RULE = '---\npaths:\n  - "prod/*.yaml"\n---\n\n# prod\n\n- Start from a template.\n'
 OK_AGENT = ("---\nname: rev\ndescription: Read-only review. Use proactively.\ntools: Read, Grep, Glob\n"
-            "model: inherit\n---\n\nYou review.\n\n## Output\n\nVerdict.\n")
+            "model: inherit\nmaxTurns: 20\n---\n\nYou review.\n\n## Output\n\nVerdict.\n")
 LONG = "- Every deployable is pinned and listed once in the status table.\n"
 FILES = {
     AGENTS: "# AGENTS.md\n\n- `prod/`: [prod](.claude/rules/prod.md).\n- Review: [review](.claude/rules/review.md).\n"
@@ -238,6 +242,10 @@ CASES = [
     ("agent with Write", "claude.agent", _with(".claude/agents/rev.md", OK_AGENT.replace("Glob\n", "Glob, Write\n")),
      None),
     ("agent with Edit", "claude.agent", _with(".claude/agents/rev.md", OK_AGENT.replace("Glob\n", "Glob, Edit\n")), None),
+    ("agent without maxTurns", "claude.agent",
+     _with(".claude/agents/rev.md", OK_AGENT.replace("maxTurns: 20\n", "")), None),
+    ("agent with unbounded maxTurns", "claude.agent",
+     _with(".claude/agents/rev.md", OK_AGENT.replace("maxTurns: 20", "maxTurns: 0")), None),
     ("agent without tools", "claude.agent",
      _with(".claude/agents/rev.md", OK_AGENT.replace("tools: Read, Grep, Glob\n", "")), None),
     ("agent without name", "claude.agent", _with(".claude/agents/rev.md", OK_AGENT.replace("name: rev\n", "")), None),
