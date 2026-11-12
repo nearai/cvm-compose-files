@@ -36,6 +36,9 @@ GUARDS = [layout, status, pins, privacy, public, frozen, claude]
 RULES = ["run.render", "exceptions.format", "exceptions.unused"]
 ALL_RULES = RULES + [r for g in GUARDS for r in g.RULES]
 ENTRY_KEYS = {"rule", "path", "sha256", "reason", "remove_when"}
+# Rules that guard the agent setup and the waivers themselves.
+UNWAIVABLE_PREFIX = ("exceptions.", "claude.")
+UNWAIVABLE = {"layout.claude-md", "layout.agent-file"}
 
 
 class Context:
@@ -77,8 +80,11 @@ def apply_exceptions(ctx, findings):
         if not isinstance(e, dict) or set(e) != ENTRY_KEYS or not all(isinstance(e[k], str) and e[k] for k in e):
             out.append(Finding(EXCEPTIONS, 0, "exceptions.format", f"{where}: needs exactly {sorted(ENTRY_KEYS)}"))
             continue
-        if e["rule"] not in ALL_RULES or e["rule"].startswith("exceptions."):
+        if e["rule"] not in ALL_RULES:
             out.append(Finding(EXCEPTIONS, 0, "exceptions.format", f"{where}: unknown rule"))
+            continue
+        if e["rule"].startswith(UNWAIVABLE_PREFIX) or e["rule"] in UNWAIVABLE:
+            out.append(Finding(EXCEPTIONS, 0, "exceptions.format", f"{where}: rule cannot be waived"))
             continue
         if re.search(r"[*?\[\]]", e["path"]) or not ctx.head.has(e["path"]):
             out.append(Finding(EXCEPTIONS, 0, "exceptions.format", f"{where}: path must be one existing file"))
@@ -226,6 +232,13 @@ RUN_CASES = [
     ("render failure", "run.render", {"prod/a.yaml": "x"}, None, {"prod/a.yaml": "ERROR"}),
     ("exception with a glob", "exceptions.format",
      {"prod/a.bin": "x", "ci/data/exceptions.json": json.dumps(GOOD_EX + [dict(GOOD_EX[0], path="prod/*.bin")])}, None),
+    ("waiver of a claude rule", "exceptions.format",
+     {"prod/a.bin": "x", ".claude/settings.json": "{}", "ci/data/exceptions.json": json.dumps(
+         GOOD_EX + [dict(GOOD_EX[0], rule="claude.settings", path=".claude/settings.json",
+                         sha256=sha256(".claude/settings.json"))])}, None),
+    ("waiver of layout.claude-md", "exceptions.format",
+     {"prod/a.bin": "x", "CLAUDE.md": "x", "ci/data/exceptions.json": json.dumps(
+         GOOD_EX + [dict(GOOD_EX[0], rule="layout.claude-md", path="CLAUDE.md", sha256=sha256("CLAUDE.md"))])}, None),
     ("unused exception", "exceptions.unused",
      {"prod/a.yaml": "x", "ci/data/exceptions.json": json.dumps([dict(GOOD_EX[0], path="prod/a.yaml")])}, None),
 ]

@@ -40,6 +40,8 @@ Read the rule file for a path before you change files under it; Claude Code also
 ## Hard rules (CI fails)
 - Paths follow the layout rules in `ci/checks/layout.py` or are listed in `ci/data/legacy.txt`, which
   only shrinks. No binaries, bytecode, notebooks, logs or secret files. Size cap per file.
+- Agent instruction and config files (`CLAUDE*.md`, `AGENTS*.md`, `.claude/`, `.mcp.json`, `.cursorrules`
+  and the like) exist only at the paths listed under Layout.
 - Every image is `repo@sha256:<64 hex>` and has a row in `ci/data/images.allow`.
 - Every model is pinned to a 40-hex revision. `--trust-remote-code` only with a pinned revision.
 - No `build`, `dockerfile_inline`, `extends`, `include` or `env_file` in deployable files.
@@ -60,7 +62,8 @@ Read the rule file for a path before you change files under it; Claude Code also
   one candidate per serving group.
 - New paths follow Naming. Service key == `container_name`. Served names never change in place.
 - Waivers live only in `ci/data/exceptions.json`: `rule`, exact `path`, `sha256` of the matched text,
-  `reason`, `remove_when`. Never copy the matched text into the entry or the PR.
+  `reason`, `remove_when`. Never copy the matched text into the entry or the PR. `claude.*`,
+  `layout.claude-md` and `layout.agent-file` cannot be waived.
 
 ## Naming
 Lowercase, `-` between tokens. No lifecycle words (new, old, test, canary, candidate, final, `v<N>`,

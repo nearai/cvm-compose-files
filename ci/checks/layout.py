@@ -9,6 +9,7 @@ from common import (
 RULES = [
     "layout.path", "layout.ext", "layout.secret-file", "layout.size", "layout.services", "layout.workflow-set",
     "layout.legacy", "layout.yaml", "layout.w1", "layout.w2", "layout.w3", "layout.all-green", "layout.claude-md",
+    "layout.agent-file",
 ]
 DIFF_RULES = ["layout.legacy"]
 
@@ -23,6 +24,14 @@ PUBLISH = re.compile(r"^\.github/workflows/publish-(?P<dir>[a-z0-9][a-z0-9.-]*)\
 DOCS = re.compile(r"^(README|AGENTS|CLAUDE|VERIFYING|SECURITY)\.md$|^docs/[a-z0-9._-]+\.md$")
 # Shared Claude Code files only; ci/checks/claude.py checks their content.
 CLAUDE_DIR = re.compile(r"^\.claude/(settings\.json|(rules|agents)/[a-z][a-z0-9-]*\.md)$")
+# Files coding agents load as instructions or config. Only the root CLAUDE.md and AGENTS.md and the
+# CLAUDE_DIR paths may exist; anywhere else an agent working there would pick them up.
+AGENT_FILE = re.compile(
+    r"(?i)(^|/)((CLAUDE|AGENTS|GEMINI)[^/]*\.md|\.mcp\.json|\.cursorrules|\.windsurfrules|\.clinerules"
+    r"|\.aider[^/]*|copilot-instructions\.md)$"
+    r"|(^|/)\.(claude|cursor|gemini|codex|windsurf|clinerules|continue|roo|kiro|junie)/"
+    r"|(^|/)\.github/(instructions|prompts|chatmodes)/"
+)
 FIXED = {
     ".gitignore", ".gitattributes", ".github/pull_request_template.md",
     ".github/workflows/ci.yaml", ".github/workflows/auto-tag.yaml",
@@ -66,13 +75,16 @@ def check(ctx):
     legacy = legacy_lines(head) or []
     for p in head.paths:
         data = head.data(p)
-        if not conforms(p, head) and not any(p == e or (e.endswith("/") and p.startswith(e)) for e in legacy):
+        if AGENT_FILE.search(p) and p not in ("CLAUDE.md", "AGENTS.md") and not CLAUDE_DIR.match(p):
+            out.append(Finding(p, 0, "layout.agent-file", "agent instruction or config file outside the root "
+                               "CLAUDE.md, AGENTS.md and .claude/ rules, agents and settings.json"))
+        elif not conforms(p, head) and not any(p == e or (e.endswith("/") and p.startswith(e)) for e in legacy):
             rule = "layout.workflow-set" if p.startswith(".github/workflows/") else "layout.path"
             out.append(Finding(p, 0, rule, "path does not follow the layout rules and is not in ci/data/legacy.txt"))
         elif p.startswith("docs/") and LIFECYCLE.search(p[len("docs/"):]):
             out.append(Finding(p, 0, "layout.path", "lifecycle or host token in a docs path"))
         if not DOCKER.match(p) and not NEW_PATH.match(p) and p not in FIXED and not DOCS.match(p) \
-                and not any(p == e or (e.endswith("/") and p.startswith(e)) for e in legacy):
+                and not AGENT_FILE.search(p) and not any(p == e or (e.endswith("/") and p.startswith(e)) for e in legacy):
             out.append(Finding(p, 0, "layout.path", "path segments must be lowercase [a-z0-9._-], at most 3 levels"))
         if len(p) > 100 and not DOCKER.match(p):
             out.append(Finding(p, 0, "layout.path", "path longer than 100 characters"))
@@ -283,8 +295,18 @@ CASES = [
      BASE_FILES),
     ("claude dir shapes", None, dict(BASE_FILES, **{".claude/rules/prod.md": "x\n", ".claude/agents/a.md": "x\n",
                                                     ".claude/settings.json": "{}\n"}), BASE_FILES),
-    ("claude command file", "layout.path", dict(BASE_FILES, **{".claude/commands/x.md": "x\n"}), BASE_FILES),
-    ("claude local settings", "layout.path", dict(BASE_FILES, **{".claude/settings." + "local.json": "{}\n"}), BASE_FILES),
+    ("claude command file", "layout.agent-file", dict(BASE_FILES, **{".claude/commands/x.md": "x\n"}), BASE_FILES),
+    ("claude local settings", "layout.agent-file", dict(BASE_FILES, **{".claude/settings." + "local.json": "{}\n"}),
+     BASE_FILES),
+    ("CLAUDE.md in a new build dir", "layout.agent-file",
+     dict(BASE_FILES, **{"docker/sglang-y-r1/Dockerfile": "FROM a\n", "docker/sglang-y-r1/CLAUDE.md": "x\n"}),
+     BASE_FILES),
+    ("AGENTS.override.md in prod", "layout.agent-file", dict(BASE_FILES, **{"prod/AGENTS.override.md": "x\n"}),
+     BASE_FILES),
+    ("rules dir in a build dir", "layout.agent-file",
+     dict(BASE_FILES, **{"docker/sglang-x-r1/.claude/rules/x.md": "x\n"}), BASE_FILES),
+    ("MCP config", "layout.agent-file", dict(BASE_FILES, **{".mcp.json": "{}\n"}), BASE_FILES),
+    ("cursor rules", "layout.agent-file", dict(BASE_FILES, **{"docker/sglang-x-r1/.cursorrules": "x\n"}), BASE_FILES),
     ("all-green misses a job", "layout.all-green",
      dict(BASE_FILES, **{".github/workflows/ci.yaml": WF_OK.replace("guards, lint, secrets]", "guards, secrets]")}),
      BASE_FILES),
