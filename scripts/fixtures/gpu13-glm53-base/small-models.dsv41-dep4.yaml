@@ -270,6 +270,7 @@ x-privacy-filter-common: &privacy-filter-common
       import asyncio
       import collections
       import concurrent.futures
+      import contextlib
       import copy
       import functools
       import gc
@@ -703,7 +704,9 @@ x-privacy-filter-common: &privacy-filter-common
       def _metrics_snapshot():
           with _metrics_lock:
               counts = dict(_outcome_counts)
-          return {"in_flight": _gate.running, "queued": len(_gate.waiters), "detached": _detached, **counts}
+              ok_seconds = round(_latency_sum["ok"], 3)
+          return {"in_flight": _gate.running, "queued": len(_gate.waiters), "detached": _detached, **counts,
+                  "ok_seconds_sum": ok_seconds}
 
 
       def _gpu_watchdog():
@@ -761,7 +764,22 @@ x-privacy-filter-common: &privacy-filter-common
                       await send({"type": "http.response.body", "body": b'{"error":"internal_error"}'})
 
 
-      app = FastAPI()
+      @contextlib.asynccontextmanager
+      async def _lifespan(app):
+          yield
+          # Shutdown runs after every open request has been answered (each ends by its
+          # deadline). A window still running on a worker thread would hold the exit
+          # (worker threads are joined at interpreter exit) until Docker kills the
+          # container, so leave without it.
+          with _work_lock:
+              active = _work_active
+          if active:
+              _log("filter_shutdown", in_flight=active)
+              sys.stderr.flush()
+              os._exit(0)
+
+
+      app = FastAPI(lifespan=_lifespan)
       app.add_middleware(_ContentFreeErrors)
 
 

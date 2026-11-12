@@ -300,7 +300,7 @@ COLOC_ENGINE_JOB = f"sglang-{COLOC_ENGINE}"
 # The move to the SGLang v0.5.23 secure image then renames --cuda-graph-max-bs to --cuda-graph-max-bs-decode and sets
 # engine_image 6de632a5e942, sglang_revision 0.5.23-near-secure and config_variant ...-prio-v0523.
 COLOC_BLOCK_HASHES = {
-    "x-privacy-filter-common": "79ce7f140d785fef754511475944329af64dbfd9fb826472bdc0822bc3f0cca6",
+    "x-privacy-filter-common": "80d987bd5d4900d30402ced2970c31bec66d894401ca6e6c8c428c40259657d4",
     COLOC_ENGINE: "6340cb36b826d7fee3db806bcb2c8ec23a7391a17eb5f5ff1760df80d350acda",
     COLOC_ENGINE_JOB: "fe072375f6e7445e4bddf78ed32dab91346f46f2dcdfc85bf3c753855c8c7e4e",
 }
@@ -1179,6 +1179,13 @@ class Gpu13FleetTest(unittest.TestCase):
         classify = self.privacy_filter_source().split("async def classify(", 1)[1]
         self.assertIn('BackgroundTask(os._exit, 1) if exit_after else None', classify)
         self.assertIn('headers={"Retry-After": "2"}', classify)
+
+    def test_privacy_filter_shutdown_does_not_wait_for_a_running_window(self) -> None:
+        source = self.privacy_filter_source()
+        self.assertIn("app = FastAPI(lifespan=_lifespan)", source)
+        lifespan = source.split("async def _lifespan(app):", 1)[1].split("\napp = ", 1)[0]
+        self.assertLess(lifespan.index("yield"), lifespan.index("os._exit(0)"))
+        self.assertIn("if active:", lifespan)
 
     def test_privacy_filter_admission_wait_is_bounded_by_the_deadline(self) -> None:
         classify = self.privacy_filter_source().split("async def classify(", 1)[1]
