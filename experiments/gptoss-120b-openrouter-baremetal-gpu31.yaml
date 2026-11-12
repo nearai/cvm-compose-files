@@ -118,7 +118,7 @@ x-gptoss-engine: &gptoss-engine
     - --port=8000
 
 x-vllm-proxy-common: &vllm-proxy-common
-  image: nearaidev/vllm-proxy-rs@sha256:e2893ff46404d112bc39c9e77de6c20f6a889227f99a49f7190bff5b2063d441  # inference-proxy main 73a0d88
+  image: nearaidev/vllm-proxy-rs@sha256:31ac94956077df3b48a3773a1530319aa415d1a8cd8ac2ed2e97b43f7d3836b3  # inference-proxy main 1f02271
   # Same fd limits as the prod proxies. Without them one pooled proxy hits EMFILE at ~500 concurrent streams.
   ulimits:
     nofile:
