@@ -1,0 +1,14 @@
+base_image=lmsysorg/sglang@sha256:f832b5c39559c9caa900b22ad37c76fcce66470676855c42052102c537812f1f
+base_image_linux_amd64_manifest=sha256:f7876bef696ccf9cf75a2bf7ccb82970f5fac577f082fb8ca95c9a59d2160eb5
+source_repository=https://github.com/sgl-project/sglang
+source_revision=297e54fd105e974cdf401e5b4d20253a22c16f90
+source_build=https://github.com/sgl-project/sglang/actions/runs/40978390987
+source_image_tag=lmsysorg/sglang:v0.5.23
+patch_source=https://github.com/nearai/cvm-compose-files
+patch_series=docker/sglang-v0523-secure/SERIES (applied in order by apply-patches.py)
+patch_origin=docker/sglang-glm53-v0523/patches/{05-rid-abort-exact-match,14-admin-auth-redaction,15-customer-data-log-redaction}.diff (byte-identical)
+security_python_requirement=nltk==3.10.3 sha256:ff9598a8e20518ee0d557745890cc4435b9578489e2dcbc69c4f81fa060caf7c
+security_python_requirement=defusedxml==0.7.1 sha256:a352e7e428770286cc899e2542b6cdaedb2b4953ff269a210103ec58f6198a61
+removed_runtime_artifact=/opt/nvidia/nsight-compute/2025.3.1/host/target-linux-x64/plugins/efa_metrics/nic_sampler
+removed_runtime_artifact=/opt/nvidia/nsight-systems-cli/2026.4.1/target-linux-x64/plugins/efa_metrics/nic_sampler
+build_recipe=docker/sglang-v0523-secure/Dockerfile
