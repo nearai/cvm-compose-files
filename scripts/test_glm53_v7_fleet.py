@@ -296,8 +296,9 @@ COLOC_ENGINE_JOB = f"sglang-{COLOC_ENGINE}"
 # #336's rollout then adds --enable-priority-scheduling --disable-priority-preemption and config_variant qwen38-gpu2-coloc-fa3-m96-prio.
 # The move to the SGLang v0.5.23 secure image then renames --cuda-graph-max-bs to --cuda-graph-max-bs-decode and sets
 # engine_image 6de632a5e942, sglang_revision 0.5.23-near-secure and config_variant ...-prio-v0523.
+# x-privacy-filter-common then runs the MoE experts as grouped GEMMs (PRIVACY_EXPERTS_IMPL=grouped_mm).
 COLOC_BLOCK_HASHES = {
-    "x-privacy-filter-common": "8b0fa38844cc279cf27d02250fd37ecb7125a4e2fd0dec08fb66f4f35ee55c9e",
+    "x-privacy-filter-common": "c421728515cbffa9449ab5a4cfa925bea5b922c9d5b805a79b38ce1416be7492",
     COLOC_ENGINE: "6340cb36b826d7fee3db806bcb2c8ec23a7391a17eb5f5ff1760df80d350acda",
     COLOC_ENGINE_JOB: "fe072375f6e7445e4bddf78ed32dab91346f46f2dcdfc85bf3c753855c8c7e4e",
 }

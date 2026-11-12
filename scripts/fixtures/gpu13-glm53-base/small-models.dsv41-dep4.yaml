@@ -325,6 +325,10 @@ x-privacy-filter-common: &privacy-filter-common
       MAX_LENGTH = max(8, _env("PRIVACY_MAX_LENGTH", 4096, int))
       STRIDE = max(0, min(_env("PRIVACY_STRIDE", 256, int), MAX_LENGTH - 1))
       ATTN_IMPL = _env("PRIVACY_ATTN_IMPL", "sdpa", str)
+      # MoE experts kernel. Unset keeps the library default, which resolves to the per-expert "eager" loop for
+      # this model; "grouped_mm" runs all 128 experts of a layer as one grouped GEMM.
+      EXPERTS_IMPL = _env("PRIVACY_EXPERTS_IMPL", "", str)
+      _EXPERTS_KW = {"experts_implementation": EXPERTS_IMPL} if EXPERTS_IMPL else {}
       GPU_MEM_LIMIT_GB = max(1.0, _env("GPU_MEM_LIMIT_GB", 36.0, float))
       WATCHDOG_INTERVAL_S = max(1.0, _env("WATCHDOG_INTERVAL_S", 30.0, float))
       FILTER_GPU_MEM_FRACTION = min(1.0, max(0.01, _env("FILTER_GPU_MEM_FRACTION", 0.25, float)))
@@ -348,6 +352,7 @@ x-privacy-filter-common: &privacy-filter-common
               device=0 if USE_CUDA else -1,
               torch_dtype=torch.bfloat16,
               trust_remote_code=True,
+              model_kwargs=_EXPERTS_KW,
           )
       else:
           try:
@@ -359,7 +364,7 @@ x-privacy-filter-common: &privacy-filter-common
                   device=0 if USE_CUDA else -1,
                   torch_dtype=torch.bfloat16,
                   trust_remote_code=True,
-                  model_kwargs={"attn_implementation": ATTN_IMPL},
+                  model_kwargs={"attn_implementation": ATTN_IMPL, **_EXPERTS_KW},
               )
               cfg = getattr(getattr(clf, "model", None), "config", None)
               # The private field may change; try the public form too, and safely
@@ -392,6 +397,7 @@ x-privacy-filter-common: &privacy-filter-common
                       device=0 if USE_CUDA else -1,
                       torch_dtype=torch.bfloat16,
                       trust_remote_code=True,
+                      model_kwargs=_EXPERTS_KW,
                   )
           except Exception as exc:
               error_text = str(exc).lower()
@@ -426,8 +432,11 @@ x-privacy-filter-common: &privacy-filter-common
                   device=0 if USE_CUDA else -1,
                   torch_dtype=torch.bfloat16,
                   trust_remote_code=True,
+                  model_kwargs=_EXPERTS_KW,
               )
       STRIDE = max(0, min(STRIDE, MAX_LENGTH - 1))
+      print(json.dumps({"event": "filter_config", "max_length": MAX_LENGTH, "experts_implementation": getattr(
+          getattr(getattr(clf, "model", None), "config", None), "_experts_implementation", None)}), flush=True)
       # Cap the pipeline's per-forward window. The pipeline chunks inputs longer than
       # this into model_max_length-token windows (see the classify() stride= arg below).
       clf.tokenizer.model_max_length = MAX_LENGTH
@@ -606,6 +615,10 @@ x-privacy-filter-common: &privacy-filter-common
     - PRIVACY_MAX_LENGTH=131072
     - PRIVACY_STRIDE=256
     - PRIVACY_ATTN_IMPL=sdpa
+    # Run each layer's 128 experts as one grouped GEMM instead of the library's
+    # per-expert loop: several times faster, and much less slowed by other work
+    # on the same GPU.
+    - PRIVACY_EXPERTS_IMPL=grouped_mm
   restart: unless-stopped
   stop_grace_period: 5m
   logging: *logging-conf
