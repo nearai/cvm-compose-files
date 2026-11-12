@@ -1,7 +1,8 @@
 # AGENTS.md
 
 Rules for everyone who changes or reviews this repo, people and agents. CI enforces what it can;
-the author and the reviewer cover the rest. `CLAUDE.md` only imports this file.
+the author and the reviewer cover the rest. `CLAUDE.md` only imports this file. The rule files under
+Area rules are part of these rules. Each rule is stated in one file; other files link to it.
 
 ## Purpose
 Deployable Docker Compose files for confidential inference, plus the build contexts of the images
@@ -15,10 +16,20 @@ build sources and model revisions, except where VERIFYING.md lists a known gap.
   and `ci/data/`, data files that ride along with the changes they record. No other subdirs.
 - `docs/` usage docs, at most one per deployable: `docs/<file stem>.md`.
 - `.github/` `ci.yaml`, `auto-tag.yaml`, `publish-<docker dir>.yaml` workflows, PR template.
+- `.claude/` area rules (`rules/`), read-only review agents (`agents/`), a deny-only `settings.json`.
 - Legacy, listed in `ci/data/legacy.txt`, shrinking: older deployable and publish workflow names,
   `scripts/` (old validators, no new files), root `cleanup-hf-model.yaml`, and `adapters/`, kept
   until no release tag that may be redeployed for rollback still fetches from `main`.
 - No other top-level dirs.
+
+## Area rules
+Read the rule file for a path before you change files under it; Claude Code also loads it by itself.
+- `prod/`, `ci/templates/`: [.claude/rules/prod.md](.claude/rules/prod.md), names, labels, lifecycle.
+- `docker/`: [.claude/rules/docker.md](.claude/rules/docker.md), build dirs and image tags.
+- `ci/`: [.claude/rules/ci.md](.claude/rules/ci.md), guard code, data files, self-tests.
+- `.github/workflows/`: [.claude/rules/workflows.md](.claude/rules/workflows.md), how a workflow is written.
+- Every review: [.claude/rules/review.md](.claude/rules/review.md). Agents in `.claude/agents/` only
+  read and report; the author or reviewer decides.
 
 ## Commands
 `ci/run.py` renders with the pinned compose image in `ci/lib/common.py`, as CI does; never local compose.
@@ -51,40 +62,15 @@ build sources and model revisions, except where VERIFYING.md lists a known gap.
 - Waivers live only in `ci/data/exceptions.json`: `rule`, exact `path`, `sha256` of the matched text,
   `reason`, `remove_when`. Never copy the matched text into the entry or the PR.
 
-## Naming and versioning
+## Naming
 Lowercase, `-` between tokens. No lifecycle words (new, old, test, canary, candidate, final, `v<N>`,
 dates) and no host names in `prod/` or `docs/` paths or in workflow, job or step `name:` fields.
-Version tokens are allowed in `docker/` dir names and so in `publish-<dir>.yaml` file names. CI
-checks paths, service-key equality and served-name stability; review checks the rest.
-- Serving file: `prod/<checkpoint>-<engine>-<topology>[-<tier>].yaml`. `checkpoint` = lowercased HF repo
-  name; `engine` = `sglang` | `vllm`; `topology` = `tp<N>` | `dep<N>` | `dp<N>`, `x<R>` for replicas;
-  `tier` only to tell two files apart (`base`, `long`).
-- Pack: `prod/pack-<purpose>.yaml`. Utility or any non-serving project: `prod/util-<verb>-<object>.yaml`.
-- Build dir: `docker/<engine>-<upstream>-<scope>-r<N>/`, e.g. `sglang-v0.5.23-glm53-r1`. A rebuild is a
-  new dir with `r<N+1>`. Image tag = dir name without `<engine>-`. Compose files pin the digest only.
-- Serving and pack files set no top-level `name:`; utility files set `name:` to the file stem.
-- Service keys: `model-sg-*`, `model-vllm-*`, `proxy-*`, `model-proxy-registrar*`, `model-downloader*`,
-  `nginx*`, `dcgm-*`, `sidecar-*`, `otelcol-contrib`, `hf-cleanup`.
+Version tokens are allowed in `docker/` dir names and so in `publish-<dir>.yaml` file names. Patterns
+per area are in the area rules. CI checks paths, service-key equality and served-name stability;
+review checks the rest against the templates.
 - Served names are public API IDs and never change for a live model. A new model serves its upstream
   Hugging Face `org/repo` ID; quantization, engine and topology never appear in a served name.
-- Engine labels: `served_model`, `model_path`, `deployment` (= file stem), `engine_image`, `instance`,
-  `config_variant`; change `config_variant` when image, command or env changes.
-- Model pin: the engine loads `models--<org>--<repo>/snapshots/<40hex>` offline; the downloader
-  fetches the same repo at the same `--revision`. Env names `UPPER_SNAKE`.
 - Config revision = release tag `v0.0.N` (auto-tag only) plus the file path; never in file names.
-- New compose file: copy a file in `ci/templates/`; keep its line-1 header form, key and service order.
-
-## Retention and lifecycle
-- Status is `live` or `candidate`, only in the README table, never in a compose file.
-- `live` runs in production. A `candidate` is being rolled out now: at most one per serving group
-  (same served-name set), with the same service keys as the live file it replaces, or an announced
-  change with an exception entry.
-- Everything else not in production is deleted. Rollback = redeploy an older tag. Tags never move.
-- Never rename a legacy path in place. A functional change (the rendered config differs) to a legacy
-  file ships as a new standard-named candidate. Comment- or doc-only edits stay in place.
-- Moving a deployed file takes two PRs: add the new file as candidate; the promotion PR deletes the
-  old file, its table row, its legacy line and its doc.
-- Before deleting a file a host may run, check the deployment manager and say so in the PR.
 
 ## Comments and docs
 - Comments say why, at most 2 lines in a row. No history, dates, names, hosts, plans, run IDs, PR
@@ -123,18 +109,3 @@ Everything here is public and copied by others: files, branches, tags, PRs, revi
 - Never change a gate (`ci/` outside `ci/data/`, `ci.yaml`, the workflow set) in the same PR as a
   change it checks. Entries in `ci/data/` (waivers, allowlists, legacy line removals, expected
   findings) may ride along and are listed under Gates in the PR.
-
-## Reviewer checklist (every push, state the head SHA)
-- [ ] Read the rendered diff, not only the YAML.
-- [ ] `expected.json`: a probe line that loses a rule means a weaker guard; reject unless justified.
-- [ ] Image bump: digest from a `main` publish run, signature verifies, no tag-only refs.
-- [ ] New sink, endpoint, port, mount or env var; moved default; removed safety line.
-- [ ] Gate edited together with the thing it gates; waiver text in the PR, not `ci/data/exceptions.json`.
-- [ ] Prose (README, VERIFYING, comments, PR text) says the same as the config and claims no more.
-- [ ] Names of people, partners or customers and other leaks CI cannot see.
-- [ ] New secret-like variable without a secret suffix.
-- [ ] Naming, header, key and service order, labels follow the templates; `config_variant` changed if due.
-- [ ] Docs: one per deployable; links resolve; `CLAUDE.md` is exactly `@AGENTS.md`; this file stays
-      at most 140 lines; the signing-identity table in VERIFYING.md only gains rows.
-- [ ] Changed files updated their references: README table, `ci/data/` (services, images, legacy),
-      VERIFYING.md identities and known gaps.
