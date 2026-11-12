@@ -105,13 +105,13 @@ Everything here is public and copied by others: files, branches, tags, PRs, revi
 - Title and commit subjects: `<prod|docker|ci|docs|repo>: <summary>`, at most 72 chars counting the
   ` (#N)` squash adds; merge commits from updating a branch are exempt.
 - Squash merge only. No force-push after review starts. Never move or delete tags or rewrite history.
-- Merging needs `all-green` and one approval from a non-author, two for gate changes (`ci/` outside
-  `ci/data/`, `ci.yaml`); a `ci/data/`-only change, `expected.json` included, needs one. Settings
-  cannot enforce that per path. A new push dismisses approvals. Agents never approve their own work.
+- Gates: `ci/` outside `ci/data/`, `ci.yaml`, the workflow set, `AGENTS.md`, `CLAUDE.md` and `.claude/`.
+- Merging needs `all-green` and one approval from a non-author, two for a gate change; a
+  `ci/data/`-only change, `expected.json` included, needs one. Settings cannot enforce that per path.
+  A new push dismisses approvals. Agents never approve their own work.
 - Evidence in the PR body: `ci/run.py` green; rendered-diff note for `prod/` changes; `--noop` output
   for comment-only or refactor changes; for image bumps the `main` publish run and the signature
   verification; for deletions the deployment-manager check; every new sink, port, mount, env var,
   moved default or removed safety line named.
-- Never change a gate (`ci/` outside `ci/data/`, `ci.yaml`, the workflow set) in the same PR as a
-  change it checks. Entries in `ci/data/` (waivers, allowlists, legacy line removals, expected
-  findings) may ride along and are listed under Gates in the PR.
+- Never change a gate in the same PR as a change it checks or reviews. Entries in `ci/data/` (waivers,
+  allowlists, legacy line removals, expected findings) may ride along and are listed under Gates in the PR.
