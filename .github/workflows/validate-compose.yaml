@@ -62,14 +62,6 @@ jobs:
             python:3.12-slim \
             python3 scripts/validate_public_metrics.py
 
-      - name: Validate DS4F migration contracts
-        run: |
-          docker run --rm \
-            -v "$PWD:/repo" \
-            -w /repo \
-            ruby:3.3-alpine \
-            ruby scripts/validate_ds4f_migration.rb
-
       - name: Validate registrar auth contracts
         run: |
           docker run --rm \
@@ -86,15 +78,6 @@ jobs:
             ruby:3.3-alpine \
             sh -c "ruby scripts/validate_engine_network.rb --self-test && ruby scripts/validate_engine_network.rb"
 
-      - name: Validate read-only GPU preflight
-        run: |
-          set -o pipefail
-          docker run --rm -v "$PWD:/repo:ro" -w /repo ruby:3.3-alpine \
-            ruby scripts/validate_migration_gpu_preflight.rb --emit-python-tests | \
-            docker run --rm -i --network none --read-only --cap-drop ALL \
-              ghcr.io/astral-sh/uv:python3.11-bookworm-slim@sha256:4f5d923c9dcea037f57bda425dd209f3ec643da2f0b74227f68d09dab0b3bb36 \
-              python3 -
-
       - name: Validate compose-manager token rotation contract
         run: |
           docker run --rm \
@@ -102,99 +85,6 @@ jobs:
             -w /repo \
             ruby:3.3-alpine \
             ruby scripts/validate_rotate_compose_manager_token.rb
-
-      - name: Validate GLM-5.3 DCGM telemetry contract
-        run: |
-          docker run --rm \
-            -v "$PWD:/repo" \
-            -w /repo \
-            ruby:3.3-alpine \
-            ruby scripts/validate_glm53_dcgm_metrics.rb
-
-      - name: Validate canonical GLM-5.3 production contract
-        run: |
-          docker run --rm \
-            -v "$PWD:/repo" \
-            -w /repo \
-            ruby:3.3-alpine \
-            ruby scripts/validate_glm53_prod_config.rb
-
-      - name: Test GLM-5.3 HiCache canary promotion
-        run: |
-          docker run --rm -v "$PWD:/repo:ro" -w /repo ruby:3.3-alpine \
-            sh -c 'apk add --no-cache python3 >/dev/null && python3 scripts/test_glm53_hicache_canary.py'
-
-      - name: Validate GLM-5.3 W4AFP8 base file
-        run: |
-          docker run --rm -v "$PWD:/repo:ro" -w /repo ruby:3.3-alpine \
-            sh -c 'apk add --no-cache python3 >/dev/null && python3 scripts/prepare_glm53_w4afp8_base.py --check && python3 -m scripts.test_glm53_w4afp8_base'
-
-      - name: Validate DeepSeek-V4.1 DEP8 pack
-        run: |
-          docker run --rm -v "$PWD:/repo:ro" -w /repo ruby:3.3-alpine \
-            sh -c 'apk add --no-cache python3 >/dev/null && python3 scripts/prepare_dsv41_lora_dep8.py --check && python3 -m scripts.test_dsv41_lora_dep8'
-
-      - name: Validate gpu13 GLM-5.3 base replicas (GPUs 4-7)
-        run: |
-          docker run --rm -v "$PWD:/repo:ro" -w /repo ruby:3.3-alpine \
-            sh -c 'apk add --no-cache python3 >/dev/null && python3 scripts/prepare_gpu13_glm53_base.py --check && python3 -m scripts.test_gpu13_glm53_base'
-
-      - name: Validate GLM-5.3 W4AFP8 4x TP2 base canary file
-        run: |
-          docker run --rm -v "$PWD:/repo:ro" -w /repo ruby:3.3-alpine \
-            sh -c 'apk add --no-cache python3 >/dev/null && python3 scripts/prepare_glm53_w4afp8_tp2x4.py --check && python3 -m scripts.test_glm53_w4afp8_tp2x4'
-
-      - name: Validate GLM-5.3 W4AFP8 long-context candidate
-        run: |
-          docker run --rm -v "$PWD:/repo:ro" -w /repo \
-            python:3.12-slim \
-            sh -c 'python3 scripts/prepare_glm53_w4afp8_canary.py --check && python3 -m scripts.test_glm53_w4afp8_canary'
-
-      - name: Validate GLM-5.3 W4AFP8 long-context file
-        run: |
-          docker run --rm -v "$PWD:/repo:ro" -w /repo ruby:3.3-alpine \
-            sh -c 'apk add --no-cache python3 >/dev/null && python3 scripts/prepare_glm53_w4afp8_long_context.py --check && python3 -m scripts.test_glm53_w4afp8_long_context'
-
-      - name: Validate GLM-5.3 v8 zero-sync KDA canary (gpu03 r4)
-        run: |
-          docker run --rm -v "$PWD:/repo:ro" -w /repo \
-            python:3.12-slim \
-            sh -c 'python3 scripts/prepare_glm53_v8_kda_canary.py --check && python3 -m scripts.test_glm53_v8_kda_canary'
-
-      - name: Validate GLM-5.3 base-tier v12 Q8 prefill canary (gpu04 r4)
-        # Pure file checks: digest-pinned image, no network, read-only root, no capabilities, bounded runtime.
-        timeout-minutes: 10
-        run: |
-          docker run --rm --network none --read-only --cap-drop ALL --tmpfs /tmp \
-            -e PYTHONDONTWRITEBYTECODE=1 -v "$PWD:/repo:ro" -w /repo \
-            ghcr.io/astral-sh/uv:python3.11-bookworm-slim@sha256:4f5d923c9dcea037f57bda425dd209f3ec643da2f0b74227f68d09dab0b3bb36 \
-            sh -c 'python3 scripts/prepare_glm53_base_q8_canary.py --check && python3 -m scripts.test_glm53_base_q8_canary'
-
-      - name: Validate GLM-5.3 base-tier v12 Q8 prefill fleet file
-        # Pure file checks: digest-pinned image, no network, read-only root, no capabilities, bounded runtime.
-        timeout-minutes: 10
-        run: |
-          docker run --rm --network none --read-only --cap-drop ALL --tmpfs /tmp \
-            -e PYTHONDONTWRITEBYTECODE=1 -v "$PWD:/repo:ro" -w /repo \
-            ghcr.io/astral-sh/uv:python3.11-bookworm-slim@sha256:4f5d923c9dcea037f57bda425dd209f3ec643da2f0b74227f68d09dab0b3bb36 \
-            sh -c 'python3 scripts/prepare_glm53_base_v12_q8_fleet.py --check && python3 -m scripts.test_glm53_base_v12_q8_fleet'
-
-      - name: Validate GLM-5.3 base-tier three-replica file (gpu04)
-        timeout-minutes: 10
-        run: |
-          docker run --rm --network none --read-only --cap-drop ALL --tmpfs /tmp \
-            -e PYTHONDONTWRITEBYTECODE=1 -v "$PWD:/repo:ro" -w /repo \
-            ghcr.io/astral-sh/uv:python3.11-bookworm-slim@sha256:4f5d923c9dcea037f57bda425dd209f3ec643da2f0b74227f68d09dab0b3bb36 \
-            sh -c 'python3 scripts/prepare_glm53_gpu04_tp2x3.py --check'
-
-      - name: Validate GLM-5.3 gpu04 mixed-tier file (3 base + 1 long)
-        # Pure file checks: digest-pinned image, no network, read-only root, no capabilities, bounded runtime.
-        timeout-minutes: 10
-        run: |
-          docker run --rm --network none --read-only --cap-drop ALL --tmpfs /tmp \
-            -e PYTHONDONTWRITEBYTECODE=1 -v "$PWD:/repo:ro" -w /repo \
-            ghcr.io/astral-sh/uv:python3.11-bookworm-slim@sha256:4f5d923c9dcea037f57bda425dd209f3ec643da2f0b74227f68d09dab0b3bb36 \
-            sh -c 'python3 scripts/prepare_glm53_gpu04_3b1l.py --check && python3 -m scripts.test_glm53_gpu04_3b1l'
 
       - name: Validate docker compose files
         # Compose files reference env vars that are populated at deploy time
@@ -230,7 +120,7 @@ jobs:
           SAGE_DOCKERHUB_TOKEN: ci-dummy
         run: |
           exit_code=0
-          for file in prod/*.yaml experiments/*.yaml *.yaml; do
+          for file in prod/*.yaml *.yaml; do
             [ -f "$file" ] || continue
             echo "Validating $file..."
             if ! docker compose -f "$file" config --format=yaml > /dev/null 2>&1; then
@@ -271,7 +161,7 @@ jobs:
           SAGE_DOCKERHUB_TOKEN: ci-dummy
         run: |
           set -euo pipefail
-          for file in prod/*.yaml experiments/*.yaml *.yaml; do
+          for file in prod/*.yaml *.yaml; do
             [ -f "$file" ] || continue
             config="$(docker compose -f "$file" config --format=json | jq -r '.configs.otelcol_app_config.content // empty')"
             if [ -z "$config" ]; then

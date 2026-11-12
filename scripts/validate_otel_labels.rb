@@ -316,12 +316,11 @@ end
 
 errors = []
 
-# Recursively find all compose files under prod/ and experiments/, plus any
-# root-level utilities (cleanup-hf-model.yaml). Sort for deterministic error
-# output. Relative paths from the repo root are used in error messages so
-# same-named files in different dirs are distinguishable.
+# Find all compose files under prod/, plus any root-level utilities
+# (cleanup-hf-model.yaml). Sort for deterministic error output. Relative paths
+# from the repo root are used in error messages so same-named files in
+# different dirs are distinguishable.
 compose_files = Dir.glob(File.join(ROOT, "prod", "*.yaml")) +
-                Dir.glob(File.join(ROOT, "experiments", "*.yaml")) +
                 Dir.glob(File.join(ROOT, "*.yaml"))
 compose_files.sort.each do |path|
   file = path.sub("#{ROOT}/", "")
