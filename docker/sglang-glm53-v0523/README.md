@@ -44,6 +44,7 @@ How the series was built: the fork stack was rebuilt as commits on fc91d24, then
 | 23 | fork-final-prefill-abort-race | fork 4a7929c6ad (upstream PR #34153, open) | adapted (`reqs_to_exclude`, `discard_output_reason`). The scheduler half is only live with the overlap scheduler; prod runs `--disable-overlap-schedule` | unconditional |
 | 24 | fork-glm5-perception-gate | fork 0cf7426be5 / fc91d2403c | tests only (`test/manual/test_glm5_next_perception.py` for GPU runs) | – |
 | 25 | fork-glm53-review-findings | fork e4d313ef03 (remainder) | adapted. GLM video dispatch in the EPD encoder and hybrid-DSA draft state in P/D; prod uses neither | – |
+| 26 | log-format-followup | **new** | log line format follow-up to 15 | unconditional |
 
 Fork commits not carried, because v0.5.23 has them:
 - the GLM-5.3-Flash branch (squash-merged upstream as #36507);

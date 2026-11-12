@@ -32,6 +32,7 @@ token count (v8) and a flag-gated Q8 DSA prefill path for the FP8 NoPE KV layout
 | `kda-zero-sync.diff` | new here (v8, unconditional; tee-bench exp 37) | the logical token count in `KDAAttnBackend.forward_extend` (`layers/attention/linear/kda_backend.py`) only |
 | `dsa-q8-flashmla-sparse.diff` | tee-bench exp 33 Q8 prefill overlay (v9, flag-gated: `--dsa-prefill-backend flashmla_sparse_q8`; tee-bench exp 45b) | `forward_extend` KPool top-k pad and `_forward_flashmla_sparse_q8kv8` head width in `dsa_backend.py`, KPool allowlist in `dsa/dsa_backend_kpool.py` |
 | `admin-auth-redaction.diff` | v13, backport of upstream sglang #41322 + #48518 (unconditional, applied last) | admin auth on `/set_trace_level` and `/load_lora_adapter_from_tensors`; `api_key` / `admin_api_key` / `ssl_keyfile_password` redacted from `/server_info`, `/get_server_info`, the `server_args=` log lines, gRPC server info, crash/request dumps and `ServerArgs.__repr__` |
+| `log-format.diff` | port of `docker/sglang-glm53-v0523` patches 15 and 26 (unconditional, applied last) | log line format; test: `test_log_format.py` (test-cpu.sh step 19) |
 
 ## Admin key and credential redaction (v13)
 

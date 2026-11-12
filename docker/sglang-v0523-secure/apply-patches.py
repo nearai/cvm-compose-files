@@ -6,7 +6,7 @@ v0.5.23 (297e54fd) with an editable install. This script refuses to run on any o
 1. the checkout must be at SOURCE_REVISION with a clean work tree;
 2. every patch in SERIES must exist with its pinned sha256 (SHA256SUMS also covers them);
 3. each patch must pass `git apply --check` on the tree left by the previous ones, then is applied.
-The three patches are byte-identical to the same-numbered patches of docker/sglang-glm53-v0523 and
+The four patches are byte-identical to the same-numbered patches of docker/sglang-glm53-v0523 and
 apply on clean v0.5.23 without the rest of that series.
 """
 import hashlib

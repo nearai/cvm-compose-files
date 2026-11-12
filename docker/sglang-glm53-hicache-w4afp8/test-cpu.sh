@@ -565,4 +565,9 @@ echo "step 17 OK: pillow 13 imports and round-trips an RGB image through PNG and
 python3 "$RECIPE_DIR/test_admin_auth_redaction.py" --root "$PWD/python/sglang/srt" --live | tail -n 1
 echo "step 18 OK: admin-only endpoints need the admin key, serving and scrape paths stay open, and no readback, log or dump carries the keys"
 
+# 19. Log line format (log-format.diff).
+python3 "$RECIPE_DIR/test_log_format.py" --root "$PWD/python/sglang/srt" | tail -n 1
+python3 -m pytest -q -p no:cacheprovider test/registered/unit/function_call/test_unknown_tool_name.py
+echo "step 19 OK: log line format"
+
 echo "GLM-5.3 W4AFP8 combined-image CPU checks passed"
