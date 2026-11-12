@@ -208,7 +208,7 @@ ALLOW = ('{"services": [{"file": "' + P + '", "service": "model-sg-a", "items": 
 AUX = {"container_name": "aux-a", "image": "nearaidev/sglang@sha256:" + "0" * 64, "command": ["python3", "-m", "x"]}
 RAW = ("services:\n  model-sg-a:\n    environment:\n      HF_TOKEN: ${HF_TOKEN:?set}\n"
        "      UP: ${UP_URL}\n    command: sh -c 'echo $${HOME} ${PORT:-8000}'\n")
-FILES = {P: RAW, V: "services:\n  model-vllm-a:\n    image: x\n", "ci/services.allow.json": ALLOW}
+FILES = {P: RAW, V: "services:\n  model-vllm-a:\n    image: x\n", "ci/data/services.allow.json": ALLOW}
 REND = {P: {"services": {"model-sg-a": SG, "aux-a": AUX}}, V: {"services": {"model-vllm-a": VL}}}
 
 
@@ -251,9 +251,9 @@ CASES = [
     ("default without default_ok", "privacy.default", dict(FILES, **{P: RAW.replace("${UP_URL}", "${UP_URL:-x}")}),
      FILES, REND, None),
     ("variable without an egress flag", "privacy.egress",
-     dict(FILES, **{"ci/services.allow.json": ALLOW.replace('"name": "HF_TOKEN", "egress": false', '"name": "HF_TOKEN"')}),
+     dict(FILES, **{"ci/data/services.allow.json": ALLOW.replace('"name": "HF_TOKEN", "egress": false', '"name": "HF_TOKEN"')}),
      FILES, REND, None),
-    ("bad dummy", "privacy.dummy", dict(FILES, **{"ci/services.allow.json": ALLOW.replace('"8000"', '"x y"')}), FILES,
+    ("bad dummy", "privacy.dummy", dict(FILES, **{"ci/data/services.allow.json": ALLOW.replace('"8000"', '"x y"')}), FILES,
      REND, None),
     ("ghost key volume on disk", "privacy.tmpfs", FILES, FILES,
      dict(REND, **{P: {"services": {"model-sg-a": SG, "aux-a": AUX}, "volumes": {"ghost": {"driver_opts": {}}}}}), None),

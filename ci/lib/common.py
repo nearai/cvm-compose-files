@@ -14,53 +14,26 @@ COMPOSE_IMAGE = (
     "@sha256:2357639ad1ea7d0194134bf3292622fd4e562483966ed674e5d7c945b5f3b28d"
 )
 PUBLISH_ENV = "publish"
-RUNNERS = {"ubuntu-latest", "ubuntu-24.04", "ubuntu-22.04", "ubuntu_large_x64"}
-PUBLIC_HOSTS = {
-    "completions.near.ai",
-    "completions-stg.near.ai",
-    "cloud-api.near.ai",
-    "claude.com",
-    "github.com",
-    "githubusercontent.com",
-    "huggingface.co",
-    "hf.co",
-    "docker.io",
-    "docker.com",
-    "ghcr.io",
-    "nvcr.io",
-    "quay.io",
-    "pypi.org",
-    "pythonhosted.org",
-    "astral.sh",
-    "nginx.org",
-    "opentelemetry.io",
-    "sigstore.dev",
-    "example.com",
-    "mobyproject.org",
-    "apache.org",
-}
-PUBLIC_OWNERS = {
-    "actions",
-    "docker",
-    "sigstore",
-    "nearai",
-    "sgl-project",
-    "vllm-project",
-    "huggingface",
-    "astral-sh",
-    "NVIDIA",
-    "open-telemetry",
-    "deepseek-ai",
-    "flashinfer-ai",
-    "cli",
-    "moby",
-}
 ORG = "nearai"
-ORG_PUBLIC_REPOS = {"cvm-compose-files", "compose-manager"}
-# 1.1.1.1 (public resolver) and 169.254.169.254 (link-local metadata) are well-known targets an
-# egress probe must fail to reach; they reveal nothing about our infrastructure.
-IP_ALLOW = {"0.0.0.0", "127.0.0.1", "127.0.0.11", "1.1.1.1", "169.254.169.254"}
-IP_ALLOW_PREFIX = ("172.31.250.",)
+
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+EXCEPTIONS = "ci/data/exceptions.json"
+EXPECTED = "ci/data/expected.json"
+LEGACY = "ci/data/legacy.txt"
+IMAGES = "ci/data/images.allow"
+SERVICES = "ci/data/services.allow.json"
+PUBLIC = "ci/data/public.json"
+TEMPLATES = ("ci/templates/sglang.yaml", "ci/templates/vllm.yaml")
+
+# Public allowlists: hosts, repo owners, org repos, IPs and runners that may appear in repo text.
+with open(os.path.join(ROOT, PUBLIC)) as _f:
+    _public = json.load(_f)
+PUBLIC_HOSTS = set(_public["hosts"])
+PUBLIC_OWNERS = set(_public["owners"])
+ORG_PUBLIC_REPOS = set(_public["org_public_repos"])
+IP_ALLOW = set(_public["ips"])
+IP_ALLOW_PREFIX = tuple(_public["ip_prefixes"])
+RUNNERS = set(_public["runners"])
 
 LIFECYCLE = re.compile(
     r"(?i)(^|[-_.\s])(canary|candidate|test|tmp|temp|old|new|backup|wip|draft|legacy|final|copy|prev|previous"
@@ -70,14 +43,6 @@ SHA40 = re.compile(r"^[0-9a-f]{40}$")
 DIGEST_REF = re.compile(r"^[\w./-]+@sha256:[0-9a-f]{64}$")
 SECRET_SUFFIX = re.compile(r"_(TOKEN|KEY|SECRET|PASSWORD|CREDENTIALS)$")
 ENGINE_KEY = re.compile(r"^model-(sg|vllm)-")
-
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-EXCEPTIONS = "ci/exceptions.json"
-EXPECTED = "ci/expected.json"
-LEGACY = "ci/legacy.txt"
-IMAGES = "ci/images.allow"
-SERVICES = "ci/services.allow.json"
-TEMPLATES = ("ci/template-sglang.yaml", "ci/template-vllm.yaml")
 
 
 def sha256(text):

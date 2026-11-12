@@ -28,14 +28,15 @@ downloaders and monitoring. Hosts run a file from a release tag `v0.0.N`.
 |---|---|
 | `prod/` | every deployable compose file, flat |
 | `docker/<dir>/` | build context of one published image; frozen once published (read it at the image's source commit) |
-| `ci/` | guards (`check_*.py`, run by `run.py`), their data files, tool configs, two templates |
+| `ci/` | the gate: `run.py`, guards in `checks/`, `lib/`, tool configs in `config/`, two templates in `templates/` |
+| `ci/data/` | allowlists, waivers, the legacy list and expected findings; they change with what they record |
 | `docs/` | usage docs, at most one per deployable |
 | `.github/` | `ci.yaml`, `auto-tag.yaml`, one `publish-*.yaml` per image, PR template |
 | `scripts/` | legacy validators, still run by CI |
 | `adapters/` | legacy: a LoRA adapter some deployables fetch at runtime |
 | `cleanup-hf-model.yaml` | legacy: a utility deployable outside `prod/` |
 
-Legacy paths are listed in `ci/legacy.txt` and only shrink.
+Legacy paths are listed in `ci/data/legacy.txt` and only shrink.
 
 ## Status
 

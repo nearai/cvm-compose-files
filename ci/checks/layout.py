@@ -24,10 +24,13 @@ DOCS = re.compile(r"^(README|AGENTS|CLAUDE|VERIFYING|SECURITY)\.md$|^docs/[a-z0-
 FIXED = {
     ".gitignore", ".gitattributes", ".github/pull_request_template.md",
     ".github/workflows/ci.yaml", ".github/workflows/auto-tag.yaml",
-    "ci/run.py", "ci/common.py", "ci/check_layout.py", "ci/check_status.py", "ci/check_pins.py",
-    "ci/check_privacy.py", "ci/check_public.py", "ci/check_frozen.py", "ci/legacy.txt", "ci/images.allow",
-    "ci/services.allow.json", "ci/exceptions.json", "ci/expected.json", "ci/yamllint.yaml", "ci/gitleaks.toml", "ci/gitleaks.ignore",
-    "ci/template-sglang.yaml", "ci/template-vllm.yaml",
+    "ci/run.py", "ci/lib/common.py",
+    "ci/checks/layout.py", "ci/checks/status.py", "ci/checks/pins.py", "ci/checks/privacy.py", "ci/checks/public.py",
+    "ci/checks/frozen.py",
+    "ci/data/legacy.txt", "ci/data/images.allow", "ci/data/services.allow.json", "ci/data/public.json",
+    "ci/data/exceptions.json", "ci/data/expected.json", "ci/data/gitleaks.ignore",
+    "ci/config/yamllint.yaml", "ci/config/gitleaks.toml",
+    "ci/templates/sglang.yaml", "ci/templates/vllm.yaml",
 }
 BANNED_EXT = re.compile(r"\.(pyc|safetensors|bin|pt|gguf|onnx|ipynb|log|zip|tar(\.[a-z0-9]+)?)$|(^|/)__pycache__/", re.I)
 SECRET_FILE = re.compile(
@@ -60,7 +63,7 @@ def check(ctx):
         data = head.data(p)
         if not conforms(p, head) and not any(p == e or (e.endswith("/") and p.startswith(e)) for e in legacy):
             rule = "layout.workflow-set" if p.startswith(".github/workflows/") else "layout.path"
-            out.append(Finding(p, 0, rule, "path does not follow the layout rules and is not in ci/legacy.txt"))
+            out.append(Finding(p, 0, rule, "path does not follow the layout rules and is not in ci/data/legacy.txt"))
         elif p.startswith("docs/") and LIFECYCLE.search(p[len("docs/"):]):
             out.append(Finding(p, 0, "layout.path", "lifecycle or host token in a docs path"))
         if not DOCKER.match(p) and not NEW_PATH.match(p) and p not in FIXED and not DOCS.match(p) \
@@ -104,7 +107,7 @@ def check_legacy(ctx, legacy):
     if base is not None:
         for n, e in enumerate(legacy, 1):
             if e not in base:
-                out.append(Finding(LEGACY, n, "layout.legacy", "ci/legacy.txt only shrinks; entry not in base"))
+                out.append(Finding(LEGACY, n, "layout.legacy", "ci/data/legacy.txt only shrinks; entry not in base"))
     return out
 
 
@@ -191,7 +194,7 @@ PUB_OK = (
 )
 BASE_FILES = {
     "README.md": "x\n",
-    "ci/legacy.txt": "prod/Old-File.yaml\n",
+    "ci/data/legacy.txt": "prod/Old-File.yaml\n",
     "prod/Old-File.yaml": "services: {}\n",
     "prod/glm-5.3-sglang-tp4.yaml": "services: {}\n",
     "docker/sglang-x-r1/Dockerfile": "FROM a\n",
@@ -225,10 +228,10 @@ CASES = [
     ("unknown workflow", "layout.workflow-set", dict(BASE_FILES, **{".github/workflows/extra.yaml": WF_OK}),
      BASE_FILES),
     ("legacy grows", "layout.legacy",
-     dict(BASE_FILES, **{"ci/legacy.txt": "prod/Another.yaml\nprod/Old-File.yaml\n", "prod/Another.yaml": "x\n"}),
+     dict(BASE_FILES, **{"ci/data/legacy.txt": "prod/Another.yaml\nprod/Old-File.yaml\n", "prod/Another.yaml": "x\n"}),
      BASE_FILES),
-    ("legacy glob", "layout.legacy", dict(BASE_FILES, **{"ci/legacy.txt": "prod/*.yaml\nprod/Old-File.yaml\n"}),
-     dict(BASE_FILES, **{"ci/legacy.txt": "prod/*.yaml\nprod/Old-File.yaml\n"})),
+    ("legacy glob", "layout.legacy", dict(BASE_FILES, **{"ci/data/legacy.txt": "prod/*.yaml\nprod/Old-File.yaml\n"}),
+     dict(BASE_FILES, **{"ci/data/legacy.txt": "prod/*.yaml\nprod/Old-File.yaml\n"})),
     ("workflow with an anchor", "layout.yaml",
      dict(BASE_FILES, **{".github/workflows/publish-sglang-x-r1.yaml": PUB_OK.replace("environment: " + PUBLISH_ENV,
                                                                                       "environment: &e " + PUBLISH_ENV)}),

@@ -175,7 +175,7 @@ ENGINE = {"container_name": "model-sg-a", "image": IMG,
 DL = {"container_name": "model-downloader", "image": IMG, "entrypoint": ["sh", "-c"],
       "command": [f"hf download org/m --revision {REV}\n"]}
 P = "prod/m-sglang-tp1.yaml"
-FILES = {P: "services:\n  model-sg-a:\n    image: x\n", "ci/images.allow": ROWS,
+FILES = {P: "services:\n  model-sg-a:\n    image: x\n", "ci/data/images.allow": ROWS,
          "docker/sglang-x-r1/Dockerfile": f"FROM {IMG}\n"}
 REND = {P: {"services": {"model-sg-a": ENGINE, "model-downloader": DL}}}
 
@@ -190,14 +190,14 @@ CASES = [
     ("tag-only image", "pins.digest", FILES, FILES, _svc(image="nearaidev/sglang:latest"), None),
     ("digest without a row", "pins.allow", FILES, FILES, _svc(image=IMG.replace("a" * 64, "b" * 64)), None),
     ("new row with a wrong dir", "pins.rows",
-     dict(FILES, **{"ci/images.allow": ROWS + f"x/sglang@sha256:{'e' * 64} y-r1 sglang-z-r1 {'d' * 40}\n"}), FILES,
+     dict(FILES, **{"ci/data/images.allow": ROWS + f"x/sglang@sha256:{'e' * 64} y-r1 sglang-z-r1 {'d' * 40}\n"}), FILES,
      REND, None),
     ("new build dir with an unpinned FROM", "pins.docker-dir",
      dict(FILES, **{"docker/sglang-y-r1/Dockerfile": "FROM ubuntu:24.04\n"}), FILES, REND, None),
     ("model without revision", "pins.hf-revision", FILES, FILES,
      _svc(command=["sglang", "serve", "--model-path", "org/m", "--served-model-name", "m"]), None),
     ("remote code without revision (missing revision waived)", "pins.remote-code",
-     dict(FILES, **{"ci/exceptions.json": json.dumps([{
+     dict(FILES, **{"ci/data/exceptions.json": json.dumps([{
          "rule": "pins.hf-revision", "path": P, "sha256": sha256("org/n"), "reason": "r", "remove_when": "w"}])}),
      FILES,
      {P: {"services": {"model-sg-a": dict(ENGINE, command=["sglang", "serve", "--model-path", "org/m", "--revision",

@@ -44,8 +44,9 @@ Render the file to see the final `image:` values after anchors and overrides:
 python3 ci/run.py --render prod/<file>.yaml
 ```
 
-Each digest has a row in `ci/images.allow`: `repo@sha256:<digest> <tag> <build dir> <source commit>`,
-with `-` for third-party images. A digest built here also has a row in the Digests and build dirs table.
+Each digest has a row in `ci/data/images.allow`:
+`repo@sha256:<digest> <tag> <build dir> <source commit>`, with `-` for third-party images. A digest
+built here also has a row in the Digests and build dirs table.
 
 ## 3. Signature and provenance
 
@@ -138,14 +139,14 @@ prefix of another row of this table.
 | `e9d29a1cb1cd65284392c4d62d5f2a36669628057e15c60fe93ea40cfe4fc7e7` | `glm53-admission-reserve-v10` | `sglang-glm53-admission-reserve` | `0244bab81cc0ec42f0aa24d5de57b804650c9cfa` | `a7b7136a…` |
 | `a7b7136abcf5e07522289d96e96fec9b42a1a30f9dfda57e957f142680d2d67b` | - | `sglang-glm53-fc91d24` | `ea48a48b3bfcaa57099252a19143efc414adff5b` | upstream SGLang |
 
-Digests pinned by a deployable at `HEAD` are also rows in `ci/images.allow`. The others are pinned at
-earlier release tags or are bases of another image.
+Digests pinned by a deployable at `HEAD` are also rows in `ci/data/images.allow`. The others are pinned
+at earlier release tags or are bases of another image.
 
 ## Known gaps
 
 CI checks compose files, build contexts, workflows and repo text. It does not check image contents, and
 nothing in this repo binds a host to a file. Deviations CI detects in live files are entries in
-`ci/exceptions.json`; each binds one rule, one file and the matched value. Counts per rule:
+`ci/data/exceptions.json`; each binds one rule, one file and the matched value. Counts per rule:
 
 | rule | entries | what it waives |
 |---|---|---|
@@ -165,7 +166,7 @@ nothing in this repo binds a host to a file. Deviations CI detects in live files
 Gaps that are not exceptions:
 - The logging rules check flags and env only, on services the guards classify as SGLang or vLLM by key, image, command or role (see What the
   proof covers). Only engines must set an explicit no-log flag; other services on those images, such as
-  every `role: aux` entry in `ci/services.allow.json`, are checked for flags and env that enable logging.
+  every `role: aux` entry in `ci/data/services.allow.json`, are checked for flags and env that enable logging.
 - Two vLLM publish workflows skip the provenance attestation when resuming from an already pushed digest;
   such an image has a signature only.
 - Repository settings applied at merge: a `v*` tag ruleset blocks moving and deleting tags, but

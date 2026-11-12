@@ -88,7 +88,7 @@ jobs:
       - name: Render and validate embedded OTel collector configs
         run: |
           set -euo pipefail
-          for f in prod/*.yaml cleanup-hf-model.yaml ci/template-*.yaml; do
+          for f in prod/*.yaml cleanup-hf-model.yaml ci/templates/*.yaml; do
             echo "render $f"
             python3 ci/run.py --render "$f" > "$RUNNER_TEMP/rendered.json"
             config="$(jq -r '.configs.otelcol_app_config.content // empty' "$RUNNER_TEMP/rendered.json")"
@@ -131,7 +131,7 @@ jobs:
           persist-credentials: false
 
       - name: yamllint
-        run: docker run --rm --network none -v "$PWD:/code:ro" -w /code "$YAMLLINT_IMAGE" yamllint -c ci/yamllint.yaml .
+        run: docker run --rm --network none -v "$PWD:/code:ro" -w /code "$YAMLLINT_IMAGE" yamllint -c ci/config/yamllint.yaml .
 
       - name: actionlint and zizmor
         run: |
@@ -167,7 +167,7 @@ jobs:
           run() {
             docker run --rm --network none -v "$PWD:/repo:ro" -w /repo \
               -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0=/repo \
-              "$GITLEAKS_IMAGE" "$@" --config ci/gitleaks.toml --gitleaks-ignore-path ci/gitleaks.ignore --redact --verbose --no-banner
+              "$GITLEAKS_IMAGE" "$@" --config ci/config/gitleaks.toml --gitleaks-ignore-path ci/data/gitleaks.ignore --redact --verbose --no-banner
           }
           run dir .
           if [ -n "$BASE" ]; then

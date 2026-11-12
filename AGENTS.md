@@ -11,36 +11,37 @@ build sources and model revisions, except where VERIFYING.md lists a known gap.
 ## Layout
 - `prod/` every deployable compose file, flat: serving, pack (`pack-*`) and utility (`util-*`) files.
 - `docker/<dir>/` build context of one published image. Never edited once published.
-- `ci/` guards, their data files, tool configs and two templates. Flat.
+- `ci/` the gate: `run.py`, `lib/`, `checks/` (one guard each), `config/` (tool configs), `templates/`.
+  `ci/data/` holds the data files that ride along with the changes they record.
 - `docs/` usage docs, at most one per deployable: `docs/<file stem>.md`.
 - `.github/` `ci.yaml`, `auto-tag.yaml`, `publish-<docker dir>.yaml` workflows, PR template.
-- Legacy, listed in `ci/legacy.txt`, shrinking: older deployable and publish workflow names,
+- Legacy, listed in `ci/data/legacy.txt`, shrinking: older deployable and publish workflow names,
   `scripts/` (old validators, no new files), `adapters/` (removed after repinning), root
   `cleanup-hf-model.yaml`.
-- No other top-level dirs, no subdirs in `prod/` or `ci/`.
+- No other top-level dirs, no subdirs in `prod/`, no other subdirs in `ci/`.
 
 ## Commands
-`ci/run.py` renders through the digest-pinned compose image set in `ci/common.py`, the same one CI
+`ci/run.py` renders through the digest-pinned compose image set in `ci/lib/common.py`, the same one CI
 uses. Do not judge a change with a locally installed compose version.
 - Render one file: `python3 ci/run.py --render prod/<f>.yaml`
 - All guards: `python3 ci/run.py --base origin/main`. Self-tests: `python3 ci/run.py --self-test`.
-- Findings on the real tree are pinned in `ci/expected.json`; update it with `--write-expected`.
+- Findings on the real tree are pinned in `ci/data/expected.json`; update it with `--write-expected`.
 - Show a change is a no-op: `python3 ci/run.py --noop origin/main` (empty output).
 
 ## Hard rules (CI fails)
-- Paths follow the layout rules in `ci/check_layout.py` or are listed in `ci/legacy.txt`, which only
-  shrinks. No binaries, bytecode, notebooks, logs or secret files. Size cap per file.
-- Every image is `repo@sha256:<64 hex>` and has a row in `ci/images.allow`.
+- Paths follow the layout rules in `ci/checks/layout.py` or are listed in `ci/data/legacy.txt`, which
+  only shrinks. No binaries, bytecode, notebooks, logs or secret files. Size cap per file.
+- Every image is `repo@sha256:<64 hex>` and has a row in `ci/data/images.allow`.
 - Every model is pinned to a 40-hex revision. `--trust-remote-code` only with a pinned revision.
 - No `build`, `dockerfile_inline`, `extends`, `include` or `env_file` in deployable files.
 - No runtime fetch from a branch. URLs pin a 40-hex commit or revision.
 - New SGLang engines set `--log-requests-level 0`. New vLLM engines keep the logging flags of
-  `ci/template-vllm.yaml`, which sets an explicit disabling flag only if the pinned vLLM has one.
+  `ci/templates/vllm.yaml`, which sets an explicit disabling flag only if the pinned vLLM has one.
   Existing engines without an explicit flag are listed exceptions and appear in VERIFYING.md.
 - No service on an SGLang or vLLM image, whatever its role, enables request logging, profiling,
   tracing or dumps by flag or env, or logs at debug.
 - Privileged mode, devices, sockets, host mounts and published ports are listed per service in
-  `ci/services.allow.json`. Host-provided variables are listed under `env` in the same file, each
+  `ci/data/services.allow.json`. Host-provided variables are listed under `env` in the same file, each
   with `egress: true` (the value can choose where data goes) or `egress: false`.
 - No IPs, internal domains, host or runner names or private repo names in files, paths, commit
   messages, branch names or PR text. Comments follow the policy below. No inline linter ignores.
@@ -50,7 +51,7 @@ uses. Do not judge a change with a locally installed compose version.
 - The README status table lists every deployable once with the served names it `serves`; at most
   one candidate per serving group.
 - New paths follow Naming. Service key == `container_name`. Served names never change in place.
-- Waivers live only in `ci/exceptions.json`: `rule`, exact `path`, `sha256` of the matched text,
+- Waivers live only in `ci/data/exceptions.json`: `rule`, exact `path`, `sha256` of the matched text,
   `reason`, `remove_when`. Never copy the matched text into the entry or the PR.
 
 ## Naming and versioning
@@ -73,7 +74,7 @@ the rest is shown in the templates and checked in review.
 - Model pin: the engine loads `models--<org>--<repo>/snapshots/<40hex>` offline; the downloader
   fetches the same repo at the same `--revision`. Env names `UPPER_SNAKE`.
 - Config revision = release tag `v0.0.N` (auto-tag only) plus the file path. No version in names or files.
-- New compose file: copy `ci/template-sglang.yaml` or `ci/template-vllm.yaml` and keep its line-1
+- New compose file: copy `ci/templates/sglang.yaml` or `ci/templates/vllm.yaml` and keep its line-1
   header form, key order and service order.
 
 ## Retention and lifecycle
@@ -121,20 +122,20 @@ Everything here is public and copied by others: files, branches, tags, PRs, revi
   for comment-only or refactor changes; for image bumps the `main` publish run and the signature
   verification; for deletions the deployment-manager check; every new sink, port, mount, env var,
   moved default or removed safety line named.
-- Never change a gate (guard code, `ci/common.py`, `ci.yaml`, tool configs, the workflow set) in the
-  same PR as a change it checks. Data entries (exceptions, allowlists, legacy line removals,
-  `ci/expected.json`, `ci/gitleaks.ignore`) may ride along and are listed under Gates in the PR.
+- Never change a gate (`ci/` outside `ci/data/`, `ci.yaml`, the workflow set) in the same PR as a
+  change it checks. Entries in `ci/data/` (waivers, allowlists, legacy line removals, expected
+  findings) may ride along and are listed under Gates in the PR.
 
 ## Reviewer checklist (every push, state the head SHA)
 - [ ] Read the rendered diff, not only the YAML.
 - [ ] Image bump: digest from a `main` publish run, signature verifies, no tag-only refs.
 - [ ] New sink, endpoint, port, mount or env var; moved default; removed safety line.
-- [ ] Gate edited together with the thing it gates; waiver text in the PR instead of `ci/exceptions.json`.
+- [ ] Gate edited together with the thing it gates; waiver text in the PR, not `ci/data/exceptions.json`.
 - [ ] Prose (README, VERIFYING, comments, PR text) says the same as the config and claims no more.
 - [ ] Names of people, partners or customers and other leaks CI cannot see.
 - [ ] New secret-like variable without a secret suffix.
 - [ ] Naming, header, key and service order, labels follow the templates; `config_variant` changed if due.
 - [ ] Docs: one per deployable; links resolve; `CLAUDE.md` is exactly `@AGENTS.md`; this file stays
       at most 140 lines; the signing-identity table in VERIFYING.md only gains rows.
-- [ ] Changed files updated their references: README table, `ci/services.allow.json`, `ci/images.allow`,
-      `ci/legacy.txt`, VERIFYING.md identities and known gaps.
+- [ ] Changed files updated their references: README table, `ci/data/` (services, images, legacy),
+      VERIFYING.md identities and known gaps.

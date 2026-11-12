@@ -49,7 +49,7 @@ BASE = {"docker/sglang-x-r1/Dockerfile": "FROM a\n", "docker/sglang-x-r1/p.diff"
         ".github/workflows/publish-sglang-x-r1.yaml": "x\n", "adapters/a/w.json": "{}\n",
         "docker/sglang-x-r1/__pycache__/m.pyc": "x"}
 NOCOMMON = dict(BASE)
-WITHCOMMON = dict(BASE, **{"ci/common.py": "x\n"})
+WITHCOMMON = dict(BASE, **{"ci/lib/common.py": "x\n"})
 
 
 def _head(*drop, **add):

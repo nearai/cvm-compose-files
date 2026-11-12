@@ -5,27 +5,30 @@
   run.py --self-test      every rule against built-in red and green inputs
   run.py --render <file>  rendered compose JSON of one file
   run.py --noop <rev>     rendered diff of every deployable between <rev> and the working tree
-  run.py --write-expected rewrite ci/expected.json from the working tree
+  run.py --write-expected rewrite ci/data/expected.json from the working tree
 """
 
 import argparse
 import difflib
 import json
+import os
 import re
 import sys
 
-import check_frozen
-import check_layout
-import check_pins
-import check_privacy
-import check_public
-import check_status
+sys.path[:0] = [os.path.join(os.path.dirname(os.path.abspath(__file__)), d) for d in ("lib", "checks")]
+
+import frozen
+import layout
+import pins
+import privacy
+import public
+import status
 from common import (
     EXCEPTIONS, EXPECTED, IMAGES, ROOT, SERVICES, TEMPLATES, Finding, RenderError, Renderer, Tree, env_lines, git,
     load_json, render_dir, sha256,
 )
 
-GUARDS = [check_layout, check_status, check_pins, check_privacy, check_public, check_frozen]
+GUARDS = [layout, status, pins, privacy, public, frozen]
 RULES = ["run.render", "exceptions.format", "exceptions.unused"]
 ALL_RULES = RULES + [r for g in GUARDS for r in g.RULES]
 ENTRY_KEYS = {"rule", "path", "sha256", "reason", "remove_when"}
@@ -34,7 +37,7 @@ ENTRY_KEYS = {"rule", "path", "sha256", "reason", "remove_when"}
 class Context:
     def __init__(self, head, base=None, rendered=None, rendered_base=None, name_status=(), commits=(), pr=None):
         self.head, self.base = head, base
-        self.bootstrap = base is not None and not base.has("ci/common.py")
+        self.bootstrap = base is not None and not base.has("ci/lib/common.py")
         self.services_allow = load_json(head, SERVICES, {})
         self.services_allow_base = load_json(base, SERVICES, {}) if base else {}
         self.templates = [t for t in TEMPLATES if head.has(t)]
@@ -125,7 +128,7 @@ PROBES = {
     "privileged": lambda s: dict(s, privileged=True),
     "tag": lambda s: dict(s, image="nginx:latest"),
 }
-PROBE_GUARDS = [check_privacy, check_pins]
+PROBE_GUARDS = [privacy, pins]
 
 
 def _keys(findings):
@@ -165,7 +168,7 @@ def expected_doc(head, rendered):
 
 
 def check_expected(head, doc):
-    """Findings for every line that differs from ci/expected.json. Exceptions never apply."""
+    """Findings for every line that differs from ci/data/expected.json. Exceptions never apply."""
     want = load_json(head, EXPECTED, None)
     if not isinstance(want, dict):
         return [Finding(EXPECTED, 0, "run.expected", "missing or not a JSON object; run --write-expected")]
@@ -215,12 +218,12 @@ def case_ctx(case):
 GOOD_EX = [{"rule": "layout.ext", "path": "prod/a.bin", "sha256": sha256("prod/a.bin"), "reason": "r",
             "remove_when": "w"}]
 RUN_CASES = [
-    ("exception matches", None, {"prod/a.bin": "x", "ci/exceptions.json": json.dumps(GOOD_EX)}, None),
+    ("exception matches", None, {"prod/a.bin": "x", "ci/data/exceptions.json": json.dumps(GOOD_EX)}, None),
     ("render failure", "run.render", {"prod/a.yaml": "x"}, None, {"prod/a.yaml": "ERROR"}),
     ("exception with a glob", "exceptions.format",
-     {"prod/a.bin": "x", "ci/exceptions.json": json.dumps(GOOD_EX + [dict(GOOD_EX[0], path="prod/*.bin")])}, None),
+     {"prod/a.bin": "x", "ci/data/exceptions.json": json.dumps(GOOD_EX + [dict(GOOD_EX[0], path="prod/*.bin")])}, None),
     ("unused exception", "exceptions.unused",
-     {"prod/a.yaml": "x", "ci/exceptions.json": json.dumps([dict(GOOD_EX[0], path="prod/a.yaml")])}, None),
+     {"prod/a.yaml": "x", "ci/data/exceptions.json": json.dumps([dict(GOOD_EX[0], path="prod/a.yaml")])}, None),
 ]
 
 
@@ -238,7 +241,7 @@ class RunGuard:
 
 
 def self_test():
-    sentinel = check_privacy.SENTINEL
+    sentinel = privacy.SENTINEL
     total, failures, red = 0, [], set()
     for g in GUARDS + [RunGuard]:
         greens = 0
@@ -305,7 +308,6 @@ def resolve(rev):
 
 
 def real_ctx(base_rev):
-    from check_public import env_pr
     head = Tree()
     sa = load_json(head, SERVICES, {})
     base, name_status, commits = None, [], []
@@ -325,7 +327,7 @@ def real_ctx(base_rev):
                 sha, parents, msg = x.strip("\n").split("\0", 2)
                 commits.append((sha, msg, len(parents.split()) > 1))
     ctx = Context(head, base, Renderer(head, sa), Renderer(base, load_json(base, SERVICES, {}) or sa) if base else None,
-                  name_status, commits, env_pr())
+                  name_status, commits, public.env_pr())
     return ctx
 
 
@@ -355,7 +357,7 @@ def main():
             for r in g.DIFF_RULES:
                 print(f"SKIP (no base): {r}")
     elif ctx.bootstrap:
-        print("bootstrap mode: ci/common.py is absent at base")
+        print("bootstrap mode: ci/lib/common.py is absent at base")
     findings = run_guards(ctx)
     if not ctx.render_errors:
         findings += check_expected(ctx.head, expected_doc(ctx.head, ctx._rendered))

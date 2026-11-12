@@ -35,9 +35,8 @@ Title: `<prod|docker|ci|docs|repo>: <imperative summary>`, at most 72 chars with
 
 ## Gates
 
-<!-- Changes to guard code, ci/common.py, ci.yaml, tool configs or the workflow set are not allowed in
-     the same PR as a change they check. List data entries that ride along: ci/exceptions.json,
-     ci/images.allow, ci/services.allow.json, ci/legacy.txt. -->
+<!-- Changes to ci/ outside ci/data/, ci.yaml or the workflow set are not allowed in the same PR as a
+     change they check. List every ci/data/ file that rides along. -->
 
 ## Non-goals
 
