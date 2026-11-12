@@ -303,7 +303,7 @@ COLOC_BLOCK_HASHES = {
 }
 # gpu13's stock engines move to SGLang v0.5.23 (docker/sglang-v0523-secure) and
 # vLLM v0.33.0: the Qwen3.6, Qwen3.8 and FLUX.2 anchors and the four vLLM services, each pinned whole. Their scrape
-# jobs are unchanged (the coloc job is pinned above).
+# jobs are unchanged (the coloc job is pinned above). Whisper then gains the language-detection fallback RUN step.
 LATEST_ENGINE_SECURE_IMAGE = "docker.io/nearaidev/sglang@sha256:6de632a5e9422be4b6e84e32cf475679c0f29c4bb6d58984d873ff9f7ba92a65"
 LATEST_ENGINE_VLLM_IMAGE = "vllm/vllm-openai@sha256:d825baf9ce4b1b6bfc5ecc7b79880c7e6748c65a72d697ce3d47607aafa84c6e"
 LATEST_ENGINE_ANCHOR_HASHES = {
@@ -315,7 +315,7 @@ LATEST_ENGINE_SERVICE_HASHES = {
     "model-vllm-qwen3vl-30b-a3b-fp8-tp1": "9a3ed1ed633b900e06f5299a144797df7948abfcc26d314d8c0906398cc3c524",
     "model-vllm-qwen3-embedding-0.6b-tp1": "763f854c382687c8d94b12a6b9d6afadae42c669d99cd4b76638e925b7ff3896",
     "model-vllm-qwen3-reranker-0.6b-tp1": "0c94efed56e7e554527b124e26b34d33d4d2caebedb1a57adae1b7051f92f1e2",
-    "model-vllm-whisper-large-v3-tp1": "1187289d7754eb94987f8df44bc5949930ea97410978713f225839d16e685683",
+    "model-vllm-whisper-large-v3-tp1": "0699929b370fbd72e8b105b6c1e4dab7e098a1dd0ddec1bdfe8935527a5abe15",
 }
 # Qwen3.8 abliterated LoRA canary (#395): the coloc engine and proxy-qwen38-27b change as modelled by
 # with_qwen38_abliterated_lora(); everything new is pinned by hash below and is gated behind the

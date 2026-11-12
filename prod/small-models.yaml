@@ -1955,7 +1955,7 @@ services:
   model-vllm-whisper-large-v3-tp1:
     <<: *vllm-common
     # New local tag, so compose cannot reuse the vllm-with-audio image already built on the host from the old base.
-    image: vllm-with-audio-v0330
+    image: vllm-with-audio-v0330-langfix
     build:
       context: .
       dockerfile_inline: |
@@ -1973,6 +1973,12 @@ services:
             && python3 -m pip install --no-cache-dir --no-deps --require-hashes -r /tmp/audio-requirements.txt \
             && rm /tmp/audio-requirements.txt \
             && python3 -c 'import av, scipy.signal, soundfile, soxr'
+        # whisper-large-v3 can detect a language vLLM does not list (e.g. <|yue|>); fall back to English instead of HTTP 500.
+        RUN python3 -c 'import pathlib; p = pathlib.Path("/usr/local/lib/python3.12/dist-packages/vllm/model_executor/models/whisper.py"); s = p.read_text(); i = " " * 8; \
+              old = i + "# Whisper language tokens have the form <|xx|>\n" + i + "assert decoded.startswith(\"<|\") and decoded.endswith(\"|>\")\n" + i + "lang_code = decoded[2:-2]\n" + i + "assert lang_code in cls.supported_languages\n" + i + "return lang_code\n"; \
+              new = i + "# Whisper language tokens have the form <|xx|>; fall back to English instead of failing the request.\n" + i + "lang_code = decoded[2:-2] if decoded.startswith(\"<|\") and decoded.endswith(\"|>\") else \"\"\n" + i + "return lang_code if lang_code in cls.supported_languages else \"en\"\n"; \
+              assert s.count(old) == 1, "whisper.py: language-detection block not found exactly once"; p.write_text(s.replace(old, new))' \
+            && grep -qxF '        return lang_code if lang_code in cls.supported_languages else "en"' /usr/local/lib/python3.12/dist-packages/vllm/model_executor/models/whisper.py
     container_name: model-vllm-whisper-large-v3-tp1
     # 0.20 (~28 GiB, ~24 GiB KV): at 0.06 the 4.2 GiB KV cache capped whisper at
     # 17 concurrent 30 s segments and preempted under sustained load. GPU 3 had
