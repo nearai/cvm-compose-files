@@ -9,6 +9,13 @@ REQUIRED_PROXY_ENV = %w[
   WEB_CONTEXT_SEARCH_URL
   WEB_CONTEXT_SEARCH_API_KEY
 ].freeze
+PROXY_IMAGE_PREFIX = "nearaidev/vllm-proxy-rs"
+# Under prod/, every proxy inlines remote media and refuses video parts by default;
+# a deploy can still override the value through the environment.
+REQUIRED_PROD_PROXY_ENV = {
+  "VLLM_PROXY_INLINE_MEDIA" => "${VLLM_PROXY_INLINE_MEDIA:-1}",
+  "VLLM_PROXY_REJECTED_CONTENT_PART_TYPES" => "${VLLM_PROXY_REJECTED_CONTENT_PART_TYPES:-video_url}",
+}.freeze
 
 def yaml_load(content)
   YAML.load(content, aliases: true)
@@ -31,8 +38,11 @@ def service_environment(service)
   end
 end
 
-def inference_proxy_service?(env)
-  env.key?("MODEL_NAME") && env.key?("CLOUD_API_URL")
+def inference_proxy_service?(file, service, env)
+  return true if env.key?("MODEL_NAME") && env.key?("CLOUD_API_URL")
+
+  # Under prod/ the image alone identifies a proxy, so no proxy escapes the checks below.
+  file.start_with?("prod/") && service["image"].to_s.start_with?(PROXY_IMAGE_PREFIX)
 end
 
 errors = []
@@ -50,7 +60,17 @@ compose_files.sort.each do |path|
 
   services.each do |service_name, service|
     env = service_environment(service)
-    next unless inference_proxy_service?(env)
+    next unless inference_proxy_service?(file, service, env)
+
+    if file.start_with?("prod/")
+      REQUIRED_PROD_PROXY_ENV.each do |name, expected|
+        actual = env[name]
+        next if actual == expected
+
+        problem = actual.nil? ? "is missing" : "is #{actual.inspect}"
+        errors << "#{file}: services.#{service_name}.environment #{name} #{problem}, expected #{expected.inspect}"
+      end
+    end
 
     missing = REQUIRED_PROXY_ENV.reject do |name|
       env[name] == "${#{name}}"

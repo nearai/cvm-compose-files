@@ -265,10 +265,10 @@ class FleetFilesTest(unittest.TestCase):
         base_names = BASE_ENGINES
         self.assertEqual(
             strip(self.base, base_names, ["x-sg-glm53-flash-common", "x-sg-glm53-flash-candidate"]),
-            strip(BASE_FIXTURE.read_text(), base_names, ["x-sg-glm53-flash-common", "x-sg-glm53-flash-candidate"]),
+            strip(with_inline_media(BASE_FIXTURE.read_text()), base_names, ["x-sg-glm53-flash-common", "x-sg-glm53-flash-candidate"]),
         )
         long_names = LONG_ENGINES
-        self.assertEqual(strip(self.long, long_names, []), strip(LONG_FIXTURE.read_text(), long_names, []))
+        self.assertEqual(strip(self.long, long_names, []), strip(with_inline_media(LONG_FIXTURE.read_text()), long_names, []))
 
 
 SMALL = ROOT / "prod/small-models.yaml"
@@ -323,7 +323,7 @@ LORA_CONFIGS = ("qwen38_abliterated_registrar_script",)
 LORA_JOB = "inference-proxy-proxy-qwen38-27b-abliterated"
 LORA_BLOCK_HASHES = {
     "qwen38-lora-adapter-downloader": "f00890986a1cbe050f1158fc94fb46c6a2910fad7ac622387bc09f21f47e7d4b",
-    "proxy-qwen38-27b-abliterated": "a282663973f55971d1e1a848cc5f6ed41841684e6c2f7803bbcacd8660c32105",
+    "proxy-qwen38-27b-abliterated": "e05cc4d92c5f139ea8fcdeabb7cc69a30d6c4a4916a99e1feb7969b60060bb9b",
     "qwen38-abliterated-registrar": "abbc11eca5f3f296b108cc4ec308ee5c59e04a04c99f4f7a6ce691586031c895",
     "qwen38_abliterated_registrar_script": "bf512180438d8e6258a37b59e02f9f6abc2bcab5ea79ac92b91b31b62f6afbe7",
     LORA_JOB: "300953b485fbe7ab94916efc464b5fdbdd784fbd6c554392491da0f653f3c505",
@@ -770,6 +770,22 @@ def with_qwen38_priority_tiers(text: str) -> str:
     return text.replace(block, updated, 1)
 
 
+INLINE_MEDIA_AFTER = "      - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}\n"
+INLINE_MEDIA_ENV = (
+    "      # Proxy downloads remote image/audio URLs and forwards data: URLs; video parts are refused.\n"
+    "      # On by default; a deploy can pass VLLM_PROXY_INLINE_MEDIA=0 to turn inlining off.\n"
+    "      - VLLM_PROXY_INLINE_MEDIA=${VLLM_PROXY_INLINE_MEDIA:-1}\n"
+    "      - VLLM_PROXY_REJECTED_CONTENT_PART_TYPES=${VLLM_PROXY_REJECTED_CONTENT_PART_TYPES:-video_url}\n"
+)
+
+
+def with_inline_media(text: str) -> str:
+    """Add the media-inlining settings after the web-search key of every proxy in the frozen pre-v7 fixture."""
+    if text.count(INLINE_MEDIA_AFTER) == 0:
+        raise AssertionError("expected proxy services in the fixture")
+    return text.replace(INLINE_MEDIA_AFTER, INLINE_MEDIA_AFTER + INLINE_MEDIA_ENV)
+
+
 class Gpu13FleetTest(unittest.TestCase):
     """gpu13 keeps its non-migration small-model services and GPU 0-3 contracts."""
 
@@ -829,10 +845,10 @@ class Gpu13FleetTest(unittest.TestCase):
         return namespace, exit_calls
 
     def test_non_glm_services_and_everything_outside_the_glm_blocks_are_byte_identical(self) -> None:
-        old = with_qwen38_priority_tiers(with_qwen38_probe_timeout_saturated(with_qwen38_no_mixed_chunk(with_glm53_long_tier_registration(with_qwen38_abliterated_ingress(
+        old = with_inline_media(with_qwen38_priority_tiers(with_qwen38_probe_timeout_saturated(with_qwen38_no_mixed_chunk(with_glm53_long_tier_registration(with_qwen38_abliterated_ingress(
             with_qwen38_abliterated_lora(with_filter_and_coloc_on_gpu2(with_sage_on_gpu2(with_qwen38_coloc_pool(without_qwen38_gpu0_stage_b(self.old))))),
             qwen38_abliterated_ingress(self.small),
-        )))))
+        ))))))
         names = re.findall(r"^  ([a-z0-9-]+):$", self.old[self.old.index("\nservices:\n"):], re.MULTILINE)
         expected_names = [name for name in names if name != QWEN38_GPU0_SERVICE]
         expected_names.insert(expected_names.index(QWEN38_R2) + 1, COLOC_ENGINE)

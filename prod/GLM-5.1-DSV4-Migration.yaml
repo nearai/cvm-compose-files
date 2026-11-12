@@ -134,6 +134,10 @@ services:
       - USE_NV_ATTESTATION_SDK=true
       - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
       - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
+      # Proxy downloads remote image/audio URLs and forwards data: URLs; video parts are refused.
+      # On by default; a deploy can pass VLLM_PROXY_INLINE_MEDIA=0 to turn inlining off.
+      - VLLM_PROXY_INLINE_MEDIA=${VLLM_PROXY_INLINE_MEDIA:-1}
+      - VLLM_PROXY_REJECTED_CONTENT_PART_TYPES=${VLLM_PROXY_REJECTED_CONTENT_PART_TYPES:-video_url}
     labels:
       com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:zai-org/GLM-5.1-FP8","deployment:GLM-5.1-SGL-AWQ-TP4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000"]}]'
       nearai.otel.scrape: "true"
@@ -353,6 +357,10 @@ services:
       - USE_NV_ATTESTATION_SDK=true
       - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
       - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
+      # Proxy downloads remote image/audio URLs and forwards data: URLs; video parts are refused.
+      # On by default; a deploy can pass VLLM_PROXY_INLINE_MEDIA=0 to turn inlining off.
+      - VLLM_PROXY_INLINE_MEDIA=${VLLM_PROXY_INLINE_MEDIA:-1}
+      - VLLM_PROXY_REJECTED_CONTENT_PART_TYPES=${VLLM_PROXY_REJECTED_CONTENT_PART_TYPES:-video_url}
     labels:
       com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:deepseek-ai/DeepSeek-V4-Flash","deployment:dsv4-flash-migration","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8001","ppcie:true","config_variant:ds4f-migration-v1","stream_idle_timeout:20"]}]'
       nearai.otel.scrape: "true"

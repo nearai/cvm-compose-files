@@ -453,6 +453,10 @@ services:
       - USE_NV_ATTESTATION_SDK=true
       - WEB_CONTEXT_SEARCH_URL=${{WEB_CONTEXT_SEARCH_URL}}
       - WEB_CONTEXT_SEARCH_API_KEY=${{WEB_CONTEXT_SEARCH_API_KEY}}
+      # Proxy downloads remote image/audio URLs and forwards data: URLs; video parts are refused.
+      # On by default; a deploy can pass VLLM_PROXY_INLINE_MEDIA=0 to turn inlining off.
+      - VLLM_PROXY_INLINE_MEDIA=${{VLLM_PROXY_INLINE_MEDIA:-1}}
+      - VLLM_PROXY_REJECTED_CONTENT_PART_TYPES=${{VLLM_PROXY_REJECTED_CONTENT_PART_TYPES:-video_url}}
     labels:
       com.datadoghq.ad.logs: '[{{"source":"vllm-proxy","service":"vllm-proxy","tags":[{tags(layout, {"model": model, "port": str(http)})}]}}]'
 {otel_labels(layout, "vllm-proxy", "inference-proxy", "vllm-proxy", name, "8000", model)}
