@@ -69,7 +69,7 @@ jobs:
           git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
           git merge-base --is-ancestor "$SOURCE_REVISION" origin/main
           test "$(sha256sum "$BUILD_CONTEXT/Dockerfile" | awk '{print $1}')" = \
-            3246fb0a606c4946ce55bfecc4b8be5b280ca87e29e13bb569a61e874bfd1793
+            a4664c64a5a7204260ad4d116da1876e0ffb4a1b9246e38a6ad98abab15a5b57
           (cd "$BUILD_CONTEXT" && grep '^patch=' PROVENANCE | while read -r l; do
             f=${l#patch=}; f=${f%% *}; h=${l##*sha256:}
             echo "$h  $f"; done | sha256sum --check --strict)
@@ -81,6 +81,9 @@ jobs:
             "$BUILD_CONTEXT/PROVENANCE"
           grep -Fxq \
             'adapter_revision=196c06e3c2aad43e9688d16fa993b4333f69358a' \
+            "$BUILD_CONTEXT/PROVENANCE"
+          grep -Fxq \
+            'security_upgrades=linux-libc-dev 6.8.0-149.149 (noble-security); python packages none (base certifi 2026.10.23, pip 26.2.2, uv 0.13.6)' \
             "$BUILD_CONTEXT/PROVENANCE"
           echo "IMAGE_REF=${REGISTRY}/${IMAGE_REPOSITORY}:${IMAGE_TAG}" >> "$GITHUB_ENV"
 
@@ -143,7 +146,8 @@ jobs:
             '.config.Labels["nearai.vllm.base"] == "vllm/vllm-openai:v0.33.0" and
              .config.Labels["nearai.vllm.dsv41_supports_lora_patch_sha256"] == "a4ff8a08bd1aade5bb108af3b15fb163a0edd3f80af1dff81eca414c33bd988f" and
              .config.Labels["nearai.vllm.moe_lora_only_when_targeted_patch_sha256"] == "60374d690ace180c8084ef22f489419dfc98edb720f224afd5c648c41ba07899" and
-             .config.Labels["nearai.vllm.decoder_replay_lora_rows_patch_sha256"] == "065be72658ef5a9b58f2f76b5d7aef49c63aa0e51ba785b2854411dd11ae6640"' \
+             .config.Labels["nearai.vllm.decoder_replay_lora_rows_patch_sha256"] == "065be72658ef5a9b58f2f76b5d7aef49c63aa0e51ba785b2854411dd11ae6640" and
+             .config.Labels["nearai.security.linux_libc_dev"] == "6.8.0-149.149"' \
             image-config.json
 
       - name: Verify embedded BuildKit provenance
