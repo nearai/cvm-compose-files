@@ -23,7 +23,8 @@
 #     ENV, HOST_IP, CVM_HOST=gpu31, CVM_NAME=none, HF_DIR.
 #
 # Engine config: FP8 KV + 32K batched tokens (tee-bench exp 31) plus the EAGLE3-v3 draft (3 tokens, cvm-compose-files
-# #355), on vLLM v0.31.0 and without #355's CPU KV offload; the reasons are next to the engine command below.
+# #355), on vLLM v0.33.0 (v0.31.0 until 2026-11; same flags) and without #355's CPU KV offload on r4; the reasons are next
+# to the engine command below.
 #
 #   cd /data/gpu31-openrouter && sudo docker compose --env-file .env -f compose.yaml -p openrouter up -d
 
@@ -67,12 +68,12 @@ x-engine-common: &engine-common
 
 x-gptoss-engine: &gptoss-engine
   <<: *engine-common
-  # vLLM v0.31.0, the image of the Qwen3.8 replicas on gpu32. Not 0.26 (the gpu32 pack's gpt-oss image): with the EAGLE3
+  # vLLM v0.33.0, the image of the Qwen3.8 replicas on gpu32 (both lanes moved from v0.31.0 together). Not 0.26 (the gpu32 pack's gpt-oss image): with the EAGLE3
   # draft on, 0.26 corrupts json_schema output (xgrammar "Failed to advance FSM"; 2 of 24 valid on 2026-10-14, answers
   # start with `{"{`), and 0.31 does not (all valid).
-  image: vllm/vllm-openai@sha256:c1c9f6fd5c109ba7f0546a59f5b2f15fb87f64c77782e90a27b648b42a8e67c3  # vLLM v0.31.0
+  image: vllm/vllm-openai@sha256:d825baf9ce4b1b6bfc5ecc7b79880c7e6748c65a72d697ce3d47607aafa84c6e  # vLLM v0.33.0
   # Harmony render hotfix, applied at container start (gptoss_harmony_render_patch below), then the image's own
-  # `vllm serve` with the command list unchanged. v0.31.0 answers 500 when a request's history holds a tool call whose
+  # `vllm serve` with the command list unchanged. v0.31.0 and v0.33.0 answer 500 when a request's history holds a tool call whose
   # name contains special-token text such as `<|channel|>`; the patch serves those as v0.30 did and turns any other
   # Harmony render error into a 400. Non-fatal: if the file differs it logs a warning and the engine serves unpatched.
   entrypoint: ["/bin/bash", "-c", "python3 /etc/vllm/patch_harmony_render.py; exec vllm serve \"$$@\"", "vllm-serve"]
@@ -86,7 +87,7 @@ x-gptoss-engine: &gptoss-engine
   environment:
     - HF_HUB_OFFLINE=1
     - VLLM_LOGGING_LEVEL=INFO
-    - VLLM_CACHE_ROOT=/root/.cache/vllm/gptoss-120b-v031
+    - VLLM_CACHE_ROOT=/root/.cache/vllm/gptoss-120b-v033
     - NVIDIA_DRIVER_CAPABILITIES=compute,utility
   command:
     - openai/gpt-oss-120b
@@ -218,7 +219,7 @@ services:
     environment: &gptoss-offload-env
       - HF_HUB_OFFLINE=1
       - VLLM_LOGGING_LEVEL=INFO
-      - VLLM_CACHE_ROOT=/root/.cache/vllm/gptoss-120b-v031
+      - VLLM_CACHE_ROOT=/root/.cache/vllm/gptoss-120b-v033
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
       - VLLM_USE_SIMPLE_KV_OFFLOAD=1
     command: &gptoss-offload-command
@@ -407,7 +408,8 @@ volumes:
   vllm_cache:
 
 configs:
-  # Harmony render hotfix for vLLM v0.31.0 (see x-gptoss-engine). Upstream vllm#55128 (first in v0.31.0) re-encodes
+  # Harmony render hotfix for vLLM v0.31.0 and v0.33.0 (see x-gptoss-engine; all three anchors re-checked against
+  # v0.33.0's harmony_utils.py: each matches once, the bug is unfixed there). Upstream vllm#55128 (first in v0.31.0) re-encodes
   # prior tool-call headers with tiktoken's default check, so a tool name in the history that contains special-token
   # text (seen in production: `<|channel|>`) raises HarmonyError, which reaches the caller as a 500. Two edits to
   # vllm/entrypoints/openai/parser/harmony_utils.py: encode that text as plain text, as oss-harmony does when it
