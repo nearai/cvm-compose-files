@@ -26,7 +26,7 @@ FIXED = {
     ".github/workflows/ci.yaml", ".github/workflows/auto-tag.yaml",
     "ci/run.py", "ci/common.py", "ci/check_layout.py", "ci/check_status.py", "ci/check_pins.py",
     "ci/check_privacy.py", "ci/check_public.py", "ci/check_frozen.py", "ci/legacy.txt", "ci/images.allow",
-    "ci/services.allow.json", "ci/exceptions.json", "ci/expected.json", "ci/yamllint.yaml", "ci/gitleaks.toml",
+    "ci/services.allow.json", "ci/exceptions.json", "ci/expected.json", "ci/yamllint.yaml", "ci/gitleaks.toml", "ci/gitleaks.ignore",
     "ci/template-sglang.yaml", "ci/template-vllm.yaml",
 }
 BANNED_EXT = re.compile(r"\.(pyc|safetensors|bin|pt|gguf|onnx|ipynb|log|zip|tar(\.[a-z0-9]+)?)$|(^|/)__pycache__/", re.I)

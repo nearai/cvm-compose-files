@@ -122,8 +122,8 @@ Everything here is public and copied by others: files, branches, tags, PRs, revi
   verification; for deletions the deployment-manager check; every new sink, port, mount, env var,
   moved default or removed safety line named.
 - Never change a gate (guard code, `ci/common.py`, `ci.yaml`, tool configs, the workflow set) in the
-  same PR as a change it checks. Data entries (exceptions, allowlists, legacy line removals, `ci/expected.json`) may ride
-  along and are listed under Gates in the PR.
+  same PR as a change it checks. Data entries (exceptions, allowlists, legacy line removals,
+  `ci/expected.json`, `ci/gitleaks.ignore`) may ride along and are listed under Gates in the PR.
 
 ## Reviewer checklist (every push, state the head SHA)
 - [ ] Read the rendered diff, not only the YAML.
