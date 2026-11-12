@@ -76,10 +76,19 @@ x-gptoss-engine: &gptoss-engine
   # `vllm serve` with the command list unchanged. v0.31.0 and v0.33.0 answer 500 when a request's history holds a tool call whose
   # name contains special-token text such as `<|channel|>`; the patch serves those as v0.30 did and turns any other
   # Harmony render error into a 400. Non-fatal: if the file differs it logs a warning and the engine serves unpatched.
-  entrypoint: ["/bin/bash", "-c", "python3 /etc/vllm/patch_harmony_render.py; exec vllm serve \"$$@\"", "vllm-serve"]
+  # Then the tool schema patch (gptoss_tool_schema_patch below): tools reach the model as a TypeScript-like signature,
+  # and the Harmony renderer drops $ref, anyOf and const and integer enums, so Pydantic-style schemas lose their nested
+  # shape. The patch renders a rewritten copy of each schema. Also non-fatal.
+  entrypoint: ["/bin/bash", "-c", "python3 /etc/vllm/patch_harmony_render.py; python3 /etc/vllm/patch_tool_schema.py; exec vllm serve \"$$@\"", "vllm-serve"]
   configs:
     - source: gptoss_harmony_render_patch
       target: /etc/vllm/patch_harmony_render.py
+      mode: 0444
+    - source: gptoss_tool_schema_patch
+      target: /etc/vllm/patch_tool_schema.py
+      mode: 0444
+    - source: gptoss_tool_schema_module
+      target: /usr/local/lib/python3.12/dist-packages/vllm/entrypoints/openai/parser/nearai_tool_schema.py
       mode: 0444
   volumes:
     - ${HF_DIR:-/data/gpu31-openrouter/hf}:/root/.cache/huggingface
@@ -476,6 +485,199 @@ configs:
               print("[harmony-render] WARN: anchor not found; serving UNPATCHED (vLLM file changed?)", flush=True)
       except Exception as e:
           print(f"[harmony-render] WARN: patch failed ({e}); serving UNPATCHED", flush=True)
+  # Tool schemas for the Harmony prompt (see x-gptoss-engine). gpt-oss sees each tool as a TypeScript-like signature that
+  # openai-harmony renders from the JSON schema (oss-harmony 0.0.11 in this image, same output as openai-harmony
+  # 0.0.8). It renders $ref/$defs, anyOf, allOf, a {"type":"null"} branch and const as `any` or a bare type, integer
+  # enums as `number`, and drops properties under a type list such as ["object","null"]. Pydantic writes nested models as
+  # $ref and Optional fields as anyOf with null, so the model guessed their shape: from 2026-11-05 OpenRouter measured
+  # 40-70% tool-call success on this endpoint, nearly all schema mismatches in nested objects and arrays. A
+  # Pydantic-style tool gave 0/20 schema-valid calls, and 29/30 with the rewrite below (same model, same prompt).
+  # gptoss_tool_schema_module rewrites a copy of the schema into the forms the renderer keeps (refs inlined, single
+  # non-null anyOf/oneOf branch + nullable, other anyOf -> oneOf, string const -> one-value enum, non-string enum/const
+  # -> a note in the description). Plain schemas render byte-for-byte as before. gptoss_tool_schema_patch makes
+  # create_tool_definition in harmony_utils.py render that copy; the request's own schema is untouched, so tool-call
+  # parsing and structured-output grammars still use it. Exact anchor, idempotent, skipped with a warning if the module
+  # is missing. Tests: scripts/test_gptoss_tool_schema.py.
+  gptoss_tool_schema_patch:
+    content: |
+      import pathlib
+      import sys
+      F = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else "/usr/local/lib/python3.12/dist-packages/vllm/entrypoints/openai/parser/harmony_utils.py")
+      OLD = (
+          "def create_tool_definition(tool: ChatCompletionToolsParam | Tool):\n"
+          "    if isinstance(tool, ChatCompletionToolsParam):\n"
+          "        return ToolDescription.new(\n"
+          "            name=tool.function.name,\n"
+          "            description=tool.function.description or \"\",\n"
+          "            parameters=tool.function.parameters,\n"
+          "        )\n"
+          "    return ToolDescription.new(\n"
+          "        name=tool.name,\n"
+          "        description=tool.description or \"\",\n"
+          "        parameters=tool.parameters,\n"
+          "    )\n"
+      )
+      NEW = (
+          "def create_tool_definition(tool: ChatCompletionToolsParam | Tool):\n"
+          "    # Render a copy of the schema written in the forms Harmony keeps\n"
+          "    # (nearai_tool_schema.py, mounted by cvm-compose-files). The request's\n"
+          "    # own schema is untouched, so tool-call parsing and grammars still use it.\n"
+          "    try:\n"
+          "        from vllm.entrypoints.openai.parser.nearai_tool_schema import schema_for_harmony\n"
+          "    except ImportError:\n"
+          "        def schema_for_harmony(schema):\n"
+          "            return schema\n"
+          "    if isinstance(tool, ChatCompletionToolsParam):\n"
+          "        return ToolDescription.new(\n"
+          "            name=tool.function.name,\n"
+          "            description=tool.function.description or \"\",\n"
+          "            parameters=schema_for_harmony(tool.function.parameters),\n"
+          "        )\n"
+          "    return ToolDescription.new(\n"
+          "        name=tool.name,\n"
+          "        description=tool.description or \"\",\n"
+          "        parameters=schema_for_harmony(tool.parameters),\n"
+          "    )\n"
+      )
+      try:
+          s = F.read_text()
+          if NEW in s:
+              print("[tool-schema] already applied", flush=True)
+          elif not (F.parent / "nearai_tool_schema.py").is_file():
+              print("[tool-schema] WARN: nearai_tool_schema.py not mounted; serving UNPATCHED", flush=True)
+          elif s.count(OLD) == 1:
+              F.write_text(s.replace(OLD, NEW, 1))
+              print("[tool-schema] applied: tool schemas rendered with refs inlined and unions kept", flush=True)
+          else:
+              print("[tool-schema] WARN: anchor not found; serving UNPATCHED (vLLM file changed?)", flush=True)
+      except Exception as e:
+          print(f"[tool-schema] WARN: patch failed ({e}); serving UNPATCHED", flush=True)
+  gptoss_tool_schema_module:
+    content: |
+      """Tool schemas for the Harmony prompt (cvm-compose-files gptoss_tool_schema_module).
+
+      gpt-oss sees each tool as a TypeScript-like signature that openai-harmony renders from the JSON schema.
+      The renderer keeps objects, arrays, string enums, descriptions, defaults, `nullable` and `oneOf`, but
+      renders `$$ref`, `anyOf`, `allOf`, a `{"type": "null"}` branch and `const` as `any` or a bare type, and
+      non-string enums as `number`. Pydantic writes nested models as `$$ref` and Optional fields as `anyOf`
+      with null, so the model never sees their shape. schema_for_harmony() returns a copy written with the
+      forms the renderer keeps. It only changes the prompt text; the request's own schema is never modified.
+      """
+      import copy
+      import json
+      import logging
+
+      logger = logging.getLogger(__name__)
+      MAX_DEPTH = 16
+
+
+      def schema_for_harmony(schema):
+          if not isinstance(schema, dict):
+              return schema
+          try:
+              return _Rewriter(schema).walk(schema, 0, frozenset())
+          except Exception:
+              logger.warning("tool schema rewrite failed; rendering the schema as sent", exc_info=True)
+              return schema
+
+
+      def _with_note(s, note):
+          d = s.get("description")
+          s["description"] = f"{d} {note}" if isinstance(d, str) and d else note
+          return s
+
+
+      class _Rewriter:
+          def __init__(self, root):
+              self.root = root
+
+          def resolve(self, ref):
+              if not isinstance(ref, str) or not ref.startswith("#"):
+                  return None
+              node = self.root
+              for part in ref[1:].split("/")[1:]:
+                  part = part.replace("~1", "/").replace("~0", "~")
+                  if isinstance(node, dict) and part in node:
+                      node = node[part]
+                  elif isinstance(node, list) and part.isdigit() and int(part) < len(node):
+                      node = node[int(part)]
+                  else:
+                      return None
+              return copy.deepcopy(node) if isinstance(node, dict) else None
+
+          def walk(self, s, depth, seen):
+              if not isinstance(s, dict):
+                  return s
+              s = dict(s)
+              s.pop("$$defs", None)
+              s.pop("definitions", None)
+              if "$$ref" in s:
+                  ref = s.pop("$$ref")
+                  target = self.resolve(ref)
+                  if target is None:
+                      return s
+                  if ref in seen or depth >= MAX_DEPTH:
+                      name = ref.rsplit("/", 1)[-1]
+                      return _with_note(dict(s, type=target.get("type", "object")), f"(Same shape as {name}.)")
+                  target.update(s)  # sibling keywords (description, default) win
+                  return self.walk(target, depth + 1, seen | {ref})
+              all_of = s.get("allOf")
+              if isinstance(all_of, list) and len(all_of) == 1 and isinstance(all_of[0], dict):
+                  s.pop("allOf")
+                  inner = dict(all_of[0])
+                  inner.update(s)
+                  return self.walk(inner, depth, seen)
+              for key in ("anyOf", "oneOf"):
+                  alts = s.get(key)
+                  if not isinstance(alts, list) or not alts:
+                      continue
+                  s.pop(key)
+                  options = [a for a in alts if not (isinstance(a, dict) and a.get("type") == "null")]
+                  nullable = len(options) < len(alts)
+                  if len(options) == 1 and isinstance(options[0], dict):
+                      inner = dict(options[0])
+                      inner.update(s)
+                      out = self.walk(inner, depth, seen)
+                  else:
+                      out = s
+                      out["oneOf"] = [self.walk(a, depth, seen) for a in options]
+                  if nullable:
+                      out["nullable"] = True
+                  return out
+              t = s.get("type")
+              if isinstance(t, list) and "null" in t:
+                  rest = [x for x in t if x != "null"]
+                  if len(rest) == 1:
+                      s["type"] = rest[0]
+                      s["nullable"] = True
+              if "const" in s:
+                  c = s.pop("const")
+                  if isinstance(c, str):
+                      s["type"] = "string"
+                      s["enum"] = [c]
+                  else:
+                      _with_note(s, f"Must be {json.dumps(c)}.")
+              enum = s.get("enum")
+              if isinstance(enum, list) and enum:
+                  values = [v for v in enum if v is not None]
+                  if len(values) < len(enum) and values and all(isinstance(v, str) for v in values):
+                      s["enum"] = values
+                      s["type"] = "string"
+                      s["nullable"] = True
+                  elif not all(isinstance(v, str) for v in enum):
+                      _with_note(s, "One of: " + ", ".join(json.dumps(v) for v in enum) + ".")
+              props = s.get("properties")
+              if isinstance(props, dict):
+                  s["properties"] = {k: self.walk(v, depth, seen) for k, v in props.items()}
+              items = s.get("items")
+              if isinstance(items, dict):
+                  s["items"] = self.walk(items, depth, seen)
+              elif isinstance(items, list):
+                  s["items"] = [self.walk(v, depth, seen) for v in items]
+              extra = s.get("additionalProperties")
+              if isinstance(extra, dict):
+                  s["additionalProperties"] = self.walk(extra, depth, seen)
+              return s
   otelcol_app_config:
     content: |
       receivers:

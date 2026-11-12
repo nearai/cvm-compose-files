@@ -62,6 +62,14 @@ jobs:
             python:3.12-slim \
             python3 scripts/validate_public_metrics.py
 
+      - name: Test gpt-oss tool schema rewrite (gpu31)
+        run: |
+          docker run --rm \
+            -v "$PWD:/repo:ro" \
+            -w /repo \
+            python:3.12-slim \
+            python3 scripts/test_gptoss_tool_schema.py
+
       - name: Validate DS4F migration contracts
         run: |
           docker run --rm \
