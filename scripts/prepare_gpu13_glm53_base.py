@@ -32,6 +32,7 @@ Runbook: docs/gpu13-glm53-base-gpu4-7.md.
 """
 
 import argparse
+import re
 import difflib
 import sys
 from pathlib import Path
@@ -123,6 +124,16 @@ GHOST_VOLUME: Final = """\
       device: tmpfs
       o: "size=1m,mode=0700"
 """
+
+
+# SGLang v0.5.23 (docker/sglang-glm53-v0523), the image gpu03's base replicas run. Same argv as gpu04's v12 replicas
+# plus the one flag v0.5.23 needs (its default prefill CUDA graphs OOM at warmup at --mem-fraction-static 0.86). The ghost
+# aggregator stays on v12, as on gpu03.
+V12_IMAGE: Final = "docker.io/nearaidev/sglang@sha256:da8d4e4b5ec667499b58a21e56050aae9bcfc4df9669b3ac27e2e20af033d681"
+V0523_IMAGE: Final = "docker.io/nearaidev/sglang@sha256:050b1adf961c8621264d14696d24645f70d1a675509ad400a72ccfb1a3fddcb2"
+V0523_FLAG: Final = "--cuda-graph-backend-prefill disabled"
+V12_SUFFIX: Final = "-v12-q8"
+V0523_SUFFIX: Final = "-v0523"
 
 
 def once(text: str, old: str, new: str, what: str) -> str:
@@ -275,6 +286,32 @@ def nginx(text: str) -> str:
     return head + "  nginx_conf:\n" + conf + "  # ── TEMPORARY (gpu02 maintenance): dedicated ingress for Qwen3.8" + tail
 
 
+def to_v0523(out: str) -> str:
+    """r1/r2 on the v0.5.23 image: common anchor image, candidate argv + V0523_FLAG, engine_image/config_variant labels."""
+    common = block(out, "x-sg-glm53-flash-common: &sg-glm53-flash-common\n", "x-sg-glm53-flash-candidate: &sg-glm53-flash-candidate\n", "common anchor")
+    out = once(out, common, once(common, f"  image: {V12_IMAGE}\n", f"  image: {V0523_IMAGE}\n", "common anchor image"), "common anchor")
+    candidate = out[out.index("x-sg-glm53-flash-candidate: &sg-glm53-flash-candidate\n"):]
+    candidate = candidate[: candidate.index("\n\n") + 1]
+    if V0523_FLAG.split()[0] in candidate:
+        raise SystemExit("candidate argv already sets --cuda-graph-backend-prefill")
+    out = once(out, candidate, once(candidate, "      --disable-overlap-schedule\n", f"      --disable-overlap-schedule\n      {V0523_FLAG}\n", "candidate argv"), "candidate anchor")
+    old, new = V12_IMAGE.split(":")[-1][:12], V0523_IMAGE.split(":")[-1][:12]
+    for pattern in ('"engine_image:{}"', 'nearai.otel.engine_image: "{}"', 'engine_image: "{}"'):
+        if out.count(pattern.format(old)) != 2:
+            raise SystemExit(f"expected two r1/r2 {pattern.format(old)!r}, found {out.count(pattern.format(old))}")
+        out = out.replace(pattern.format(old), pattern.format(new))
+    variants = set(re.findall(r'config_variant[:"]\s*"?([\w.-]+{})"'.format(re.escape(V12_SUFFIX)), out))
+    if len(variants) != 1:
+        raise SystemExit(f"expected one v12 config_variant, found {sorted(variants)}")
+    (variant,) = variants
+    if out.count(variant) != 6:
+        raise SystemExit(f"expected six r1/r2 config_variant labels, found {out.count(variant)}")
+    out = out.replace(variant, variant[: -len(V12_SUFFIX)] + V0523_SUFFIX)
+    if V12_IMAGE not in block(out, "  glm53-ghost-aggregator:\n", "    container_name: glm53-ghost-aggregator\n", "aggregator"):
+        raise SystemExit("ghost aggregator must stay on v12")
+    return out
+
+
 def generate(text: str, glm: str) -> str:
     pieces = glm_pieces(glm)
     out = replace_block(text, "x-dsv41-proxy-common: &dsv41-proxy-common\n", "x-vllm-env:\n", "", "dsv41 proxy anchor")
@@ -328,7 +365,7 @@ def generate(text: str, glm: str) -> str:
         body = out.replace("(MODEL_NAME=deepseek-ai/DeepSeek-V4.1-Flash-1017)", "").replace("The DeepSeek-V4.1 checkpoint", "")
         if needle in body:
             raise SystemExit(f"leftover {needle!r} in the generated file")
-    return out
+    return to_v0523(out)
 
 
 def main() -> int:
