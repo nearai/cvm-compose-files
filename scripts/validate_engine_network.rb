@@ -3,15 +3,31 @@
 # publishes no ports, carries no Hugging Face token and runs with the hub
 # offline. Only its proxies, the metrics collector and the egress probe may
 # share a network with it, and the collector must not listen for OTLP there.
-# Files opt in through ISOLATED_FILES; every engine service in a listed file
-# must satisfy the contract.
+# An engine is any service that runs an engine image or that a proxy uses as
+# its backend. Files opt in through ISOLATED_FILES; every engine service in a
+# listed file must satisfy the contract, except the services listed as pending
+# for that file.
 
 require "yaml"
 
 ROOT = File.expand_path("..", __dir__)
-ISOLATED_FILES = %w[
-  prod/qwen38-27b-abliterated-cc-1gpu.yaml
-].freeze
+# File => engine services that do not follow the contract yet.
+ISOLATED_FILES = {
+  "prod/qwen38-27b-abliterated-cc-1gpu.yaml" => [],
+  "prod/small-models.yaml" => %w[
+    model-sg-qwen36-35b-a3b-fp8-tp1-r1
+    model-sg-glm53-w4afp8-tp2-r1
+    model-sg-glm53-w4afp8-tp2-r2
+    glm53-ghost-aggregator
+    model-sg-flux2-klein-4b-tp1
+    model-vllm-qwen3vl-30b-a3b-fp8-tp1
+    model-vllm-qwen3-embedding-0.6b-tp1
+    model-vllm-qwen3-reranker-0.6b-tp1
+    model-vllm-whisper-large-v3-tp1
+    model-privacy-filter
+  ]
+}.freeze
+BACKEND_ENV = %w[VLLM_BACKEND_URLS VLLM_BASE_URL].freeze
 ENGINE_IMAGE = %r{\A(docker\.io/)?(lmsysorg/sglang|vllm/vllm-openai|nearaidev/sglang|nearaidev/vllm)[@:]}
 FORBIDDEN_ENV = %w[HF_TOKEN HUGGING_FACE_HUB_TOKEN HUGGINGFACE_HUB_TOKEN].freeze
 PROXY_IMAGE = %r{\A(docker\.io/)?nearaidev/vllm-proxy-rs[@:]}
@@ -93,11 +109,29 @@ def check_members(file, compose, engine_networks, engines)
   errors
 end
 
-def check(file, compose)
+# Service names the proxies in this file send requests to.
+def proxy_backends(file, services, errors)
+  by_container = services.to_h { |name, service| [service["container_name"].to_s, name] }
+  services.select { |_, s| s["image"].to_s.match?(PROXY_IMAGE) }.flat_map do |name, service|
+    env = environment(service)
+    BACKEND_ENV.flat_map { |key| env[key].to_s.split(",") }.filter_map do |url|
+      host = url.strip[%r{\A\w+://([^:/]+)}, 1]
+      backend = services.key?(host) ? host : by_container[host]
+      errors << "#{file}: services.#{name}: backend #{host} is not a service in this file" unless backend
+      backend
+    end
+  end
+end
+
+def check(file, compose, pending = [])
   errors = []
   networks = compose["networks"] || {}
-  engines = (compose["services"] || {}).select { |_, s| s["image"].to_s.match?(ENGINE_IMAGE) }
-  errors << "#{file}: no engine service found" if engines.empty?
+  services = compose["services"] || {}
+  backends = proxy_backends(file, services, errors)
+  detected = services.select { |name, s| s["image"].to_s.match?(ENGINE_IMAGE) || backends.include?(name) }
+  errors << "#{file}: no engine service found" if detected.empty?
+  (pending - detected.keys).each { |name| errors << "#{file}: pending service #{name} is not an engine in this file" }
+  engines = detected.reject { |name, _| pending.include?(name) }
   engine_networks = engines.values.flat_map { |service| network_names(service) }.uniq
   errors.concat(check_members(file, compose, engine_networks, engines))
 
@@ -148,15 +182,28 @@ if ARGV.first == "--self-test"
   members["services"]["other"]["networks"] = %w[default eng]
   raise "self-test: bad members accepted" unless check("members", members).length == 4
 
+  custom = Marshal.load(Marshal.dump(good))
+  custom["services"].merge!(
+    "proxy" => { "image" => "nearaidev/vllm-proxy-rs@sha256:0", "networks" => %w[default eng],
+                 "environment" => ["VLLM_BASE_URL=http://custom-engine:8000"] },
+    "custom" => { "image" => "local-build", "container_name" => "custom-engine" }
+  )
+  raise "self-test: custom-image backend not treated as an engine" unless check("custom", custom).length == 2
+  raise "self-test: pending engine rejected" unless check("custom", custom, ["custom"]).empty?
+  raise "self-test: stale pending entry accepted" unless check("custom", custom, %w[custom gone]).length == 1
+
+  custom["services"]["proxy"]["environment"] = ["VLLM_BACKEND_URLS=http://e:8000,http://elsewhere:8000"]
+  raise "self-test: unknown backend accepted" unless check("custom", custom, ["custom"]).length == 2
+
   puts "Engine isolation self-tests OK"
   exit 0
 end
 
-errors = ISOLATED_FILES.flat_map do |file|
+errors = ISOLATED_FILES.flat_map do |file, pending|
   path = File.join(ROOT, file)
   next ["#{file}: listed in ISOLATED_FILES but missing"] unless File.exist?(path)
 
-  check(file, yaml_load(File.read(path)))
+  check(file, yaml_load(File.read(path)), pending)
 end
 
 if errors.any?
@@ -165,4 +212,5 @@ if errors.any?
   exit 1
 end
 
-puts "Engine isolation contract OK (#{ISOLATED_FILES.length} file(s))"
+pending = ISOLATED_FILES.values.sum(&:length)
+puts "Engine isolation contract OK (#{ISOLATED_FILES.length} file(s), #{pending} engine(s) pending)"

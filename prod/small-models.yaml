@@ -1021,6 +1021,9 @@ services:
     # This image is inference-proxy 53d79441 (#337). It includes #336's opt-in size tiers below.
     image: nearaidev/vllm-proxy-rs@sha256:e2893ff46404d112bc39c9e77de6c20f6a889227f99a49f7190bff5b2063d441
     container_name: proxy-qwen38-27b
+    networks:
+      - default
+      - engine-qwen38
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - CLOUD_API_URL=https://cloud-api.near.ai
@@ -1071,6 +1074,14 @@ services:
   model-sg-qwen38-27b-fp8-tp1-coloc:
     <<: *qwen3-8-27b-dedicated
     container_name: model-sg-qwen38-27b-fp8-tp1-coloc
+    # The engine sits on an internal network only: it has no route out of the CVM
+    # and no DNS for outside names. The proxies fetch remote media for it
+    # (VLLM_PROXY_INLINE_MEDIA) and it loads weights from the local cache. It has
+    # its own IPC namespace, so /dev/shm is sized here.
+    networks:
+      - engine-qwen38
+    ipc: private
+    shm_size: 16gb
     # No --enable-mixed-chunk: with extra_buffer it caches stale GDN state and prefix hits return empty answers (sglang#39342).
     # 2026-11-02 engine tuning: --attention-backend flashinfer -> fa3 and --max-mamba-cache-size 128 -> 96;
     # config_variant qwen38-gpu2-coloc-fa3-m96 (was qwen38-gpu13-gpu0-coloc-test). Mem 0.50, chunk 4096,
@@ -1129,8 +1140,7 @@ services:
     # segments needs pidfd_getfd; the container may not call it, and the engine
     # crashed on its first request on gpu23 (2026-10-23).
     environment:
-      - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
-      - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0}
+      - HF_HUB_OFFLINE=1
       - VLLM_LOGGING_LEVEL=INFO
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
       - OPENBLAS_L2_SIZE=2097152
@@ -1277,6 +1287,9 @@ services:
     # This image is inference-proxy 53d79441 (#337). It includes #336's opt-in size tiers below.
     image: nearaidev/vllm-proxy-rs@sha256:e2893ff46404d112bc39c9e77de6c20f6a889227f99a49f7190bff5b2063d441
     container_name: proxy-qwen38-27b-abliterated
+    networks:
+      - default
+      - engine-qwen38
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - CLOUD_API_URL=https://cloud-api.near.ai
@@ -2345,7 +2358,35 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
+  engine-egress-probe:
+    # One-shot check from inside the engine network: every outbound attempt must
+    # fail. The result is one log line (PASS or FAIL).
+    image: curlimages/curl@sha256:d94d07ba9e7d6de898b6d96c1a072f6f8266c687af78a74f380087a0addf5d17
+    container_name: engine-egress-probe
+    restart: "no"
+    networks:
+      - engine-qwen38
+    entrypoint:
+      - sh
+      - -c
+      - |
+        fail=0
+        gateway=$$(hostname -i | awk '{print $$1}' | sed 's/[0-9]*$$/1/')
+        for url in https://1.1.1.1 https://huggingface.co http://169.254.169.254 http://compose-manager:8080 "http://$$gateway:8080"; do
+          if curl -s -o /dev/null -m 5 "$$url"; then echo "engine-egress-probe reached $$url"; fail=1; fi
+        done
+        if nslookup huggingface.co >/dev/null 2>&1; then echo "engine-egress-probe resolved an outside name"; fail=1; fi
+        if [ "$$fail" = 0 ]; then echo "engine-egress-probe PASS: no route out"; else echo "engine-egress-probe FAIL"; fi
+        exit "$$fail"
+    logging: *logging-conf
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"engine-egress-probe","service":"engine-egress-probe","tags":["model:Qwen/Qwen3.8-27B","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+
   otelcol-contrib:
+    # Joins each engine network to scrape the engines there.
+    networks:
+      - default
+      - engine-qwen38
     image: otel/opentelemetry-collector-contrib@sha256:85ac41c2db88d0df9bd6145e608a3cb023f5d8443868adbfbbf66efb51087917
     container_name: otelcol-contrib
     command: ["--config=/etc/otelcol-contrib/config.yaml"]
@@ -2358,9 +2399,6 @@ services:
       - DD_HOSTNAME=${DD_HOSTNAME:-unknown}
       - ENV=${ENV:-unknown}
       - HOST_IP=${HOST_IP:-unknown}
-    expose:
-      - "4317"
-      - "4318"
     volumes:
       - /var/lib/docker/containers:/var/lib/docker/containers:ro
       - otelcol_app_storage:/var/lib/otelcol-contrib
@@ -2388,6 +2426,11 @@ networks:
   default:
     external: true
     name: dstack_default
+  engine-qwen38:
+    # No gateway and no outside DNS. Only the Qwen3.8 engine, its proxies, the
+    # metrics collector and the probe join it.
+    name: engine_qwen38
+    internal: true
 
 volumes:
   otelcol_app_storage:
@@ -2414,10 +2457,11 @@ configs:
       receivers:
         otlp:
           protocols:
+            # Loopback only: nothing in this stack sends OTLP to the collector.
             grpc:
-              endpoint: 0.0.0.0:4317
+              endpoint: 127.0.0.1:4317
             http:
-              endpoint: 0.0.0.0:4318
+              endpoint: 127.0.0.1:4318
 
         filelog/docker_containers:
           include: [/var/lib/docker/containers/*/*-json.log]
