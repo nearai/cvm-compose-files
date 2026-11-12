@@ -1153,7 +1153,14 @@ x-privacy-filter-common: &privacy-filter-common
               _observe("bad_request", started)
               raise HTTPException(400, "input must be a non-empty string or list of strings")
 
-          if not await _gate.acquire(QUEUE_TIMEOUT_S):
+          deadline = started + DEADLINE_S
+          # Wait for a slot no longer than the queue timeout or the request's deadline.
+          if not await _gate.acquire(min(QUEUE_TIMEOUT_S, deadline - time.monotonic())):
+              if time.monotonic() >= deadline:
+                  elapsed = _observe("deadline", started)
+                  _log("filter_deadline", request_id=request_id, elapsed_s=round(elapsed, 3), inputs=len(texts),
+                       chars=sum(len(t) for t in texts), in_flight=_gate.running, queued=len(_gate.waiters))
+                  return JSONResponse(status_code=504, content={"error": "deadline_exceeded"})
               elapsed = _observe("rejected", started)
               _log("filter_rejected", request_id=request_id, elapsed_s=round(elapsed, 3),
                    in_flight=_gate.running, queued=len(_gate.waiters))
@@ -1174,7 +1181,6 @@ x-privacy-filter-common: &privacy-filter-common
               return _detach(job, "cancelled", started, request_id, 499, {"error": "client_closed_request"})
           future.add_done_callback(functools.partial(_job_done, job))
 
-          deadline = started + DEADLINE_S
           try:
               while not future.done():
                   now = time.monotonic()

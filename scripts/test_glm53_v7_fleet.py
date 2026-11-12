@@ -300,7 +300,7 @@ COLOC_ENGINE_JOB = f"sglang-{COLOC_ENGINE}"
 # The move to the SGLang v0.5.23 secure image then renames --cuda-graph-max-bs to --cuda-graph-max-bs-decode and sets
 # engine_image 6de632a5e942, sglang_revision 0.5.23-near-secure and config_variant ...-prio-v0523.
 COLOC_BLOCK_HASHES = {
-    "x-privacy-filter-common": "04dd623bd6aad03644bb12513f1722d6c61614d5b0a0005468aef3f1bd31a257",
+    "x-privacy-filter-common": "79ce7f140d785fef754511475944329af64dbfd9fb826472bdc0822bc3f0cca6",
     COLOC_ENGINE: "6340cb36b826d7fee3db806bcb2c8ec23a7391a17eb5f5ff1760df80d350acda",
     COLOC_ENGINE_JOB: "fe072375f6e7445e4bddf78ed32dab91346f46f2dcdfc85bf3c753855c8c7e4e",
 }
@@ -1179,6 +1179,13 @@ class Gpu13FleetTest(unittest.TestCase):
         classify = self.privacy_filter_source().split("async def classify(", 1)[1]
         self.assertIn('BackgroundTask(os._exit, 1) if exit_after else None', classify)
         self.assertIn('headers={"Retry-After": "2"}', classify)
+
+    def test_privacy_filter_admission_wait_is_bounded_by_the_deadline(self) -> None:
+        classify = self.privacy_filter_source().split("async def classify(", 1)[1]
+        self.assertIn("await _gate.acquire(min(QUEUE_TIMEOUT_S, deadline - time.monotonic()))", classify)
+        self.assertLess(classify.index("deadline = started + DEADLINE_S"), classify.index("_gate.acquire("))
+        self.assertLess(classify.index('status_code=504, content={"error": "deadline_exceeded"}'),
+                        classify.index('_observe("rejected", started)'))
 
     def test_privacy_filter_success_resets_consecutive_oom_503s(self) -> None:
         def primary(oom_error):
