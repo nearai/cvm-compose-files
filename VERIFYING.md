@@ -6,9 +6,10 @@ attestation are the proof.
 ## What the proof covers
 
 - **The compose file is not in the hardware measurement.** A host's measured configuration covers its
-  base services only. A deployed compose file shows up in the host's attestation log as an action
-  record (release tag, commit, file path, file hash). This repo does not publish that log, and where it
-  is published is not documented here yet.
+  base services only. The host's deployment manager keeps its own record of what it applied (release
+  tag, commit, file path, SHA-256 of the file bytes at that tag). That record is the manager's report,
+  not a hardware attestation, and environment values supplied at deploy time are not part of it. This
+  repo does not publish it, and how to obtain it is not documented here yet.
 - **Images** are pinned by digest, except the cases counted under Known gaps. An image built here can
   be checked against its signature, its provenance and its build dir at the recorded source commit.
 - **Privacy** here means one thing: the serving containers must not write prompts or outputs to their
@@ -32,7 +33,7 @@ git show v0.0.N:prod/<file>.yaml > deployed.yaml
 sha256sum deployed.yaml
 ```
 
-Compare the hash with the file hash in the host's attestation log. The file at a tag can differ from
+Compare the hash with the file hash in the host's deployment record. The file at a tag can differ from
 the file at `HEAD`; verify the tagged bytes.
 
 ## 2. File to image digests
@@ -158,12 +159,11 @@ nothing in this repo binds a host to a file. Deviations CI detects in live files
 | `layout.ext`, `layout.size` | 1 each | the adapter weights file in `adapters/` |
 | `public.domain` | 5 | an internal telemetry endpoint |
 | `public.host` | 8 | host names in config values, labels or service names |
-| `public.ip` | 2 | addresses an egress probe must fail to reach |
 | `public.repo` | 3 | references to repositories outside the public allowlist |
 | `public.runner` | 4 | publish workflows on a self-hosted runner |
 
 Gaps that are not exceptions:
-- The logging rules check flags and env only, on services on an SGLang or vLLM image (see What the
+- The logging rules check flags and env only, on services the guards classify as SGLang or vLLM by key, image, command or role (see What the
   proof covers). Only engines must set an explicit no-log flag; other services on those images, such as
   every `role: aux` entry in `ci/services.allow.json`, are checked for flags and env that enable logging.
 - Two vLLM publish workflows skip the provenance attestation when resuming from an already pushed digest;

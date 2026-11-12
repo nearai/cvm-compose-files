@@ -27,7 +27,7 @@ downloaders and monitoring. Hosts run a file from a release tag `v0.0.N`.
 | path | contents |
 |---|---|
 | `prod/` | every deployable compose file, flat |
-| `docker/<dir>/` | build context of one published image; never edited once published |
+| `docker/<dir>/` | build context of one published image; frozen once published (read it at the image's source commit) |
 | `ci/` | guards (`check_*.py`, run by `run.py`), their data files, tool configs, two templates |
 | `docs/` | usage docs, at most one per deployable |
 | `.github/` | `ci.yaml`, `auto-tag.yaml`, one `publish-*.yaml` per image, PR template |

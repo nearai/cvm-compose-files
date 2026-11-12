@@ -19,6 +19,7 @@ PUBLIC_HOSTS = {
     "completions.near.ai",
     "completions-stg.near.ai",
     "cloud-api.near.ai",
+    "claude.com",
     "github.com",
     "githubusercontent.com",
     "huggingface.co",
@@ -56,7 +57,9 @@ PUBLIC_OWNERS = {
 }
 ORG = "nearai"
 ORG_PUBLIC_REPOS = {"cvm-compose-files", "compose-manager"}
-IP_ALLOW = {"0.0.0.0", "127.0.0.1", "127.0.0.11"}
+# 1.1.1.1 (public resolver) and 169.254.169.254 (link-local metadata) are well-known targets an
+# egress probe must fail to reach; they reveal nothing about our infrastructure.
+IP_ALLOW = {"0.0.0.0", "127.0.0.1", "127.0.0.11", "1.1.1.1", "169.254.169.254"}
 IP_ALLOW_PREFIX = ("172.31.250.",)
 
 LIFECYCLE = re.compile(
