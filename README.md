@@ -7,10 +7,14 @@ downloaders and monitoring. Hosts run a file from a release tag `v0.0.N`.
 ## Trust model
 
 - This repo says what should run. It cannot prove what a host runs. The proof is the image signature and
-  the host's attestation; [VERIFYING.md](VERIFYING.md) shows how to check them.
-- Every image is pinned by digest. Images built here are published by a workflow run from `main` and
-  signed with a keyless Sigstore identity tied to that workflow; most also get a build provenance
+  the host's attestation; [VERIFYING.md](VERIFYING.md) shows how to check them. The compose file itself
+  is not part of the host's hardware measurement.
+- Images are pinned by digest, except as listed in [Known gaps](VERIFYING.md#known-gaps). Images built
+  here are published by publish workflows on `main` and signed with a keyless Sigstore identity; for
+  older digests the repo does not record which identity signed them. Most also get a build provenance
   attestation.
+- Privacy here means the serving containers must not log prompts or outputs. CI checks this through the
+  flags and env of SGLang and vLLM services only; VERIFYING.md says exactly what is covered.
 - Engines load model weights at a pinned Hugging Face commit revision, except where VERIFYING.md lists
   a gap.
 - CI checks the compose files, build contexts, workflows and text in this repo. It does not inspect the
@@ -35,7 +39,7 @@ Legacy paths are listed in `ci/legacy.txt` and only shrink.
 
 ## Status
 
-Every deployable file, the served model names it serves, and whether it is `live` or a `candidate`.
+Every deployable file, the served model names it serves, and its status.
 
 <!-- status:begin -->
 | file | serves | status |
@@ -51,8 +55,8 @@ Every deployable file, the served model names it serves, and whether it is `live
 | `prod/small-models.yaml` | Qwen/Qwen3-Embedding-0.6B,Qwen/Qwen3-Reranker-0.6B,Qwen/Qwen3-VL-30B-A3B-Instruct,Qwen/Qwen3.6-35B-A3B-FP8,Qwen/Qwen3.8-27B,black-forest-labs/FLUX.2-klein-4B,openai/whisper-large-v3,z-ai/glm-5.3-flash | live |
 <!-- status:end -->
 
-`live` runs in production. A `candidate` is being rolled out now. Files that run nowhere are deleted;
-older versions stay reachable through release tags.
+`live` runs in production. Files that run nowhere are deleted; older versions stay reachable through
+release tags.
 
 ## Verify
 

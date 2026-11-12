@@ -1,18 +1,13 @@
 # Rotate the compose-manager `BEARER_TOKEN`
 
-`prod/rotate-compose-manager-token.yaml` rotates the `BEARER_TOKEN` of a running compose-manager
-without restarting the CVM and without touching any model container. Its one service, `rotate-token`,
-rewrites the token in the launcher's env file and recreates only the `compose-manager` container in
-its own project (`dstack`). The service has no network, only the Docker socket, and never restarts.
+`prod/rotate-compose-manager-token.yaml` replaces the `BEARER_TOKEN` of a running compose-manager. Its
+one service, `rotate-token`, recreates only the `compose-manager` container; model containers are not
+touched. The service has no network, only the Docker socket, and never restarts.
 
-## Request
+## Usage
 
-Send the file through compose-manager and always set `"project": "cm-token-rotate"` on
-`POST /compose/up`, `/compose/down` and `/compose/logs`. The file's own `name:` is only a fallback and
-does not protect a request that names another project.
-
-Run a dry run first with a placeholder token. compose-manager writes the `env` map to a temporary file
-even on a dry run, so never send the real token with `dry_run: true`.
+Send the file through compose-manager with `"project": "cm-token-rotate"` on every request for it
+(`/compose/up`, `/compose/down`, `/compose/logs`), and pass the new token as `NEW_BEARER_TOKEN`:
 
 ```json
 {
@@ -20,34 +15,12 @@ even on a dry run, so never send the real token with `dry_run: true`.
   "file": "prod/rotate-compose-manager-token.yaml",
   "project": "cm-token-rotate",
   "services": ["rotate-token"],
-  "env": { "NEW_BEARER_TOKEN": "placeholder-for-dry-run-only" },
-  "dry_run": true
+  "env": { "NEW_BEARER_TOKEN": "<new token>" }
 }
 ```
 
-The plan must create only `rotate-token` and recreate or remove nothing else. Then send the same
-request with the real `NEW_BEARER_TOKEN` and `"dry_run": false`.
-
-## Result
-
-`compose/up` returns once the container has started, not when the rotation is done. Read the
-container's exit status and logs with `POST /docker/ps` and `POST /compose/logs` for project
-`cm-token-rotate`, service `rotate-token`.
-
-| exit | meaning |
-|---|---|
-| `0` | rotated; compose-manager is healthy and accepts the new token |
-| `2` | rotation failed and was rolled back; compose-manager is healthy on the old token |
-| `3` | the rollback also failed; the host needs manual recovery |
-
-Confirm on an authenticated endpoint such as `GET /docker/ps`: the old token gets `401`, the new one
-`200`. `GET /version` is unauthenticated and cannot show which token is valid.
-
-To undo a successful rotation, run the file again with the old token as `NEW_BEARER_TOKEN`. Every run
-also leaves a timestamped backup of the env file next to it inside `compose-manager-launcher`.
-
-The rotation appears in the host's attestation log as a normal `compose_up` action; the token value is
-never recorded there.
+The container exits `0` when the new token is accepted, `2` when the rotation was rolled back to the
+old token, and `3` when the rollback also failed.
 
 ## Inner script
 

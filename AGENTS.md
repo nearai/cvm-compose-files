@@ -5,8 +5,8 @@ the author and the reviewer cover the rest. `CLAUDE.md` only imports this file.
 
 ## Purpose
 Deployable Docker Compose files for confidential inference, plus the build contexts of the images
-they pin. The repo is public. Anyone can go from a release tag and a file path to the exact image,
-its build source and the model revision (VERIFYING.md, which also lists known gaps).
+they pin. The repo is public. From a release tag and a file path, a verifier can trace image digests,
+build sources and model revisions, except where VERIFYING.md lists a known gap.
 
 ## Layout
 - `prod/` every deployable compose file, flat: serving, pack (`pack-*`) and utility (`util-*`) files.
