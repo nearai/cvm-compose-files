@@ -78,6 +78,14 @@ jobs:
             ruby:3.3-alpine \
             ruby scripts/validate_registrar_auth.rb
 
+      - name: Validate engine isolation contract
+        run: |
+          docker run --rm \
+            -v "$PWD:/repo:ro" \
+            -w /repo \
+            ruby:3.3-alpine \
+            sh -c "ruby scripts/validate_engine_network.rb --self-test && ruby scripts/validate_engine_network.rb"
+
       - name: Validate read-only GPU preflight
         run: |
           set -o pipefail
