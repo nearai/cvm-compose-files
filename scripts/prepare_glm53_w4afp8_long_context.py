@@ -379,9 +379,9 @@ TP2_FLAG_CHANGES: Final = {
 }
 # --- r2b canary: SGLang v0.5.23 (docker/sglang-glm53-v0523, PR #446) on ONE long-tier TP2 replica ---------------------
 # r2b alone moves to the v0.5.23 image; r1a, r1b and r2a keep TP2_IMAGE (v12) with byte-identical argv, env and labels.
-# TODO: fill with the publish-glm53-v0523 digest. The all-zero digest is a PLACEHOLDER that cannot be pulled; replace it
-# (and W4AFP8_LONG_CONTEXT_V0523_CANARY_IMAGE in scripts/validate_glm53_prod_config.rb) and run --write before any deploy.
-V0523_CANARY_IMAGE: Final = "docker.io/nearaidev/sglang@sha256:" + "0" * 64
+# Digest from publish-glm53-v0523 (attested); keep in sync with W4AFP8_LONG_CONTEXT_V0523_CANARY_IMAGE in
+# scripts/validate_glm53_prod_config.rb.
+V0523_CANARY_IMAGE: Final = "docker.io/nearaidev/sglang@sha256:050b1adf961c8621264d14696d24645f70d1a675509ad400a72ccfb1a3fddcb2"
 V0523_CANARY_ENGINE_IMAGE_LABEL: Final = V0523_CANARY_IMAGE.split(":")[-1][:12]
 # REQUIRED on v0.5.23: its default breakable prefill CUDA graphs OOM at warmup at --mem-fraction-static 0.86
 # (verified on gpu31 2026-11-10). Appended to the otherwise unchanged TP2 argv.

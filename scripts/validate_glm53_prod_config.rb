@@ -1097,9 +1097,8 @@ W4AFP8_LONG_CONTEXT_V10_IMAGE = "docker.io/nearaidev/sglang@sha256:c15a33672ade5
 # budget). The long tier's TP2 replicas run it, and so do the base-tier gpu04 r4 Q8 canary and the base V12Q8 fleet file.
 W4AFP8_LONG_CONTEXT_V12_IMAGE = W4AFP8_V12_IMAGE
 # r2b canary: SGLang v0.5.23 (docker/sglang-glm53-v0523, PR #446) on ONE long-tier TP2 replica; r1a/r1b/r2a stay on v12.
-# TODO: fill with the publish-glm53-v0523 digest (same value as V0523_CANARY_IMAGE in scripts/prepare_glm53_w4afp8_long_context.py).
-# The all-zero digest is a placeholder that cannot be pulled.
-W4AFP8_LONG_CONTEXT_V0523_CANARY_IMAGE = "docker.io/nearaidev/sglang@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+# Same value as V0523_CANARY_IMAGE in scripts/prepare_glm53_w4afp8_long_context.py (attested publish-glm53-v0523 digest).
+W4AFP8_LONG_CONTEXT_V0523_CANARY_IMAGE = "docker.io/nearaidev/sglang@sha256:050b1adf961c8621264d14696d24645f70d1a675509ad400a72ccfb1a3fddcb2"
 W4AFP8_QSPLIT_CAPABLE_IMAGES = [W4AFP8_LONG_CONTEXT_V2_IMAGE, W4AFP8_LONG_CONTEXT_V3_IMAGE, W4AFP8_LONG_CONTEXT_V6_IMAGE, W4AFP8_LONG_CONTEXT_V7_IMAGE, W4AFP8_LONG_CONTEXT_V10_IMAGE, W4AFP8_LONG_CONTEXT_V12_IMAGE].freeze
 W4AFP8_LONG_CONTEXT_VARIANT = "fc91d24-long-context-w4afp8-cCHUNK-QSPLITOFFLOOPhicache-cuda-host-pooled-v1-HOSTadmission-reserve-disabled-pool-clamp-pdiPDI-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192#{OBSERVABILITY_VARIANT_SUFFIX}"
 W4AFP8_QSPLIT_ENV = "SGLANG_DSA_INDEXER_QSPLIT"
