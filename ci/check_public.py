@@ -169,12 +169,15 @@ def check(ctx):
             out += comment_findings(p, text)
         if p.startswith(".github/workflows/"):
             out += workflow_findings(p, text)
-    for sha, msg in ctx.commits:
+    for sha, msg, *merge in ctx.commits:
         where = f"commit {sha[:12]}"
         # Git trailers (Co-Authored-By and the like) carry identities by design.
         body = "\n".join("" if TRAILER.match(l) else l for l in msg.split("\n"))
         out += text_findings(where, body)
         subject = msg.split("\n", 1)[0]
+        # Merge commits from "Update branch" keep their generated subject; their bodies are still scanned.
+        if merge and merge[0]:
+            continue
         if not TITLE.match(subject) or len(subject) > 72:
             out.append(Finding(where, 1, "public.title", "subject must be `<prod|docker|ci|docs|repo>: <summary>`, "
                                "at most 72 chars"))
@@ -182,14 +185,17 @@ def check(ctx):
     for field in ("title", "body", "branch"):
         if pr.get(field):
             out += text_findings(f"pr {field}", pr[field])
-    if pr.get("title") and (not TITLE.match(pr["title"]) or len(pr["title"]) > 72):
+    # The squash commit subject is the title plus ` (#N)`; it has to fit in 72 chars too.
+    cap = 72 - len(f" (#{pr.get('number') or '99999'})")
+    if pr.get("title") and (not TITLE.match(pr["title"]) or len(pr["title"]) > cap):
         out.append(Finding("pr title", 1, "public.title", "title must be `<prod|docker|ci|docs|repo>: <summary>`, "
-                           "at most 72 chars"))
+                           f"at most {cap} chars"))
     return out
 
 
 def env_pr():
-    return {k: os.environ.get(v, "") for k, v in (("title", "PR_TITLE"), ("body", "PR_BODY"), ("branch", "PR_BRANCH"))}
+    return {k: os.environ.get(v, "") for k, v in (("title", "PR_TITLE"), ("body", "PR_BODY"), ("branch", "PR_BRANCH"),
+                                                  ("number", "PR_NUMBER"))}
 
 
 # Self-test inputs are assembled at run time so this file never holds the strings it bans.
@@ -219,6 +225,12 @@ CASES = [
      {"commits": [("c" * 40, f"ci: x\n\nsee https://{_DOM}/x\n")]}),
     ("bad PR title", "public.title", FILES, None, None, None, {"pr": {"title": "Fix stuff"}}),
     ("bad commit subject", "public.title", FILES, None, None, None, {"commits": [("b" * 40, "wip\n")]}),
+    ("merge commit subject", None, FILES, None, None, None,
+     {"commits": [("d" * 40, "Merge branch 'main' into chore/x\n", True)]}),
+    ("domain in a merge commit body", "public.domain", FILES, None, None, None,
+     {"commits": [("e" * 40, f"Merge branch 'main'\n\nsee https://{_DOM}/x\n", True)]}),
+    ("PR title too long once squashed", "public.title", FILES, None, None, None,
+     {"pr": {"title": "repo: " + "x" * 62, "number": "1234"}}),
     ("three comment lines", "public.comment", dict(FILES, **{P: FILES[P] + "# a\n# b\n"}), None, None, None, {}),
     ("commented-out key", "public.comment", dict(FILES, **{P: FILES[P] + "# image: nginx\n"}), None, None, None, {}),
     ("history in a comment", "public.comment", dict(FILES, **{P: FILES[P] + "# We previously used x.\n"}), None, None,

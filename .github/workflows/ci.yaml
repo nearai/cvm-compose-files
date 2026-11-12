@@ -12,27 +12,23 @@ permissions:
 env:
   RUBY_IMAGE: docker.io/library/ruby@sha256:2fda53cb7c1c93618593afce7404e311b2b44b0eab35bfeace3981aa0be4ff54 # 3.3-alpine
   PYTHON_IMAGE: docker.io/library/python@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b # 3.12-slim
-  OTELCOL_IMAGE: otel/opentelemetry-collector-contrib@sha256:85ac41c2db88d0df9bd6145e608a3cb023f5d8443868adbfbbf66efb51087917 # same digest as the compose files
   YAMLLINT_IMAGE: docker.io/pipelinecomponents/yamllint@sha256:f7f7b4f8824839e33690a880dbe20944128b0dc9c55522a0b92a29b3a905cecf # 0.35.27
   ACTIONLINT_IMAGE: docker.io/rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 # 1.7.12
   ZIZMOR_IMAGE: ghcr.io/zizmorcore/zizmor@sha256:3014cc8f68f663935f69b3c3e0e41f5ce102b268d97db13db0f62208747f860d # 1.32.0
   GITLEAKS_IMAGE: ghcr.io/gitleaks/gitleaks@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f # v8.30.1
 
 jobs:
-  guards:
+  base:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 5
     outputs:
-      base: ${{ steps.base.outputs.sha }}
+      sha: ${{ steps.base.outputs.sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
           persist-credentials: false
-
-      - name: Guard fixtures
-        run: python3 ci/run.py --self-test
 
       - name: Find the base commit
         id: base
@@ -51,9 +47,24 @@ jobs:
           fi
           echo "sha=$base" >> "$GITHUB_OUTPUT"
 
+  guards:
+    needs: [base]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Guard fixtures
+        run: python3 ci/run.py --self-test
+
       - name: Guards
         env:
-          BASE: ${{ steps.base.outputs.sha }}
+          BASE: ${{ needs.base.outputs.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_BODY: ${{ github.event.pull_request.body }}
           PR_BRANCH: ${{ github.head_ref }}
@@ -73,6 +84,7 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
 
+      # Each embedded collector config is validated with the collector image its own file pins.
       - name: Render and validate embedded OTel collector configs
         run: |
           set -euo pipefail
@@ -81,8 +93,14 @@ jobs:
             python3 ci/run.py --render "$f" > "$RUNNER_TEMP/rendered.json"
             config="$(jq -r '.configs.otelcol_app_config.content // empty' "$RUNNER_TEMP/rendered.json")"
             if [ -n "$config" ]; then
+              images="$(jq -r '[.services[] | select(any(.configs[]?; .source == "otelcol_app_config")) | .image]
+                | unique | .[]' "$RUNNER_TEMP/rendered.json")"
+              if [ "$(grep -c . <<< "$images")" -ne 1 ] || ! [[ "$images" =~ @sha256:[0-9a-f]{64}$ ]]; then
+                echo "$f: the services using otelcol_app_config must share one digest-pinned image" >&2
+                exit 1
+              fi
               echo "otelcol validate $f"
-              printf '%s' "$config" | docker run --rm -i --network none "$OTELCOL_IMAGE" validate --config=/dev/stdin
+              printf '%s' "$config" | docker run --rm -i --network none "$images" validate --config=/dev/stdin
             fi
           done
 
@@ -131,7 +149,7 @@ jobs:
           docker run --rm --network none -v "$PWD:/repo:ro" -w /repo "$ZIZMOR_IMAGE" --offline "${files[@]}"
 
   secrets:
-    needs: [guards]
+    needs: [base]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -143,7 +161,7 @@ jobs:
 
       - name: gitleaks
         env:
-          BASE: ${{ needs.guards.outputs.base }}
+          BASE: ${{ needs.base.outputs.sha }}
         run: |
           set -euo pipefail
           run() {
@@ -158,7 +176,7 @@ jobs:
 
   all-green:
     if: always()
-    needs: [compose, guards, lint, secrets]
+    needs: [base, compose, guards, lint, secrets]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -168,7 +186,7 @@ jobs:
         run: |
           set -euo pipefail
           echo "results: $RESULTS"
-          [ "$(wc -w <<< "$RESULTS")" -eq 4 ]
+          [ "$(wc -w <<< "$RESULTS")" -eq 5 ]
           for r in $RESULTS; do
             [ "$r" = success ]
           done

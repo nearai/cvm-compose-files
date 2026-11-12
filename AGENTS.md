@@ -112,11 +112,11 @@ Everything here is public and copied by others: files, branches, tags, PRs, revi
 ## Pull requests
 - One concern: new config, new image, image bump, config tune, rules/CI change, deletion or promotion,
   or docs. Only the doc and table updates the change forces may ride along.
-- Title and commit subjects: `<prod|docker|ci|docs|repo>: <imperative summary>`, at most 72 chars.
+- Title and commit subjects: `<prod|docker|ci|docs|repo>: <summary>`, at most 72 chars counting the
+  ` (#N)` squash adds; merge commits from updating a branch are exempt.
 - Squash merge only. No force-push after review starts. Never move or delete tags or rewrite history.
-- Merging needs `all-green` and one approval from someone other than the author; a new push
-  dismisses earlier approvals. Agents never approve their own work. Changes under `ci/` need two
-  such approvals; repository settings cannot enforce this per path, so reviewers do.
+- Merging needs `all-green` and one approval from a non-author (two for `ci/` changes; settings
+  cannot enforce that per path). A new push dismisses approvals. Agents never approve their own work.
 - Evidence in the PR body: `ci/run.py` green; rendered-diff note for `prod/` changes; `--noop` output
   for comment-only or refactor changes; for image bumps the `main` publish run and the signature
   verification; for deletions the deployment-manager check; every new sink, port, mount, env var,

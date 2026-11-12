@@ -319,8 +319,11 @@ def real_ctx(base_rev):
             n = 2 if st[0] in "RC" else 1
             name_status.append((st[0], *raw[i + 1:i + 1 + n]))
             i += 1 + n
-        log = git("log", "--format=%H%x00%B%x01", f"{base_rev}..HEAD").decode()
-        commits = [tuple(x.strip("\n").split("\0", 1)) for x in log.split("\x01") if x.strip()]
+        log = git("log", "--format=%H%x00%P%x00%B%x01", f"{base_rev}..HEAD").decode()
+        for x in log.split("\x01"):
+            if x.strip():
+                sha, parents, msg = x.strip("\n").split("\0", 2)
+                commits.append((sha, msg, len(parents.split()) > 1))
     ctx = Context(head, base, Renderer(head, sa), Renderer(base, load_json(base, SERVICES, {}) or sa) if base else None,
                   name_status, commits, env_pr())
     return ctx
