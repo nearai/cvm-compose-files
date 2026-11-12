@@ -377,6 +377,38 @@ TP2_FLAG_CHANGES: Final = {
     "--hicache-io-backend direct": None,
     "--hicache-mem-layout page_first_direct": None,
 }
+# --- r2b canary: SGLang v0.5.23 (docker/sglang-glm53-v0523, PR #446) on ONE long-tier TP2 replica ---------------------
+# r2b alone moves to the v0.5.23 image; r1a, r1b and r2a keep TP2_IMAGE (v12) with byte-identical argv, env and labels.
+# TODO: fill with the publish-glm53-v0523 digest. The all-zero digest is a PLACEHOLDER that cannot be pulled; replace it
+# (and W4AFP8_LONG_CONTEXT_V0523_CANARY_IMAGE in scripts/validate_glm53_prod_config.rb) and run --write before any deploy.
+V0523_CANARY_IMAGE: Final = "docker.io/nearaidev/sglang@sha256:" + "0" * 64
+V0523_CANARY_ENGINE_IMAGE_LABEL: Final = V0523_CANARY_IMAGE.split(":")[-1][:12]
+# REQUIRED on v0.5.23: its default breakable prefill CUDA graphs OOM at warmup at --mem-fraction-static 0.86
+# (verified on gpu31 2026-11-10). Appended to the otherwise unchanged TP2 argv.
+V0523_CANARY_FLAGS: Final = ("--cuda-graph-backend-prefill disabled",)
+V0523_CANARY_VARIANT: Final = TP2_VARIANT.replace("fc91d24", "sglang-v0523", 1).removesuffix("-v12-q8") + "-v0523-canary"
+V0523_CANARY_REPLICA: Final = "2b"
+# Per-TP2-replica overrides of image, engine_image label, config_variant and extra argv. Replicas not listed run the fleet values.
+TP2_OVERRIDES: Final = {
+    V0523_CANARY_REPLICA: {
+        "image": V0523_CANARY_IMAGE,
+        "engine_image": V0523_CANARY_ENGINE_IMAGE_LABEL,
+        "variant": V0523_CANARY_VARIANT,
+        "extra_flags": V0523_CANARY_FLAGS,
+        "comment": (
+            "  # SGLang v0.5.23 CANARY (header: r2b CANARY). Differs from r2a/r1a/r1b ONLY in image, engine_image/config_variant\n"
+            "  # labels and --cuda-graph-backend-prefill disabled. Deploy alone, from a main tag, after draining r2b.\n"
+        ),
+    },
+}
+TP2_FLEET: Final = {"image": TP2_IMAGE, "engine_image": TP2_ENGINE_IMAGE_LABEL, "variant": TP2_VARIANT, "extra_flags": (), "comment": ""}
+
+
+def tp2_settings(suffix: str, canary: bool = True) -> dict:
+    """The image / labels / extra argv a TP2 replica runs: the fleet values, or its override while the canary is on."""
+    return TP2_OVERRIDES[suffix] if canary and suffix in TP2_OVERRIDES else TP2_FLEET
+
+
 BACKEND_URLS_R1_R2: Final = f"http://{SERVICE_PREFIX}1:8000,http://{SERVICE_PREFIX}2:8000"
 # The value gpu02's compose-manager env map sets for GLM53_BACKEND_URLS during the 2xTP2 canary.
 GPU02_BACKEND_URLS: Final = (
@@ -516,9 +548,10 @@ def resolve_engine_image_labels(text: str) -> str:
     return text
 
 
-def tp2_service(r2: str, suffix: str) -> str:
+def tp2_service(r2: str, suffix: str, canary: bool = True) -> str:
     """One TP2 replica of the gpu02 2xTP2 canary, derived from the generated r2 service text."""
     spec = TP2_REPLICAS[suffix]
+    settings = tp2_settings(suffix, canary)
     name = f"{TP2_SERVICE_PREFIX}{suffix}"
     command_start = r2.index("    command: >\n") + len("    command: >\n")
     env_start = r2.index("    environment:\n")
@@ -539,6 +572,10 @@ def tp2_service(r2: str, suffix: str) -> str:
     if int(TP2_MAMBA_CACHE) < 5 * TP2_MAX_RUNNING:
         raise GenerationError(f"{TP2_MAMBA_CACHE} mamba slots cannot hold {TP2_MAX_RUNNING} running requests")
     rewritten.extend((f"--max-mamba-cache-size {TP2_MAMBA_CACHE}", "--mamba-ssm-dtype bfloat16", "--disable-overlap-schedule"))
+    for flag in settings["extra_flags"]:
+        if flag.split()[0] in {argument.split()[0] for argument in rewritten}:
+            raise GenerationError(f"tp2 {suffix}: extra flag {flag!r} already set")
+        rewritten.append(flag)
 
     env_end = r2.index("    depends_on:\n")
     environment = r2[env_start:env_end]
@@ -566,17 +603,18 @@ def tp2_service(r2: str, suffix: str) -> str:
     devices = ",".join(f'"{device}"' for device in spec["devices"])
     log_tags = (
         '"model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash",'
-        f'"precision:{TP2_PRECISION}","deployment:glm53-flash-sgl-tp4","config_variant:{TP2_VARIANT}",'
-        f'"request_logging:disabled","engine_image:{TP2_ENGINE_IMAGE_LABEL}","env:${{ENV}}","host:${{CVM_HOST}}",'
+        f'"precision:{TP2_PRECISION}","deployment:glm53-flash-sgl-tp4","config_variant:{settings["variant"]}",'
+        f'"request_logging:disabled","engine_image:{settings["engine_image"]}","env:${{ENV}}","host:${{CVM_HOST}}",'
         f'"ip:${{HOST_IP}}","port:8000","instance:{suffix}","gpu_pair:{spec["gpu_pair"]}"'
     )
     return (
         f"  # --- GLM-5.3-Flash 2xTP2 memory-optimized canary replica {suffix} (SGLang TP2, GPUs {spec['gpu_pair']}) ---\n"
         f"  # Started only by a scoped services list naming it (never by an unscoped up, which would collide with the TP4 replica on these GPUs).\n"
-        f"  {name}:\n"
+        + settings["comment"]
+        + f"  {name}:\n"
         "    <<: *sg-glm53-flash-common\n"
         f"    container_name: {name}\n"
-        f"    image: {TP2_IMAGE}\n"
+        f"    image: {settings['image']}\n"
         + render_command(rewritten, 4)
         + environment
         + "    depends_on:\n      model-downloader:\n        condition: service_completed_successfully\n"
@@ -592,10 +630,10 @@ def tp2_service(r2: str, suffix: str) -> str:
         f'      nearai.otel.model_path: "{CHECKPOINT}"\n'
         '      nearai.otel.served_model: "z-ai/glm-5.3-flash"\n'
         '      nearai.otel.deployment: "glm53-flash-sgl-tp4"\n'
-        f'      nearai.otel.config_variant: "{TP2_VARIANT}"\n'
+        f'      nearai.otel.config_variant: "{settings["variant"]}"\n'
         '      nearai.otel.thinking_budget_policy: "default8192-public-to-native"\n'
         '      nearai.otel.request_logging: "disabled"\n'
-        f'      nearai.otel.engine_image: "{TP2_ENGINE_IMAGE_LABEL}"\n'
+        f'      nearai.otel.engine_image: "{settings["engine_image"]}"\n'
         f'      nearai.otel.instance: "{suffix}"\n'
         f'      nearai.otel.gpu_pair: "{spec["gpu_pair"]}"\n'
         '      nearai.otel.env: "${ENV}"\n      nearai.otel.host: "${CVM_HOST}"\n'
@@ -604,8 +642,9 @@ def tp2_service(r2: str, suffix: str) -> str:
     )
 
 
-def tp2_scrape_job(suffix: str) -> str:
+def tp2_scrape_job(suffix: str, canary: bool = True) -> str:
     spec = TP2_REPLICAS[suffix]
+    settings = tp2_settings(suffix, canary)
     name = f"{TP2_SERVICE_PREFIX}{suffix}"
     return (
         f"              - job_name: sglang-{name}\n"
@@ -630,27 +669,83 @@ def tp2_scrape_job(suffix: str) -> str:
         '                      port: "8000"\n'
         f'                      instance: "{suffix}"\n'
         f'                      gpu_pair: "{spec["gpu_pair"]}"\n'
-        f'                      config_variant: "{TP2_VARIANT}"\n'
+        f'                      config_variant: "{settings["variant"]}"\n'
         '                      thinking_budget_policy: "default8192-public-to-native"\n'
         '                      request_logging: "disabled"\n'
-        f'                      engine_image: "{TP2_ENGINE_IMAGE_LABEL}"\n'
+        f'                      engine_image: "{settings["engine_image"]}"\n'
     )
 
 
-def add_tp2_canary(text: str) -> str:
+def add_tp2_canary(text: str, canary: bool = True) -> str:
     """Add the gpu02 2xTP2 pair beside the untouched TP4 r2 and make the proxy pool overridable."""
     text = replace_exact(text, PROXY_BACKEND_OLD, PROXY_BACKEND_NEW, 1, "proxy backend list")
     r2_start, r2_end, r2 = section(
         text, f"  {R2_SERVICE}:\n", "\n  # Explicit operator-only semantic check;", "replica 2 service"
     )
-    pair = "".join("\n" + tp2_service(r2, suffix) for suffix in TP2_REPLICAS)
+    pair = "".join("\n" + tp2_service(r2, suffix, canary) for suffix in TP2_REPLICAS)
     text = text[:r2_end] + pair + text[r2_end:]
     job_marker = "              - job_name: dcgm-dcgm-glm53\n"
-    jobs = "".join(tp2_scrape_job(suffix) for suffix in TP2_REPLICAS)
+    jobs = "".join(tp2_scrape_job(suffix, canary) for suffix in TP2_REPLICAS)
     return replace_exact(text, job_marker, jobs + job_marker, 1, "tp2 scrape jobs")
 
 
-def generate(source: str) -> str:
+def canary_header() -> str:
+    """HEADER with the r2b v0.5.23 canary block, inserted after the fleet paragraph."""
+    header = replace_exact(
+        HEADER,
+        "config every host of the tier deploys. The four TP2 replicas r1a/r1b/r2a/r2b run the glm53-hicache-w4afp8-v12 image",
+        "config every host of the tier deploys. The four TP2 replicas r1a/r1b/r2a/r2b (r2b: the SGLang v0.5.23 canary below) run the glm53-hicache-w4afp8-v12 image",
+        1,
+        "canary header fleet sentence",
+    )
+    block = (
+        "#\n"
+        f"# r2b CANARY (SGLang v0.5.23): ONE long-tier TP2 replica, {TP2_SERVICE_PREFIX}{V0523_CANARY_REPLICA}\n"
+        f"# (gpu23, GPUs {TP2_REPLICAS[V0523_CANARY_REPLICA]['gpu_pair']}), runs the docker/sglang-glm53-v0523 image (PR #446). r1a, r1b and r2a are unchanged (v12).\n"
+        f"#   Image: {V0523_CANARY_IMAGE}\n"
+        "#     TODO: PLACEHOLDER digest. Fill V0523_CANARY_IMAGE in scripts/prepare_glm53_w4afp8_long_context.py and\n"
+        "#     W4AFP8_LONG_CONTEXT_V0523_CANARY_IMAGE in scripts/validate_glm53_prod_config.rb with the publish-glm53-v0523\n"
+        "#     digest, then run the generator with --write. Never deploy the placeholder.\n"
+        "#   What changed vs v12: upstream SGLang v0.5.23 plus the 25 NEAR AI patches (the v12 stack ported). Closes\n"
+        "#     CVE-2026-15976, CVE-2026-86793 and CVE-2026-15969; adds credential redaction, exact-rid aborts and\n"
+        "#     customer-data log redaction. The patches keep the environment names this file sets (SGLANG_DSA_INDEXER_QSPLIT,\n"
+        "#     SGLANG_GHOST_CACHE*, SGLANG_KV_TIER_METRICS, SGLANG_PREPROCESS_*, SGLANG_TOOL_SCHEMA_*, SGLANG_HICACHE_*), so the\n"
+        "#     environment text is identical to the other TP2 replicas. One engine DEFAULT differs: v0.5.23 turns\n"
+        "#     SGLANG_EXPERIMENTAL_DSA_KPOOL_METADATA_FUSION on (the fork had it off). The gpu31 A/B ran with it on; it is\n"
+        "#     not pinned here, so r2b runs the v0.5.23 default. SGLANG_EXPERIMENTAL_DSA_KPOOL_METADATA_FUSION=0 restores the fork.\n"
+        "#   Argv: identical to the other TP2 replicas plus --cuda-graph-backend-prefill disabled. REQUIRED: v0.5.23's default\n"
+        "#     breakable prefill CUDA graphs OOM at warmup at --mem-fraction-static 0.86 (verified on gpu31 2026-11-10).\n"
+        f"#   Labels: engine_image {V0523_CANARY_ENGINE_IMAGE_LABEL} (first 12 hex of the canary digest); config_variant\n"
+        f"#     {V0523_CANARY_VARIANT}\n"
+        "#   gpu31 A/B against v12 (same argv otherwise): GSM8K-200 0.985 vs 0.980, passkey 128K 3/3 on both, no errors.\n"
+        "#   HOSTS: since 2026-11-06 this file runs on gpu23 ONLY. gpu02 moved to DeepSeek-V4.1 DEP8\n"
+        "#     (prod/DeepSeek-V4.1-Flash-1017-vLLM-DEP8-Abliterated.yaml): Prometheus shows only model-vllm-dsv41-dp0..7 on\n"
+        "#     gpu02 over the last 7 days (2026-11-11), no GLM container. The older text below that calls this file shared by\n"
+        "#     gpu02 and gpu23 predates that. While this canary is live, deploying this file on gpu02 (or any host but gpu23)\n"
+        "#     is FORBIDDEN: it would put a second replica on v0.5.23 outside the canary. Bringing GLM long back to gpu02\n"
+        "#     means a new PR that pins its r2b to v12 first. gpu04 renders its l4 from the v12 r2b (prepare_glm53_gpu04_3b1l.py).\n"
+        "#   KMS: this change is a new compose hash for this file. Register it with the KMS contract gpu23 boots from before\n"
+        "#     the first dry_run/compose call that uses the new tag (docs/long-context-glm53-2xtp2-rollout.md). gpu23 is the\n"
+        "#     only host that deploys this file now, so gpu23 is the only registration.\n"
+        f"#   DEPLOY: from a main tag only. Drain r2b only, then compose up with services [\"{TP2_SERVICE_PREFIX}{V0523_CANARY_REPLICA}\"]\n"
+        "#     and nothing else; never more than one long replica out of the pool. r2b's scrape-job labels (config_variant,\n"
+        "#     engine_image) live in otelcol_app_config and update only when otelcol-contrib is recreated (no engine restart).\n"
+        "#   ROLLBACK: redeploy the previous tag's copy of this file (r2b back on v12) with the same single-service list.\n"
+    )
+    return replace_exact(
+        header,
+        "# The older text below that names bf16 KV, 12 running or the v6 image describes the TP4 services and the history.\n",
+        "# The older text below that names bf16 KV, 12 running or the v6 image describes the TP4 services and the history.\n" + block,
+        1,
+        "canary header block",
+    )
+
+
+def generate(source: str, v0523_canary: bool = True) -> str:
+    """The target file. v0523_canary=False renders it without the r2b v0.5.23 canary (all four TP2 replicas on v12):
+    the previous tag's file, and the r2b that prepare_glm53_gpu04_3b1l.py copies for gpu04's l4."""
+    if not TP2_VARIANT.startswith("fc91d24-") or not TP2_VARIANT.endswith("-v12-q8"):
+        raise GenerationError("TP2_VARIANT changed shape; re-derive V0523_CANARY_VARIANT")
     if SERVICE_PREFIX in source or f"models--{CHECKPOINT.replace('/', '--')}/" in source:
         raise GenerationError("source compose already contains W4AFP8 engines")
 
@@ -724,7 +819,7 @@ def generate(source: str) -> str:
     ):
         updated = replace_exact(updated, old, new, count, label)
     updated = resolve_engine_image_labels(updated)
-    updated = add_tp2_canary(updated)
+    updated = add_tp2_canary(updated, v0523_canary)
 
     # Observability: the per-CVM ghost aggregator, its in-memory volume and its scrape job.
     engines = "The engines"
@@ -734,7 +829,7 @@ def generate(source: str) -> str:
         ("              - job_name: dcgm-dcgm-glm53\n", obs.scrape_job(DEPLOYMENT) + "              - job_name: dcgm-dcgm-glm53\n", "ghost scrape job"),
     ):
         updated = replace_exact(updated, old, new, 1, label)
-    return HEADER + updated
+    return (canary_header() if v0523_canary else HEADER) + updated
 
 
 def main() -> int:

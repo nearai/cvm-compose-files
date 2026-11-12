@@ -1,5 +1,7 @@
 # GLM-5.3 Flash long tier: 2xTP2 memory-optimized rollout to every remaining TP4 replica
 
+> **2026-11-11 update (v0.5.23 canary, #447):** the long tier now runs on **gpu23 only**. gpu02 has served DeepSeek-V4.1 DEP8 since 2026-11-06 (Prometheus: only `model-vllm-dsv41-dp0..7` on gpu02 over 7 days) and does not deploy this file. While the r2b v0.5.23 canary is live, deploying `prod/GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext.yaml` on any host but gpu23 is forbidden; returning GLM long to gpu02 needs a PR that pins its r2b to v12 first. The canary is a new compose hash for this file: register it with the KMS contract gpu23 boots from before the first dry_run/compose call on the new tag. Text below that says gpu02 and gpu23 share the file predates the move.
+
 Status: PREPARED, nothing deployed by this change. Every stage below needs its own explicit GO, a merged tag that clears compose-manager's commit-age gate, a registered KMS compose hash, and the abort criteria. Builds on the gpu02 canary (#332, `docs/gpu02-glm53-2xtp2-memopt-canary.md`), whose r2 is already two TP2 replicas.
 
 ## Which hosts run what (verify before every stage)

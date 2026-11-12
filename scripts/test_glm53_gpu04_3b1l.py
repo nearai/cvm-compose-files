@@ -23,7 +23,8 @@ class Gpu04MixedTier(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.source = (ROOT / gen.SOURCE).read_text()
-        cls.long_source = (ROOT / gen.LONG_SOURCE).read_text()
+        # l4 copies gpu23's r2b as rendered without the r2b v0.5.23 canary (v12), not the committed long file.
+        cls.long_source = gen.v12_long_text()
         cls.text = (ROOT / gen.TARGET).read_text()
         cls.svc = services(cls.text)
         cls.src_svc = services(cls.source)
@@ -31,6 +32,13 @@ class Gpu04MixedTier(unittest.TestCase):
 
     def test_committed_file_is_generated(self) -> None:
         self.assertEqual(self.text, gen.generate(self.source, self.long_source))
+
+    def test_l4_does_not_follow_the_r2b_v0523_canary(self) -> None:
+        l4 = self.svc[gen.LONG_L4]
+        self.assertNotIn(gen.long_generator.V0523_CANARY_IMAGE, l4)
+        self.assertNotIn("--cuda-graph-backend-prefill", l4)
+        self.assertNotIn("v0523", l4)
+        self.assertIn(f"image: {gen.long_generator.TP2_IMAGE}\n", l4)
 
     def test_service_set(self) -> None:
         expected = (set(self.src_svc) - {gen.BASE_R4}) | {gen.LONG_L4, gen.LONG_PROXY}
