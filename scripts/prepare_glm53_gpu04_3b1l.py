@@ -43,6 +43,10 @@ from pathlib import Path
 from typing import Final
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+from scripts import prepare_glm53_w4afp8_long_context as long_generator  # noqa: E402
+
 SOURCE: Final = Path("prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8-V12Q8.yaml")
 LONG_SOURCE: Final = Path("prod/GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext.yaml")
 TARGET: Final = Path("prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8-V12Q8-gpu04-3B1L.yaml")
@@ -126,6 +130,15 @@ def long_replica(long_text: str) -> str:
     if f"-mr16q{LONG_QUEUE}-" not in r2b:
         raise SystemExit("l4 config_variant: queue token not found")
     return r2b
+
+
+def v12_long_text() -> str:
+    """The long-context file as rendered WITHOUT gpu23's r2b v0.5.23 canary, i.e. r2b on the v12 fleet config.
+
+    l4 copies gpu23's r2b, and r2b is now a single-replica v0.5.23 canary in the committed long file. gpu04's l4 must not
+    follow that canary implicitly, so it is pinned to the v12 r2b until the long tier rolls v0.5.23 out on purpose.
+    """
+    return long_generator.generate((ROOT / long_generator.SOURCE).read_text(), v0523_canary=False)
 
 
 def generate(text: str, long_text: str) -> str:
@@ -439,7 +452,7 @@ def main() -> int:
     mode.add_argument("--write", action="store_true")
     mode.add_argument("--check", action="store_true")
     args = parser.parse_args()
-    expected = generate((ROOT / SOURCE).read_text(), (ROOT / LONG_SOURCE).read_text())
+    expected = generate((ROOT / SOURCE).read_text(), v12_long_text())
     target = ROOT / TARGET
     if args.write:
         target.write_text(expected)

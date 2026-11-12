@@ -182,8 +182,11 @@ class FleetFilesTest(unittest.TestCase):
             block = service_block(self.long, name)
             argv = argv_of(block)
             with self.subTest(replica=name):
-                self.assertEqual([t for t in argv if not t.startswith("127.0.0.1")], [t for t in canary_argv if not t.startswith("127.0.0.1")])
-                self.assertIn(f"    image: {V12_IMAGE}\n", block)
+                # r2b is the single-replica SGLang v0.5.23 canary: its own image plus one flag (prepare_glm53_w4afp8_long_context.py).
+                settings = long_generator.tp2_settings(name.rsplit("-r", 1)[1])
+                extra = [token for flag in settings["extra_flags"] for token in flag.split()]
+                self.assertEqual([t for t in argv if not t.startswith("127.0.0.1")], [t for t in canary_argv if not t.startswith("127.0.0.1")] + extra)
+                self.assertIn(f"    image: {settings['image']}\n", block)
                 value = lambda flag: argv[argv.index(flag) + 1]
                 self.assertEqual((value("--kv-cache-dtype"), value("--dsa-prefill-backend"), value("--dsa-decode-backend")), ("fp8_e4m3", "flashmla_sparse_q8", "flashmla_kv"))
                 self.assertEqual(value("--chunked-prefill-size"), "16384")
@@ -200,8 +203,10 @@ class FleetFilesTest(unittest.TestCase):
             self.assertNotIn(V12_LABEL, block)
 
     def test_fleet_telemetry_values(self) -> None:
-        for text, names, engine in ((self.base, BASE_ENGINES, "fa730e6e62b2"), (self.long, LONG_ENGINES, V12_LABEL)):
+        for text, names, fleet_engine in ((self.base, BASE_ENGINES, "fa730e6e62b2"), (self.long, LONG_ENGINES, V12_LABEL)):
             for name in names:
+                # The long tier's r2b runs the v0.5.23 canary image, labelled with its own digest.
+                engine = long_generator.tp2_settings(name.rsplit("-r", 1)[1])["engine_image"] if text is self.long else fleet_engine
                 block = service_block(text, name)
                 job = jobs_of(text)[f"sglang-{name}"]
                 with self.subTest(replica=name):
@@ -213,7 +218,8 @@ class FleetFilesTest(unittest.TestCase):
         self.assertEqual(self.base.count(base_generator.CANDIDATE_VARIANT), 12)  # 4 x (log tag, label, scrape job)
         for token in ("hicacheoff", "mamba380", "fp8kv", "mr64", "-v7"):
             self.assertIn(token, base_generator.CANDIDATE_VARIANT)
-        self.assertEqual(self.long.count(long_generator.TP2_VARIANT), 12)
+        self.assertEqual(self.long.count(long_generator.TP2_VARIANT), 9)  # r1a, r1b, r2a; r2b is the v0.5.23 canary
+        self.assertEqual(code(self.long).count(long_generator.V0523_CANARY_VARIANT), 3)
         for token in ("fp8kv", "mr16q8", "c16384", "-v12-q8"):
             self.assertIn(token, long_generator.TP2_VARIANT)
 

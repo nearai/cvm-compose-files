@@ -147,7 +147,7 @@ class GeneratedFileTest(unittest.TestCase):
         with_canary = generator.generate(source)
         original_add = generator.add_tp2_canary
         try:
-            generator.add_tp2_canary = lambda text: text
+            generator.add_tp2_canary = lambda text, *_: text
             without = generator.generate(source)
         finally:
             generator.add_tp2_canary = original_add
@@ -460,6 +460,7 @@ class ValidatorContractTest(unittest.TestCase):
         ):
             start, end = tp2_bounds(self.valid, name)
             block = self.valid[start:end]
+            settings = generator.tp2_settings(instance)  # r2b: the v0.5.23 canary's image and variant
             cases = (
                 (f"device_ids: {devices}", f"device_ids: {wrong_devices}", "must use GPU device_ids"),
                 ("    environment:\n", "    environment:\n      - SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE=4096\n", "must not set admission-reserve environment"),
@@ -468,9 +469,9 @@ class ValidatorContractTest(unittest.TestCase):
                 ("      - SGLANG_DSA_INDEXER_QSPLIT=1\n", "", "environment must be the long-context environment with NO SGLANG_HICACHE_RAM_BUDGET"),
                 (f'nearai.otel.instance: "{instance}"', 'nearai.otel.instance: "9"', "nearai.otel.instance must be"),
                 ("nearai.otel.gpu_pair:", "nearai.otel.gpu_pairx:", "nearai.otel.gpu_pair must be"),
-                (f'nearai.otel.config_variant: "{TP2_VARIANT}"', 'nearai.otel.config_variant: "x"', "nearai.otel.config_variant must be"),
+                (f'nearai.otel.config_variant: "{settings["variant"]}"', 'nearai.otel.config_variant: "x"', "nearai.otel.config_variant must be"),
                 ('nearai.otel.deployment: "glm53-flash-sgl-tp4"', 'nearai.otel.deployment: "other"', "nearai.otel.deployment"),
-                (f"image: {generator.TP2_IMAGE}\n", f"image: {RELEASED_V6_IMAGE}\n", "image must be"),
+                (f"image: {settings['image']}\n", f"image: {RELEASED_V6_IMAGE}\n", "image must be"),
                 ("    container_name: " + name + "\n", "    container_name: " + name + '\n    restart: "no"\n', "must share one runtime configuration outside command and environment"),
             )
             for before, after, message in cases:
@@ -573,6 +574,157 @@ R2_TP4 = "http://model-sg-glm53-w4afp8-tp4-r2:8000"
 R1A_URL = "http://model-sg-glm53-w4afp8-tp2-r1a:8000"
 R1B_URL = "http://model-sg-glm53-w4afp8-tp2-r1b:8000"
 R2A_URL = "http://model-sg-glm53-w4afp8-tp2-r2a:8000"
+class V0523CanaryTest(unittest.TestCase):
+    """r2b alone runs the SGLang v0.5.23 canary; r1a, r1b and r2a stay on the v12 fleet config byte for byte."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        source = (ROOT / generator.SOURCE).read_text()
+        cls.with_canary = generator.generate(source)
+        cls.without = generator.generate(source, v0523_canary=False)
+
+    @staticmethod
+    def body(text: str) -> str:
+        """The file past the generated header (the header documents the canary and is allowed to differ)."""
+        return text[text.index("\nx-"):]
+
+    @staticmethod
+    def argv(block: str) -> list[str]:
+        command = block.split("    command: >\n", 1)[1].split("    environment:\n", 1)[0]
+        return [line.strip() for line in command.splitlines() if line.strip()]
+
+    def test_committed_file_is_the_canary_render(self) -> None:
+        self.assertEqual(TARGET.read_text(), self.with_canary)
+        self.assertNotEqual(self.with_canary, self.without)
+
+    def test_placeholder_digest_and_derived_labels(self) -> None:
+        # TODO(publish-glm53-v0523): the digest is a placeholder until the image is published; the labels follow it.
+        self.assertRegex(generator.V0523_CANARY_IMAGE, r"^docker\.io/nearaidev/sglang@sha256:[0-9a-f]{64}$")
+        self.assertEqual(generator.V0523_CANARY_ENGINE_IMAGE_LABEL, generator.V0523_CANARY_IMAGE.split("sha256:")[1][:12])
+        self.assertNotEqual(generator.V0523_CANARY_IMAGE, generator.TP2_IMAGE)
+        self.assertEqual(generator.V0523_CANARY_FLAGS, ("--cuda-graph-backend-prefill disabled",))
+        self.assertEqual(
+            generator.V0523_CANARY_VARIANT,
+            "sglang-v0523" + generator.TP2_VARIANT.removeprefix("fc91d24").removesuffix("-v12-q8") + "-v0523-canary",
+        )
+        self.assertEqual(set(generator.TP2_OVERRIDES), {"2b"})
+        # The validator pins the same digest.
+        validator = (ROOT / VALIDATOR).read_text()
+        self.assertIn(f'W4AFP8_LONG_CONTEXT_V0523_CANARY_IMAGE = "{generator.V0523_CANARY_IMAGE}"\n', validator)
+
+    def test_only_r2b_differs(self) -> None:
+        # Remove r2b's service block and its scrape job from both renders: the rest of the body is byte-identical.
+        def strip(text: str, canary: bool) -> str:
+            start, end = tp2_bounds(text, R2B)
+            text = text[:start] + text[end:]
+            job = generator.tp2_scrape_job("2b", canary)
+            self.assertEqual(text.count(job), 1)
+            text = text.replace(job, "")
+            if canary:  # the two-line pointer comment above r2b's service key
+                comment = generator.TP2_OVERRIDES["2b"]["comment"]
+                self.assertEqual(text.count(comment), 1)
+                text = text.replace(comment, "")
+            return self.body(text)
+        self.assertEqual(strip(self.with_canary, True), strip(self.without, False))
+        # And r1a, r1b, r2a are identical blocks and scrape jobs in both renders.
+        for suffix in ("2a", "1a", "1b"):
+            name = f"{generator.TP2_SERVICE_PREFIX}{suffix}"
+            with self.subTest(replica=name):
+                a, b = tp2_bounds(self.with_canary, name)
+                c, d = tp2_bounds(self.without, name)
+                self.assertEqual(self.with_canary[a:b], self.without[c:d])
+                self.assertIn(f"    image: {generator.TP2_IMAGE}\n", self.with_canary[a:b])
+                self.assertNotIn("--cuda-graph-backend-prefill", self.with_canary[a:b])
+                self.assertEqual(generator.tp2_scrape_job(suffix, True), generator.tp2_scrape_job(suffix, False))
+
+    def test_r2b_is_the_v12_replica_plus_image_flag_and_labels(self) -> None:
+        start, end = tp2_bounds(self.with_canary, R2B)
+        canary = self.with_canary[start:end]
+        start, end = tp2_bounds(self.without, R2B)
+        v12 = self.without[start:end]
+        self.assertIn(f"    image: {generator.V0523_CANARY_IMAGE}\n", canary)
+        self.assertNotIn(generator.TP2_IMAGE, canary)
+        self.assertEqual(self.argv(canary), self.argv(v12) + ["--cuda-graph-backend-prefill disabled"])
+        self.assertEqual(self.argv(canary).count("--cuda-graph-backend-prefill disabled"), 1)
+        # Environment, devices and every other label are unchanged.
+        self.assertEqual(canary.split("    environment:\n", 1)[1].split("    labels:\n", 1)[0],
+                         v12.split("    environment:\n", 1)[1].split("    labels:\n", 1)[0])
+        restored = (
+            canary.replace(generator.TP2_OVERRIDES["2b"]["comment"], "")
+            .replace(generator.V0523_CANARY_IMAGE, generator.TP2_IMAGE)
+            .replace("        --cuda-graph-backend-prefill disabled\n", "")
+            .replace(generator.V0523_CANARY_VARIANT, generator.TP2_VARIANT)
+            .replace(f"engine_image:{generator.V0523_CANARY_ENGINE_IMAGE_LABEL}", f"engine_image:{generator.TP2_ENGINE_IMAGE_LABEL}")
+            .replace(f'engine_image: "{generator.V0523_CANARY_ENGINE_IMAGE_LABEL}"', f'engine_image: "{generator.TP2_ENGINE_IMAGE_LABEL}"')
+        )
+        self.assertEqual(restored, v12)
+
+    def test_r2b_labels_are_consistent_across_log_tags_otel_and_scrape(self) -> None:
+        text = self.with_canary
+        variant, label = generator.V0523_CANARY_VARIANT, generator.V0523_CANARY_ENGINE_IMAGE_LABEL
+        start, end = tp2_bounds(text, R2B)
+        block = text[start:end]
+        self.assertIn(f'"config_variant:{variant}"', block)
+        self.assertIn(f'"engine_image:{label}"', block)
+        self.assertIn(f'nearai.otel.config_variant: "{variant}"', block)
+        self.assertIn(f'nearai.otel.engine_image: "{label}"', block)
+        job = generator.tp2_scrape_job("2b")
+        self.assertIn(f'config_variant: "{variant}"', job)
+        self.assertIn(f'engine_image: "{label}"', job)
+        # Exactly r2b's three sites; the other three TP2 replicas keep 3 sites each of the fleet variant.
+        self.assertEqual(text.count(variant), 3 + 1)  # + the header line naming it
+        self.assertEqual(text.count(generator.TP2_VARIANT), 9)
+        self.assertEqual(text.count(f'engine_image: "{generator.TP2_ENGINE_IMAGE_LABEL}"'), 6)
+
+    def test_header_documents_the_canary(self) -> None:
+        header = self.with_canary[: self.with_canary.index("\nx-")]
+        for needle in ("r2b CANARY (SGLang v0.5.23)", "PR #446", "TODO: PLACEHOLDER digest", "CVE-2026-15976", "CVE-2026-86793",
+                       "CVE-2026-15969", "credential redaction", "exact-rid aborts", "customer-data log redaction",
+                       "--cuda-graph-backend-prefill disabled", "--mem-fraction-static 0.86", "GSM8K-200 0.985 vs 0.980",
+                       "passkey 128K 3/3", 'services ["model-sg-glm53-w4afp8-tp2-r2b"]', "from a main tag", "ROLLBACK",
+                       generator.V0523_CANARY_IMAGE):
+            self.assertIn(needle, header)
+        self.assertTrue(self.without.startswith(generator.HEADER))
+        self.assertNotIn("v0523", self.without)
+
+
+class V0523CanaryValidatorTest(unittest.TestCase):
+    """The production validator pins r2b to the canary and r1a/r1b/r2a to v12."""
+
+    setUp = ValidatorContractTest.setUp
+    run_ruby = ValidatorContractTest.run_ruby
+    assert_fails = ValidatorContractTest.assert_fails
+
+    def block_mutation(self, name: str, before: str, after: str) -> str:
+        start, end = tp2_bounds(self.valid, name)
+        block = self.valid[start:end]
+        self.assertEqual(block.count(before), 1, before)
+        return self.valid[:start] + block.replace(before, after, 1) + self.valid[end:]
+
+    def test_rejects_r2b_back_on_v12_without_its_labels(self) -> None:
+        self.assert_fails(self.block_mutation(R2B, f"image: {generator.V0523_CANARY_IMAGE}\n", f"image: {generator.TP2_IMAGE}\n"),
+                          f"{R2B} image must be {generator.V0523_CANARY_IMAGE}")
+
+    def test_rejects_r2b_without_the_prefill_graph_flag(self) -> None:
+        self.assert_fails(self.block_mutation(R2B, "        --cuda-graph-backend-prefill disabled\n", ""),
+                          f"{R2B} argv must be the v12 fleet TP2 argv exactly plus --cuda-graph-backend-prefill disabled")
+
+    def test_rejects_the_canary_image_or_flag_on_another_replica(self) -> None:
+        for name in (R2A, R1A, R1B):
+            with self.subTest(replica=name):
+                self.assert_fails(self.block_mutation(name, f"image: {generator.TP2_IMAGE}\n", f"image: {generator.V0523_CANARY_IMAGE}\n"),
+                                  f"{name} image must be {generator.TP2_IMAGE}")
+                self.assert_fails(self.block_mutation(name, "        --disable-overlap-schedule\n",
+                                                      "        --disable-overlap-schedule\n        --cuda-graph-backend-prefill disabled\n"),
+                                  f"{name} argv must be the v12 fleet TP2 argv exactly (")
+
+    def test_rejects_r2b_variant_drift(self) -> None:
+        self.assert_fails(
+            self.block_mutation(R2B, f'nearai.otel.config_variant: "{generator.V0523_CANARY_VARIANT}"', f'nearai.otel.config_variant: "{TP2_VARIANT}"'),
+            "nearai.otel.config_variant must be",
+        )
+
+
 R2B_URL = "http://model-sg-glm53-w4afp8-tp2-r2b:8000"
 
 
