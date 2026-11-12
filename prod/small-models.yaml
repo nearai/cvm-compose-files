@@ -414,22 +414,37 @@ x-privacy-filter-common: &privacy-filter-common
           "uvicorn[standard]"
       WORKDIR /app
       COPY <<'PYEOF' /app/server.py
+      import asyncio
+      import collections
+      import concurrent.futures
+      import contextlib
       import copy
+      import functools
       import gc
       import json
+      import logging
+      import math
       import os
+      import re
       import sys
       import threading
       import time
       import torch
-      from fastapi import FastAPI, HTTPException
-      from fastapi.responses import JSONResponse
+      from fastapi import FastAPI, HTTPException, Request
+      from fastapi.exceptions import RequestValidationError
+      from fastapi.responses import JSONResponse, Response
       from pydantic import BaseModel, Field
       from starlette.background import BackgroundTask
       from transformers import AutoTokenizer, pipeline
 
       MODEL_ID = "openai/privacy-filter"
       MODEL_REVISION = "7ffa9a043d54d1be65afb281eddf0ffbe629385b"
+      PROCESS_START_TIME = time.time()
+
+      # Logging rule for this server: request inputs are customer text. Nothing written to
+      # stdout/stderr or exported on /metrics may contain or be derived from it: only event
+      # names, counts, durations, sizes, status codes and a validated X-Request-Id. Errors
+      # are reported by exception type, never by message or traceback.
 
 
       def _env(name, default, cast):
@@ -440,11 +455,42 @@ x-privacy-filter-common: &privacy-filter-common
               return default
 
 
+      def _env_seconds(name, default, minimum):
+          # Like _env, but also rejects nan/inf, then clamps to a usable floor.
+          value = _env(name, default, float)
+          if not math.isfinite(value):
+              value = default
+          return max(minimum, value)
+
+
       def _retry_window(max_length, cap):
           # The retry must use a strictly smaller window than the primary pass, or it
           # repeats the identical forward (clamped eager mode is 4096 -> 2048).
           window = min(cap, max_length // 2)
           return window if window >= 8 else None
+
+
+      _log_lock = threading.Lock()
+
+
+      def _log(event, **fields):
+          # One JSON object per line on stdout, flushed so a following os._exit keeps it.
+          line = json.dumps({"event": event, **fields})
+          with _log_lock:
+              sys.stdout.write(line + "\n")
+              sys.stdout.flush()
+
+
+      class _AccessLogWithoutQuery(logging.Filter):
+          # uvicorn's access line carries the full request target; keep only the path.
+          def filter(self, record):
+              args = record.args
+              if isinstance(args, tuple) and len(args) == 5 and isinstance(args[2], str):
+                  record.args = (args[0], args[1], args[2].split("?", 1)[0], args[3], args[4])
+              return True
+
+
+      logging.getLogger("uvicorn.access").addFilter(_AccessLogWithoutQuery())
 
 
       # GPU 0 has served privacy-filter since 33b77d5. Left unbounded,
@@ -468,7 +514,6 @@ x-privacy-filter-common: &privacy-filter-common
       # baseline at only 16k tokens and cannot safely use the full window, so explicit
       # eager mode or a rejected non-eager implementation clamps MAX_LENGTH to 4096
       # and retains STRIDE-token overlapping chunks without truncating the document.
-      BATCH_SIZE = max(1, _env("PRIVACY_BATCH_SIZE", 8, int))
       MAX_LENGTH = max(8, _env("PRIVACY_MAX_LENGTH", 4096, int))
       STRIDE = max(0, min(_env("PRIVACY_STRIDE", 256, int), MAX_LENGTH - 1))
       ATTN_IMPL = _env("PRIVACY_ATTN_IMPL", "sdpa", str)
@@ -477,6 +522,19 @@ x-privacy-filter-common: &privacy-filter-common
       FILTER_GPU_MEM_FRACTION = min(1.0, max(0.01, _env("FILTER_GPU_MEM_FRACTION", 0.25, float)))
       OOM_RETRY_MAX_LENGTH = max(8, _env("FILTER_OOM_RETRY_MAX_LENGTH", 16384, int))
       OOM_EXIT_AFTER = max(1, _env("FILTER_OOM_EXIT_AFTER", 3, int))
+      # Admission: at most MAX_INFLIGHT classify jobs run at once; up to MAX_QUEUED more
+      # wait up to QUEUE_TIMEOUT_S for a slot; anything beyond gets 503 + Retry-After.
+      MAX_INFLIGHT = max(1, _env("FILTER_MAX_INFLIGHT", 4, int))
+      MAX_QUEUED = max(0, _env("FILTER_MAX_QUEUED", 8, int))
+      QUEUE_TIMEOUT_S = _env_seconds("FILTER_QUEUE_TIMEOUT_S", 5.0, 0.0)
+      RETRY_AFTER_S = max(1, _env("FILTER_RETRY_AFTER_S", 1, int))
+      # A request gets 504 once DEADLINE_S has passed since it arrived; a caller that
+      # disconnects is noticed within DISCONNECT_POLL_S. Either way the job stops at its
+      # next window boundary and keeps its slot until it has.
+      DEADLINE_S = _env_seconds("FILTER_DEADLINE_S", 60.0, 1.0)
+      DISCONNECT_POLL_S = _env_seconds("FILTER_DISCONNECT_POLL_S", 0.5, 0.05)
+      # Exit for a restart when jobs are running and none has finished for STALL_EXIT_S.
+      STALL_EXIT_S = _env_seconds("FILTER_STALL_EXIT_S", 120.0, 5.0)
       _oom_lock = threading.Lock()
       _consecutive_oom_503 = 0
 
@@ -576,7 +634,7 @@ x-privacy-filter-common: &privacy-filter-common
               )
       STRIDE = max(0, min(STRIDE, MAX_LENGTH - 1))
       # Cap the pipeline's per-forward window. The pipeline chunks inputs longer than
-      # this into model_max_length-token windows (see the classify() stride= arg below).
+      # this into model_max_length-token windows with STRIDE tokens of overlap.
       clf.tokenizer.model_max_length = MAX_LENGTH
       # The retry has its own tokenizer window but shares the same model weights.
       retry_max_length = _retry_window(MAX_LENGTH, OOM_RETRY_MAX_LENGTH)
@@ -597,16 +655,221 @@ x-privacy-filter-common: &privacy-filter-common
       tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, revision=MODEL_REVISION, trust_remote_code=True)
 
 
+      class _Cancelled(Exception):
+          pass
+
+
+      def _pipeline_params(pipe, stride):
+          # The same parameter merge the pipeline's __call__ performs.
+          pre, fwd, post = pipe._sanitize_parameters(stride=stride)
+          return (
+              {**pipe._preprocess_params, **pre},
+              {**pipe._forward_params, **fwd},
+              {**pipe._postprocess_params, **post},
+          )
+
+
+      def _classify_texts(pipe, texts, stride, cancel):
+          # The pipeline's own single-input loop (tokenize into windows, one forward per
+          # window, aggregate), with a cancel check before every window. One window's
+          # forward is the unit that cannot be interrupted.
+          if not _WINDOWED.get(id(pipe), False):
+              results = []
+              for text in texts:
+                  if cancel.is_set():
+                      raise _Cancelled()
+                  results.append(pipe(text, stride=stride))
+              return results
+          pre, fwd, post = _pipeline_params(pipe, stride)
+          results = []
+          for text in texts:
+              if cancel.is_set():
+                  raise _Cancelled()
+              outputs = []
+              for model_inputs in pipe.preprocess(text, **pre):
+                  if cancel.is_set():
+                      raise _Cancelled()
+                  outputs.append(pipe.forward(model_inputs, **fwd))
+              if cancel.is_set():
+                  raise _Cancelled()
+              results.append(pipe.postprocess(outputs, **post))
+          return results
+
+
+      def _same_spans(a, b):
+          return len(a) == len(b) and all(
+              x["entity_group"] == y["entity_group"] and x["start"] == y["start"] and x["end"] == y["end"]
+              and abs(float(x["score"]) - float(y["score"])) < 1e-3
+              for x, y in zip(a, b)
+          )
+
+
+      def _check_windowed(pipe, max_length, stride):
+          # Startup self-check on a fixed synthetic text: the window-by-window loop must
+          # give the pipeline call's result. If it ever does not, fall back to whole-text
+          # calls (cancel then applies between texts only). Returns (ok, windows, error type).
+          text = "Contact Alice Example at alice@example.com or +1 555 0100 about invoice 4417. "
+          target = min(max_length + max_length // 2, 8192)
+          per_copy = max(1, len(tokenizer(text).input_ids))
+          text = text * max(1, target // per_copy)
+          try:
+              pre, fwd, post = _pipeline_params(pipe, stride)
+              windows = [pipe.forward(m, **fwd) for m in pipe.preprocess(text, **pre)]
+              return _same_spans(pipe.postprocess(windows, **post), pipe(text, stride=stride)), len(windows), None
+          except Exception as exc:
+              return False, 0, type(exc).__name__
+
+
+      _primary_check = _check_windowed(clf, MAX_LENGTH, STRIDE)
+      _retry_check = (None, 0, None)
+      if clf_retry is not None:
+          _retry_check = _check_windowed(clf_retry, retry_max_length, min(STRIDE, retry_max_length - 1))
+      _WINDOWED = {id(clf): _primary_check[0], id(clf_retry): bool(_retry_check[0])}
+      # Exactly one line per process start.
+      _log("filter_windowed_check", ok=_primary_check[0], windows=_primary_check[1], error_type=_primary_check[2],
+           max_length=MAX_LENGTH, retry_ok=_retry_check[0], retry_windows=_retry_check[1],
+           retry_error_type=_retry_check[2], retry_max_length=retry_max_length)
+
+
+      # Metrics: bounded labels only (outcome names below).
+      OUTCOMES = ("ok", "rejected", "deadline", "cancelled", "oom", "error", "bad_request")
+      LATENCY_BUCKETS = (0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 20.0, 30.0, 60.0, 120.0)
+      _metrics_lock = threading.Lock()
+      _outcome_counts = dict.fromkeys(OUTCOMES, 0)
+      _latency_buckets = {o: [0] * len(LATENCY_BUCKETS) for o in OUTCOMES}
+      _latency_sum = dict.fromkeys(OUTCOMES, 0.0)
+      _last_success_time = 0.0
+
+
+      def _observe(outcome, started):
+          global _last_success_time
+          elapsed = time.monotonic() - started
+          with _metrics_lock:
+              _outcome_counts[outcome] += 1
+              _latency_sum[outcome] += elapsed
+              buckets = _latency_buckets[outcome]
+              for i, bound in enumerate(LATENCY_BUCKETS):
+                  if elapsed <= bound:
+                      buckets[i] += 1
+              if outcome == "ok":
+                  _last_success_time = time.time()
+          return elapsed
+
+
+      # Jobs running on worker threads, and when one last finished (or work began after idle).
+      _work_lock = threading.Lock()
+      _work_active = 0
+      _work_progress = time.monotonic()
+
+
+      def _work_started():
+          global _work_active, _work_progress
+          with _work_lock:
+              if _work_active == 0:
+                  _work_progress = time.monotonic()
+              _work_active += 1
+
+
+      def _work_finished():
+          global _work_active, _work_progress
+          with _work_lock:
+              _work_active -= 1
+              _work_progress = time.monotonic()
+
+
+      def _stall_seconds():
+          with _work_lock:
+              return (time.monotonic() - _work_progress) if _work_active else 0.0
+
+
+      def _stall_watchdog():
+          while True:
+              time.sleep(min(5.0, STALL_EXIT_S / 4))
+              with _work_lock:
+                  active = _work_active
+                  stalled = time.monotonic() - _work_progress
+              if active and stalled > STALL_EXIT_S:
+                  _log("filter_stall_exit", in_flight=active, seconds_since_progress=round(stalled, 1),
+                       limit_s=STALL_EXIT_S)
+                  sys.stderr.flush()
+                  os._exit(1)
+
+
+      class _Gate:
+          """At most `limit` jobs hold a slot; up to `queue_limit` more wait, in order, for one.
+
+          Runs on the event loop thread only. A released slot passes straight to the next
+          live waiter, so `running` never exceeds `limit`.
+          """
+
+          def __init__(self, limit, queue_limit):
+              self.limit = limit
+              self.queue_limit = queue_limit
+              self.running = 0
+              self.waiters = collections.deque()
+
+          async def acquire(self, timeout):
+              if self.running < self.limit and not self.waiters:
+                  self.running += 1
+                  return True
+              if len(self.waiters) >= self.queue_limit or timeout <= 0:
+                  return False
+              waiter = asyncio.get_running_loop().create_future()
+              self.waiters.append(waiter)
+              try:
+                  await asyncio.wait_for(asyncio.shield(waiter), timeout)
+                  return True
+              except asyncio.TimeoutError:
+                  # The slot may have been handed over as the timer fired.
+                  return waiter.done() and not waiter.cancelled()
+              except asyncio.CancelledError:
+                  if waiter.done() and not waiter.cancelled():
+                      self.release()
+                  raise
+              finally:
+                  if not waiter.done():
+                      waiter.cancel()
+                  try:
+                      self.waiters.remove(waiter)
+                  except ValueError:
+                      pass
+
+          def release(self):
+              while self.waiters:
+                  waiter = self.waiters.popleft()
+                  if not waiter.done():
+                      waiter.set_result(None)
+                      return
+              self.running -= 1
+
+
+      _gate = _Gate(MAX_INFLIGHT, MAX_QUEUED)
+      _pool = concurrent.futures.ThreadPoolExecutor(max_workers=MAX_INFLIGHT, thread_name_prefix="classify")
+      _detached = 0  # jobs still running after their request got a 504 or the caller left
+
+
+      def _metrics_snapshot():
+          with _metrics_lock:
+              counts = dict(_outcome_counts)
+              ok_seconds = round(_latency_sum["ok"], 3)
+          return {"in_flight": _gate.running, "queued": len(_gate.waiters), "detached": _detached, **counts,
+                  "ok_seconds_sum": ok_seconds}
+
+
       def _gpu_watchdog():
           while True:
               time.sleep(WATCHDOG_INTERVAL_S)
-              torch.cuda.empty_cache()
-              reserved_gb = torch.cuda.memory_reserved(0) / 1024 ** 3
-              max_reserved_gb = torch.cuda.max_memory_reserved(0) / 1024 ** 3
-              allocated_gb = torch.cuda.memory_allocated(0) / 1024 ** 3
-              print(json.dumps({"event": "filter_mem", "reserved_gb": reserved_gb,
-                                "max_reserved_gb": max_reserved_gb, "allocated_gb": allocated_gb}), flush=True)
-              if reserved_gb > GPU_MEM_LIMIT_GB:
+              line = {}
+              reserved_gb = 0.0
+              if USE_CUDA:
+                  torch.cuda.empty_cache()
+                  reserved_gb = torch.cuda.memory_reserved(0) / 1024 ** 3
+                  line = {"reserved_gb": reserved_gb,
+                          "max_reserved_gb": torch.cuda.max_memory_reserved(0) / 1024 ** 3,
+                          "allocated_gb": torch.cuda.memory_allocated(0) / 1024 ** 3}
+              _log("filter_mem", **line, **_metrics_snapshot())
+              if USE_CUDA and reserved_gb > GPU_MEM_LIMIT_GB:
+                  _log("filter_mem_exit", reserved_gb=reserved_gb, limit_gb=GPU_MEM_LIMIT_GB)
                   sys.stderr.write(
                       "privacy-filter: reserved %.1f GB > %.1f GB limit; "
                       "exiting for a clean restart\n" % (reserved_gb, GPU_MEM_LIMIT_GB)
@@ -615,10 +878,65 @@ x-privacy-filter-common: &privacy-filter-common
                   os._exit(1)
 
 
-      if USE_CUDA:
-          threading.Thread(target=_gpu_watchdog, daemon=True).start()
+      threading.Thread(target=_gpu_watchdog, daemon=True).start()
+      threading.Thread(target=_stall_watchdog, daemon=True).start()
 
-      app = FastAPI()
+
+      class _ContentFreeErrors:
+          # Outermost handler for anything the routes did not handle: log the exception
+          # type only and answer 500, instead of letting the server print a traceback
+          # (tracebacks and exception messages can quote request content).
+          def __init__(self, app):
+              self.app = app
+
+          async def __call__(self, scope, receive, send):
+              if scope["type"] != "http":
+                  await self.app(scope, receive, send)
+                  return
+              started = False
+
+              async def tracked_send(message):
+                  nonlocal started
+                  if message["type"] == "http.response.start":
+                      started = True
+                  await send(message)
+
+              try:
+                  await self.app(scope, receive, tracked_send)
+              except Exception as exc:
+                  _log("filter_unhandled", error_type=type(exc).__name__)
+                  if not started:
+                      await send({"type": "http.response.start", "status": 500,
+                                  "headers": [(b"content-type", b"application/json")]})
+                      await send({"type": "http.response.body", "body": b'{"error":"internal_error"}'})
+
+
+      @contextlib.asynccontextmanager
+      async def _lifespan(app):
+          yield
+          # Shutdown runs after every open request has been answered (each ends by its
+          # deadline). A window still running on a worker thread would hold the exit
+          # (worker threads are joined at interpreter exit) until Docker kills the
+          # container, so leave without it.
+          with _work_lock:
+              active = _work_active
+          if active:
+              _log("filter_shutdown", in_flight=active)
+              sys.stderr.flush()
+              os._exit(0)
+
+
+      app = FastAPI(lifespan=_lifespan)
+      app.add_middleware(_ContentFreeErrors)
+
+
+      @app.exception_handler(RequestValidationError)
+      async def _invalid_request(request: Request, exc: RequestValidationError):
+          # The default 422 body echoes the offending input back; return locations only.
+          _observe("bad_request", time.monotonic())
+          errors = [{"type": str(e.get("type", "")), "loc": [p for p in e.get("loc", ()) if isinstance(p, (str, int))]}
+                    for e in exc.errors()]
+          return JSONResponse(status_code=422, content={"detail": errors})
 
 
       class ClassifyRequest(BaseModel):
@@ -627,8 +945,62 @@ x-privacy-filter-common: &privacy-filter-common
 
 
       @app.get("/v1/models")
-      def models():
+      async def models():
+          # Async on purpose: answers from the event loop without waiting on classify work.
           return {"object": "list", "data": [{"id": MODEL_ID, "object": "model"}]}
+
+
+      @app.get("/health")
+      async def health():
+          # Liveness only: the process and its event loop are up.
+          return {"status": "ok"}
+
+
+      def _metric(lines, name, kind, help_text, samples):
+          lines.append(f"# HELP {name} {help_text}")
+          lines.append(f"# TYPE {name} {kind}")
+          for labels, value in samples:
+              lines.append(f"{name}{labels} {value}")
+
+
+      @app.get("/metrics")
+      async def metrics():
+          with _metrics_lock:
+              counts = dict(_outcome_counts)
+              buckets = {o: list(b) for o, b in _latency_buckets.items()}
+              sums = dict(_latency_sum)
+              last_success = _last_success_time
+          lines = []
+          _metric(lines, "privacy_filter_classify_requests_total", "counter",
+                  "Classify requests by outcome.", [(f'{{outcome="{o}"}}', counts[o]) for o in OUTCOMES])
+          _metric(lines, "privacy_filter_classify_in_flight", "gauge",
+                  "Classify jobs holding a slot, including detached ones.", [("", _gate.running)])
+          _metric(lines, "privacy_filter_classify_queued", "gauge",
+                  "Classify requests waiting for a slot.", [("", len(_gate.waiters))])
+          _metric(lines, "privacy_filter_classify_detached", "gauge",
+                  "Jobs still running after their request got a 504 or the caller left.", [("", _detached)])
+          _metric(lines, "privacy_filter_classify_max_in_flight", "gauge",
+                  "Configured slot limit.", [("", MAX_INFLIGHT)])
+          _metric(lines, "privacy_filter_classify_max_queued", "gauge",
+                  "Configured wait queue limit.", [("", MAX_QUEUED)])
+          _metric(lines, "privacy_filter_stall_seconds", "gauge",
+                  "Seconds since a job last finished while jobs are running (0 when idle).",
+                  [("", round(_stall_seconds(), 3))])
+          _metric(lines, "privacy_filter_last_success_timestamp_seconds", "gauge",
+                  "Unix time of the last successful classify (0 before the first).", [("", last_success)])
+          _metric(lines, "privacy_filter_process_start_time_seconds", "gauge",
+                  "Unix time this process started.", [("", PROCESS_START_TIME)])
+          name = "privacy_filter_classify_duration_seconds"
+          lines.append(f"# HELP {name} Time from arrival to response, by outcome.")
+          lines.append(f"# TYPE {name} histogram")
+          for o in OUTCOMES:
+              for bound, count in zip(LATENCY_BUCKETS, buckets[o]):
+                  lines.append(f'{name}_bucket{{outcome="{o}",le="{bound}"}} {count}')
+              lines.append(f'{name}_bucket{{outcome="{o}",le="+Inf"}} {counts[o]}')
+              lines.append(f'{name}_sum{{outcome="{o}"}} {sums[o]}')
+              lines.append(f'{name}_count{{outcome="{o}"}} {counts[o]}')
+          return Response("\n".join(lines) + "\n", media_type="text/plain; version=0.0.4")
+
 
       def _merge_adjacent_spans(spans):
           if not spans:
@@ -647,34 +1019,35 @@ x-privacy-filter-common: &privacy-filter-common
           return merged
 
 
-      @app.post("/v1/privacy/classify")
-      def classify(req: ClassifyRequest):
-          global _consecutive_oom_503
-          texts = [req.input] if isinstance(req.input, str) else req.input
-          if not texts or any(not isinstance(t, str) for t in texts):
-              raise HTTPException(400, "input must be a non-empty string or list of strings")
+      def _classify_work(texts, threshold, cancel):
+          """Run one classify request on a worker thread.
 
+          Returns (outcome, body, exit_after): outcome "ok" with the JSON body as bytes, or
+          "oom" when memory stayed short after the retry; exit_after asks for a restart.
+          Raises _Cancelled when `cancel` is set.
+          """
+          global _consecutive_oom_503
           # The pipeline runs the forward under torch.no_grad() internally.
-          # No lock: classify requests stay concurrent (the OOM counter's lock
-          # never covers a forward).
+          # No lock: classify jobs stay concurrent up to the slot limit (the OOM
+          # counter's lock never covers a forward).
           # Recover after leaving each except block: while an OOM is being handled, its
           # traceback still holds the failed forward's frames and their tensors, so
           # empty_cache() could not return that memory.
           oom = False
           try:
-              raw = clf(texts, batch_size=BATCH_SIZE, stride=STRIDE)
+              raw = _classify_texts(clf, texts, STRIDE, cancel)
           except torch.cuda.OutOfMemoryError:
               oom = True
           if oom:
               # Don't 500-storm behind a healthy /v1/models probe: retry with
               # smaller windows without mutating the shared classifier state.
-              print(json.dumps({"event": "filter_oom", "retry_max_length": retry_max_length}), flush=True)
+              _log("filter_oom", retry_max_length=retry_max_length)
               gc.collect()
               torch.cuda.empty_cache()
               retry_oom = clf_retry is None
               if clf_retry is not None:
                   try:
-                      raw = clf_retry(texts, batch_size=BATCH_SIZE, stride=min(STRIDE, retry_max_length - 1))
+                      raw = _classify_texts(clf_retry, texts, min(STRIDE, retry_max_length - 1), cancel)
                   except torch.cuda.OutOfMemoryError:
                       retry_oom = True
               if retry_oom:
@@ -685,21 +1058,20 @@ x-privacy-filter-common: &privacy-filter-common
                       _consecutive_oom_503 += 1
                       consecutive_503 = _consecutive_oom_503
                   if consecutive_503 >= OOM_EXIT_AFTER:
-                      print(json.dumps({"event": "filter_oom_exit", "consecutive_503": consecutive_503}), flush=True)
+                      _log("filter_oom_exit", consecutive_503=consecutive_503)
                       sys.stderr.write(
                           "privacy-filter: %d consecutive memory-pressure 503s; "
                           "exiting for a clean restart\n" % consecutive_503
                       )
                       sys.stderr.flush()
-                      return JSONResponse(status_code=503, headers={"Retry-After": "2"},
-                                          content={"error": "gpu_memory_pressure"},
-                                          background=BackgroundTask(os._exit, 1))
-                  return JSONResponse(status_code=503, headers={"Retry-After": "2"},
-                                      content={"error": "gpu_memory_pressure"})
+                      return "oom", None, True
+                  return "oom", None, False
 
           with _oom_lock:
               _consecutive_oom_503 = 0
 
+          if cancel.is_set():
+              raise _Cancelled()
           # Single batched tokenize for usage counts instead of N sequential calls.
           tok_lens = [len(ids) for ids in tokenizer(texts).input_ids]
 
@@ -714,7 +1086,7 @@ x-privacy-filter-common: &privacy-filter-common
                       "end": int(s["end"]),
                   }
                   for s in spans
-                  if float(s["score"]) >= req.threshold
+                  if float(s["score"]) >= threshold
               ]
               data.append(
                   {
@@ -724,7 +1096,130 @@ x-privacy-filter-common: &privacy-filter-common
                   }
               )
 
-          return {"model": MODEL_ID, "data": data}
+          # Serialize here, off the event loop (same encoding as FastAPI's JSONResponse).
+          body = json.dumps({"model": MODEL_ID, "data": data}, ensure_ascii=False, allow_nan=False,
+                            indent=None, separators=(",", ":")).encode("utf-8")
+          return "ok", body, False
+
+
+      class _Job:
+          def __init__(self, texts, threshold):
+              self.texts = texts
+              self.threshold = threshold
+              self.cancel = threading.Event()
+              self.detached_at = None  # set on the loop thread when the request stops waiting
+              self.finished = False
+
+
+      def _run_job(job):
+          _work_started()
+          try:
+              return _classify_work(job.texts, job.threshold, job.cancel)
+          except _Cancelled:
+              return "cancelled", None, False
+          except Exception as exc:
+              _log("filter_error", error_type=type(exc).__name__)
+              return "error", None, False
+          finally:
+              _work_finished()
+
+
+      def _job_done(job, future):
+          # Loop thread: the job has really stopped, so its slot can go to the next request.
+          global _detached
+          job.finished = True
+          _gate.release()
+          if future.cancelled() or future.exception() is not None:
+              return
+          outcome, _, exit_after = future.result()
+          if job.detached_at is not None:
+              _detached -= 1
+              _log("filter_detached_done", outcome=outcome,
+                   seconds_after_detach=round(time.monotonic() - job.detached_at, 3))
+              if exit_after:
+                  # No request is left to carry the restart; do it here.
+                  asyncio.get_running_loop().call_later(0.5, os._exit, 1)
+
+
+      _REQUEST_ID = re.compile(r"[A-Za-z0-9._:-]{1,128}")
+
+
+      def _request_id(request):
+          value = request.headers.get("x-request-id", "")
+          return value if _REQUEST_ID.fullmatch(value) else None
+
+
+      def _detach(job, outcome, started, request_id, status, content):
+          global _detached
+          job.cancel.set()
+          if job.detached_at is None:
+              job.detached_at = time.monotonic()
+              if not job.finished:
+                  _detached += 1
+          elapsed = _observe(outcome, started)
+          _log("filter_" + outcome, request_id=request_id, elapsed_s=round(elapsed, 3), inputs=len(job.texts),
+               chars=sum(len(t) for t in job.texts), in_flight=_gate.running, queued=len(_gate.waiters))
+          return JSONResponse(status_code=status, content=content)
+
+
+      @app.post("/v1/privacy/classify")
+      async def classify(req: ClassifyRequest, request: Request):
+          started = time.monotonic()
+          request_id = _request_id(request)
+          texts = [req.input] if isinstance(req.input, str) else req.input
+          if not texts or any(not isinstance(t, str) for t in texts):
+              _observe("bad_request", started)
+              raise HTTPException(400, "input must be a non-empty string or list of strings")
+
+          deadline = started + DEADLINE_S
+          # Wait for a slot no longer than the queue timeout or the request's deadline.
+          if not await _gate.acquire(min(QUEUE_TIMEOUT_S, deadline - time.monotonic())):
+              if time.monotonic() >= deadline:
+                  elapsed = _observe("deadline", started)
+                  _log("filter_deadline", request_id=request_id, elapsed_s=round(elapsed, 3), inputs=len(texts),
+                       chars=sum(len(t) for t in texts), in_flight=_gate.running, queued=len(_gate.waiters))
+                  return JSONResponse(status_code=504, content={"error": "deadline_exceeded"})
+              elapsed = _observe("rejected", started)
+              _log("filter_rejected", request_id=request_id, elapsed_s=round(elapsed, 3),
+                   in_flight=_gate.running, queued=len(_gate.waiters))
+              return JSONResponse(status_code=503, headers={"Retry-After": str(RETRY_AFTER_S)},
+                                  content={"error": "overloaded"})
+
+          job = _Job(texts, req.threshold)
+          try:
+              gone = await request.is_disconnected()
+              if not gone:
+                  future = asyncio.get_running_loop().run_in_executor(_pool, _run_job, job)
+          except BaseException:
+              _gate.release()
+              raise
+          if gone:
+              _gate.release()
+              job.finished = True
+              return _detach(job, "cancelled", started, request_id, 499, {"error": "client_closed_request"})
+          future.add_done_callback(functools.partial(_job_done, job))
+
+          try:
+              while not future.done():
+                  now = time.monotonic()
+                  if now >= deadline:
+                      return _detach(job, "deadline", started, request_id, 504, {"error": "deadline_exceeded"})
+                  await asyncio.wait({future}, timeout=min(DISCONNECT_POLL_S, deadline - now))
+                  if not future.done() and await request.is_disconnected():
+                      return _detach(job, "cancelled", started, request_id, 499, {"error": "client_closed_request"})
+          except asyncio.CancelledError:
+              _detach(job, "cancelled", started, request_id, 499, {"error": "client_closed_request"})
+              raise
+
+          outcome, body, exit_after = future.result()
+          _observe(outcome if outcome in OUTCOMES else "error", started)
+          if outcome == "ok":
+              return Response(body, media_type="application/json")
+          if outcome == "oom":
+              return JSONResponse(status_code=503, headers={"Retry-After": "2"},
+                                  content={"error": "gpu_memory_pressure"},
+                                  background=BackgroundTask(os._exit, 1) if exit_after else None)
+          return JSONResponse(status_code=500, content={"error": "internal_error"})
       PYEOF
       EXPOSE 8000
       CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8000"]
@@ -749,10 +1244,21 @@ x-privacy-filter-common: &privacy-filter-common
     # batch 1 can classify 131072 tokens in one pass. Explicit eager mode, or a
     # rejected non-eager implementation, clamps MAX_LENGTH to 4096 and chunks with
     # STRIDE overlap; eager measured ~13 GB over baseline at only 16k tokens.
-    - PRIVACY_BATCH_SIZE=1
+    # Windows are forwarded one at a time (batch 1), so a cancelled or late request
+    # stops at the next window boundary.
     - PRIVACY_MAX_LENGTH=131072
     - PRIVACY_STRIDE=256
     - PRIVACY_ATTN_IMPL=sdpa
+    # Admission: 4 classify jobs at once, 8 more wait up to 5 s, the rest get 503
+    # with Retry-After. A request gets 504 after 60 s; a request whose caller has
+    # disconnected stops at the next window. With jobs running and none finished
+    # for 120 s, the process exits so Docker restarts it.
+    - FILTER_MAX_INFLIGHT=4
+    - FILTER_MAX_QUEUED=8
+    - FILTER_QUEUE_TIMEOUT_S=5
+    - FILTER_RETRY_AFTER_S=1
+    - FILTER_DEADLINE_S=60
+    - FILTER_STALL_EXIT_S=120
   restart: unless-stopped
   stop_grace_period: 5m
   logging: *logging-conf
@@ -2056,6 +2562,20 @@ services:
     container_name: model-privacy-filter
     labels:
       com.datadoghq.ad.logs: '[{"source":"privacy-filter","service":"privacy-filter","tags":["model:openai/privacy-filter","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8007"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "privacy-filter"
+      nearai.otel.service: "privacy-filter"
+      nearai.otel.source: "privacy-filter"
+      nearai.otel.container_name: "model-privacy-filter"
+      nearai.otel.port: "8000"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "openai/privacy-filter"
+      nearai.otel.deployment: "small-models"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
 
   # Per-model dcgm-exporters: each container only sees its assigned GPUs via
   # device_ids, so all NVML/DCGM metrics it emits are correctly attributable to
@@ -2654,6 +3174,23 @@ configs:
                       cvm_name: "${CVM_NAME}"
                       ip: "${HOST_IP}"
                       port: "8006"
+              - job_name: privacy-filter-model-privacy-filter
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['model-privacy-filter:8000']
+                    labels:
+                      service: "privacy-filter"
+                      source: "privacy-filter"
+                      container_name: "model-privacy-filter"
+                      model: "openai/privacy-filter"
+                      deployment: "small-models"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      port: "8007"
               - job_name: dcgm-dcgm-privacy-filter
                 scrape_interval: 15s
                 metrics_path: /metrics

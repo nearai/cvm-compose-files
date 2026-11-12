@@ -10,11 +10,14 @@ Imported by test_glm53_w4afp8_tp2x4.py and test_glm53_w4afp8_long_context.py so 
 """
 
 import ast
+import asyncio
+import collections
 import contextlib
 import gc
 import hashlib
 import io
 import json
+import math
 import re
 import shlex
 import shutil
@@ -297,10 +300,26 @@ COLOC_ENGINE_JOB = f"sglang-{COLOC_ENGINE}"
 # The move to the SGLang v0.5.23 secure image then renames --cuda-graph-max-bs to --cuda-graph-max-bs-decode and sets
 # engine_image 6de632a5e942, sglang_revision 0.5.23-near-secure and config_variant ...-prio-v0523.
 COLOC_BLOCK_HASHES = {
-    "x-privacy-filter-common": "8b0fa38844cc279cf27d02250fd37ecb7125a4e2fd0dec08fb66f4f35ee55c9e",
+    "x-privacy-filter-common": "80d987bd5d4900d30402ced2970c31bec66d894401ca6e6c8c428c40259657d4",
     COLOC_ENGINE: "6340cb36b826d7fee3db806bcb2c8ec23a7391a17eb5f5ff1760df80d350acda",
     COLOC_ENGINE_JOB: "fe072375f6e7445e4bddf78ed32dab91346f46f2dcdfc85bf3c753855c8c7e4e",
 }
+# The filter exports its own metrics: its service gains the collector scrape labels and a scrape job
+# right before the filter's DCGM job, each pinned whole; with_privacy_filter_metrics() adds both to the fixture.
+PRIVACY_FILTER_SERVICE = "model-privacy-filter"
+PRIVACY_FILTER_JOB = "privacy-filter-model-privacy-filter"
+PRIVACY_FILTER_METRICS_HASHES = {
+    PRIVACY_FILTER_SERVICE: "850a1bdbe7a8165424b9197ee272fa474c1439919c69a2fd54d10434f8b7d977",
+    PRIVACY_FILTER_JOB: "895f75675ca127ca2436d8f4104ad45546a3e292aad4e203cf6f3f7ca6b5bad8",
+}
+# Every keyword the filter's log lines may carry: counts, durations, sizes, outcomes, error types and the
+# validated request id. A new field needs a reviewed entry here (request content must never be logged).
+PRIVACY_FILTER_LOG_FIELDS = {
+    "retry_max_length", "consecutive_503", "ok", "windows", "max_length", "error_type", "in_flight",
+    "seconds_since_progress", "limit_s", "reserved_gb", "limit_gb", "outcome", "seconds_after_detach",
+    "request_id", "elapsed_s", "inputs", "chars", "queued", "retry_ok", "retry_windows", "retry_error_type",
+}
+PRIVACY_FILTER_LOG_SPLATS = {"line", "_metrics_snapshot"}
 # gpu13's stock engines move to SGLang v0.5.23 (docker/sglang-v0523-secure) and
 # vLLM v0.33.0: the Qwen3.6, Qwen3.8 and FLUX.2 anchors and the four vLLM services, each pinned whole. Their scrape
 # jobs are unchanged (the coloc job is pinned above).
@@ -819,6 +838,18 @@ def with_latest_engines(text: str, small: str) -> str:
     return text
 
 
+def with_privacy_filter_metrics(text: str, small: str) -> str:
+    """Take the filter's scrape-labelled service and its scrape job from small (pinned by hash in their own test)."""
+    old, new = service_block(text, PRIVACY_FILTER_SERVICE), service_block(small, PRIVACY_FILTER_SERVICE)
+    if text.count(old) != 1:
+        raise AssertionError("expected one privacy-filter fixture service")
+    text = text.replace(old, new, 1)
+    anchor = "              - job_name: dcgm-dcgm-privacy-filter\n"
+    if text.count(anchor) != 1:
+        raise AssertionError("expected one privacy-filter DCGM fixture job")
+    return text.replace(anchor, " " * 14 + jobs_of(small)[PRIVACY_FILTER_JOB] + anchor, 1)
+
+
 class Gpu13FleetTest(unittest.TestCase):
     """gpu13 keeps its non-migration small-model services and GPU 0-3 contracts."""
 
@@ -830,58 +861,49 @@ class Gpu13FleetTest(unittest.TestCase):
     def privacy_filter_function(self, name: str) -> types.CodeType:
         block = anchor_block(self.small, "x-privacy-filter-common")
         source = textwrap.dedent(block.split("COPY <<'PYEOF' /app/server.py\n", 1)[1].split("\n      PYEOF", 1)[0])
-        function = next(node for node in ast.parse(source).body if isinstance(node, ast.FunctionDef) and node.name == name)
+        kinds = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+        function = next(node for node in ast.parse(source).body if isinstance(node, kinds) and node.name == name)
         function.decorator_list = []
         return compile(ast.fix_missing_locations(ast.Module(body=[function], type_ignores=[])), "server.py", "exec")
+
+    def privacy_filter_source(self) -> str:
+        block = anchor_block(self.small, "x-privacy-filter-common")
+        return textwrap.dedent(block.split("COPY <<'PYEOF' /app/server.py\n", 1)[1].split("\n      PYEOF", 1)[0])
 
     def privacy_filter_oom_namespace(self, primary, retry, retry_max_length=16384, exit_after=3):
         class OutOfMemoryError(Exception):
             pass
 
-        class JSONResponse:
-            def __init__(self, status_code, headers, content, background=None):
-                self.status_code = status_code
-                self.headers = headers
-                self.content = content
-                self.background = background
-
-        class BackgroundTask:
-            def __init__(self, func, *args):
-                self.func = func
-                self.args = args
-
-        exit_calls = []
-        exit_stub = lambda code: exit_calls.append(code)
         namespace = {
             "torch": types.SimpleNamespace(cuda=types.SimpleNamespace(OutOfMemoryError=OutOfMemoryError, empty_cache=lambda: None)),
             "gc": gc,
             "json": json,
-            "os": types.SimpleNamespace(_exit=exit_stub),
             "sys": types.SimpleNamespace(stderr=io.StringIO()),
-            "JSONResponse": JSONResponse,
-            "BackgroundTask": BackgroundTask,
-            "HTTPException": Exception,
-            "ClassifyRequest": object,
+            "_log": lambda event, **fields: print(json.dumps({"event": event, **fields})),
+            "_Cancelled": type("_Cancelled", (Exception,), {}),
+            "_classify_texts": lambda pipe, texts, stride, cancel: pipe(texts, stride),
             "clf": lambda *args, **kwargs: primary(OutOfMemoryError),
             "clf_retry": None if retry is None else lambda *args, **kwargs: retry(OutOfMemoryError),
             "tokenizer": lambda texts: types.SimpleNamespace(input_ids=[[0] for _ in texts]),
             "_merge_adjacent_spans": lambda spans: spans,
             "MODEL_ID": "openai/privacy-filter",
-            "BATCH_SIZE": 1,
             "STRIDE": 256,
             "retry_max_length": retry_max_length,
             "OOM_EXIT_AFTER": exit_after,
             "_oom_lock": threading.Lock(),
             "_consecutive_oom_503": 0,
         }
-        exec(self.privacy_filter_function("classify"), namespace)
-        return namespace, exit_calls
+        exec(self.privacy_filter_function("_classify_work"), namespace)
+        return namespace
+
+    def run_work(self, namespace):
+        return namespace["_classify_work"](["x"], 0.0, threading.Event())
 
     def test_non_glm_services_and_everything_outside_the_glm_blocks_are_byte_identical(self) -> None:
-        old = with_latest_engines(with_inline_media(with_qwen38_priority_tiers(with_qwen38_probe_timeout_saturated(with_qwen38_no_mixed_chunk(with_glm53_long_tier_registration(with_qwen38_abliterated_ingress(
+        old = with_privacy_filter_metrics(with_latest_engines(with_inline_media(with_qwen38_priority_tiers(with_qwen38_probe_timeout_saturated(with_qwen38_no_mixed_chunk(with_glm53_long_tier_registration(with_qwen38_abliterated_ingress(
             with_qwen38_abliterated_lora(with_filter_and_coloc_on_gpu2(with_sage_on_gpu2(with_qwen38_coloc_pool(without_qwen38_gpu0_stage_b(self.old))))),
             qwen38_abliterated_ingress(self.small),
-        )))))), self.small)
+        )))))), self.small), self.small)
         names = re.findall(r"^  ([a-z0-9-]+):$", self.old[self.old.index("\nservices:\n"):], re.MULTILINE)
         expected_names = [name for name in names if name != QWEN38_GPU0_SERVICE]
         expected_names.insert(expected_names.index(QWEN38_R2) + 1, COLOC_ENGINE)
@@ -934,6 +956,7 @@ class Gpu13FleetTest(unittest.TestCase):
         index = expected_jobs.index("inference-proxy-proxy-qwen38-27b") + 1
         expected_jobs[index:index] = [LORA_JOB]
         expected_jobs.insert(expected_jobs.index("dcgm-dcgm-shared-gpu3") + 1, SAGE_DCGM_JOB)
+        expected_jobs.insert(expected_jobs.index("dcgm-dcgm-privacy-filter"), PRIVACY_FILTER_JOB)
         self.assertEqual([key for key in expected_jobs if "glm53" not in key], [key for key in new_jobs if "glm53" not in key])
         for key in old_jobs:
             if "glm53" not in key:
@@ -1069,25 +1092,8 @@ class Gpu13FleetTest(unittest.TestCase):
                     self.assertLess(result, max_length)
 
     def test_privacy_filter_oom_recovery_runs_after_the_failed_forward_is_released(self) -> None:
-        code = self.privacy_filter_function("classify")
-
         class OutOfMemoryError(Exception):
             pass
-
-        class HTTPException(Exception):
-            pass
-
-        class JSONResponse:
-            def __init__(self, status_code, headers, content, background=None):
-                self.status_code = status_code
-                self.headers = headers
-                self.content = content
-                self.background = background
-
-        class BackgroundTask:
-            def __init__(self, func, *args):
-                self.func = func
-                self.args = args
 
         class Sentinel:
             pass
@@ -1102,10 +1108,10 @@ class Gpu13FleetTest(unittest.TestCase):
                     sentinels.append(weakref.ref(sentinel))
                     raise OutOfMemoryError("simulated failed forward")
 
-                def primary(texts, batch_size, stride):
+                def primary(texts, stride):
                     return fail_forward()
 
-                def retry(texts, batch_size, stride):
+                def retry(texts, stride):
                     self.assertIsNone(sentinels[0]())
                     if retry_fails:
                         return fail_forward()
@@ -1118,69 +1124,75 @@ class Gpu13FleetTest(unittest.TestCase):
                     "torch": types.SimpleNamespace(cuda=types.SimpleNamespace(OutOfMemoryError=OutOfMemoryError, empty_cache=empty_cache)),
                     "gc": gc,
                     "json": json,
-                    "os": types.SimpleNamespace(_exit=lambda code: None),
                     "sys": types.SimpleNamespace(stderr=io.StringIO()),
-                    "JSONResponse": JSONResponse,
-                    "BackgroundTask": BackgroundTask,
-                    "HTTPException": HTTPException,
-                    "ClassifyRequest": object,
+                    "_log": lambda event, **fields: print(json.dumps({"event": event, **fields})),
+                    "_Cancelled": type("_Cancelled", (Exception,), {}),
+                    "_classify_texts": lambda pipe, texts, stride, cancel: pipe(texts, stride),
                     "clf": primary,
                     "clf_retry": retry,
                     "tokenizer": lambda texts: types.SimpleNamespace(input_ids=[[0] for _ in texts]),
                     "_merge_adjacent_spans": lambda spans: spans,
                     "MODEL_ID": "openai/privacy-filter",
-                    "BATCH_SIZE": 1,
                     "STRIDE": 256,
                     "retry_max_length": 16384,
                     "OOM_EXIT_AFTER": 3,
                     "_oom_lock": threading.Lock(),
                     "_consecutive_oom_503": 0,
                 }
-                exec(code, namespace)
+                exec(self.privacy_filter_function("_classify_work"), namespace)
                 stdout = io.StringIO()
                 with contextlib.redirect_stdout(stdout):
-                    result = namespace["classify"](types.SimpleNamespace(input="x", threshold=0.0))
+                    result = self.run_work(namespace)
 
                 self.assertEqual(len(cache_checks), 2 if retry_fails else 1)
                 self.assertTrue(all(cache_checks))
                 self.assertEqual([json.loads(line)["event"] for line in stdout.getvalue().splitlines()], ["filter_oom"])
                 if retry_fails:
-                    self.assertIsInstance(result, JSONResponse)
-                    self.assertEqual(result.status_code, 503)
-                    self.assertEqual(result.headers, {"Retry-After": "2"})
+                    self.assertEqual(result, ("oom", None, False))
                 else:
-                    self.assertEqual(result["data"][0]["spans"], [])
+                    self.assertEqual(result[0], "ok")
+                    self.assertEqual(json.loads(result[1])["data"][0]["spans"], [])
 
     def test_privacy_filter_oom_without_retry_returns_503(self) -> None:
         def primary(oom_error):
             raise oom_error("primary OOM")
 
-        namespace, exit_calls = self.privacy_filter_oom_namespace(primary, None, retry_max_length=None)
+        namespace = self.privacy_filter_oom_namespace(primary, None, retry_max_length=None)
         stdout = io.StringIO()
         with contextlib.redirect_stdout(stdout):
-            result = namespace["classify"](types.SimpleNamespace(input="x", threshold=0.0))
-        self.assertEqual(result.status_code, 503)
-        self.assertEqual(result.headers, {"Retry-After": "2"})
-        self.assertIsNone(result.background)
+            result = self.run_work(namespace)
+        self.assertEqual(result, ("oom", None, False))
         self.assertEqual(json.loads(stdout.getvalue().splitlines()[0]), {"event": "filter_oom", "retry_max_length": None})
-        self.assertEqual(exit_calls, [])
 
     def test_privacy_filter_exits_after_three_consecutive_oom_503s(self) -> None:
         def oom(oom_error):
             raise oom_error("simulated OOM")
 
-        namespace, exit_calls = self.privacy_filter_oom_namespace(oom, oom)
+        namespace = self.privacy_filter_oom_namespace(oom, oom)
         stdout = io.StringIO()
         with contextlib.redirect_stdout(stdout):
-            results = [namespace["classify"](types.SimpleNamespace(input="x", threshold=0.0)) for _ in range(3)]
-        self.assertEqual([response.status_code for response in results], [503, 503, 503])
-        self.assertEqual([response.headers for response in results], [{"Retry-After": "2"}] * 3)
-        self.assertEqual([response.background is not None for response in results], [False, False, True])
-        self.assertIs(results[2].background.func, namespace["os"]._exit)
-        self.assertEqual(results[2].background.args, (1,))
-        self.assertEqual(exit_calls, [])
+            results = [self.run_work(namespace) for _ in range(3)]
+        self.assertEqual(results, [("oom", None, False), ("oom", None, False), ("oom", None, True)])
         self.assertEqual([json.loads(line) for line in stdout.getvalue().splitlines() if 'filter_oom_exit' in line],
                          [{"event": "filter_oom_exit", "consecutive_503": 3}])
+        # The handler turns the restart request into the 503's background task.
+        classify = self.privacy_filter_source().split("async def classify(", 1)[1]
+        self.assertIn('BackgroundTask(os._exit, 1) if exit_after else None', classify)
+        self.assertIn('headers={"Retry-After": "2"}', classify)
+
+    def test_privacy_filter_shutdown_does_not_wait_for_a_running_window(self) -> None:
+        source = self.privacy_filter_source()
+        self.assertIn("app = FastAPI(lifespan=_lifespan)", source)
+        lifespan = source.split("async def _lifespan(app):", 1)[1].split("\napp = ", 1)[0]
+        self.assertLess(lifespan.index("yield"), lifespan.index("os._exit(0)"))
+        self.assertIn("if active:", lifespan)
+
+    def test_privacy_filter_admission_wait_is_bounded_by_the_deadline(self) -> None:
+        classify = self.privacy_filter_source().split("async def classify(", 1)[1]
+        self.assertIn("await _gate.acquire(min(QUEUE_TIMEOUT_S, deadline - time.monotonic()))", classify)
+        self.assertLess(classify.index("deadline = started + DEADLINE_S"), classify.index("_gate.acquire("))
+        self.assertLess(classify.index('status_code=504, content={"error": "deadline_exceeded"}'),
+                        classify.index('_observe("rejected", started)'))
 
     def test_privacy_filter_success_resets_consecutive_oom_503s(self) -> None:
         def primary(oom_error):
@@ -1193,16 +1205,178 @@ class Gpu13FleetTest(unittest.TestCase):
                 return [[]]
             raise oom_error("retry OOM")
 
-        namespace, exit_calls = self.privacy_filter_oom_namespace(primary, retry)
+        namespace = self.privacy_filter_oom_namespace(primary, retry)
         stdout = io.StringIO()
         with contextlib.redirect_stdout(stdout):
-            results = [namespace["classify"](types.SimpleNamespace(input="x", threshold=0.0)) for _ in range(5)]
-        self.assertEqual([response.status_code if hasattr(response, "status_code") else 200 for response in results],
-                         [503, 503, 200, 503, 503])
-        self.assertTrue(all(getattr(response, "background", None) is None for response in results))
+            results = [self.run_work(namespace) for _ in range(5)]
+        self.assertEqual([result[0] for result in results], ["oom", "oom", "ok", "oom", "oom"])
+        self.assertFalse(any(result[2] for result in results))
         self.assertEqual(namespace["_consecutive_oom_503"], 2)
         self.assertNotIn("filter_oom_exit", stdout.getvalue())
-        self.assertEqual(exit_calls, [])
+
+    def test_privacy_filter_cancel_stops_at_the_next_window(self) -> None:
+        namespace = {}
+        for name in ("_Cancelled", "_pipeline_params", "_classify_texts"):
+            exec(self.privacy_filter_function(name), namespace)
+        cancel = threading.Event()
+        calls = []
+        cancel_after_first = []
+
+        class Pipe:
+            _preprocess_params = {"is_split_into_words": False}
+            _forward_params = {}
+            _postprocess_params = {"aggregation_strategy": "simple"}
+
+            def _sanitize_parameters(self, stride):
+                return {"stride": stride}, {}, {}
+
+            def preprocess(self, text, **params):
+                calls.append(("preprocess", params))
+                yield from range(3)
+
+            def forward(self, window, **params):
+                calls.append(("forward", window))
+                if cancel_after_first:
+                    cancel.set()
+                return window
+
+            def postprocess(self, outputs, **params):
+                calls.append(("postprocess", params))
+                return outputs
+
+            def __call__(self, text, stride):
+                calls.append(("whole", stride))
+                return ["whole"]
+
+        pipe = Pipe()
+        namespace["_WINDOWED"] = {id(pipe): True}
+        self.assertEqual(namespace["_classify_texts"](pipe, ["a", "b"], 7, cancel), [[0, 1, 2], [0, 1, 2]])
+        self.assertEqual(calls[0], ("preprocess", {"is_split_into_words": False, "stride": 7}))
+        self.assertEqual(calls[4], ("postprocess", {"aggregation_strategy": "simple"}))
+        # A cancel set during a window's forward stops the job before the next window.
+        calls.clear()
+        cancel_after_first.append(True)
+        with self.assertRaises(namespace["_Cancelled"]):
+            namespace["_classify_texts"](pipe, ["a", "b"], 7, cancel)
+        self.assertEqual([c for c in calls if c[0] == "forward"], [("forward", 0)])
+        # Without a passing startup check, whole-text calls, still cancelled between texts.
+        calls.clear()
+        cancel.clear()
+        namespace["_WINDOWED"] = {}
+        self.assertEqual(namespace["_classify_texts"](pipe, ["a", "b"], 7, cancel), [["whole"], ["whole"]])
+        cancel.set()
+        with self.assertRaises(namespace["_Cancelled"]):
+            namespace["_classify_texts"](pipe, ["a"], 7, cancel)
+
+    def test_privacy_filter_gate_caps_running_and_waiting_requests(self) -> None:
+        namespace = {"asyncio": asyncio, "collections": collections}
+        exec(self.privacy_filter_function("_Gate"), namespace)
+        gate_class = namespace["_Gate"]
+
+        async def scenario():
+            gate = gate_class(2, 1)
+            self.assertTrue(await gate.acquire(5))
+            self.assertTrue(await gate.acquire(5))
+            waiter = asyncio.create_task(gate.acquire(5))
+            await asyncio.sleep(0)
+            self.assertEqual(len(gate.waiters), 1)
+            self.assertFalse(await gate.acquire(5))  # the queue is full: refused at once
+            gate.release()  # the slot passes straight to the waiter
+            self.assertTrue(await waiter)
+            self.assertEqual(gate.running, 2)
+            self.assertFalse(await gate.acquire(0.05))  # timed out in the queue
+            self.assertEqual(len(gate.waiters), 0)
+            task = asyncio.create_task(gate.acquire(5))
+            await asyncio.sleep(0)
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+            self.assertEqual(len(gate.waiters), 0)
+            gate.release()
+            gate.release()
+            self.assertEqual(gate.running, 0)
+            no_queue = gate_class(1, 0)
+            self.assertTrue(await no_queue.acquire(5))
+            self.assertFalse(await no_queue.acquire(5))
+
+        asyncio.run(scenario())
+
+    def test_privacy_filter_env_tolerates_bad_values(self) -> None:
+        environ = {"I": "four", "B": " ", "F": "2.5", "INF": "inf", "NAN": "nan", "NEG": "-3"}
+        namespace = {"os": types.SimpleNamespace(environ=environ), "math": math}
+        exec(self.privacy_filter_function("_env"), namespace)
+        exec(self.privacy_filter_function("_env_seconds"), namespace)
+        self.assertEqual(namespace["_env"]("I", 4, int), 4)
+        self.assertEqual(namespace["_env"]("B", 8, int), 8)
+        self.assertEqual(namespace["_env"]("MISSING", 1, int), 1)
+        self.assertEqual(namespace["_env_seconds"]("F", 5.0, 0.0), 2.5)
+        self.assertEqual(namespace["_env_seconds"]("INF", 5.0, 0.0), 5.0)
+        self.assertEqual(namespace["_env_seconds"]("NAN", 60.0, 1.0), 60.0)
+        self.assertEqual(namespace["_env_seconds"]("NEG", 120.0, 5.0), 5.0)
+        source = self.privacy_filter_source()
+        for line in ('MAX_INFLIGHT = max(1, _env("FILTER_MAX_INFLIGHT", 4, int))',
+                     'MAX_QUEUED = max(0, _env("FILTER_MAX_QUEUED", 8, int))',
+                     'QUEUE_TIMEOUT_S = _env_seconds("FILTER_QUEUE_TIMEOUT_S", 5.0, 0.0)',
+                     'DEADLINE_S = _env_seconds("FILTER_DEADLINE_S", 60.0, 1.0)',
+                     'STALL_EXIT_S = _env_seconds("FILTER_STALL_EXIT_S", 120.0, 5.0)'):
+            self.assertIn(line, source)
+
+    def test_privacy_filter_logs_no_request_content(self) -> None:
+        tree = ast.parse(self.privacy_filter_source())
+        # Every exception caught after startup is reported by type only.
+        app_line = next(node.lineno for node in tree.body if isinstance(node, ast.Assign)
+                        and any(getattr(t, "id", None) == "app" for t in node.targets))
+        typed = {id(call.args[0]) for call in ast.walk(tree) if isinstance(call, ast.Call)
+                 and getattr(call.func, "id", None) == "type" and len(call.args) == 1}
+        request_path = [node for node in tree.body if node.lineno > app_line] + [
+            node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.ClassDef))
+            and node.name in ("_classify_texts", "_check_windowed", "_stall_watchdog", "_gpu_watchdog", "_log")]
+        for top in request_path:
+            for handler in (n for n in ast.walk(top) if isinstance(n, ast.ExceptHandler) and n.name):
+                for use in (n for n in ast.walk(handler) if isinstance(n, ast.Name) and n.id == handler.name):
+                    self.assertIn(id(use), typed, f"line {use.lineno}: exception used other than type(...)")
+            for call in (n for n in ast.walk(top) if isinstance(n, ast.Call)):
+                self.assertNotIn(getattr(call.func, "id", None), ("print", "repr"), f"line {call.lineno}")
+                self.assertNotIn(getattr(call.func, "attr", None), ("print_exc", "format_exc", "print_exception"),
+                                 f"line {call.lineno}")
+                if getattr(call.func, "attr", None) == "exception":  # logger.exception(); future.exception() is fine
+                    self.assertEqual(getattr(call.func.value, "id", None), "future", f"line {call.lineno}")
+        # Log lines carry only reviewed fields.
+        for call in (n for n in ast.walk(tree) if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "_log"):
+            for keyword in call.keywords:
+                if keyword.arg is None:
+                    splat = keyword.value
+                    name = getattr(splat, "id", None) or getattr(getattr(splat, "func", None), "id", None)
+                    self.assertIn(name, PRIVACY_FILTER_LOG_SPLATS, f"line {call.lineno}")
+                else:
+                    self.assertIn(keyword.arg, PRIVACY_FILTER_LOG_FIELDS, f"line {call.lineno}")
+        source = self.privacy_filter_source()
+        self.assertNotIn("import traceback", source)
+        self.assertIn('logging.getLogger("uvicorn.access").addFilter(_AccessLogWithoutQuery())', source)
+
+    def test_privacy_filter_request_id_is_validated(self) -> None:
+        namespace = {"re": re}
+        exec('_REQUEST_ID = re.compile(r"[A-Za-z0-9._:-]{1,128}")', namespace)
+        self.assertIn('_REQUEST_ID = re.compile(r"[A-Za-z0-9._:-]{1,128}")', self.privacy_filter_source())
+        exec(self.privacy_filter_function("_request_id"), namespace)
+        def check(value):
+            return namespace["_request_id"](types.SimpleNamespace(headers={"x-request-id": value}))
+        self.assertEqual(check("6f1c2b0e-1d2a-4c7e-9a51-3b8f0e7d9c21"), "6f1c2b0e-1d2a-4c7e-9a51-3b8f0e7d9c21")
+        for bad in ("", "has space", "x" * 129, "name@example.com", "a\nb"):
+            self.assertIsNone(check(bad), bad)
+
+    def test_privacy_filter_metrics_blocks_are_pinned(self) -> None:
+        blocks = {PRIVACY_FILTER_SERVICE: service_block(self.small, PRIVACY_FILTER_SERVICE),
+                  PRIVACY_FILTER_JOB: jobs_of(self.small)[PRIVACY_FILTER_JOB]}
+        for name, block in blocks.items():
+            with self.subTest(block=name):
+                self.assertEqual(hashlib.sha256(block.encode()).hexdigest(), PRIVACY_FILTER_METRICS_HASHES[name])
+        self.assertIn('nearai.otel.scrape: "true"', blocks[PRIVACY_FILTER_SERVICE])
+        self.assertIn("targets: ['model-privacy-filter:8000']", blocks[PRIVACY_FILTER_JOB])
+        source = self.privacy_filter_source()
+        for route in ('@app.get("/v1/models")\nasync def models', '@app.get("/health")\nasync def health',
+                      '@app.get("/metrics")\nasync def metrics'):
+            self.assertIn(route, source)
 
     def test_coloc_engine_joins_customer_routing_without_synthetic_load(self) -> None:
         names = re.findall(r"^  ([a-z0-9-]+):$", self.small[self.small.index("\nservices:\n"):], re.MULTILINE)
@@ -1247,6 +1421,7 @@ class Gpu13FleetTest(unittest.TestCase):
         index = expected_jobs.index("inference-proxy-proxy-qwen38-27b") + 1
         expected_jobs[index:index] = [LORA_JOB]
         expected_jobs.insert(expected_jobs.index("dcgm-dcgm-shared-gpu3") + 1, SAGE_DCGM_JOB)
+        expected_jobs.insert(expected_jobs.index("dcgm-dcgm-privacy-filter"), PRIVACY_FILTER_JOB)
         self.assertEqual([key for key in expected_jobs if "glm53" not in key], [key for key in new_jobs if "glm53" not in key])
         for key in old_jobs:
             if "glm53" in key:
