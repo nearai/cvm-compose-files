@@ -11,8 +11,10 @@ Names, labels and lifecycle of deployables. The hard rules in AGENTS.md apply on
 ## Names
 - New compose file: copy a file in `ci/templates/`; keep its line-1 header form, key and service order.
 - Serving file: `prod/<checkpoint>-<engine>-<topology>[-<tier>].yaml`. `checkpoint` = lowercased HF repo
-  name; `engine` = `sglang` | `vllm`; `topology` = `tp<N>` | `dep<N>` | `dp<N>`, `x<R>` for replicas;
-  `tier` only to tell two files apart (`base`, `long`).
+  name; `engine` = `sglang` | `vllm`; `topology` = `tp<N>` | `dep<N>` | `dp<N>`, `x<R>` for replicas,
+  `_` between engine groups; `tier` only to tell two files apart (`base`, `long`). Examples: `tp4` one
+  TP4 engine; `tp2x4` four TP2 engines; `dep8` one engine over 8 data-parallel ranks with expert
+  parallelism; `tp2x4_tp4x2` four TP2 and two TP4 engines in one file.
 - Pack: `prod/pack-<purpose>.yaml`. Utility or any non-serving project: `prod/util-<verb>-<object>.yaml`.
 - Serving and pack files set no top-level `name:`; utility files set `name:` to the file stem.
 - Service keys: `model-sg-*`, `model-vllm-*`, `proxy-*`, `model-proxy-registrar*`, `model-downloader*`,

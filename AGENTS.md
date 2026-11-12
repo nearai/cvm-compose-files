@@ -54,7 +54,8 @@ Read the rule file for a path before you change files under it; Claude Code also
   `ci/data/services.allow.json`. Host-provided variables are listed under `env` in the same file, each
   with `egress: true` (the value can choose where data goes) or `egress: false`.
 - No IPs, internal domains, host or runner names or private repo names in files, paths, commit
-  messages, branch names or PR text. Comments follow the policy below. No inline linter ignores.
+  messages, branch names or PR text; only what `ci/data/public.json` lists as public is allowed.
+  Comments follow the policy below. No inline linter ignores.
 - Build inputs of merged build dirs, `adapters/` and existing publish workflows are only ever deleted,
   never edited. Build inputs: the Dockerfile, what it copies, files in `SHA256SUMS` or `SERIES`, files
   a publish workflow names. Other `.md` files there may be edited; the public-text rules scan them.
@@ -72,7 +73,8 @@ Read the rule file for a path before you change files under it; Claude Code also
 Lowercase, `-` between tokens. No lifecycle words (new, old, test, canary, candidate, final, `v<N>`,
 dates) and no host names in `prod/` or `docs/` paths or in workflow, job or step `name:` fields.
 Version tokens are allowed in `docker/` dir names and so in `publish-<dir>.yaml` file names. Patterns
-per area are in the area rules. CI checks paths, service-key equality and served-name stability;
+per area are in the area rules. CI checks paths, new build-dir names, service-key equality and
+served-name stability;
 review checks the rest against the templates.
 - Served names are public API IDs and never change for a live model. A new model serves its upstream
   Hugging Face `org/repo` ID; quantization, engine and topology never appear in a served name.

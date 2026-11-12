@@ -38,6 +38,21 @@ downloaders and monitoring. Hosts run a file from a release tag `v0.0.N`.
 
 Legacy paths are listed in `ci/data/legacy.txt` and only shrink.
 
+## Names
+
+| name | form | example |
+|---|---|---|
+| serving file | `prod/<checkpoint>-<engine>-<topology>[-<tier>].yaml` | `prod/glm-5.3-flash-sglang-tp2x4.yaml` |
+| other deployable | `prod/pack-<purpose>.yaml`, `prod/util-<verb>-<object>.yaml` | `prod/util-rotate-token.yaml` |
+| build dir | `docker/<engine>-v<upstream>-<scope>-r<N>/` | `docker/sglang-v0.5.23-glm53-r1/` |
+| image tag | build dir without `<engine>-` | `v0.5.23-glm53-r1` |
+| publish workflow | `.github/workflows/publish-<build dir>.yaml` | `publish-sglang-v0.5.23-glm53-r1.yaml` |
+| served name | the model's Hugging Face `org/repo` ID | `z-ai/glm-5.3-flash` |
+
+`topology`: `tp4` one TP4 engine, `tp2x4` four TP2 engines, `dep8` one engine over 8 data-parallel
+ranks with expert parallelism. Files and dirs that predate these forms keep their names; files are
+marked `(legacy name)` in the status table. A config revision is a release tag plus a file path.
+
 ## Status
 
 One row per served model name and engine configuration of each deployable; files without an engine

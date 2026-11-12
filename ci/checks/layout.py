@@ -9,9 +9,9 @@ from common import (
 RULES = [
     "layout.path", "layout.ext", "layout.secret-file", "layout.size", "layout.services", "layout.workflow-set",
     "layout.legacy", "layout.yaml", "layout.w1", "layout.w2", "layout.w3", "layout.all-green", "layout.claude-md",
-    "layout.agent-file",
+    "layout.agent-file", "layout.build-dir",
 ]
-DIFF_RULES = ["layout.legacy"]
+DIFF_RULES = ["layout.legacy", "layout.build-dir"]
 
 SERVING = re.compile(
     r"^prod/(?P<ckpt>[a-z0-9]+(?:[.-][a-z0-9]+)*?)-(?P<engine>sglang|vllm)-"
@@ -20,6 +20,8 @@ SERVING = re.compile(
 PACK = re.compile(r"^prod/pack-[a-z0-9]+(?:-[a-z0-9]+)*\.yaml$")
 UTIL = re.compile(r"^prod/util-[a-z0-9]+(?:-[a-z0-9]+)*\.yaml$")
 DOCKER = re.compile(r"^docker/([a-z0-9][a-z0-9.-]*)/.+$")
+# New build dirs only; dirs present at the base keep their names.
+BUILD_DIR = re.compile(r"(sglang|vllm)-v[0-9.]+-[a-z0-9-]+-r[0-9]+")
 PUBLISH = re.compile(r"^\.github/workflows/publish-(?P<dir>[a-z0-9][a-z0-9.-]*)\.yaml$")
 DOCS = re.compile(r"^(README|AGENTS|CLAUDE|VERIFYING|SECURITY)\.md$|^docs/[a-z0-9._-]+\.md$")
 # Shared Claude Code files only; ci/checks/claude.py checks their content.
@@ -100,6 +102,12 @@ def check(ctx):
                 out.append(Finding(p, n, "layout.services", "compose services outside prod/ or the ci templates"))
     if head.has("CLAUDE.md") and head.data("CLAUDE.md") != b"@AGENTS.md\n":
         out.append(Finding("CLAUDE.md", 1, "layout.claude-md", "CLAUDE.md must be exactly @AGENTS.md"))
+    if ctx.base is not None:
+        old = {m.group(1) for m in map(DOCKER.match, ctx.base.paths) if m}
+        for d in sorted({m.group(1) for m in map(DOCKER.match, head.paths) if m} - old):
+            if not BUILD_DIR.fullmatch(d):
+                out.append(Finding(f"docker/{d}/", 0, "layout.build-dir",
+                                   "new build dir must be named <engine>-v<upstream>-<scope>-r<N>"))
     out += check_legacy(ctx, legacy)
     out += check_workflows(ctx)
     return out
@@ -239,9 +247,9 @@ BASE_FILES = {
     "ci/data/legacy.txt": "prod/Old-File.yaml\n",
     "prod/Old-File.yaml": "services: {}\n",
     "prod/glm-5.3-sglang-tp4.yaml": "services: {}\n",
-    "docker/sglang-x-r1/Dockerfile": "FROM a\n",
+    "docker/sglang-v1-x-r1/Dockerfile": "FROM a\n",
     ".github/workflows/ci.yaml": WF_OK,
-    ".github/workflows/publish-sglang-x-r1.yaml": PUB_OK,
+    ".github/workflows/publish-sglang-v1-x-r1.yaml": PUB_OK,
 }
 
 
@@ -259,13 +267,17 @@ def _with(**changes):
 CASES = [
     ("conforming tree", None, BASE_FILES, BASE_FILES),
     ("diff rule green without base data file", None, BASE_FILES, {"docs/x.md": "x\n"}),
+    ("new build dir with a standard name", None,
+     _with(**{"docker/vllm-v0.33.0-dsv41-r1/Dockerfile": "FROM a\n"}), BASE_FILES),
+    ("new build dir with a legacy-style name", "layout.build-dir",
+     _with(**{"docker/sglang-glm53-r1/Dockerfile": "FROM a\n"}), BASE_FILES),
     ("unlisted bad path", "layout.path", dict(BASE_FILES, **{"prod/My-Config.yaml": "services: {}\n"}), BASE_FILES),
     ("lifecycle token in a serving path", "layout.path",
      dict(BASE_FILES, **{"prod/glm-5.3-sglang-tp4-test.yaml": "services: {}\n"}), BASE_FILES),
-    ("bytecode", "layout.ext", dict(BASE_FILES, **{"docker/sglang-x-r1/a.pyc": "x"}), BASE_FILES),
-    ("secret file", "layout.secret-file", dict(BASE_FILES, **{"docker/sglang-x-r1/.env": "A=1\n"}), BASE_FILES),
+    ("bytecode", "layout.ext", dict(BASE_FILES, **{"docker/sglang-v1-x-r1/a.pyc": "x"}), BASE_FILES),
+    ("secret file", "layout.secret-file", dict(BASE_FILES, **{"docker/sglang-v1-x-r1/.env": "A=1\n"}), BASE_FILES),
     ("oversized file", "layout.size", dict(BASE_FILES, **{"docs/big.md": "x" * (MAX_SIZE + 1)}), BASE_FILES),
-    ("compose outside prod", "layout.services", dict(BASE_FILES, **{"docker/sglang-x-r1/c.yaml": "services:\n"}),
+    ("compose outside prod", "layout.services", dict(BASE_FILES, **{"docker/sglang-v1-x-r1/c.yaml": "services:\n"}),
      BASE_FILES),
     ("unknown workflow", "layout.workflow-set", dict(BASE_FILES, **{".github/workflows/extra.yaml": WF_OK}),
      BASE_FILES),
@@ -275,14 +287,14 @@ CASES = [
     ("legacy glob", "layout.legacy", dict(BASE_FILES, **{"ci/data/legacy.txt": "prod/*.yaml\nprod/Old-File.yaml\n"}),
      dict(BASE_FILES, **{"ci/data/legacy.txt": "prod/*.yaml\nprod/Old-File.yaml\n"})),
     ("workflow with an anchor", "layout.yaml",
-     dict(BASE_FILES, **{".github/workflows/publish-sglang-x-r1.yaml": PUB_OK.replace("environment: " + PUBLISH_ENV,
+     dict(BASE_FILES, **{".github/workflows/publish-sglang-v1-x-r1.yaml": PUB_OK.replace("environment: " + PUBLISH_ENV,
                                                                                       "environment: &e " + PUBLISH_ENV)}),
      BASE_FILES),
     ("publish job without environment", "layout.w1",
-     dict(BASE_FILES, **{".github/workflows/publish-sglang-x-r1.yaml": PUB_OK.replace(
+     dict(BASE_FILES, **{".github/workflows/publish-sglang-v1-x-r1.yaml": PUB_OK.replace(
          "    environment: " + PUBLISH_ENV + "\n", "")}), BASE_FILES),
     ("publish on pull_request", "layout.w2",
-     dict(BASE_FILES, **{".github/workflows/publish-sglang-x-r1.yaml": PUB_OK.replace(
+     dict(BASE_FILES, **{".github/workflows/publish-sglang-v1-x-r1.yaml": PUB_OK.replace(
          "  workflow_dispatch:\n", "  workflow_dispatch:\n  pull_request_target:\n")}), BASE_FILES),
     ("unpinned action", "layout.w3",
      dict(BASE_FILES, **{".github/workflows/ci.yaml": WF_OK.replace("@" + "a" * 40, "@v4")}), BASE_FILES),
@@ -299,14 +311,14 @@ CASES = [
     ("claude local settings", "layout.agent-file", dict(BASE_FILES, **{".claude/settings." + "local.json": "{}\n"}),
      BASE_FILES),
     ("CLAUDE.md in a new build dir", "layout.agent-file",
-     dict(BASE_FILES, **{"docker/sglang-y-r1/Dockerfile": "FROM a\n", "docker/sglang-y-r1/CLAUDE.md": "x\n"}),
+     dict(BASE_FILES, **{"docker/sglang-v1-y-r1/Dockerfile": "FROM a\n", "docker/sglang-v1-y-r1/CLAUDE.md": "x\n"}),
      BASE_FILES),
     ("AGENTS.override.md in prod", "layout.agent-file", dict(BASE_FILES, **{"prod/AGENTS.override.md": "x\n"}),
      BASE_FILES),
     ("rules dir in a build dir", "layout.agent-file",
-     dict(BASE_FILES, **{"docker/sglang-x-r1/.claude/rules/x.md": "x\n"}), BASE_FILES),
+     dict(BASE_FILES, **{"docker/sglang-v1-x-r1/.claude/rules/x.md": "x\n"}), BASE_FILES),
     ("MCP config", "layout.agent-file", dict(BASE_FILES, **{".mcp.json": "{}\n"}), BASE_FILES),
-    ("cursor rules", "layout.agent-file", dict(BASE_FILES, **{"docker/sglang-x-r1/.cursorrules": "x\n"}), BASE_FILES),
+    ("cursor rules", "layout.agent-file", dict(BASE_FILES, **{"docker/sglang-v1-x-r1/.cursorrules": "x\n"}), BASE_FILES),
     ("all-green misses a job", "layout.all-green",
      dict(BASE_FILES, **{".github/workflows/ci.yaml": WF_OK.replace("guards, lint, secrets]", "guards, secrets]")}),
      BASE_FILES),
