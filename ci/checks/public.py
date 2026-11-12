@@ -1,12 +1,13 @@
 """public: nothing internal in files, paths, commit messages or PR text."""
 
 import ipaddress
+import json
 import os
 import re
 
 from common import (
     IP_ALLOW, IP_ALLOW_PREFIX, LIFECYCLE, ORG, ORG_PUBLIC_REPOS, PUBLIC_HOSTS, PUBLIC_OWNERS, RUNNERS, Finding,
-    YamlError, is_text, parse_yaml, yaml_comments,
+    YamlError, is_text, parse_yaml, sha256, yaml_comments,
 )
 
 RULES = [
@@ -64,8 +65,9 @@ def text_findings(path, text, rules=RULES):
                 if m.group(0) not in hosts:
                     out.append(Finding(path, n, "public.domain", "internal domain", key=m.group(0)))
         if "public.host" in rules:
+            # Exception keys bind the host to its line, so a waived host cannot appear in new text.
             for m in HOST.finditer(line):
-                out.append(Finding(path, n, "public.host", "host name", key=m.group(0)))
+                out.append(Finding(path, n, "public.host", "host name", key=f"{m.group(0)}:{line.strip()}"))
         if "public.repo" in rules:
             for m in GH_REF.finditer(line):
                 g = [x for x in m.groups() if x is not None]
@@ -218,6 +220,12 @@ CASES = [
      {}),
     ("host name in a comment", "public.host", dict(FILES, **{P: FILES[P] + f"# Runs on {_HOST} only.\n"}), None, None,
      None, {}),
+    ("waived host on a new line", "public.host",
+     dict(FILES, **{P: FILES[P] + f"# Runs on {_HOST} only.\nx-host: {_HOST}\n",
+                    "ci/data/exceptions.json": json.dumps([{"rule": "public.host", "path": P,
+                                                            "sha256": sha256(f"{_HOST}:# Runs on {_HOST} only."),
+                                                            "reason": "r", "remove_when": "w"}])}),
+     None, None, None, {}),
     ("lifecycle step name", "public.lifecycle", dict(FILES, **{WF[0]: WF[1].replace("name: check", "name: canary check")}),
      None, None, None, {}),
     ("inline ignore", "public.ignore", dict(FILES, **{"README.md": "x  # " + "no" + "qa\n"}), None, None, None, {}),
