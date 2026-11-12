@@ -86,7 +86,7 @@
   {
     "rule": "pins.digest",
     "path": "prod/small-models.yaml",
-    "sha256": "aae2a2c45e005cb655ef2c5d23e17bee0a0350d3d3e0d36f4216a9a83a050b7e",
+    "sha256": "6bafa1ee9f2d89a69dccbc1a27295fdc4bba621c81dd0b0c40e24abb0b4362aa",
     "reason": "image is built on the host from an inline Dockerfile",
     "remove_when": "the image is published from a build dir and pinned by digest"
   },
@@ -233,7 +233,7 @@
   {
     "rule": "privacy.no-log-flag",
     "path": "prod/small-models.yaml",
-    "sha256": "91bec1cffef1ac09d06a02426db9b496a72461d30ba1d432670fb87cb0982154",
+    "sha256": "bd34b018d6da23083292856a55f1dafd2773af859593718311c942eeade025db",
     "reason": "vLLM engine sets no request-logging flag and relies on the engine default, which is off",
     "remove_when": "the service sets --no-enable-log-requests at its next functional change"
   },
@@ -383,6 +383,20 @@
     "sha256": "f652e8b86af83646fcf7426e614963ca06ea18eeb2bb50bf6b9a72082ac54a09",
     "reason": "host name inside a config value, label or service name",
     "remove_when": "next functional change of this file"
+  },
+  {
+    "rule": "public.ip",
+    "path": "prod/qwen38-27b-abliterated-cc-1gpu.yaml",
+    "sha256": "f1412386aa8db2579aff2636cb9511cacc5fd9880ecab60c048508fbe26ee4d9",
+    "reason": "public resolver address the egress probe must fail to reach",
+    "remove_when": "the egress probe is removed or reads its targets from the environment"
+  },
+  {
+    "rule": "public.ip",
+    "path": "prod/qwen38-27b-abliterated-cc-1gpu.yaml",
+    "sha256": "34146ce1ba492ed7acf9a9925a04541645c203d9652183c6e238f55786c8b66f",
+    "reason": "link-local metadata address the egress probe must fail to reach",
+    "remove_when": "the egress probe is removed or reads its targets from the environment"
   },
   {
     "rule": "public.repo",

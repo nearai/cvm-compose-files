@@ -158,6 +158,7 @@ nothing in this repo binds a host to a file. Deviations CI detects in live files
 | `layout.ext`, `layout.size` | 1 each | the adapter weights file in `adapters/` |
 | `public.domain` | 5 | an internal telemetry endpoint |
 | `public.host` | 8 | host names in config values, labels or service names |
+| `public.ip` | 2 | addresses an egress probe must fail to reach |
 | `public.repo` | 3 | references to repositories outside the public allowlist |
 | `public.runner` | 4 | publish workflows on a self-hosted runner |
 
