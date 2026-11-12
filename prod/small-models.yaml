@@ -63,11 +63,18 @@ x-sglang-env:
 x-qwen3-6-common: &qwen3-6-common
   <<: *nvidia
   init: true
-  # SGLang v0.5.16 (cu129) includes xgrammar 0.2.1, fixing the qwen3_coder
-  # forced-tool grammar regression reported in sgl-project/sglang#27336. Runtime defaults
+  # SGLang v0.5.23 secure build (docker/sglang-v0523-secure: upstream v0.5.23 297e54fd, CUDA 13.0, plus the
+  # exact-rid abort, credential redaction and customer-data log redaction patches). Was
+  # lmsysorg/sglang:v0.5.16-cu129@sha256:984699c2; v0.5.16 already had xgrammar 0.2.1, the fix for the
+  # qwen3_coder forced-tool grammar regression (sgl-project/sglang#27336). Runtime defaults
   # changed after v0.5.12, so the existing behavior is kept explicit below.
+  # --enable-mixed-chunk is dropped. v0.5.16 turned it off under EAGLE ("Mixed chunked prefill is disabled
+  # because of using eagle speculative decoding"), so it never ran here. v0.5.23 keeps it on with EAGLE, and
+  # mixed chunk + extra_buffer on a hybrid GDN model is what returned empty answers on prefix hits for
+  # Qwen3.8 (sglang#39342). Dropping the flag keeps today's behavior.
   # https://lmsysorg.mintlify.app/cookbook/autoregressive/Qwen/Qwen3.6
-  image: lmsysorg/sglang:v0.5.16-cu129@sha256:984699c298a95b73c469b2191403ddc85fd780506e13c39c4afff3845e27bc6c
+  # SGLang v0.5.23 secure runtime (docker/sglang-v0523-secure, published from main).
+  image: docker.io/nearaidev/sglang@sha256:6de632a5e9422be4b6e84e32cf475679c0f29c4bb6d58984d873ff9f7ba92a65
   command: >
       sglang serve
       --model-path Qwen/Qwen3.6-35B-A3B-FP8
@@ -87,7 +94,6 @@ x-qwen3-6-common: &qwen3-6-common
       --context-length 262144
       --num-continuous-decode-steps 5
       --model-loader-extra-config '{"enable_multithread_load": "true", "num_threads": 64}'
-      --enable-mixed-chunk
       --chunked-prefill-size 16384
       --port 8000
       --host 0.0.0.0
@@ -116,7 +122,10 @@ x-qwen3-8-27b-dedicated: &qwen3-8-27b-dedicated
   init: true
   cap_add:
     - SYS_NICE
-  image: lmsysorg/sglang@sha256:febfb971c7352570fc445c466ebd6ffc9d896024958e544a60f2137fd85856b1
+  # SGLang v0.5.23 secure build (same image as x-qwen3-6-common). Was lmsysorg/sglang@sha256:febfb971
+  # (nightly-dev-20260814-c4271c3f, sglang 0.0.0.dev0+qwen38.27b.g561c8f3).
+  # SGLang v0.5.23 secure runtime (docker/sglang-v0523-secure, published from main).
+  image: docker.io/nearaidev/sglang@sha256:6de632a5e9422be4b6e84e32cf475679c0f29c4bb6d58984d873ff9f7ba92a65
   # No --enable-mixed-chunk: with extra_buffer it caches stale GDN state and prefix hits return empty answers (sglang#39342).
   command: >
       sglang serve
@@ -156,27 +165,26 @@ x-qwen3-8-27b-dedicated: &qwen3-8-27b-dedicated
 
 x-flux-common: &flux-common
   <<: *vllm-common
-  image: sglang-diffusion
-  build:
-    context: .
-    dockerfile_inline: |
-      # Pinned pre-v0.5.11 because the cu129-tagged v0.5.12 image actually
-      # ships PyTorch built against CUDA 13.0, which mismatches the cu12.9
-      # torchvision pulled in by `python[diffusion]` and breaks sglang's
-      # `from torchvision.io import decode_jpeg` at import time.
-      FROM lmsysorg/sglang@sha256:8ece90ad52faa8b56149f0117227d9009db34513213e35990da468aeb6fe0b75
-      RUN python3 -m pip install -e "python[diffusion]"
-      RUN python3 -m pip install accelerate einops
+  # SGLang v0.5.23 secure build (same image as x-qwen3-6-common), pulled instead of built here. The upstream
+  # v0.5.23 image is built with the `all` extra, which includes `diffusion` (diffusers 0.37.0, cache-dit 1.5.1,
+  # accelerate, einops) on a matched torch 2.14.1 / torchvision 0.29.2 CUDA 13.0 pair; decode_jpeg and
+  # Flux2KleinPipeline import in it. The old inline build (lmsysorg/sglang@sha256:8ece90ad, a 2026-01-21 build
+  # before v0.5.8, plus `pip install -e "python[diffusion]" accelerate einops`) was pinned only because the
+  # cu129-tagged v0.5.12 image shipped a CUDA 13.0 PyTorch that broke `from torchvision.io import decode_jpeg`.
+  # Argv: the v0.5.23 diffusion parser exits on unknown flags; the old one ignored them. So --tensor-parallel-size 1
+  # is now --tp-size 1, and --mem-fraction-static 0.15 is dropped: diffusion has no such option, so it never
+  # applied. --log-requests-level and --enable-metrics are real diffusion options in v0.5.23.
+  # SGLang v0.5.23 secure runtime (docker/sglang-v0523-secure, published from main).
+  image: docker.io/nearaidev/sglang@sha256:6de632a5e9422be4b6e84e32cf475679c0f29c4bb6d58984d873ff9f7ba92a65
   command: >
       sglang serve
       --model-path black-forest-labs/FLUX.2-klein-4B
-      --tensor-parallel-size 1
+      --tp-size 1
       --port 8000
       --host 0.0.0.0
       --trust-remote-code
       --log-requests-level 0
       --enable-torch-compile
-      --mem-fraction-static 0.15
       --enable-metrics
   volumes:
     - hugginface_cache:/root/.cache/huggingface
@@ -1070,6 +1078,10 @@ services:
     # 2026-11-03: --enable-priority-scheduling --disable-priority-preemption, paired with the size tiers on both
     # Qwen3.8 proxies (inference-proxy #336); config_variant qwen38-gpu2-coloc-fa3-m96-prio. exp55 R10 basis.
     # A later --mamba-ssm-dtype bfloat16 is a one-line addition here.
+    # 2026-11-11 move to the v0.5.23 secure image: --cuda-graph-max-bs is now --cuda-graph-max-bs-decode (same
+    # meaning: febfb971 already treated the old name as a deprecated alias of it; v0.5.23 dropped the alias, and
+    # the old name fails as ambiguous with -decode/-prefill). The LoRA flags are unchanged in v0.5.23.
+    # config_variant qwen38-gpu2-coloc-fa3-m96-prio-v0523.
     command: >
       sglang serve
       --trust-remote-code
@@ -1087,7 +1099,7 @@ services:
       --disable-priority-preemption
       --max-running-requests 32
       --max-queued-requests 64
-      --cuda-graph-max-bs 32
+      --cuda-graph-max-bs-decode 32
       --reasoning-parser qwen3
       --tool-call-parser qwen3_coder
       --enable-lora
@@ -1130,7 +1142,7 @@ services:
               device_ids: ["2"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:Qwen/Qwen3.8-27B-FP8","served_model:Qwen/Qwen3.8-27B","model_revision:017b9c7af6b5689d5dd426a76e0bc077eb5ca20a","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:0","gpu_pair:2","config_variant:qwen38-gpu2-coloc-fa3-m96-prio","quantization:fp8","lora:abliterated-r1","sglang_revision:qwen38.27b.g561c8f3","engine_image:febfb971c735"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:Qwen/Qwen3.8-27B-FP8","served_model:Qwen/Qwen3.8-27B","model_revision:017b9c7af6b5689d5dd426a76e0bc077eb5ca20a","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:0","gpu_pair:2","config_variant:qwen38-gpu2-coloc-fa3-m96-prio-v0523","quantization:fp8","lora:abliterated-r1","sglang_revision:0.5.23-near-secure","engine_image:6de632a5e942"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -1149,7 +1161,7 @@ services:
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.instance: "0"
       nearai.otel.gpu_pair: "2"
-      nearai.otel.config_variant: "qwen38-gpu2-coloc-fa3-m96-prio"
+      nearai.otel.config_variant: "qwen38-gpu2-coloc-fa3-m96-prio-v0523"
       nearai.otel.quantization: "fp8"
       nearai.otel.chunk_size: "4096"
       nearai.otel.max_prefill_tokens: "4096"
@@ -1158,8 +1170,8 @@ services:
       nearai.otel.max_mamba_cache_size: "96"
       nearai.otel.max_running_requests: "32"
       nearai.otel.max_queued_requests: "64"
-      nearai.otel.sglang_revision: "qwen38.27b.g561c8f3"
-      nearai.otel.engine_image: "febfb971c735"
+      nearai.otel.sglang_revision: "0.5.23-near-secure"
+      nearai.otel.engine_image: "6de632a5e942"
 
   nginx-qwen38:
     image: nginx@sha256:1d13701a5f9f3fb01aaa88cef2344d65b6b5bf6b7d9fa4cf0dca557a8d7702ba
@@ -1689,7 +1701,11 @@ services:
 
   model-vllm-qwen3vl-30b-a3b-fp8-tp1:
     <<: *vllm-common
-    image: vllm/vllm-openai@sha256:ccd6a6dbf4aba4e94c6f7052d1835d6e742082b6a5095276552e9b7a5a47c2e5
+    # vLLM v0.33.0 (VLLM_IMAGE_TAG vllm/vllm-openai:v0.33.0, build commit 4ba787ec = tag v0.33.0, CUDA 13.0.2) on
+    # all four vLLM services. Was vllm/vllm-openai@sha256:ccd6a6db: a 2026-03-04 main build at about v0.17.0rc0
+    # (FlashInfer 0.6.4, CUDA 12.9.1). Every argv flag below and on the embedding, reranker and whisper services
+    # parses and validates unchanged on v0.33.0; --runner pooling is still the pooling switch (there is no --task).
+    image: vllm/vllm-openai@sha256:d825baf9ce4b1b6bfc5ecc7b79880c7e6748c65a72d697ce3d47607aafa84c6e
     container_name: model-vllm-qwen3vl-30b-a3b-fp8-tp1
     # --async-scheduling remains disabled: on H200 confidential-compute workloads,
     # output-drain/next-step overlap may be void; this Qwen3-VL operating point has
@@ -1778,7 +1794,7 @@ services:
 
   model-vllm-qwen3-embedding-0.6b-tp1:
     <<: *vllm-common
-    image: vllm/vllm-openai@sha256:ccd6a6dbf4aba4e94c6f7052d1835d6e742082b6a5095276552e9b7a5a47c2e5
+    image: vllm/vllm-openai@sha256:d825baf9ce4b1b6bfc5ecc7b79880c7e6748c65a72d697ce3d47607aafa84c6e
     container_name: model-vllm-qwen3-embedding-0.6b-tp1
     command: >
         Qwen/Qwen3-Embedding-0.6B
@@ -1855,7 +1871,7 @@ services:
 
   model-vllm-qwen3-reranker-0.6b-tp1:
     <<: *vllm-common
-    image: vllm/vllm-openai@sha256:ccd6a6dbf4aba4e94c6f7052d1835d6e742082b6a5095276552e9b7a5a47c2e5
+    image: vllm/vllm-openai@sha256:d825baf9ce4b1b6bfc5ecc7b79880c7e6748c65a72d697ce3d47607aafa84c6e
     container_name: model-vllm-qwen3-reranker-0.6b-tp1
     # The checkpoint is a causal LM. Without the hf-overrides, vLLM serves it as an embedding model
     # and /v1/rerank returns cosine similarity. The overrides build the yes/no classifier head, and the
@@ -1938,12 +1954,25 @@ services:
 
   model-vllm-whisper-large-v3-tp1:
     <<: *vllm-common
-    image: vllm-with-audio
+    # New local tag, so compose cannot reuse the vllm-with-audio image already built on the host from the old base.
+    image: vllm-with-audio-v0330
     build:
       context: .
       dockerfile_inline: |
-        FROM vllm/vllm-openai@sha256:ccd6a6dbf4aba4e94c6f7052d1835d6e742082b6a5095276552e9b7a5a47c2e5
-        RUN pip install openai-whisper torchaudio librosa vllm[audio]
+        FROM vllm/vllm-openai@sha256:d825baf9ce4b1b6bfc5ecc7b79880c7e6748c65a72d697ce3d47607aafa84c6e
+        # vLLM v0.33.0 decodes audio with av, scipy, soundfile and soxr (its `audio` extra; mistral_common is
+        # already in the image). None of them is in the image. openai-whisper, librosa and torchaudio are not
+        # imported by v0.33. `pip install vllm[audio]` would also downgrade the image's nvidia-nccl-cu13
+        # 2.31.2 to 2.30.7 while re-resolving vllm's own pins, so the four wheels go in alone, hash-pinned.
+        RUN printf '%s\n' \
+              'av==19.0.2 --hash=sha256:9c1da7aad0fa6c13b4a5c1e7985be0d13f8526a96284573acaf3d55ead6d3fe8' \
+              'scipy==1.18.1 --hash=sha256:f55fa87b6c612ecd6b058f167c53231b1d14e412efe361d3d6e38b3631c73218' \
+              'soundfile==0.14.0 --hash=sha256:1e38bac1853412871318e82a1ba69a8be677619b56025bbfcccdb41b6cafe82d' \
+              'soxr==1.1.0 --hash=sha256:3b033078e86f3c4a658e5697fac8995764fad9e799563616b630136b613167f1' \
+              > /tmp/audio-requirements.txt \
+            && python3 -m pip install --no-cache-dir --no-deps --require-hashes -r /tmp/audio-requirements.txt \
+            && rm /tmp/audio-requirements.txt \
+            && python3 -c 'import av, scipy.signal, soundfile, soxr'
     container_name: model-vllm-whisper-large-v3-tp1
     # 0.20 (~28 GiB, ~24 GiB KV): at 0.06 the 4.2 GiB KV cache capped whisper at
     # 17 concurrent 30 s segments and preempted under sustained load. GPU 3 had
@@ -2753,7 +2782,7 @@ configs:
                       instance: "0"
                       gpu_pair: "2"
                       model_revision: "017b9c7af6b5689d5dd426a76e0bc077eb5ca20a"
-                      config_variant: "qwen38-gpu2-coloc-fa3-m96-prio"
+                      config_variant: "qwen38-gpu2-coloc-fa3-m96-prio-v0523"
                       quantization: "fp8"
                       chunk_size: "4096"
                       max_prefill_tokens: "4096"
@@ -2762,8 +2791,8 @@ configs:
                       max_mamba_cache_size: "96"
                       max_running_requests: "32"
                       max_queued_requests: "64"
-                      sglang_revision: "qwen38.27b.g561c8f3"
-                      engine_image: "febfb971c735"
+                      sglang_revision: "0.5.23-near-secure"
+                      engine_image: "6de632a5e942"
               - job_name: inference-proxy-proxy-qwen38-27b
                 scrape_interval: 15s
                 metrics_path: /metrics
