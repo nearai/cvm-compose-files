@@ -3324,46 +3324,73 @@ configs:
       client_body_buffer_size 1m;
       server_names_hash_bucket_size 128;
 
+      # Resolve the proxy upstreams through Docker's embedded DNS at request time
+      # (proxy_pass with a variable) instead of once at startup, so a recreated
+      # proxy container with a new IP is picked up immediately rather than at
+      # the next 6-hourly reload.
+      resolver 127.0.0.11 valid=5s ipv6=off;
+
       # :8002 - FLUX (single proxy, 4 backends)
       server {
           listen 8002;
-          location / { proxy_pass http://proxy-flux2-klein-4b:8000; }
+          location / {
+              set $$proxy_flux2_klein_4b http://proxy-flux2-klein-4b:8000;
+              proxy_pass $$proxy_flux2_klein_4b;
+          }
       }
 
       # :8003 - Qwen3-VL
       server {
           listen 8003;
-          location / { proxy_pass http://proxy-qwen3vl-30b-a3b:8000; }
+          location / {
+              set $$proxy_qwen3vl_30b_a3b http://proxy-qwen3vl-30b-a3b:8000;
+              proxy_pass $$proxy_qwen3vl_30b_a3b;
+          }
       }
 
       # :8004 - Embeddings
       server {
           listen 8004;
-          location / { proxy_pass http://proxy-qwen3-embedding-0.6b:8000; }
+          location / {
+              set $$proxy_qwen3_embedding_0_6b http://proxy-qwen3-embedding-0.6b:8000;
+              proxy_pass $$proxy_qwen3_embedding_0_6b;
+          }
       }
 
       # :8005 - Reranker
       server {
           listen 8005;
-          location / { proxy_pass http://proxy-qwen3-reranker-0.6b:8000; }
+          location / {
+              set $$proxy_qwen3_reranker_0_6b http://proxy-qwen3-reranker-0.6b:8000;
+              proxy_pass $$proxy_qwen3_reranker_0_6b;
+          }
       }
 
       # :8006 - Whisper
       server {
           listen 8006;
-          location / { proxy_pass http://proxy-whisper-large-v3:8000; }
+          location / {
+              set $$proxy_whisper_large_v3 http://proxy-whisper-large-v3:8000;
+              proxy_pass $$proxy_whisper_large_v3;
+          }
       }
 
       # :8007 - Privacy-filter
       server {
           listen 8007;
-          location / { proxy_pass http://proxy-privacy-filter:8000; }
+          location / {
+              set $$proxy_privacy_filter http://proxy-privacy-filter:8000;
+              proxy_pass $$proxy_privacy_filter;
+          }
       }
 
       # :8008 - Qwen3.6-35B-A3B-FP8
       server {
           listen 8008;
-          location / { proxy_pass http://proxy-qwen36-35b-a3b:8000; }
+          location / {
+              set $$proxy_qwen36_35b_a3b http://proxy-qwen36-35b-a3b:8000;
+              proxy_pass $$proxy_qwen36_35b_a3b;
+          }
       }
 
       # :8009 - GLM-5.3 Flash base tier (proxy-glm53 pools r1 and r2 on GPUs 4-7). model-proxy discovers the
@@ -3371,7 +3398,10 @@ configs:
       # /healthz and /v1/metrics on this port directly.
       server {
           listen 8009;
-          location / { proxy_pass http://proxy-glm53:8000; }
+          location / {
+              set $$proxy_glm53 http://proxy-glm53:8000;
+              proxy_pass $$proxy_glm53;
+          }
       }
 
       # ── TLS server blocks (port 443 = host 8444) ──
@@ -3400,7 +3430,10 @@ configs:
           keepalive_requests 1000000;
           location ^~ /metrics { return 404; }
           location ^~ /v1/metrics { return 404; }
-          location / { proxy_pass http://proxy-flux2-klein-4b:8000; }
+          location / {
+              set $$proxy_flux2_klein_4b http://proxy-flux2-klein-4b:8000;
+              proxy_pass $$proxy_flux2_klein_4b;
+          }
       }
 
       server {
@@ -3417,7 +3450,10 @@ configs:
           keepalive_requests 1000000;
           location ^~ /metrics { return 404; }
           location ^~ /v1/metrics { return 404; }
-          location / { proxy_pass http://proxy-qwen3vl-30b-a3b:8000; }
+          location / {
+              set $$proxy_qwen3vl_30b_a3b http://proxy-qwen3vl-30b-a3b:8000;
+              proxy_pass $$proxy_qwen3vl_30b_a3b;
+          }
       }
 
       server {
@@ -3430,7 +3466,10 @@ configs:
           keepalive_requests 1000000;
           location ^~ /metrics { return 404; }
           location ^~ /v1/metrics { return 404; }
-          location / { proxy_pass http://proxy-qwen3-embedding-0.6b:8000; }
+          location / {
+              set $$proxy_qwen3_embedding_0_6b http://proxy-qwen3-embedding-0.6b:8000;
+              proxy_pass $$proxy_qwen3_embedding_0_6b;
+          }
       }
 
       server {
@@ -3443,7 +3482,10 @@ configs:
           keepalive_requests 1000000;
           location ^~ /metrics { return 404; }
           location ^~ /v1/metrics { return 404; }
-          location / { proxy_pass http://proxy-qwen3-reranker-0.6b:8000; }
+          location / {
+              set $$proxy_qwen3_reranker_0_6b http://proxy-qwen3-reranker-0.6b:8000;
+              proxy_pass $$proxy_qwen3_reranker_0_6b;
+          }
       }
 
       server {
@@ -3456,7 +3498,10 @@ configs:
           keepalive_requests 1000000;
           location ^~ /metrics { return 404; }
           location ^~ /v1/metrics { return 404; }
-          location / { proxy_pass http://proxy-whisper-large-v3:8000; }
+          location / {
+              set $$proxy_whisper_large_v3 http://proxy-whisper-large-v3:8000;
+              proxy_pass $$proxy_whisper_large_v3;
+          }
       }
 
       server {
@@ -3469,7 +3514,10 @@ configs:
           keepalive_requests 1000000;
           location ^~ /metrics { return 404; }
           location ^~ /v1/metrics { return 404; }
-          location / { proxy_pass http://proxy-privacy-filter:8000; }
+          location / {
+              set $$proxy_privacy_filter http://proxy-privacy-filter:8000;
+              proxy_pass $$proxy_privacy_filter;
+          }
       }
 
       # qwen3-30b.* is a model-proxy domain alias for qwen3-6-35b (retired Qwen3-30B; the
@@ -3492,7 +3540,10 @@ configs:
           keepalive_requests 1000000;
           location ^~ /metrics { return 404; }
           location ^~ /v1/metrics { return 404; }
-          location / { proxy_pass http://proxy-qwen36-35b-a3b:8000; }
+          location / {
+              set $$proxy_qwen36_35b_a3b http://proxy-qwen36-35b-a3b:8000;
+              proxy_pass $$proxy_qwen36_35b_a3b;
+          }
       }
 
       server {
@@ -3507,7 +3558,10 @@ configs:
           keepalive_requests 1000000;
           location ^~ /metrics { return 404; }
           location ^~ /v1/metrics { return 404; }
-          location / { proxy_pass http://proxy-glm53:8000; }
+          location / {
+              set $$proxy_glm53 http://proxy-glm53:8000;
+              proxy_pass $$proxy_glm53;
+          }
       }
 
   # ── TEMPORARY (gpu02 maintenance): dedicated ingress for Qwen3.8 on :8000/:8001 ──
@@ -3542,10 +3596,19 @@ configs:
       client_max_body_size 100m;
       client_body_buffer_size 1m;
 
+      # Resolve the proxy upstreams through Docker's embedded DNS at request time
+      # (proxy_pass with a variable) instead of once at startup, so a recreated
+      # proxy container with a new IP is picked up immediately rather than at
+      # the next 6-hourly reload.
+      resolver 127.0.0.11 valid=5s ipv6=off;
+
       # :8000 - Qwen3.8-27B (registrar probe + health)
       server {
           listen 8000;
-          location / { proxy_pass http://proxy-qwen38-27b:8000; }
+          location / {
+              set $$proxy_qwen38_27b http://proxy-qwen38-27b:8000;
+              proxy_pass $$proxy_qwen38_27b;
+          }
       }
 
       # :8000 with Host qwen3-8-27b-abliterated - the abliterated registrar's health
@@ -3581,7 +3644,10 @@ configs:
           keepalive_requests 1000000;
           location ^~ /metrics { return 404; }
           location ^~ /v1/metrics { return 404; }
-          location / { proxy_pass http://proxy-qwen38-27b:8000; }
+          location / {
+              set $$proxy_qwen38_27b http://proxy-qwen38-27b:8000;
+              proxy_pass $$proxy_qwen38_27b;
+          }
       }
 
       # :8001 - Qwen3.8-27B abliterated, selected by SNI on the base routing port:

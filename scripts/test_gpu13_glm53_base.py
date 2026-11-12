@@ -116,14 +116,14 @@ class Gpu13GlmBase(unittest.TestCase):
         conf = self.text.split("  nginx_conf:\n", 1)[1].split("  nginx_qwen38_conf:\n", 1)[0]
         plain = conf.split("          listen 8009;\n", 1)[1].split("      }\n", 1)[0]
         self.assertEqual(conf.count("listen 8009;"), 1)
-        self.assertIn("location / { proxy_pass http://proxy-glm53:8000; }", plain)
+        self.assertIn("set $$proxy_glm53 http://proxy-glm53:8000;", plain)
         self.assertNotIn("auth_request", plain)
         self.assertNotIn("glm-5-3-flash-long", conf)
         self.assertNotIn("default_server", conf)
         vhost = conf.split("server_name glm-5-3-flash.completions.near.ai\n", 1)[1].split("      }\n", 1)[0]
         self.assertIn(r'"~^glm-5-3-flash-b[0-9a-f]{12}\.completions(-stg)?\.near\.ai$$"', vhost)
         self.assertIn(r"~^glm-5-3-flash-i\d+\.completions(-stg)?\.near\.ai$$", vhost)
-        self.assertIn("location / { proxy_pass http://proxy-glm53:8000; }", vhost)
+        self.assertIn("set $$proxy_glm53 http://proxy-glm53:8000;", vhost)
 
     def test_registrar_base_domain_only(self) -> None:
         script = self.text.split("  registrar_script:\n", 1)[1].split("  nginx_conf:\n", 1)[0]

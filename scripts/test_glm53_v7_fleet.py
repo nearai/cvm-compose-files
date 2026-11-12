@@ -630,8 +630,8 @@ GLM53_LONG_TIER_NGINX_8009_NEW = r"""      # :8009 - GLM-5.3 Flash. `location /`
       # the rewrite phase, BEFORE auth_request's access phase, so the gate would be
       # a no-op; try_files runs in the precontent phase, AFTER access, and the
       # always-missing file falls through to the named location that holds the
-      # `return`. Static proxy_pass (no resolver in this http block), like every
-      # other upstream in this file.
+      # `return`. The upstream resolves per request through this http block's
+      # resolver, like every other upstream in this file.
       server {
           listen 8009;
           location = /v1/models {

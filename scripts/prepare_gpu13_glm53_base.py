@@ -86,7 +86,10 @@ NGINX_8009_GLM: Final = """\
       # /healthz and /v1/metrics on this port directly.
       server {
           listen 8009;
-          location / { proxy_pass http://proxy-glm53:8000; }
+          location / {
+              set $$proxy_glm53 http://proxy-glm53:8000;
+              proxy_pass $$proxy_glm53;
+          }
       }
 """
 
@@ -103,7 +106,10 @@ NGINX_TLS_GLM: Final = """\
           keepalive_requests 1000000;
           location ^~ /metrics { return 404; }
           location ^~ /v1/metrics { return 404; }
-          location / { proxy_pass http://proxy-glm53:8000; }
+          location / {
+              set $$proxy_glm53 http://proxy-glm53:8000;
+              proxy_pass $$proxy_glm53;
+          }
       }
 """
 
@@ -280,7 +286,7 @@ def nginx(text: str) -> str:
         raise SystemExit("nginx DS TLS: start marker not found exactly once")
     i = conf.index(start)
     ds_tls = conf[i:]
-    if "proxy-dsv41-abliterated:8000; }\n      }\n" not in ds_tls or not ds_tls.endswith("      }\n\n"):
+    if "proxy_pass $$proxy_dsv41_abliterated;\n          }\n      }\n" not in ds_tls or not ds_tls.endswith("      }\n\n"):
         raise SystemExit("nginx DS TLS: unexpected tail")
     conf = conf[:i] + NGINX_TLS_GLM + "\n"
     return head + "  nginx_conf:\n" + conf + "  # ── TEMPORARY (gpu02 maintenance): dedicated ingress for Qwen3.8" + tail

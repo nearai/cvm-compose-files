@@ -879,13 +879,20 @@ configs:
         ',"upstream_addr":"$$upstream_addr"'
         '}';
 
+      # Resolve the proxy upstreams through Docker's embedded DNS at request time
+      # (proxy_pass with a variable) instead of once at startup, so a recreated
+      # proxy container with a new IP is picked up immediately rather than at
+      # the next 6-hourly reload.
+      resolver 127.0.0.11 valid=5s ipv6=off;
+
       server {
           listen 80 default_server;
           access_log /var/log/nginx/access.log json_combined;
           client_max_body_size 100m;
           client_body_buffer_size 1m;
           location / {
-              proxy_pass http://proxy-glm51:8000;
+              set $$proxy_glm51 http://proxy-glm51:8000;
+              proxy_pass $$proxy_glm51;
               proxy_http_version 1.1;
               proxy_set_header Host $$host;
               proxy_set_header X-Real-IP $$remote_addr;
@@ -912,7 +919,8 @@ configs:
           location ^~ /metrics { return 404; }
           location ^~ /v1/metrics { return 404; }
           location / {
-              proxy_pass http://proxy-glm51:8000;
+              set $$proxy_glm51 http://proxy-glm51:8000;
+              proxy_pass $$proxy_glm51;
               proxy_http_version 1.1;
               proxy_set_header Host $$host;
               proxy_set_header X-Real-IP $$remote_addr;

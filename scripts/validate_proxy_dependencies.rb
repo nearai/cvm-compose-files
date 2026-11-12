@@ -50,7 +50,10 @@ end
 def proxy_pass_upstreams(compose, service)
   configs = compose.fetch("configs", {})
   config_sources(service).flat_map do |source|
-    configs.fetch(source, {}).fetch("content", "").scan(%r{proxy_pass\s+http://([A-Za-z0-9_.-]+)(?::\d+)?}).flatten
+    content = configs.fetch(source, {}).fetch("content", "")
+    # Static proxy_pass names and the `set $var http://host` form used for per-request resolution.
+    content.scan(%r{proxy_pass\s+http://([A-Za-z0-9_.-]+)(?::\d+)?}).flatten +
+      content.scan(%r{\bset\s+\$\$?\w+\s+http://([A-Za-z0-9_.-]+)(?::\d+)?}).flatten
   end.uniq
 end
 
