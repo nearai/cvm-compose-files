@@ -41,6 +41,9 @@ SECRET_FILE = re.compile(
     re.I,
 )
 MAX_SIZE = 256 * 1024
+CI_JOBS = {"base", "compose", "guards", "lint", "secrets"}
+NEEDS_JSON = "${{ toJSON(needs) }}"
+GUARD_CALLS = ("python3 ci/run.py --self-test", 'python3 ci/run.py --base "$BASE"')
 NEW_PATH = re.compile(r"^[a-z0-9._-]+(/[a-z0-9._-]+){0,2}$")
 
 
@@ -170,6 +173,23 @@ def check_workflows(ctx):
             needs = ag.get("needs") or []
             needs = [needs] if isinstance(needs, str) else needs
             others = sorted(k for k in jobs if k != "all-green")
+            if others != sorted(CI_JOBS):
+                out.append(Finding(p, find_line(text, r"^jobs:"), "layout.all-green",
+                                   f"ci.yaml jobs must be exactly {', '.join(sorted(CI_JOBS))} and all-green"))
+            if str(ag.get("if", "")).strip() != "always()":
+                out.append(Finding(p, find_line(text, r"^  all-green:"), "layout.all-green",
+                                   "all-green must run if: always()"))
+            # The result check reads every needed job from `needs`, so no job count is written down.
+            if not any(isinstance(st, dict) and NEEDS_JSON in (st.get("env") or {}).values()
+                       for st in ag.get("steps") or []):
+                out.append(Finding(p, find_line(text, r"^  all-green:"), "layout.all-green",
+                                   f"all-green must check the results in {NEEDS_JSON}"))
+            guards = jobs.get("guards") if isinstance(jobs.get("guards"), dict) else {}
+            runs = "\n".join(str(st.get("run", "")) for st in guards.get("steps") or [] if isinstance(st, dict))
+            for call in GUARD_CALLS:
+                if not re.search(rf"(?m)^\s*{re.escape(call)}(\s|$)", runs):
+                    out.append(Finding(p, find_line(text, r"^  guards:"), "layout.all-green",
+                                       f"the guards job must run `{call}`"))
             if sorted(needs) != others:
                 out.append(Finding(p, find_line(text, r"^  all-green:"), "layout.all-green",
                                    "all-green.needs must list every other job"))
@@ -185,10 +205,18 @@ def check_workflows(ctx):
 
 
 # Self-test fixtures: (description, expected rule or None, files, base files)
+def _job(name, steps='      - run: "true"\n'):
+    return f"  {name}:\n    runs-on: ubuntu-latest\n    steps:\n{steps}"
+
+
+ALL_GREEN = ("  all-green:\n    if: always()\n    needs: [base, compose, guards, lint, secrets]\n"
+             "    runs-on: ubuntu-latest\n    steps:\n      - env:\n          NEEDS: " + NEEDS_JSON + "\n"
+             "        run: jq -e 'all(.[]; .result == \"success\")' <<< \"$NEEDS\"\n")
 WF_OK = (
-    "name: ci\non:\n  pull_request:\npermissions:\n  contents: read\njobs:\n  guards:\n    runs-on: ubuntu-latest\n"
-    "    steps:\n      - uses: actions/checkout@" + "a" * 40 + "\n  all-green:\n    if: always()\n"
-    "    needs: [guards]\n    runs-on: ubuntu-latest\n    steps:\n      - run: \"true\"\n"
+    "name: ci\non:\n  pull_request:\npermissions:\n  contents: read\njobs:\n" + _job("base")
+    + _job("guards", "      - uses: actions/checkout@" + "a" * 40 + "\n      - run: python3 ci/run.py --self-test\n"
+           "      - run: |\n          python3 ci/run.py --base \"$BASE\"\n")
+    + _job("compose") + _job("lint") + _job("secrets") + ALL_GREEN
 )
 PUB_OK = (
     "name: Publish x\non:\n  workflow_dispatch:\njobs:\n  publish:\n    environment: " + PUBLISH_ENV + "\n"
@@ -249,7 +277,7 @@ CASES = [
     ("second job named all-green", "layout.all-green",
      dict(BASE_FILES, **{".github/workflows/ci.yaml": WF_OK.replace(
          "  all-green:\n", "  spoof:\n    name: all-green\n    runs-on: ubuntu-latest\n    steps:\n"
-         "      - run: \"true\"\n  all-green:\n").replace("needs: [guards]", "needs: [guards, spoof]")}), BASE_FILES),
+         "      - run: \"true\"\n  all-green:\n").replace("needs: [base,", "needs: [spoof, base,")}), BASE_FILES),
     ("CLAUDE.md imports AGENTS.md", None, dict(BASE_FILES, **{"CLAUDE.md": "@AGENTS.md\n"}), BASE_FILES),
     ("CLAUDE.md with extra text", "layout.claude-md", dict(BASE_FILES, **{"CLAUDE.md": "@AGENTS.md\nAlso: x\n"}),
      BASE_FILES),
@@ -258,5 +286,19 @@ CASES = [
     ("claude command file", "layout.path", dict(BASE_FILES, **{".claude/commands/x.md": "x\n"}), BASE_FILES),
     ("claude local settings", "layout.path", dict(BASE_FILES, **{".claude/settings." + "local.json": "{}\n"}), BASE_FILES),
     ("all-green misses a job", "layout.all-green",
-     dict(BASE_FILES, **{".github/workflows/ci.yaml": WF_OK.replace("needs: [guards]", "needs: []")}), BASE_FILES),
+     dict(BASE_FILES, **{".github/workflows/ci.yaml": WF_OK.replace("guards, lint, secrets]", "guards, secrets]")}),
+     BASE_FILES),
+    ("ci.yaml drops a job", "layout.all-green",
+     dict(BASE_FILES, **{".github/workflows/ci.yaml": WF_OK.replace(_job("lint"), "").replace(
+         "guards, lint, secrets]", "guards, secrets]")}), BASE_FILES),
+    ("all-green without always()", "layout.all-green",
+     dict(BASE_FILES, **{".github/workflows/ci.yaml": WF_OK.replace("    if: always()\n", "")}), BASE_FILES),
+    ("all-green counts results itself", "layout.all-green",
+     dict(BASE_FILES, **{".github/workflows/ci.yaml": WF_OK.replace(NEEDS_JSON, "${{ join(needs.*.result, ' ') }}")}),
+     BASE_FILES),
+    ("guards job skips the self-test", "layout.all-green",
+     dict(BASE_FILES, **{".github/workflows/ci.yaml": WF_OK.replace("run: python3 ci/run.py --self-test",
+                                                                    "run: python3 ci/run.py --help")}), BASE_FILES),
+    ("guards job runs without a base", "layout.all-green",
+     dict(BASE_FILES, **{".github/workflows/ci.yaml": WF_OK.replace(' --base \"$BASE\"', "")}), BASE_FILES),
 ]

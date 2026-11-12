@@ -9,6 +9,11 @@ on:
 permissions:
   contents: read
 
+# A new push to a PR cancels its older run; runs on main always finish.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   RUBY_IMAGE: docker.io/library/ruby@sha256:2fda53cb7c1c93618593afce7404e311b2b44b0eab35bfeace3981aa0be4ff54 # 3.3-alpine
   PYTHON_IMAGE: docker.io/library/python@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b # 3.12-slim
@@ -19,7 +24,7 @@ env:
 
 jobs:
   base:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
       sha: ${{ steps.base.outputs.sha }}
@@ -49,7 +54,7 @@ jobs:
 
   guards:
     needs: [base]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -57,6 +62,9 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
           persist-credentials: false
+
+      - name: Require Python 3.12
+        run: python3 -c 'import sys; assert sys.version_info[:2] == (3, 12), sys.version'
 
       - name: Guard fixtures
         run: python3 ci/run.py --self-test
@@ -76,13 +84,16 @@ jobs:
           fi
 
   compose:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
+
+      - name: Require Python 3.12
+        run: python3 -c 'import sys; assert sys.version_info[:2] == (3, 12), sys.version'
 
       # Each embedded collector config is validated with the collector image its own file pins.
       - name: Render and validate embedded OTel collector configs
@@ -125,7 +136,7 @@ jobs:
 
   lint:
     needs: [base]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -155,7 +166,7 @@ jobs:
 
   secrets:
     needs: [base]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -182,16 +193,13 @@ jobs:
   all-green:
     if: always()
     needs: [base, compose, guards, lint, secrets]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - name: Require every job to succeed
         env:
-          RESULTS: ${{ join(needs.*.result, ' ') }}
+          NEEDS: ${{ toJSON(needs) }}
         run: |
           set -euo pipefail
-          echo "results: $RESULTS"
-          [ "$(wc -w <<< "$RESULTS")" -eq 5 ]
-          for r in $RESULTS; do
-            [ "$r" = success ]
-          done
+          jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<< "$NEEDS"
+          jq -e 'length > 0 and all(.[]; .result == "success")' <<< "$NEEDS"

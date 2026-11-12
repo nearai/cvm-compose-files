@@ -7,6 +7,8 @@
   run.py --list-deployables  every deployable compose file, one per line
   run.py --noop <rev>     rendered diff of every deployable between <rev> and the working tree
   run.py --write-expected rewrite ci/data/expected.json from the working tree
+
+Supported Python: 3.12, the python3 of the ubuntu-24.04 runner; CI fails on any other version. Stdlib only.
 """
 
 import argparse
