@@ -205,7 +205,7 @@ class FleetFilesTest(unittest.TestCase):
     def test_fleet_telemetry_values(self) -> None:
         for text, names, fleet_engine in ((self.base, BASE_ENGINES, "fa730e6e62b2"), (self.long, LONG_ENGINES, V12_LABEL)):
             for name in names:
-                # The long tier's r2b runs the v0.5.23 canary image, labelled with its own digest.
+                # The long tier's TP2 replicas run the v0.5.23 image, labelled with its own digest.
                 engine = long_generator.tp2_settings(name.rsplit("-r", 1)[1])["engine_image"] if text is self.long else fleet_engine
                 block = service_block(text, name)
                 job = jobs_of(text)[f"sglang-{name}"]
@@ -218,8 +218,8 @@ class FleetFilesTest(unittest.TestCase):
         self.assertEqual(self.base.count(base_generator.CANDIDATE_VARIANT), 12)  # 4 x (log tag, label, scrape job)
         for token in ("hicacheoff", "mamba380", "fp8kv", "mr64", "-v7"):
             self.assertIn(token, base_generator.CANDIDATE_VARIANT)
-        self.assertEqual(self.long.count(long_generator.TP2_VARIANT), 9)  # r1a, r1b, r2a; r2b is the v0.5.23 canary
-        self.assertEqual(code(self.long).count(long_generator.V0523_CANARY_VARIANT), 3)
+        self.assertEqual(self.long.count(long_generator.TP2_VARIANT), 0)  # all four TP2 replicas run v0.5.23
+        self.assertEqual(code(self.long).count(long_generator.V0523_VARIANT), 12)
         for token in ("fp8kv", "mr16q8", "c16384", "-v12-q8"):
             self.assertIn(token, long_generator.TP2_VARIANT)
 

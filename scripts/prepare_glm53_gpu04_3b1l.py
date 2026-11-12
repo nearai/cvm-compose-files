@@ -134,12 +134,8 @@ def long_replica(long_text: str) -> str:
 
 
 def v12_long_text() -> str:
-    """The long-context file as rendered WITHOUT gpu23's r2b v0.5.23 canary, i.e. r2b on the v12 fleet config.
-
-    l4 copies gpu23's r2b, and r2b is now a single-replica v0.5.23 canary in the committed long file. gpu04's l4 must not
-    follow that canary implicitly, so it is pinned to the v12 r2b until the long tier rolls v0.5.23 out on purpose.
-    """
-    return long_generator.generate((ROOT / long_generator.SOURCE).read_text(), v0523_canary=False)
+    """The long-context file as rendered WITHOUT v0.5.23, i.e. r2b on the v12 fleet config: gpu04's l4 stays on v12."""
+    return long_generator.generate((ROOT / long_generator.SOURCE).read_text(), v0523=False)
 
 
 def v12_base_text() -> str:
