@@ -294,10 +294,28 @@ COLOC_ENGINE_JOB = f"sglang-{COLOC_ENGINE}"
 # (engine labels and scrape job); x-privacy-filter-common is unchanged.
 # #416 then switches the /health generation off on the coloc engine (SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION=0, as GLM-5.3 #274).
 # #336's rollout then adds --enable-priority-scheduling --disable-priority-preemption and config_variant qwen38-gpu2-coloc-fa3-m96-prio.
+# The move to the SGLang v0.5.23 secure image then renames --cuda-graph-max-bs to --cuda-graph-max-bs-decode and sets
+# engine_image 6de632a5e942, sglang_revision 0.5.23-near-secure and config_variant ...-prio-v0523.
 COLOC_BLOCK_HASHES = {
     "x-privacy-filter-common": "8b0fa38844cc279cf27d02250fd37ecb7125a4e2fd0dec08fb66f4f35ee55c9e",
-    COLOC_ENGINE: "c3e9e78f1a90b07c0718f650908947432f48306c67bf66f78d44f5fdf854b37f",
-    COLOC_ENGINE_JOB: "db7bc6714299369ba55174e6536a28747c32830d2ce3803dcefb43347b28e3b7",
+    COLOC_ENGINE: "6340cb36b826d7fee3db806bcb2c8ec23a7391a17eb5f5ff1760df80d350acda",
+    COLOC_ENGINE_JOB: "fe072375f6e7445e4bddf78ed32dab91346f46f2dcdfc85bf3c753855c8c7e4e",
+}
+# gpu13's stock engines move to SGLang v0.5.23 (docker/sglang-v0523-secure) and
+# vLLM v0.33.0: the Qwen3.6, Qwen3.8 and FLUX.2 anchors and the four vLLM services, each pinned whole. Their scrape
+# jobs are unchanged (the coloc job is pinned above).
+LATEST_ENGINE_SECURE_IMAGE = "docker.io/nearaidev/sglang@sha256:6de632a5e9422be4b6e84e32cf475679c0f29c4bb6d58984d873ff9f7ba92a65"
+LATEST_ENGINE_VLLM_IMAGE = "vllm/vllm-openai@sha256:d825baf9ce4b1b6bfc5ecc7b79880c7e6748c65a72d697ce3d47607aafa84c6e"
+LATEST_ENGINE_ANCHOR_HASHES = {
+    "x-qwen3-6-common": "96b70643089226402b3f5cafd904a059c8071e7f0f1b2c5955bd4f2d880d0b4b",
+    "x-qwen3-8-27b-dedicated": "04e022bab1ab83d55d04f2fe1959f527ce9a1dad55f6abae031b77f36d58fe0b",
+    "x-flux-common": "78be815b3d14edd5e018961e0a3d346e3357d85bb940751321f7f07fab89cc20",
+}
+LATEST_ENGINE_SERVICE_HASHES = {
+    "model-vllm-qwen3vl-30b-a3b-fp8-tp1": "9a3ed1ed633b900e06f5299a144797df7948abfcc26d314d8c0906398cc3c524",
+    "model-vllm-qwen3-embedding-0.6b-tp1": "763f854c382687c8d94b12a6b9d6afadae42c669d99cd4b76638e925b7ff3896",
+    "model-vllm-qwen3-reranker-0.6b-tp1": "0c94efed56e7e554527b124e26b34d33d4d2caebedb1a57adae1b7051f92f1e2",
+    "model-vllm-whisper-large-v3-tp1": "1187289d7754eb94987f8df44bc5949930ea97410978713f225839d16e685683",
 }
 # Qwen3.8 abliterated LoRA canary (#395): the coloc engine and proxy-qwen38-27b change as modelled by
 # with_qwen38_abliterated_lora(); everything new is pinned by hash below and is gated behind the
@@ -786,6 +804,21 @@ def with_inline_media(text: str) -> str:
     return text.replace(INLINE_MEDIA_AFTER, INLINE_MEDIA_AFTER + INLINE_MEDIA_ENV)
 
 
+def with_latest_engines(text: str, small: str) -> str:
+    """Take the engine move's anchors and vLLM services from small (each pinned by hash in its own test)."""
+    for anchor in LATEST_ENGINE_ANCHOR_HASHES:
+        old, new = anchor_block(text, anchor), anchor_block(small, anchor)
+        if text.count(old) != 1:
+            raise AssertionError(f"expected one {anchor} fixture block")
+        text = text.replace(old, new, 1)
+    for name in LATEST_ENGINE_SERVICE_HASHES:
+        old, new = service_block(text, name), service_block(small, name)
+        if text.count(old) != 1:
+            raise AssertionError(f"expected one {name} fixture block")
+        text = text.replace(old, new, 1)
+    return text
+
+
 class Gpu13FleetTest(unittest.TestCase):
     """gpu13 keeps its non-migration small-model services and GPU 0-3 contracts."""
 
@@ -845,10 +878,10 @@ class Gpu13FleetTest(unittest.TestCase):
         return namespace, exit_calls
 
     def test_non_glm_services_and_everything_outside_the_glm_blocks_are_byte_identical(self) -> None:
-        old = with_inline_media(with_qwen38_priority_tiers(with_qwen38_probe_timeout_saturated(with_qwen38_no_mixed_chunk(with_glm53_long_tier_registration(with_qwen38_abliterated_ingress(
+        old = with_latest_engines(with_inline_media(with_qwen38_priority_tiers(with_qwen38_probe_timeout_saturated(with_qwen38_no_mixed_chunk(with_glm53_long_tier_registration(with_qwen38_abliterated_ingress(
             with_qwen38_abliterated_lora(with_filter_and_coloc_on_gpu2(with_sage_on_gpu2(with_qwen38_coloc_pool(without_qwen38_gpu0_stage_b(self.old))))),
             qwen38_abliterated_ingress(self.small),
-        ))))))
+        )))))), self.small)
         names = re.findall(r"^  ([a-z0-9-]+):$", self.old[self.old.index("\nservices:\n"):], re.MULTILINE)
         expected_names = [name for name in names if name != QWEN38_GPU0_SERVICE]
         expected_names.insert(expected_names.index(QWEN38_R2) + 1, COLOC_ENGINE)
@@ -905,6 +938,27 @@ class Gpu13FleetTest(unittest.TestCase):
         for key in old_jobs:
             if "glm53" not in key:
                 self.assertEqual(new_jobs[key], old_jobs[key], key)
+
+    def test_latest_engine_blocks_are_exactly_the_reviewed_move(self) -> None:
+        for anchor, digest in LATEST_ENGINE_ANCHOR_HASHES.items():
+            block = anchor_block(self.small, anchor)
+            with self.subTest(anchor=anchor):
+                self.assertEqual(hashlib.sha256(block.encode()).hexdigest(), digest)
+                self.assertIn(f"  image: {LATEST_ENGINE_SECURE_IMAGE}\n", block)
+                self.assertNotIn("build:", block)
+        for name, digest in LATEST_ENGINE_SERVICE_HASHES.items():
+            block = service_block(self.small, name)
+            with self.subTest(service=name):
+                self.assertEqual(hashlib.sha256(block.encode()).hexdigest(), digest)
+                self.assertIn(LATEST_ENGINE_VLLM_IMAGE, block)
+        coloc = service_block(self.small, COLOC_ENGINE)
+        self.assertIn("      --cuda-graph-max-bs-decode 32\n", coloc)
+        self.assertNotIn("      --cuda-graph-max-bs 32\n", coloc)
+        self.assertNotIn("--enable-mixed-chunk\n", anchor_block(self.small, "x-qwen3-6-common").split("command: >", 1)[1])
+        flux = anchor_block(self.small, "x-flux-common").split("command: >", 1)[1]
+        self.assertIn("      --tp-size 1\n", flux)
+        for gone in ("--tensor-parallel-size", "--mem-fraction-static"):
+            self.assertNotIn(gone, flux)
 
     def test_gpu2_coloc_blocks_are_exactly_the_reviewed_additions(self) -> None:
         blocks = {
