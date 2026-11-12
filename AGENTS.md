@@ -24,6 +24,7 @@ its build source and the model revision (VERIFYING.md, which also lists known ga
 uses. Do not judge a change with a locally installed compose version.
 - Render one file: `python3 ci/run.py --render prod/<f>.yaml`
 - All guards: `python3 ci/run.py --base origin/main`. Self-tests: `python3 ci/run.py --self-test`.
+- Findings on the real tree are pinned in `ci/expected.json`; update it with `--write-expected`.
 - Show a change is a no-op: `python3 ci/run.py --noop origin/main` (empty output).
 
 ## Hard rules (CI fails)
@@ -36,9 +37,11 @@ uses. Do not judge a change with a locally installed compose version.
 - New SGLang engines set `--log-requests-level 0`. New vLLM engines keep the logging flags of
   `ci/template-vllm.yaml`, which sets an explicit disabling flag only if the pinned vLLM has one.
   Existing engines without an explicit flag are listed exceptions and appear in VERIFYING.md.
-- No engine enables request logging, profiling, tracing or dumps by flag or env, or logs at debug.
+- No service on an SGLang or vLLM image, whatever its role, enables request logging, profiling,
+  tracing or dumps by flag or env, or logs at debug.
 - Privileged mode, devices, sockets, host mounts and published ports are listed per service in
-  `ci/services.allow.json`. Host-provided variables are listed under `env` in the same file.
+  `ci/services.allow.json`. Host-provided variables are listed under `env` in the same file, each
+  with `egress: true` (the value can choose where data goes) or `egress: false`.
 - No IPs, internal domains, host or runner names or private repo names in files, paths, commit
   messages, branch names or PR text. Comments follow the policy below. No inline linter ignores.
 - Existing build dirs, `adapters/` and existing publish workflows are only ever deleted, never edited.
@@ -112,7 +115,8 @@ Everything here is public and copied by others: files, branches, tags, PRs, revi
 - Title and commit subjects: `<prod|docker|ci|docs|repo>: <imperative summary>`, at most 72 chars.
 - Squash merge only. No force-push after review starts. Never move or delete tags or rewrite history.
 - Merging needs `all-green` and one approval from someone other than the author; a new push
-  dismisses earlier approvals. Agents never approve their own work.
+  dismisses earlier approvals. Agents never approve their own work. Changes under `ci/` need two
+  such approvals; repository settings cannot enforce this per path, so reviewers do.
 - Evidence in the PR body: `ci/run.py` green; rendered-diff note for `prod/` changes; `--noop` output
   for comment-only or refactor changes; for image bumps the `main` publish run and the signature
   verification; for deletions the deployment-manager check; every new sink, port, mount, env var,

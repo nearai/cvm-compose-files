@@ -70,6 +70,7 @@ ENGINE_KEY = re.compile(r"^model-(sg|vllm)-")
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 EXCEPTIONS = "ci/exceptions.json"
+EXPECTED = "ci/expected.json"
 LEGACY = "ci/legacy.txt"
 IMAGES = "ci/images.allow"
 SERVICES = "ci/services.allow.json"

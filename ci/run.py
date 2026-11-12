@@ -5,6 +5,7 @@
   run.py --self-test      every rule against built-in red and green inputs
   run.py --render <file>  rendered compose JSON of one file
   run.py --noop <rev>     rendered diff of every deployable between <rev> and the working tree
+  run.py --write-expected rewrite ci/expected.json from the working tree
 """
 
 import argparse
@@ -20,8 +21,8 @@ import check_privacy
 import check_public
 import check_status
 from common import (
-    EXCEPTIONS, ROOT, SERVICES, TEMPLATES, Finding, RenderError, Renderer, Tree, env_lines, git, load_json,
-    render_dir, sha256,
+    EXCEPTIONS, EXPECTED, IMAGES, ROOT, SERVICES, TEMPLATES, Finding, RenderError, Renderer, Tree, env_lines, git,
+    load_json, render_dir, sha256,
 )
 
 GUARDS = [check_layout, check_status, check_pins, check_privacy, check_public, check_frozen]
@@ -110,6 +111,79 @@ def run_guards(ctx, guards=GUARDS):
     return apply_exceptions(ctx, findings)
 
 
+# ---------------------------------------------------------------- expected findings
+
+def _command(svc):
+    cmd = svc.get("command")
+    return list(cmd) if isinstance(cmd, list) else [] if cmd is None else [cmd]
+
+
+# Each probe breaks one service; the rules that fire for it are recorded per service.
+PROBES = {
+    "log": lambda s: dict(s, command=_command(s) + ["--log-requests-level", "2", "--enable-log-requests"]),
+    "env": lambda s: dict(s, environment=dict(s.get("environment") or {}, SGLANG_DUMP_REQUESTS="1")),
+    "privileged": lambda s: dict(s, privileged=True),
+    "tag": lambda s: dict(s, image="nginx:latest"),
+}
+PROBE_GUARDS = [check_privacy, check_pins]
+
+
+def _keys(findings):
+    return {(f.rule, f.path, f.key) for f in findings}
+
+
+def probe_lines(head, rendered):
+    """`path service-hash probe: rules` for every service of every rendered file."""
+    out = []
+    for p in head.deployables() + [t for t in TEMPLATES if head.has(t)]:
+        try:
+            doc = rendered(p)
+        except RenderError:
+            continue
+        files = {x: head.data(x) for x in (p, IMAGES) if head.has(x)}
+        sa = load_json(head, SERVICES, {})
+        files[SERVICES] = json.dumps(dict(sa, services=[e for e in sa.get("services", []) if e.get("file") == p]))
+
+        def run(d):
+            ctx = Context(Tree(files=files), None, lambda path: d if path == p else None)
+            return _keys(f for g in PROBE_GUARDS for f in g.check(ctx))
+        clean = run(doc)
+        for key, svc in sorted(doc.get("services", {}).items()):
+            for name, probe in PROBES.items():
+                d = dict(doc, services=dict(doc["services"], **{key: probe(svc)}))
+                rules = sorted({r for r, _, _ in run(d) - clean})
+                out.append(f"{p} {sha256(key)[:16]} {name}: {' '.join(rules) or '-'}")
+    return sorted(out)
+
+
+def expected_doc(head, rendered):
+    """Raw findings (before exceptions) of a head-only run, plus the probe results."""
+    ctx = Context(head, None, rendered)
+    findings = [f for g in GUARDS for f in g.check(ctx)]
+    lines = sorted({f"{f.rule} {f.path} {sha256(f.key)}" for f in findings})
+    return {"findings": lines, "probes": probe_lines(head, rendered)}
+
+
+def check_expected(head, doc):
+    """Findings for every line that differs from ci/expected.json. Exceptions never apply."""
+    want = load_json(head, EXPECTED, None)
+    if not isinstance(want, dict):
+        return [Finding(EXPECTED, 0, "run.expected", "missing or not a JSON object; run --write-expected")]
+    out = []
+    for part in ("findings", "probes"):
+        have, exp = set(doc[part]), set(want.get(part) or [])
+        for line in sorted(have - exp):
+            out.append(Finding(EXPECTED, 0, "run.expected", f"{part}: new: {line}"))
+        for line in sorted(exp - have):
+            out.append(Finding(EXPECTED, 0, "run.expected", f"{part}: gone: {line}"))
+    return out
+
+
+def write_expected(doc):
+    with open(f"{ROOT}/{EXPECTED}", "w") as f:
+        f.write(json.dumps(doc, indent=2) + "\n")
+
+
 # ---------------------------------------------------------------- self-test
 
 def _tree(files):
@@ -195,12 +269,33 @@ def self_test():
     for r in ALL_RULES:
         if r not in red:
             failures.append(f"rule {r} has no red case that fires")
+    failures += expected_self_test()
+    total += 3
     for f in failures:
         print("FAIL", f)
     if failures or total == 0:
         return 1
     print(f"OK ({total})")
     return 0
+
+
+def expected_self_test():
+    p = "prod/m-sglang-tp1.yaml"
+    svc = {"container_name": "model-sg-a", "image": "x@sha256:" + "0" * 64,
+           "command": ["sglang", "serve", "--log-requests-level", "0"]}
+    files = {p: "services:\n  model-sg-a:\n    image: x\n", SERVICES: '{"services": [], "env": []}'}
+    head = Tree(files=files)
+    doc = expected_doc(head, lambda path: {"services": {"model-sg-a": svc}} if path == p else None)
+    fails = []
+    if not any(l.endswith(" log: privacy.log-enabled") for l in doc["probes"]):
+        fails.append("expected: the log probe does not fire privacy.log-enabled")
+    good = Tree(files=dict(files, **{EXPECTED: json.dumps(doc)}))
+    if check_expected(good, doc):
+        fails.append("expected: matching file is not green")
+    bad = dict(doc, probes=doc["probes"][1:])
+    if {f.rule for f in check_expected(Tree(files=dict(files, **{EXPECTED: json.dumps(bad)})), doc)} != {"run.expected"}:
+        fails.append("expected: a missing probe line is not red")
+    return fails
 
 
 # ---------------------------------------------------------------- real runs
@@ -237,6 +332,7 @@ def main():
     ap.add_argument("--base")
     ap.add_argument("--render")
     ap.add_argument("--noop")
+    ap.add_argument("--write-expected", action="store_true")
     a = ap.parse_args()
     if a.self_test:
         return self_test()
@@ -246,6 +342,10 @@ def main():
         return 0
     if a.noop:
         return noop(a.noop)
+    if a.write_expected:
+        head = Tree()
+        write_expected(expected_doc(head, Renderer(head, load_json(head, SERVICES, {}))))
+        return 0
     ctx = real_ctx(a.base)
     if ctx.base is None:
         for g in GUARDS:
@@ -254,6 +354,8 @@ def main():
     elif ctx.bootstrap:
         print("bootstrap mode: ci/common.py is absent at base")
     findings = run_guards(ctx)
+    if not ctx.render_errors:
+        findings += check_expected(ctx.head, expected_doc(ctx.head, ctx._rendered))
     for f in sorted(findings, key=lambda f: (f.path, f.line, f.rule)):
         print(f)
     if findings:

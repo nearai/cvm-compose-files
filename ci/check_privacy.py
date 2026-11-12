@@ -1,5 +1,6 @@
 """privacy: engine logging flags and env, host access, deploy-time variables."""
 
+import bisect
 import re
 
 from common import (
@@ -18,7 +19,6 @@ VLLM_NO_LOG = "--no-enable-log-requests"
 BANNED_FLAG = re.compile(
     r"^--(log-requests|enable-log-requests|enable-log-outputs|config|[\w-]*(dump|trace|profil)[\w-]*)(=.*)?$")
 BANNED_ENV = re.compile(r"LOG_REQUEST|DUMP|PROFILE|TRACE|^NEAR_SELF_PROFILE")
-EGRESS = re.compile(r"_(URL|ENDPOINT|HOST)$")
 ENGINE_IMAGE = re.compile(r"^(sglang|vllm|vllm-openai)$")
 UPPER_SNAKE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 DUMMY = re.compile(r"^(ci-[a-z0-9-]+|\d{1,5})$")
@@ -75,9 +75,9 @@ def check(ctx):
         for key, svc in sorted(services.items()):
             line = find_line(text, rf"^  {re.escape(key)}:")
             entry = allow.get((p, key), {})
+            image = svc.get("image") or ""
+            repo = image.split("@")[0].rsplit("/", 1)[-1].split(":")[0]
             if key not in eng and not ENGINE_KEY.match(key):
-                image = svc.get("image") or ""
-                repo = image.split("@")[0].rsplit("/", 1)[-1].split(":")[0]
                 if (has_gpu(svc) or ENGINE_IMAGE.match(repo)) and entry.get("role") not in ("engine", "aux"):
                     out.append(Finding(p, line, "privacy.role", f"service {key} needs role engine or aux", key=key))
             found = host_access(svc, volumes)
@@ -90,8 +90,9 @@ def check(ctx):
             for item in sorted(want - found):
                 out.append(Finding(SERVICES, 0, "privacy.host-access", f"{p} {key}: listed {item} is not used",
                                    key=f"{p}:{key}:{item}"))
-            if key in eng:
-                out += check_engine(p, line, key, svc)
+            # Any service classified SGLang/vLLM gets the logging checks, whatever its role.
+            if key in eng or ENGINE_IMAGE.match(repo) or engine_kind(key, svc) != "unknown":
+                out += check_engine(p, line, key, svc, key in eng)
         for vname, vol in volumes.items():
             if "ghost" in vname:
                 opts = (vol or {}).get("driver_opts") or {}
@@ -109,40 +110,44 @@ def check(ctx):
     for name, e in sorted(env.items()):
         if not UPPER_SNAKE.match(name):
             out.append(Finding(SERVICES, 0, "privacy.var", f"env name {name} must be UPPER_SNAKE", key=name))
-        if EGRESS.search(name) and not e.get("egress"):
-            out.append(Finding(SERVICES, 0, "privacy.egress", f"env {name} sends data out; set egress", key=name))
+        # Every deploy-time variable states whether it can send data out; no name pattern decides it.
+        if not isinstance(e.get("egress"), bool):
+            out.append(Finding(SERVICES, 0, "privacy.egress", f"env {name}: set egress to true or false", key=name))
         if "dummy" in e and not DUMMY.match(str(e["dummy"])):
             out.append(Finding(SERVICES, 0, "privacy.dummy", f"env {name}: dummy must match {DUMMY.pattern}",
                                key=name))
     return out
 
 
-def check_engine(p, line, key, svc):
+def check_engine(p, line, key, svc, serving):
+    """Logging checks; `serving` engines must also carry the no-log flag."""
     out, toks = [], service_tokens(svc)
     kind = engine_kind(key, svc)
     levels = flag_values(toks, "--log-requests-level")
     if any(v != "0" for v in levels):
         out.append(Finding(p, line, "privacy.log-enabled", f"engine {key}: request logging level must be 0",
-                           key=f"{key}:--log-requests-level"))
-    elif kind == "sglang" and len(levels) != 1:
+                           key=f"{key}:--log-requests-level={','.join(levels)}"))
+    elif serving and kind == "sglang" and len(levels) != 1:
         out.append(Finding(p, line, "privacy.no-log-flag", f"engine {key}: set --log-requests-level 0 exactly once",
-                           key=key))
-    if kind == "vllm" and toks.count(VLLM_NO_LOG) != 1:
-        out.append(Finding(p, line, "privacy.no-log-flag", f"engine {key}: set {VLLM_NO_LOG} exactly once", key=key))
+                           key=f"{key}:{svc.get('image')}"))
+    # Exception keys bind the image: the logging default is a property of the pinned engine.
+    if serving and kind == "vllm" and toks.count(VLLM_NO_LOG) != 1:
+        out.append(Finding(p, line, "privacy.no-log-flag", f"engine {key}: set {VLLM_NO_LOG} exactly once",
+                           key=f"{key}:{svc.get('image')}"))
     for i, t in enumerate(toks):
         m = BANNED_FLAG.match(t)
         if m:
             out.append(Finding(p, line, "privacy.log-enabled", f"engine {key}: flag {m.group(1)} is not allowed",
-                               key=f"{key}:--{m.group(1)}"))
+                               key=f"{key}:{t}"))
     for v in flag_values(toks, "--log-level"):
         if v.lower() == "debug":
             out.append(Finding(p, line, "privacy.log-enabled", f"engine {key}: debug logging is not allowed",
-                               key=f"{key}:--log-level"))
+                               key=f"{key}:--log-level={v}"))
     envd = svc.get("environment") or {}
     for name, val in sorted(envd.items()):
         if BANNED_ENV.search(name) or (name.endswith("_LOG_LEVEL") and str(val).upper() == "DEBUG"):
             out.append(Finding(p, line, "privacy.env", f"engine {key}: env {name} is not allowed",
-                               key=f"{key}:{name}"))
+                               key=f"{key}:{name}={val}"))
     return out
 
 
@@ -171,21 +176,23 @@ def check_vars(p, text, env):
         offs.append(total)
         total += len(line) + 1
     for off, name, op, rest in var_refs(text):
-        n = max(i for i, o in enumerate(offs) if o <= off) + 1
+        n = bisect.bisect_right(offs, off)
+        # Exception keys bind the variable to the line that uses it, default included.
+        bound = f"{name}:{lines[n - 1].strip()}"
         if op == "bad" or not UPPER_SNAKE.match(name):
-            out.append(Finding(p, n, "privacy.var", "variable name must be UPPER_SNAKE", key=name))
+            out.append(Finding(p, n, "privacy.var", "variable name must be UPPER_SNAKE", key=bound))
             continue
         if name not in env:
-            out.append(Finding(p, n, "privacy.var", f"${{{name}}} is not listed under env in {SERVICES}", key=name))
+            out.append(Finding(p, n, "privacy.var", f"${{{name}}} is not listed under env in {SERVICES}", key=bound))
             continue
         if SECRET_SUFFIX.search(name):
             if op not in ("", ":?", "?"):
-                out.append(Finding(p, n, "privacy.secret", f"secret {name} must not have a default", key=name))
+                out.append(Finding(p, n, "privacy.secret", f"secret {name} must not have a default", key=bound))
             elif "environment" not in paths[n - 1] or kinds[n - 1] == "scalar":
                 out.append(Finding(p, n, "privacy.secret", f"secret {name} is only allowed under environment:",
-                                   key=name))
+                                   key=bound))
         elif op in (":-", "-", ":+", "+") and not env[name].get("default_ok"):
-            out.append(Finding(p, n, "privacy.default", f"{name} has a default; set default_ok", key=name))
+            out.append(Finding(p, n, "privacy.default", f"{name} has a default; set default_ok", key=bound))
     return out
 
 
@@ -194,17 +201,23 @@ V = "prod/m-vllm-tp1.yaml"
 SG = {"container_name": "model-sg-a", "command": ["sglang", "serve", "--log-requests-level", "0"],
       "ipc": "host"}
 VL = {"container_name": "model-vllm-a", "command": ["org/m", VLLM_NO_LOG]}
-ALLOW = ('{"services": [{"file": "' + P + '", "service": "model-sg-a", "items": ["ipc:host"]}], "env": ['
-         '{"name": "HF_TOKEN"}, {"name": "PORT", "default_ok": true, "dummy": "8000"}, '
+ALLOW = ('{"services": [{"file": "' + P + '", "service": "model-sg-a", "items": ["ipc:host"]}, '
+         '{"file": "' + P + '", "service": "aux-a", "role": "aux", "items": []}], "env": ['
+         '{"name": "HF_TOKEN", "egress": false}, {"name": "PORT", "egress": false, "default_ok": true, "dummy": "8000"}, '
          '{"name": "UP_URL", "egress": true}]}')
+AUX = {"container_name": "aux-a", "image": "nearaidev/sglang@sha256:" + "0" * 64, "command": ["python3", "-m", "x"]}
 RAW = ("services:\n  model-sg-a:\n    environment:\n      HF_TOKEN: ${HF_TOKEN:?set}\n"
        "      UP: ${UP_URL}\n    command: sh -c 'echo $${HOME} ${PORT:-8000}'\n")
 FILES = {P: RAW, V: "services:\n  model-vllm-a:\n    image: x\n", "ci/services.allow.json": ALLOW}
-REND = {P: {"services": {"model-sg-a": SG}}, V: {"services": {"model-vllm-a": VL}}}
+REND = {P: {"services": {"model-sg-a": SG, "aux-a": AUX}}, V: {"services": {"model-vllm-a": VL}}}
 
 
 def _sg(**kw):
-    return dict(REND, **{P: {"services": {"model-sg-a": dict(SG, **kw)}}})
+    return dict(REND, **{P: {"services": {"model-sg-a": dict(SG, **kw), "aux-a": AUX}}})
+
+
+def _aux(**kw):
+    return dict(REND, **{P: {"services": {"model-sg-a": SG, "aux-a": dict(AUX, **kw)}}})
 
 
 SENTINEL = "ghp_" + "Q7" * 18
@@ -218,12 +231,16 @@ CASES = [
     ("trace flag in sh -c", "privacy.log-enabled", FILES, FILES,
      _sg(entrypoint=["sh", "-c"], command=["exec sglang serve --log-requests-level 0 --enable-trace"]), None),
     ("dump env", "privacy.env", FILES, FILES, _sg(environment={"SGLANG_DUMP_REQUESTS": "1"}), None),
+    ("aux on an engine image with log level 2", "privacy.log-enabled", FILES, FILES,
+     _aux(command=["python3", "-m", "sglang.launch_server", "--log-requests-level", "2"]), None),
+    ("aux on an engine image with a dump env", "privacy.env", FILES, FILES,
+     _aux(environment={"SGLANG_DUMP_REQUESTS": "1"}), None),
     ("GPU service without role", "privacy.role", FILES, FILES,
-     dict(REND, **{P: {"services": {"model-sg-a": SG, "x": {
+     dict(REND, **{P: {"services": {"model-sg-a": SG, "aux-a": AUX, "x": {
          "container_name": "x", "deploy": {"resources": {"reservations": {"devices": [{"capabilities": ["gpu"]}]}}}}}}}),
      None),
     ("privileged service not listed", "privacy.host-access", FILES, FILES,
-     dict(REND, **{P: {"services": {"model-sg-a": SG, "x": {"container_name": "x", "privileged": True}}}}), None),
+     dict(REND, **{P: {"services": {"model-sg-a": SG, "aux-a": AUX, "x": {"container_name": "x", "privileged": True}}}}), None),
     ("listed access unused", "privacy.host-access", FILES, FILES, _sg(ipc=None), None),
     ("unlisted variable", "privacy.var", dict(FILES, **{P: RAW + "    labels:\n      a: ${FOO_URL:-}\n"}), FILES,
      REND, None),
@@ -233,13 +250,13 @@ CASES = [
      REND, None),
     ("default without default_ok", "privacy.default", dict(FILES, **{P: RAW.replace("${UP_URL}", "${UP_URL:-x}")}),
      FILES, REND, None),
-    ("URL variable without egress", "privacy.egress",
-     dict(FILES, **{"ci/services.allow.json": ALLOW.replace('"egress": true', '"default_ok": true')}), FILES, REND,
-     None),
+    ("variable without an egress flag", "privacy.egress",
+     dict(FILES, **{"ci/services.allow.json": ALLOW.replace('"name": "HF_TOKEN", "egress": false', '"name": "HF_TOKEN"')}),
+     FILES, REND, None),
     ("bad dummy", "privacy.dummy", dict(FILES, **{"ci/services.allow.json": ALLOW.replace('"8000"', '"x y"')}), FILES,
      REND, None),
     ("ghost key volume on disk", "privacy.tmpfs", FILES, FILES,
-     dict(REND, **{P: {"services": {"model-sg-a": SG}, "volumes": {"ghost": {"driver_opts": {}}}}}), None),
+     dict(REND, **{P: {"services": {"model-sg-a": SG, "aux-a": AUX}, "volumes": {"ghost": {"driver_opts": {}}}}}), None),
     ("hf-cleanup without profile", "privacy.maintenance", FILES, FILES,
-     dict(REND, **{P: {"services": {"model-sg-a": SG, "hf-cleanup": {"container_name": "hf-cleanup"}}}}), None),
+     dict(REND, **{P: {"services": {"model-sg-a": SG, "aux-a": AUX, "hf-cleanup": {"container_name": "hf-cleanup"}}}}), None),
 ]
