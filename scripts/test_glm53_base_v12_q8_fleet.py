@@ -17,6 +17,10 @@ ROOT = Path(__file__).resolve().parents[1]
 SOURCE = (ROOT / gen.SOURCE).read_text()
 TARGET = (ROOT / gen.TARGET).read_text()
 BODY = TARGET.split("#\n", 1)[1]  # past the generated header comment
+# The fleet file as rendered without gpu03's r4 v0.5.23 canary: every v7 -> v12 confinement test runs on it, and the
+# canary test below pins what r4 adds on top.
+V12 = gen.generate(SOURCE, v0523_canary=False)
+V12_BODY = V12.split("#\n", 1)[1]
 GPU03_LIVE = Path("prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8-V8KdaCanary.yaml")
 GPU04_LIVE = Path("prod/GLM-5.3-Flash-SGL-TP2x3-W4AFP8-gpu04.yaml")
 CANARY = Path("prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8-Q8Canary.yaml")
@@ -80,7 +84,7 @@ class BaseV12Q8FleetTest(unittest.TestCase):
         self.assertIn(f"    image: {gen.V12_IMAGE}\n", (ROOT / LONG_CONTEXT).read_text())
 
     def test_only_image_backend_and_labels_change(self):
-        removed, added = changed_lines(SOURCE, BODY)
+        removed, added = changed_lines(SOURCE, V12_BODY)
         # Comments may change only by the anchor comment and the reworded v7 image lines; the header is outside BODY.
         self.assertEqual(sorted(line for line in removed if is_comment(line)),
                          sorted(old.rstrip("\n") for old, _ in gen.COMMENT_EDITS))
@@ -117,23 +121,48 @@ class BaseV12Q8FleetTest(unittest.TestCase):
 
     def test_every_replica_inherits_the_one_anchor(self):
         for name in gen.REPLICAS:
-            service = block(TARGET, name)
+            service = block(V12, name)
             self.assertIn("    <<: *sg-glm53-flash-candidate\n", service, name)
             self.assertNotIn("\n    image:", service, name)
             self.assertNotIn("\n    command:", service, name)
-        self.assertEqual(TARGET.count(gen.V12_IMAGE), 2)  # common anchor + ghost aggregator
-        self.assertIn(gen.V12_IMAGE, block(TARGET, gen.AGGREGATOR))
+        self.assertEqual(V12.count(gen.V12_IMAGE), 2)  # common anchor + ghost aggregator
+        self.assertIn(gen.V12_IMAGE, block(V12, gen.AGGREGATOR))
         live = "".join(line + "\n" for line in TARGET.splitlines() if not is_comment(line))
         self.assertNotIn(gen.V7_LABEL, live)
 
     def test_replica_labels(self):
         for name in gen.REPLICAS:
-            service = block(TARGET, name)
+            service = block(V12, name)
             self.assertIn(f'"engine_image:{gen.V12_LABEL}"', service)
             self.assertIn(f'nearai.otel.engine_image: "{gen.V12_LABEL}"', service)
             self.assertEqual(len(re.findall(r'config_variant(?::|: ")[^"]*-obs-v1-v12-q8"', service)), 2, name)
-        self.assertEqual(TARGET.count('engine_image: "da8d4e4b5ec6"'), 8)
-        self.assertEqual(TARGET.count("-obs-v1-v12-q8\""), 12)
+        self.assertEqual(V12.count('engine_image: "da8d4e4b5ec6"'), 8)
+        self.assertEqual(V12.count("-obs-v1-v12-q8\""), 12)
+
+    def test_v0523_canary_touches_only_r4(self):
+        # Against the canary-free render, only the header, r4's service block and r4's scrape job change.
+        self.assertEqual(TARGET.split("#\n", 1)[1], V12_BODY.replace(block(V12_BODY, gen.V0523_CANARY_REPLICA), block(BODY, gen.V0523_CANARY_REPLICA)).replace(
+            V12_BODY[V12_BODY.index(f"- job_name: sglang-{gen.V0523_CANARY_REPLICA}\n"):].split("- job_name:", 2)[1],
+            BODY[BODY.index(f"- job_name: sglang-{gen.V0523_CANARY_REPLICA}\n"):].split("- job_name:", 2)[1]))
+        for name in gen.REPLICAS[:3]:
+            self.assertEqual(block(TARGET, name), block(V12, name), name)
+        r4_v12, r4 = block(V12, gen.V0523_CANARY_REPLICA), block(TARGET, gen.V0523_CANARY_REPLICA)
+        self.assertIn(f"\n    image: {gen.V0523_CANARY_IMAGE}\n", r4)
+        argv = r4.split("\n    command: >\n", 1)[1]
+        argv_lines = []
+        for line in argv.splitlines():
+            if not line.startswith("        "):
+                break
+            argv_lines.append(line)
+        tokens = " ".join(argv_lines).split()
+        self.assertEqual(tokens, anchor_tokens(V12) + ["--cuda-graph-backend-prefill", "disabled"])
+        self.assertEqual(r4.count(gen.V0523_CANARY_LABEL), 3)  # image digest + log tag + OTel label
+        self.assertEqual(r4.count("-v0523-canary\""), 2)  # log tag + OTel label
+        self.assertEqual(r4.count("-v0523-canary\","), 1)
+        self.assertNotIn(gen.V12_LABEL, r4)
+        self.assertEqual(TARGET.count(gen.V0523_CANARY_IMAGE), 2)  # header + r4 (aggregator stays v12)
+        self.assertIn(gen.V12_IMAGE, block(TARGET, gen.AGGREGATOR))
+        self.assertNotEqual(r4, r4_v12)
 
     def test_dashboard_selectors_unchanged(self):
         for key in ("deployment", "host_machine", "server_address", "container_name", "instance", "service", "precision"):
