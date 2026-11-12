@@ -71,7 +71,8 @@ class Gpu13GlmBase(unittest.TestCase):
                 self.assertEqual(self.text.split(f"  {config}:\n", 1)[1][:4000], self.source.split(f"  {config}:\n", 1)[1][:4000])
 
     def test_engines_match_gpu04_r1_r2(self) -> None:
-        self.assertEqual(argv(anchor(self.text, "x-sg-glm53-flash-candidate")), argv(anchor(self.glm, "x-sg-glm53-flash-candidate")))
+        # gpu04's v12 argv plus the one flag v0.5.23 needs.
+        self.assertEqual(argv(anchor(self.text, "x-sg-glm53-flash-candidate")), argv(anchor(self.glm, "x-sg-glm53-flash-candidate")) + gen.V0523_FLAG.split())
         self.assertIn("--max-running-requests 64", anchor(self.text, "x-sg-glm53-flash-candidate"))
         self.assertNotIn("--enable-hierarchical-cache", anchor(self.text, "x-sg-glm53-flash-candidate"))
         common = anchor(self.text, "x-sg-glm53-flash-common")
@@ -84,9 +85,24 @@ class Gpu13GlmBase(unittest.TestCase):
                 self.assertIn("<<: *sg-glm53-flash-candidate", block)
                 # Two-space comments are section headings that follow a service; they belong to the next one.
                 keep = lambda b: [l for l in b.splitlines() if not l.startswith("  # ") and not any(d in l for d in ENGINE_DELTAS)]
-                self.assertEqual(keep(block), keep(self.glm_svc[name]))
+                v12 = self.glm_svc[name].replace('engine_image:da8d4e4b5ec6"', 'engine_image:050b1adf961c"').replace(
+                    'engine_image: "da8d4e4b5ec6"', 'engine_image: "050b1adf961c"').replace(gen.V12_SUFFIX + '"', gen.V0523_SUFFIX + '"')
+                self.assertEqual(keep(block), keep(v12))
         self.assertIn("      - CUDA_DEVICE_ORDER=PCI_BUS_ID\n", self.svc[gen.R2])
         self.assertIn("SGLANG_GHOST_CACHE_REPLICA=r2", self.svc[gen.R2])
+
+    def test_v0523_image_on_engines_only(self) -> None:
+        common = anchor(self.text, "x-sg-glm53-flash-common")
+        self.assertIn(f"  image: {gen.V0523_IMAGE}\n", common)
+        self.assertIn(f"    image: {gen.V12_IMAGE}\n", self.svc["glm53-ghost-aggregator"])
+        self.assertEqual(self.text.count(gen.V0523_IMAGE), 1)
+        self.assertNotIn(gen.V12_SUFFIX + '"', self.text)
+        for name in (gen.R1, gen.R2):
+            with self.subTest(engine=name):
+                self.assertNotIn("\n    image:", self.svc[name])
+                self.assertEqual(self.svc[name].count('050b1adf961c"'), 2)
+                self.assertIn(f"sglang-{name}", jobs(self.text))
+                self.assertIn('engine_image: "050b1adf961c"', jobs(self.text)[f"sglang-{name}"])
 
     def test_proxy_pool_and_ports(self) -> None:
         proxy = self.svc["proxy-glm53"]
