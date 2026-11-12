@@ -299,7 +299,7 @@ COLOC_ENGINE_JOB = f"sglang-{COLOC_ENGINE}"
 # x-privacy-filter-common then runs the MoE experts as grouped GEMMs (PRIVACY_EXPERTS_IMPL=grouped_mm).
 COLOC_BLOCK_HASHES = {
     "x-privacy-filter-common": "c421728515cbffa9449ab5a4cfa925bea5b922c9d5b805a79b38ce1416be7492",
-    COLOC_ENGINE: "6340cb36b826d7fee3db806bcb2c8ec23a7391a17eb5f5ff1760df80d350acda",
+    COLOC_ENGINE: "e29b3cb3b7deddc3906385c0675e9b8590097cf9bfd3958059ace86b834f735b",
     COLOC_ENGINE_JOB: "fe072375f6e7445e4bddf78ed32dab91346f46f2dcdfc85bf3c753855c8c7e4e",
 }
 # gpu13's stock engines move to SGLang v0.5.23 (docker/sglang-v0523-secure) and
@@ -342,7 +342,7 @@ LORA_CONFIGS = ("qwen38_abliterated_registrar_script",)
 LORA_JOB = "inference-proxy-proxy-qwen38-27b-abliterated"
 LORA_BLOCK_HASHES = {
     "qwen38-lora-adapter-downloader": "f00890986a1cbe050f1158fc94fb46c6a2910fad7ac622387bc09f21f47e7d4b",
-    "proxy-qwen38-27b-abliterated": "e05cc4d92c5f139ea8fcdeabb7cc69a30d6c4a4916a99e1feb7969b60060bb9b",
+    "proxy-qwen38-27b-abliterated": "6c7fbc21f673cfaed5c3762f49dd4ab095257ea90a69d9072240293f282be677",
     "qwen38-abliterated-registrar": "abbc11eca5f3f296b108cc4ec308ee5c59e04a04c99f4f7a6ce691586031c895",
     "qwen38_abliterated_registrar_script": "bf512180438d8e6258a37b59e02f9f6abc2bcab5ea79ac92b91b31b62f6afbe7",
     LORA_JOB: "300953b485fbe7ab94916efc464b5fdbdd784fbd6c554392491da0f653f3c505",
@@ -371,7 +371,7 @@ QWEN38_R2_JOBS = (f"sglang-{QWEN38_R2}", f"dcgm-{QWEN38_R2_DCGM}")
 SAGE_BLOCK_HASHES = {
     "sage-dstack": "e3020a51e7f4f6c6a02868004618e880da664a55abc6c875c1da860595f16518",
     "sage": "eb3119b13f1a6788f39fb58f394573e4e89e435c30001f8c9db162003d3347af",
-    "networks": "f83c2c4fabfffcf0587e644bb575e4cc4c602f0fe8a032061fac8215403be193",
+    "networks": "e8013b3c7daa036a2272d99db8a36b40bb210faa4a65c5096839a9e1d638dfce",
 }
 # Our DCGM exporter on Sage's GPU, right after sage, and its scrape job after the shared GPU 3 one. Both pinned whole.
 SAGE_DCGM = "dcgm-sage"
@@ -820,6 +820,25 @@ def with_latest_engines(text: str, small: str) -> str:
     return text
 
 
+# The Qwen3.8 engine moves to an internal network: both Qwen3.8 proxies and the collector join it, a one-shot
+# probe checks it, and the engine starts offline with its own IPC namespace. The engine, the abliterated proxy
+# and the networks block are pinned by hash above; the probe is pinned here.
+ENGINE_NETWORK = "engine-qwen38"
+ENGINE_PROBE = "engine-egress-probe"
+ENGINE_PROBE_HASH = "c596c28ccf11433ad3ebdd8ce3e830c8d4a98bce0c96c304486b420f59cbd153"
+ENGINE_NETWORK_JOIN = "    networks:\n      - default\n      - engine-qwen38\n"
+# The proxies start only after the probe passes.
+ENGINE_PROBE_GATE = "    depends_on:\n      engine-egress-probe:\n        condition: service_completed_successfully\n"
+
+
+def with_qwen38_engine_network(text: str) -> str:
+    """Join proxy-qwen38-27b to the engine network and gate it on the probe, right after its container name."""
+    name = "    container_name: proxy-qwen38-27b\n"
+    if text.count(name) != 1:
+        raise AssertionError("expected one proxy-qwen38-27b container name in the fixture")
+    return text.replace(name, name + ENGINE_NETWORK_JOIN + ENGINE_PROBE_GATE, 1)
+
+
 class Gpu13FleetTest(unittest.TestCase):
     """gpu13 keeps its non-migration small-model services and GPU 0-3 contracts."""
 
@@ -879,10 +898,10 @@ class Gpu13FleetTest(unittest.TestCase):
         return namespace, exit_calls
 
     def test_non_glm_services_and_everything_outside_the_glm_blocks_are_byte_identical(self) -> None:
-        old = with_latest_engines(with_inline_media(with_qwen38_priority_tiers(with_qwen38_probe_timeout_saturated(with_qwen38_no_mixed_chunk(with_glm53_long_tier_registration(with_qwen38_abliterated_ingress(
+        old = with_qwen38_engine_network(with_latest_engines(with_inline_media(with_qwen38_priority_tiers(with_qwen38_probe_timeout_saturated(with_qwen38_no_mixed_chunk(with_glm53_long_tier_registration(with_qwen38_abliterated_ingress(
             with_qwen38_abliterated_lora(with_filter_and_coloc_on_gpu2(with_sage_on_gpu2(with_qwen38_coloc_pool(without_qwen38_gpu0_stage_b(self.old))))),
             qwen38_abliterated_ingress(self.small),
-        )))))), self.small)
+        )))))), self.small))
         names = re.findall(r"^  ([a-z0-9-]+):$", self.old[self.old.index("\nservices:\n"):], re.MULTILINE)
         expected_names = [name for name in names if name != QWEN38_GPU0_SERVICE]
         expected_names.insert(expected_names.index(QWEN38_R2) + 1, COLOC_ENGINE)
@@ -897,6 +916,9 @@ class Gpu13FleetTest(unittest.TestCase):
         expected_names.insert(expected_names.index("otelcol-contrib"), SAGE_DCGM)
         expected_names.insert(expected_names.index("default"), "sage")
         expected_names.insert(expected_names.index("certs"), "sage-data")
+        # The engine probe sits right before the collector; the engine network follows the default one.
+        expected_names.insert(expected_names.index("otelcol-contrib"), ENGINE_PROBE)
+        expected_names.insert(expected_names.index("default") + 1, ENGINE_NETWORK)
         self.assertEqual(
             [name for name in expected_names if name not in GPU13_REPLACED_SERVICES and name not in ("ghost",)],
             [name for name in re.findall(r"^  ([a-z0-9-]+):$", self.small[self.small.index("\nservices:\n"):], re.MULTILINE) if name not in GPU13_NEW_SERVICES and name not in ("ghost",)],
@@ -912,6 +934,9 @@ class Gpu13FleetTest(unittest.TestCase):
                     expected = service_block(old, name)
                     if name == "proxy-qwen38-27b":
                         expected = expected.replace(OLD_PROXY_IMAGE, SMALL_PROXY_IMAGE)
+                    if name == "default":
+                        # The engine network now follows it, so its block no longer runs into `volumes:`.
+                        expected = expected.split("\n\nvolumes:", 1)[0]
                     self.assertEqual(new_block, expected)
         anchors = re.findall(r"^(x-[a-z0-9-]+): &", self.old, re.MULTILINE)
         self.assertEqual(
@@ -939,6 +964,29 @@ class Gpu13FleetTest(unittest.TestCase):
         for key in old_jobs:
             if "glm53" not in key:
                 self.assertEqual(new_jobs[key], old_jobs[key], key)
+
+    def test_qwen38_engine_runs_on_an_internal_network(self) -> None:
+        networks = self.small.split("\nnetworks:\n", 1)[1].split("\nvolumes:\n", 1)[0]
+        self.assertIn("    name: engine_qwen38\n    internal: true\n", service_block(self.small, ENGINE_NETWORK))
+        engine = service_block(self.small, COLOC_ENGINE)
+        self.assertIn("    networks:\n      - engine-qwen38\n    ipc: private\n    shm_size: 16gb\n", engine)
+        self.assertIn("      - HF_HUB_OFFLINE=1\n", engine)
+        self.assertNotIn("HF_TOKEN", engine)
+        for name in ("proxy-qwen38-27b", "proxy-qwen38-27b-abliterated", "otelcol-contrib"):
+            self.assertIn(ENGINE_NETWORK_JOIN, service_block(self.small, name), name)
+        probe = service_block(self.small, ENGINE_PROBE)
+        self.assertEqual(hashlib.sha256(probe.encode()).hexdigest(), ENGINE_PROBE_HASH)
+        self.assertIn('    networks:\n      - engine-qwen38\n    extra_hosts:\n      - "compose-manager:host-gateway"\n    entrypoint:\n', probe)
+        for name in ("proxy-qwen38-27b", "proxy-qwen38-27b-abliterated"):
+            self.assertIn(ENGINE_NETWORK_JOIN + ENGINE_PROBE_GATE, service_block(self.small, name), name)
+        self.assertEqual(self.small.count(ENGINE_PROBE_GATE), 2)
+        # No other service joins the engine network.
+        self.assertEqual(self.small.count("      - engine-qwen38\n"), 5)
+        collector = config_block(self.small, "otelcol_app_config")
+        self.assertIn("endpoint: 127.0.0.1:4317\n", collector)
+        self.assertIn("endpoint: 127.0.0.1:4318\n", collector)
+        self.assertNotIn("0.0.0.0:431", collector)
+        self.assertNotIn("    expose:\n", service_block(self.small, "otelcol-contrib"))
 
     def test_latest_engine_blocks_are_exactly_the_reviewed_move(self) -> None:
         for anchor, digest in LATEST_ENGINE_ANCHOR_HASHES.items():

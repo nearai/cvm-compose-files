@@ -350,9 +350,8 @@ def generate(text: str, glm: str) -> str:
         '      - "model-vllm-dsv41-dp4:host-gateway"\n'
         '      - "model-vllm-dsv41-dp5:host-gateway"\n'
         '      - "model-vllm-dsv41-dp6:host-gateway"\n'
-        '      - "model-vllm-dsv41-dp7:host-gateway"\n'
-        "    expose:\n",
-        "    expose:\n",
+        '      - "model-vllm-dsv41-dp7:host-gateway"\n',
+        "",
         "collector extra_hosts",
     )
     out = once(out, "  dsv41_kernel_cache:\n  humming_cache:\n", GHOST_VOLUME, "volumes")
