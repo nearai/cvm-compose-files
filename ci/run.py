@@ -7,6 +7,7 @@
   run.py --list-deployables  every deployable compose file, one per line
   run.py --noop <rev>     rendered diff of every deployable between <rev> and the working tree
   run.py --write-expected rewrite ci/data/expected.json from the working tree
+  run.py --write-status   rewrite the README status table from the rendered files, keeping each status
 
 Supported Python: 3.12, the python3 of the ubuntu-24.04 runner; CI fails on any other version. Stdlib only.
 """
@@ -356,6 +357,7 @@ def main():
     ap.add_argument("--list-deployables", action="store_true")
     ap.add_argument("--noop")
     ap.add_argument("--write-expected", action="store_true")
+    ap.add_argument("--write-status", action="store_true")
     a = ap.parse_args()
     if a.self_test:
         return self_test()
@@ -371,6 +373,11 @@ def main():
     if a.write_expected:
         head = Tree()
         write_expected(expected_doc(head, Renderer(head, load_json(head, SERVICES, {}))))
+        return 0
+    if a.write_status:
+        text = status.write_status(real_ctx(None))
+        with open(os.path.join(ROOT, "README.md"), "w") as f:
+            f.write(text)
         return 0
     ctx = real_ctx(a.base)
     if ctx.base is None:

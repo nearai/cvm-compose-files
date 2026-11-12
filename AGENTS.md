@@ -60,8 +60,9 @@ Read the rule file for a path before you change files under it; Claude Code also
   a publish workflow names. Other `.md` files there may be edited; the public-text rules scan them.
 - A new image is a new `docker/<dir>/` plus `.github/workflows/publish-<dir>.yaml` in one PR. CI lints
   a publish workflow only until it merges; its jobs run only in the protected `publish` env, never on PRs.
-- The README status table lists every deployable once with the served names it `serves`; at most
-  one candidate per serving group.
+- The README status table is generated from the rendered files (`--write-status`); only `status` is
+  hand-written. At most one candidate per serving group. A model served by more than one live file
+  has one note below the table saying how the files differ.
 - New paths follow Naming. Service key == `container_name`. Served names never change in place.
 - Waivers live only in `ci/data/exceptions.json`: `rule`, exact `path`, `sha256` of the matched text,
   `reason`, `remove_when`. Never copy the matched text into the entry or the PR. `claude.*`,

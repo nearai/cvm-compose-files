@@ -40,24 +40,48 @@ Legacy paths are listed in `ci/data/legacy.txt` and only shrink.
 
 ## Status
 
-Every deployable file, the served model names it serves, and its status.
+One row per served model name and engine configuration of each deployable; files without an engine
+get one row. `python3 ci/run.py --write-status` generates every column except `status`, and CI
+fails if a row differs from the rendered file. `model@revision` is the loaded checkpoint and the
+first 12 hex of its pinned revision (`-`: not pinned). `engine image` is the build dir the pinned
+digest comes from, a third-party image, or an image built on the host. `topology` follows the
+file-name grammar in `.claude/rules/prod.md`. `privacy`: `flag set` (explicit no-log flag),
+`waived` (listed in Known gaps), `n.a.` (no engine). `(legacy name)`: listed in `ci/data/legacy.txt`.
 
 <!-- status:begin -->
-| file | serves | status |
-|---|---|---|
-| `cleanup-hf-model.yaml` | - | live |
-| `prod/DeepSeek-V4.1-Flash-1017-vLLM-DEP8-Abliterated.yaml` | deepseek-ai/DeepSeek-V4.1-Flash-1017 | live |
-| `prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8-V12Q8.yaml` | z-ai/glm-5.3-flash | live |
-| `prod/GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext.yaml` | z-ai/glm-5.3-flash | live |
-| `prod/qwen38-27b-abliterated-cc-1gpu.yaml` | Qwen/Qwen3.8-27B | live |
-| `prod/rotate-compose-manager-token.yaml` | - | live |
-| `prod/sage-pull.yaml` | - | live |
-| `prod/sage.yaml` | - | live |
-| `prod/small-models.yaml` | Qwen/Qwen3-Embedding-0.6B,Qwen/Qwen3-Reranker-0.6B,Qwen/Qwen3-VL-30B-A3B-Instruct,Qwen/Qwen3.6-35B-A3B-FP8,Qwen/Qwen3.8-27B,black-forest-labs/FLUX.2-klein-4B,openai/whisper-large-v3,z-ai/glm-5.3-flash | live |
+| file | serves | model@revision | engine image | topology | privacy | status |
+|---|---|---|---|---|---|---|
+| `cleanup-hf-model.yaml` (legacy name) | - | - | - | - | n.a. | live |
+| `prod/DeepSeek-V4.1-Flash-1017-vLLM-DEP8-Abliterated.yaml` (legacy name) | deepseek-ai/DeepSeek-V4.1-Flash-1017 | deepseek-ai/DeepSeek-V4.1-Flash-1017@1bae0e108899 | docker/vllm-dsv41-v033 | dep8 | waived | live |
+| `prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8-V12Q8.yaml` (legacy name) | z-ai/glm-5.3-flash | graphistry/GLM-5.3-Flash-W4AFP8@99f1fa70408c | docker/sglang-glm53-v0523 | tp2x4 | flag set | live |
+| `prod/GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext.yaml` (legacy name) | z-ai/glm-5.3-flash | graphistry/GLM-5.3-Flash-W4AFP8@99f1fa70408c | docker/sglang-glm53-hicache-w4afp8 | tp4x2 | flag set | live |
+| `prod/GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext.yaml` (legacy name) | z-ai/glm-5.3-flash | graphistry/GLM-5.3-Flash-W4AFP8@99f1fa70408c | docker/sglang-glm53-v0523 | tp2x4 | flag set | live |
+| `prod/qwen38-27b-abliterated-cc-1gpu.yaml` (legacy name) | Qwen/Qwen3.8-27B | Qwen/Qwen3.8-27B-FP8@017b9c7af6b5 | third-party lmsysorg/sglang | tp1 | flag set | live |
+| `prod/rotate-compose-manager-token.yaml` (legacy name) | - | - | - | - | n.a. | live |
+| `prod/sage-pull.yaml` (legacy name) | - | - | - | - | n.a. | live |
+| `prod/sage.yaml` (legacy name) | - | - | - | - | n.a. | live |
+| `prod/small-models.yaml` (legacy name) | Qwen/Qwen3-Embedding-0.6B | Qwen/Qwen3-Embedding-0.6B@97b0c614be4d | third-party vllm/vllm-openai | tp1 | waived | live |
+| `prod/small-models.yaml` (legacy name) | Qwen/Qwen3-Reranker-0.6B | Qwen/Qwen3-Reranker-0.6B@e61197ed4502 | third-party vllm/vllm-openai | tp1 | waived | live |
+| `prod/small-models.yaml` (legacy name) | Qwen/Qwen3-VL-30B-A3B-Instruct | Qwen/Qwen3-VL-30B-A3B-Instruct-FP8@d9748a51ae66 | third-party vllm/vllm-openai | tp1 | waived | live |
+| `prod/small-models.yaml` (legacy name) | Qwen/Qwen3.6-35B-A3B-FP8 | Qwen/Qwen3.6-35B-A3B-FP8@95a723d08a94 | docker/sglang-v0523-secure | tp1 | flag set | live |
+| `prod/small-models.yaml` (legacy name) | Qwen/Qwen3.8-27B | Qwen/Qwen3.8-27B-FP8@017b9c7af6b5 | docker/sglang-v0523-secure | tp1 | flag set | live |
+| `prod/small-models.yaml` (legacy name) | black-forest-labs/FLUX.2-klein-4B | black-forest-labs/FLUX.2-klein-4B@- | docker/sglang-v0523-secure | tp1 | flag set | live |
+| `prod/small-models.yaml` (legacy name) | openai/whisper-large-v3 | openai/whisper-large-v3@06f233fe06e7 | built on host | tp1 | waived | live |
+| `prod/small-models.yaml` (legacy name) | z-ai/glm-5.3-flash | graphistry/GLM-5.3-Flash-W4AFP8@99f1fa70408c | docker/sglang-glm53-v0523 | tp2x2 | flag set | live |
 <!-- status:end -->
 
 `live` runs in production. Files that run nowhere are deleted; older versions stay reachable through
 release tags.
+
+Models served by more than one live file:
+
+- `z-ai/glm-5.3-flash`: `GLM-5.3-Flash-SGL-TP2x4-W4AFP8-V12Q8.yaml` runs four TP2 engines with an FP8 KV
+  cache. `GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext.yaml` runs four TP2 engines with smaller batches and two
+  TP4 engines on the hicache image with a bfloat16 KV cache and hierarchical cache. `small-models.yaml`
+  runs two TP2 engines with the V12Q8 settings next to other models.
+- `Qwen/Qwen3.8-27B`: `qwen38-27b-abliterated-cc-1gpu.yaml` runs it alone on one GPU on a third-party
+  SGLang image; `small-models.yaml` runs it on the `sglang-v0523-secure` image with half the GPU memory
+  and batch limits, next to other models. Both load the same checkpoint and LoRA adapter.
 
 ## Verify
 
