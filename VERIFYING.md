@@ -19,7 +19,14 @@ attestation are the proof.
   host. CI enforces it only through the flags and env of services it classifies as SGLang or vLLM (by
   service key, image name, command or `role: engine`), `aux` services included. It does not cover
   services on other images (nginx, the collector, GPU exporters, downloaders, registrars, `sage`,
-  `model-privacy-filter`), and it cannot see what any image logs by default.
+  `model-privacy-filter`), and it cannot see what any image logs by default. The SGLang images built
+  here also carry log-redaction patches, which CI does not check:
+  [14-admin-auth-redaction](docker/sglang-v0523-secure/patches/14-admin-auth-redaction.diff),
+  [15-customer-data-log-redaction](docker/sglang-v0523-secure/patches/15-customer-data-log-redaction.diff),
+  [26-log-format-followup](docker/sglang-v0523-secure/patches/26-log-format-followup.diff) (same files in
+  `sglang-glm53-v0523`), and in `sglang-glm53-hicache-w4afp8`
+  [admin-auth-redaction](docker/sglang-glm53-hicache-w4afp8/admin-auth-redaction.diff) and
+  [log-format](docker/sglang-glm53-hicache-w4afp8/log-format.diff).
 
 Start from the deployment record: a release tag `v0.0.N`, a file path and the file's SHA-256. Always
 verify by digest. Image tags on the registry can be moved; digests cannot.
@@ -146,6 +153,17 @@ at earlier release tags or are bases of another image.
 
 ## Known gaps
 
+Order in which the gaps below are to be closed, highest impact first:
+
+1. `privacy.no-log-flag`: set the explicit no-log flag on every vLLM engine.
+2. `pins.raw-key`, `pins.digest`: replace images built on the host or pinned by tag with images built
+   here and pinned by digest.
+3. `pins.hf-revision`, `pins.remote-code`: pin the model revision.
+4. `pins.url`, `layout.ext`, `layout.size`: fetch the LoRA adapter at a pinned revision, then delete
+   `adapters/`.
+5. `privacy.secret`: no empty defaults, no secrets inside embedded configs.
+6. `public.*`: move internal names out of config values, labels and workflows.
+
 CI checks compose files, build contexts, workflows and repo text. It does not check image contents, and
 nothing in this repo binds a host to a file. Deviations CI detects in live files are entries in
 `ci/data/exceptions.json`; each binds one rule, one file and the matched value. Counts per rule:
@@ -171,7 +189,14 @@ Gaps that are not exceptions:
   flag; other services on those images, such as every `role: aux` entry in
   `ci/data/services.allow.json`, are checked for flags and env that enable logging.
 - actionlint and zizmor check a publish workflow only until it merges. Publish workflows that exist
-  at the base commit are frozen and not linted, so findings in them stay.
+  at the base commit are frozen and not linted, so findings in them stay. All seven current ones have
+  known findings: a self-hosted runner label, shellcheck info and style notes, and zizmor
+  `artipacked` (checkout without `persist-credentials: false`).
+- Some pinned images are neither standard upstream images nor built here: `nearaidev/vllm-proxy-rs`
+  and `nearaidev/compose-manager-launcher` are built outside this repo, and the image of
+  `prod/sage.yaml` and `prod/sage-pull.yaml` comes from a vendor. This repo has no build record or
+  signing identity for them; only their digests are pinned. The Whisper engine in
+  `prod/small-models.yaml` is built on the host (`pins.raw-key`) and has no digest at all.
 - Two vLLM publish workflows skip the provenance attestation when resuming from an already pushed digest;
   such an image has a signature only.
 - Repository settings applied at merge: a `v*` tag ruleset blocks moving and deleting tags, but
