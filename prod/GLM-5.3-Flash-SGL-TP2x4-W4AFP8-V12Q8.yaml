@@ -1,131 +1,9 @@
-# GLM-5.3 Flash BASE TIER, v12 + Q8 DSA PREFILL FLEET FILE (gpu03 and gpu04), generated from
-# prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8.yaml (the v7 fleet file) by scripts/prepare_glm53_base_v12_q8_fleet.py (do not hand-edit).
-# Full copy of the v7 fleet file with ONLY: the engine image of all four replicas and of glm53-ghost-aggregator moved to
-# glm53-hicache-w4afp8-v12 (sha256:da8d4e4b5ec6..., the long tier's image), every replica's argv with
-# --dsa-prefill-backend flashmla_sparse_q8 (chunk 8192, queue 32, flashmla_kv decode unchanged), and the replicas'
-# engine_image / config_variant (-v12-q8) labels. Deploy one replica at a time with a scoped compose/up
-# (docs/glm53-base-v12-q8-rollout.md). ROLLBACK: redeploy prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8.yaml (v7) for the same service.
-# The v7 header below describes everything else; where it names the v7 image or flashmla_kv prefill, read v12 and
-# flashmla_sparse_q8 for the engines.
-# SGLang v0.5.23: r1-r4 run docker.io/nearaidev/sglang@sha256:050b1adf961c8621264d14696d24645f70d1a675509ad400a72ccfb1a3fddcb2
-#   (docker/sglang-glm53-v0523) with the v12 argv below plus --cuda-graph-backend-prefill disabled; the ghost aggregator
-#   stays on v12. One engine default differs: v0.5.23 turns SGLANG_EXPERIMENTAL_DSA_KPOOL_METADATA_FUSION on (=0 restores it).
-#   Labels: engine_image 050b1adf961c, config_variant <v12 variant without -v12-q8>-v0523.
-#   DEPLOY: from a main tag, gpu03 only, one replica per scoped compose/up, then otelcol-contrib. gpu04 does not deploy this
-#   file (scripts/prepare_glm53_gpu04_3b1l.py renders it on v12). ROLLBACK: the previous tag's copy, same single service.
-#
-# GLM-5.3 Flash BASE TIER, v7 FLEET CONFIG (gpu03 and gpu04): the one base config every host of the tier deploys.
-# All four replicas r1-r4 run the glm53-hicache-w4afp8-v7 image (#345) with FP8 KV (flashmla_kv prefill and decode),
-# 64 running requests / 64 decode graphs / 380 mamba slots, the overlap scheduler off, HiCache OFF (the form gpu03 r3
-# runs: the four HiCache flags are removed, nothing else about HiCache changes), the preprocess pool and the
-# tool-schema caps, and no profiling (no NEAR_SELF_PROFILE*). Runbook and evidence: docs/glm53-v7-fleet-rollout.md.
-# ROLLBACK (v7): redeploy the previous tag's copy of this file for the same services; it is the v6 image
-# (docker.io/nearaidev/sglang@sha256:9c6ddd4319c4ab00e351d8650459e68b8830e36ffcc029d67fa5e19d0ac3ed17) with bf16 KV, 48 running and HiCache on.
-#
-# Everything below this block describes the 4x TP2 layout and the history of its config; the engine argv, image and
-# telemetry labels are the v7 ones above wherever the older text names bf16, 48 running, 330 slots or HiCache.
-#
-# GLM-5.3 Flash base-tier 4x TP2 file (one 8x H200 host: gpu03 or gpu04), generated from
-# prod/GLM-5.3-Flash-SGL-TP4-W4AFP8.yaml by scripts/prepare_glm53_w4afp8_tp2x4.py.
-# Four independent TP2/EP2 replicas, one per NVLink GPU pair (0-1, 2-3, 4-5, 6-7), replace
-# the two TP4/EP4 replicas. Same checkpoint (graphistry/GLM-5.3-Flash-W4AFP8@99f1fa7) and
-# the same admission reserve (4096, max fraction 0.75), plus 8192-token prefill chunks
-# (the lab-qualified TP2 argv), a HiCache write_through_selective 325 GiB host tier per replica
-# (4 x 325 GiB; OFF in the v7 fleet config) and the DSA indexer split. The v7 file pins the v7 image (this file: v12, top):
-#   docker.io/nearaidev/sglang@sha256:fa730e6e62b2ae8058114ce540487ade33ab93bc42b1179ae78edc92bd563fc5
-# (docker/sglang-glm53-hicache-w4afp8 glm53-hicache-w4afp8-v7; #345, publish run 37693106399, main 29a7db9).
-#
-# EVIDENCE (lab, gpu31/gpu32, CC off, 2026-10-01; 1,300 GiB DRAM per 8 GPUs in both arms;
-# base-tier synth traffic from the 2026-09-17 prod snapshot, least-conn + affinity router):
-#   - Peak served throughput per 8 GPUs: 4xTP2 8.18 req/s / 1,871 output tok/s vs 2xTP4
-#     6.49 req/s / 1,545 tok/s (+26% / +21%). Unserved backlog 4.7% vs 18% at 8 req/s
-#     offered, 16% vs 37% at 10 req/s. 0 HTTP errors in every arm.
-#   - Lower TTFT for prompts <=10K at every load. Long prompts (30K+) are slower at low load:
-#     TP2 prefills with half the GPUs.
-#   - Hit rate unchanged: 84-85% synth; agent-trace replay 93.1% (4xTP2) vs 93.2% (2xTP4)
-#     at 96 agents.
-#   - TP2: 81.7 GiB weights per GPU, 1.08M-token VRAM KV pool per replica, and a 5.87M-token
-#     DRAM tier per replica at 325 GiB.
-#   - write_through_selective (vs write_through) cut recomputed tokens 17-25% on the replay
-#     with no throughput/ITL cost.
-#   - Running cap: 165 mamba state slots with BF16 SSM state (--max-mamba-cache-size 165
-#     --mamba-ssm-dtype bfloat16) let each TP2 replica run 32 requests instead of 15, with a
-#     1.0M-token VRAM pool and a 5.4M-token DRAM tier. Lab at 10 req/s offered per 8 GPUs vs
-#     the 15-running canary: 8.83 vs 7.74 req/s served (+14%), 2,064 vs 1,771 output tok/s
-#     (+16%), TTFT p50/p90 0.39/3.20 vs 1.60/5.56 s, backlog 228 vs 925, hit rate 76.8% vs
-#     71.5%. Cost: TPOT p90 188 vs 70 ms (bigger decode batches). Saturates at ~8.8 req/s.
-#
-# MEMORY-OPTIMIZED CONFIG (docs/glm53-base-tier-memopt-canary.md): all four replicas run the
-# candidate argv (mem 0.86, EAGLE fixed 4/1/5, 330 mamba slots, 48 running, pdi 2; tee-bench exp
-# 25/25b/25c), promoted from the r3/r4 canary after the gpu03 same-host bake on 2026-10-06. On
-# gpu32 bare metal under overload it served +16% (1.75 conv/s) / +25% (2.5 conv/s) more requests.
-#
-# GATES before any deploy (docs/glm53-tp2x4-base-canary.md): (1) quality with BF16 mamba
-# state at parity - PASSED 2026-10-02 (GSM8K 97.8% vs 97.4% FP32 state, perception 7/7); (2) a prod-CVM
-# test on a drained host agreed with Lloyd: CC-on startup of 4 x 325 GiB pinned host tiers
-# (cudaMallocHost), TP2 NCCL under PPCIe, CVM MemAvailable headroom, cold-start time;
-# (3) the image already pulled on the host; (4) Pranav + Lloyd go.
-#
-# None of the four engine names exists in the TP4 file (and vice versa): stop the old
-# engines with a scoped compose/down first; never let --remove-orphans do the switch.
-# ROLLBACK: prod/GLM-5.3-Flash-SGL-TP4-W4AFP8.yaml, under the same orphan rule.
-#
-# OBSERVABILITY: all four replicas enable the opt-in ghost prefix cache in shared mode
-# (SGLANG_GHOST_CACHE_REPLICA r1-r4, one key and socket on the in-memory ghost volume) and
-# the KV tier metrics; the glm53-ghost-aggregator sidecar pools the four replicas' digests
-# and is scraped like the engines. Both need the glm53-hicache-w4afp8-v6 image pinned here
-# (older images ignore the engine variables, and the sidecar would exit).
-# r1 inherits the anchor environment; r2-r4 repeat it with their own replica name (a YAML
-# merge key replaces a list wholesale).
-# Do not hand-edit this file.
-# 4x TP2 variant of the W4AFP8 GLM-5.3 Flash base-tier deployment for one 8x H200 canary
-# host: four independent TP2/EP2 replicas, one per NVLink GPU pair, behind one inference
-# proxy.
 x-logging-conf: &logging-conf
   driver: "json-file"
   options:
     max-size: "100m"
     max-file: "10"
     labels: "com.datadoghq.ad.logs,com.docker.compose.service"
-
-# GLM-5.3-Flash on four independent H200 TP2/EP2 replicas. Each replica stays
-# within one NVLink GPU pair; one inference-proxy uses its native
-# least-connections backend pool for health-aware balancing and failover.
-#
-# The engine is published by the repository's GitHub Actions workflow and pinned here by
-# its signed immutable registry digest. Its source is pinned to
-# PierreLeGuen/sglang-upstream commit fc91d24, derived from official SGLang main plus
-# the official GLM-5.3 branch. It contains upstream disconnect cleanup (#35255), the
-# final-prefill abort fix (#34153), the strict thinking-budget adapter, and two narrow
-# DSA import-cycle fixes. All four replicas pin the published split-capable
-# docker/sglang-glm53-hicache-w4afp8 derivative the long tier runs (glm53-hicache-w4afp8-v6):
-# the HCC-safe HiCache image (CUDA-owned host memory, carrying the opt-in chunked-prefill
-# admission-reserve v10 patch, nearai/inference-optimizer@fb94472) plus the W4AFP8
-# loader fix and the unconditional chunked-prefill pool clamp. The reserve is enabled
-# below with SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE=4096,
-# SGLANG_ADMISSION_RESERVE_MAX_FRACTION=0.75 and --prefill-decode-interval 1. The
-# official CUDA 13 SGLang image is the pinned build base. The serving envelope is
-# intentionally conservative: BF16 KV, 0.80 static memory, 32 running requests (an
-# effective 32 per TP2 replica with 165 BF16 mamba state slots, see the file header), a
-# bounded 8-request queue, 8192-token prefill chunks with --max-prefill-tokens 32768,
-# decode graphs capped at batch 32, TileLang DSA, the CUTLASS W4A8 MoE path (hence no
-# --moe-runner-backend and no FP8 --revision), and adaptive EAGLE 5/1/6. This retains
-# the full 1,048,576-token model context.
-# Priority scheduling (--enable-priority-scheduling, --disable-priority-preemption)
-# relies on the pinned inference-proxy below (build 2834196, nearai/inference-proxy#241)
-# overwriting the `priority` field of every forwarded request, so no client-chosen
-# or missing priority ever reaches the scheduler. --default-priority-value is
-# deliberately absent for the same reason. scripts/validate_glm53_prod_config.rb
-# refuses the priority switches unless proxy-glm53 pins a priority-normalizing build.
-#
-# A small fail-closed adapter patch maps the public thinking_token_budget field
-# to SGLang strict-thinking's custom_params.thinking_budget. Omitted values
-# default to 8192; explicit null remains an opt-out; an explicit native
-# custom_params.thinking_budget wins. Request/response payload logging is off.
-#
-# The vLLM GLM-5.3-Flash path is not used: its Hopper NVFP4/MLA path produced
-# non-finite logits and repetitive output. This pack also retires the previous
-# co-resident DeepSeek arm so both four-GPU islands serve GLM-5.3-Flash.
 
 x-nvidia: &nvidia
   runtime: nvidia
@@ -203,7 +81,6 @@ x-sg-glm53-flash-common: &sg-glm53-flash-common
     - ghost:/ghost
   environment:
     - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
-    # Local snapshot path; nothing is fetched at engine start.
     - HF_HUB_OFFLINE=1
     - TRANSFORMERS_OFFLINE=1
     - HF_HUB_DISABLE_TELEMETRY=1
@@ -214,61 +91,22 @@ x-sg-glm53-flash-common: &sg-glm53-flash-common
     - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
     - TORCHINDUCTOR_CACHE_DIR=/root/.cache/torchinductor
     - TRITON_CACHE_DIR=/root/.cache/triton
-    # Persist tilelang's DSA kernel JIT cache: it defaults to /root/.tilelang, outside
-    # the kernel_cache volume, so every restart re-paid ~22-24 compiles at 8-9 s each
-    # with the whole engine frozen (2026-09-12..16 capacity campaign).
     - TILELANG_CACHE_DIR=/root/.cache/tilelang
-    # /health must not run a generation: at this pin health_generate submits a real
-    # 1-token request that queues behind any in-flight long prefill, so the CVM
-    # proxy's 3 s probe times out, the replica flaps unhealthy, and the conversation
-    # affinity pin is skipped (full re-prefill on the other replica). nearai/infra#234.
     - SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION=0
-    # Admission-reserve v10 (carried by this image): reserve up to 4096 tokens of each
-    # 8192-token prefill chunk for waiting requests, sized on their uncached extend length,
-    # bounded so the in-flight long prefill keeps >=25% of the chunk, and refunded when no
-    # waiter used it. Pairs with --prefill-decode-interval 1 so admitted requests also decode.
-    # Measured (2026-09-12..16 campaign): <=2K prompts p95 TTFT 19.6 s -> 0.6 s; cost ITL p90
-    # 30 -> ~240 ms, median unchanged. The patch is inert with the reserve unset (rollback).
-    # NEVER set SGLANG_ADMISSION_RESERVE_MIN_WAIT_S (wall-clock gate desyncs the TP ranks; v10
-    # raises) or SGLANG_ADMISSION_RESERVE_MIN_ITERS (unmeasured in production).
     - SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE=4096
     - SGLANG_ADMISSION_RESERVE_MAX_FRACTION=0.75
     - SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE=1
-    # v7 fleet: HiCache is OFF (no --enable-hierarchical-cache in the argv), so the HiCache variables below are
-    # unread, exactly as gpu03 r3 runs. They stay so re-enabling is an argv-only change.
-    # HiCache host tier: a fixed 325 GiB per replica across its two TP ranks, 1,300 GiB for
-    # the four replicas (the lab arm's DRAM total per 8 GPUs; ~5.87M tokens per replica). A
-    # percentage would resolve against MemAvailable at each start, so the replicas started
-    # later would get less; startup fails if it exceeds available RAM minus 10 GiB.
     - SGLANG_HICACHE_RAM_BUDGET=${GLM53_HICACHE_RAM_BUDGET:-325GiB}
-    # CUDA-owned host memory (cudaMallocHost). Must stay 1 on TEE hosts: 0 selects
-    # cudaHostRegister, which fails with CUDA error 801 under HCC/PPCIe.
     - SGLANG_HICACHE_CUDA_HOST_MEMORY=${GLM53_HICACHE_CUDA_HOST_MEMORY:-1}
     - SGLANG_HICACHE_POOLED_TRANSFERS=1
     - SGLANG_HICACHE_STAGING_PAGES=64
-    # DSA indexer query split. Each TP rank scores 1/TP of a prefill chunk's rows instead of
-    # all of them, so the fp32 logits buffer -- sized new_tokens x total_context -- shrinks
-    # by TP (halves at TP2). gpu02's long-tier r1 crashed on 2026-09-25 without it:
-    # deep_gemm.fp8_mqa_logits asked for 11.96 GiB with 11.88 GiB free at ~392K context
-    # (dsa_indexer_kpool.py:919). This is a MITIGATION, not the fix: it divides the buffer
-    # by TP and does not bound it. The real fix is calling _should_chunk_mqa_logits
-    # (defined, unused, at dsa_indexer_kpool.py:862) and chunking against free memory.
     - SGLANG_DSA_INDEXER_QSPLIT=1
-    # Opt-in observability (docker/sglang-glm53-hicache-w4afp8 v6; older images ignore it).
-    # TP rank 0 only, off the serving path. The ghost prefix cache hashes each finished
-    # request's pages into keyed digests (a 1/16 sample; tokens never leave the engine)
-    # on a background thread and exports sglang:ghost_*. Every engine in this CVM shares the
-    # key on the in-memory ghost volume and sends its digests to glm53-ghost-aggregator,
-    # without ever blocking: if the aggregator is down the sends are dropped and counted.
-    # The KV tier metrics export sglang:kv_tier_* (VRAM/DRAM evictions, load-backs, tier sizes).
     - SGLANG_GHOST_CACHE=1
     - SGLANG_GHOST_CACHE_SAMPLE=16
     - SGLANG_GHOST_CACHE_KEY_FILE=/ghost/key
     - SGLANG_GHOST_CACHE_SOCKET=/ghost/aggregator.sock
     - SGLANG_GHOST_CACHE_REPLICA=r1
     - SGLANG_KV_TIER_METRICS=1
-    # v7 (opt-in in the image): the preprocess pool (SGLANG_PREPROCESS_WORKERS=0 is the old single-thread path)
-    # and the tool-schema caps (0 = off). Profiling is off (no self-profile variables).
     - SGLANG_PREPROCESS_WORKERS=4
     - SGLANG_PREPROCESS_TIMEOUT_S=60
     - SGLANG_PREPROCESS_LOG_SLOW_S=5
@@ -279,13 +117,6 @@ x-sg-glm53-flash-common: &sg-glm53-flash-common
   logging: *logging-conf
 
 x-sg-glm53-flash-candidate: &sg-glm53-flash-candidate
-  # v12 base fleet (docs/glm53-base-v12-q8-rollout.md): the v7 argv below with ONLY --dsa-prefill-backend
-  # flashmla_sparse_q8 (FP8/Q8 DSA prefill, 8K chunks kept); the v12 image comes from the common anchor.
-  # v7 fleet argv for every replica (tee-bench exp 25-32): the previous argv with mem 0.86, EAGLE fixed
-  # 4/1/5 (no adaptive), FP8 KV with both DSA backends flashmla_kv, 64 running / graph batch 64, 380 mamba
-  # slots (5 per running request), the overlap scheduler off, and HiCache OFF (the four HiCache flags are
-  # removed, as gpu03 r3 runs it; the HiCache environment stays and is unread). Everything else, including
-  # the environment and the engine image (v12 in this file), is inherited from the common anchor.
   <<: *sg-glm53-flash-common
   command: >
       sglang serve
@@ -348,11 +179,6 @@ services:
     container_name: model-downloader
     restart: "no"
     entrypoint: ["sh", "-c"]
-    # Every dedicated GLM-5.3 Flash TP4 file (not prod/small-models.yaml) also fetches the
-    # W4AFP8 snapshot (~165 GiB; keep >=250 GiB free on the model-cache volume), so moving
-    # a host between the FP8 and W4AFP8 files costs only the engine cold start:
-    # compose-manager runs `up --remove-orphans`, so a new file's downloader cannot run
-    # while engines it does not define are still serving.
     command:
       - |
         set -e
@@ -371,11 +197,6 @@ services:
     labels:
       com.datadoghq.ad.logs: '[{"source":"model-downloader","service":"model-downloader","tags":["model:zai-org/GLM-5.3-Flash","served_model:z-ai/glm-5.3-flash","deployment:glm53-flash-sgl-tp2x4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
 
-  # Dormant during normal deploys. Target this service explicitly with the
-  # maintenance profile when one model's shared HF cache must be evicted.
-  # Inlined copy of the root cleanup-hf-model.yaml service: compose-manager's
-  # compose/up fetches only the requested file, so cross-file `extends:` /
-  # `include:` must not be used here (they fail at config load).
   hf-cleanup:
     image: alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
     container_name: hf-cleanup
@@ -419,8 +240,6 @@ services:
       - huggingface_cache:/root/.cache/huggingface
     environment:
       - MODEL_NAME=${MODEL_NAME:-}
-    # Verbatim from cleanup-hf-model.yaml (not the file-wide *logging-conf) so the
-    # rendered service is unchanged from the previous `extends` result.
     logging:
       driver: "json-file"
       options:
@@ -454,9 +273,6 @@ services:
     entrypoint: ["sh", "/register.sh"]
     restart: unless-stopped
     healthcheck:
-      # Unhealthy if the registration loop hasn't ticked in 3m (e.g. wedged
-      # before the loop, or the loop died). Surfaces silent registrar failures
-      # in `docker ps` / Datadog. See cvm-compose-files#57.
       test: ["CMD-SHELL", "[ $$(( $$(date +%s) - $$(cat /tmp/registrar_alive 2>/dev/null || echo 0) )) -lt 180 ]"]
       interval: 30s
       timeout: 10s
@@ -476,7 +292,6 @@ services:
     labels:
       com.datadoghq.ad.logs: '[{"source":"model-proxy-registrar","service":"model-proxy-registrar","tags":["model:z-ai/glm-5.3-flash","deployment:glm53-flash-sgl-tp2x4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
 
-  # --- GLM-5.3-Flash proxy ---
   proxy-glm53:
     <<: *vllm-proxy-common
     container_name: proxy-glm53
@@ -492,27 +307,15 @@ services:
       - FUSION_ENABLED=${FUSION_ENABLED}
       - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
       - VLLM_BACKEND_URLS=http://model-sg-glm53-w4afp8-tp2-r1:8000,http://model-sg-glm53-w4afp8-tp2-r2:8000,http://model-sg-glm53-w4afp8-tp2-r3:8000,http://model-sg-glm53-w4afp8-tp2-r4:8000
-      # Keep append-only conversations on the replica that already holds their prefix cache
-      # (inference-proxy #227); new conversations still balance by least-connections.
       - VLLM_BACKEND_CONVERSATION_AFFINITY=1
       - VLLM_PROXY_MAX_REQUEST_SIZE=104857600
-      # Drop pooled upstream connections after 3 s idle. The engines' uvicorn closes an idle
-      # keep-alive connection after 5 s (SGLANG_TIMEOUT_KEEP_ALIVE default) while this proxy
-      # keeps one for 60 s by default, so a health probe could reuse a connection the engine
-      # had already closed: it fails at once and counts toward the 3 misses that mark a
-      # replica unhealthy. It applies to every pooled connection of this proxy (engines,
-      # cloud-api, compose-manager); each reconnects after 3 s idle.
       - VLLM_PROXY_POOL_IDLE_TIMEOUT_SECS=3
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
       - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
       - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
-      # Proxy downloads remote image/audio URLs and forwards data: URLs; video parts are refused.
-      # On by default; a deploy can pass VLLM_PROXY_INLINE_MEDIA=0 to turn inlining off.
       - VLLM_PROXY_INLINE_MEDIA=${VLLM_PROXY_INLINE_MEDIA:-1}
       - VLLM_PROXY_REJECTED_CONTENT_PART_TYPES=${VLLM_PROXY_REJECTED_CONTENT_PART_TYPES:-video_url}
-      # Replica-state publishing (inference-proxy #274): off unless the host's deploy env sets
-      # REPLICA_STATE_REDIS_URL; a bad value logs one error and disables only this feature.
       - REPLICA_STATE_REDIS_URL=${REPLICA_STATE_REDIS_URL:-}
       - REPLICA_STATE_REDIS_CA_CERT=${REPLICA_STATE_REDIS_CA_CERT:-}
       - REPLICA_STATE_HOST_ID=${CVM_HOST:-}
@@ -533,7 +336,6 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
-  # --- GLM-5.3-Flash engine replica 1 (SGLang TP2, GPUs 0-1) ---
   model-sg-glm53-w4afp8-tp2-r1:
     <<: *sg-glm53-flash-candidate
     container_name: model-sg-glm53-w4afp8-tp2-r1
@@ -571,13 +373,11 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
-  # --- GLM-5.3-Flash engine replica 2 (SGLang TP2, GPUs 2-3) ---
   model-sg-glm53-w4afp8-tp2-r2:
     <<: *sg-glm53-flash-candidate
     container_name: model-sg-glm53-w4afp8-tp2-r2
     environment:
       - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
-      # Local snapshot path; nothing is fetched at engine start.
       - HF_HUB_OFFLINE=1
       - TRANSFORMERS_OFFLINE=1
       - HF_HUB_DISABLE_TELEMETRY=1
@@ -588,61 +388,22 @@ services:
       - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
       - TORCHINDUCTOR_CACHE_DIR=/root/.cache/torchinductor
       - TRITON_CACHE_DIR=/root/.cache/triton
-      # Persist tilelang's DSA kernel JIT cache: it defaults to /root/.tilelang, outside
-      # the kernel_cache volume, so every restart re-paid ~22-24 compiles at 8-9 s each
-      # with the whole engine frozen (2026-09-12..16 capacity campaign).
       - TILELANG_CACHE_DIR=/root/.cache/tilelang
-      # /health must not run a generation: at this pin health_generate submits a real
-      # 1-token request that queues behind any in-flight long prefill, so the CVM
-      # proxy's 3 s probe times out, the replica flaps unhealthy, and the conversation
-      # affinity pin is skipped (full re-prefill on the other replica). nearai/infra#234.
       - SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION=0
-      # Admission-reserve v10 (carried by this image): reserve up to 4096 tokens of each
-      # 8192-token prefill chunk for waiting requests, sized on their uncached extend length,
-      # bounded so the in-flight long prefill keeps >=25% of the chunk, and refunded when no
-      # waiter used it. Pairs with --prefill-decode-interval 1 so admitted requests also decode.
-      # Measured (2026-09-12..16 campaign): <=2K prompts p95 TTFT 19.6 s -> 0.6 s; cost ITL p90
-      # 30 -> ~240 ms, median unchanged. The patch is inert with the reserve unset (rollback).
-      # NEVER set SGLANG_ADMISSION_RESERVE_MIN_WAIT_S (wall-clock gate desyncs the TP ranks; v10
-      # raises) or SGLANG_ADMISSION_RESERVE_MIN_ITERS (unmeasured in production).
       - SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE=4096
       - SGLANG_ADMISSION_RESERVE_MAX_FRACTION=0.75
       - SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE=1
-      # v7 fleet: HiCache is OFF (no --enable-hierarchical-cache in the argv), so the HiCache variables below are
-      # unread, exactly as gpu03 r3 runs. They stay so re-enabling is an argv-only change.
-      # HiCache host tier: a fixed 325 GiB per replica across its two TP ranks, 1,300 GiB for
-      # the four replicas (the lab arm's DRAM total per 8 GPUs; ~5.87M tokens per replica). A
-      # percentage would resolve against MemAvailable at each start, so the replicas started
-      # later would get less; startup fails if it exceeds available RAM minus 10 GiB.
       - SGLANG_HICACHE_RAM_BUDGET=${GLM53_HICACHE_RAM_BUDGET:-325GiB}
-      # CUDA-owned host memory (cudaMallocHost). Must stay 1 on TEE hosts: 0 selects
-      # cudaHostRegister, which fails with CUDA error 801 under HCC/PPCIe.
       - SGLANG_HICACHE_CUDA_HOST_MEMORY=${GLM53_HICACHE_CUDA_HOST_MEMORY:-1}
       - SGLANG_HICACHE_POOLED_TRANSFERS=1
       - SGLANG_HICACHE_STAGING_PAGES=64
-      # DSA indexer query split. Each TP rank scores 1/TP of a prefill chunk's rows instead of
-      # all of them, so the fp32 logits buffer -- sized new_tokens x total_context -- shrinks
-      # by TP (halves at TP2). gpu02's long-tier r1 crashed on 2026-09-25 without it:
-      # deep_gemm.fp8_mqa_logits asked for 11.96 GiB with 11.88 GiB free at ~392K context
-      # (dsa_indexer_kpool.py:919). This is a MITIGATION, not the fix: it divides the buffer
-      # by TP and does not bound it. The real fix is calling _should_chunk_mqa_logits
-      # (defined, unused, at dsa_indexer_kpool.py:862) and chunking against free memory.
       - SGLANG_DSA_INDEXER_QSPLIT=1
-      # Opt-in observability (docker/sglang-glm53-hicache-w4afp8 v6; older images ignore it).
-      # TP rank 0 only, off the serving path. The ghost prefix cache hashes each finished
-      # request's pages into keyed digests (a 1/16 sample; tokens never leave the engine)
-      # on a background thread and exports sglang:ghost_*. Every engine in this CVM shares the
-      # key on the in-memory ghost volume and sends its digests to glm53-ghost-aggregator,
-      # without ever blocking: if the aggregator is down the sends are dropped and counted.
-      # The KV tier metrics export sglang:kv_tier_* (VRAM/DRAM evictions, load-backs, tier sizes).
       - SGLANG_GHOST_CACHE=1
       - SGLANG_GHOST_CACHE_SAMPLE=16
       - SGLANG_GHOST_CACHE_KEY_FILE=/ghost/key
       - SGLANG_GHOST_CACHE_SOCKET=/ghost/aggregator.sock
       - SGLANG_GHOST_CACHE_REPLICA=r2
       - SGLANG_KV_TIER_METRICS=1
-      # v7 (opt-in in the image): the preprocess pool (SGLANG_PREPROCESS_WORKERS=0 is the old single-thread path)
-      # and the tool-schema caps (0 = off). Profiling is off (no self-profile variables).
       - SGLANG_PREPROCESS_WORKERS=4
       - SGLANG_PREPROCESS_TIMEOUT_S=60
       - SGLANG_PREPROCESS_LOG_SLOW_S=5
@@ -682,13 +443,11 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
-  # --- GLM-5.3-Flash engine replica 3 (SGLang TP2, GPUs 4-5) ---
   model-sg-glm53-w4afp8-tp2-r3:
     <<: *sg-glm53-flash-candidate
     container_name: model-sg-glm53-w4afp8-tp2-r3
     environment:
       - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
-      # Local snapshot path; nothing is fetched at engine start.
       - HF_HUB_OFFLINE=1
       - TRANSFORMERS_OFFLINE=1
       - HF_HUB_DISABLE_TELEMETRY=1
@@ -699,61 +458,22 @@ services:
       - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
       - TORCHINDUCTOR_CACHE_DIR=/root/.cache/torchinductor
       - TRITON_CACHE_DIR=/root/.cache/triton
-      # Persist tilelang's DSA kernel JIT cache: it defaults to /root/.tilelang, outside
-      # the kernel_cache volume, so every restart re-paid ~22-24 compiles at 8-9 s each
-      # with the whole engine frozen (2026-09-12..16 capacity campaign).
       - TILELANG_CACHE_DIR=/root/.cache/tilelang
-      # /health must not run a generation: at this pin health_generate submits a real
-      # 1-token request that queues behind any in-flight long prefill, so the CVM
-      # proxy's 3 s probe times out, the replica flaps unhealthy, and the conversation
-      # affinity pin is skipped (full re-prefill on the other replica). nearai/infra#234.
       - SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION=0
-      # Admission-reserve v10 (carried by this image): reserve up to 4096 tokens of each
-      # 8192-token prefill chunk for waiting requests, sized on their uncached extend length,
-      # bounded so the in-flight long prefill keeps >=25% of the chunk, and refunded when no
-      # waiter used it. Pairs with --prefill-decode-interval 1 so admitted requests also decode.
-      # Measured (2026-09-12..16 campaign): <=2K prompts p95 TTFT 19.6 s -> 0.6 s; cost ITL p90
-      # 30 -> ~240 ms, median unchanged. The patch is inert with the reserve unset (rollback).
-      # NEVER set SGLANG_ADMISSION_RESERVE_MIN_WAIT_S (wall-clock gate desyncs the TP ranks; v10
-      # raises) or SGLANG_ADMISSION_RESERVE_MIN_ITERS (unmeasured in production).
       - SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE=4096
       - SGLANG_ADMISSION_RESERVE_MAX_FRACTION=0.75
       - SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE=1
-      # v7 fleet: HiCache is OFF (no --enable-hierarchical-cache in the argv), so the HiCache variables below are
-      # unread, exactly as gpu03 r3 runs. They stay so re-enabling is an argv-only change.
-      # HiCache host tier: a fixed 325 GiB per replica across its two TP ranks, 1,300 GiB for
-      # the four replicas (the lab arm's DRAM total per 8 GPUs; ~5.87M tokens per replica). A
-      # percentage would resolve against MemAvailable at each start, so the replicas started
-      # later would get less; startup fails if it exceeds available RAM minus 10 GiB.
       - SGLANG_HICACHE_RAM_BUDGET=${GLM53_HICACHE_RAM_BUDGET:-325GiB}
-      # CUDA-owned host memory (cudaMallocHost). Must stay 1 on TEE hosts: 0 selects
-      # cudaHostRegister, which fails with CUDA error 801 under HCC/PPCIe.
       - SGLANG_HICACHE_CUDA_HOST_MEMORY=${GLM53_HICACHE_CUDA_HOST_MEMORY:-1}
       - SGLANG_HICACHE_POOLED_TRANSFERS=1
       - SGLANG_HICACHE_STAGING_PAGES=64
-      # DSA indexer query split. Each TP rank scores 1/TP of a prefill chunk's rows instead of
-      # all of them, so the fp32 logits buffer -- sized new_tokens x total_context -- shrinks
-      # by TP (halves at TP2). gpu02's long-tier r1 crashed on 2026-09-25 without it:
-      # deep_gemm.fp8_mqa_logits asked for 11.96 GiB with 11.88 GiB free at ~392K context
-      # (dsa_indexer_kpool.py:919). This is a MITIGATION, not the fix: it divides the buffer
-      # by TP and does not bound it. The real fix is calling _should_chunk_mqa_logits
-      # (defined, unused, at dsa_indexer_kpool.py:862) and chunking against free memory.
       - SGLANG_DSA_INDEXER_QSPLIT=1
-      # Opt-in observability (docker/sglang-glm53-hicache-w4afp8 v6; older images ignore it).
-      # TP rank 0 only, off the serving path. The ghost prefix cache hashes each finished
-      # request's pages into keyed digests (a 1/16 sample; tokens never leave the engine)
-      # on a background thread and exports sglang:ghost_*. Every engine in this CVM shares the
-      # key on the in-memory ghost volume and sends its digests to glm53-ghost-aggregator,
-      # without ever blocking: if the aggregator is down the sends are dropped and counted.
-      # The KV tier metrics export sglang:kv_tier_* (VRAM/DRAM evictions, load-backs, tier sizes).
       - SGLANG_GHOST_CACHE=1
       - SGLANG_GHOST_CACHE_SAMPLE=16
       - SGLANG_GHOST_CACHE_KEY_FILE=/ghost/key
       - SGLANG_GHOST_CACHE_SOCKET=/ghost/aggregator.sock
       - SGLANG_GHOST_CACHE_REPLICA=r3
       - SGLANG_KV_TIER_METRICS=1
-      # v7 (opt-in in the image): the preprocess pool (SGLANG_PREPROCESS_WORKERS=0 is the old single-thread path)
-      # and the tool-schema caps (0 = off). Profiling is off (no self-profile variables).
       - SGLANG_PREPROCESS_WORKERS=4
       - SGLANG_PREPROCESS_TIMEOUT_S=60
       - SGLANG_PREPROCESS_LOG_SLOW_S=5
@@ -793,13 +513,11 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
-  # --- GLM-5.3-Flash engine replica 4 (SGLang TP2, GPUs 6-7) ---
   model-sg-glm53-w4afp8-tp2-r4:
     <<: *sg-glm53-flash-candidate
     container_name: model-sg-glm53-w4afp8-tp2-r4
     environment:
       - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
-      # Local snapshot path; nothing is fetched at engine start.
       - HF_HUB_OFFLINE=1
       - TRANSFORMERS_OFFLINE=1
       - HF_HUB_DISABLE_TELEMETRY=1
@@ -810,61 +528,22 @@ services:
       - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
       - TORCHINDUCTOR_CACHE_DIR=/root/.cache/torchinductor
       - TRITON_CACHE_DIR=/root/.cache/triton
-      # Persist tilelang's DSA kernel JIT cache: it defaults to /root/.tilelang, outside
-      # the kernel_cache volume, so every restart re-paid ~22-24 compiles at 8-9 s each
-      # with the whole engine frozen (2026-09-12..16 capacity campaign).
       - TILELANG_CACHE_DIR=/root/.cache/tilelang
-      # /health must not run a generation: at this pin health_generate submits a real
-      # 1-token request that queues behind any in-flight long prefill, so the CVM
-      # proxy's 3 s probe times out, the replica flaps unhealthy, and the conversation
-      # affinity pin is skipped (full re-prefill on the other replica). nearai/infra#234.
       - SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION=0
-      # Admission-reserve v10 (carried by this image): reserve up to 4096 tokens of each
-      # 8192-token prefill chunk for waiting requests, sized on their uncached extend length,
-      # bounded so the in-flight long prefill keeps >=25% of the chunk, and refunded when no
-      # waiter used it. Pairs with --prefill-decode-interval 1 so admitted requests also decode.
-      # Measured (2026-09-12..16 campaign): <=2K prompts p95 TTFT 19.6 s -> 0.6 s; cost ITL p90
-      # 30 -> ~240 ms, median unchanged. The patch is inert with the reserve unset (rollback).
-      # NEVER set SGLANG_ADMISSION_RESERVE_MIN_WAIT_S (wall-clock gate desyncs the TP ranks; v10
-      # raises) or SGLANG_ADMISSION_RESERVE_MIN_ITERS (unmeasured in production).
       - SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE=4096
       - SGLANG_ADMISSION_RESERVE_MAX_FRACTION=0.75
       - SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE=1
-      # v7 fleet: HiCache is OFF (no --enable-hierarchical-cache in the argv), so the HiCache variables below are
-      # unread, exactly as gpu03 r3 runs. They stay so re-enabling is an argv-only change.
-      # HiCache host tier: a fixed 325 GiB per replica across its two TP ranks, 1,300 GiB for
-      # the four replicas (the lab arm's DRAM total per 8 GPUs; ~5.87M tokens per replica). A
-      # percentage would resolve against MemAvailable at each start, so the replicas started
-      # later would get less; startup fails if it exceeds available RAM minus 10 GiB.
       - SGLANG_HICACHE_RAM_BUDGET=${GLM53_HICACHE_RAM_BUDGET:-325GiB}
-      # CUDA-owned host memory (cudaMallocHost). Must stay 1 on TEE hosts: 0 selects
-      # cudaHostRegister, which fails with CUDA error 801 under HCC/PPCIe.
       - SGLANG_HICACHE_CUDA_HOST_MEMORY=${GLM53_HICACHE_CUDA_HOST_MEMORY:-1}
       - SGLANG_HICACHE_POOLED_TRANSFERS=1
       - SGLANG_HICACHE_STAGING_PAGES=64
-      # DSA indexer query split. Each TP rank scores 1/TP of a prefill chunk's rows instead of
-      # all of them, so the fp32 logits buffer -- sized new_tokens x total_context -- shrinks
-      # by TP (halves at TP2). gpu02's long-tier r1 crashed on 2026-09-25 without it:
-      # deep_gemm.fp8_mqa_logits asked for 11.96 GiB with 11.88 GiB free at ~392K context
-      # (dsa_indexer_kpool.py:919). This is a MITIGATION, not the fix: it divides the buffer
-      # by TP and does not bound it. The real fix is calling _should_chunk_mqa_logits
-      # (defined, unused, at dsa_indexer_kpool.py:862) and chunking against free memory.
       - SGLANG_DSA_INDEXER_QSPLIT=1
-      # Opt-in observability (docker/sglang-glm53-hicache-w4afp8 v6; older images ignore it).
-      # TP rank 0 only, off the serving path. The ghost prefix cache hashes each finished
-      # request's pages into keyed digests (a 1/16 sample; tokens never leave the engine)
-      # on a background thread and exports sglang:ghost_*. Every engine in this CVM shares the
-      # key on the in-memory ghost volume and sends its digests to glm53-ghost-aggregator,
-      # without ever blocking: if the aggregator is down the sends are dropped and counted.
-      # The KV tier metrics export sglang:kv_tier_* (VRAM/DRAM evictions, load-backs, tier sizes).
       - SGLANG_GHOST_CACHE=1
       - SGLANG_GHOST_CACHE_SAMPLE=16
       - SGLANG_GHOST_CACHE_KEY_FILE=/ghost/key
       - SGLANG_GHOST_CACHE_SOCKET=/ghost/aggregator.sock
       - SGLANG_GHOST_CACHE_REPLICA=r4
       - SGLANG_KV_TIER_METRICS=1
-      # v7 (opt-in in the image): the preprocess pool (SGLANG_PREPROCESS_WORKERS=0 is the old single-thread path)
-      # and the tool-schema caps (0 = off). Profiling is off (no self-profile variables).
       - SGLANG_PREPROCESS_WORKERS=4
       - SGLANG_PREPROCESS_TIMEOUT_S=60
       - SGLANG_PREPROCESS_LOG_SLOW_S=5
@@ -904,9 +583,6 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
-  # Explicit operator-only semantic check; never starts with a normal stack apply.
-  # Runs the candidate's synthetic fixture gate against each replica at concurrency 1.
-  # No GPU allocation, host mounts, Docker socket, credentials, or published ports.
   glm53-perception-check:
     image: docker.io/nearaidev/sglang@sha256:e9d29a1cb1cd65284392c4d62d5f2a36669628057e15c60fe93ea40cfe4fc7e7
     container_name: glm53-perception-check
@@ -947,8 +623,6 @@ services:
     labels:
       com.datadoghq.ad.logs: '[{"source":"glm53-perception-check","service":"glm53-perception-check","tags":["model:z-ai/glm-5.3-flash","deployment:glm53-flash-sgl-tp2x4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
 
-  # Explicit operator-only TLS access to each replica for paired qualification.
-  # Never registered with the customer router; no model/proxy dependencies.
   glm53-soak-relay:
     image: nginx@sha256:1d13701a5f9f3fb01aaa88cef2344d65b6b5bf6b7d9fa4cf0dca557a8d7702ba
     container_name: glm53-soak-relay
@@ -980,13 +654,6 @@ services:
     labels:
       com.datadoghq.ad.logs: '[{"source":"nginx","service":"nginx","tags":["model:z-ai/glm-5.3-flash","deployment:glm53-flash-sgl-tp2x4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
 
-  # --- Ghost prefix cache aggregator: one per CVM, CPU only ---
-  # All four engines in this CVM send their sampled page digests (keyed hashes, never tokens)
-  # to /ghost/aggregator.sock on the in-memory ghost volume. This process keeps one LRU across
-  # them and exports sglang:ghost_pool_* on :9464: per replica, the reuse one pooled cache
-  # would have served and the reuse seen only on another replica. It runs the engines' image so
-  # both move together. Serving never depends on it: the engines do not wait for it, and an
-  # image without ghost-prefix-cache.diff makes only this container exit and restart.
   glm53-ghost-aggregator:
     image: docker.io/nearaidev/sglang@sha256:da8d4e4b5ec667499b58a21e56050aae9bcfc4df9669b3ac27e2e20af033d681
     container_name: glm53-ghost-aggregator
@@ -1022,8 +689,6 @@ services:
       nearai.otel.host_machine: "${CVM_HOST}"
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
-
-  # --- Full-host GPU telemetry ---
 
   dcgm-glm53:
     <<: *dcgm-common

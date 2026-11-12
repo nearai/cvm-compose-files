@@ -1,170 +1,3 @@
-# 2026-11-02 engine tuning (model-sg-qwen38-27b-fp8-tp1-lora only): --attention-backend
-# flashinfer -> fa3 and --max-mamba-cache-size 320 -> 192; engine config_variant is now
-# qwen38-abl-cc-1gpu-fa3-m192 (proxies, registrars and dcgm keep qwen38-abl-cc-1gpu). Why:
-# with LoRA on, the old argv hits a KV-cache cliff under long-prompt load (691k KV tokens,
-# ~3% cache hit); mamba 192 gives 991k KV tokens. Evidence: tee-bench
-# evidence/gpu31-exp55-qwen38-lora-mix, bare metal gpu31, same image (qwen38.27b.g561c8f3).
-# On the coloc shape (r7: mem 0.50, chunk 4096) fa3 alone raised cache hit 3.5% -> 15% and cut
-# TTFT(<64k) p50 121 s -> 40 s; this file's shape was measured in the earlier exp55 runs (needle 16k-200k,
-# arithmetic, greedy parity, adapter-active screens unchanged). r8 probes (FI/m320 vs FA3/m192:
-# thinking-on split, tool calls, refusal base 40/40 and abliterated 1/40 on both, CJK echo) were identical and
-# passing; bursts of 64-96 concurrent short requests: 0 errors, 0 empty. Prod 7-day mamba slots on
-# gpu32 GPU 7: max ~192, p99 ~76; running p99 19, max 64.
-# Effective concurrency: mamba slots cap admission at about 3 slots/request. FA3/m192 peaked at 38 running
-# (mamba_usage plateau 0.60) with the rest queued; FI/m320 reached 64. So 192 ~ 38 effective, not 64.
-# Slot exhaustion queues, it does not error.
-# FA3 + mamba 192 were measured on bare metal (gpu31), NOT yet under single-GPU CC: the
-# first deploy is a watched canary on gpu32 (cache hit rate, queue depth, FB used). Roll back to the
-# previous tag (flashinfer, mamba 320) on: FB used > 135 GiB, engine restart or OOM, TTFT/ITL
-# regression vs the pre-deploy baseline, queue growth, or mamba_usage >= 0.95 sustained.
-# 2026-11-03: --enable-priority-scheduling --disable-priority-preemption on the engine plus
-# inference-proxy 41e8602f (#336) size tiers on both proxies; engine config_variant gains -prio.
-# 2026-11-04: both proxies move to inference-proxy 53d79441 (#337), which keeps #336's size tiers.
-# exp55 R10 (gpu31, no preemption): <16k p95 TTFT ~127 s -> ~19-24 s, >=64k p95 +10-15%, 0 errors.
-# Not included yet: --mamba-ssm-dtype bfloat16 (under test; add it as one line next to
-# --max-mamba-cache-size and bump the engine config_variant).
-#
-# The STATUS block below is superseded: gpu32 GPU 7 has served prod with this file since 2026-10-29.
-# STATUS: STAGING-GATED. In prod/ so compose-manager can deploy it from a vX.Y.Z tag
-# (cvm-ansible-playbooks' deploy workflow accepts only prod/ files; AGENT.md forbids
-# deploying experiments/). The README soak gate is enforced by MODEL_PROXY_REGISTRATION,
-# which defaults to `disabled`: a deployed instance takes no model-proxy traffic until it
-# is set to `staging`, and must not be set to `production` until all of these pass:
-#   - the 30-minute staging soak (0 request failures, model-onboarding soak harness) on a
-#     real single-GPU CC CVM; nothing has run on one yet
-#   - LoRA under CC: SGLang --enable-lora with the abliterated-r1 adapter is proven on the
-#     gpu13 PPCIe CVM only; a pinned-host-memory failure under single-GPU CC is the main
-#     unknown
-#   - --mem-fraction-static 0.85 (the gpu13 dedicated recipe, a PPCIe CVM) is unverified
-#     on the single-GPU CC CVM; check for OOM at engine start and under load
-#   - host-port forwarding: guest 8000/8444 to HOST_PORT_BASE+0/+44 on gpu31/gpu32 is
-#     untested; qualify it before MODEL_PROXY_REGISTRATION is turned on
-#
-# Qwen3.8-27B (base) AND Qwen3.8-27B-abliterated from ONE SGLang engine on ONE H200 NVL
-# in a single-GPU confidential-computing compose-manager CVM (TDX + GPU CC mode, not
-# PPCIe). First target: gpu32 GPU 7 (instance cm-gpu32-g7). The file is instance-agnostic:
-# any gpu31/gpu32 single-GPU CVM can run it by setting the env vars below. Nothing here is
-# deployed.
-#
-# Engine: SGLang + LoRA, copied from the proven gpu13 stack in prod/small-models.yaml
-# (engine image lmsysorg/sglang@sha256:febfb971..., --enable-lora with the
-# adapters/qwen38-27b-abliterated-r1 adapter, inference-proxy 5faff1b with
-# VLLM_PROXY_BACKEND_LORA). gpu13 is a PPCIe CVM, so this exact combination is NOT yet
-# proven under single-GPU CC. vLLM (bare-metal gpu32 engine) was not chosen: the
-# proxy's LoRA selector handling (injected lora_path) is the part proven in a CVM here.
-#
-# One GPU, TP1: Qwen/Qwen3.8-27B-FP8 @ 017b9c7af6b5689d5dd426a76e0bc077eb5ca20a plus the
-# adapter. The engine's --served-model-name is the base id and the adapter is a LoRA name,
-# so its /v1/models lists BOTH ids. Two inference-proxies front it, as on gpu13:
-#   proxy-qwen38-27b             Qwen/Qwen3.8-27B, strict request model, TOKEN=PROXY_TOKEN
-#   proxy-qwen38-27b-abliterated Qwen/Qwen3.8-27B-abliterated, strict request model +
-#                                VLLM_PROXY_BACKEND_LORA (injects lora_path), allowed-org
-#                                gate, TOKEN=QWEN38_ABLITERATED_PROXY_TOKEN
-# nginx-qwen38 selects the proxy (see Routing). The engine port is never published.
-# Customer API keys are denied on the abliterated proxy until
-# QWEN38_ABLITERATED_ALLOWED_ORG_IDS is set. The base proxy has no org gate (as on gpu13).
-#
-# Routing (nginx-qwen38, mirrors gpu13's nginx-qwen38):
-#   :8000 plain   default server -> base proxy, so model-proxy's probe at host B+0 reads
-#                 the engine list (both ids). Host qwen3-8-27b-abliterated[.completions-stg]
-#                 -> abliterated proxy (resolved per request).
-#   :8444 TLS     SNI qwen3-8-27b(-stg, -i<N>) -> base proxy; SNI
-#                 qwen3-8-27b-abliterated(-stg, -i<N>) -> abliterated proxy. The base
-#                 server is also the TLS default_server (gpu13's base block is the first,
-#                 hence the default, on :8001), so the instance's direct host name and
-#                 unknown SNI reach the base proxy, which only serves the base id.
-#   /v1/metrics is open on the plain :8000 default server only (proxied to the base
-#   proxy), because model-proxy samples capacity from {probe}/v1/metrics; this matches
-#   gpu13's nginx-qwen38 :8000. /metrics stays private (404) on every server, and
-#   /v1/metrics is 404 on the :8000 abliterated Host server and every TLS :8444 server.
-# model-proxy discovery maps both models' domains to (HOST_IP:B+0 probe, routing port
-# B+44) and nginx picks the proxy by SNI.
-#
-# Registrars (as on gpu13):
-#   qwen38-registrar             owns the endpoint HOST_IP:B+0 with routing_port B+44 and
-#                                registers the base model. Only it unregisters, on stop or
-#                                when a health check fails (see Shared-endpoint health).
-#   qwen38-abliterated-registrar only register_model for the abliterated domain; it never
-#                                registers or unregisters an endpoint.
-# Both wait for the engine /v1/models to list BOTH ids before registering anything.
-#
-# Shared-endpoint health (tradeoff): both models share ONE model-proxy endpoint, and
-# model-proxy has no per-model endpoint health or withdrawal (/unregister/model is not
-# propagated and peer sync restores the mapping). So the base registrar gates the endpoint
-# on BOTH routes each cycle: the /v1/models list, base chat + base TLS, and abliterated
-# chat (Host header through the local nginx, QWEN38_ABLITERATED_PROXY_TOKEN) + abliterated
-# TLS SNI. An abliterated failure counts toward the same 3-failure threshold and
-# unregisters the endpoint. One failing model therefore withdraws BOTH models from this
-# instance: intended and fail-closed, because a broken abliterated route would otherwise
-# keep receiving traffic through the shared endpoint. Backpressure (curl 52/56, HTTP 503)
-# counts as alive for both routes.
-#
-# GPU CC rules: cudaHostRegister fails (error 801), so nothing here uses pinned host
-# memory: no HiCache, no host KV offload, no --enable-hierarchical-cache. No gpu13 flag
-# was dropped (the gpu13 engine command uses none of these); the LoRA path is unchecked
-# under CC, see "Validate first".
-#
-# Deviations from gpu13:
-#   - GPU gets the whole H200: sizing follows the gpu13 dedicated recipe
-#     (x-qwen3-8-27b-dedicated: mem-fraction 0.85, chunk/prefill 8192, mamba cache 192,
-#     64 running / 128 queued) instead of the 0.50 coloc values, plus the LoRA flags.
-#   - GPU reserved with count: 1 (the CVM sees exactly one GPU), not device_ids "2".
-#   - Standalone: own nginx on the canonical guest ports 8000 (HTTP) and 8444 (TLS) in
-#     place of gpu13's 8000/8001. The host side is HOST_PORT_BASE+0 / +44, not 8000/8001.
-#   - Registrars are not profile-gated; MODEL_PROXY_REGISTRATION (default disabled) gates
-#     them, and they run their health checks against the local nginx (guest ports), not
-#     HOST_IP:port, so nothing depends on hairpin NAT.
-#   - The plain abliterated Host server also lists the completions-stg name, because the
-#     abliterated registrar sends Host: <its domain> and the staging domain differs.
-#   - Telemetry drops gpu_pair and adds instance/gpu labels from INSTANCE_LABEL.
-#
-# Ports. Guest ports are fixed by the CVM (8000-8010, 8444 TLS, 8080 compose-manager,
-# which is not in this file). The host side is B = 11000 + 100*i: guest 8000+k -> B+k,
-# guest 8444 -> B+44 (gpu32 GPU 7, i=7: 11700 and 11744). This file publishes guest 8000
-# (nginx HTTP) and 8444 (nginx TLS). The base registrar advertises the HOST ports.
-#
-# Deploy-time env (all must be set unless a default is shown):
-#   Compose-manager supplied (as on other CVMs): ENV, CVM_HOST, CVM_NAME, HOST_IP,
-#     DD_HOSTNAME, MONITORING_INGEST_TOKEN
-#   HUGGING_FACE_HUB_TOKEN, CLOUD_API_USAGE_TOKEN, FUSION_ENABLED,
-#     FUSION_INTERNAL_BEARER_TOKEN, WEB_CONTEXT_SEARCH_URL, WEB_CONTEXT_SEARCH_API_KEY
-#   PROXY_TOKEN              bearer token of the BASE proxy (proxy-qwen38-27b) and of the
-#     base registrar's inference probes. The usual fleet-wide token, as on gpu13.
-#   QWEN38_ABLITERATED_PROXY_TOKEN  dedicated bearer token of the ABLITERATED proxy and of
-#     the abliterated registrar's probes and the base registrar's abliterated route checks. Do NOT reuse PROXY_TOKEN: the fleet-wide token
-#     must never bypass the abliterated no-organizations default.
-#   QWEN38_ABLITERATED_PROXY_TOKEN_NEXT  optional second token the ABLITERATED proxy also accepts during rotation
-#   INSTANCE_LABEL           instance name for telemetry, e.g. cm-gpu32-g7 (default unknown)
-#   HOST_PORT_BASE           host port base B, e.g. 11700 (required once registration is on)
-#   MODEL_PROXY_REGISTRATION disabled (default) | staging | production (both registrars)
-#   MODEL_PROXY_TOKEN        token for the selected model-proxy (needed unless disabled)
-#   QWEN38_ABLITERATED_ALLOWED_ORG_IDS  comma-separated org ids (default: no organizations)
-#   HOST_HTTP_PORT, HOST_TLS_PORT       optional explicit overrides of B+0 and B+44
-#   HOST_PORT_BASE and the overrides must be decimal integers without leading zeros; the
-#   resulting ports must be 1-65535. HOST_IP must be non-empty. Only the base registrar
-#   reads HOST_IP and the host ports.
-#
-# Registration: disabled does nothing. staging uses https://completions-stg.near.ai and
-# the completions-stg domains. production uses https://completions.near.ai. Production
-# must be chosen explicitly. Qualify the host ports first (see Validate first). Start
-# both registrars together: the abliterated domain is only usable through the endpoint the
-# base registrar owns.
-#
-# Telemetry: host/cvm_name labels keep CVM_HOST and CVM_NAME; instance carries
-# INSTANCE_LABEL. Grafana still keys on <host>-compose-manager, so these CVMs do not get
-# their own Grafana host entry from the labels.
-#
-# TLS: certs come from the external certs volume, as on gpu13 (completions.near.ai
-# lineage, issued by compose-manager's certbot; not redesigned here). Many single-GPU
-# CVMs requesting the same certificate set can hit Let's Encrypt duplicate-certificate
-# limits; stagger first boots and watch certbot logs before adding instances.
-#
-# Validate first (per the single-GPU CC handover): guest conf-compute reports CC ON,
-# one GPU, Intel TDX; /v1/attestation/report returns 200 with a nonce; chat for both
-# models on host B+0; TLS for both domains on B+44; /v1/models lists both ids; /metrics is
-# not public; LoRA load and first request work under CC (a pinned-host-memory failure
-# there is the main unknown); decode speed against bare metal.
-
 x-logging-conf: &logging-conf
   driver: "json-file"
   options:
@@ -259,9 +92,6 @@ services:
     labels:
       com.datadoghq.ad.logs: '[{"source":"model-downloader","service":"model-downloader","tags":["model:Qwen/Qwen3.8-27B-abliterated","deployment:qwen38-abliterated-cc-1gpu","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","instance:${INSTANCE_LABEL:-unknown}","config_variant:qwen38-abl-cc-1gpu","lora:abliterated-r1"]}]'
 
-  # The engine sits on an internal network only: it has no route out of the CVM
-  # and no DNS for outside names. The proxies fetch remote media for it
-  # (VLLM_PROXY_INLINE_MEDIA) and it loads weights from the local cache.
   model-sg-qwen38-27b-fp8-tp1-lora:
     <<: *nvidia
     networks:
@@ -271,7 +101,6 @@ services:
       - SYS_NICE
     container_name: model-sg-qwen38-27b-fp8-tp1-lora
     image: lmsysorg/sglang@sha256:febfb971c7352570fc445c466ebd6ffc9d896024958e544a60f2137fd85856b1
-    # No --enable-mixed-chunk: with extra_buffer it caches stale GDN state and prefix hits return empty answers (sglang#39342).
     command: >
       sglang serve
       --trust-remote-code
@@ -300,16 +129,12 @@ services:
       --enable-cache-report
       --enable-metrics
       --log-requests-level 0
-    # No PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True: SGLang's CUDA IPC handoff
-    # needs pidfd_getfd under expandable segments and crashed on gpu23 (2026-10-23).
     environment:
       - HF_HUB_OFFLINE=1
       - VLLM_LOGGING_LEVEL=INFO
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
       - OPENBLAS_L2_SIZE=2097152
       - NCCL_DEBUG=WARN
-      # /health answers without a 1-token generation. That generation queues behind
-      # long prefills and fails the proxy's 3 s probe on a busy engine (as GLM-5.3, #274).
       - SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION=0
     volumes:
       - hugginface_cache:/root/.cache/huggingface
@@ -361,8 +186,6 @@ services:
       nearai.otel.sglang_revision: "qwen38.27b.g561c8f3"
       nearai.otel.engine_image: "febfb971c735"
 
-  # Public auth, signing and usage reporting for base Qwen3.8-27B. The engine serves the
-  # base id as its model name; strict request model keeps the adapter id out of this proxy.
   proxy-qwen38-27b:
     <<: *vllm-proxy-common
     networks:
@@ -383,15 +206,11 @@ services:
       - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
       - VLLM_BACKEND_URLS=http://model-sg-qwen38-27b-fp8-tp1-lora:8000
       - VLLM_PROXY_MAX_REQUEST_SIZE=104857600
-      # Size tiers (inference-proxy #336): <=16k prompt tokens jump ahead, >64k go last. Needs the
-      # engine's --enable-priority-scheduling; without it SGLang ignores the priority field.
       - VLLM_PROXY_PRIORITY_SIZE_TIERS=16000:10,65536:5,*:0
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
       - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
       - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
-      # Proxy downloads remote image/audio URLs and forwards data: URLs; video parts are refused.
-      # On by default; a deploy can pass VLLM_PROXY_INLINE_MEDIA=0 to turn inlining off.
       - VLLM_PROXY_INLINE_MEDIA=${VLLM_PROXY_INLINE_MEDIA:-1}
       - VLLM_PROXY_REJECTED_CONTENT_PART_TYPES=${VLLM_PROXY_REJECTED_CONTENT_PART_TYPES:-video_url}
     labels:
@@ -413,9 +232,6 @@ services:
       nearai.otel.instance: "${INSTANCE_LABEL:-unknown}"
       nearai.otel.config_variant: "qwen38-abl-cc-1gpu"
 
-  # Public auth, signing and usage reporting for the adapter; allowlisted orgs only (default-deny).
-  # The engine serves the adapter id as a LoRA name, so the proxy injects lora_path and
-  # refuses requests for the base model id.
   proxy-qwen38-27b-abliterated:
     <<: *vllm-proxy-common
     networks:
@@ -431,7 +247,6 @@ services:
       - MODEL_NAME=Qwen/Qwen3.8-27B-abliterated
       - VLLM_PROXY_STRICT_REQUEST_MODEL=true
       - VLLM_PROXY_BACKEND_LORA=Qwen/Qwen3.8-27B-abliterated
-      # Deny customer API keys until the intended organization IDs are supplied.
       - VLLM_PROXY_ALLOWED_ORG_IDS=${QWEN38_ABLITERATED_ALLOWED_ORG_IDS:-__no_organizations__}
       - OHTTP_ENABLED=true
       - TOKEN=${QWEN38_ABLITERATED_PROXY_TOKEN}${QWEN38_ABLITERATED_PROXY_TOKEN_NEXT:+,${QWEN38_ABLITERATED_PROXY_TOKEN_NEXT}}
@@ -439,15 +254,11 @@ services:
       - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
       - VLLM_BACKEND_URLS=http://model-sg-qwen38-27b-fp8-tp1-lora:8000
       - VLLM_PROXY_MAX_REQUEST_SIZE=104857600
-      # Size tiers (inference-proxy #336): <=16k prompt tokens jump ahead, >64k go last. Needs the
-      # engine's --enable-priority-scheduling; without it SGLang ignores the priority field.
       - VLLM_PROXY_PRIORITY_SIZE_TIERS=16000:10,65536:5,*:0
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
       - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
       - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
-      # Proxy downloads remote image/audio URLs and forwards data: URLs; video parts are refused.
-      # On by default; a deploy can pass VLLM_PROXY_INLINE_MEDIA=0 to turn inlining off.
       - VLLM_PROXY_INLINE_MEDIA=${VLLM_PROXY_INLINE_MEDIA:-1}
       - VLLM_PROXY_REJECTED_CONTENT_PART_TYPES=${VLLM_PROXY_REJECTED_CONTENT_PART_TYPES:-video_url}
     labels:
@@ -469,9 +280,6 @@ services:
       nearai.otel.instance: "${INSTANCE_LABEL:-unknown}"
       nearai.otel.config_variant: "qwen38-abl-cc-1gpu"
 
-  # Serves both domains: the base proxy is the default on :8000 and :8444, the abliterated
-  # proxy is selected by Host (plain) or SNI (TLS). Only the base proxy is a static
-  # upstream, so nginx never fails to start or reload because of the abliterated proxy.
   nginx-qwen38:
     image: nginx@sha256:1d13701a5f9f3fb01aaa88cef2344d65b6b5bf6b7d9fa4cf0dca557a8d7702ba
     container_name: nginx-qwen38
@@ -492,17 +300,11 @@ services:
     labels:
       com.datadoghq.ad.logs: '[{"source":"nginx","service":"nginx","tags":["model:Qwen/Qwen3.8-27B","deployment:qwen38-abliterated-cc-1gpu","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:${INSTANCE_LABEL:-unknown}"]}]'
 
-  # Owns the endpoint HOST_IP:HOST_PORT_BASE+0 (routing_port HOST_PORT_BASE+44) and
-  # registers the base model. It advertises the HOST ports, never the guest ports.
-  # MODEL_PROXY_REGISTRATION=disabled (default) only keeps the container idle.
-  # Its TERM handler withdraws only this endpoint. It also withdraws it when the
-  # abliterated route fails (shared endpoint, see the file header).
   qwen38-registrar:
     image: curlimages/curl@sha256:d94d07ba9e7d6de898b6d96c1a072f6f8266c687af78a74f380087a0addf5d17
     container_name: qwen38-registrar
     entrypoint: ["sh", "/register.sh"]
     restart: unless-stopped
-    # A TERM waits for a foreground curl (up to 45s), then unregister (10s).
     stop_grace_period: 90s
     depends_on:
       - nginx-qwen38
@@ -529,16 +331,11 @@ services:
     labels:
       com.datadoghq.ad.logs: '[{"source":"model-proxy-registrar","service":"model-proxy-registrar","tags":["model:Qwen/Qwen3.8-27B","deployment:qwen38-abliterated-cc-1gpu","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","instance:${INSTANCE_LABEL:-unknown}","config_variant:qwen38-abl-cc-1gpu"]}]'
 
-  # Only maps the adapter id to its domain; it never registers or unregisters an endpoint,
-  # so it cannot touch the endpoint qwen38-registrar owns. Discovery probes the base
-  # endpoint, whose /v1/models lists the adapter id, and routes the abliterated domain to
-  # the same routing port, where nginx-qwen38 selects the abliterated proxy by SNI.
   qwen38-abliterated-registrar:
     image: curlimages/curl@sha256:d94d07ba9e7d6de898b6d96c1a072f6f8266c687af78a74f380087a0addf5d17
     container_name: qwen38-abliterated-registrar
     entrypoint: ["sh", "/register.sh"]
     restart: unless-stopped
-    # A TERM waits for a foreground curl (up to 45s); nothing is withdrawn on stop.
     stop_grace_period: 90s
     depends_on:
       - nginx-qwen38
@@ -588,8 +385,6 @@ services:
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.instance: "${INSTANCE_LABEL:-unknown}"
 
-  # One-shot check from inside the engine network: every outbound attempt must
-  # fail. The result is one log line (PASS or FAIL).
   engine-egress-probe:
     image: curlimages/curl@sha256:d94d07ba9e7d6de898b6d96c1a072f6f8266c687af78a74f380087a0addf5d17
     container_name: engine-egress-probe
@@ -647,8 +442,6 @@ networks:
   default:
     external: true
     name: dstack_default
-  # No gateway and no outside DNS. Only the engine, its proxies, the metrics
-  # collector and the probe join it.
   engine-qwen38:
     name: engine_qwen38
     internal: true

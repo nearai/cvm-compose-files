@@ -1,97 +1,3 @@
-# One-shot maintenance: rotates the compose-manager `BEARER_TOKEN` inside a
-# running compose-manager CVM WITHOUT restarting the CVM and WITHOUT touching
-# any model container. See docs/rotate-compose-manager-token.md for the full
-# canary / apply / verify / rollback runbook — read it before running this.
-#
-# NEVER deploy this under the serving `work` or `dstack` project (compose-manager
-# rejects both as reserved, see resolve_compose_project in nearai/compose-manager
-# src/main.rs). Always pass "project": "cm-token-rotate" explicitly on every
-# /compose/up, /compose/down and /compose/logs call against this file — the
-# `name:` below is only a Compose fallback, not a guard against an explicit
-# override (same caveat as prod/migration-gpu-preflight.yaml).
-#
-# Mechanism (verified against nearai/compose-manager @ 8e07c35, prod tag
-# prod-20260702-8e07c35 — the pinned digest running on every compose-manager
-# CVM as of 2026-09-25 — and nearai/cvm-ansible-playbooks
-# cvm_configurations/compose-manager.yaml.j2):
-#   - The compose-manager-launcher sidecar (container_name: compose-manager-launcher,
-#     always present next to compose-manager) already mounts:
-#       * the CVM's sealed decrypted secrets, read-only, at $LAUNCHER_BASE_ENV_FILE
-#         (default /dstack-env — this is where the ORIGINAL BEARER_TOKEN lives;
-#         it cannot be edited in place, only via a full CVM redeploy)
-#       * the writable `dstack_work` volume at /app/work, which holds
-#         $LAUNCHER_ENV_FILE (default /app/work/.env.launcher) — an override
-#         file the launcher itself writes to today (e.g. COMPOSE_MANAGER_IMAGE
-#         on every auto-update) and passes as the LATER --env-file, so it wins
-#         interpolation over the sealed /dstack-env for anything it sets.
-#   - The launcher recreates compose-manager with exactly:
-#       docker compose -p "$LAUNCHER_COMPOSE_PROJECT" -f "$LAUNCHER_COMPOSE_FILE" \
-#         --env-file "$LAUNCHER_BASE_ENV_FILE" --env-file "$LAUNCHER_ENV_FILE" \
-#         up -d --no-deps compose-manager
-#     (launcher.sh compose_up(), unchanged at 8e07c35). `--no-deps`, and the
-#     fact this command never adds --remove-orphans, mean it only ever
-#     recreates the single `compose-manager` container in project `dstack` —
-#     certbot/datadog/telemetry in that same project, and every model
-#     project, are untouched. `docker exec` into an already-running container
-#     inherits that container's own environment, so the LAUNCHER_* variables
-#     below are read live from compose-manager-launcher itself, not hardcoded
-#     here — this file self-adapts if cvm-ansible-playbooks ever changes them.
-#   - We write a BEARER_TOKEN= line into $LAUNCHER_ENV_FILE (backed up first,
-#     replaced atomically via tmp+mv, every other line preserved), then run
-#     the launcher's own recreate command above so the NEW compose-manager
-#     container picks up the new token — the sealed /dstack-env is never
-#     written to, so nothing here requires a CVM redeploy. GET /version is
-#     UNAUTHENTICATED (verified live: no BEARER_TOKEN required), so it only
-#     proves the container process answers, not that the token override
-#     actually took effect — after /version comes back healthy we separately
-#     poll the AUTHENTICATED GET /docker/ps (verify_bearer_token-gated in
-#     compose-manager's own src/main.rs) with the NEW token before declaring
-#     success, and roll back if it's ever rejected despite a healthy /version.
-#   - This file's own `rotate-token` service never mounts the CVM decrypted
-#     env, dstack.sock, or any model/HF-cache volume, and never gets network
-#     access. Its only host access is the Docker socket, used solely to
-#     `docker exec` into the already-privileged compose-manager-launcher
-#     container to do the file edit and the recreate — no new privileged
-#     surface is introduced beyond what that sidecar already has today.
-#   - NEW_BEARER_TOKEN arrives only via this compose file's `env` map on the
-#     /compose/up call (compose-manager writes it to a short-lived per-call
-#     temp --env-file, deleted when the request's NDJSON stream ends — the
-#     same channel every other secret, e.g. PROXY_TOKEN, already goes through).
-#     It is never written to git, and compose-manager's action log / attestation
-#     report_data records only {timestamp, action, tag, commit, file,
-#     file_sha256, services} — never env values (verified: DeploymentAction in
-#     src/main.rs has no env field, and the `info!` call that logs env_files
-#     logs only their paths). The external verifier DOES see the compose_up
-#     action itself (file + file_sha256) — give the external verifier's owners
-#     a heads-up before running.
-#
-# Exit codes from the `rotate-token` container (compose/up's own response only
-# confirms the container STARTED — check the container's own exit code via
-# POST /docker/ps or POST /compose/logs, project cm-token-rotate, to know
-# whether the rotation itself actually succeeded):
-#   0 = rotated; compose-manager came back healthy AND the NEW token was
-#       confirmed accepted on the authenticated GET /docker/ps
-#   2 = rotation failed (either /version never came healthy, or it did but
-#       GET /docker/ps rejected the new token — see the container's own log
-#       line for which); automatically rolled back; compose-manager is
-#       healthy again on the OLD token
-#   3 = CRITICAL: the rollback recreate also failed to come up healthy —
-#       manual intervention required on this host; do not assume either token
-#       works until checked by hand
-#
-# Usage (compose-manager `POST /compose/up`) — canary with dry_run first using
-# a PLACEHOLDER token value (dry_run still writes the per-call temp env file
-# to disk before short-circuiting, so never pass the real new token on a
-# dry_run call):
-#   curl -sS 'http://<host_ip>:8080/compose/up' \
-#     -H 'Authorization: Bearer <CM_TOKEN>' \
-#     -H 'Content-Type: application/json' \
-#     -d '{"tag":"<reviewed tag>","file":"prod/rotate-compose-manager-token.yaml",
-#          "project":"cm-token-rotate","services":["rotate-token"],
-#          "env":{"NEW_BEARER_TOKEN":"placeholder-for-dry-run-only"},
-#          "dry_run":true}'
-# Expected plan: create only `rotate-token` under project cm-token-rotate —
-# nothing else. Then repeat with the REAL token and "dry_run":false.
 name: cm-token-rotate
 
 x-logging-conf: &logging-conf
@@ -103,16 +9,8 @@ x-logging-conf: &logging-conf
 
 services:
   rotate-token:
-    # Official Docker Inc CLI image (Alpine 3.21 base): just the `docker`
-    # binary + busybox userland (sh, awk, cp, mv, date, stat, chmod, grep) —
-    # no compose plugin needed here, since the actual `docker compose`
-    # invocation runs inside compose-manager-launcher via `docker exec`,
-    # reusing its own already-installed docker-cli-compose. Digest-pinned.
     image: docker:27-cli@sha256:851f91d241214e7c6db86513b270d58776379aacc5eb9c4a87e5b47115e3065c
     container_name: rotate-token
-    # Defense in depth: a service tagged with `profiles:` is skipped by a
-    # blanket `up` with no services named, and only starts when explicitly
-    # requested (as this runbook always does via "services":["rotate-token"]).
     profiles: [cm-token-rotate]
     restart: "no"
     user: "0:0"
@@ -123,28 +21,11 @@ services:
     security_opt:
       - no-new-privileges:true
     network_mode: none
-    # The Docker socket is the ONLY host access this container has — used
-    # exclusively to `docker exec` into compose-manager-launcher (see the
-    # header comment for why that is sufficient and does not need docker.sock
-    # to run `docker compose` itself, the model volumes, or dstack.sock).
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
       - NEW_BEARER_TOKEN=${NEW_BEARER_TOKEN}
     entrypoint: ["sh", "-c"]
-    # IMPORTANT: docker compose interpolates `$VAR` / `${VAR}` / `${VAR:-x}`
-    # ANYWHERE in this file, including inside this multi-line command string —
-    # not just in top-level fields. Every `$` below that must reach the SHELL
-    # (not compose) is doubled as `$$`, the documented compose escape for a
-    # literal `$` (same convention already used by ../cleanup-hf-model.yaml).
-    # To keep that escaping burden small and auditable, the substantial logic
-    # (rewrite + recreate + health-check + rollback, all run inside
-    # compose-manager-launcher) is carried as a base64 blob instead of being
-    # written inline with `$$` on every line — base64's alphabet has no `$`,
-    # so compose cannot alter it. It decodes to the plain, unescaped script at
-    # docs/rotate-compose-manager-token.md#inner-script (keep the two in sync;
-    # CI's `scripts/validate_rotate_compose_manager_token.rb` checks the
-    # decoded blob's sha256 against a pinned value so drift fails loudly).
     command:
       - |
         set -eu
