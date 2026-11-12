@@ -145,7 +145,7 @@ def v12_long_text() -> str:
 def v12_base_text() -> str:
     """The base V12Q8 file as rendered WITHOUT gpu03's r4 v0.5.23 canary (all four replicas on v12), so gpu04's file does
     not follow that canary implicitly."""
-    return base_generator.generate((ROOT / base_generator.SOURCE).read_text(), v0523_canary=False)
+    return base_generator.generate((ROOT / base_generator.SOURCE).read_text(), v0523=False)
 
 
 def generate(text: str, long_text: str) -> str:

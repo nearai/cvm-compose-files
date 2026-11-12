@@ -17,7 +17,7 @@ SOURCE = (ROOT / gen.SOURCE).read_text()
 TARGET = (ROOT / gen.TARGET).read_text()
 BODY = TARGET.split("#\n", 1)[1]  # past the generated header comment
 # The v12 fleet file as rendered without gpu03's r4 v0.5.23 canary: this file qualifies the v12 r4.
-FLEET = fleet.generate((ROOT / fleet.SOURCE).read_text(), v0523_canary=False)
+FLEET = fleet.generate((ROOT / fleet.SOURCE).read_text(), v0523=False)
 OLD_BACKEND = "--dsa-prefill-backend flashmla_kv"
 NEW_BACKEND = "--dsa-prefill-backend flashmla_sparse_q8"
 

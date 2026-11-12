@@ -93,24 +93,21 @@ HEADER: Final = (
 )
 
 
-# --- r4 canary: SGLang v0.5.23 (docker/sglang-glm53-v0523) on ONE base replica ---------------------------------------
-# r4 alone gets its own image and argv; r1-r3 keep the anchor (v12) byte-identical. Same image as the long tier's r2b
-# canary (keep in sync with W4AFP8_V0523_CANARY_IMAGE in scripts/validate_glm53_prod_config.rb).
-V0523_CANARY_IMAGE: Final = "docker.io/nearaidev/sglang@sha256:050b1adf961c8621264d14696d24645f70d1a675509ad400a72ccfb1a3fddcb2"
-V0523_CANARY_LABEL: Final = V0523_CANARY_IMAGE.split(":")[-1][:12]
-V0523_CANARY_REPLICA: Final = f"{SERVICE_PREFIX}4"
+# --- SGLang v0.5.23 (docker/sglang-glm53-v0523) on all four base replicas ---------------------------------------------
+# The common anchor's image and the candidate argv carry it, so r1-r4 stay identical. Keep in sync with
+# W4AFP8_TP2X4_V12Q8_V0523 in scripts/validate_glm53_prod_config.rb.
+V0523_IMAGE: Final = "docker.io/nearaidev/sglang@sha256:050b1adf961c8621264d14696d24645f70d1a675509ad400a72ccfb1a3fddcb2"
+V0523_LABEL: Final = V0523_IMAGE.split(":")[-1][:12]
 # REQUIRED on v0.5.23: its default breakable prefill CUDA graphs OOM at warmup at --mem-fraction-static 0.86.
-V0523_CANARY_FLAGS: Final = ("--cuda-graph-backend-prefill disabled",)
-V0523_CANARY_SUFFIX: Final = "-v0523-canary"
-V0523_CANARY_HEADER: Final = (
-    f"# r4 CANARY (SGLang v0.5.23): {V0523_CANARY_REPLICA} alone runs {V0523_CANARY_IMAGE}\n"
-    "#   (docker/sglang-glm53-v0523, the image gpu23's long r2b canary pins) with the v12 argv below plus\n"
-    "#   --cuda-graph-backend-prefill disabled; r1-r3 and the ghost aggregator are unchanged (v12). One engine default differs:\n"
-    "#   v0.5.23 turns SGLANG_EXPERIMENTAL_DSA_KPOOL_METADATA_FUSION on (the fork had it off; =0 restores it).\n"
-    f"#   Labels: engine_image {V0523_CANARY_LABEL}, config_variant <v12 variant without {V12_VARIANT_SUFFIX}>{V0523_CANARY_SUFFIX}.\n"
-    "#   DEPLOY: from a main tag, gpu03 only, drain r4 first, compose/up services [r4] then otelcol-contrib. gpu04 does not\n"
-    "#   deploy this file (scripts/prepare_glm53_gpu04_3b1l.py renders it without the canary). ROLLBACK: the previous tag's\n"
-    "#   copy of this file, same single service.\n"
+V0523_FLAGS: Final = ("--cuda-graph-backend-prefill disabled",)
+V0523_SUFFIX: Final = "-v0523"
+V0523_HEADER: Final = (
+    f"# SGLang v0.5.23: r1-r4 run {V0523_IMAGE}\n"
+    "#   (docker/sglang-glm53-v0523) with the v12 argv below plus --cuda-graph-backend-prefill disabled; the ghost aggregator\n"
+    "#   stays on v12. One engine default differs: v0.5.23 turns SGLANG_EXPERIMENTAL_DSA_KPOOL_METADATA_FUSION on (=0 restores it).\n"
+    f"#   Labels: engine_image {V0523_LABEL}, config_variant <v12 variant without {V12_VARIANT_SUFFIX}>{V0523_SUFFIX}.\n"
+    "#   DEPLOY: from a main tag, gpu03 only, one replica per scoped compose/up, then otelcol-contrib. gpu04 does not deploy this\n"
+    "#   file (scripts/prepare_glm53_gpu04_3b1l.py renders it on v12). ROLLBACK: the previous tag's copy, same single service.\n"
 )
 
 
@@ -229,49 +226,43 @@ def replace_in_span(text: str, bounds: tuple[int, int], edit) -> str:
     return text[:start] + edit(text[start:end]) + text[end:]
 
 
-def add_v0523_canary(out: str) -> str:
-    """r4 on the v0.5.23 image: an explicit image + command (v12 argv + V0523_CANARY_FLAGS) and canary labels."""
-    lines = [line.strip() for line in anchor_argv(out).splitlines()]
-    for flag in V0523_CANARY_FLAGS:
+def add_v0523(out: str) -> str:
+    """r1-r4 on the v0.5.23 image: common anchor image, candidate argv + V0523_FLAGS, engine_image/config_variant labels."""
+    common = span(out, f"\n{COMMON_ANCHOR}\n", r"\n[^ \n#]", "common engine anchor")
+    out = replace_in_span(out, common, lambda anchor: replace_exact(anchor, f"\n  image: {V12_IMAGE}\n", f"\n  image: {V0523_IMAGE}\n", 1, "common anchor image"))
+    body = anchor_argv(out)
+    lines = [line.strip() for line in body.splitlines()]
+    for flag in V0523_FLAGS:
         if any(line.split()[0] == flag.split()[0] for line in lines):
-            raise GenerationError(f"canary flag {flag!r} is already in the fleet argv")
-        lines.append(flag)
-    argv = "".join(f"      {line}\n" for line in lines)
-    name = V0523_CANARY_REPLICA
+            raise GenerationError(f"v0.5.23 flag {flag!r} is already in the fleet argv")
+    indent = body.splitlines(keepends=True)[-1][: len(body.splitlines()[-1]) - len(body.splitlines()[-1].lstrip())]
+    out = replace_in_span(out, anchor_span(out), lambda anchor: replace_exact(anchor, body, body + "".join(f"{indent}{f}\n" for f in V0523_FLAGS), 1, "anchor argv"))
 
-    def edit_service(block: str) -> str:
-        block = replace_exact(
-            block,
-            "\n    <<: *sg-glm53-flash-candidate\n",
-            "\n    <<: *sg-glm53-flash-candidate\n"
-            "    # SGLang v0.5.23 CANARY (header): own image and argv = the fleet argv + --cuda-graph-backend-prefill disabled.\n"
-            f"    image: {V0523_CANARY_IMAGE}\n"
-            f"    command: >\n{argv.replace(chr(10) + '      ', chr(10) + '        ').replace('      sglang serve', '        sglang serve', 1)}",
-            1,
-            f"{name} canary image/command",
-        )
+    def edit_service(block: str, name: str) -> str:
         variant = re.search(r'nearai\.otel\.config_variant: "([^"]+)"', block).group(1)
-        block = replace_exact(block, f'"engine_image:{V12_LABEL}"', f'"engine_image:{V0523_CANARY_LABEL}"', 1, f"{name} canary log engine_image")
-        block = replace_exact(block, f'nearai.otel.engine_image: "{V12_LABEL}"', f'nearai.otel.engine_image: "{V0523_CANARY_LABEL}"', 1, f"{name} canary otel engine_image")
-        return replace_exact(block, f'{variant}"', f'{canary_variant(variant)}"', 2, f"{name} canary config_variant")
+        block = replace_exact(block, f'"engine_image:{V12_LABEL}"', f'"engine_image:{V0523_LABEL}"', 1, f"{name} log engine_image")
+        block = replace_exact(block, f'nearai.otel.engine_image: "{V12_LABEL}"', f'nearai.otel.engine_image: "{V0523_LABEL}"', 1, f"{name} otel engine_image")
+        return replace_exact(block, f'{variant}"', f'{v0523_variant(variant)}"', 2, f"{name} config_variant")
 
-    def edit_job(job: str) -> str:
+    def edit_job(job: str, name: str) -> str:
         variant = re.search(r'config_variant: "([^"]+)"', job).group(1)
-        job = replace_exact(job, f'engine_image: "{V12_LABEL}"', f'engine_image: "{V0523_CANARY_LABEL}"', 1, f"{name} canary scrape engine_image")
-        return replace_exact(job, f'config_variant: "{variant}"', f'config_variant: "{canary_variant(variant)}"', 1, f"{name} canary scrape config_variant")
+        job = replace_exact(job, f'engine_image: "{V12_LABEL}"', f'engine_image: "{V0523_LABEL}"', 1, f"{name} scrape engine_image")
+        return replace_exact(job, f'config_variant: "{variant}"', f'config_variant: "{v0523_variant(variant)}"', 1, f"{name} scrape config_variant")
 
-    out = replace_in_span(out, service_span(out, name), edit_service)
-    return replace_in_span(out, scrape_job_span(out, name), edit_job)
+    for name in REPLICAS:
+        out = replace_in_span(out, service_span(out, name), lambda b, n=name: edit_service(b, n))
+        out = replace_in_span(out, scrape_job_span(out, name), lambda j, n=name: edit_job(j, n))
+    return out
 
 
-def canary_variant(variant: str) -> str:
+def v0523_variant(variant: str) -> str:
     if not variant.endswith(V12_VARIANT_SUFFIX):
         raise GenerationError(f"config_variant {variant!r} does not end {V12_VARIANT_SUFFIX}")
-    return variant[: -len(V12_VARIANT_SUFFIX)] + V0523_CANARY_SUFFIX
+    return variant[: -len(V12_VARIANT_SUFFIX)] + V0523_SUFFIX
 
 
-def generate(source: str, v0523_canary: bool = True) -> str:
-    """The target file. v0523_canary=False renders it with all four replicas on v12 (the previous tag's file, and the
+def generate(source: str, v0523: bool = True) -> str:
+    """The target file. v0523=False renders it with all four replicas on v12 (the previous tag's file, and the
     input scripts/prepare_glm53_gpu04_3b1l.py builds gpu04's file from)."""
     if Q8_BACKEND in source or V12_IMAGE_DIGEST in source:
         raise GenerationError("source already carries v12 or flashmla_sparse_q8; it must be the v7 fleet file")
@@ -319,9 +310,9 @@ def generate(source: str, v0523_canary: bool = True) -> str:
     live = "".join(line for line in out.splitlines(keepends=True) if not line.lstrip().startswith("#"))
     if V7_IMAGE_DIGEST in live or V7_LABEL in live:
         raise GenerationError("a v7 image or engine_image label survived outside comments")
-    if not v0523_canary:
+    if not v0523:
         return HEADER + out
-    return HEADER[: -len("#\n")] + V0523_CANARY_HEADER + "#\n" + add_v0523_canary(out)
+    return HEADER[: -len("#\n")] + V0523_HEADER + "#\n" + add_v0523(out)
 
 
 def main() -> int:
