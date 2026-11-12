@@ -259,8 +259,13 @@ services:
     labels:
       com.datadoghq.ad.logs: '[{"source":"model-downloader","service":"model-downloader","tags":["model:Qwen/Qwen3.8-27B-abliterated","deployment:qwen38-abliterated-cc-1gpu","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","instance:${INSTANCE_LABEL:-unknown}","config_variant:qwen38-abl-cc-1gpu","lora:abliterated-r1"]}]'
 
+  # The engine sits on an internal network only: it has no route out of the CVM
+  # and no DNS for outside names. The proxies fetch remote media for it
+  # (VLLM_PROXY_INLINE_MEDIA) and it loads weights from the local cache.
   model-sg-qwen38-27b-fp8-tp1-lora:
     <<: *nvidia
+    networks:
+      - engine-qwen38
     init: true
     cap_add:
       - SYS_NICE
@@ -298,8 +303,7 @@ services:
     # No PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True: SGLang's CUDA IPC handoff
     # needs pidfd_getfd under expandable segments and crashed on gpu23 (2026-10-23).
     environment:
-      - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
-      - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0}
+      - HF_HUB_OFFLINE=1
       - VLLM_LOGGING_LEVEL=INFO
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
       - OPENBLAS_L2_SIZE=2097152
@@ -361,6 +365,9 @@ services:
   # base id as its model name; strict request model keeps the adapter id out of this proxy.
   proxy-qwen38-27b:
     <<: *vllm-proxy-common
+    networks:
+      - default
+      - engine-qwen38
     container_name: proxy-qwen38-27b
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
@@ -411,6 +418,9 @@ services:
   # refuses requests for the base model id.
   proxy-qwen38-27b-abliterated:
     <<: *vllm-proxy-common
+    networks:
+      - default
+      - engine-qwen38
     container_name: proxy-qwen38-27b-abliterated
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
@@ -578,7 +588,33 @@ services:
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.instance: "${INSTANCE_LABEL:-unknown}"
 
+  # One-shot check from inside the engine network: every outbound attempt must
+  # fail. The result is one log line (PASS or FAIL).
+  engine-egress-probe:
+    image: curlimages/curl@sha256:d94d07ba9e7d6de898b6d96c1a072f6f8266c687af78a74f380087a0addf5d17
+    container_name: engine-egress-probe
+    restart: "no"
+    networks:
+      - engine-qwen38
+    entrypoint:
+      - sh
+      - -c
+      - |
+        fail=0
+        for url in https://1.1.1.1 https://huggingface.co http://169.254.169.254 http://compose-manager:8080; do
+          if curl -s -o /dev/null -m 5 "$$url"; then echo "engine-egress-probe reached $$url"; fail=1; fi
+        done
+        if nslookup huggingface.co >/dev/null 2>&1; then echo "engine-egress-probe resolved an outside name"; fail=1; fi
+        if [ "$$fail" = 0 ]; then echo "engine-egress-probe PASS: no route out"; else echo "engine-egress-probe FAIL"; fi
+        exit "$$fail"
+    logging: *logging-conf
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"engine-egress-probe","service":"engine-egress-probe","tags":["model:Qwen/Qwen3.8-27B","deployment:qwen38-abliterated-cc-1gpu","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","instance:${INSTANCE_LABEL:-unknown}"]}]'
+
   otelcol-contrib:
+    networks:
+      - default
+      - engine-qwen38
     image: otel/opentelemetry-collector-contrib@sha256:85ac41c2db88d0df9bd6145e608a3cb023f5d8443868adbfbbf66efb51087917
     container_name: otelcol-contrib
     command: ["--config=/etc/otelcol-contrib/config.yaml"]
@@ -614,6 +650,11 @@ networks:
   default:
     external: true
     name: dstack_default
+  # No gateway and no outside DNS. Only the engine, its proxies, the metrics
+  # collector and the probe join it.
+  engine-qwen38:
+    name: engine_qwen38
+    internal: true
 
 volumes:
   otelcol_app_storage:
