@@ -22,7 +22,8 @@ def services(text: str) -> dict[str, str]:
 class Gpu04MixedTier(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        cls.source = (ROOT / gen.SOURCE).read_text()
+        # Base r1-r3 come from the V12Q8 file as rendered without gpu03's r4 v0.5.23 canary (v12).
+        cls.source = gen.v12_base_text()
         # l4 copies gpu23's r2b as rendered without the r2b v0.5.23 canary (v12), not the committed long file.
         cls.long_source = gen.v12_long_text()
         cls.text = (ROOT / gen.TARGET).read_text()

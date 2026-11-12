@@ -760,6 +760,15 @@ W4AFP8_TP2X4_V12Q8_FILE = File.join(ROOT, "prod", "GLM-5.3-Flash-SGL-TP2x4-W4AFP
 W4AFP8_V12_IMAGE = "docker.io/nearaidev/sglang@sha256:da8d4e4b5ec667499b58a21e56050aae9bcfc4df9669b3ac27e2e20af033d681"
 W4AFP8_TP2X4_V12Q8_IMAGE = W4AFP8_V12_IMAGE
 W4AFP8_TP2X4_V12Q8_VARIANT = "w4afp8-qsplit-hicacheoff-mamba380-fp8kv-memopt086-mr64-c8192-admission-reserve-v10-pdi#{W4AFP8_TP2X4_CANDIDATE_PDI}-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192#{OBSERVABILITY_VARIANT_SUFFIX}-v12-q8"
+# gpu03 r4 canary: SGLang v0.5.23 (scripts/prepare_glm53_base_v12_q8_fleet.py V0523_CANARY_*), the same image as the long
+# tier's r2b canary. Only r4; the argv is the fleet argv plus the one flag v0.5.23 needs.
+W4AFP8_TP2X4_V12Q8_CANARIES = {
+  "model-sg-glm53-w4afp8-tp2-r4" => {
+    "image" => "docker.io/nearaidev/sglang@sha256:050b1adf961c8621264d14696d24645f70d1a675509ad400a72ccfb1a3fddcb2",
+    "extra_argv" => ["--cuda-graph-backend-prefill", "disabled"],
+    "variant" => W4AFP8_TP2X4_V12Q8_VARIANT.delete_suffix("-v12-q8") + "-v0523-canary",
+  },
+}.freeze
 W4AFP8_TP2X4_V12Q8_ARGV = Shellwords.split(<<~'ARGV').freeze
   sglang serve
   --model-path /root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/snapshots/99f1fa70408c52b007d4fd69e02e5a522422e755
@@ -841,8 +850,11 @@ def w4afp8_tp2x4_view(errors, file_label, compose, replica_names)
   )
 end
 
+# canaries: { replica name => { "image" =>, "extra_argv" => [...], "variant" => } } for single-replica image canaries; every
+# other replica must run `image` with the candidate argv exactly.
 def validate_w4afp8_tp2x4(errors, compose, base, raw, label: "W4AFP8 4x TP2", image: W4AFP8_TP2X4_IMAGE, fleet_name: "v7 fleet",
-                          candidate_argv: W4AFP8_TP2X4_CANDIDATE_ARGV, candidate_variant: W4AFP8_TP2X4_CANDIDATE_VARIANT, prefill: "flashmla_kv")
+                          candidate_argv: W4AFP8_TP2X4_CANDIDATE_ARGV, candidate_variant: W4AFP8_TP2X4_CANDIDATE_VARIANT, prefill: "flashmla_kv",
+                          canaries: {})
   services = compose.fetch("services", {})
   expected_services = EXPECTED_SERVICES - REPLICAS.keys + W4AFP8_TP2X4_REPLICAS.keys + [GHOST_SERVICE]
   missing = expected_services - services.keys
@@ -868,15 +880,19 @@ def validate_w4afp8_tp2x4(errors, compose, base, raw, label: "W4AFP8 4x TP2", im
 
   base_env = environment_map(base.dig("services", W4AFP8_BASE_REPLICAS.keys.first) || {}).merge(W4AFP8_TP2X4_EXTRA_ENV)
   collector = load_embedded_yaml(errors, "#{label} file otelcol_app_config", compose.dig("configs", "otelcol_app_config", "content"))
-  engine_image_label = image.split(":").last[0, 12]
+  (canaries.keys - W4AFP8_TP2X4_REPLICAS.keys).each { |name| errors << "#{label} canary #{name} is not a replica" }
+  errors << "#{label} allows at most one canary replica" if canaries.length > 1
   replicas = {}
   W4AFP8_TP2X4_REPLICAS.each do |name, spec|
     service = services[name]
     next errors << "#{label} missing services.#{name}" if service.nil?
 
+    canary = canaries[name]
+    replica_image = canary ? canary["image"] : image
+    engine_image_label = replica_image.split(":").last[0, 12]
     replicas[name] = service
     errors << "#{label} #{name} container_name must be #{name}" unless service["container_name"] == name
-    errors << "#{label} #{name} image must be #{image}" unless service["image"] == image
+    errors << "#{label} #{name} image must be #{replica_image}" unless service["image"] == replica_image
     errors << "#{label} #{name} must use the prebuilt signed image, not a host-local build" if service.key?("build")
     actual_argv = begin
       Shellwords.split(command_text(service))
@@ -887,6 +903,11 @@ def validate_w4afp8_tp2x4(errors, compose, base, raw, label: "W4AFP8 4x TP2", im
     candidate = spec["role"] == "candidate"
     expected_argv = candidate ? candidate_argv : W4AFP8_TP2X4_ARGV
     expected_variant = candidate ? candidate_variant : W4AFP8_TP2X4_VARIANT
+    if canary
+      errors << "#{label} #{name} canary must be a candidate replica" unless candidate
+      expected_argv += canary["extra_argv"]
+      expected_variant = canary["variant"]
+    end
     unless actual_argv == expected_argv
       drift = ((actual_argv - expected_argv) + (expected_argv - actual_argv)).uniq
       errors << "#{label} #{name} argv must be the #{candidate ? fleet_name : 'lab-qualified TP2 control'} argv exactly; differing tokens: #{drift.first(8).join(' ')}"
@@ -954,7 +975,8 @@ def validate_w4afp8_tp2x4(errors, compose, base, raw, label: "W4AFP8 4x TP2", im
   if replicas.length == W4AFP8_TP2X4_REPLICAS.length
     # The argv is checked exactly per role and the environment in full per replica above (it
     # differs only in the ghost-cache replica name); everything else is identical.
-    contracts = replicas.values.map { |service| runtime_contract(service).reject { |key, _value| %w[command environment].include?(key) } }
+    # A canary's image is checked above; everything else must still match.
+    contracts = replicas.values.map { |service| runtime_contract(service).reject { |key, _value| %w[command environment image].include?(key) } }
     errors << "#{label} replicas must use identical runtime configuration" unless contracts.uniq.length == 1
   end
   validate_observability(errors, label, compose, collector, W4AFP8_TP2X4_REPLICAS.transform_values { |spec| spec["ghost_replica"] },
@@ -1099,7 +1121,7 @@ W4AFP8_LONG_CONTEXT_V12_IMAGE = W4AFP8_V12_IMAGE
 # r2b canary: SGLang v0.5.23 (docker/sglang-glm53-v0523, PR #446) on ONE long-tier TP2 replica; r1a/r1b/r2a stay on v12.
 # Same value as V0523_CANARY_IMAGE in scripts/prepare_glm53_w4afp8_long_context.py (attested publish-glm53-v0523 digest).
 W4AFP8_LONG_CONTEXT_V0523_CANARY_IMAGE = "docker.io/nearaidev/sglang@sha256:050b1adf961c8621264d14696d24645f70d1a675509ad400a72ccfb1a3fddcb2"
-W4AFP8_QSPLIT_CAPABLE_IMAGES = [W4AFP8_LONG_CONTEXT_V2_IMAGE, W4AFP8_LONG_CONTEXT_V3_IMAGE, W4AFP8_LONG_CONTEXT_V6_IMAGE, W4AFP8_LONG_CONTEXT_V7_IMAGE, W4AFP8_LONG_CONTEXT_V10_IMAGE, W4AFP8_LONG_CONTEXT_V12_IMAGE].freeze
+W4AFP8_QSPLIT_CAPABLE_IMAGES = [W4AFP8_LONG_CONTEXT_V2_IMAGE, W4AFP8_LONG_CONTEXT_V3_IMAGE, W4AFP8_LONG_CONTEXT_V6_IMAGE, W4AFP8_LONG_CONTEXT_V7_IMAGE, W4AFP8_LONG_CONTEXT_V10_IMAGE, W4AFP8_LONG_CONTEXT_V12_IMAGE, W4AFP8_LONG_CONTEXT_V0523_CANARY_IMAGE].freeze  # v0.5.23: patch 06-dsa-indexer-qsplit
 W4AFP8_LONG_CONTEXT_VARIANT = "fc91d24-long-context-w4afp8-cCHUNK-QSPLITOFFLOOPhicache-cuda-host-pooled-v1-HOSTadmission-reserve-disabled-pool-clamp-pdiPDI-h200-tp4-ep4-eagle-adaptive-5-1-6-strict-budget8192#{OBSERVABILITY_VARIANT_SUFFIX}"
 W4AFP8_QSPLIT_ENV = "SGLANG_DSA_INDEXER_QSPLIT"
 # c16384 is only memory-safe WITH the split: without it a concurrent long burst left 0.04-0.65 GB
@@ -1576,7 +1598,8 @@ if w4afp8_tp2x4_v12q8_present
   if w4afp8_tp2x4_v12q8_compose && w4afp8_base_compose
     validate_w4afp8_tp2x4(errors, w4afp8_tp2x4_v12q8_compose, w4afp8_base_compose, File.read(W4AFP8_TP2X4_V12Q8_FILE),
                           label: "W4AFP8 4x TP2 v12 Q8", image: W4AFP8_TP2X4_V12Q8_IMAGE, fleet_name: "v12 Q8 base fleet",
-                          candidate_argv: W4AFP8_TP2X4_V12Q8_ARGV, candidate_variant: W4AFP8_TP2X4_V12Q8_VARIANT, prefill: "flashmla_sparse_q8")
+                          candidate_argv: W4AFP8_TP2X4_V12Q8_ARGV, candidate_variant: W4AFP8_TP2X4_V12Q8_VARIANT, prefill: "flashmla_sparse_q8",
+                          canaries: W4AFP8_TP2X4_V12Q8_CANARIES)
     validate_model_cache(errors, "W4AFP8 4x TP2 v12 Q8", w4afp8_tp2x4_v12q8_compose.fetch("services", {}))
   elsif w4afp8_tp2x4_v12q8_compose
     errors << "W4AFP8 4x TP2 v12 Q8 file requires the W4AFP8 base file it is generated from"
