@@ -21,12 +21,14 @@ UTIL = re.compile(r"^prod/util-[a-z0-9]+(?:-[a-z0-9]+)*\.yaml$")
 DOCKER = re.compile(r"^docker/([a-z0-9][a-z0-9.-]*)/.+$")
 PUBLISH = re.compile(r"^\.github/workflows/publish-(?P<dir>[a-z0-9][a-z0-9.-]*)\.yaml$")
 DOCS = re.compile(r"^(README|AGENTS|CLAUDE|VERIFYING|SECURITY)\.md$|^docs/[a-z0-9._-]+\.md$")
+# Shared Claude Code files only; ci/checks/claude.py checks their content.
+CLAUDE_DIR = re.compile(r"^\.claude/(settings\.json|(rules|agents)/[a-z][a-z0-9-]*\.md)$")
 FIXED = {
     ".gitignore", ".gitattributes", ".github/pull_request_template.md",
     ".github/workflows/ci.yaml", ".github/workflows/auto-tag.yaml",
     "ci/run.py", "ci/lib/common.py",
     "ci/checks/layout.py", "ci/checks/status.py", "ci/checks/pins.py", "ci/checks/privacy.py", "ci/checks/public.py",
-    "ci/checks/frozen.py",
+    "ci/checks/frozen.py", "ci/checks/claude.py",
     "ci/data/legacy.txt", "ci/data/images.allow", "ci/data/services.allow.json", "ci/data/public.json",
     "ci/data/exceptions.json", "ci/data/expected.json", "ci/data/gitleaks.ignore",
     "ci/config/yamllint.yaml", "ci/config/gitleaks.toml",
@@ -44,7 +46,7 @@ NEW_PATH = re.compile(r"^[a-z0-9._-]+(/[a-z0-9._-]+){0,2}$")
 
 def conforms(path, tree):
     """True when the path satisfies the naming rules without a legacy line."""
-    if path in FIXED or DOCS.match(path):
+    if path in FIXED or DOCS.match(path) or CLAUDE_DIR.match(path):
         return True
     if path.startswith("prod/"):
         if not (SERVING.match(path) or PACK.match(path) or UTIL.match(path)):
@@ -251,6 +253,10 @@ CASES = [
     ("CLAUDE.md imports AGENTS.md", None, dict(BASE_FILES, **{"CLAUDE.md": "@AGENTS.md\n"}), BASE_FILES),
     ("CLAUDE.md with extra text", "layout.claude-md", dict(BASE_FILES, **{"CLAUDE.md": "@AGENTS.md\nAlso: x\n"}),
      BASE_FILES),
+    ("claude dir shapes", None, dict(BASE_FILES, **{".claude/rules/prod.md": "x\n", ".claude/agents/a.md": "x\n",
+                                                    ".claude/settings.json": "{}\n"}), BASE_FILES),
+    ("claude command file", "layout.path", dict(BASE_FILES, **{".claude/commands/x.md": "x\n"}), BASE_FILES),
+    ("claude local settings", "layout.path", dict(BASE_FILES, **{".claude/settings." + "local.json": "{}\n"}), BASE_FILES),
     ("all-green misses a job", "layout.all-green",
      dict(BASE_FILES, **{".github/workflows/ci.yaml": WF_OK.replace("needs: [guards]", "needs: []")}), BASE_FILES),
 ]
