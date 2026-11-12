@@ -1,6 +1,6 @@
 # SGLang v0.5.23 + NEAR AI security patches (model-agnostic)
 
-This recipe is for every stock-SGLang model (Qwen3.6, Qwen3.8, FLUX.2 and others). It builds upstream SGLang **v0.5.23** (tag 297e54fd, released 2026-10-28) with only the three engine-agnostic security patches from the GLM-5.3 series (`docker/sglang-glm53-v0523`). It has no model-specific or performance patch. GLM-5.3 keeps its own recipe.
+This recipe is for every stock-SGLang model (Qwen3.6, Qwen3.8, FLUX.2 and others). It builds upstream SGLang **v0.5.23** (tag 297e54fd, released 2026-10-28) with only the four engine-agnostic security patches from the GLM-5.3 series (`docker/sglang-glm53-v0523`). It has no model-specific or performance patch. GLM-5.3 keeps its own recipe.
 
 Upstream v0.5.23 already closes these CVEs:
 - CVE-2026-15976: `update_weights_from_disk` pickle RCE, fixed by #42760;
@@ -14,6 +14,7 @@ The patches add the fixes v0.5.23 still lacks:
 | 05-rid-abort-exact-match | CVE-2026-112266, a customer-reachable abort of other users' requests. Aborts match the exact rid; `<rid>_<n>` children match only for an rid the worker does not own (`AbortReq.match_children`, last field, wire-compatible) | unconditional |
 | 14-admin-auth-redaction | CVE-2026-15977, credential redaction rebuilt from upstream #48518 (it landed after the release): `build_server_info` (HTTP + gRPC + rust launch info), scheduler `internal_states`, dumps always a redacted dict, crash-dump `launch_command`. The admin-auth half is upstream #41322, already in v0.5.23 | unconditional |
 | 15-customer-data-log-redaction | media URL → `<url host=H>`, `data:` → `<base64 len=N>`, schemas/values → `<len=N sha256=…>`, redacted tracebacks. Keeps the `NNN Client Error … for url:` wording that inference-proxy maps to a 400 | unconditional |
+| 26-log-format-followup | log line format follow-up to 15 | unconditional |
 
 The patch files are byte-identical to the same-numbered patches in `docker/sglang-glm53-v0523/patches/` (the sha256 values in `SERIES` match). They keep their series numbers so the two recipes can be compared. They do not depend on the other GLM patches:
 - each one passes `git apply --check` on a clean 297e54fd checkout, in this order;

@@ -1,8 +1,8 @@
 """Apply the reviewed W4AFP8 loader, pool-clamp, DSA indexer query-split, event-loop offload,
 event-loop stall-dump, ghost prefix cache, KV tier metrics, self-profiling hook, FP8 KV for NoPE DSA,
 opt-in preprocess process pool, opt-in tool-schema size cap, host-side KDA token count, flashmla_sparse_q8
-DSA prefill (Q8), K-pool indexer logits budget and admin-auth/credential-redaction patches to exact
-production source bytes."""
+DSA prefill (Q8), K-pool indexer logits budget, admin-auth/credential-redaction and log format patches to
+exact production source bytes."""
 
 import ast
 import hashlib
@@ -45,6 +45,9 @@ PATCHES: Final = {
     # those after-bytes), plus server_args.py, entrypoints/engine.py and entrypoints/grpc_bridge.py, which no
     # earlier patch touches. Admin auth on two endpoints and credential redaction (upstream #41322, #48518).
     "admin-auth-redaction.diff": "563d9d30ba47e8afc6570857d7d94f964d08a0a97ff8e2479dd59eece137753e",
+    # Last: log line format, ported from docker/sglang-glm53-v0523 patches 15 and 26. Its context is the
+    # after-bytes of the earlier patches for serving_base.py (preprocess-pool.diff).
+    "log-format.diff": "29a6baa60109ec09cc5e4559be2849613b77371a84d30938eddbfec564ef07d9",
 }
 MANIFEST: Final = json.loads((CONTEXT / "source-manifest.json").read_text())
 

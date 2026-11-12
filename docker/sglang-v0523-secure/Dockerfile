@@ -5,7 +5,7 @@ FROM lmsysorg/sglang@sha256:f832b5c39559c9caa900b22ad37c76fcce66470676855c420521
 ARG BUILD_SOURCE_REVISION
 
 LABEL org.opencontainers.image.title="NEAR AI SGLang v0.5.23 secure runtime"
-LABEL org.opencontainers.image.description="Upstream SGLang v0.5.23 plus three model-agnostic NEAR AI security patches (exact-rid aborts, credential redaction, customer-data log redaction)"
+LABEL org.opencontainers.image.description="Upstream SGLang v0.5.23 plus four model-agnostic NEAR AI security patches (exact-rid aborts, credential redaction, customer-data log redaction, log format follow-up)"
 LABEL org.opencontainers.image.vendor="NEAR AI"
 LABEL org.opencontainers.image.licenses="Apache-2.0"
 LABEL org.opencontainers.image.source="https://github.com/nearai/cvm-compose-files"

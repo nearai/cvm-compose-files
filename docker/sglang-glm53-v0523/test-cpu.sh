@@ -67,6 +67,7 @@ step "13 upstream unit tests the series adds or edits"
 SGLANG_USE_CPU_ENGINE=1 PYTHONPATH="$T" python3 -m pytest -q -p no:cacheprovider -p no:warnings -p near_stub_plugin \
   test/registered/unit/entrypoints/openai/test_thinking_token_budget.py \
   test/registered/unit/entrypoints/openai/test_serving_chat.py \
+  test/registered/unit/function_call/test_unknown_tool_name.py \
   test/registered/unit/managers/test_scheduler_chunked_req_gate.py \
   test/registered/unit/managers/test_batch_result_processor_hidden_states.py \
   test/registered/unit/utils/test_glm5_next_perception_gate.py \

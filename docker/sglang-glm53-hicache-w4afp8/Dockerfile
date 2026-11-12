@@ -33,6 +33,7 @@ LABEL nearai.sglang.tool_schema_depth_cap="v1-opt-in"
 LABEL nearai.sglang.kda_host_token_count="v1"
 LABEL nearai.sglang.dsa_kpool_logits_budget="v1"
 LABEL nearai.sglang.admin_auth_redaction="v1-upstream-41322-48518"
+LABEL nearai.sglang.log_format="v1"
 LABEL nearai.sglang.dsa_q8_flashmla_sparse="v1-flag-gated"
 LABEL nearai.security_remediation="CVE-2026-102268:pyjwt-2.14.0"
 LABEL nearai.security_remediation_2="CVE-2026-53398,CVE-2026-63940,CVE-2026-64535,CVE-2026-64564,CVE-2026-72399,CVE-2026-74394:linux-libc-dev-6.8.0-147.147"
@@ -43,6 +44,7 @@ COPY Dockerfile \
      README.md \
      SHA256SUMS \
      admin-auth-redaction.diff \
+     log-format.diff \
      apply-patches.py \
      chunked-prefill-pool-clamp.diff \
      dsa-indexer-qsplit.diff \
@@ -72,6 +74,7 @@ COPY Dockerfile \
      test_dsa_q8_flashmla_sparse.py \
      test_dsa_kpool_logits_budget.py \
      test_admin_auth_redaction.py \
+     test_log_format.py \
      kvtm_check_plugin.py \
      security-requirements.txt \
      /usr/share/nearai/glm53-hicache-w4afp8/
@@ -160,6 +163,7 @@ RUN apt-get update \
 # internal_states), the engine's server_args= log lines, the gRPC server info, the crash/request dumps and
 # their launch_command, and ServerArgs.__repr__. Without --admin-api-key nothing changes for callers: the
 # two endpoints were open and stay open, and a server without keys reports them as None as before.
+# The log format patch (log-format.diff) is unconditional and only changes log and error texts.
 # Everything inherited from the base stays opt-in: admission reserve v10 via
 # SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE, and HiCache via --enable-hierarchical-cache plus
 # SGLANG_HICACHE_*. On an HCC/PPCIe (TEE) host SGLANG_HICACHE_CUDA_HOST_MEMORY must stay 1; 0 selects

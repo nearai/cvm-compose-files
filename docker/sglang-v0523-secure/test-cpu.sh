@@ -20,13 +20,14 @@ python3 "$T/test_admin_auth_redaction.py" --root "$SRT" --live | tail -n 1
 step "2 customer-data log redaction (customer-data-log-redaction)"
 python3 "$T/test_customer_data_log_redaction.py" --root "$SRT"
 
-step "3 upstream unit tests the three patches add or edit (rid-abort-exact-match, admin-auth-redaction)"
+step "3 upstream unit tests the patches add or edit (rid-abort-exact-match, admin-auth-redaction, log-format-followup)"
 SGLANG_USE_CPU_ENGINE=1 PYTHONPATH="$T" python3 -m pytest -q -p no:cacheprovider -p no:warnings -p near_stub_plugin \
   test/registered/unit/managers/test_abort_rid_match.py \
   test/registered/unit/constrained/test_grammar_manager.py \
   test/registered/unit/mem_cache/test_dllm_fdfo_kv_reuse.py \
   test/registered/unit/entrypoints/test_server_info.py \
-  test/registered/unit/server_args/test_server_args.py
+  test/registered/unit/server_args/test_server_args.py \
+  test/registered/unit/function_call/test_unknown_tool_name.py
 
 step "4 upstream unit suites around the patches: no failure beyond stock v0.5.23's own"
 # Stock v0.5.23 already fails/errors some of these on a CPU-only container (collection errors,
