@@ -19,6 +19,7 @@ VLLM_NO_LOG = "--no-enable-log-requests"
 BANNED_FLAG = re.compile(
     r"^--(log-requests|enable-log-requests|enable-log-outputs|config|[\w-]*(dump|trace|profil)[\w-]*)(=.*)?$")
 BANNED_ENV = re.compile(r"LOG_REQUEST|DUMP|PROFILE|TRACE|^NEAR_SELF_PROFILE")
+LOG_LEVEL_ENV = re.compile(r"(?i)_LOG(GING)?_LEVEL$")
 ENGINE_IMAGE = re.compile(r"^(sglang|vllm|vllm-openai)$")
 UPPER_SNAKE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 DUMMY = re.compile(r"^(ci-[a-z0-9-]+|\d{1,5})$")
@@ -119,9 +120,17 @@ def check(ctx):
     return out
 
 
+def flag_name(t):
+    """`--a_b=x` -> `--a-b=x`: the engines' argument parsers accept `_` for `-` in flag names."""
+    if not t.startswith("--"):
+        return t
+    name, eq, val = t.partition("=")
+    return name.replace("_", "-") + eq + val
+
+
 def check_engine(p, line, key, svc, serving):
     """Logging checks; `serving` engines must also carry the no-log flag."""
-    out, toks = [], service_tokens(svc)
+    out, toks = [], [flag_name(t) for t in service_tokens(svc)]
     kind = engine_kind(key, svc)
     levels = flag_values(toks, "--log-requests-level")
     if any(v != "0" for v in levels):
@@ -145,7 +154,7 @@ def check_engine(p, line, key, svc, serving):
                                key=f"{key}:--log-level={v}"))
     envd = svc.get("environment") or {}
     for name, val in sorted(envd.items()):
-        if BANNED_ENV.search(name) or (name.endswith("_LOG_LEVEL") and str(val).upper() == "DEBUG"):
+        if BANNED_ENV.search(name) or (LOG_LEVEL_ENV.search(name) and str(val).upper() == "DEBUG"):
             out.append(Finding(p, line, "privacy.env", f"engine {key}: env {name} is not allowed",
                                key=f"{key}:{name}={val}"))
     return out
@@ -231,6 +240,15 @@ CASES = [
     ("trace flag in sh -c", "privacy.log-enabled", FILES, FILES,
      _sg(entrypoint=["sh", "-c"], command=["exec sglang serve --log-requests-level 0 --enable-trace"]), None),
     ("dump env", "privacy.env", FILES, FILES, _sg(environment={"SGLANG_DUMP_REQUESTS": "1"}), None),
+    ("vLLM debug logging env", "privacy.env", FILES, FILES,
+     dict(REND, **{V: {"services": {"model-vllm-a": dict(VL, environment={"VLLM_LOGGING_LEVEL": "DEBUG"})}}}), None),
+    ("vLLM info logging env", None, FILES, FILES,
+     dict(REND, **{V: {"services": {"model-vllm-a": dict(VL, environment={"VLLM_LOGGING_LEVEL": "INFO"})}}}), None),
+    ("underscore request-log flags", "privacy.log-enabled", FILES, FILES,
+     dict(REND, **{V: {"services": {"model-vllm-a": dict(VL, command=VL["command"] + ["--enable_log_requests",
+                                                                                     "--enable_log_outputs"])}}}), None),
+    ("underscore log level", "privacy.log-enabled", FILES, FILES,
+     _sg(command=["sglang", "serve", "--log_requests_level=2"]), None),
     ("aux on an engine image with log level 2", "privacy.log-enabled", FILES, FILES,
      _aux(command=["python3", "-m", "sglang.launch_server", "--log-requests-level", "2"]), None),
     ("aux on an engine image with a dump env", "privacy.env", FILES, FILES,
