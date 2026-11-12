@@ -18,6 +18,7 @@ LABEL nearai.vllm.engram_fast_gather_patch_sha256="9f8a001ac8121f43f7cf99e9b5061
 LABEL nearai.vllm.engram_peer_reads_kill_switch="nearai; VLLM_NEAR_ENGRAM_PEER_READS=0 keeps the v0.32 DP-collective Engram lookup instead of v0.33 peer-HBM reads (#62091)"
 LABEL nearai.vllm.engram_peer_reads_kill_switch_patch_sha256="3b2e41d848877c4556b84eb46ff91ffdd20f05ef25f64ada9e5753799681f3c7"
 LABEL nearai.security.upgrades="none needed: the v0.33.0 base ships certifi 2026.10.23, pip 26.2.2 and uv 0.13.6"
+LABEL nearai.security.linux_libc_dev="6.8.0-149.149"
 
 COPY 01-dsv41-supports-lora-wo-b.patch 02-moe-lora-only-when-targeted.patch 03-decoder-replay-lora-rows.patch \
      04-cc-disable-uva.patch 05-engram-cpu-gather.patch 06-engram-fast-gather.patch \
@@ -65,3 +66,11 @@ RUN cd /usr/local/lib/python3.12/dist-packages \
         vllm/models/deepseek_v41/common/engram.py \
         vllm/models/deepseek_v41/nvidia/model.py \
     && rm -rf /tmp/near
+
+# Base-image finding with a fix available: linux-libc-dev (kernel UAPI headers, not executed in containers)
+# upgraded to the exact noble-security fix.
+RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends --only-upgrade \
+        linux-libc-dev=6.8.0-149.149 \
+    && rm -rf /var/lib/apt/lists/* \
+    && test "$(dpkg-query -W -f='${Version}' linux-libc-dev)" = "6.8.0-149.149"

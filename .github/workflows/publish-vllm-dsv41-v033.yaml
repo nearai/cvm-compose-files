@@ -69,7 +69,7 @@ jobs:
           git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
           git merge-base --is-ancestor "$SOURCE_REVISION" origin/main
           test "$(sha256sum "$BUILD_CONTEXT/Dockerfile" | awk '{print $1}')" = \
-            3246fb0a606c4946ce55bfecc4b8be5b280ca87e29e13bb569a61e874bfd1793
+            ea4cd7a01bd50e65da01ca0607491f6005ba78f3508a2b4f6574a78fc0c4b277
           (cd "$BUILD_CONTEXT" && grep '^patch=' PROVENANCE | while read -r l; do
             f=${l#patch=}; f=${f%% *}; h=${l##*sha256:}
             echo "$h  $f"; done | sha256sum --check --strict)
