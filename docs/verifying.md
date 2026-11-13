@@ -159,8 +159,8 @@ Order in which the gaps below are to be closed, highest impact first:
 2. `pins.raw-key`, `pins.digest`: replace images built on the host or pinned by tag with images built
    here and pinned by digest.
 3. `pins.hf-revision`, `pins.remote-code`: pin the model revision.
-4. `pins.url`, `layout.ext`, `layout.size`: fetch the LoRA adapter at a pinned revision, then delete
-   `adapters/`.
+4. `layout.ext`, `layout.size`: delete `adapters/` once no release tag that may be redeployed fetches
+   the LoRA adapter from `main`; `HEAD` fetches it at a pinned commit.
 5. `privacy.secret`: no empty defaults, no secrets inside embedded configs.
 6. `public.*`: move internal names out of config values, labels and workflows.
 
@@ -176,7 +176,6 @@ nothing in this repo binds a host to a file. Deviations CI detects in live files
 | `pins.raw-key` | 4 | `build` or `dockerfile_inline` in a deployable (images built on the host, unsigned) |
 | `pins.hf-revision` | 1 | a model loaded without a pinned revision |
 | `pins.remote-code` | 1 | remote code enabled for that model |
-| `pins.url` | 2 | a LoRA adapter fetched from this repo's `main` branch; SHA-256-checked, fails closed |
 | `layout.ext`, `layout.size` | 1 each | the adapter weights file in `adapters/` |
 | `public.domain` | 5 | an internal telemetry endpoint |
 | `public.host` | 8 | host names in config values, labels or service names |
