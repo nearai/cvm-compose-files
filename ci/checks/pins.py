@@ -66,7 +66,7 @@ def check_sources(ctx, rows):
     for ref, (n, parts) in rows.items():
         if len(parts) != 4:
             continue
-        repo = ref.split("@")[0].split(":")[0].removeprefix("docker.io/")
+        repo = re.sub(r"^(docker\.io|index\.docker\.io|registry-1\.docker\.io)/", "", ref.split("@")[0].split(":")[0])
         if parts[2] == "-":
             if repo in PUBLISHED_HERE:
                 out.append(Finding(IMAGES, n, "pins.source", "an image this repo publishes names its tag, dir and commit"))
@@ -77,8 +77,11 @@ def check_sources(ctx, rows):
         if ctx.history is not None and not ctx.history(parts[3], parts[2]):
             out.append(Finding(IMAGES, n, "pins.source", "source commit is not on main or has no docker/<dir>/Dockerfile"))
         digest = ref.rpartition("@sha256:")[2]
-        if verifying is not None and f"`{digest}`" not in verifying:
-            out.append(Finding(IMAGES, n, "pins.source", "image built here needs a row in docs/verifying.md"))
+        if verifying is not None:
+            row = next((l for l in verifying.splitlines() if l.startswith(f"| `{digest}` |")), None)
+            if row is None or f"`{parts[2]}`" not in row or f"`{parts[3]}`" not in row:
+                out.append(Finding(IMAGES, n, "pins.source",
+                                   "image built here needs a docs/verifying.md Digests row with the same dir and commit"))
     return out
 
 
@@ -186,9 +189,12 @@ def check_rows(ctx, rows, base_rows):
                 out.append(Finding(df, 0, "pins.docker-dir", "new build dir needs a Dockerfile"))
                 continue
             text = head.text(df)
+            stages = set()
             for n, line in enumerate(text.splitlines(), 1):
-                m = re.match(r"(?i)^\s*FROM\s+(?:--\S+\s+)*(\S+)", line)
-                if m and not (DIGEST_REF.match(m.group(1)) and m.group(1) in rows):
+                m = re.match(r"(?i)^\s*FROM\s+(?:--\S+\s+)*(\S+)(?:\s+AS\s+(\S+))?", line)
+                if m and m.group(2):
+                    stages.add(m.group(2).lower())
+                if m and m.group(1).lower() not in stages and not (DIGEST_REF.match(m.group(1)) and m.group(1) in rows):
                     out.append(Finding(df, n, "pins.docker-dir", "FROM must be a digest with a row", key=m.group(1)))
     return out
 

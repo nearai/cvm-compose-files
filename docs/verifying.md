@@ -164,6 +164,8 @@ Known gaps, highest impact first:
    `main`; `HEAD` fetches it at a pinned commit.
 5. `privacy.secret`: some secrets have empty defaults or sit inside embedded configs.
 6. `public.*`: some config values, labels and workflows hold internal names.
+7. The GPU a Sage service runs on is the deploy-time value `SAGE_GPU_UUID`, so the deployment record
+   does not show it. The file fails to start without it.
 
 CI checks compose files, build contexts, workflows and repo text. It does not check image contents, and
 nothing in this repo binds a host to a file. Deviations CI detects in live files are entries in
@@ -189,13 +191,17 @@ Gaps that are not exceptions:
   `ci/data/services.allow.json`, are checked for flags and env that enable logging.
 - actionlint and zizmor check a publish workflow only until it merges. Publish workflows that exist
   at the base commit are frozen and not linted, so any findings in them stay until the workflow is
-  deleted with the last build dir it publishes.
+  deleted with the last build dir it publishes. The three current ones check out the repository
+  without `persist-credentials: false` (zizmor `artipacked`).
 - Some pinned images are neither standard upstream images nor built here: `nearaidev/vllm-proxy-rs`
   and `nearaidev/compose-manager-launcher` are built outside this repo, and the image of
   `prod/sage.yaml` and `prod/sage-pull.yaml` comes from a vendor. This repo has no build record or
   signing identity for them; only their digests are pinned. The Whisper engine in
   `prod/small-models.yaml` and `prod/pack-small-models.yaml` is built on the host (`pins.raw-key`) and
   has no digest at all.
+- The nginx checks read `location` blocks and explicit `proxy_pass`, `rewrite` and `return` targets on
+  TLS inference listeners. They do not follow a `proxy_pass` that maps one prefix onto another or an
+  `upstream` block; review reads those.
 - `publish-vllm-dsv41-v033.yaml` skips the provenance attestation when it resumes from an already
   pushed digest; such an image has a signature only.
 - Repository settings applied at merge: a `v*` tag ruleset blocks moving and deleting tags, but

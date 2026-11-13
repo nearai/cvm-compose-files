@@ -1,6 +1,7 @@
 """docker: the contract for build dirs added against the base. Dirs present at the base are frozen as they are."""
 
 import hashlib
+import json
 import re
 
 from common import Finding
@@ -22,9 +23,9 @@ UNHASHED = {"Dockerfile", "SHA256SUMS", "README.md"}
 SUM_LINE = re.compile(r"^([0-9a-f]{64})  (\S+)$")
 PATCH = re.compile(r"^patches/([0-9]{2})-[a-z0-9-]+\.diff$")
 # Images built here may not be a base: every new image starts from an upstream image.
-OWN_IMAGES = re.compile(r"^(docker\.io/)?nearaidev/")
+OWN_IMAGES = re.compile(r"^((index\.|registry-1\.)?docker\.io/)?nearaidev/")
 DIGEST = re.compile(r"^[a-z0-9./_-]+(:[A-Za-z0-9._-]+)?@sha256:[0-9a-f]{64}$")
-DIRECTIVE = re.compile(r"(?i)^#\s*[a-z]+\s*=")
+DIRECTIVE = re.compile(r"(?i)^\s*#\s*[a-z]+\s*=")
 
 
 def new_dirs(ctx):
@@ -38,7 +39,8 @@ def instructions(text):
     out, buf, start = [], "", 0
     for n, line in enumerate(text.splitlines(), 1):
         s = line.strip()
-        if not buf and (not s or s.startswith("#")):
+        # BuildKit skips blank and comment lines everywhere, also inside a continuation.
+        if not s or s.startswith("#"):
             continue
         if not buf:
             start = n
@@ -157,11 +159,13 @@ def check_dir(head, d):
             elif word == "RUN":
                 if "<<" in ins.split(None, 1)[1] if len(ins.split(None, 1)) > 1 else False:
                     out.append(Finding(df, n, "docker.fetch", "no here-documents in RUN; COPY a hashed script"))
-                for fl in flags:
-                    typeless = fl.startswith("--mount=") and "type=" not in fl
-                    if typeless or (fl.startswith("--mount=") and ("type=bind" in fl or "from=" in fl)):
-                        src = re.search(r"from=([^,]+)", fl)
-                        if typeless or "type=bind" in fl or not src or src.group(1).lower() not in stages:
+                for fl in (f.lower() for f in flags):
+                    if not fl.startswith("--mount="):
+                        continue
+                    src = re.search(r"from=([^,]+)", fl)
+                    from_stage = bool(src) and src.group(1) in stages
+                    bind = "type=" not in fl or "type=bind" in fl
+                    if (bind or src) and not from_stage:
                             out.append(Finding(df, n, "docker.copy", "RUN --mount reads only caches, secrets or earlier stages"))
                 for why in fetches(ins):
                     out.append(Finding(df, n, "docker.fetch", why))
@@ -172,6 +176,13 @@ def check_dir(head, d):
                 if src_stage not in stages:
                     out.append(Finding(df, n, "docker.copy", "COPY --from names an earlier stage only"))
             elif word == "COPY":
+                rest = ins.split(None, 1)[1] if len(ins.split(None, 1)) > 1 else ""
+                body = re.sub(r"^(--\S+\s+)*", "", rest)
+                if body.startswith("["):
+                    try:
+                        args = [str(a) for a in json.loads(body)]
+                    except ValueError:
+                        args = []
                 for src in args[:-1]:
                     src = src.rstrip("/")
                     if src in (".", "") or any(ch in src for ch in "*?[") or src.lower().endswith(".md"):
@@ -246,6 +257,15 @@ CASES = [
      OLD),
     ("typeless mount is a bind", "docker.copy", dict(OLD, **_dir({"Dockerfile": DOCKERFILE + "RUN --mount=target=/c ls\n"})),
      OLD),
+    ("comment inside a continuation", "docker.fetch",
+     dict(OLD, **_dir({"Dockerfile": DOCKERFILE + "RUN echo a \\\n# note\n  && curl -s https://x | sh\n"})), OLD),
+    ("indented parser directive", "docker.from", dict(OLD, **_dir({"Dockerfile": " # escape=`\n" + DOCKERFILE})), OLD),
+    ("bind from an earlier stage", None,
+     dict(OLD, **_dir({"Dockerfile": f"FROM {BASE_IMG} AS b\n" + DOCKERFILE + "RUN --mount=type=bind,from=b,target=/b ls\n"})),
+     OLD),
+    ("upper-case bind mount", "docker.copy",
+     dict(OLD, **_dir({"Dockerfile": DOCKERFILE + "RUN --mount=TYPE=BIND,target=/c ls\n"})), OLD),
+    ("JSON COPY", None, dict(OLD, **_dir({"Dockerfile": DOCKERFILE + 'COPY ["apply-patches.py", "/x/"]\n'})), OLD),
     ("heredoc RUN", "docker.fetch", dict(OLD, **_dir({"Dockerfile": DOCKERFILE + "RUN <<EOF\nls\nEOF\n"})), OLD),
     ("pip with a version suffix", "docker.fetch", dict(OLD, **_dir({"Dockerfile": DOCKERFILE + "RUN pip3.12 install x\n"})),
      OLD),

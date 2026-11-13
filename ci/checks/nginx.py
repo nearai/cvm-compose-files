@@ -23,6 +23,7 @@ INFERENCE_PROXY_UPSTREAM = re.compile(
     r"\b(?:proxy_pass|set\s+\$\$?\w+)\s+(?:(?:https?)://)?(?:proxy-|vllm-proxy-)")
 METRICS_DENY = re.compile(r"\blocation\s+\^~\s+/metrics\s*\{\s*return\s+404\s*;\s*\}")
 OTHER_METRICS_LOCATION = re.compile(r"(?i)\blocation\s+(=|~\*?)\s*[^{]*metrics|\b(proxy_pass|rewrite|return)\b[^;]*/metrics\b")
+LOCATION = re.compile(r"\blocation\s+([^{]*)\{([^}]*)\}")
 BACKEND_METRICS_DENY = re.compile(r"\blocation\s+\^~\s+/v1/metrics\s*\{\s*return\s+404\s*;\s*\}")
 HTTP2_LISTEN = re.compile(r"\blisten\b[^;]*\bhttp2\b[^;]*;")
 HTTP2_ON = re.compile(r"\bhttp2\s+on\s*;")
@@ -108,7 +109,9 @@ def check(ctx):
                                        f"{path}: {where}: TLS inference listener exposes /metrics", key=where + "m"))
                 # An exact location wins over the ^~ prefix, and any proxy_pass or rewrite can target a
                 # metrics path from another location, so neither may name one.
-                if OTHER_METRICS_LOCATION.search(block):
+                if OTHER_METRICS_LOCATION.search(block) or any(
+                        "metrics" in m.group(1).lower() and "return 404" not in m.group(2)
+                        for m in LOCATION.finditer(block)):
                     out.append(Finding(path, 0, "nginx.public-metrics",
                                        f"{path}: {where}: TLS inference listener routes a metrics path past the 404",
                                        key=where + "x"))
@@ -250,6 +253,9 @@ CASES = [
     _case("metrics via another location", "nginx.public-metrics",
           _model(TLS.replace("  location ^~ /metrics { return 404; }\n",
                              "  location ^~ /metrics { return 404; }\n  location /stats { proxy_pass http://e/metrics; }\n"))),
+    _case("longer metrics prefix", "nginx.public-metrics",
+          _model(TLS.replace("  location ^~ /metrics { return 404; }\n",
+                             "  location ^~ /metrics { return 404; }\n  location /metrics/x { proxy_pass http://e; }\n"))),
     _case("no TLS inference listener", "nginx.public-metrics", _model("server {\n  listen 80;\n}\n")),
     _case("unbalanced server block", "nginx.parse", _model("server {\n  listen 80;\n", TLS)),
     _case("http2 proxy without keepalive", "nginx.keepalive",

@@ -75,9 +75,9 @@ def conforms(path, tree):
     return bool(DOCKER.match(path))
 
 
-SOFT_RUN = re.compile(r"(?m)\|\|\s*(true|:|exit(\s+0)?)(?![\w)])|\|\|\s*echo\b|^\s*set\s+\+(e\b|o\s+errexit)")
+SOFT_RUN = re.compile(r"(?m)\|\|\s*(\S*/)?(true|:|exit(\s+0)?)(?![\w)])|\|\|\s*(echo|printf|\()|^\s*set\s+\+(e\b|o\s+errexit)")
 # A step that runs a required check is plain: no pipes, no fallbacks, no shell overrides.
-REQUIRED_STEP_BAN = re.compile(r"\|\||(?<![|])\|(?![|])|\bset\s+\+|\bthen\s+:|\btrap\b")
+REQUIRED_STEP_BAN = re.compile(r"\|\||(?<![|])\|(?![|])|&&|&\s*$|\bset\s+\+|\bthen\s+:|\btrap\b", re.M)
 NGINX_CALL = "python3 ci/run.py --nginx-test"
 
 
@@ -98,6 +98,8 @@ def soft_fail(jobs, doc=None):
                 continue
             if "continue-on-error" in st:
                 out.append(f"job {name} step {i} must not set continue-on-error")
+            if str(st.get("if", "")).strip().strip("${} ").lower() in ("false", "0", "''"):
+                out.append(f"job {name} step {i} is switched off by if:")
             if "shell" in st:
                 out.append(f"job {name} step {i} must use the default shell")
             run = str(st.get("run", ""))
@@ -385,6 +387,17 @@ CASES = [
     ("required check piped", "layout.all-green",
      dict(BASE_FILES, **{".github/workflows/ci.yaml": WF_OK.replace(
          "python3 ci/run.py --self-test\n", "python3 ci/run.py --self-test | tee x\n")}), BASE_FILES),
+    ("required check chained", "layout.all-green",
+     dict(BASE_FILES, **{".github/workflows/ci.yaml": WF_OK.replace(
+         "python3 ci/run.py --self-test\n", "python3 ci/run.py --self-test && echo ok\n")}), BASE_FILES),
+    ("any step switched off", "layout.all-green",
+     dict(BASE_FILES, **{".github/workflows/ci.yaml": WF_OK.replace(
+         '      - run: python3 ci/run.py --nginx-test\n', '      - run: python3 ci/run.py --nginx-test\n      - if: ${{ false }}\n        run: x\n')}),
+     BASE_FILES),
+    ("fallback printf", "layout.all-green",
+     dict(BASE_FILES, **{".github/workflows/ci.yaml": WF_OK.replace(
+         '      - run: python3 ci/run.py --nginx-test\n', '      - run: python3 ci/run.py --nginx-test\n      - run: x || printf ok\n')}),
+     BASE_FILES),
     ("fallback echo", "layout.all-green",
      dict(BASE_FILES, **{".github/workflows/ci.yaml": WF_OK.replace(
          "python3 ci/run.py --self-test\n", "python3 ci/run.py --self-test || echo failed\n")}), BASE_FILES),

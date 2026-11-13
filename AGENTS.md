@@ -46,8 +46,8 @@ Read the rule file for a path before you change files under it; Claude Code also
   that tag and path. A follow-up PR marks it `live` and deletes the file it replaced.
 - New image: PR 1 adds `docker/<dir>/` and `publish-<dir>.yaml`. After merge, a maintainer dispatches
   the workflow on `main`; it builds, scans, attests and signs. PR 2 pins the digest in a deployable and
-  adds its `images.allow` row (dir and the `main` commit it was built from) and its docs/verifying.md
-  rows. `pins.source` checks both.
+  adds its `images.allow` row (dir, `main` commit), its docs/verifying.md Digests row and, for a new
+  workflow, its Signing-identities row. `pins.source` checks the first two.
 
 ## Hard rules (CI fails)
 - Paths follow the layout rules in `ci/checks/layout.py` or are listed in `ci/data/legacy.txt`, which
@@ -83,7 +83,7 @@ Read the rule file for a path before you change files under it; Claude Code also
 - Waivers live only in `ci/data/exceptions.json`: `rule`, exact `path`, `sha256` of the matched text,
   `reason`, `remove_when` (for `public.host` the hash covers the host and its stripped line). Never copy
   the matched text into the entry or the PR. `claude.*`,
-  `layout.claude-md` and `layout.agent-file` cannot be waived.
+  `exceptions.*`, `layout.claude-md` and `layout.agent-file` cannot be waived.
 
 ## Naming
 Lowercase, `-` between tokens. No lifecycle words (new, old, test, canary, candidate, final, `v<N>`,
