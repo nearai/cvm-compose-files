@@ -4,6 +4,8 @@
 Report vulnerabilities privately through GitHub: Security tab -> "Report a vulnerability".
 This is the only reporting channel. Do not open a public issue or pull request, and do not include
 secrets or user data in the report.
+When the fix path in .claude/rules/docs.md applies, a maintainer opens a private fork and adds you;
+otherwise the fix is a normal public PR.
 If you find a credential in this repository, report it the same way and do not use it.
 
 ## Scope
