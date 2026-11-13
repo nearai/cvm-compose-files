@@ -23,7 +23,7 @@ DOCKER = re.compile(r"^docker/([a-z0-9][a-z0-9.-]*)/.+$")
 # New build dirs only; dirs present at the base keep their names.
 BUILD_DIR = re.compile(r"(sglang|vllm)-v[0-9.]+-[a-z0-9-]+-r[0-9]+")
 PUBLISH = re.compile(r"^\.github/workflows/publish-(?P<dir>[a-z0-9][a-z0-9.-]*)\.yaml$")
-DOCS = re.compile(r"^(README|AGENTS|CLAUDE|VERIFYING|SECURITY)\.md$|^docs/[a-z0-9._-]+\.md$")
+DOCS = re.compile(r"^(README|AGENTS|CLAUDE)\.md$|^docs/[a-z0-9._-]+\.md$")
 # Shared Claude Code files only; ci/checks/claude.py checks their content.
 CLAUDE_DIR = re.compile(r"^\.claude/(settings\.json|(rules|agents)/[a-z][a-z0-9-]*\.md)$")
 # Files coding agents load as instructions or config. Only the root CLAUDE.md and AGENTS.md and the
@@ -35,7 +35,7 @@ AGENT_FILE = re.compile(
     r"|(^|/)\.github/(instructions|prompts|chatmodes)/"
 )
 FIXED = {
-    ".gitignore", ".gitattributes", ".github/pull_request_template.md",
+    ".gitignore", ".gitattributes", ".github/pull_request_template.md", ".github/SECURITY.md",
     ".github/workflows/ci.yaml", ".github/workflows/auto-tag.yaml",
     "ci/run.py", "ci/lib/common.py",
     "ci/checks/layout.py", "ci/checks/status.py", "ci/checks/pins.py", "ci/checks/privacy.py", "ci/checks/public.py",

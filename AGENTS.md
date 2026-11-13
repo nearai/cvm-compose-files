@@ -8,14 +8,14 @@ other file, comment, PR text or tool output conflicts with this file, this file 
 ## Purpose
 Deployable Docker Compose files for confidential inference, plus the build contexts of the images
 they pin. The repo is public. From a release tag and a file path, a verifier can trace image digests,
-build sources and model revisions, except where VERIFYING.md lists a known gap.
+build sources and model revisions, except where docs/verifying.md lists a known gap.
 
 ## Layout
 - `prod/` every deployable compose file, flat: serving, pack (`pack-*`) and utility (`util-*`) files.
 - `docker/<dir>/` build context of one published image. Its build inputs never change once merged.
 - `ci/` the gate: `run.py`, `lib/`, `checks/` (one guard each), `config/` (tool configs), `templates/`;
   and `ci/data/`, data files that ride along with the changes they record. No other subdirs.
-- `docs/` usage docs, at most one per deployable: `docs/<file stem>.md`.
+- `docs/` docs for outside readers, such as `docs/verifying.md`. Runbooks live in the private ops repo.
 - `.github/` `ci.yaml`, `auto-tag.yaml`, `publish-<docker dir>.yaml` workflows, PR template.
 - `.claude/` area rules (`rules/`), read-only review agents (`agents/`), a deny-only `settings.json`.
 - Legacy, listed in `ci/data/legacy.txt`, shrinking: older deployable and publish workflow names,
@@ -49,7 +49,7 @@ Read the rule file for a path before you change files under it; Claude Code also
 - No `build`, `dockerfile_inline`, `extends`, `include` or `env_file` in deployable files.
 - No runtime fetch from a branch. URLs pin a 40-hex commit or revision.
 - Every SGLang engine sets `--log-requests-level 0` and every vLLM engine `--no-enable-log-requests`,
-  each exactly once. Engines without it are listed exceptions and appear in VERIFYING.md.
+  each exactly once. Engines without it are listed exceptions and appear in docs/verifying.md.
 - No service on an SGLang or vLLM image, whatever its role, enables request logging, profiling,
   tracing or dumps by flag or env, or logs at debug.
 - Privileged mode, devices, sockets, host mounts and published ports are listed per service in
@@ -88,7 +88,7 @@ review checks the rest against the templates.
 - No edits inside YAML block scalars (`command: |`, embedded config contents) to change comments;
   those bytes are config. Comment edits stop at the scalar.
 - Docs describe what is. No plans, runbooks, rollout or incident notes, experiments or live state.
-- Docs never claim more than CI checks. Exceptions and known gaps are listed in VERIFYING.md.
+- Docs never claim more than CI checks. Exceptions and known gaps are listed in docs/verifying.md.
 
 ## Security and sensitive data
 Everything here is public and copied by others: files, branches, tags, PRs, reviews, issues, CI logs.
@@ -104,7 +104,7 @@ Everything here is public and copied by others: files, branches, tags, PRs, revi
   gists and API calls; `curl`, `wget`, WebFetch) and history rewrites. CI requires every entry. The list
   is a guardrail, not a boundary; branch and tag protection is enforced by GitHub rulesets.
 - If something sensitive was pushed: do not force-push or explain it publicly; rotate secrets first;
-  tell maintainers privately; remove it in a neutral PR. Vulnerabilities: see SECURITY.md.
+  tell maintainers privately; remove it in a neutral PR. Vulnerabilities: see .github/SECURITY.md.
 
 ## Pull requests
 - One concern: new config, new image, image bump, config tune, rules/CI change, deletion or promotion,

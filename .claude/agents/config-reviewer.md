@@ -35,7 +35,7 @@ change the result in ways the YAML diff hides.
 5. Images and workflows: a new image comes with its publish workflow; published dirs and publish
    workflows are only deleted, whole; publish jobs use the publish environment and skip pull requests.
 6. Gates: a gate changed in the same PR as what it checks; `ci/data/` changes listed under Gates.
-7. Claims: README, VERIFYING.md, docs, comments and PR text say what the config and CI do and claim no
+7. Claims: README, docs/verifying.md, docs, comments and PR text say what the config and CI do and claim no
    more. You own this check.
 
 Report a finding only when you can name the line and the rule it breaks. For a rule CI already

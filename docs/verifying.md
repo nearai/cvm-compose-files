@@ -21,12 +21,12 @@ attestation are the proof.
   services on other images (nginx, the collector, GPU exporters, downloaders, registrars, `sage`,
   `model-privacy-filter`), and it cannot see what any image logs by default. The SGLang images built
   here also carry log-redaction patches, which CI does not check:
-  [14-admin-auth-redaction](docker/sglang-v0523-secure/patches/14-admin-auth-redaction.diff),
-  [15-customer-data-log-redaction](docker/sglang-v0523-secure/patches/15-customer-data-log-redaction.diff),
-  [26-log-format-followup](docker/sglang-v0523-secure/patches/26-log-format-followup.diff) (same files in
+  [14-admin-auth-redaction](../docker/sglang-v0523-secure/patches/14-admin-auth-redaction.diff),
+  [15-customer-data-log-redaction](../docker/sglang-v0523-secure/patches/15-customer-data-log-redaction.diff),
+  [26-log-format-followup](../docker/sglang-v0523-secure/patches/26-log-format-followup.diff) (same files in
   `sglang-glm53-v0523`), and in `sglang-glm53-hicache-w4afp8`
-  [admin-auth-redaction](docker/sglang-glm53-hicache-w4afp8/admin-auth-redaction.diff) and
-  [log-format](docker/sglang-glm53-hicache-w4afp8/log-format.diff).
+  [admin-auth-redaction](../docker/sglang-glm53-hicache-w4afp8/admin-auth-redaction.diff) and
+  [log-format](../docker/sglang-glm53-hicache-w4afp8/log-format.diff).
 
 Start from the deployment record: a release tag `v0.0.N`, a file path and the file's SHA-256. Always
 verify by digest. Image tags on the registry can be moved; digests cannot.
