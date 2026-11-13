@@ -16,7 +16,7 @@ build sources and model revisions, except where docs/verifying.md lists a known 
 - `ci/` the gate: `run.py`, `lib/`, `checks/` (one guard each), `config/` (tool configs), `templates/`;
   and `ci/data/`, data files that ride along with the changes they record. No other subdirs.
 - `docs/` docs for outside readers, such as `docs/verifying.md`. No runbooks.
-- `.github/` `ci.yaml`, `auto-tag.yaml`, `publish-<docker dir>.yaml` workflows, PR template, `SECURITY.md`.
+- `.github/` `ci.yaml`, `auto-tag.yaml`, `publish-<docker dir>.yaml` workflows, PR template, `.github/SECURITY.md`.
 - `.claude/` area rules (`rules/`), read-only review agents (`agents/`), a deny-only `settings.json`.
 - Legacy, listed in `ci/data/legacy.txt`, shrinking: deployables and a publish workflow named before the
   naming rules, and `adapters/`, kept until no release tag that may be redeployed fetches it from `main`.
