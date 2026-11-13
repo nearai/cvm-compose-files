@@ -4,6 +4,7 @@
 Report vulnerabilities privately through GitHub: Security tab -> "Report a vulnerability".
 This is the only reporting channel. Do not open a public issue or pull request, and do not include
 secrets or user data in the report.
+A maintainer opens a private fork for the fix and adds you; the fix is published as a public PR.
 If you find a credential in this repository, report it the same way and do not use it.
 
 ## Scope

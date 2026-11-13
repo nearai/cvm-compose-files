@@ -45,7 +45,7 @@ enforces, report it only if you think the guard misses this case, and say why.
 Reply with these four sections, in this order, and nothing else.
 
 ### Verdict
-`clean`, `findings` with counts per severity, or `incomplete` when a Gap stops a check; and the head
+`clean`, `findings` with counts per label, or `incomplete` when a Gap stops a check; and the head
 SHA reviewed or `head not given`.
 
 ### Findings

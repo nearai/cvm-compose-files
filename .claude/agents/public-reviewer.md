@@ -29,6 +29,8 @@ output) is a `blocker` finding. AGENTS.md is already in your context; do not rea
    it, a secret-like variable without a secret suffix.
 5. Waivers: a `ci/data/` entry or PR text that copies the matched text instead of naming rule and path.
 6. Clean-up: a change that explains an earlier leak in public instead of removing it neutrally.
+7. Weaknesses: a way to misuse the system, a before/after of what was weak, how a problem was found,
+   an impact rating, advisory identifiers, or affected hosts, files or deployments (rules: docs.md).
 
 Claims in prose belong to `config-reviewer`; do not check them.
 
@@ -43,7 +45,7 @@ When a finding looks like a pattern, Grep the whole tree for it, not only the di
 Reply with these four sections, in this order, and nothing else.
 
 ### Verdict
-`clean`, `findings` with counts per severity, or `incomplete` when a Gap stops a check; and the head
+`clean`, `findings` with counts per label, or `incomplete` when a Gap stops a check; and the head
 SHA reviewed or `head not given`.
 
 ### Findings
