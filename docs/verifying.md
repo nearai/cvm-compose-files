@@ -21,8 +21,8 @@ attestation are the proof.
   services on other images (nginx, the collector, GPU exporters, downloaders, registrars, `sage`,
   `model-privacy-filter`), and it cannot see what any image logs by default. The published
   `sglang-v0523-secure` and `sglang-glm53-v0523` images also carry log-redaction patches, which CI does
-  not check: [14-admin-auth-redaction](../docker/sglang-v0523-secure/patches/14-admin-auth-redaction.diff)
-  and [15-customer-data-log-redaction](../docker/sglang-v0523-secure/patches/15-customer-data-log-redaction.diff).
+  not check: [14-admin-auth-redaction](https://github.com/nearai/cvm-compose-files/blob/a07dea8faf1523d85f20e328031977b7964be3e4/docker/sglang-v0523-secure/patches/14-admin-auth-redaction.diff)
+  and [15-customer-data-log-redaction](https://github.com/nearai/cvm-compose-files/blob/a07dea8faf1523d85f20e328031977b7964be3e4/docker/sglang-v0523-secure/patches/15-customer-data-log-redaction.diff).
   Patch 26 in those dirs and the redaction patches of the former `sglang-glm53-hicache-w4afp8` dir are
   not in any published image; the `SERIES` or Dockerfile at an image's source commit records what it contains.
 
@@ -109,9 +109,9 @@ workflow's existing signatures stay valid for the images it published.
 
 | workflow | identity (prefix `https://github.com/nearai/cvm-compose-files/`) | images | state |
 |---|---|---|---|
-| `publish-glm53-v0523.yaml` | `.github/workflows/publish-glm53-v0523.yaml@refs/heads/main` | `nearaidev/sglang` | active |
-| `publish-sglang-v0523-secure.yaml` | `.github/workflows/publish-sglang-v0523-secure.yaml@refs/heads/main` | `nearaidev/sglang` | active |
 | `publish-vllm-dsv41-v033.yaml` | `.github/workflows/publish-vllm-dsv41-v033.yaml@refs/heads/main` | `nearaidev/vllm` | active |
+| `publish-glm53-v0523.yaml` | `.github/workflows/publish-glm53-v0523.yaml@refs/heads/main` | `nearaidev/sglang` | retired |
+| `publish-sglang-v0523-secure.yaml` | `.github/workflows/publish-sglang-v0523-secure.yaml@refs/heads/main` | `nearaidev/sglang` | retired |
 | `publish-glm53-admission-reserve.yaml` | `.github/workflows/publish-glm53-admission-reserve.yaml@refs/heads/main` | `nearaidev/sglang` | retired |
 | `publish-glm53-fc91d24.yaml` | `.github/workflows/publish-glm53-fc91d24.yaml@refs/heads/main` | `nearaidev/sglang` | retired |
 | `publish-glm53-hicache.yaml` | `.github/workflows/publish-glm53-hicache.yaml@refs/heads/main` | `nearaidev/sglang` | retired |
