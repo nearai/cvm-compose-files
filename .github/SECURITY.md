@@ -16,7 +16,8 @@ In scope:
   attestation look valid when it should not.
 - Secrets or private data committed anywhere in this repository or its history.
 
-Items listed under "Known gaps" in docs/verifying.md are limits by design.
+Items listed under "Known gaps" in docs/verifying.md are limits by design; reports that show a limit is
+wider than described are in scope.
 
 Out of scope (report to the project concerned):
 - Bugs in upstream inference engines, base images or models.

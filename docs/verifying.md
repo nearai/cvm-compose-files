@@ -152,29 +152,29 @@ at earlier release tags or are bases of another image.
 
 What verification does not cover by design:
 
-- CI checks compose files, build contexts, workflows and repo text. It does not check image contents,
-  and nothing in this repo binds a host to a file. Values supplied at deploy time are not in the
-  deployment record.
+- Release tags: a verifier checks that the tag's commit is on `main` (step 1).
 - Some pinned images are not built in this repo. Only their digests are pinned; this repo has no build
   record or signing identity for them. Some images are defined inline in a deployable and have no
   digest. The pins rules below count them.
 - Not every image has a build provenance attestation; the signature is the identity proof.
+- CI checks compose files, build contexts, workflows and repo text. It does not check image contents,
+  and nothing in this repo binds a host to a file. Values supplied at deploy time are not in the
+  deployment record.
 - The logging rules apply to services classified as SGLang or vLLM (see What the proof covers).
 - The CI guards are partial checks, not a full review. Review reads what they do not parse.
-- Release tags are protected by a repository ruleset; check that a tag's commit is on `main` (step 1).
 
 Deviations CI detects in live files are entries in `ci/data/exceptions.json`; each binds one rule, one
 file and the matched value. Counts per rule:
 
 | rule | entries | what it waives |
 |---|---|---|
-| `privacy.no-log-flag` | 12 | vLLM engines without an explicit request-logging flag |
-| `privacy.secret` | 9 | secret variables without a required-value check, or used inside an embedded config |
-| `pins.digest` | 12 | image references pinned by tag, or defined inline |
-| `pins.raw-key` | 8 | images defined inline in a deployable |
-| `pins.hf-revision` | 1 | a model referenced by name without a revision pin |
-| `pins.remote-code` | 1 | the remote-code setting on that model |
 | `layout.ext`, `layout.size` | 1 each | the adapter weights file in `adapters/` |
+| `pins.digest` | 12 | image references pinned by tag, or defined inline |
+| `pins.hf-revision` | 1 | a model referenced by name without a revision pin |
+| `pins.raw-key` | 8 | images defined inline in a deployable |
+| `pins.remote-code` | 1 | the remote-code setting on that model |
+| `privacy.no-log-flag` | 12 | vLLM engines without an explicit request-logging flag; the engine default does not log requests |
+| `privacy.secret` | 9 | secret variables without a required-value check, or used inside an embedded config |
 | `public.domain` | 6 | domain names outside the public allowlist |
 | `public.host` | 27 | host names in config values, labels or service names |
 | `public.repo` | 2 | repository references outside the public allowlist |
