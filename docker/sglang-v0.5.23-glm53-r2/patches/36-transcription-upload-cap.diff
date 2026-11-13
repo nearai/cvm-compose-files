@@ -1,0 +1,287 @@
+diff --git a/python/sglang/srt/arg_groups/field_order.py b/python/sglang/srt/arg_groups/field_order.py
+index e61963e..3378fc9 100644
+--- a/python/sglang/srt/arg_groups/field_order.py
++++ b/python/sglang/srt/arg_groups/field_order.py
+@@ -552,5 +552,6 @@ POSITIONAL_FIELD_ORDER = (
+     "enable_return_aux_hidden_states",
+     "aux_hidden_state_capture",
+     "return_aux_hidden_state_layer_ids",
++    "audio_transcription_max_file_size_mb",
+ )
+ # fmt: on
+diff --git a/python/sglang/srt/arg_groups/fields/mm.py b/python/sglang/srt/arg_groups/fields/mm.py
+index 12991ac..f7c1301 100644
+--- a/python/sglang/srt/arg_groups/fields/mm.py
++++ b/python/sglang/srt/arg_groups/fields/mm.py
+@@ -96,6 +96,11 @@ class Mm(msgspec.Struct):
+         "Maximum size in MiB for one client-supplied remote media download. "
+         "The limit is enforced while streaming; set to 0 to disable it.",
+     ] = 64
++    audio_transcription_max_file_size_mb: A[
++        int,
++        "Maximum size in MiB for one uploaded transcription file. The limit "
++        "is enforced while reading the upload; set to 0 to disable it.",
++    ] = 25
+     mm_preprocess_cache_size_mb: A[
+         Optional[int],
+         Arg(
+diff --git a/python/sglang/srt/arg_groups/serving_hook.py b/python/sglang/srt/arg_groups/serving_hook.py
+index 95141eb..db6e15f 100644
+--- a/python/sglang/srt/arg_groups/serving_hook.py
++++ b/python/sglang/srt/arg_groups/serving_hook.py
+@@ -204,6 +204,8 @@ def handle_crash_dump_env(server_args: Any):
+ def handle_media_url_security(server_args: Any):
+     """Normalize and publish the media URL policy before workers start."""
+     cfg = resolving_view(server_args)
++    if cfg.audio_transcription_max_file_size_mb < 0:
++        raise ValueError("audio_transcription_max_file_size_mb must be non-negative")
+     declare_resolution(
+         server_args,
+         "_handle_media_url_security",
+diff --git a/python/sglang/srt/entrypoints/http_server.py b/python/sglang/srt/entrypoints/http_server.py
+index 5923d17..0f89f68 100644
+--- a/python/sglang/srt/entrypoints/http_server.py
++++ b/python/sglang/srt/entrypoints/http_server.py
+@@ -523,6 +523,7 @@ from sglang.srt.runtime_context import (
+     get_disagg,
+     get_exec,
+     get_lora,
++    get_mm,
+     get_model,
+     get_observability,
+     get_parallel,
+@@ -709,6 +710,46 @@ async def validate_json_request(raw_request: Request):
+         )
+ 
+ 
++_UPLOAD_READ_CHUNK_BYTES = 1024 * 1024
++
++
++async def _read_upload_with_limit(file: UploadFile, max_bytes: int):
++    """Read an upload in bounded chunks, None once it exceeds ``max_bytes``.
++
++    Starlette spools an UploadFile to a temp file past a small in-memory
++    threshold, but ``await file.read()`` then buffers the whole thing in host
++    memory before any validation runs (sglang#43709) — a cheap way for a
++    client to exhaust the host. Reading in chunks enforces the cap while
++    streaming, mirroring how the remote-media limit is enforced.
++    """
++    chunks = []
++    total = 0
++    while True:
++        chunk = await file.read(_UPLOAD_READ_CHUNK_BYTES)
++        if not chunk:
++            break
++        total += len(chunk)
++        if total > max_bytes:
++            return None
++        chunks.append(chunk)
++    return b"".join(chunks)
++
++
++def _transcription_upload_too_large(max_bytes: int) -> ORJSONResponse:
++    return ORJSONResponse(
++        content={
++            "error": {
++                "message": (
++                    "Transcription upload exceeds the configured "
++                    f"{max_bytes // (1024 * 1024)} MiB limit "
++                    "(--audio-transcription-max-file-size-mb)"
++                )
++            }
++        },
++        status_code=413,
++    )
++
++
+ ##### Native API endpoints #####
+ 
+ 
+@@ -1975,7 +2016,19 @@ async def openai_v1_audio_transcriptions(
+             status_code=400,
+         )
+ 
+-    audio_data = await file.read()
++    max_upload_bytes = get_mm().audio_transcription_max_file_size_mb * 1024 * 1024
++    if max_upload_bytes > 0:
++        # The declared-size precheck catches honest clients before any
++        # buffering; the chunked read enforces the cap even when the
++        # declared size is missing or lies (sglang#43709).
++        declared_size = getattr(file, "size", None)
++        if declared_size is not None and declared_size > max_upload_bytes:
++            return _transcription_upload_too_large(max_upload_bytes)
++        audio_data = await _read_upload_with_limit(file, max_upload_bytes)
++        if audio_data is None:
++            return _transcription_upload_too_large(max_upload_bytes)
++    else:
++        audio_data = await file.read()
+ 
+     return (
+         await raw_request.app.state.openai_serving_transcription.create_transcription(
+diff --git a/test/registered/unit/entrypoints/openai/test_transcription_upload_limit.py b/test/registered/unit/entrypoints/openai/test_transcription_upload_limit.py
+new file mode 100644
+index 0000000..d958e62
+--- /dev/null
++++ b/test/registered/unit/entrypoints/openai/test_transcription_upload_limit.py
+@@ -0,0 +1,161 @@
++"""Unit tests for the transcription upload size cap (sglang#43709).
++
++The /v1/audio/transcriptions endpoint used to buffer the whole multipart
++upload in host memory via ``await file.read()`` before any validation ran.
++These tests pin the new contract: over-limit uploads are rejected with a 413
++— via the declared-size precheck when the client is honest, and via the
++chunked read when the declared size is missing or lies — and the serving
++layer is never reached for rejected uploads.
++"""
++
++from sglang.test.test_utils import maybe_stub_sgl_kernel
++
++maybe_stub_sgl_kernel()  # must precede any import that pulls in sgl_kernel
++
++import unittest
++from types import SimpleNamespace
++from unittest.mock import AsyncMock, Mock, patch
++
++from sglang.srt.entrypoints.http_server import (
++    _read_upload_with_limit,
++    openai_v1_audio_transcriptions,
++)
++from sglang.test.ci.ci_register import register_cpu_ci
++from sglang.test.test_utils import CustomTestCase
++
++register_cpu_ci(est_time=1, suite="base-a-test-cpu")
++
++_MIB = 1024 * 1024
++
++
++class _FakeUploadFile:
++    """starlette UploadFile semantics: read(size) returns up to size bytes."""
++
++    def __init__(self, data: bytes, declared_size=None):
++        self._data = data
++        self.size = declared_size
++        self._pos = 0
++
++    async def read(self, size: int = -1):
++        if size is None or size < 0:
++            size = len(self._data) - self._pos
++        chunk = self._data[self._pos : self._pos + size]
++        self._pos += len(chunk)
++        return chunk
++
++
++def _fake_mm(limit_mib: int):
++    return SimpleNamespace(audio_transcription_max_file_size_mb=limit_mib)
++
++
++def _raw_request(serving_result=None):
++    serving = Mock()
++    serving.create_transcription = AsyncMock(return_value=serving_result)
++    return (
++        SimpleNamespace(
++            app=SimpleNamespace(
++                state=SimpleNamespace(openai_serving_transcription=serving)
++            )
++        ),
++        serving.create_transcription,
++    )
++
++
++class ReadUploadWithLimitTest(CustomTestCase):
++    def test_under_limit_upload_is_returned_intact(self):
++        import asyncio
++
++        data = b"ab" * 1024  # 2 KiB
++        out = asyncio.run(_read_upload_with_limit(_FakeUploadFile(data), 4 * _MIB))
++        self.assertEqual(out, data)
++
++    def test_over_limit_stream_returns_none(self):
++        import asyncio
++
++        # 3 MiB of data against a 2 MiB cap; the declared size is absent so
++        # only the chunked read can catch it.
++        data = b"x" * (3 * _MIB)
++        self.assertIsNone(
++            asyncio.run(_read_upload_with_limit(_FakeUploadFile(data), 2 * _MIB))
++        )
++
++    def test_exact_limit_passes(self):
++        import asyncio
++
++        data = b"x" * (2 * _MIB)
++        out = asyncio.run(_read_upload_with_limit(_FakeUploadFile(data), 2 * _MIB))
++        self.assertEqual(len(out), 2 * _MIB)
++
++    def test_empty_upload_returns_empty_bytes(self):
++        import asyncio
++
++        self.assertEqual(
++            asyncio.run(_read_upload_with_limit(_FakeUploadFile(b""), _MIB)), b""
++        )
++
++
++class TranscriptionUploadLimitTest(CustomTestCase):
++    def _run(self, file, limit_mib, serving_result=None):
++        import asyncio
++
++        raw_request, serving = _raw_request(serving_result)
++        with patch(
++            "sglang.srt.entrypoints.http_server.get_mm",
++            return_value=_fake_mm(limit_mib),
++        ):
++            response = asyncio.run(
++                openai_v1_audio_transcriptions(
++                    raw_request=raw_request, file=file, response_format="json"
++                )
++            )
++        return response, serving
++
++    def test_declared_over_limit_rejects_before_reading(self):
++        file = _FakeUploadFile(b"anything", declared_size=30 * _MIB)
++        response, serving = self._run(file, limit_mib=25)
++        self.assertEqual(response.status_code, 413)
++        self.assertIn(
++            "--audio-transcription-max-file-size-mb",
++            response.body.decode(),
++        )
++        serving.assert_not_awaited()
++
++    def test_lying_declared_size_is_caught_while_streaming(self):
++        # Declared 1 MiB, actually 30 MiB: only the chunked read catches it.
++        file = _FakeUploadFile(b"x" * (30 * _MIB), declared_size=_MIB)
++        response, serving = self._run(file, limit_mib=25)
++        self.assertEqual(response.status_code, 413)
++        serving.assert_not_awaited()
++
++    def test_under_limit_upload_reaches_the_serving_layer(self):
++        data = b"real audio bytes"
++        file = _FakeUploadFile(data, declared_size=len(data))
++        response, serving = self._run(file, limit_mib=25, serving_result="ok")
++        self.assertEqual(response, "ok")
++        serving.assert_awaited_once()
++        self.assertEqual(serving.await_args.kwargs["audio_data"], data)
++
++    def test_zero_limit_disables_the_cap(self):
++        data = b"x" * (40 * _MIB)
++        file = _FakeUploadFile(data, declared_size=len(data))
++        response, serving = self._run(file, limit_mib=0, serving_result="ok")
++        self.assertEqual(response, "ok")
++        self.assertEqual(serving.await_args.kwargs["audio_data"], data)
++
++    def test_invalid_response_format_still_rejected_first(self):
++        import asyncio
++
++        raw_request, serving = _raw_request()
++        response = asyncio.run(
++            openai_v1_audio_transcriptions(
++                raw_request=raw_request,
++                file=_FakeUploadFile(b"x"),
++                response_format="srt",
++            )
++        )
++        self.assertEqual(response.status_code, 400)
++        serving.assert_not_awaited()
++
++
++if __name__ == "__main__":
++    unittest.main()

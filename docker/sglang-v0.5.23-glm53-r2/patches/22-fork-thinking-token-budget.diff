@@ -1,0 +1,171 @@
+diff --git a/python/sglang/srt/entrypoints/openai/protocol.py b/python/sglang/srt/entrypoints/openai/protocol.py
+index cbdd8aa1d8..054b7d4b74 100644
+--- a/python/sglang/srt/entrypoints/openai/protocol.py
++++ b/python/sglang/srt/entrypoints/openai/protocol.py
+@@ -65,6 +65,7 @@ from pydantic import (
+     Field,
+     PrivateAttr,
+     StrictBool,
++    StrictInt,
+     field_serializer,
+     field_validator,
+     model_serializer,
+@@ -1033,6 +1034,10 @@ class ChatCompletionRequest(PDRoutingFields):
+     # Custom logit processor for advanced sampling control
+     custom_logit_processor: Optional[Union[List[Optional[str]], str]] = None
+     custom_params: Optional[Dict] = None
++    # NEAR AI: public thinking budget, mapped to custom_params.thinking_budget
++    # (enforced by --enable-strict-thinking). Explicit null opts out of the
++    # model default; an explicit custom_params.thinking_budget wins.
++    thinking_token_budget: Optional[StrictInt] = Field(default=None, ge=0)
+     watermark: Optional[Dict[str, Any]] = Field(
+         default=None,
+         description=(
+@@ -1072,6 +1077,26 @@ class ChatCompletionRequest(PDRoutingFields):
+     def _handle_deprecated_dp_rank(cls, values):
+         return _migrate_deprecated_dp_rank(values)
+ 
++    @model_validator(mode="before")
++    @classmethod
++    def normalize_thinking_token_budget(cls, values):
++        if not isinstance(values, dict):
++            return values
++        custom_params = values.get("custom_params")
++        if custom_params is None:
++            custom_params = {}
++        if not isinstance(custom_params, dict) or "thinking_budget" in custom_params:
++            return values
++        if "thinking_token_budget" not in values:
++            return values
++        budget = values.get("thinking_token_budget")
++        if isinstance(budget, int) and not isinstance(budget, bool) and budget >= 0:
++            values = dict(values)
++            custom_params = dict(custom_params)
++            custom_params["thinking_budget"] = budget
++            values["custom_params"] = custom_params
++        return values
++
+     @model_validator(mode="before")
+     @classmethod
+     def set_tool_choice_default(cls, values):
+diff --git a/python/sglang/srt/entrypoints/openai/serving_chat.py b/python/sglang/srt/entrypoints/openai/serving_chat.py
+index 6c85c0e05c..5aa9abd729 100644
+--- a/python/sglang/srt/entrypoints/openai/serving_chat.py
++++ b/python/sglang/srt/entrypoints/openai/serving_chat.py
+@@ -1342,6 +1342,17 @@ class OpenAIServingChat(OpenAIServingBase):
+             tool_call_constraint=processed_messages.tool_call_constraint,
+             renderer_handles_response_format=self.chat_encoding_spec == "kimi_k3",
+         )
++        # NEAR AI: GLM-5.3 default thinking budget (policy
++        # "default8192-public-to-native") when the client omits
++        # thinking_token_budget; explicit null or a native budget is kept.
++        if (
++            getattr(self.tokenizer_manager.model_config.hf_config, "model_type", None)
++            in ("glm5_next", "glm5_next_text")
++            and "thinking_token_budget" not in request.model_fields_set
++        ):
++            custom_params = dict(sampling_params.get("custom_params") or {})
++            custom_params.setdefault("thinking_budget", 8192)
++            sampling_params["custom_params"] = custom_params
+         set_request_reasoning_end_token_ids(
+             sampling_params, processed_messages.reasoning_end_token_ids
+         )
+diff --git a/test/registered/unit/entrypoints/openai/test_serving_chat.py b/test/registered/unit/entrypoints/openai/test_serving_chat.py
+index 415c885b8b..264b8ac921 100644
+--- a/test/registered/unit/entrypoints/openai/test_serving_chat.py
++++ b/test/registered/unit/entrypoints/openai/test_serving_chat.py
+@@ -952,6 +952,54 @@ class ServingChatTestCase(CustomTestCase):
+             self.assertEqual(adapted.session_id, "session-1")
+             self.assertEqual(processed, self.basic_req)
+ 
++    def test_thinking_budget_uses_active_model_config(self):
++        cases = [
++            ("glm5_next", "custom-alias", {}, {"thinking_budget": 8192}),
++            ("glm5_next_text", "custom-alias", {}, {"thinking_budget": 8192}),
++            ("deepseek_v3", "z-ai/glm-5.3-flash", {}, None),
++            ("qwen3", "custom-alias", {}, None),
++            ("glm5_next", "custom-alias", {"thinking_token_budget": None}, None),
++            (
++                "glm5_next",
++                "custom-alias",
++                {"thinking_token_budget": 0},
++                {"thinking_budget": 0},
++            ),
++            (
++                "glm5_next",
++                "custom-alias",
++                {"custom_params": {"thinking_budget": 42, "other": 1}},
++                {"thinking_budget": 42, "other": 1},
++            ),
++            (
++                "glm5_next",
++                "custom-alias",
++                {"custom_params": {"other": 1}},
++                {"thinking_budget": 8192, "other": 1},
++            ),
++            (
++                "qwen3",
++                "custom-alias",
++                {"thinking_token_budget": 42},
++                {"thinking_budget": 42},
++            ),
++        ]
++        self.chat.default_sampling_params = {}
++        processed = MessageProcessingResult(
++            "prompt", [1, 2, 3], None, None, [], [], None
++        )
++        with patch.object(self.chat, "_process_messages", return_value=processed):
++            for model_type, alias, extra, expected in cases:
++                with self.subTest(model_type=model_type, extra=extra):
++                    self.tm.model_config.hf_config.model_type = model_type
++                    request = ChatCompletionRequest(
++                        model=alias,
++                        messages=[{"role": "user", "content": "OK"}],
++                        **extra,
++                    )
++                    adapted, _ = self.chat._convert_to_internal_request(request)
++                    self.assertEqual(adapted.sampling_params["custom_params"], expected)
++
+     def test_response_template_prefix_uses_prompt_token_ids(self):
+         class ResponseTemplateAlias(ResponseTemplateToolDetector):
+             pass
+diff --git a/test/registered/unit/entrypoints/openai/test_thinking_token_budget.py b/test/registered/unit/entrypoints/openai/test_thinking_token_budget.py
+new file mode 100644
+index 0000000000..ed2567fa56
+--- /dev/null
++++ b/test/registered/unit/entrypoints/openai/test_thinking_token_budget.py
+@@ -0,0 +1,34 @@
++import pytest
++from pydantic import ValidationError
++
++from sglang.srt.entrypoints.openai.protocol import ChatCompletionRequest
++from sglang.test.ci.ci_register import register_cpu_ci
++
++register_cpu_ci(est_time=2, suite="base-a-test-cpu")
++
++BASE = {"model": "z-ai/glm-5.3-flash", "messages": [{"role": "user", "content": "OK"}]}
++
++
++@pytest.mark.parametrize(
++    "extra,expected",
++    [
++        ({}, None),
++        ({"thinking_token_budget": 0}, {"thinking_budget": 0}),
++        ({"thinking_token_budget": 4096}, {"thinking_budget": 4096}),
++        ({"thinking_token_budget": None}, None),
++        ({"custom_params": {"other": 1}}, {"other": 1}),
++        (
++            {"thinking_token_budget": 4096, "custom_params": {"thinking_budget": 2048}},
++            {"thinking_budget": 2048},
++        ),
++    ],
++)
++def test_budget_contract(extra, expected):
++    request = ChatCompletionRequest.model_validate({**BASE, **extra})
++    assert request.custom_params == expected
++
++
++@pytest.mark.parametrize("budget", [True, -1, "8192", 1.5])
++def test_invalid_budget_rejected(budget):
++    with pytest.raises(ValidationError):
++        ChatCompletionRequest.model_validate({**BASE, "thinking_token_budget": budget})

@@ -1,0 +1,90 @@
+diff --git a/python/sglang/srt/multimodal/cache/identity.py b/python/sglang/srt/multimodal/cache/identity.py
+index 66568e7..c7e7308 100644
+--- a/python/sglang/srt/multimodal/cache/identity.py
++++ b/python/sglang/srt/multimodal/cache/identity.py
+@@ -132,14 +132,23 @@ def _read_media_bytes(media: str | bytes) -> bytes:
+         return bytes(media)
+ 
+     from sglang.srt.utils import get_image_bytes, image_extension_names
++    from sglang.srt.utils.common import (
++        check_local_media_allowed,
++        local_media_allowed,
++    )
+ 
+     if media.startswith("file://"):
++        check_local_media_allowed()
+         media = unquote(urlparse(media).path)
+     elif media.startswith(("http://", "https://", "data:")):
+         return get_image_bytes(media)
+     # ``load_image`` accepts relative local paths only by image extension.
+     # Match that contract instead of probing arbitrary base64 as a filename.
+-    if media.lower().endswith(image_extension_names) and Path(media).is_file():
++    if (
++        local_media_allowed()
++        and media.lower().endswith(image_extension_names)
++        and Path(media).is_file()
++    ):
+         return Path(media).read_bytes()
+     return get_image_bytes(media)
+ 
+diff --git a/python/sglang/srt/utils/common.py b/python/sglang/srt/utils/common.py
+index 81f8c5f..47f2f4d 100644
+--- a/python/sglang/srt/utils/common.py
++++ b/python/sglang/srt/utils/common.py
+@@ -1938,6 +1938,24 @@ def get_mm_http_session() -> requests.Session:
+     return session
+ 
+ 
++# Media inputs come from request bodies. A file:// URL or a bare server path
++# would let any caller read local files into the model, so the loaders below
++# refuse them unless the operator opts in (offline Engine use, tests).
++LOCAL_MEDIA_ENV = "SGLANG_ALLOW_LOCAL_MEDIA_PATHS"
++
++
++def local_media_allowed() -> bool:
++    return get_bool_env_var(LOCAL_MEDIA_ENV)
++
++
++def check_local_media_allowed() -> None:
++    if not local_media_allowed():
++        raise ValueError(
++            "Local file paths and file:// URLs are not accepted for media inputs; "
++            "send an http(s) URL or a data: URL."
++        )
++
++
+ # Raised by the loaders below when client-supplied media cannot be fetched or
+ # decoded. ValueError is in the set because invalid base64 raises binascii.Error.
+ CLIENT_MEDIA_EXCEPTIONS = (
+@@ -1964,8 +1982,10 @@ def load_audio(
+         timeout = int(os.getenv("REQUEST_TIMEOUT", "5"))
+         source = download_remote_media(audio_file, timeout=timeout)
+     elif isinstance(audio_file, str) and audio_file.startswith("file://"):
++        check_local_media_allowed()
+         source = unquote(urlparse(audio_file).path)
+     elif isinstance(audio_file, str):
++        check_local_media_allowed()
+         source = audio_file
+     else:
+         raise ValueError(f"Invalid audio format: {redact_media_ref(audio_file)}")
+@@ -2233,6 +2253,7 @@ def get_image_bytes(image_file: Union[str, bytes]) -> bytes:
+         timeout = int(os.getenv("REQUEST_TIMEOUT", "3"))
+         return download_remote_media(image_file, timeout=timeout)
+     if image_file.startswith(("file://", "/")):
++        check_local_media_allowed()
+         with open(image_file, "rb") as f:
+             return f.read()
+     if isinstance(image_file, str) and image_file.startswith("data:"):
+@@ -2262,8 +2283,11 @@ def _normalize_video_input(
+             _, encoded = video_file.split(",", 1)
+             return pybase64.b64decode(encoded, validate=True)
+         elif video_file.startswith("file://"):
++            check_local_media_allowed()
+             return unquote(urlparse(video_file).path)
+-        elif os.path.isfile(unquote(urlparse(video_file).path)):
++        elif local_media_allowed() and os.path.isfile(
++            unquote(urlparse(video_file).path)
++        ):
+             return video_file
+         else:
+             return pybase64.b64decode(video_file, validate=True)

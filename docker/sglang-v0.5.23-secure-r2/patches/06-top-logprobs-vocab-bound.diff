@@ -1,0 +1,121 @@
+diff --git a/python/sglang/srt/entrypoints/openai/serving_base.py b/python/sglang/srt/entrypoints/openai/serving_base.py
+index 3352f7b..72fa22c 100644
+--- a/python/sglang/srt/entrypoints/openai/serving_base.py
++++ b/python/sglang/srt/entrypoints/openai/serving_base.py
+@@ -209,6 +209,12 @@ class OpenAIServingBase(ABC):
+         """Validate request"""
+         pass
+ 
++    def _top_logprobs_error(self, field: str, value: Optional[int]) -> Optional[str]:
++        vocab_size = self.tokenizer_manager.model_config.vocab_size
++        if value is not None and not 0 <= value <= vocab_size:
++            return f"{field} must be in [0, {vocab_size}], got {value}."
++        return None
++
+     def create_error_response(
+         self,
+         message: str,
+diff --git a/python/sglang/srt/entrypoints/openai/serving_chat.py b/python/sglang/srt/entrypoints/openai/serving_chat.py
+index 2b5a497..8978787 100644
+--- a/python/sglang/srt/entrypoints/openai/serving_chat.py
++++ b/python/sglang/srt/entrypoints/openai/serving_chat.py
+@@ -1118,6 +1118,12 @@ class OpenAIServingChat(OpenAIServingBase):
+         if request.return_sampling_mask and not request.return_meta_info:
+             return "return_sampling_mask requires return_meta_info=true."
+ 
++        top_logprobs_error = self._top_logprobs_error(
++            "top_logprobs", request.top_logprobs
++        )
++        if top_logprobs_error:
++            return top_logprobs_error
++
+         if self.is_minimax_m3:
+             m3_error = _validate_minimax_m3_request(request)
+             if m3_error:
+diff --git a/python/sglang/srt/entrypoints/openai/serving_completions.py b/python/sglang/srt/entrypoints/openai/serving_completions.py
+index e381ddc..c0afd1b 100644
+--- a/python/sglang/srt/entrypoints/openai/serving_completions.py
++++ b/python/sglang/srt/entrypoints/openai/serving_completions.py
+@@ -66,7 +66,7 @@ class OpenAIServingCompletion(OpenAIServingBase):
+         if not prompt or (isinstance(prompt, list) and all(not p for p in prompt)):
+             return "Prompt cannot be empty"
+ 
+-        return None
++        return self._top_logprobs_error("logprobs", request.logprobs)
+ 
+     def _convert_to_internal_request(
+         self,
+diff --git a/test/registered/unit/entrypoints/openai/test_serving_chat.py b/test/registered/unit/entrypoints/openai/test_serving_chat.py
+index de78f18..8ede1e2 100644
+--- a/test/registered/unit/entrypoints/openai/test_serving_chat.py
++++ b/test/registered/unit/entrypoints/openai/test_serving_chat.py
+@@ -168,7 +168,7 @@ class _MockTokenizerManager:
+     """Minimal mock that satisfies OpenAIServingChat."""
+ 
+     def __init__(self):
+-        self.model_config = Mock(is_multimodal=False)
++        self.model_config = Mock(is_multimodal=False, vocab_size=32000)
+         self.server_args = Mock(
+             model_path="deepseek-ai/DeepSeek-V4-Flash",
+             revision=None,
+@@ -1875,6 +1875,26 @@ class ServingChatTestCase(CustomTestCase):
+             "return_sampling_mask requires return_meta_info=true.",
+         )
+ 
++    def test_validate_request_bounds_top_logprobs_to_vocab(self):
++        """top_logprobs outside [0, vocab_size] must be a 400, not a topk that
++        kills the scheduler."""
++        for top_logprobs, ok in ((32001, False), (0, True), (32000, True)):
++            with self.subTest(top_logprobs=top_logprobs):
++                req = ChatCompletionRequest(
++                    model="x",
++                    messages=[{"role": "user", "content": "Hi?"}],
++                    logprobs=True,
++                    top_logprobs=top_logprobs,
++                )
++                error = self.chat._validate_request(req)
++                if ok:
++                    self.assertIsNone(error)
++                else:
++                    self.assertEqual(
++                        error,
++                        f"top_logprobs must be in [0, 32000], got {top_logprobs}.",
++                    )
++
+     def test_validate_request_rejects_flat_output_top_logprobs_without_meta_info(
+         self,
+     ):
+diff --git a/test/registered/unit/entrypoints/openai/test_serving_completions.py b/test/registered/unit/entrypoints/openai/test_serving_completions.py
+index e9a1c55..412ea4e 100644
+--- a/test/registered/unit/entrypoints/openai/test_serving_completions.py
++++ b/test/registered/unit/entrypoints/openai/test_serving_completions.py
+@@ -79,7 +79,7 @@ class ServingCompletionTestCase(unittest.TestCase):
+         tm.tokenizer.decode.return_value = "decoded text"
+         tm.tokenizer.bos_token_id = 1
+ 
+-        tm.model_config = Mock(is_multimodal=False)
++        tm.model_config = Mock(is_multimodal=False, vocab_size=32000)
+         tm.server_args = Mock(enable_cache_report=False)
+ 
+         tm.generate_request = AsyncMock()
+@@ -89,6 +89,20 @@ class ServingCompletionTestCase(unittest.TestCase):
+         self.sc = OpenAIServingCompletion(tm, self.template_manager)
+         self.fastapi_request = Mock(spec=Request)
+ 
++    def test_validate_request_bounds_logprobs_to_vocab(self):
++        """logprobs outside [0, vocab_size] must be a 400, not a topk that
++        kills the scheduler."""
++        for logprobs, ok in ((-1, False), (32001, False), (0, True), (32000, True)):
++            with self.subTest(logprobs=logprobs):
++                req = CompletionRequest(model="x", prompt="Hi", logprobs=logprobs)
++                error = self.sc._validate_request(req)
++                if ok:
++                    self.assertIsNone(error)
++                else:
++                    self.assertEqual(
++                        error, f"logprobs must be in [0, 32000], got {logprobs}."
++                    )
++
+     # ---------- prompt-handling ----------
+     def test_single_token_ids_prompt(self):
+         req = CompletionRequest(model="x", prompt=[1, 2, 3, 4], max_tokens=100)
