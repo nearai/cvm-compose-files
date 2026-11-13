@@ -1,0 +1,205 @@
+name: ci
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# A new push to a PR cancels its older run; runs on main always finish.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  RUBY_IMAGE: docker.io/library/ruby@sha256:2fda53cb7c1c93618593afce7404e311b2b44b0eab35bfeace3981aa0be4ff54 # 3.3-alpine
+  PYTHON_IMAGE: docker.io/library/python@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b # 3.12-slim
+  YAMLLINT_IMAGE: docker.io/pipelinecomponents/yamllint@sha256:f7f7b4f8824839e33690a880dbe20944128b0dc9c55522a0b92a29b3a905cecf # 0.35.27
+  ACTIONLINT_IMAGE: docker.io/rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 # 1.7.12
+  ZIZMOR_IMAGE: ghcr.io/zizmorcore/zizmor@sha256:3014cc8f68f663935f69b3c3e0e41f5ce102b268d97db13db0f62208747f860d # 1.32.0
+  GITLEAKS_IMAGE: ghcr.io/gitleaks/gitleaks@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f # v8.30.1
+
+jobs:
+  base:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      sha: ${{ steps.base.outputs.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Find the base commit
+        id: base
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" = pull_request ]; then
+            base="$(git merge-base "$PR_BASE" HEAD)"
+          elif [ -n "$BEFORE" ] && ! [[ "$BEFORE" =~ ^0+$ ]] && git merge-base --is-ancestor "$BEFORE" HEAD 2>/dev/null; then
+            base="$BEFORE"
+          else
+            base="$(git rev-parse -q --verify 'HEAD^1' || true)"
+          fi
+          echo "sha=$base" >> "$GITHUB_OUTPUT"
+
+  guards:
+    needs: [base]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Require Python 3.12
+        run: python3 -c 'import sys; assert sys.version_info[:2] == (3, 12), sys.version'
+
+      - name: Guard fixtures
+        run: python3 ci/run.py --self-test
+
+      - name: Guards
+        env:
+          BASE: ${{ needs.base.outputs.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_BRANCH: ${{ github.head_ref }}
+        run: |
+          if [ -n "$BASE" ]; then
+            python3 ci/run.py --base "$BASE"
+          else
+            python3 ci/run.py
+          fi
+
+  compose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Require Python 3.12
+        run: python3 -c 'import sys; assert sys.version_info[:2] == (3, 12), sys.version'
+
+      # Each embedded collector config is validated with the collector image its own file pins.
+      - name: Render and validate embedded OTel collector configs
+        run: |
+          set -euo pipefail
+          deployables="$(python3 ci/run.py --list-deployables)"
+          mapfile -t files <<< "$deployables"
+          for f in "${files[@]}" ci/templates/*.yaml; do
+            echo "render $f"
+            python3 ci/run.py --render "$f" > "$RUNNER_TEMP/rendered.json"
+            config="$(jq -r '.configs.otelcol_app_config.content // empty' "$RUNNER_TEMP/rendered.json")"
+            if [ -n "$config" ]; then
+              images="$(jq -r '[.services[] | select(any(.configs[]?; .source == "otelcol_app_config")) | .image]
+                | unique | .[]' "$RUNNER_TEMP/rendered.json")"
+              if [ "$(grep -c . <<< "$images")" -ne 1 ] || ! [[ "$images" =~ @sha256:[0-9a-f]{64}$ ]]; then
+                echo "$f: the services using otelcol_app_config must share one digest-pinned image" >&2
+                exit 1
+              fi
+              echo "otelcol validate $f"
+              printf '%s' "$config" | docker run --rm -i --network none "$images" validate --config=/dev/stdin
+            fi
+          done
+
+      - name: Ruby validators
+        run: |
+          set -euo pipefail
+          for s in otel_labels proxy_dependencies proxy_environment registrar_auth rotate_compose_manager_token engine_network; do
+            echo "validate_$s"
+            docker run --rm --network none -v "$PWD:/repo:ro" -w /repo "$RUBY_IMAGE" ruby "scripts/validate_$s.rb"
+          done
+          echo "validate_engine_network --self-test"
+          docker run --rm --network none -v "$PWD:/repo:ro" -w /repo "$RUBY_IMAGE" ruby scripts/validate_engine_network.rb --self-test
+
+      - name: Public metrics validator
+        run: docker run --rm --network none -v "$PWD:/repo:ro" -w /repo "$PYTHON_IMAGE" python3 scripts/validate_public_metrics.py
+
+      # Runs on the host so it can start the pinned nginx image itself.
+      - name: Streaming keepalive validator
+        run: python3 scripts/validate_streaming_keepalive.py
+
+  lint:
+    needs: [base]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: yamllint
+        run: docker run --rm --network none -v "$PWD:/code:ro" -w /code "$YAMLLINT_IMAGE" yamllint -c ci/config/yamllint.yaml .
+
+      # A publish workflow is linted in the PR that adds it. Once it exists at the base commit it is
+      # frozen (frozen.edit), so findings in it could not be fixed in place.
+      - name: actionlint and zizmor
+        env:
+          BASE: ${{ needs.base.outputs.sha }}
+        run: |
+          set -euo pipefail
+          files=(.github/workflows/ci.yaml .github/workflows/auto-tag.yaml)
+          for f in .github/workflows/publish-*.yaml; do
+            if [ -z "$BASE" ] || ! git cat-file -e "$BASE:$f" 2>/dev/null; then
+              files+=("$f")
+            fi
+          done
+          docker run --rm --network none -v "$PWD:/repo:ro" -w /repo "$ACTIONLINT_IMAGE" "${files[@]}"
+          docker run --rm --network none -v "$PWD:/repo:ro" -w /repo "$ZIZMOR_IMAGE" --offline "${files[@]}"
+
+  secrets:
+    needs: [base]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: gitleaks
+        env:
+          BASE: ${{ needs.base.outputs.sha }}
+        run: |
+          set -euo pipefail
+          run() {
+            docker run --rm --network none -v "$PWD:/repo:ro" -w /repo \
+              -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0=/repo \
+              "$GITLEAKS_IMAGE" "$@" --config ci/config/gitleaks.toml --redact --verbose --no-banner
+          }
+          run dir .
+          if [ -n "$BASE" ]; then
+            run git --log-opts="$BASE..HEAD" .
+          fi
+
+  all-green:
+    if: always()
+    needs: [base, compose, guards, lint, secrets]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require every job to succeed
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<< "$NEEDS"
+          jq -e 'length > 0 and all(.[]; .result == "success")' <<< "$NEEDS"

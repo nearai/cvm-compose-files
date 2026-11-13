@@ -1,0 +1,61 @@
+# Qwen/Qwen3-Embedding-0.6B | vLLM | tp1
+services:
+  model-downloader:
+    image: ghcr.io/astral-sh/uv@sha256:4f5d923c9dcea037f57bda425dd209f3ec643da2f0b74227f68d09dab0b3bb36
+    container_name: model-downloader
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        set -e
+        uvx --from 'huggingface_hub[hf_xet]' hf download Qwen/Qwen3-Embedding-0.6B --revision 97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3
+    environment:
+      HF_TOKEN: ${HUGGING_FACE_HUB_TOKEN:?required}
+    volumes:
+      - hf-cache:/root/.cache/huggingface
+    restart: "no"
+
+  model-vllm-qwen3-embedding-0.6b-tp1:
+    image: docker.io/nearaidev/vllm@sha256:a744ada2a362e2548a88527432da1662aa027012226d9e0ed4fce9cda1e6f0bd
+    container_name: model-vllm-qwen3-embedding-0.6b-tp1
+    depends_on:
+      model-downloader:
+        condition: service_completed_successfully
+    command:
+      - /root/.cache/huggingface/hub/models--Qwen--Qwen3-Embedding-0.6B/snapshots/97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3
+      - --served-model-name
+      - Qwen/Qwen3-Embedding-0.6B
+      - --runner
+      - pooling
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --no-enable-log-requests
+    environment:
+      HF_HUB_OFFLINE: "1"
+    labels:
+      served_model: Qwen/Qwen3-Embedding-0.6B
+      model_path: Qwen/Qwen3-Embedding-0.6B
+      deployment: template-vllm
+      engine_image: nearaidev/vllm
+      instance: ${INSTANCE_LABEL:-default}
+      config_variant: r1
+    shm_size: 16g
+    volumes:
+      - hf-cache:/root/.cache/huggingface:ro
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+
+volumes:
+  hf-cache:
+
+networks:
+  default:
+    name: dstack_default
+    external: true

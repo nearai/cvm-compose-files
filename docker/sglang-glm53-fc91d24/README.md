@@ -1,8 +1,5 @@
 # GLM-5.3 Flash SGLang runtime
 
-This public build context replaces the former host-local inline build used by
-`prod/GLM-5.3-Flash-SGL-TP4.yaml`.
-
 The recipe pins all source identities that define the engine:
 
 - SGLang CUDA base image by registry digest;
@@ -10,17 +7,16 @@ The recipe pins all source identities that define the engine:
 - the downloaded GitHub source archive by SHA-256;
 - the editable package version used when compiling the Rust extension.
 
-The base scan also identified fixable findings in NLTK and two unused NVIDIA
-Nsight EFA sampler binaries. The recipe upgrades NLTK to 3.10.3 and removes
-those samplers before the final digest is scanned. The workflow refuses to
-attest or sign an image with a remaining fixable CRITICAL finding.
+The recipe upgrades NLTK to 3.10.3 and removes two unused NVIDIA Nsight EFA
+sampler binaries, which clears the base image's fixable findings in them. The
+workflow refuses to attest or sign an image with a remaining fixable CRITICAL
+finding.
 
 ## Publishing
 
 Only `.github/workflows/publish-glm53-fc91d24.yaml` publishes this image. The
-workflow accepts an exact commit already merged into `main`, builds on the
-self-hosted GitHub Actions infrastructure runner, and pushes to
-`docker.io/nearaidev/sglang`.
+workflow accepts an exact commit already merged into `main`, builds on a
+self-hosted runner, and pushes to `docker.io/nearaidev/sglang`.
 
 The workflow publishes and verifies:
 

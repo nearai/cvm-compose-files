@@ -30,6 +30,7 @@ env:
 jobs:
   publish:
     name: Build, scan, attest, and publish
+    environment: publish
     permissions:
       contents: read
       attestations: write
@@ -337,7 +338,7 @@ jobs:
             echo
             echo "- tag: \`$IMAGE_REF\`"
             echo "- immutable: \`$IMAGE_IMMUTABLE_REF\`"
-            echo '- SGLang source: `PierreLeGuen/sglang-upstream@fc91d2403cc210a86bd5fc715c6609f58c932e5a`'
+            echo '- SGLang source commit: `fc91d2403cc210a86bd5fc715c6609f58c932e5a`'
             echo '- source archive SHA-256: `1e4340ed7e476696f36f4094e027f2c7648bcca98934f0df3220b307bdcd1673`'
             echo '- embedded BuildKit provenance: verified'
             echo '- embedded SPDX SBOM: verified'

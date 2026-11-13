@@ -1,4 +1,4 @@
-name: Publish GLM-5.3 SGLang v0.5.23 image
+name: Publish GLM-5.3 SGLang 0.5.23 image
 
 on:
   workflow_dispatch:
@@ -30,6 +30,7 @@ env:
 jobs:
   publish:
     name: Build, scan, attest, and publish
+    environment: publish
     permissions:
       contents: read
       attestations: write
@@ -371,7 +372,7 @@ jobs:
       - name: Publish summary
         run: |
           {
-            echo '## GLM-5.3 SGLang v0.5.23 image'
+            echo '## GLM-5.3 SGLang 0.5.23 image'
             echo
             echo "- tag: \`$IMAGE_REF\`"
             echo "- immutable: \`$IMAGE_IMMUTABLE_REF\`"

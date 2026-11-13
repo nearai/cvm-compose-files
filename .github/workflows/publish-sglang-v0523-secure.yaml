@@ -1,4 +1,4 @@
-name: Publish SGLang v0.5.23 secure image
+name: Publish SGLang 0.5.23 secure image
 
 on:
   workflow_dispatch:
@@ -30,6 +30,7 @@ env:
 jobs:
   publish:
     name: Build, scan, attest, and publish
+    environment: publish
     permissions:
       contents: read
       attestations: write
@@ -371,7 +372,7 @@ jobs:
       - name: Publish summary
         run: |
           {
-            echo '## SGLang v0.5.23 secure image'
+            echo '## SGLang 0.5.23 secure image'
             echo
             echo "- tag: \`$IMAGE_REF\`"
             echo "- immutable: \`$IMAGE_IMMUTABLE_REF\`"

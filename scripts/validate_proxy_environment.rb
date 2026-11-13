@@ -48,7 +48,6 @@ end
 errors = []
 
 compose_files = Dir.glob(File.join(ROOT, "prod", "*.yaml")) +
-                Dir.glob(File.join(ROOT, "experiments", "*.yaml")) +
                 Dir.glob(File.join(ROOT, "*.yaml"))
 
 compose_files.sort.each do |path|
