@@ -8,6 +8,7 @@
   run.py --noop <rev>     rendered diff of every deployable between <rev> and the working tree
   run.py --write-expected rewrite ci/data/expected.json from the working tree
   run.py --write-status   rewrite the README status table from the rendered files, keeping each status
+  run.py --nginx-test     nginx -t of every nginx default.conf, in its pinned image (needs Docker)
 
 Supported Python: 3.12, the python3 of the ubuntu-24.04 runner; CI fails on any other version. Stdlib only.
 """
@@ -24,16 +25,18 @@ sys.path[:0] = [os.path.join(os.path.dirname(os.path.abspath(__file__)), d) for 
 import claude
 import frozen
 import layout
+import nginx
 import pins
 import privacy
 import public
+import stack
 import status
 from common import (
     EXCEPTIONS, EXPECTED, IMAGES, ROOT, SERVICES, TEMPLATES, Finding, RenderError, Renderer, Tree, env_lines, git,
     load_json, render_dir, sha256,
 )
 
-GUARDS = [layout, status, pins, privacy, public, frozen, claude]
+GUARDS = [layout, status, pins, privacy, public, frozen, claude, stack, nginx]
 RULES = ["run.render", "exceptions.format", "exceptions.unused"]
 ALL_RULES = RULES + [r for g in GUARDS for r in g.RULES]
 ENTRY_KEYS = {"rule", "path", "sha256", "reason", "remove_when"}
@@ -43,13 +46,14 @@ UNWAIVABLE = {"layout.claude-md", "layout.agent-file"}
 
 
 class Context:
-    def __init__(self, head, base=None, rendered=None, rendered_base=None, name_status=(), commits=(), pr=None):
+    def __init__(self, head, base=None, rendered=None, rendered_base=None, name_status=(), commits=(), pr=None,
+                 raw=None):
         self.head, self.base = head, base
         self.bootstrap = base is not None and not base.has("ci/lib/common.py")
         self.services_allow = load_json(head, SERVICES, {})
         self.services_allow_base = load_json(base, SERVICES, {}) if base else {}
         self.templates = [t for t in TEMPLATES if head.has(t)]
-        self._rendered, self._rendered_base = rendered, rendered_base
+        self._rendered, self._rendered_base, self._raw = rendered, rendered_base, raw
         self.name_status, self.commits, self.pr = list(name_status), list(commits), pr or {}
         self.render_errors = []
 
@@ -62,6 +66,10 @@ class Context:
 
     def rendered(self, path):
         return self._get(self._rendered, path) if self._rendered else None
+
+    def raw(self, path):
+        """The render with `${NAME:-default}` and `$$` kept as written; see stack.py."""
+        return self._get(self._raw, path) if self._raw else None
 
     def rendered_base(self, path):
         return self._get(self._rendered_base, path) if self._rendered_base else None
@@ -170,9 +178,9 @@ def probe_lines(head, rendered):
     return sorted(out)
 
 
-def expected_doc(head, rendered):
+def expected_doc(head, rendered, raw=None):
     """Raw findings (before exceptions) of a head-only run, plus the probe results."""
-    ctx = Context(head, None, rendered)
+    ctx = Context(head, None, rendered, raw=raw)
     findings = [f for g in GUARDS for f in g.check(ctx)]
     lines = sorted({f"{f.rule} {f.path} {sha256(f.key)}" for f in findings})
     return {"findings": lines, "probes": probe_lines(head, rendered)}
@@ -223,7 +231,8 @@ def case_ctx(case):
     rendered_base = case[5] if len(case) > 5 else None
     extra = case[6] if len(case) > 6 else {}
     return Context(_tree(files), _tree(base), _fake(rendered), _fake(rendered_base),
-                   extra.get("name_status", ()), extra.get("commits", ()), extra.get("pr"))
+                   extra.get("name_status", ()), extra.get("commits", ()), extra.get("pr"),
+                   raw=_fake(extra.get("raw")))
 
 
 GOOD_EX = [{"rule": "layout.ext", "path": "prod/a.bin", "sha256": sha256("prod/a.bin"), "reason": "r",
@@ -345,7 +354,7 @@ def real_ctx(base_rev):
                 sha, parents, msg = x.strip("\n").split("\0", 2)
                 commits.append((sha, msg, len(parents.split()) > 1))
     ctx = Context(head, base, Renderer(head, sa), Renderer(base, load_json(base, SERVICES, {}) or sa) if base else None,
-                  name_status, commits, public.env_pr())
+                  name_status, commits, public.env_pr(), raw=Renderer(head, sa, interpolate=False))
     return ctx
 
 
@@ -358,9 +367,12 @@ def main():
     ap.add_argument("--noop")
     ap.add_argument("--write-expected", action="store_true")
     ap.add_argument("--write-status", action="store_true")
+    ap.add_argument("--nginx-test", action="store_true")
     a = ap.parse_args()
     if a.self_test:
         return self_test()
+    if a.nginx_test:
+        return nginx_test()
     if a.list_deployables:
         print("\n".join(Tree().deployables()))
         return 0
@@ -372,7 +384,8 @@ def main():
         return noop(a.noop)
     if a.write_expected:
         head = Tree()
-        write_expected(expected_doc(head, Renderer(head, load_json(head, SERVICES, {}))))
+        sa = load_json(head, SERVICES, {})
+        write_expected(expected_doc(head, Renderer(head, sa), Renderer(head, sa, interpolate=False)))
         return 0
     if a.write_status:
         text = status.write_status(real_ctx(None))
@@ -388,11 +401,29 @@ def main():
         print("bootstrap mode: ci/lib/common.py is absent at base")
     findings = run_guards(ctx)
     if not ctx.render_errors:
-        findings += check_expected(ctx.head, expected_doc(ctx.head, ctx._rendered))
+        findings += check_expected(ctx.head, expected_doc(ctx.head, ctx._rendered, ctx._raw))
     for f in sorted(findings, key=lambda f: (f.path, f.line, f.rule)):
         print(f)
     if findings:
         print(f"FAIL ({len(findings)} findings)")
+        return 1
+    print("OK")
+    return 0
+
+
+def nginx_test():
+    """`nginx -t` for every nginx default.conf in the working tree, in its pinned image."""
+    head = Tree()
+    raw = Renderer(head, load_json(head, SERVICES, {}), interpolate=False)
+    try:
+        models = {p: raw(p) for p in head.deployables()}
+    except RenderError as e:
+        print(f"FAIL render: {e}")
+        return 1
+    failures = nginx.nginx_test(models)
+    for f in failures:
+        print(f"FAIL {f}")
+    if failures:
         return 1
     print("OK")
     return 0
