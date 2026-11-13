@@ -115,7 +115,7 @@ Everything here is public and copied by others: files, branches, tags, PRs, revi
   only under `environment:` of the service that needs them.
 - Workflows that hold secrets never run PR code. `ci.yaml` has read-only permissions and no secrets.
 - `.claude/settings.json` denies secret reads, outward actions (`gh` reviews, merges, comments, issues,
-  gists and API calls; `curl`, `wget`, WebFetch) force pushes and tag deletion. CI requires every entry. The list
+  gists and API calls; `curl`, `wget`, WebFetch), force pushes and tag deletion. CI requires every entry. The list
   is a guardrail, not a boundary; branch and tag protection is enforced by GitHub rulesets.
 - If something sensitive was pushed: do not force-push or explain it publicly; rotate secrets first;
   tell maintainers privately; remove it in a neutral PR. Vulnerabilities: see .github/SECURITY.md.

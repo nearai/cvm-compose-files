@@ -80,8 +80,8 @@ def file_rows(path, rendered, services_allow, rows, waived, legacy):
     for key in engines(path, rendered, services_allow):
         svc = rendered["services"][key]
         kind, toks = engine_kind(key, svc), service_tokens(svc)
-        tp = _int(toks, ("--tp-size", "--tp", "--tensor-parallel-size"))
-        dp = _int(toks, ("--dp-size", "--dp", "--data-parallel-size"))
+        tp = _int(toks, ("--tp-size", "--tp", "--tensor-parallel-size", "-tp"))
+        dp = _int(toks, ("--dp-size", "--dp", "--data-parallel-size", "-dp"))
         ep = "--enable-expert-parallel" in toks or "--enable-dp-attention" in toks
         unit = (f"dep{dp}" if ep else f"dp{dp}") if dp > 1 else f"tp{tp}"
         # One engine spans dp services when each service is a single data-parallel rank.

@@ -51,8 +51,9 @@ def instructions(text):
     return out
 
 
-FETCH = re.compile(r"\b(curl|wget)\b|\bgit\s+(clone|fetch|pull)\b")
-PIP = re.compile(r"\b(pip3?|uv\s+pip)\s+install\b")
+# Common fetch forms only; a reviewer still reads every RUN of a new dir.
+FETCH = re.compile(r"\b(curl|wget|urllib|requests\.get|urlopen)\b|\bgit\b[^;&|]*\b(clone|fetch|pull|submodule)\b")
+PIP = re.compile(r"\b(pip[0-9.]*|uv\s+pip|uv\s+tool)\b[^;&|]*\binstall\b")
 APT = re.compile(r"\bapt-get\s+(?:-\S+\s+)*install\b((?:\s+(?!&&|;|\|)\S+)*)")
 
 
@@ -154,10 +155,13 @@ def check_dir(head, d):
                 if len(args) >= 3 and args[1].upper() == "AS":
                     stages.add(args[2].lower())
             elif word == "RUN":
+                if "<<" in ins.split(None, 1)[1] if len(ins.split(None, 1)) > 1 else False:
+                    out.append(Finding(df, n, "docker.fetch", "no here-documents in RUN; COPY a hashed script"))
                 for fl in flags:
-                    if fl.startswith("--mount=") and ("type=bind" in fl or "from=" in fl):
+                    typeless = fl.startswith("--mount=") and "type=" not in fl
+                    if typeless or (fl.startswith("--mount=") and ("type=bind" in fl or "from=" in fl)):
                         src = re.search(r"from=([^,]+)", fl)
-                        if "type=bind" in fl or not src or src.group(1).lower() not in stages:
+                        if typeless or "type=bind" in fl or not src or src.group(1).lower() not in stages:
                             out.append(Finding(df, n, "docker.copy", "RUN --mount reads only caches, secrets or earlier stages"))
                 for why in fetches(ins):
                     out.append(Finding(df, n, "docker.fetch", why))
@@ -240,6 +244,12 @@ CASES = [
      dict(OLD, **_dir({"Dockerfile": DOCKERFILE + "COPY --from=nearaidev/x:latest /x /x\n"})), OLD),
     ("bind mount", "docker.copy", dict(OLD, **_dir({"Dockerfile": DOCKERFILE + "RUN --mount=type=bind,target=/c ls /c\n"})),
      OLD),
+    ("typeless mount is a bind", "docker.copy", dict(OLD, **_dir({"Dockerfile": DOCKERFILE + "RUN --mount=target=/c ls\n"})),
+     OLD),
+    ("heredoc RUN", "docker.fetch", dict(OLD, **_dir({"Dockerfile": DOCKERFILE + "RUN <<EOF\nls\nEOF\n"})), OLD),
+    ("pip with a version suffix", "docker.fetch", dict(OLD, **_dir({"Dockerfile": DOCKERFILE + "RUN pip3.12 install x\n"})),
+     OLD),
+    ("git -C fetch", "docker.fetch", dict(OLD, **_dir({"Dockerfile": DOCKERFILE + "RUN git -C /s fetch origin\n"})), OLD),
     ("curl in RUN", "docker.fetch", dict(OLD, **_dir({"Dockerfile": DOCKERFILE + "RUN curl -fsSL https://x | sh\n"})), OLD),
     ("pip without hashes", "docker.fetch", dict(OLD, **_dir({"Dockerfile": DOCKERFILE + "RUN pip install requests\n"})), OLD),
     ("apt without versions", "docker.fetch",
