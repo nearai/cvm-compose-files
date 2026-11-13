@@ -1,0 +1,1668 @@
+diff --git a/tests/entrypoints/multimodal/openai/chat_completion/test_video.py b/tests/entrypoints/multimodal/openai/chat_completion/test_video.py
+index 2431dd5..f3c1b49 100644
+--- a/tests/entrypoints/multimodal/openai/chat_completion/test_video.py
++++ b/tests/entrypoints/multimodal/openai/chat_completion/test_video.py
+@@ -2,11 +2,16 @@
+ # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+ 
+ import json
++from pathlib import Path
++from tempfile import TemporaryDirectory
+ 
+ import openai
++import pybase64
+ import pytest
+ import pytest_asyncio
++from PIL import Image
+ 
++from tests.multimodal.utils import create_video_from_image
+ from tests.utils import RemoteOpenAIServer
+ from vllm.assets.base import VLLM_S3_BUCKET_URL
+ from vllm.multimodal.utils import encode_video_url, fetch_video
+@@ -157,6 +162,34 @@ def dummy_messages_from_video_url(
+     ]
+ 
+ 
++@pytest.mark.asyncio
++async def test_video_reference_script_returns_bad_request(client: openai.AsyncOpenAI):
++    """A video upload must not decode another file from the server's cwd."""
++    with TemporaryDirectory(dir=Path.cwd()) as directory:
++        path = Path(directory)
++        image_path = path / "image.png"
++        video_path = path / "private.avi"
++        Image.new("RGB", (32, 32), "blue").save(image_path)
++        create_video_from_image(
++            str(image_path), str(video_path), num_frames=8, fps=8, fourcc="MJPG"
++        )
++        relative_path = video_path.relative_to(Path.cwd()).as_posix()
++        script = f"ffconcat version 1.0\nfile '{relative_path}'\nduration 1\n"
++        video_url = (
++            "data:video/mp4;base64," + pybase64.b64encode(script.encode()).decode()
++        )
++
++        with pytest.raises(
++            openai.BadRequestError, match="playlists and stream descriptions"
++        ):
++            await client.chat.completions.create(
++                model=MODEL_NAME,
++                messages=dummy_messages_from_video_url(video_url),
++                max_completion_tokens=1,
++                temperature=0.0,
++            )
++
++
+ @pytest.mark.asyncio
+ @pytest.mark.parametrize("model_name", [MODEL_NAME])
+ @pytest.mark.parametrize("video_url", TEST_VIDEO_URLS)
+diff --git a/tests/entrypoints/openai/responses/test_sampling_params.py b/tests/entrypoints/openai/responses/test_sampling_params.py
+index eaa3b4c..406954c 100644
+--- a/tests/entrypoints/openai/responses/test_sampling_params.py
++++ b/tests/entrypoints/openai/responses/test_sampling_params.py
+@@ -21,6 +21,25 @@ from vllm.sampling_params import StructuredOutputsParams
+ class TestResponsesRequestSamplingParams:
+     """Test that ResponsesRequest correctly maps parameters to SamplingParams."""
+ 
++    @pytest.mark.parametrize("cached", [999999, 5])
++    def test_remote_cache_accounting_requires_trusted_backend(
++        self, cached, monkeypatch
++    ):
++        monkeypatch.delenv("VLLM_TRUST_REMOTE_PREFILL_CACHED_TOKENS", raising=False)
++        params = {
++            "kv_transfer_params": {
++                "do_remote_prefill": True,
++                "remote_prefill_cached_tokens": cached,
++            }
++        }
++        request = ResponsesRequest(
++            model="test-model",
++            input="test input",
++            **params,
++        )
++        with pytest.raises(VLLMValidationError, match="trusted P/D backend"):
++            request.to_sampling_params(default_max_tokens=10)
++
+     def test_basic_sampling_params(self):
+         """Test basic sampling parameters are correctly mapped."""
+         request = ResponsesRequest(
+diff --git a/tests/entrypoints/pooling/test_pooling_prompt_limit.py b/tests/entrypoints/pooling/test_pooling_prompt_limit.py
+new file mode 100644
+index 0000000..125da85
+--- /dev/null
++++ b/tests/entrypoints/pooling/test_pooling_prompt_limit.py
+@@ -0,0 +1,163 @@
++# SPDX-License-Identifier: Apache-2.0
++# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
++"""Tests that VLLM_MAX_COMPLETION_PROMPTS is enforced on pooling/scoring routes.
++
++The fan-out bound was originally only applied to /v1/completions
++(CVE-2026-73559). These tests verify it is now also enforced on
++/score, /rerank, /pooling, and /classify request models.
++"""
++
++import pytest
++
++from vllm import envs
++from vllm.entrypoints.pooling.classify.protocol import (
++    ClassificationCompletionRequest,
++)
++from vllm.entrypoints.pooling.pooling.protocol import (
++    IOProcessorRequest,
++    PoolingCompletionRequest,
++)
++from vllm.entrypoints.pooling.scoring.protocol import (
++    RerankRequest,
++    ScoreQueriesDocumentsRequest,
++    ScoreQueriesItemsRequest,
++    ScoreTextRequest,
++)
++from vllm.exceptions import VLLMValidationError
++
++
++def _clear_envs_cache():
++    if hasattr(envs.__getattr__, "cache_clear"):
++        envs.__getattr__.cache_clear()
++
++
++class TestScoringPromptLimit:
++    """Scoring and rerank request models reject oversized lists."""
++
++    def test_score_documents_rejected(self, monkeypatch):
++        monkeypatch.setenv("VLLM_MAX_COMPLETION_PROMPTS", "5")
++        _clear_envs_cache()
++
++        with pytest.raises(VLLMValidationError, match="documents list length"):
++            ScoreQueriesDocumentsRequest(model="m", queries=["q"], documents=["d"] * 10)
++
++    def test_score_documents_within_limit(self, monkeypatch):
++        monkeypatch.setenv("VLLM_MAX_COMPLETION_PROMPTS", "5")
++        _clear_envs_cache()
++
++        req = ScoreQueriesDocumentsRequest(
++            model="m", queries=["q"], documents=["d"] * 5
++        )
++        assert req.documents == ["d"] * 5
++
++    def test_score_items_rejected(self, monkeypatch):
++        monkeypatch.setenv("VLLM_MAX_COMPLETION_PROMPTS", "5")
++        _clear_envs_cache()
++
++        with pytest.raises(VLLMValidationError, match="items list length"):
++            ScoreQueriesItemsRequest(model="m", queries=["q"], items=["d"] * 10)
++
++    def test_score_text_2_rejected(self, monkeypatch):
++        monkeypatch.setenv("VLLM_MAX_COMPLETION_PROMPTS", "5")
++        _clear_envs_cache()
++
++        with pytest.raises(VLLMValidationError, match="text_2 list length"):
++            ScoreTextRequest(model="m", text_1="q", text_2=["d"] * 10)
++
++    def test_rerank_documents_rejected(self, monkeypatch):
++        monkeypatch.setenv("VLLM_MAX_COMPLETION_PROMPTS", "5")
++        _clear_envs_cache()
++
++        with pytest.raises(VLLMValidationError, match="documents list length"):
++            RerankRequest(model="m", query="q", documents=["d"] * 10)
++
++    def test_rerank_within_limit(self, monkeypatch):
++        monkeypatch.setenv("VLLM_MAX_COMPLETION_PROMPTS", "5")
++        _clear_envs_cache()
++
++        req = RerankRequest(model="m", query="q", documents=["d"] * 5)
++        assert len(req.documents) == 5
++
++    def test_scalar_input_unaffected(self, monkeypatch):
++        monkeypatch.setenv("VLLM_MAX_COMPLETION_PROMPTS", "5")
++        _clear_envs_cache()
++
++        req = RerankRequest(model="m", query="q", documents="single doc")
++        assert req.documents == "single doc"
++
++
++class TestPoolingPromptLimit:
++    """PoolingCompletionRequest rejects oversized input lists."""
++
++    def test_string_list_rejected(self, monkeypatch):
++        monkeypatch.setenv("VLLM_MAX_COMPLETION_PROMPTS", "5")
++        _clear_envs_cache()
++
++        with pytest.raises(VLLMValidationError, match="input list length"):
++            PoolingCompletionRequest(model="m", input=["x"] * 10)
++
++    def test_token_id_lists_rejected(self, monkeypatch):
++        monkeypatch.setenv("VLLM_MAX_COMPLETION_PROMPTS", "5")
++        _clear_envs_cache()
++
++        with pytest.raises(VLLMValidationError, match="input list length"):
++            PoolingCompletionRequest(model="m", input=[[1]] * 10)
++
++    def test_single_token_id_list_unaffected(self, monkeypatch):
++        monkeypatch.setenv("VLLM_MAX_COMPLETION_PROMPTS", "5")
++        _clear_envs_cache()
++
++        req = PoolingCompletionRequest(model="m", input=[1, 2, 3, 4, 5, 6])
++        assert req.input == [1, 2, 3, 4, 5, 6]
++
++    def test_within_limit_accepted(self, monkeypatch):
++        monkeypatch.setenv("VLLM_MAX_COMPLETION_PROMPTS", "5")
++        _clear_envs_cache()
++
++        req = PoolingCompletionRequest(model="m", input=["x"] * 5)
++        assert len(req.input) == 5
++
++    def test_scalar_string_unaffected(self, monkeypatch):
++        monkeypatch.setenv("VLLM_MAX_COMPLETION_PROMPTS", "5")
++        _clear_envs_cache()
++
++        req = PoolingCompletionRequest(model="m", input="hello world")
++        assert req.input == "hello world"
++
++
++class TestIOProcessorPromptLimit:
++    """IOProcessorRequest rejects oversized data lists."""
++
++    def test_data_list_rejected(self, monkeypatch):
++        monkeypatch.setenv("VLLM_MAX_COMPLETION_PROMPTS", "5")
++        _clear_envs_cache()
++
++        with pytest.raises(VLLMValidationError, match="data list length"):
++            IOProcessorRequest(model="m", data=["x"] * 10)
++
++    def test_data_list_within_limit(self, monkeypatch):
++        monkeypatch.setenv("VLLM_MAX_COMPLETION_PROMPTS", "5")
++        _clear_envs_cache()
++
++        req: IOProcessorRequest[list[str]] = IOProcessorRequest(
++            model="m", data=["x"] * 5
++        )
++        assert len(req.data) == 5
++
++
++class TestClassifyPromptLimit:
++    """ClassificationCompletionRequest rejects oversized input lists."""
++
++    def test_input_list_rejected(self, monkeypatch):
++        monkeypatch.setenv("VLLM_MAX_COMPLETION_PROMPTS", "5")
++        _clear_envs_cache()
++
++        with pytest.raises(VLLMValidationError, match="input list length"):
++            ClassificationCompletionRequest(model="m", input=["x"] * 10)
++
++    def test_within_limit_accepted(self, monkeypatch):
++        monkeypatch.setenv("VLLM_MAX_COMPLETION_PROMPTS", "5")
++        _clear_envs_cache()
++
++        req = ClassificationCompletionRequest(model="m", input=["x"] * 5)
++        assert len(req.input) == 5
+diff --git a/tests/entrypoints/serve/exception_handling/test_error_sanitization.py b/tests/entrypoints/serve/exception_handling/test_error_sanitization.py
+index c783fb7..d1f40bd 100644
+--- a/tests/entrypoints/serve/exception_handling/test_error_sanitization.py
++++ b/tests/entrypoints/serve/exception_handling/test_error_sanitization.py
+@@ -8,6 +8,8 @@ PIL repr addresses leaked via the Anthropic API router and the
+ speech-to-text WebSocket paths.
+ """
+ 
++import time
++
+ import pytest
+ 
+ from vllm.entrypoints.serve.exception_handling.utils import sanitize_message
+@@ -69,6 +71,14 @@ class TestSanitizeMessageFilePaths:
+         assert "0x" not in result
+         assert "/usr/local/" not in result
+ 
++    def test_long_segment_run_is_fast(self):
++        """Regression: a client-controlled run of /segments (e.g. the model
++        name) made the generic path regex backtrack for ~1 minute at 20 KB."""
++        msg = "The model `" + "/a" * 10_000 + "` does not exist."
++        start = time.perf_counter()
++        assert sanitize_message(msg) == msg
++        assert time.perf_counter() - start < 1
++
+ 
+ class TestSanitizeMessageCoversLeakPatterns:
+     """Ensure sanitize_message strips addresses from realistic exceptions."""
+@@ -153,3 +163,57 @@ def test_engine_dead_error_response_hides_log_oriented_message():
+     assert "stack trace" not in err.error.message
+     assert "log" not in err.error.message
+     assert "stack trace (above)" in str(exc)
++
++
++class TestSanitizeMessageReDoSResistance:
++    """Regression tests for GHSA-f2g9-pmwr-xwc7.
++
++    Verifies that sanitize_message performs bounded near-linear work
++    on adversarial slash-delimited input with no filename extension.
++    """
++
++    def test_slash_segments_no_extension_completes_quickly(self):
++        """50k slash-segments without dot-extension must complete in < 0.1s."""
++        import time
++
++        message = "/a" * 50000
++        t0 = time.perf_counter()
++        result = sanitize_message(message)
++        elapsed = time.perf_counter() - t0
++        assert elapsed < 0.1, f"Took {elapsed:.2f}s (expected < 0.1s)"
++        assert result == message
++
++    def test_alphanumeric_control_completes(self):
++        """100k alphanumeric chars must complete near-instantly."""
++        import time
++
++        message = "a" * 100000
++        t0 = time.perf_counter()
++        result = sanitize_message(message)
++        elapsed = time.perf_counter() - t0
++        assert elapsed < 0.1, f"Took {elapsed:.2f}s"
++        assert result == message
++
++    def test_linear_scaling(self):
++        """Verify near-linear scaling across input sizes."""
++        import time
++
++        times = []
++        for n in [1000, 10000, 50000]:
++            message = "/a" * n
++            t0 = time.perf_counter()
++            sanitize_message(message)
++            times.append(time.perf_counter() - t0)
++
++        ratio = times[-1] / max(times[0], 1e-9)
++        assert ratio < 100, (
++            f"50k/1k time ratio is {ratio:.0f}x (expected < 100x for linear)"
++        )
++
++    def test_path_redaction_still_works(self):
++        """Legitimate paths are still redacted after the fix."""
++        assert "<path>" in sanitize_message("Error in /app/server.py")
++        assert "<path>" in sanitize_message("at /workspace/vllm/engine.py")
++        assert "<path>" in sanitize_message(
++            "error at /usr/lib/python3.12/dist-packages/vllm/core.py"
++        )
+diff --git a/tests/entrypoints/unit_tests/test_sampling_int_bounds.py b/tests/entrypoints/unit_tests/test_sampling_int_bounds.py
+new file mode 100644
+index 0000000..b97553d
+--- /dev/null
++++ b/tests/entrypoints/unit_tests/test_sampling_int_bounds.py
+@@ -0,0 +1,90 @@
++# SPDX-License-Identifier: Apache-2.0
++# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
++
++"""Reject sampling integers that cannot round-trip through engine transport."""
++
++import pytest
++from pydantic import ValidationError
++
++from vllm.entrypoints.anthropic.protocol import AnthropicMessagesRequest
++from vllm.entrypoints.openai.chat_completion.protocol import (
++    BatchChatCompletionRequest,
++    ChatCompletionRequest,
++)
++from vllm.entrypoints.openai.completion.protocol import CompletionRequest
++from vllm.entrypoints.openai.responses.protocol import ResponsesRequest
++
++pytestmark = pytest.mark.cpu_test
++
++_INT64_MAX = 2**63 - 1
++_OVERFLOW = 2**64
++_CHAT_MESSAGES = [{"role": "user", "content": "hi"}]
++
++
++@pytest.mark.parametrize(
++    ("cls", "kwargs"),
++    [
++        (CompletionRequest, {"model": "m", "prompt": "hi"}),
++        (
++            ChatCompletionRequest,
++            {"model": "m", "messages": _CHAT_MESSAGES},
++        ),
++    ],
++)
++def test_oversized_stream_interval_rejected(cls, kwargs):
++    with pytest.raises(ValidationError):
++        cls(**kwargs, stream_interval=_OVERFLOW)
++
++
++@pytest.mark.parametrize(
++    ("cls", "kwargs"),
++    [
++        (CompletionRequest, {"model": "m", "prompt": "hi"}),
++        (
++            ChatCompletionRequest,
++            {"model": "m", "messages": _CHAT_MESSAGES},
++        ),
++    ],
++)
++def test_max_stream_interval_accepted(cls, kwargs):
++    req = cls(**kwargs, stream_interval=_INT64_MAX)
++    assert req.stream_interval == _INT64_MAX
++
++
++@pytest.mark.parametrize(
++    ("cls", "kwargs"),
++    [
++        (CompletionRequest, {"model": "m", "prompt": "hi"}),
++        (
++            ChatCompletionRequest,
++            {"model": "m", "messages": _CHAT_MESSAGES},
++        ),
++        (
++            BatchChatCompletionRequest,
++            {"model": "m", "messages": [_CHAT_MESSAGES]},
++        ),
++        (ResponsesRequest, {"model": "m", "input": "hi"}),
++        (
++            AnthropicMessagesRequest,
++            {"model": "m", "max_tokens": 1, "messages": _CHAT_MESSAGES},
++        ),
++    ],
++)
++def test_oversized_top_k_rejected(cls, kwargs):
++    with pytest.raises(ValidationError):
++        cls(**kwargs, top_k=_OVERFLOW)
++
++
++@pytest.mark.parametrize(
++    ("cls", "kwargs"),
++    [
++        (CompletionRequest, {"model": "m", "prompt": "hi"}),
++        (
++            ChatCompletionRequest,
++            {"model": "m", "messages": _CHAT_MESSAGES},
++        ),
++    ],
++)
++def test_negative_stream_interval_rejected(cls, kwargs):
++    with pytest.raises(ValidationError):
++        cls(**kwargs, stream_interval=-1)
+diff --git a/tests/multimodal/media/test_audio.py b/tests/multimodal/media/test_audio.py
+index 5728fa9..e78cf3c 100644
+--- a/tests/multimodal/media/test_audio.py
++++ b/tests/multimodal/media/test_audio.py
+@@ -4,7 +4,8 @@ import threading
+ from concurrent.futures import ThreadPoolExecutor
+ from io import BytesIO
+ from pathlib import Path
+-from unittest.mock import patch
++from types import SimpleNamespace
++from unittest.mock import Mock, patch
+ 
+ import numpy as np
+ import pybase64 as base64
+@@ -16,6 +17,7 @@ from vllm.multimodal.media import AudioMediaIO
+ from vllm.multimodal.media import audio as audio_module
+ from vllm.multimodal.media.audio import (
+     load_audio,
++    load_audio_pyav,
+     load_audio_soundfile,
+     load_audio_torchcodec,
+ )
+@@ -75,6 +77,22 @@ def test_audio_media_io_load_file(audio_assets: AudioTestAssets):
+     assert out[1] == 16000
+ 
+ 
++@pytest.mark.parametrize("loader", [load_audio, load_audio_pyav, load_audio_torchcodec])
++@pytest.mark.parametrize("source_type", ["buffer", "file"])
++def test_audio_reference_script_rejected(tmp_path, monkeypatch, loader, source_type):
++    """A valid local WAV must not be readable through a concat script."""
++    monkeypatch.chdir(tmp_path)
++    sf.write("private.wav", np.zeros(800, dtype=np.float32), 8000)
++    data = b"ffconcat version 1.0\nfile 'private.wav'\n"
++    if source_type == "buffer":
++        source = BytesIO(data)
++    else:
++        source = tmp_path / "audio.wav"
++        source.write_bytes(data)
++    with pytest.raises(ValueError, match="playlists and stream descriptions"):
++        loader(source, sr=None)
++
++
+ def test_audio_media_io_encode_base64(dummy_audio):
+     audio_io = AudioMediaIO()
+     media = (dummy_audio, 16000)
+@@ -104,6 +122,141 @@ def test_load_audio_max_duration_rejected(dummy_audio_bytes):
+         load_audio(BytesIO(dummy_audio_bytes), sr=None, max_duration_s=0.0001)
+ 
+ 
++def _fake_pyav_container(num_channels: int) -> tuple[Mock, SimpleNamespace]:
++    frame = SimpleNamespace(
++        layout=SimpleNamespace(channels=[object()] * num_channels),
++        to_ndarray=Mock(return_value=np.zeros((num_channels, 1), dtype=np.float32)),
++    )
++    stream = SimpleNamespace(
++        codec_context=SimpleNamespace(channels=num_channels),
++        duration=0,
++        layout=SimpleNamespace(channels=[object()] * num_channels),
++        rate=16000,
++        thread_type=None,
++        time_base=None,
++    )
++    container = Mock()
++    container.__enter__ = Mock(return_value=container)
++    container.__exit__ = Mock(return_value=False)
++    container.decode.return_value = [frame]
++    container.duration = 0
++    container.streams = SimpleNamespace(audio=[stream])
++    return container, stream
++
++
++def _fake_soundfile(num_channels: int) -> Mock:
++    audio_file = Mock()
++    audio_file.__enter__ = Mock(return_value=audio_file)
++    audio_file.__exit__ = Mock(return_value=False)
++    audio_file.channels = num_channels
++    audio_file.frames = 1
++    audio_file.read.return_value = np.zeros((1, num_channels), dtype=np.float32)
++    audio_file.samplerate = 16000
++    return audio_file
++
++
++def test_load_audio_pyav_rejects_excessive_channels_before_decode(monkeypatch):
++    import vllm.envs as envs
++
++    monkeypatch.setattr(envs, "VLLM_MAX_AUDIO_CHANNELS", 8, raising=False)
++    container, stream = _fake_pyav_container(num_channels=64)
++
++    with (
++        patch("vllm.multimodal.media.audio.av.open", return_value=container),
++        pytest.raises(ValueError, match="channel count"),
++    ):
++        load_audio_pyav(BytesIO(b"fake"), sr=None)
++
++    container.decode.assert_not_called()
++    assert stream.thread_type == "AUTO"
++
++
++def test_load_audio_pyav_rejects_excessive_layout_channels_before_decode(monkeypatch):
++    import vllm.envs as envs
++
++    monkeypatch.setattr(envs, "VLLM_MAX_AUDIO_CHANNELS", 8, raising=False)
++    container, stream = _fake_pyav_container(num_channels=64)
++    stream.codec_context.channels = 0
++
++    with (
++        patch("vllm.multimodal.media.audio.av.open", return_value=container),
++        pytest.raises(ValueError, match="channel count"),
++    ):
++        load_audio_pyav(BytesIO(b"fake"), sr=None)
++
++    container.decode.assert_not_called()
++
++
++def test_load_audio_pyav_rejects_excessive_frame_channels_before_array(monkeypatch):
++    import vllm.envs as envs
++
++    monkeypatch.setattr(envs, "VLLM_MAX_AUDIO_CHANNELS", 8, raising=False)
++    container, stream = _fake_pyav_container(num_channels=64)
++    stream.codec_context.channels = 1
++    stream.layout.channels = [object()]
++    frame = container.decode.return_value[0]
++
++    with (
++        patch("vllm.multimodal.media.audio.av.open", return_value=container),
++        pytest.raises(ValueError, match="channel count"),
++    ):
++        load_audio_pyav(BytesIO(b"fake"), sr=None)
++
++    frame.to_ndarray.assert_not_called()
++
++
++def test_load_audio_soundfile_rejects_excessive_channels_before_read(monkeypatch):
++    import vllm.envs as envs
++
++    monkeypatch.setattr(envs, "VLLM_MAX_AUDIO_CHANNELS", 8, raising=False)
++    audio_file = _fake_soundfile(num_channels=64)
++
++    with (
++        patch(
++            "vllm.multimodal.media.audio.soundfile.SoundFile",
++            return_value=audio_file,
++        ),
++        pytest.raises(ValueError, match="channel count"),
++    ):
++        load_audio_soundfile(BytesIO(b"fake"), sr=None)
++
++    audio_file.read.assert_not_called()
++
++
++def test_load_audio_soundfile_allows_common_surround_channels(monkeypatch):
++    import vllm.envs as envs
++
++    monkeypatch.setattr(envs, "VLLM_MAX_AUDIO_CHANNELS", 8, raising=False)
++    audio_file = _fake_soundfile(num_channels=6)
++
++    with patch(
++        "vllm.multimodal.media.audio.soundfile.SoundFile",
++        return_value=audio_file,
++    ):
++        audio, sr = load_audio_soundfile(BytesIO(b"fake"), sr=None)
++
++    audio_file.read.assert_called_once_with(dtype="float32", always_2d=False)
++    assert sr == 16000
++    np.testing.assert_array_equal(audio, np.zeros(1, dtype=np.float32))
++
++
++def test_load_audio_soundfile_channel_limit_disabled(monkeypatch):
++    import vllm.envs as envs
++
++    monkeypatch.setattr(envs, "VLLM_MAX_AUDIO_CHANNELS", 0, raising=False)
++    audio_file = _fake_soundfile(num_channels=64)
++
++    with patch(
++        "vllm.multimodal.media.audio.soundfile.SoundFile",
++        return_value=audio_file,
++    ):
++        audio, sr = load_audio_soundfile(BytesIO(b"fake"), sr=None)
++
++    audio_file.read.assert_called_once_with(dtype="float32", always_2d=False)
++    assert sr == 16000
++    np.testing.assert_array_equal(audio, np.zeros(1, dtype=np.float32))
++
++
+ def test_audio_media_io_from_video(video_assets):
+     audio_io = AudioMediaIO()
+     video_path = video_assets[0].video_path
+diff --git a/tests/multimodal/media/test_base.py b/tests/multimodal/media/test_base.py
+index 98ef58b..0016d2c 100644
+--- a/tests/multimodal/media/test_base.py
++++ b/tests/multimodal/media/test_base.py
+@@ -1,12 +1,14 @@
+ # SPDX-License-Identifier: Apache-2.0
+ # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+ import pickle
++from io import BytesIO
+ from pathlib import Path
+ 
+ import pytest
+ from PIL import Image
+ 
+ from vllm.multimodal.media import MediaWithBytes
++from vllm.multimodal.media_utils import validate_media_bytes, validate_media_source
+ 
+ pytestmark = pytest.mark.cpu_test
+ 
+@@ -14,6 +16,45 @@ ASSETS_DIR = Path(__file__).parent.parent / "assets"
+ assert ASSETS_DIR.exists()
+ 
+ 
++@pytest.mark.parametrize(
++    "data",
++    [
++        b"ffconcat version 1.0\nfile 'private.avi'\n",
++        b"\xef\xbb\xbf#EXTM3U\n#EXT-X-TARGETDURATION:1\nprivate.ts\n",
++        b" \xef\xbb\xbf#EXTM3U\nprivate.ts\n",
++        b"v=0\r\nc=IN IP4 127.0.0.1\r\nm=video 1234 RTP/AVP 96\r\n",
++        b"s=session\nc=IN IP6 ::1\n",
++        b"<?xml version='1.0'?><MPD></MPD>",
++        b"<MPD></MPD>",
++        "<MPD></MPD>".encode("utf-16"),
++    ],
++)
++@pytest.mark.parametrize("source_type", ["bytes", "buffer", "file"])
++def test_media_reference_descriptions_rejected(tmp_path, data, source_type):
++    """Reference formats must fail before a decoder can open another resource."""
++    with pytest.raises(ValueError, match="playlists and stream descriptions"):
++        if source_type == "bytes":
++            validate_media_bytes(data)
++        elif source_type == "buffer":
++            validate_media_source(BytesIO(data))
++        else:
++            path = tmp_path / "media"
++            path.write_bytes(data)
++            validate_media_source(path)
++
++
++def test_binary_media_metadata_is_not_a_reference_description(tmp_path):
++    data = b"RIFF\x00\x00\x00\x00WAVE\nc=IN IP4 127.0.0.1\n"
++    path = tmp_path / "media.wav"
++    path.write_bytes(data)
++    validate_media_bytes(data)
++    validate_media_source(path)
++    source = BytesIO(data)
++    source.seek(8)
++    validate_media_source(source)
++    assert source.tell() == 8
++
++
+ def test_media_with_bytes_pickle_roundtrip():
+     """Regression test for pickle/unpickle of MediaWithBytes.
+ 
+diff --git a/tests/multimodal/media/test_connector.py b/tests/multimodal/media/test_connector.py
+index f688b51..32b4a9e 100644
+--- a/tests/multimodal/media/test_connector.py
++++ b/tests/multimodal/media/test_connector.py
+@@ -35,6 +35,36 @@ TEST_VIDEO_URLS = [
+ ]
+ 
+ 
++@pytest.mark.asyncio
++@pytest.mark.parametrize("modality", ["video", "audio"])
++@pytest.mark.parametrize("source_type", ["data", "http", "file"])
++async def test_fetch_media_reference_script_rejected(
++    tmp_path, monkeypatch, modality, source_type
++):
++    """Every connector ingress must reject secondary-resource descriptions."""
++    data = b"ffconcat version 1.0\nfile 'private.avi'\n"
++    connector = MediaConnector(allowed_local_media_path=str(tmp_path))
++    if source_type == "data":
++        url = f"data:{modality}/mp4;base64," + base64.b64encode(data).decode()
++    elif source_type == "file":
++        path = tmp_path / "media.mp4"
++        path.write_bytes(data)
++        url = path.as_uri()
++    else:
++        url = "https://media.example.com/media.mp4"
++        monkeypatch.setattr(connector.connection, "get_bytes", lambda *a, **kw: data)
++
++        async def get_bytes(*args, **kwargs):
++            return data
++
++        monkeypatch.setattr(connector.connection, "async_get_bytes", get_bytes)
++
++    with pytest.raises(ValueError, match="playlists and stream descriptions"):
++        getattr(connector, f"fetch_{modality}")(url)
++    with pytest.raises(ValueError, match="playlists and stream descriptions"):
++        await getattr(connector, f"fetch_{modality}_async")(url)
++
++
+ @pytest.fixture(scope="module")
+ def url_images(local_asset_server) -> dict[str, Image.Image]:
+     return {
+@@ -57,6 +87,13 @@ def _image_equals(a: Image.Image, b: Image.Image) -> bool:
+     return (np.asarray(a) == np.asarray(convert_image_mode(b, a.mode))).all()
+ 
+ 
++@pytest.fixture(autouse=True)
++def _allow_loopback_media_fetches(monkeypatch):
++    # This module serves fixtures from a loopback test server, which the
++    # SSRF guard (#57157) blocks by default. Opt out explicitly.
++    monkeypatch.setenv("VLLM_MEDIA_URL_ALLOW_PRIVATE_IPS", "1")
++
++
+ @pytest.mark.asyncio
+ @pytest.mark.parametrize("image_url", TEST_IMAGE_ASSETS, indirect=True)
+ async def test_fetch_image_http(image_url: str):
+diff --git a/tests/multimodal/media/test_media_url_ssrf.py b/tests/multimodal/media/test_media_url_ssrf.py
+new file mode 100644
+index 0000000..08ae945
+--- /dev/null
++++ b/tests/multimodal/media/test_media_url_ssrf.py
+@@ -0,0 +1,166 @@
++# SPDX-License-Identifier: Apache-2.0
++# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
++"""Regression tests for https://github.com/vllm-project/vllm/issues/57157.
++
++Server-side request forgery via multimodal media URLs: the domain allowlist
++(`allowed_media_domains`) is checked once against the *initial* URL, while
++redirects are followed unchecked, and resolved IPs are never validated, so
++loopback / RFC1918 / link-local destinations are reachable by default.
++
++All servers below bind to loopback only; no real cloud metadata or external
++targets are involved.
++"""
++
++import socket
++import threading
++from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
++from io import BytesIO
++from unittest.mock import patch
++
++import pytest
++from PIL import Image
++
++from vllm.exceptions import VLLMUnprocessableEntityError
++from vllm.multimodal.media.connector import MediaConnector
++
++pytestmark = pytest.mark.cpu_test
++
++
++def _png_bytes() -> bytes:
++    buf = BytesIO()
++    Image.new("RGB", (1, 1), (255, 0, 0)).save(buf, format="PNG")
++    return buf.getvalue()
++
++
++class _PNGHandler(BaseHTTPRequestHandler):
++    payload = b""
++    hits = 0
++
++    def do_GET(self):
++        type(self).hits += 1
++        body = type(self).payload
++        self.send_response(200)
++        self.send_header("Content-Type", "image/png")
++        self.send_header("Content-Length", str(len(body)))
++        self.end_headers()
++        self.wfile.write(body)
++
++    def log_message(self, *args):
++        pass
++
++
++def _redirect_handler(target_url: str):
++    class _Handler(BaseHTTPRequestHandler):
++        def do_GET(self):
++            self.send_response(302)
++            self.send_header("Location", target_url)
++            self.end_headers()
++
++        def log_message(self, *args):
++            pass
++
++    return _Handler
++
++
++@pytest.fixture
++def png_payload():
++    return _png_bytes()
++
++
++@pytest.fixture
++def image_server(png_payload):
++    _PNGHandler.payload = png_payload
++    _PNGHandler.hits = 0
++    server = ThreadingHTTPServer(("127.0.0.1", 0), _PNGHandler)
++    thread = threading.Thread(target=server.serve_forever, daemon=True)
++    thread.start()
++    yield server
++    server.shutdown()
++
++
++@pytest.fixture
++def redirect_server(image_server):
++    target = f"http://blocked.example.com:{image_server.server_port}/img.png"
++    server = ThreadingHTTPServer(("127.0.0.1", 0), _redirect_handler(target))
++    thread = threading.Thread(target=server.serve_forever, daemon=True)
++    thread.start()
++    yield server
++    server.shutdown()
++
++
++def _fake_getaddrinfo(host, port, *args, **kwargs):
++    mapping = {
++        "allowed.example.com": "127.0.0.1",
++        "blocked.example.com": "127.0.0.1",
++    }
++    if host in mapping:
++        ip = mapping[host]
++        family = socket.AF_INET
++        return [(family, socket.SOCK_STREAM, 6, "", (ip, port))]
++    return _REAL_GETADDRINFO(host, port, *args, **kwargs)
++
++
++_REAL_GETADDRINFO = socket.getaddrinfo
++
++
++@pytest.fixture
++def controlled_dns():
++    with patch.object(socket, "getaddrinfo", side_effect=_fake_getaddrinfo):
++        yield
++
++
++def test_redirect_target_domain_rechecked(redirect_server, controlled_dns, monkeypatch):
++    """A 302 to a non-allowlisted host must not be followed.
++
++    Private-IP validation is opted out here to isolate the domain
++    re-check: both test hosts are loopback. Fails before the #57157 fix
++    (the redirect is followed and fetched); passes after.
++    """
++    monkeypatch.setenv("VLLM_MEDIA_URL_ALLOW_PRIVATE_IPS", "1")
++    first_url = f"http://allowed.example.com:{redirect_server.server_port}/start"
++    connector = MediaConnector(allowed_media_domains=["allowed.example.com"])
++    with pytest.raises(
++        VLLMUnprocessableEntityError, match="Failed to fetch"
++    ) as exc_info:
++        connector.fetch_image(first_url)
++    assert "allowed domains" in str(exc_info.value.__cause__)
++    assert _PNGHandler.hits == 0
++
++
++@pytest.mark.asyncio
++async def test_redirect_target_domain_rechecked_async(
++    redirect_server, controlled_dns, monkeypatch
++):
++    monkeypatch.setenv("VLLM_MEDIA_URL_ALLOW_PRIVATE_IPS", "1")
++    first_url = f"http://allowed.example.com:{redirect_server.server_port}/start"
++    connector = MediaConnector(allowed_media_domains=["allowed.example.com"])
++    with pytest.raises(
++        VLLMUnprocessableEntityError, match="Failed to fetch"
++    ) as exc_info:
++        await connector.fetch_image_async(first_url)
++    assert "allowed domains" in str(exc_info.value.__cause__)
++    assert _PNGHandler.hits == 0
++
++
++def test_loopback_blocked_by_default(image_server, monkeypatch):
++    """Direct fetches of loopback IPs are rejected unless explicitly opted in.
++
++    Fails before the #57157 fix: the fetch succeeds.
++    """
++    monkeypatch.delenv("VLLM_MEDIA_URL_ALLOW_PRIVATE_IPS", raising=False)
++    url = f"http://127.0.0.1:{image_server.server_port}/img.png"
++    with pytest.raises(
++        VLLMUnprocessableEntityError, match="Failed to fetch"
++    ) as exc_info:
++        MediaConnector().fetch_image(url)
++    assert "non-public IP" in str(exc_info.value.__cause__)
++    assert _PNGHandler.hits == 0
++
++
++def test_private_ip_opt_out_allows_loopback(image_server, monkeypatch):
++    """Escape hatch for tests / trusted networks: fetching works when opted in."""
++    monkeypatch.setenv("VLLM_MEDIA_URL_ALLOW_PRIVATE_IPS", "1")
++    url = f"http://127.0.0.1:{image_server.server_port}/img.png"
++    image = MediaConnector().fetch_image(url)
++    assert image.size == (1, 1)
++    assert _PNGHandler.hits == 1
+diff --git a/tests/multimodal/media/test_video.py b/tests/multimodal/media/test_video.py
+index a5d8fd1..bfd3b39 100644
+--- a/tests/multimodal/media/test_video.py
++++ b/tests/multimodal/media/test_video.py
+@@ -87,6 +87,23 @@ def test_video_media_io_kwargs(monkeypatch: pytest.MonkeyPatch):
+             _ = videoio.load_bytes(b"test")
+ 
+ 
++@pytest.mark.parametrize("entry_point", ["bytes", "base64", "file", "loader"])
++def test_video_reference_script_rejected(tmp_path, entry_point):
++    data = b"ffconcat version 1.0\nfile 'private.avi'\n"
++    video_io = VideoMediaIO(ImageMediaIO())
++    with pytest.raises(ValueError, match="playlists and stream descriptions"):
++        if entry_point == "bytes":
++            video_io.load_bytes(data)
++        elif entry_point == "base64":
++            video_io.load_base64("video/mp4", pybase64.b64encode(data).decode())
++        elif entry_point == "file":
++            path = tmp_path / "video.mp4"
++            path.write_bytes(data)
++            video_io.load_file(path)
++        else:
++            VIDEO_LOADER_REGISTRY.load("opencv").load_bytes(data)
++
++
+ @pytest.mark.parametrize("is_color", [True, False])
+ @pytest.mark.parametrize("fourcc, ext", [("mp4v", "mp4"), ("XVID", "avi")])
+ def test_opencv_video_io_colorspace(tmp_path, is_color: bool, fourcc: str, ext: str):
+diff --git a/tests/test_connections.py b/tests/test_connections.py
+index 69df261..4f780c0 100644
+--- a/tests/test_connections.py
++++ b/tests/test_connections.py
+@@ -1,6 +1,7 @@
+ # SPDX-License-Identifier: Apache-2.0
+ # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+ 
++import asyncio
+ import threading
+ from collections.abc import Generator
+ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+@@ -57,6 +58,36 @@ def local_media_server() -> Generator[str, None, None]:
+         server.server_close()
+ 
+ 
++@pytest.fixture
++def local_cookie_server() -> Generator[tuple[str, list[str | None]], None, None]:
++    received_cookies: list[str | None] = []
++
++    class _CookieHandler(BaseHTTPRequestHandler):
++        def do_GET(self) -> None:
++            received_cookies.append(self.headers.get("Cookie"))
++            body = b"ok"
++            self.send_response(200)
++            if self.path.startswith("/set-cookie"):
++                self.send_header("Set-Cookie", "sid=shared-session")
++            self.send_header("Content-Type", "text/plain")
++            self.send_header("Content-Length", str(len(body)))
++            self.end_headers()
++            self.wfile.write(body)
++
++        def log_message(self, fmt: str, *args: object) -> None:
++            return
++
++    server = ThreadingHTTPServer(("127.0.0.1", 0), _CookieHandler)
++    thread = threading.Thread(target=server.serve_forever, daemon=True)
++    thread.start()
++    try:
++        yield f"http://127.0.0.1:{server.server_port}", received_cookies
++    finally:
++        server.shutdown()
++        thread.join()
++        server.server_close()
++
++
+ class _SyncResponse:
+     def __init__(self, chunks: list[bytes | Exception]) -> None:
+         self.headers: dict[str, str] = {}
+@@ -133,11 +164,12 @@ def test_get_bytes_with_limit_streams_instead_of_materializing() -> None:
+     ):
+         connection.get_bytes("http://example.com/media", max_bytes=4)
+ 
++    # Redirects are followed hop by hop so every hop is re-validated.
+     get_response.assert_called_once_with(
+         "http://example.com/media",
+         stream=True,
+         timeout=None,
+-        allow_redirects=True,
++        allow_redirects=False,
+     )
+     assert response.content_accessed is False
+     assert response.iterated == 2
+@@ -292,3 +324,52 @@ async def test_get_bytes_allows_body_within_limit(
+     finally:
+         if connection._async_client is not None:
+             await connection._async_client.close()
++
++
++def test_sync_http_connection_does_not_replay_response_cookies(
++    local_cookie_server: tuple[str, list[str | None]],
++) -> None:
++    base_url, received_cookies = local_cookie_server
++    connection = HTTPConnection()
++
++    assert connection.get_bytes(f"{base_url}/set-cookie") == b"ok"
++    assert connection.get_bytes(f"{base_url}/next") == b"ok"
++    assert received_cookies == [None, None]
++
++
++@pytest.mark.asyncio
++async def test_async_http_connection_does_not_replay_response_cookies(
++    local_cookie_server: tuple[str, list[str | None]],
++) -> None:
++    base_url, received_cookies = local_cookie_server
++    connection = HTTPConnection()
++
++    try:
++        assert await connection.async_get_bytes(f"{base_url}/set-cookie") == b"ok"
++        assert await connection.async_get_bytes(f"{base_url}/next") == b"ok"
++        assert received_cookies == [None, None]
++    finally:
++        if connection._async_client is not None:
++            await connection._async_client.close()
++
++
++@pytest.mark.asyncio
++async def test_async_http_connection_does_not_replay_cookies_concurrently(
++    local_cookie_server: tuple[str, list[str | None]],
++) -> None:
++    base_url, received_cookies = local_cookie_server
++    connection = HTTPConnection()
++
++    try:
++        await asyncio.gather(
++            connection.async_get_bytes(f"{base_url}/set-cookie-a"),
++            connection.async_get_bytes(f"{base_url}/set-cookie-b"),
++        )
++        await asyncio.gather(
++            connection.async_get_bytes(f"{base_url}/next-a"),
++            connection.async_get_bytes(f"{base_url}/next-b"),
++        )
++        assert received_cookies == [None, None, None, None]
++    finally:
++        if connection._async_client is not None:
++            await connection._async_client.close()
+diff --git a/tests/test_request_input_bounds.py b/tests/test_request_input_bounds.py
+index b196c56..c876638 100644
+--- a/tests/test_request_input_bounds.py
++++ b/tests/test_request_input_bounds.py
+@@ -483,3 +483,129 @@ def test_encode_messages_unknown_role_raises_value_error(encoding_module):
+             [{"role": "SYSTEM", "content": "Hello"}],
+             thinking_mode="chat",
+         )
++
++
++# --- GHSA-cg76-73hw-qg4m: stop_token_ids count cap and set lookup ---------
++
++
++def test_stop_token_ids_count_cap_rejects_oversized_list():
++    with pytest.raises(VLLMValidationError, match="Too many stop_token_ids"):
++        SamplingParams(stop_token_ids=list(range(200)))
++
++
++def test_stop_token_ids_pydantic_cap_on_completion_request():
++    with pytest.raises(ValidationError, match="at most 128"):
++        CompletionRequest(
++            model="test-model",
++            prompt="hello",
++            stop_token_ids=list(range(200)),
++        )
++
++
++def test_stop_token_ids_pydantic_cap_on_chat_request():
++    with pytest.raises(ValidationError, match="at most 128"):
++        ChatCompletionRequest(
++            model="test-model",
++            messages=[{"role": "user", "content": "hello"}],
++            stop_token_ids=list(range(200)),
++        )
++
++
++def test_stop_token_ids_set_property():
++    params = SamplingParams(stop_token_ids=[10, 20, 30])
++    assert params.stop_token_ids_set == frozenset({10, 20, 30})
++
++
++# --- GHSA-v782-f4x3-chvf: stop strings dedup and cap at SamplingParams ----
++
++
++def test_stop_strings_deduped_at_sampling_params():
++    params = SamplingParams(stop=["a", "b", "a", "c"])
++    assert params.stop == ["a", "b", "c"]
++
++
++def test_stop_strings_cap_at_sampling_params():
++    with pytest.raises(VLLMValidationError, match="Too many stop strings"):
++        SamplingParams(stop=[f"stop{i}" for i in range(10)])
++
++
++# --- GHSA-4r96-ccfx-mq85: DeepSeek V3.2 tool-message linear scan ---------
++
++
++def test_deepseek_v32_tool_messages_linear_scan():
++    k = 64
++    msgs = [
++        {"role": "user", "content": "hi"},
++        {
++            "role": "assistant",
++            "content": "",
++            "tool_calls": [
++                {
++                    "type": "function",
++                    "function": {"name": f"f{i}", "arguments": "{}"},
++                }
++                for i in range(k)
++            ],
++        },
++    ]
++    msgs.extend({"role": "tool", "content": "result"} for _ in range(k))
++
++    reads = 0
++    orig_getitem = list.__getitem__
++
++    class CountingList(list):
++        def __getitem__(self, i):
++            nonlocal reads
++            reads += 1
++            return orig_getitem(self, i)
++
++    counting_msgs = CountingList(msgs)
++
++    deepseek_v32_encoding.encode_messages(counting_msgs, thinking_mode="chat")
++
++    # O(n) should be well under k^2/2 = 2048
++    assert reads < k * 10, (
++        f"Expected linear reads but got {reads} "
++        f"(k={k}, quadratic would be ~{k * k // 2})"
++    )
++
++
++# --- GHSA-9862-57p7-p868: bad_words Pydantic cap and total-token limit ----
++
++
++def test_bad_words_pydantic_cap_on_completion_request():
++    with pytest.raises(ValidationError, match="at most 128"):
++        CompletionRequest(
++            model="test-model",
++            prompt="hello",
++            bad_words=[f"bad{i}" for i in range(200)],
++        )
++
++
++def test_bad_words_pydantic_cap_on_chat_request():
++    with pytest.raises(ValidationError, match="at most 128"):
++        ChatCompletionRequest(
++            model="test-model",
++            messages=[{"role": "user", "content": "hello"}],
++            bad_words=[f"bad{i}" for i in range(200)],
++        )
++
++
++def test_bad_words_count_cap_at_sampling_params():
++    with pytest.raises(VLLMValidationError, match="Too many bad_words"):
++        SamplingParams(bad_words=[f"bad{i}" for i in range(200)])
++
++
++class MultiTokenMockTokenizer:
++    max_token_id = 1024
++
++    def encode(self, text: str, add_special_tokens: bool = False) -> list[int]:
++        return list(range(10))
++
++
++def test_bad_words_total_token_limit_enforced_in_frontend():
++    params = SamplingParams(bad_words=[f"word{i}" for i in range(120)])
++    tokenizer = MultiTokenMockTokenizer()
++
++    with pytest.raises(VLLMValidationError, match="Too many total bad word tokens"):
++        params.update_from_tokenizer(tokenizer)
+diff --git a/tests/test_sampling_params.py b/tests/test_sampling_params.py
+index f32a3d4..d24e85c 100644
+--- a/tests/test_sampling_params.py
++++ b/tests/test_sampling_params.py
+@@ -280,3 +280,31 @@ def test_extra_args_preserves_custom_objects_and_shared_containers():
+     params = SamplingParams(extra_args=extra_args)
+     assert params.extra_args["first"][0] is custom
+     assert params.extra_args["first"] is params.extra_args["second"]
++
++
++@pytest.mark.parametrize("cached", [999999, 5, 0, -1, None, True, "5"])
++@pytest.mark.parametrize("do_remote_prefill", [True, False])
++def test_remote_cache_accounting_requires_trusted_backend(
++    cached, do_remote_prefill, monkeypatch
++):
++    monkeypatch.delenv("VLLM_TRUST_REMOTE_PREFILL_CACHED_TOKENS", raising=False)
++    extra_args = {
++        "kv_transfer_params": {
++            "do_remote_prefill": do_remote_prefill,
++            "remote_prefill_cached_tokens": cached,
++        }
++    }
++    with pytest.raises(VLLMValidationError, match="trusted P/D backend"):
++        SamplingParams(extra_args=extra_args)
++    monkeypatch.setenv("VLLM_TRUST_REMOTE_PREFILL_CACHED_TOKENS", "1")
++    assert SamplingParams(extra_args=extra_args).extra_args == extra_args
++
++
++@pytest.mark.parametrize("kwargs", [{"top_k": 2**64}, {"stream_interval": 2**64}])
++def test_sampling_params_reject_integers_beyond_messagepack(kwargs: dict):
++    with pytest.raises(VLLMValidationError, match="must be at most"):
++        SamplingParams(**kwargs)
++
++
++def test_sampling_params_accept_messagepack_integer_boundaries():
++    SamplingParams(top_k=2**64 - 1, stream_interval=2**64 - 1)
+diff --git a/tests/tokenizers_/test_detokenize.py b/tests/tokenizers_/test_detokenize.py
+index 37e7252..85986ee 100644
+--- a/tests/tokenizers_/test_detokenize.py
++++ b/tests/tokenizers_/test_detokenize.py
+@@ -9,6 +9,7 @@ from transformers import AutoTokenizer, PythonBackend, TokenizersBackend
+ 
+ from vllm.sampling_params import SamplingParams
+ from vllm.tokenizers.detokenizer_utils import (
++    MAX_PENDING_TOKENS,
+     convert_ids_list_to_tokens,
+     convert_prompt_ids_to_tokens,
+     detokenize_incrementally,
+@@ -52,16 +53,13 @@ TOKENIZERS = [
+ ]
+ 
+ 
+-def _run_incremental_decode(
++def _new_detokenizer(
+     tokenizer,
+-    all_input_ids,
++    prompt_token_ids,
+     skip_special_tokens: bool,
+-    starting_index: int,
+     spaces_between_special_tokens: bool = True,
+     fast: bool | None = None,
+ ):
+-    prompt_token_ids = all_input_ids[:starting_index]
+-
+     params = SamplingParams(
+         skip_special_tokens=skip_special_tokens,
+         spaces_between_special_tokens=spaces_between_special_tokens,
+@@ -79,11 +77,27 @@ def _run_incremental_decode(
+     )
+ 
+     if fast is None:
+-        detokenizer = IncrementalDetokenizer.from_new_request(tokenizer, request)
+-    elif fast:
+-        detokenizer = FastIncrementalDetokenizer(tokenizer, request)
+-    else:
+-        detokenizer = SlowIncrementalDetokenizer(tokenizer, request)
++        return IncrementalDetokenizer.from_new_request(tokenizer, request)
++    if fast:
++        return FastIncrementalDetokenizer(tokenizer, request)
++    return SlowIncrementalDetokenizer(tokenizer, request)
++
++
++def _run_incremental_decode(
++    tokenizer,
++    all_input_ids,
++    skip_special_tokens: bool,
++    starting_index: int,
++    spaces_between_special_tokens: bool = True,
++    fast: bool | None = None,
++):
++    detokenizer = _new_detokenizer(
++        tokenizer,
++        all_input_ids[:starting_index],
++        skip_special_tokens,
++        spaces_between_special_tokens,
++        fast,
++    )
+ 
+     output_text = ""
+     for i, token_id in enumerate(all_input_ids[starting_index:]):
+@@ -291,7 +305,86 @@ def test_oov_decode(tokenizer, fast):
+     assert out_ids == [len(tokenizer)]
+ 
+ 
+-# ---------- convert_ids_list_to_tokens collision tests ----------
++def _lone_lead_byte_token(tokenizer) -> int:
++    """A token that decodes to a single U+FFFD: a UTF-8 lead byte on its own."""
++    return next(
++        token_id
++        for token_id in range(min(len(tokenizer), 1024))
++        if tokenizer.decode([token_id]) == "�"
++    )
++
++
++@pytest.mark.parametrize(
++    "tokenizer_name", ["openai-community/gpt2", "codellama/CodeLlama-7b-hf"]
++)
++@pytest.mark.parametrize("fast", (True, False))
++def test_malformed_utf8_run_is_streamed_as_replacement_chars(tokenizer, fast):
++    """A model emitting byte tokens that never complete a code point (garbage
++    generation) must have them streamed out as U+FFFD while the run is in
++    progress. Holding them back until a valid character arrives re-decodes the
++    whole run on every step, which stalls the API server event loop on long
++    outputs, and text after the run must still decode as if never flushed."""
++    if fast and not isinstance(tokenizer, TokenizersBackend):
++        pytest.skip()
++
++    prompt = tokenizer.encode("Hello", add_special_tokens=False)
++    run = [_lone_lead_byte_token(tokenizer)] * 1024
++    tail = tokenizer.encode(" world", add_special_tokens=False)
++    detokenizer = _new_detokenizer(
++        tokenizer, prompt, skip_special_tokens=True, fast=fast
++    )
++
++    output_text = ""
++    for token_id in run:
++        detokenizer.update([token_id], False)
++        output_text += detokenizer.get_next_output_text(False, delta=True)
++    held_back = len(run) - output_text.count("�")
++    assert held_back <= MAX_PENDING_TOKENS, f"{held_back=} tokens never streamed"
++
++    for token_id in tail:
++        detokenizer.update([token_id], False)
++    output_text += detokenizer.get_next_output_text(True, delta=True)
++    prompt_text = tokenizer.decode(prompt, skip_special_tokens=True)
++    full_text = tokenizer.decode(prompt + run + tail, skip_special_tokens=True)
++    assert output_text == full_text[len(prompt_text) :]
++    assert detokenizer.output_token_ids == run + tail
++
++
++@pytest.mark.parametrize("tokenizer_name", ["codellama/CodeLlama-7b-hf"])
++def test_flush_after_prompt_ending_in_incomplete_utf8_does_not_leak_prompt(
++    tokenizer,
++):
++    """Restarting the fast stream behind a malformed run must not prime it with
++    a prefix that itself ends in an incomplete sequence: DecodeStream ignores
++    such a prefix and would re-emit the prompt text as generated output."""
++    bad_byte = _lone_lead_byte_token(tokenizer)
++    prompt = tokenizer.encode("Hello", add_special_tokens=False) + [bad_byte]
++    run = [bad_byte] * (2 * MAX_PENDING_TOKENS)
++    tail = tokenizer.encode(" world", add_special_tokens=False)
++    detokenizer = _new_detokenizer(
++        tokenizer, prompt, skip_special_tokens=True, fast=True
++    )
++
++    for token_id in run + tail:
++        detokenizer.update([token_id], False)
++    output_text = detokenizer.get_next_output_text(True, delta=True)
++
++    assert "Hello" not in output_text
++    assert output_text.endswith("world")
++    assert output_text.count("�") == len(run)
++
++
++@pytest.mark.parametrize("tokenizer_name", ["openai-community/gpt2"])
++def test_fast_detokenizer_keeps_skipping_unrepresentable_ids(tokenizer):
++    """Ids DecodeStream cannot accept at all (#21951) are logged and skipped;
++    a run of them must not be collected for a flush that fails the same way."""
++    detokenizer = _new_detokenizer(tokenizer, [], skip_special_tokens=True, fast=True)
++    tail = tokenizer.encode(" world", add_special_tokens=False)
++
++    for token_id in [2**40] * (MAX_PENDING_TOKENS + 1) + tail:
++        detokenizer.update([token_id], False)
++
++    assert detokenizer.get_next_output_text(True, delta=True) == " world"
+ 
+ 
+ class _MockBackend:
+diff --git a/tests/utils_/test_vision_rope_shape_cache.py b/tests/utils_/test_vision_rope_shape_cache.py
+new file mode 100644
+index 0000000..3c6f042
+--- /dev/null
++++ b/tests/utils_/test_vision_rope_shape_cache.py
+@@ -0,0 +1,51 @@
++# SPDX-License-Identifier: Apache-2.0
++# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
++import torch
++
++from vllm.utils.cache import (
++    VISION_ROPE_SHAPE_CACHE_BYTES,
++    LRUCache,
++    tensors_nbytes,
++)
++from vllm.utils.mem_constants import MiB_bytes
++
++
++def test_tensors_nbytes_sums_nested_tensors():
++    a = torch.empty(100, dtype=torch.uint8)
++    b = torch.empty(50, dtype=torch.uint8)
++    assert tensors_nbytes(a) == 100
++    assert tensors_nbytes((a, b, "skip")) == 150
++    assert tensors_nbytes("not-a-tensor") == 0
++
++
++def test_vision_rope_shape_cache_evicts_when_byte_budget_exceeded():
++    """Many unique shapes must not pin more than the byte budget."""
++    cache: LRUCache[int, tuple[torch.Tensor, ...]] = LRUCache(
++        capacity=VISION_ROPE_SHAPE_CACHE_BYTES,
++        getsizeof=tensors_nbytes,
++    )
++    entry_bytes = 8 * MiB_bytes
++    n_entries = int(VISION_ROPE_SHAPE_CACHE_BYTES // entry_bytes) + 32
++    half = entry_bytes // 2
++
++    for i in range(n_entries):
++        cos = torch.empty(half, dtype=torch.uint8)
++        sin = torch.empty(half, dtype=torch.uint8)
++        empty = torch.empty(0, dtype=torch.int32)
++        assert cache.put_if_fits(i, (cos, sin, empty, empty, empty))
++
++    assert cache.currsize <= VISION_ROPE_SHAPE_CACHE_BYTES
++    assert len(cache) <= VISION_ROPE_SHAPE_CACHE_BYTES // entry_bytes
++    assert len(cache) < n_entries
++
++
++def test_vision_rope_shape_cache_skips_entry_larger_than_budget():
++    cache: LRUCache[str, torch.Tensor] = LRUCache(
++        capacity=VISION_ROPE_SHAPE_CACHE_BYTES,
++        getsizeof=tensors_nbytes,
++    )
++    oversized = torch.empty(
++        VISION_ROPE_SHAPE_CACHE_BYTES + MiB_bytes, dtype=torch.uint8
++    )
++    assert cache.put_if_fits("big", oversized) is False
++    assert "big" not in cache
+diff --git a/tests/v1/engine/test_add_request_rollback.py b/tests/v1/engine/test_add_request_rollback.py
+new file mode 100644
+index 0000000..fb1693a
+--- /dev/null
++++ b/tests/v1/engine/test_add_request_rollback.py
+@@ -0,0 +1,175 @@
++# SPDX-License-Identifier: Apache-2.0
++# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
++
++"""Roll back local request registration when engine add fails."""
++
++import asyncio
++from types import SimpleNamespace
++from unittest.mock import AsyncMock, MagicMock
++
++import pytest
++
++from vllm.sampling_params import RequestOutputKind, SamplingParams
++from vllm.v1.engine import EngineCoreRequest
++from vllm.v1.engine.async_llm import AsyncLLM
++from vllm.v1.engine.llm_engine import LLMEngine
++from vllm.v1.engine.output_processor import OutputProcessor, RequestOutputCollector
++from vllm.v1.serial_utils import MsgpackEncoder
++
++pytestmark = pytest.mark.cpu_test
++
++_OVERFLOW = 2**64
++
++
++def _engine_request(
++    request_id: str = "req-0",
++    *,
++    sampling_params: SamplingParams | None = None,
++) -> EngineCoreRequest:
++    return EngineCoreRequest(
++        request_id=request_id,
++        external_req_id=request_id,
++        prompt_token_ids=[1],
++        mm_features=None,
++        sampling_params=sampling_params
++        or SamplingParams(detokenize=False, max_tokens=1),
++        pooling_params=None,
++        arrival_time=0.0,
++        lora_request=None,
++        cache_salt=None,
++        data_parallel_rank=None,
++    )
++
++
++def _make_async_llm(add_request_async) -> AsyncLLM:
++    llm = AsyncLLM.__new__(AsyncLLM)
++    llm.output_handler = None
++    llm.vllm_config = SimpleNamespace(
++        cache_config=SimpleNamespace(kv_sharing_fast_prefill=False),
++        parallel_config=SimpleNamespace(enable_fault_tolerance=False),
++    )
++    llm.output_processor = OutputProcessor(tokenizer=None, log_stats=False)
++    llm.scheduler_config = SimpleNamespace(
++        max_num_queued_reqs=None,
++        max_num_queued_tokens=None,
++    )
++    llm.input_processor = SimpleNamespace(
++        assign_request_id=lambda _req: None,
++        apply_watermarking=lambda *_: None,
++        resolve_watermarking=lambda _: False,
++    )
++    llm.log_requests = False
++    llm._run_output_handler = lambda: None
++    llm.engine_core = SimpleNamespace(
++        add_request_async=add_request_async,
++        abort_requests_async=AsyncMock(),
++        resources=SimpleNamespace(engine_dead=False),
++        shutdown=MagicMock(),
++    )
++    return llm
++
++
++def _make_llm_engine(add_request) -> LLMEngine:
++    engine = LLMEngine.__new__(LLMEngine)
++    engine.output_processor = OutputProcessor(tokenizer=None, log_stats=False)
++    engine.input_processor = SimpleNamespace(
++        assign_request_id=lambda _req: None,
++        apply_watermarking=lambda *_: None,
++        resolve_watermarking=lambda _: False,
++    )
++    engine.engine_core = SimpleNamespace(
++        add_request=add_request,
++        abort_requests=MagicMock(),
++    )
++    return engine
++
++
++def test_async_add_request_rolls_back_on_encode_overflow():
++    encoder = MsgpackEncoder()
++
++    async def add_request_async(request: EngineCoreRequest) -> None:
++        encoder.encode(request)
++
++    llm = _make_async_llm(add_request_async)
++    request = _engine_request()
++    request.priority = _OVERFLOW
++    queue = RequestOutputCollector(RequestOutputKind.CUMULATIVE, request.request_id)
++
++    async def _run() -> None:
++        with pytest.raises(OverflowError):
++            await llm._add_request(request, None, None, 0, queue)
++
++    asyncio.run(_run())
++
++    assert llm.output_processor.request_states == {}
++    assert llm.output_processor.parent_requests == {}
++
++
++def test_async_add_request_keeps_state_when_engine_accepts():
++    llm = _make_async_llm(AsyncMock())
++    request = _engine_request()
++    queue = RequestOutputCollector(RequestOutputKind.CUMULATIVE, request.request_id)
++
++    asyncio.run(llm._add_request(request, None, None, 0, queue))
++
++    assert request.request_id in llm.output_processor.request_states
++
++
++def test_async_parallel_add_rolls_back_siblings_on_later_send_failure():
++    calls = 0
++
++    async def add_request_async(_request: EngineCoreRequest) -> None:
++        nonlocal calls
++        calls += 1
++        if calls > 1:
++            raise OverflowError("can't serialize ints")
++
++    llm = _make_async_llm(add_request_async)
++    params = SamplingParams(n=2, detokenize=False, max_tokens=1)
++    request = _engine_request(sampling_params=params)
++
++    async def _run() -> None:
++        with pytest.raises(OverflowError):
++            await llm.add_request("req-0", request, params)
++
++    asyncio.run(_run())
++
++    assert llm.output_processor.request_states == {}
++    assert llm.output_processor.parent_requests == {}
++
++
++def test_sync_add_request_rolls_back_on_engine_send_failure():
++    encoder = MsgpackEncoder()
++
++    def add_request(request: EngineCoreRequest) -> None:
++        encoder.encode(request)
++
++    engine = _make_llm_engine(add_request)
++    request = _engine_request()
++    request.priority = _OVERFLOW
++
++    with pytest.raises(OverflowError):
++        engine.add_request("req-0", request, request.sampling_params)
++
++    assert engine.output_processor.request_states == {}
++    assert engine.output_processor.parent_requests == {}
++
++
++def test_sync_parallel_add_rolls_back_siblings_on_later_send_failure():
++    calls = 0
++
++    def add_request(_request: EngineCoreRequest) -> None:
++        nonlocal calls
++        calls += 1
++        if calls > 1:
++            raise OverflowError("can't serialize ints")
++
++    engine = _make_llm_engine(add_request)
++    params = SamplingParams(n=2, detokenize=False, max_tokens=1)
++    request = _engine_request(sampling_params=params)
++
++    with pytest.raises(OverflowError):
++        engine.add_request("req-0", request, params)
++
++    assert engine.output_processor.request_states == {}
++    assert engine.output_processor.parent_requests == {}
+diff --git a/tests/v1/engine/test_output_processor.py b/tests/v1/engine/test_output_processor.py
+index 7dc30d4..9e94af9 100644
+--- a/tests/v1/engine/test_output_processor.py
++++ b/tests/v1/engine/test_output_processor.py
+@@ -217,17 +217,21 @@ def test_incremental_detokenization(
+ 
+ 
+ @pytest.mark.parametrize("do_remote_prefill", [True, False])
+-def test_remote_prefill_cached_tokens_override(do_remote_prefill: bool):
++@pytest.mark.parametrize("trusted,cached", [(True, 5), (False, 5), (False, 999999)])
++def test_remote_prefill_cached_tokens_override(
++    do_remote_prefill: bool, trusted: bool, cached: int, monkeypatch
++):
+     """P/D disaggregation: num_cached_tokens should report the P worker's
+     cache hits (passed via kv_transfer_params) instead of the local count,
+     which sees the KVs pulled from the remote prefill as a ~100% hit.
+     """
+     output_processor = OutputProcessor(tokenizer=None, log_stats=False)
++    monkeypatch.setenv("VLLM_TRUST_REMOTE_PREFILL_CACHED_TOKENS", "1")
+ 
+     prompt_tokens = [1, 2, 3, 4, 5, 6, 7, 8]
+     kv_transfer_params = {
+         "do_remote_prefill": do_remote_prefill,
+-        "remote_prefill_cached_tokens": 5,
++        "remote_prefill_cached_tokens": cached,
+     }
+     request = EngineCoreRequest(
+         request_id="request-0-int",
+@@ -244,6 +248,8 @@ def test_remote_prefill_cached_tokens_override(do_remote_prefill: bool):
+         ),
+         pooling_params=None,
+     )
++    # Exercise sink protection even if admission was bypassed.
++    monkeypatch.setenv("VLLM_TRUST_REMOTE_PREFILL_CACHED_TOKENS", str(int(trusted)))
+     output_processor.add_request(request, prompt=None)
+ 
+     prefill_stats = PrefillStats()
+@@ -262,8 +268,8 @@ def test_remote_prefill_cached_tokens_override(do_remote_prefill: bool):
+         ]
+     )
+     request_output = processed.request_outputs[0]
+-    if do_remote_prefill:
+-        assert request_output.num_cached_tokens == 5
++    if trusted and do_remote_prefill:
++        assert request_output.num_cached_tokens == cached
+     else:
+         assert request_output.num_cached_tokens == len(prompt_tokens) - 1
+ 
