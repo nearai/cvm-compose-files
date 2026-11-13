@@ -46,6 +46,7 @@ jobs:
         with:
           ref: ${{ inputs.source_revision }}
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Validate tag and source provenance
         env:
@@ -215,9 +216,11 @@ jobs:
           HIGH=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "HIGH")] | length' trivy-results.json)
           CRITICAL=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "CRITICAL")] | length' trivy-results.json)
           SUPPRESSED_CRITICAL=$(jq '[.Results[]?.ExperimentalModifiedFindings[]? | select(.Status == "ignored" and .Finding.Severity == "CRITICAL")] | length' trivy-results.json)
-          echo "TRIVY_HIGH=$HIGH" >> "$GITHUB_ENV"
-          echo "TRIVY_CRITICAL=$CRITICAL" >> "$GITHUB_ENV"
-          echo "TRIVY_SUPPRESSED_CRITICAL=$SUPPRESSED_CRITICAL" >> "$GITHUB_ENV"
+          {
+            echo "TRIVY_HIGH=$HIGH"
+            echo "TRIVY_CRITICAL=$CRITICAL"
+            echo "TRIVY_SUPPRESSED_CRITICAL=$SUPPRESSED_CRITICAL"
+          } >> "$GITHUB_ENV"
           printf 'Trivy fixed-vulnerability findings: high=%s critical=%s suppressed-critical=%s\n' \
             "$HIGH" "$CRITICAL" "$SUPPRESSED_CRITICAL"
 
