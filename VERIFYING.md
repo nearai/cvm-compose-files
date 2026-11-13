@@ -174,8 +174,9 @@ nothing in this repo binds a host to a file. Deviations CI detects in deployable
 | `privacy.secret` | 9 | secret variables with an empty default, or used inside an embedded config |
 | `pins.digest` | 14 | image references with a tag next to the digest, pinned by tag only, or built on the host |
 | `pins.raw-key` | 8 | `build` or `dockerfile_inline` in a deployable (images built on the host, unsigned) |
-| `pins.hf-revision` | 2 | a model loaded without a pinned revision |
-| `pins.remote-code` | 2 | remote code enabled for that model |
+| `pins.hf-revision` | 1 | a model loaded without a pinned revision |
+| `pins.remote-code` | 1 | remote code enabled for that model |
+| `status.key-set` | 1 | a candidate with model downloaders its live file does not have |
 | `pins.url` | 3 | a LoRA adapter fetched from this repo's `main` branch; SHA-256-checked, fails closed |
 | `layout.ext`, `layout.size` | 1 each | the adapter weights file in `adapters/` |
 | `public.domain` | 6 | an internal telemetry endpoint |
