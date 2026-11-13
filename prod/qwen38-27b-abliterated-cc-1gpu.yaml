@@ -991,8 +991,7 @@ configs:
               return 0
               ;;
             28)
-              # /v1/models answers from the HTTP layer, so 2xx means busy, not dead (a 1-token
-              # probe can queue behind long prefills).
+              # /v1/models answers from the HTTP layer, so a 2xx means busy, not down.
               if curl -sf --connect-timeout 5 --max-time 10 \
                 -H "Host: $$chat_host" \
                 -H "Authorization: Bearer $$2" \
