@@ -1,7 +1,10 @@
 ---
 paths:
   - "docs/**"
-  - ".github/SECURITY.md"
+  - ".github/**"
+  - "prod/**"
+  - "docker/**"
+  - "ci/data/**"
 ---
 
 # Public text, docs and SECURITY.md
@@ -23,8 +26,9 @@ Describe the config as it is after the change. Invented examples:
   or when it is fixed. Pass: `docs: describe setting X`. Fail: `rollout of the fix in a later PR`.
 - An upstream commit or public PR may be cited as the source of a patch, described by what it does. Pass:
   `Backport of upstream <sha>: validate input Y.` Fail: a note on its security status.
-- Replies cite the check and `path:line` only. Never quote, restate or ask about a weakness in public.
-  Pass: `blocker | <path>:12 | 7 | wording | state current behaviour`.
+- A reply about a weakness cites `<agent>:<check>` and `path:line` only; never quote, restate or ask
+  about it in public. Other review feedback on config may explain. Pass:
+  `public-reviewer:7 | <path>:12 | state current behaviour`.
 - Do not reword a sentence only to pass CI; remove what it says.
 
 ## Known gaps
@@ -42,12 +46,14 @@ changes to files never deployed, use a normal public PR.
 1. An author who is not a maintainer reports it through .github/SECURITY.md. A maintainer opens a draft
    GitHub security advisory, starts its temporary private fork and adds the author.
 2. Every commit message, code comment and diff written in the fork follows the wording rules above from
-   the first commit, because the commits become public unchanged.
+   the first commit, because the diff and its comments become public.
 3. Actions do not run in the fork: run `python3 ci/run.py --self-test` and `--base origin/main` locally
    and put the output in the private PR. Approvals in the fork are maintainer reviews; CI and the
-   merge approvals run on the public PR.
-4. When the fix is ready to deploy, push the same commits to a public branch with a neutral name and
-   open a public PR described by what the config does now.
+   merge approvals run on the public PR. `main` changes only through the public PR; never use the
+   advisory's own merge button, which bypasses branch protection and required checks.
+4. When the fix is ready to deploy, a maintainer squashes it into one commit on a public branch with a
+   neutral name, authors that commit, and opens a public PR described by what the config does now.
+   The reporter is not named and the fork's commit messages are not published.
 5. A fix that needs a new image follows the normal new-build-dir flow on the public PR; a merged build
    dir or publish workflow is not edited.
 6. Publish the advisory only when people who copy these files have to act; the maintainers decide.

@@ -23,12 +23,12 @@ build sources and model revisions, except where docs/verifying.md lists a known 
 - No other top-level dirs.
 
 ## Area rules
-Read the rule file for a path before you change files under it; Claude Code also loads it by itself.
+Read the rule file for a path before you change files under it; Claude Code loads it for its `paths:`.
 - `prod/`, `ci/templates/`: [.claude/rules/prod.md](.claude/rules/prod.md), names, labels, lifecycle.
 - `docker/`: [.claude/rules/docker.md](.claude/rules/docker.md), build dirs and image tags.
 - `ci/`: [.claude/rules/ci.md](.claude/rules/ci.md), guard code, data files, self-tests.
 - `.github/workflows/`: [.claude/rules/workflows.md](.claude/rules/workflows.md), how a workflow is written.
-- `docs/`, `.github/SECURITY.md`: [.claude/rules/docs.md](.claude/rules/docs.md), public text, known gaps, fixes.
+- Any public text (docs, comments, PR text, replies): [.claude/rules/docs.md](.claude/rules/docs.md), known gaps, fixes.
 - Every review: [.claude/rules/review.md](.claude/rules/review.md). Agents in `.claude/agents/` only
   read and report; the author or reviewer decides.
 
@@ -99,8 +99,9 @@ served-name stability; review checks the rest against the templates.
 ## Comments and docs
 - Comments say why, at most 2 lines in a row. No history, dates, names, hosts, plans, run IDs, PR
   numbers, TODO/FIXME/HACK or commented-out config.
-- No edits inside YAML block scalars (`command: |`, embedded config contents) to change comments;
-  those bytes are config. Comment edits stop at the scalar.
+- Block scalars (`command: |`, embedded config contents) are config bytes: edit only their comment
+  lines, in a `prod:` PR whose rendered diff (`--noop`) shows only comment lines; the PR body notes
+  that the file hash changes.
 - Docs describe what is. No plans, runbooks, rollout or operational-event notes, experiments or live state.
 - Docs never claim more than CI checks. docs/verifying.md lists waivers and limits by design, never a defect.
 

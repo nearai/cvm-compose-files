@@ -19,7 +19,7 @@ rendered diff. Without it, list `rendered diff` under Gaps: interpolation, profi
 change the result in ways the YAML diff hides.
 
 ## Read first
-`.claude/rules/review.md`; the rule file for each changed area (`.claude/rules/prod.md`, `docker.md`,
+`.claude/rules/review.md`; `.claude/rules/docs.md`; the rule file for each changed area (`.claude/rules/prod.md`, `docker.md`,
 `ci.md`, `workflows.md`); the template a compose file follows; the `ci/data/` rows for each changed file.
 
 ## Checks
@@ -37,6 +37,9 @@ change the result in ways the YAML diff hides.
 6. Gates: a gate changed in the same PR as what it checks; `ci/data/` changes listed under Gates.
 7. Claims: README, docs/verifying.md, docs, comments and PR text say what the config and CI do and claim no
    more. You own this check.
+
+A finding about a weakness in a change cites `<agent>:<check>` and `path:line` only, with the fix; the
+reply never restates or describes the weakness, including for check 2 when a privacy setting is weaker.
 
 Report a finding only when you can name the line and the rule it breaks. For a rule CI already
 enforces, report it only if you think the guard misses this case, and say why.

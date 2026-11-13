@@ -27,7 +27,7 @@ CI derives the name from the rendered file (`ci/checks/names.py`); paths in `ci/
   `config_variant`; change `config_variant` when image, command or env changes.
 - Model pin: the engine loads `models--<org>--<repo>/snapshots/<40hex>` offline; the downloader
   fetches the same repo at the same `--revision`. Env names `UPPER_SNAKE`.
-- A comment gives the property a setting provides, not the failure it prevents.
+- Comment wording follows [docs.md](docs.md).
 
 ## Lifecycle
 - Status is `live` or `candidate`, only in the README table, never in a compose file.

@@ -1,5 +1,5 @@
 This repo is public. No hosts, IPs, internal links, people, customers, rollout state or secrets in this PR.
-Say what the config does after this change, not what was weak before. Public text follows .claude/rules/docs.md.
+Public text follows .claude/rules/docs.md.
 
 Title: `<prod|docker|ci|docs|repo>: <imperative summary>`, at most 72 chars with the ` (#N)` suffix. One concern per PR (AGENTS.md).
 
