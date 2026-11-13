@@ -1,0 +1,121 @@
+diff --git a/python/sglang/srt/managers/tokenizer_manager.py b/python/sglang/srt/managers/tokenizer_manager.py
+index 5335d0b..248de67 100644
+--- a/python/sglang/srt/managers/tokenizer_manager.py
++++ b/python/sglang/srt/managers/tokenizer_manager.py
+@@ -1241,6 +1241,13 @@ class TokenizerManager(TokenizerControlMixin, TokenizerManagerScoreMixin):
+             # mismatch we fall back to the internal recompute so a
+             # malformed mm_hashes never blocks a request.
+             caller_mm_hashes = getattr(obj, "mm_hashes", None)
++            if caller_mm_hashes and not get_bool_env_var(
++                "SGLANG_TRUST_CALLER_MM_HASHES"
++            ):
++                # The declared hash becomes the image's prefix-cache identity, so
++                # any caller could reuse KV cached for another request's image.
++                # Only a deployment whose router is trusted opts in.
++                caller_mm_hashes = None
+             if caller_mm_hashes and mm_inputs and mm_inputs.mm_items:
+                 if len(caller_mm_hashes) != len(mm_inputs.mm_items):
+                     logger.warning(
+diff --git a/python/sglang/srt/multimodal/processors/base_processor.py b/python/sglang/srt/multimodal/processors/base_processor.py
+index a41d925..98ffe21 100644
+--- a/python/sglang/srt/multimodal/processors/base_processor.py
++++ b/python/sglang/srt/multimodal/processors/base_processor.py
+@@ -243,6 +243,17 @@ def _forget_parent_executor_wakeups():
+     concurrent.futures.process._threads_wakeups.clear()
+ 
+ 
++def _trust_caller_mm_hashes() -> bool:
++    # A caller's hash becomes the item's prefix-cache identity; see tokenizer_manager.
++    from sglang.srt.utils import get_bool_env_var
++
++    return get_bool_env_var("SGLANG_TRUST_CALLER_MM_HASHES")
++
++
++def _trusted_caller_hash(value):
++    return value if _trust_caller_mm_hashes() else None
++
++
+ class BaseMultimodalProcessor(ABC):
+     models = []
+     gpu_image_decode = True  # Enable GPU decoding by default
+@@ -1715,7 +1726,7 @@ class BaseMultimodalProcessor(ABC):
+ 
+             # adjust hash_value
+             hash_value = get_data_value("hash")
+-            if hash_value is not None:
++            if hash_value is not None and _trust_caller_mm_hashes():
+                 if isinstance(hash_value, torch.Tensor):
+                     hash_value = hash_value.item()
+                 item.hash = int(hash_value)
+@@ -1982,7 +1993,7 @@ class BaseMultimodalProcessor(ABC):
+                         format=MultimodalInputFormat.PRECOMPUTED_EMBEDDING,
+                         offsets=dict_item.pop("offsets", None),
+                         # Trusted media identity for KV trie reuse and KV-event hashes.
+-                        hash=dict_item.pop("hash", None),
++                        hash=_trusted_caller_hash(dict_item.pop("hash", None)),
+                         model_specific_data=dict_item,
+                     )
+                 )
+diff --git a/test/registered/unit/multimodal/test_precomputed_embedding_validation.py b/test/registered/unit/multimodal/test_precomputed_embedding_validation.py
+index c755e15..75150af 100644
+--- a/test/registered/unit/multimodal/test_precomputed_embedding_validation.py
++++ b/test/registered/unit/multimodal/test_precomputed_embedding_validation.py
+@@ -4,8 +4,9 @@ from sglang.test.ci.ci_register import register_cpu_ci
+ 
+ register_cpu_ci(est_time=9, suite="base-a-test-cpu")
+ 
++import os
+ import unittest
+-from unittest.mock import Mock
++from unittest.mock import Mock, patch
+ 
+ import torch
+ 
+@@ -47,13 +48,7 @@ class TestPrecomputedEmbeddingValidation(unittest.TestCase):
+         )
+         return self.processor.get_validated_mm_data([], embeddings)
+ 
+-    def test_precomputed_input_preserves_caller_hash_and_offsets(self):
+-        payload = {
+-            "format": "precomputed_embedding",
+-            "feature": torch.zeros(2, 4),
+-            "offsets": [(1, 2)],
+-            "hash": 123,
+-        }
++    def _precomputed_items(self, payload):
+         self.processor.use_cuda_ipc = False
+         self.processor._resolve_processor = Mock(return_value=(None, None))
+         items, _, _ = self.processor.process_and_combine_mm_data(
+@@ -62,9 +57,32 @@ class TestPrecomputedEmbeddingValidation(unittest.TestCase):
+             ),
+             None,
+         )
++        return items
++
++    def _payload(self):
++        return {
++            "format": "precomputed_embedding",
++            "feature": torch.zeros(2, 4),
++            "offsets": [(1, 2)],
++            "hash": 123,
++        }
++
++    def test_precomputed_input_preserves_caller_hash_and_offsets(self):
++        payload = self._payload()
++        with patch.dict(os.environ, {"SGLANG_TRUST_CALLER_MM_HASHES": "1"}):
++            items = self._precomputed_items(payload)
+         self.assertEqual(items[0].hash, payload["hash"])
+         self.assertEqual(items[0].offsets, payload["offsets"])
+ 
++    def test_precomputed_input_ignores_caller_hash_by_default(self):
++        payload = self._payload()
++        with patch.dict(os.environ):
++            os.environ.pop("SGLANG_TRUST_CALLER_MM_HASHES", None)
++            items = self._precomputed_items(payload)
++        self.assertNotEqual(items[0].hash, payload["hash"])
++        self.assertNotIn("hash", items[0].model_specific_data)
++        self.assertEqual(items[0].offsets, payload["offsets"])
++
+     def test_accepts_exact_multi_item_layout(self):
+         image_embedding = torch.zeros(5, 4)
+         audio_embedding = torch.zeros(2, 4)

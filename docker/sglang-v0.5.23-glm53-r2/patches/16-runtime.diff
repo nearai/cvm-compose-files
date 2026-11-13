@@ -1,0 +1,880 @@
+diff --git a/python/sglang/srt/mem_cache/hybrid_cache/hybrid_pool_assembler.py b/python/sglang/srt/mem_cache/hybrid_cache/hybrid_pool_assembler.py
+index a1fbf8d42e..a1e6cbf43f 100644
+--- a/python/sglang/srt/mem_cache/hybrid_cache/hybrid_pool_assembler.py
++++ b/python/sglang/srt/mem_cache/hybrid_cache/hybrid_pool_assembler.py
+@@ -40,6 +40,7 @@ from sglang.srt.mem_cache.pool_host.page_interleave import (
+ from sglang.srt.mem_cache.pool_host.qsa import QSAIndexerPoolHost
+ from sglang.srt.mem_cache.pool_host.unified import UnifiedPageEnvelopeHostPool
+ from sglang.srt.mem_cache.unified_cache.component_type import ComponentType
++from sglang.srt.mem_cache.startup_ram_budget import startup_ram_budget
+ from sglang.srt.runtime_context import get_memory, get_parallel, get_serving
+ from sglang.srt.utils import is_npu
+ 
+@@ -1275,6 +1276,32 @@ def build_mamba_host_pool(
+     )
+ 
+ 
++def _kv_share_of_layout_followers(root, followers) -> float:
++    """KV fraction of the per-token host bytes shared with layout followers.
++
++    Declared followers (e.g. the DSA indexer) take the KV host pool's token
++    capacity, so the KV share of --hicache-size (or SGLANG_HICACHE_RAM_BUDGET)
++    must also pay for them instead of adding a second, unbudgeted allocation.
++    """
++    kv_pool = root.decl.device_pool
++    kv_bytes = (
++        kv_pool.kv_cache_dim
++        * kv_pool.store_dtype.itemsize
++        * (kv_pool.layer_num + len(root.packed_draft_device_pools))
++    )
++    follower_bytes = 0
++    for pool_config in followers:
++        decl = pool_config.decl
++        if decl.storage_info is None or decl.layout_source != root.decl.pool_name:
++            continue
++        owned = decl.owned_device_layers
++        layers = decl.device_pool.layer_num if owned is None else len(owned)
++        follower_bytes += decl.storage_info.bytes_per_token_per_layer * (
++            layers + len(pool_config.packed_draft_device_pools)
++        )
++    return kv_bytes / (kv_bytes + follower_bytes)
++
++
+ def build_hybrid_mamba_stack(
+     *,
+     params: CacheInitParams,
+@@ -1328,6 +1355,8 @@ def build_hybrid_mamba_stack(
+             for b in pool.qsa_compressed_k_buffer_pool
+         )
+         kv_host_size *= kv_bytes / (kv_bytes + index_bytes)
++    elif kv_host_size is not None and use_mla:
++        kv_host_size *= _kv_share_of_layout_followers(root, config.pools[1:])
+     kv_host_pool = build_kv_host_pool(
+         kv_pool=kv_pool,
+         page_size=params.page_size,
+@@ -2537,18 +2566,19 @@ def attach_hybrid_pool_to_unified_cache(
+         kvcache = params.token_to_kv_pool_allocator.get_kvcache()
+         components = set(cache.components.keys())
+         strategy = _select_strategy(kvcache, components)
+-        result = strategy.build(
+-            cache=cache,
+-            kvcache=kvcache,
+-            params=params,
+-            server_args=server_args,
+-            load_cache_event=load_cache_event,
+-            storage_backend=storage_backend,
+-            storage_backend_extra_config=storage_extra_config,
+-            prefetch_threshold=storage_prefetch_threshold,
+-            model_name=get_serving().served_model_name,
+-            enable_storage_metrics=cache._enable_metrics_flag,
+-        )
++        with startup_ram_budget(supported=isinstance(strategy, _MambaStrategy)):
++            result = strategy.build(
++                cache=cache,
++                kvcache=kvcache,
++                params=params,
++                server_args=server_args,
++                load_cache_event=load_cache_event,
++                storage_backend=storage_backend,
++                storage_backend_extra_config=storage_extra_config,
++                prefetch_threshold=storage_prefetch_threshold,
++                model_name=get_serving().served_model_name,
++                enable_storage_metrics=cache._enable_metrics_flag,
++            )
+         _check_declared_pools_present(kvcache=kvcache, result=result, strategy=strategy)
+         _apply_stack_result(cache, kvcache, params, result)
+     except Exception:
+diff --git a/python/sglang/srt/mem_cache/l2_transfer.py b/python/sglang/srt/mem_cache/l2_transfer.py
+index 82f67bc86b..e28b2ce798 100644
+--- a/python/sglang/srt/mem_cache/l2_transfer.py
++++ b/python/sglang/srt/mem_cache/l2_transfer.py
+@@ -1,6 +1,7 @@
+ from __future__ import annotations
+ 
+ import logging
++import os
+ from contextlib import contextmanager
+ from functools import cache
+ from typing import Any, Callable, NamedTuple, Optional
+@@ -13,6 +14,8 @@ from sglang.srt.utils import get_device_module
+ 
+ logger = logging.getLogger(__name__)
+ device_module = get_device_module()
++# NEAR opt-in: pooled page-first DMA for MLA/DSA KV with the direct backend.
++_POOLED_L2_ENABLED = os.environ.get("SGLANG_HICACHE_POOLED_TRANSFERS") == "1"
+ 
+ 
+ @cache
+@@ -54,6 +57,11 @@ class L2TransferEngine:
+ 
+     def __init__(self, io_backend: str):
+         self.io_backend = io_backend
++        self._pooled_io = None
++        if _POOLED_L2_ENABLED:
++            from sglang.srt.mem_cache.pooled_l2 import PooledL2
++
++            self._pooled_io = PooledL2(io_backend)
+         self.device_to_host_stream = device_module.Stream()
+         self.host_to_device_stream = device_module.Stream()
+ 
+@@ -134,6 +142,8 @@ class L2TransferEngine:
+             transfers, self.device_to_host_stream, "device_to_host"
+         ) as (transfers, completion):
+             for transfer in transfers:
++                if self._pooled_io is not None and self._pooled_io.backup(transfer):
++                    continue
+                 transfer.host_pool.backup_from_device_all_layer_physical(
+                     transfer.device_pool,
+                     transfer.host_indices,
+@@ -154,11 +164,18 @@ class L2TransferEngine:
+             transfers, self.host_to_device_stream, "host_to_device", start_event
+         ) as (transfers, completion):
+             primary = transfers[0] if transfers else None
++            preloaded = (
++                self._pooled_io.prepare_restore(transfers, transfer_layer_id_max)
++                if self._pooled_io is not None
++                else ()
++            )
+             delay_cycles = envs.SGLANG_TEST_HICACHE_H2D_DELAY_CYCLES.get()
+             for layer_id in range(transfer_layer_id_max):
+                 if delay_cycles:
+                     torch.cuda._sleep(delay_cycles)
+-                for transfer in transfers:
++                for transfer_index, transfer in enumerate(transfers):
++                    if transfer_index in preloaded:
++                        continue
+                     local_layer_id = (
+                         transfer.layer_mapper(layer_id)
+                         if transfer.layer_mapper is not None
+diff --git a/python/sglang/srt/mem_cache/pool_host/base.py b/python/sglang/srt/mem_cache/pool_host/base.py
+index 65c9297af5..9b0bfc27ce 100644
+--- a/python/sglang/srt/mem_cache/pool_host/base.py
++++ b/python/sglang/srt/mem_cache/pool_host/base.py
+@@ -12,6 +12,7 @@ from typing import Optional, TypeGuard
+ import torch
+ 
+ from sglang.srt.mem_cache.host_memory import available_host_memory_bytes
++from sglang.srt.mem_cache.startup_ram_budget import active_budget, host_page_count
+ from sglang.srt.mem_cache.pool_host.common import (
+     _cuda_host_unregister,
+     get_allocator_from_storage,
+@@ -95,6 +96,15 @@ def host_memory_budget_bytes(
+     Inside host_memory_budget_scope, requested_bytes is booked against the
+     snapshot when it fits; the allowance before booking is returned.
+     """
++    # NEAR opt-in SGLANG_HICACHE_RAM_BUDGET: one startup budget shared by all
++    # pools of this rank. Book the request when it fits, like the scope below.
++    budget = active_budget()
++    if budget is not None:
++        available = budget.remaining_bytes
++        if 0 <= requested_bytes <= available:
++            budget.claim(requested_bytes)
++        return available
++
+     available = _host_memory_budget.get()
+     if available is not None:
+         if requested_bytes <= available:
+@@ -225,7 +235,8 @@ class HostKVCache(abc.ABC):
+             else:
+                 self.size = int(device_capacity_tokens * host_to_device_ratio)
+             # Reserve the padding page only when sizing an independent pool.
+-            self.page_num = self.size // self.page_size + 1
++            # (Under SGLANG_HICACHE_RAM_BUDGET, round down to stay in budget.)
++            self.page_num = host_page_count(self.size, self.page_size)
+             self.size = self.page_num * self.page_size
+         self.start_layer = start_layer
+         self.end_layer = end_layer
+diff --git a/python/sglang/srt/mem_cache/pool_host/mamba.py b/python/sglang/srt/mem_cache/pool_host/mamba.py
+index a54460a976..f3006e7c2b 100644
+--- a/python/sglang/srt/mem_cache/pool_host/mamba.py
++++ b/python/sglang/srt/mem_cache/pool_host/mamba.py
+@@ -19,6 +19,7 @@ from sglang.srt.mem_cache.pool_host.common import (
+     ALLOC_MEMORY_FUNCS,
+     get_allocator_from_storage,
+ )
++from sglang.srt.mem_cache.startup_ram_budget import host_page_count
+ from sglang.srt.utils import is_cuda, is_hip, is_npu, is_xpu
+ 
+ _is_cuda = is_cuda()
+@@ -170,7 +171,7 @@ class MambaPoolHost(HostKVCache):
+         else:
+             self.size = int(device_capacity * host_to_device_ratio)
+ 
+-        self.page_num = self.size // self.page_size + 1
++        self.page_num = host_page_count(self.size, self.page_size)
+         self.size = self.page_num * self.page_size
+ 
+         if self.size <= device_capacity:
+diff --git a/python/sglang/srt/mem_cache/pooled_l2.py b/python/sglang/srt/mem_cache/pooled_l2.py
+new file mode 100644
+index 0000000000..80a28d8daf
+--- /dev/null
++++ b/python/sglang/srt/mem_cache/pooled_l2.py
+@@ -0,0 +1,156 @@
++"""Opt-in rank-local pooled transfers for the GLM TP HiCache.
++
++DSA KV (including compatible packed MTP) uses byte-preserving
++gather/DMA/scatter through a persistent device staging buffer. Every other
++pool (DSA indexer, recurrent state, draft sidecars) keeps the upstream
++per-layer path. All ranks independently apply the same transfer plan; no
++cross-rank ownership.
++
++Port to v0.5.23: the host pools are built from device buffer infos, so the
++MLA host pool owns its device buffers (``device_kv_buffers``, host-layer
++order, packed MTP draft layers last) and the engine hands over resolved
++physical indices. The fork's recurrent-state duplicate-read GPU clone and the
++compressed-index pooled path are not carried (upstream state pools now also
++restore side-state buffers, and the indexer has its own host pool type).
++"""
++
++import logging
++import os
++
++import torch
++from sgl_kernel.kvcacheio import transfer_kv_direct  # noqa: F401  (CUDA build check)
++
++from sglang.srt.mem_cache.pool_host.mla import MLATokenToKVPoolHost
++from sglang.srt.mem_cache.pooled_pages import PooledPages
++
++logger = logging.getLogger(__name__)
++
++
++class PooledL2:
++    def __init__(self, io_backend):
++        if io_backend != "direct":
++            raise ValueError(
++                "SGLANG_HICACHE_POOLED_TRANSFERS=1 requires --hicache-io-backend direct"
++            )
++        if not torch.cuda.is_available() or torch.version.hip is not None:
++            raise ValueError("SGLANG_HICACHE_POOLED_TRANSFERS=1 requires NVIDIA CUDA")
++        self.backup_enabled = self.restore_enabled = True
++        self.pages = int(os.environ.get("SGLANG_HICACHE_STAGING_PAGES", "64"))
++        if not 1 <= self.pages <= 128:
++            raise ValueError("SGLANG_HICACHE_STAGING_PAGES must be in [1, 128]")
++        self.staging = {}
++        self.logged = set()
++
++    def _log_once(self, name):
++        if name not in self.logged:
++            logger.info("Pooled L2 transfer executed: %s", name)
++            self.logged.add(name)
++
++    @staticmethod
++    def _buffers(t):
++        """Device buffers in host-layer order, or None to use the upstream path."""
++        h = t.host_pool
++        if type(h) is not MLATokenToKVPoolHost:
++            return None
++        if (
++            getattr(h, "_is_dummy", False)
++            or h.layout != "page_first_direct"
++            or getattr(h, "dcp_size", 1) != 1
++            or getattr(h, "_layer_shard_enabled", False)
++            or getattr(h, "_native_buffers", None) is not None
++            or not h.device_rows_packed
++        ):
++            return None
++        if t.host_indices.device.type != "cpu" or t.device_indices.device.type != "cpu":
++            return None
++        if t.host_indices.dtype != torch.int64 or t.device_indices.dtype != torch.int64:
++            return None
++        buffers = tuple(h.device_kv_buffers)
++        if len(buffers) != h.layer_num:
++            return None
++        row_bytes = h.kv_cache_dim * h.dtype.itemsize
++        if any(
++            not b.is_cuda
++            or not b.is_contiguous()
++            or b.shape[0] % h.page_size
++            or b[0].nbytes != row_bytes
++            for b in buffers
++        ):
++            return None
++        if len({b.device for b in buffers}) != 1:
++            return None
++        if not h.kv_buffer.is_contiguous() or h.kv_buffer.shape[1] != h.layer_num:
++            return None
++        return buffers
++
++    def _stage(self, t, buffers, direction):
++        key = (id(t.host_pool), direction)
++        if key not in self.staging:
++            self.staging[key] = PooledPages(
++                list(buffers),
++                t.host_pool.kv_buffer,
++                tokens_per_page=t.host_pool.page_size,
++                staging_pages=self.pages,
++            )
++        return self.staging[key]
++
++    def backup(self, t):
++        """Back up every host layer (target + packed MTP) of one transfer."""
++        if not self.backup_enabled:
++            return False
++        buffers = self._buffers(t)
++        if buffers is None:
++            return False
++        self._stage(t, buffers, "D2H").transfer(
++            t.host_indices, t.device_indices, restore=False
++        )
++        self._log_once(type(t.host_pool).__name__ + "-pooled-D2H")
++        return True
++
++    def prepare_restore(self, transfers, transfer_layer_id_max):
++        """Restore complete packed pools up front; return the skipped indices.
++
++        Packed MTP uses extra L2Transfers for the same host pool and indices:
++        target layers map to their model positions, draft layers map to early
++        draft-consumer positions. Restore the complete packed pool once, before
++        either consumer, and only then skip every descriptor of that pool.
++        """
++        preloaded = set()
++        if not self.restore_enabled:
++            return preloaded
++        for i, t in enumerate(transfers):
++            if i in preloaded:
++                continue
++            buffers = self._buffers(t)
++            if buffers is None:
++                continue
++            h = t.host_pool
++            group = [
++                j
++                for j, other in enumerate(transfers)
++                if other.host_pool is h
++                and torch.equal(other.host_indices, t.host_indices)
++                and torch.equal(other.device_indices, t.device_indices)
++            ]
++            covered = []
++            for j in group:
++                other = transfers[j]
++                for n in range(transfer_layer_id_max):
++                    local = (
++                        other.layer_mapper(n) if other.layer_mapper is not None else n
++                    )
++                    if local is None:
++                        continue
++                    if not other.is_draft and local not in h._target_layer_indices:
++                        continue  # The upstream path skips these too.
++                    covered.append(h._host_layer_by_controller.get(local))
++            if sorted(covered, key=lambda x: -1 if x is None else x) != list(
++                range(h.layer_num)
++            ):
++                continue
++            self._stage(t, buffers, "H2D").transfer(
++                t.host_indices, t.device_indices, restore=True
++            )
++            preloaded.update(group)
++            self._log_once(type(h).__name__ + "-pooled-H2D")
++        return preloaded
+diff --git a/python/sglang/srt/mem_cache/pooled_pages.py b/python/sglang/srt/mem_cache/pooled_pages.py
+new file mode 100644
+index 0000000000..ee3bed21c8
+--- /dev/null
++++ b/python/sglang/srt/mem_cache/pooled_pages.py
+@@ -0,0 +1,156 @@
++"""Rank-local, byte-preserving staging for page-first HiCache DMA.
++
++A separate persistent allocation per direction belongs to the L2 engine's
++single stream for that direction. CPU data is touched only by CUDA copies;
++Triton kernels gather/scatter device memory. This module owns no cache slots.
++"""
++
++import torch
++import triton
++import triton.language as tl
++from sgl_kernel.kvcacheio import transfer_kv_direct
++
++try:  # Added by the HCC managed-memory allocator patch.
++    from sglang.srt.mem_cache.pool_host.common import (
++        _cuda_managed_prefetch_pages_to_host,
++    )
++except ImportError:  # pragma: no cover - allocator patch absent
++
++    def _cuda_managed_prefetch_pages_to_host(*_args, **_kwargs):
++        return None
++
++
++
++@triton.jit
++def _pages_kernel(
++    ptrs,
++    pages,
++    staging,
++    ROW: tl.constexpr,
++    LAYERS: tl.constexpr,
++    BLOCK: tl.constexpr,
++    RESTORE: tl.constexpr,
++):
++    item = tl.program_id(0)
++    page = item // LAYERS
++    layer = item % LAYERS
++    offset = tl.program_id(1) * BLOCK + tl.arange(0, BLOCK)
++    device_page = tl.load(pages + page)
++    base = tl.load(ptrs + layer).to(tl.pointer_type(tl.uint8))
++    device_ptr = base + device_page.to(tl.int64) * ROW + offset
++    staging_ptr = staging + item.to(tl.int64) * ROW + offset
++    if RESTORE:
++        data = tl.load(staging_ptr, offset < ROW, 0)
++        tl.store(device_ptr, data, offset < ROW)
++    else:
++        data = tl.load(device_ptr, offset < ROW, 0)
++        tl.store(staging_ptr, data, offset < ROW)
++
++
++class PooledPages:
++    def __init__(self, buffers, host, *, tokens_per_page, staging_pages=64):
++        assert buffers and 1 <= staging_pages <= 128
++        assert host.device.type == "cpu" and host.is_contiguous()
++        assert all(b.is_cuda and b.is_contiguous() for b in buffers)
++        assert len({b.device for b in buffers}) == 1
++        self.layers = len(buffers)
++        assert host.shape[1] == self.layers
++        self.host = host.view(torch.uint8).view(host.shape[0], self.layers, -1)
++        self.row_bytes = self.host.shape[2]
++        assert all(b.nbytes % self.row_bytes == 0 for b in buffers)
++        self.device_page_count = min(b.nbytes // self.row_bytes for b in buffers)
++        self.device = buffers[0].device
++        self.buffers = buffers
++        # Keep the original tensor because torch views do not preserve the
++        # managed-allocation owner attribute used by the HCC allocator.
++        self.host_allocation = host
++        self.ptrs = torch.tensor(
++            [b.data_ptr() for b in buffers], dtype=torch.uint64, device=self.device
++        )
++        self.staging = torch.empty(
++            (staging_pages, self.layers, self.row_bytes),
++            dtype=torch.uint8,
++            device=self.device,
++        )
++        self.capacity = staging_pages
++        self.tokens_per_page = tokens_per_page
++        self.local_pages = torch.arange(staging_pages, dtype=torch.int64)
++        self.calls = self.bytes = self.pages = 0
++
++    def _indices(self, host_indices, device_indices, restore):
++        p = self.tokens_per_page
++        assert host_indices.device.type == device_indices.device.type == "cpu"
++        assert host_indices.dtype == device_indices.dtype == torch.int64
++        assert host_indices.numel() == device_indices.numel()
++        assert host_indices.numel() % p == 0
++        result = []
++        offsets = torch.arange(p, dtype=torch.int64)
++        for indices, limit in (
++            (host_indices, self.host.shape[0]),
++            (device_indices, self.device_page_count),
++        ):
++            blocks = indices.reshape(-1, p)
++            starts = blocks[:, 0]
++            assert bool((starts % p == 0).all())
++            assert torch.equal(blocks, starts[:, None] + offsets)
++            pages = starts // p
++            if pages.numel():
++                assert int(pages.min()) >= 0 and int(pages.max()) < limit
++            result.append(pages)
++        destination = result[1 if restore else 0]
++        assert destination.unique().numel() == destination.numel(), (
++            "overlapping DMA destinations"
++        )
++        return result
++
++    def transfer(self, host_indices, device_indices, *, restore):
++        host_pages, device_pages = self._indices(host_indices, device_indices, restore)
++        if not host_pages.numel():
++            return
++        gpu_pages = device_pages.to(self.device, non_blocking=True)
++        for start in range(0, len(host_pages), self.capacity):
++            count = min(self.capacity, len(host_pages) - start)
++            local = self.local_pages[:count]
++            selected_host = host_pages[start : start + count]
++            grid = (count * self.layers, triton.cdiv(self.row_bytes, 1024))
++            if restore:
++                transfer_kv_direct(
++                    src_layers=[self.host],
++                    dst_layers=[self.staging],
++                    src_indices=selected_host,
++                    dst_indices=local,
++                    page_size=1,
++                )
++            _pages_kernel[grid](
++                self.ptrs,
++                gpu_pages[start : start + count],
++                self.staging,
++                self.row_bytes,
++                self.layers,
++                1024,
++                restore,
++            )
++            if not restore:
++                transfer_kv_direct(
++                    src_layers=[self.staging],
++                    dst_layers=[self.host],
++                    src_indices=local,
++                    dst_indices=selected_host,
++                    page_size=1,
++                )
++            # GPU access to cudaMallocManaged memory can migrate dirtied/read
++            # host pages into HBM even with a CPU preferred-location hint.
++            # Enqueue the return migration after this chunk's final consumer
++            # on the same stream, coalescing adjacent page ranges in common.py.
++            _cuda_managed_prefetch_pages_to_host(
++                self.host_allocation,
++                selected_host,
++                self.layers * self.row_bytes,
++                torch.cuda.current_stream(self.device),
++            )
++        self.calls += 1
++        self.pages += len(host_pages)
++        self.bytes += len(host_pages) * self.layers * self.row_bytes
++        self.staging.record_stream(torch.cuda.current_stream(self.device))
++        self.ptrs.record_stream(torch.cuda.current_stream(self.device))
++        gpu_pages.record_stream(torch.cuda.current_stream(self.device))
+diff --git a/python/sglang/srt/mem_cache/startup_ram_budget.py b/python/sglang/srt/mem_cache/startup_ram_budget.py
+new file mode 100644
+index 0000000000..50d586af64
+--- /dev/null
++++ b/python/sglang/srt/mem_cache/startup_ram_budget.py
+@@ -0,0 +1,233 @@
++"""One startup RAM budget for a single-node TP hybrid HiCache replica.
++
++This downstream opt-in sizes existing fixed pools; it does not resize them at
++runtime. All ranks rendezvous after model loading and before host allocation.
++"""
++
++from __future__ import annotations
++
++import logging
++import os
++import re
++from contextlib import contextmanager
++from contextvars import ContextVar
++from dataclasses import dataclass
++from decimal import Decimal
++from pathlib import Path, PurePosixPath
++
++ENV = "SGLANG_HICACHE_RAM_BUDGET"
++RESERVE_BYTES = 10 * 1024**3
++logger = logging.getLogger(__name__)
++_active: ContextVar[RankBudget | None] = ContextVar("hicache_ram_budget", default=None)
++
++
++def parse_budget(value: str) -> tuple[str, Decimal]:
++    match = re.fullmatch(r"([0-9]+(?:\.[0-9]+)?)(%|GB|GiB)", value)
++    if match is None:
++        raise ValueError(f"{ENV} must be a percentage, GB or GiB (e.g. 80% or 256GiB)")
++    amount, unit = Decimal(match[1]), match[2]
++    if amount <= 0 or (unit == "%" and amount >= 100):
++        raise ValueError(f"{ENV} must be positive; percentages must be below 100%")
++    return unit, amount
++
++
++def _unescape_mount(value: str) -> str:
++    return re.sub(r"\\([0-7]{3})", lambda m: chr(int(m[1], 8)), value)
++
++
++def cgroup_headrooms(proc: Path = Path("/proc")) -> list[int]:
++    """Read hard memory headroom at every visible ancestor, v2 or v1.
++
++    Resolve both namespaced and host cgroup mounts. Do not count swap or assume
++    page cache is reclaimable. Hidden ancestors cannot be inspected: the CVM's
++    MemAvailable remains an independent cap. Fail on unreadable active limits.
++    """
++    groups = {}
++    for line in (proc / "self/cgroup").read_text().splitlines():
++        _, controllers, path = line.split(":", 2)
++        if controllers == "":
++            groups["cgroup2"] = path
++        elif "memory" in controllers.split(","):
++            groups["cgroup"] = path
++    if not groups:
++        return []
++    headrooms, found = [], False
++    for line in (proc / "self/mountinfo").read_text().splitlines():
++        fields, tail = line.split(" - ", 1)
++        fields, tail = fields.split(), tail.split()
++        kind = tail[0]
++        if kind not in groups or (
++            kind == "cgroup" and "memory" not in tail[2].split(",")
++        ):
++            continue
++        root = PurePosixPath(_unescape_mount(fields[3]))
++        mount = Path(_unescape_mount(fields[4]))
++        membership = PurePosixPath(groups[kind])
++        if ".." in membership.parts:
++            raise ValueError("Cannot resolve cgroup memory path containing '..'")
++        try:
++            relative = membership.relative_to(root)
++        except ValueError:
++            continue
++        directory = mount / str(relative)
++        found = True
++        while True:
++            limit_file = "memory.max" if kind == "cgroup2" else "memory.limit_in_bytes"
++            usage_file = (
++                "memory.current" if kind == "cgroup2" else "memory.usage_in_bytes"
++            )
++            # A v2 root or ancestor without the memory controller has no files.
++            # Any existing pair must be readable and valid; never ignore errors.
++            limit_path = directory / limit_file
++            if limit_path.exists():
++                raw = limit_path.read_text().strip()
++                if raw != "max":
++                    limit = int(raw)
++                    usage = int((directory / usage_file).read_text().strip())
++                    if limit < 0 or usage < 0:
++                        raise ValueError("Negative cgroup memory counter")
++                    headrooms.append(max(0, limit - usage))
++            elif (
++                kind == "cgroup"
++                or directory == mount / str(relative)
++                and directory != mount
++            ):
++                raise ValueError(f"Missing cgroup memory controller at {directory}")
++            if directory == mount:
++                break
++            directory = directory.parent
++    if not found:
++        raise ValueError("Cannot locate the process cgroup memory mount")
++    return headrooms
++
++
++def available_ram_bytes() -> int:
++    import psutil
++
++    return max(
++        0, min(psutil.virtual_memory().available, *cgroup_headrooms(), float("inf"))
++    )
++
++
++@dataclass
++class RankBudget:
++    total_bytes: int
++    ranks: int
++    used_bytes: int = 0
++
++    @property
++    def rank_bytes(self) -> int:
++        return self.total_bytes // self.ranks
++
++    @property
++    def remaining_bytes(self) -> int:
++        return self.rank_bytes - self.used_bytes
++
++    def claim(self, requested_bytes: int) -> None:
++        if requested_bytes < 0 or requested_bytes > self.remaining_bytes:
++            raise ValueError("HiCache pools exceed the shared startup RAM budget")
++        self.used_bytes += requested_bytes
++
++
++def resolve_budget(records: list[dict]) -> RankBudget:
++    """All ranks resolve the same cap or fail together before allocating."""
++    errors = [record["error"] for record in records if record["error"]]
++    if errors:
++        raise ValueError(f"HiCache startup RAM sizing failed: {errors}")
++    configs = {record["config"] for record in records}
++    if len(configs) != 1:
++        raise ValueError(f"{ENV} differs across TP ranks")
++    unit, amount = parse_budget(configs.pop())
++    available = min(record["available_bytes"] for record in records)
++    safe = max(0, available - RESERVE_BYTES)
++    if unit == "%":
++        total = min(int(Decimal(available) * amount / 100), safe)
++    else:
++        total = int(amount * (10**9 if unit == "GB" else 1024**3))
++        if total > safe:
++            raise ValueError(f"{ENV} exceeds available RAM minus the 10 GiB reserve")
++    if total // len(records) <= 0:
++        raise ValueError("No RAM available for HiCache after the 10 GiB reserve")
++    return RankBudget(total, len(records))
++
++
++def active_budget() -> RankBudget | None:
++    return _active.get()
++
++
++def reserve_startup_bytes(requested_bytes: int) -> None:
++    if (budget := active_budget()) is not None:
++        budget.claim(requested_bytes)
++
++
++def host_page_count(tokens: int, page_size: int) -> int:
++    if active_budget() is None:
++        return tokens // page_size + 1  # Preserve upstream behavior without opt-in.
++    pages = tokens // page_size  # Never exceed the budget through page rounding.
++    if pages < 1:
++        raise ValueError("HiCache RAM budget is too small for one page/state per pool")
++    return pages
++
++
++@contextmanager
++def startup_ram_budget(*, supported: bool):
++    config = os.environ.get(ENV)
++    if config is None:
++        yield
++        return
++
++    import torch.distributed as dist
++
++    from sglang.srt.distributed.parallel_state import get_world_group
++    from sglang.srt.runtime_context import get_context, get_memory, get_parallel
++
++    world = get_world_group()
++    parallel = get_parallel()
++    # The supported deployment is one TP replica in one CVM. A world group
++    # must not mix independent DP replicas or machines with different RAM.
++    group = world.cpu_group
++    dist.barrier(group=group)
++    record = {"config": config, "available_bytes": 0, "error": None}
++    try:
++        parse_budget(config)
++        if (
++            not supported
++            or parallel.nnodes != 1
++            or world.world_size != parallel.tp_size
++        ):
++            raise ValueError(
++                "RAM budget supports a single-node TP hybrid KV+Mamba stack only"
++            )
++        if parallel.pp_size != 1 or parallel.dp_size != 1 or parallel.dcp_enabled:
++            raise ValueError("RAM budget does not support PP, DP or DCP")
++        if get_memory().hicache_size > 0:
++            raise ValueError(f"Use {ENV} OR --hicache-size, not both")
++        if get_memory().hicache_storage_backend is not None:
++            raise ValueError("RAM budget currently supports in-CVM host RAM only")
++        record["available_bytes"] = available_ram_bytes()
++    except Exception as exc:
++        record["error"] = str(exc)
++    records = [None] * world.world_size
++    dist.all_gather_object(records, record, group=group)
++    budget = resolve_budget(records)
++    get_context().override(source=ENV, hicache_size=budget.rank_bytes / 1e9)
++    logger.info(
++        "HiCache startup RAM: config=%s available_bytes=%d total_budget_bytes=%d "
++        "ranks=%d rank_budget_bytes=%d reserve_bytes=%d",
++        config,
++        min(r["available_bytes"] for r in records),
++        budget.total_bytes,
++        budget.ranks,
++        budget.rank_bytes,
++        RESERVE_BYTES,
++    )
++    token = _active.set(budget)
++    try:
++        yield budget
++        logger.info(
++            "HiCache startup RAM allocated: rank_pool_bytes=%d rank_budget_bytes=%d",
++            budget.used_bytes,
++            budget.rank_bytes,
++        )
++    finally:
++        _active.reset(token)
+diff --git a/python/sglang/srt/speculative/base_spec_worker.py b/python/sglang/srt/speculative/base_spec_worker.py
+index 01fff70e34..0a2fefb24d 100644
+--- a/python/sglang/srt/speculative/base_spec_worker.py
++++ b/python/sglang/srt/speculative/base_spec_worker.py
+@@ -55,6 +55,39 @@ def _can_pack_hicache_mtp(
+     return is_nextn_mtp or is_dspark_dsv4
+ 
+ 
++def _hicache_mla_rows_match(target_pool, draft_pools) -> bool:
++    from sglang.srt.mem_cache.memory_pool import (
++        HybridLinearKVPool,
++        MLATokenToKVPool,
++        MLATokenToKVPoolFP4,
++    )
++
++    def unwrap(pool):
++        return pool.full_kv_pool if isinstance(pool, HybridLinearKVPool) else pool
++
++    if target_pool is None:
++        # No target pool to compare (e.g. runner doubles): keep upstream's packing.
++        return True
++    target_pool = unwrap(target_pool)
++    draft_pools = tuple(map(unwrap, draft_pools))
++    if any(
++        isinstance(pool, MLATokenToKVPoolFP4) for pool in (target_pool, *draft_pools)
++    ):
++        raise NotImplementedError(
++            "HiCache does not support FP4 MLA KV rows and their separate scale buffers."
++        )
++    if not isinstance(target_pool, MLATokenToKVPool):
++        return True
++    # Packed MLA host layers share one element type and row stride. Separate
++    # draft KV precision can change both, even for the model's own MTP layer.
++    return all(
++        isinstance(pool, MLATokenToKVPool)
++        and pool.store_dtype == target_pool.store_dtype
++        and pool.kv_cache_dim == target_pool.kv_cache_dim
++        for pool in draft_pools
++    )
++
++
+ class EagleDraftWorkerBase(ABC):
+     # topk=1 chain constants for draft_forward's fast path; None when topk > 1.
+     _topk1_parents_prealloc: Optional[torch.Tensor] = None
+@@ -301,32 +334,43 @@ class BaseSpecWorker(ABC):
+                 mode=HiCacheDraftMode.FUSED, device_pools=draft_pools
+             )
+         if _can_pack_hicache_mtp(spec_algorithm, draft_runners):
+-            target_model_runner.mtp_draft_device_pools = draft_pools
+-            target_mamba_pool = getattr(
+-                target_model_runner.req_to_token_pool, "mamba_pool", None
+-            )
+-            draft_mamba_pools = tuple(
+-                getattr(runner.req_to_token_pool, "mamba_pool", None)
+-                for runner in draft_runners
+-            )
+-            # Shared state is already backed up with the target. Separate
+-            # draft state follows the target's Mamba slot indices.
+-            if any(
+-                pool is not None and pool is not target_mamba_pool
+-                for pool in draft_mamba_pools
++            if _hicache_mla_rows_match(
++                getattr(target_model_runner, "token_to_kv_pool", None), draft_pools
+             ):
+-                assert target_mamba_pool is not None, (
+-                    "Packed draft state requires target Mamba slot indices"
++                target_model_runner.mtp_draft_device_pools = draft_pools
++                target_mamba_pool = getattr(
++                    target_model_runner.req_to_token_pool, "mamba_pool", None
+                 )
+-                assert all(
++                draft_mamba_pools = tuple(
++                    getattr(runner.req_to_token_pool, "mamba_pool", None)
++                    for runner in draft_runners
++                )
++                # Shared state is already backed up with the target. Separate
++                # draft state follows the target's Mamba slot indices.
++                if any(
+                     pool is not None and pool is not target_mamba_pool
+                     for pool in draft_mamba_pools
+-                ), "Packed MTP requires separate state for every draft layer"
+-                target_model_runner.mtp_draft_mamba_pools = draft_mamba_pools
+-            return HiCacheDraftPlan(
+-                mode=HiCacheDraftMode.PACKED,
+-                device_pools=draft_pools,
+-            )
++                ):
++                    assert target_mamba_pool is not None, (
++                        "Packed draft state requires target Mamba slot indices"
++                    )
++                    assert all(
++                        pool is not None and pool is not target_mamba_pool
++                        for pool in draft_mamba_pools
++                    ), "Packed MTP requires separate state for every draft layer"
++                    target_model_runner.mtp_draft_mamba_pools = draft_mamba_pools
++                return HiCacheDraftPlan(
++                    mode=HiCacheDraftMode.PACKED,
++                    device_pools=draft_pools,
++                )
++            if len(draft_pools) > 1:
++                # The sidecar builder supports one runner. Do not silently
++                # omit later MTP depths through the legacy first-runner plan.
++                raise NotImplementedError(
++                    "HiCache with multiple MTP draft runners requires matching "
++                    "target and draft MLA KV row dimensions and storage dtypes. "
++                    "The sidecar fallback supports one draft runner."
++                )
+ 
+         if get_memory().enable_unified_cache_external_linker and len(draft_pools) > 1:
+             raise NotImplementedError(

@@ -1,0 +1,199 @@
+diff --git a/python/sglang/srt/model_executor/model_runner_components/weight_exporter.py b/python/sglang/srt/model_executor/model_runner_components/weight_exporter.py
+index 2db97ce..c990a68 100644
+--- a/python/sglang/srt/model_executor/model_runner_components/weight_exporter.py
++++ b/python/sglang/srt/model_executor/model_runner_components/weight_exporter.py
+@@ -38,6 +38,17 @@ class WeightExporter:
+         if reason is not None:
+             raise RuntimeError(reason)
+ 
++    def _group_port(self, ports, group_name):
++        # Request fields: a bad value is a failed request, not a scheduler crash.
++        if not isinstance(group_name, str) or group_name == "":
++            return None, "Group name cannot be empty"
++        ports_list = ports.split(",") if isinstance(ports, str) else []
++        if len(ports_list) != self.tp_size:
++            return None, (
++                f"Expected {self.tp_size} ports, but got {len(ports_list)} ports."
++            )
++        return ports_list[self.tp_rank], None
++
+     def init_weights_send_group_for_remote_instance(
+         self,
+         master_address,
+@@ -54,13 +65,10 @@ class WeightExporter:
+         assert torch.distributed.is_initialized(), (
+             "Default torch process group must be initialized"
+         )
+-        assert group_name != "", "Group name cannot be empty"
+-
+-        ports_list = ports.split(",")
+-        assert len(ports_list) == self.tp_size, (
+-            f"Expected {self.tp_size} ports, but got {len(ports_list)} ports."
+-        )
+-        group_port = ports_list[self.tp_rank]
++        group_port, error = self._group_port(ports, group_name)
++        if error is not None:
++            logger.error(error)
++            return False, error
+         group_name = f"{group_name}_{group_port}_{self.tp_rank}"
+         backend = "hccl" if backend == "nccl" and is_npu() else backend
+         device_type = "cuda" if not is_npu() else "npu"
+@@ -106,16 +114,13 @@ class WeightExporter:
+         assert torch.distributed.is_initialized(), (
+             "Default torch process group must be initialized"
+         )
+-        assert group_name != "", "Group name cannot be empty"
+-
+-        ports_list = ports.split(",")
+-        assert len(ports_list) == self.tp_size, (
+-            f"Expected {self.tp_size} ports, but got {len(ports_list)} ports."
+-        )
+-        group_port = ports_list[self.tp_rank]
++        group_port, error = self._group_port(ports, group_name)
++        if error is not None:
++            logger.error(error)
++            return False, error
+         group_name = f"{group_name}_{group_port}_{self.tp_rank}"
+ 
+-        if self._weights_send_group[group_name] is not None:
++        if self._weights_send_group.get(group_name) is not None:
+             send_group = self._weights_send_group[group_name]
+         else:
+             message = f"Group {group_name} not in _weights_send_group list. Please call `init_weights_send_group_for_remote_instance` first."
+diff --git a/test/registered/unit/model_executor/model_runner_components/test_weight_exporter.py b/test/registered/unit/model_executor/model_runner_components/test_weight_exporter.py
+new file mode 100644
+index 0000000..077d519
+--- /dev/null
++++ b/test/registered/unit/model_executor/model_runner_components/test_weight_exporter.py
+@@ -0,0 +1,131 @@
++"""Weight-send group guards, without a server or distributed communication."""
++
++import unittest
++from unittest.mock import Mock, patch
++
++import torch
++
++import sglang.srt.model_executor.model_runner_components.weight_exporter as exporter_mod
++from sglang.test.ci.ci_register import register_cpu_ci
++from sglang.test.test_utils import CustomTestCase
++
++register_cpu_ci(est_time=1, suite="base-a-test-cpu")
++
++
++class TestWeightExporter(CustomTestCase):
++    def setUp(self):
++        patcher = patch.object(exporter_mod, "current_platform", Mock())
++        patcher.start()
++        self.addCleanup(patcher.stop)
++        patcher = patch.object(torch.distributed, "is_initialized", return_value=True)
++        patcher.start()
++        self.addCleanup(patcher.stop)
++
++    def make_exporter(self, rank=0, size=1):
++        return exporter_mod.WeightExporter(
++            tp_rank=rank,
++            tp_size=size,
++            gpu_id=rank,
++            get_model_path=Mock(),
++            get_model=Mock(),
++        )
++
++    def test_missing_or_none_group_returns_error_without_touching_model(self):
++        for size in (1, 2):
++            ports = ",".join(str(29500 + rank) for rank in range(size))
++            for rank in range(size):
++                key = f"weight_send_group_{29500 + rank}_{rank}"
++                for present in (False, True):
++                    with self.subTest(size=size, rank=rank, none_entry=present):
++                        exporter = self.make_exporter(rank, size)
++                        # v0.5.23 checks export support on the model first.
++                        model = exporter.get_model.return_value
++                        model.modules.return_value = []
++                        other_group = object()
++                        exporter._weights_send_group["unrelated"] = other_group
++                        if present:
++                            exporter._weights_send_group[key] = None
++                        before = exporter._weights_send_group.copy()
++                        success, message = exporter.send_weights_to_remote_instance(
++                            "127.0.0.1", ports, "weight_send_group"
++                        )
++                        self.assertFalse(success)
++                        self.assertEqual(
++                            message,
++                            f"Group {key} not in _weights_send_group list. Please call `init_weights_send_group_for_remote_instance` first.",
++                        )
++                        model.named_parameters.assert_not_called()
++                        exporter_mod.current_platform.empty_cache.assert_not_called()
++                        self.assertEqual(exporter._weights_send_group, before)
++
++    def test_bad_group_name_or_ports_return_error_instead_of_raising(self):
++        cases = (
++            ("", "29500,29501", "Group name cannot be empty"),
++            ("g", "29500", "Expected 2 ports, but got 1 ports."),
++            ("g", "29500,29501,29502", "Expected 2 ports, but got 3 ports."),
++        )
++        for group_name, ports, expected in cases:
++            exporter = self.make_exporter(rank=1, size=2)
++            exporter.get_model.return_value.modules.return_value = []
++            for call in (
++                lambda: exporter.send_weights_to_remote_instance(
++                    "127.0.0.1", ports, group_name
++                ),
++                lambda: exporter.init_weights_send_group_for_remote_instance(
++                    "127.0.0.1", ports, 0, 2, group_name
++                ),
++            ):
++                with self.subTest(group_name=group_name, ports=ports):
++                    self.assertEqual(call(), (False, expected))
++            self.assertEqual(exporter._weights_send_group, {})
++
++    def test_existing_group_sends_weights_and_removes_only_that_group(self):
++        exporter = self.make_exporter()
++        model = torch.nn.Linear(2, 1)
++        exporter.get_model.return_value = model
++        key = "weight_send_group_29500_0"
++        group, other = object(), object()
++        exporter._weights_send_group.update({key: group, "unrelated": other})
++        with (
++            patch.object(torch.distributed, "broadcast") as broadcast,
++            patch.object(
++                torch.distributed.distributed_c10d, "destroy_process_group"
++            ) as destroy,
++        ):
++            success, message = exporter.send_weights_to_remote_instance(
++                "127.0.0.1", "29500", "weight_send_group"
++            )
++        self.assertTrue(success)
++        self.assertIn("Succeeded to send weights", message)
++        self.assertEqual(broadcast.call_count, len(list(model.parameters())))
++        for recorded, parameter in zip(broadcast.call_args_list, model.parameters()):
++            self.assertIs(recorded.args[0], parameter)
++            self.assertEqual(recorded.kwargs, {"src": 0, "group": group})
++        destroy.assert_called_once_with(group)
++        self.assertEqual(exporter._weights_send_group, {"unrelated": other})
++
++    def test_broadcast_failure_still_removes_group_and_returns_error(self):
++        exporter = self.make_exporter()
++        exporter.get_model.return_value = torch.nn.Linear(2, 1)
++        key = "weight_send_group_29500_0"
++        group = object()
++        exporter._weights_send_group[key] = group
++        with (
++            patch.object(
++                torch.distributed, "broadcast", side_effect=RuntimeError("send failed")
++            ),
++            patch.object(
++                torch.distributed.distributed_c10d, "destroy_process_group"
++            ) as destroy,
++        ):
++            success, message = exporter.send_weights_to_remote_instance(
++                "127.0.0.1", "29500", "weight_send_group"
++            )
++        self.assertFalse(success)
++        self.assertEqual(message, "Failed to send weights: send failed.")
++        self.assertNotIn(key, exporter._weights_send_group)
++        destroy.assert_called_once_with(group)
++
++
++if __name__ == "__main__":
++    unittest.main()

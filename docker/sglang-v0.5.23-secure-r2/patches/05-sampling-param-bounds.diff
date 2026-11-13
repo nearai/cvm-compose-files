@@ -1,0 +1,846 @@
+diff --git a/python/sglang/srt/beam_search/coordinator.py b/python/sglang/srt/beam_search/coordinator.py
+index 7d3ade0..4a1edbf 100644
+--- a/python/sglang/srt/beam_search/coordinator.py
++++ b/python/sglang/srt/beam_search/coordinator.py
+@@ -199,7 +199,9 @@ class BeamCoordinator(msgspec.Struct, kw_only=True):
+ 
+         group = BeamGroup(
+             beam_width=beam_width,
+-            stop_token_ids=self._collect_stop_token_ids(req, user_params),
++            stop_token_ids=self._collect_stop_token_ids(
++                req, user_params, vocab_size=self.model_config.vocab_size
++            ),
+             max_new_tokens=max_new_tokens,
+             num_return=user_params.n,
+             # Frontier state lives on device: selection consumes device top-2k
+@@ -237,7 +239,7 @@ class BeamCoordinator(msgspec.Struct, kw_only=True):
+         )
+ 
+     @staticmethod
+-    def _collect_stop_token_ids(req: Req, user_params) -> List[int]:
++    def _collect_stop_token_ids(req: Req, user_params, *, vocab_size: int) -> List[int]:
+         if user_params.ignore_eos:
+             return []
+         stop_ids = set(user_params.stop_token_ids or ())
+@@ -247,7 +249,8 @@ class BeamCoordinator(msgspec.Struct, kw_only=True):
+             if getattr(tokenizer, "eos_token_id", None) is not None:
+                 stop_ids.add(tokenizer.eos_token_id)
+             stop_ids |= set(getattr(tokenizer, "additional_stop_token_ids", None) or ())
+-        return sorted(stop_ids)
++        # Out-of-vocab ids never match; past int64 they would break BeamGroup's tensor.
++        return sorted(t for t in stop_ids if 0 <= t < vocab_size)
+ 
+     def maybe_select_and_relay(
+         self, batch: ScheduleBatch, batch_result, chunked_req: Optional[Req] = None
+diff --git a/python/sglang/srt/entrypoints/openai/protocol.py b/python/sglang/srt/entrypoints/openai/protocol.py
+index cbdd8aa..aa62415 100644
+--- a/python/sglang/srt/entrypoints/openai/protocol.py
++++ b/python/sglang/srt/entrypoints/openai/protocol.py
+@@ -81,6 +81,9 @@ from sglang.utils import convert_json_schema_to_str
+ 
+ logger = logging.getLogger(__name__)
+ 
++# OpenAI's limit on n; SGLANG_MAX_BATCH_REQS_PER_HTTP_REQ still applies after it.
++OPENAI_MAX_N = 128
++
+ DEFAULT_MODEL_NAME = "default"
+ 
+ 
+@@ -376,7 +379,7 @@ class CompletionRequest(PDRoutingFields):
+     logit_bias: Optional[Dict[str, float]] = None
+     logprobs: Optional[int] = None
+     max_tokens: int = 16
+-    n: int = 1
++    n: int = Field(default=1, ge=1, le=OPENAI_MAX_N)
+     presence_penalty: float = 0.0
+     seed: Optional[int] = None
+     stop: Optional[Union[str, List[str]]] = None
+@@ -922,27 +925,32 @@ class ChatCompletionRequest(PDRoutingFields):
+         description="Model name. Supports LoRA adapters via 'base-model:adapter-name' syntax.",
+     )
+     frequency_penalty: float = 0.0
++    # NOTE: OpenAI limits (temperature <= 2, top_logprobs <= 20, logit_bias in
++    # [-100, 100], top_logprobs requires logprobs) are deliberately not enforced:
++    # SGLang applies these values correctly and existing clients rely on that.
+     logit_bias: Optional[Dict[str, float]] = None
+     logprobs: bool = False
+-    top_logprobs: Optional[int] = None
++    top_logprobs: Optional[int] = Field(default=None, ge=0)
+     max_tokens: Optional[int] = Field(
+         default=None,
++        ge=0,
+         deprecated="max_tokens is deprecated in favor of the max_completion_tokens field",
+         description="The maximum number of tokens that can be generated in the chat completion. ",
+     )
+     max_completion_tokens: Optional[int] = Field(
+         default=None,
++        ge=0,
+         description="The maximum number of completion tokens for a chat completion request, "
+         "including visible output tokens and reasoning tokens. Input tokens are not included. ",
+     )
+-    n: int = 1
++    n: int = Field(default=1, ge=1, le=OPENAI_MAX_N)
+     presence_penalty: float = 0.0
+     response_format: Optional[Union[ResponseFormat, StructuralTagResponseFormat]] = None
+     seed: Optional[int] = None
+     stop: Optional[Union[str, List[str]]] = None
+     stream: bool = False
+     stream_options: Optional[StreamOptions] = None
+-    temperature: Optional[float] = None
++    temperature: Optional[float] = Field(default=None, ge=0.0, allow_inf_nan=False)
+     top_p: Optional[float] = None
+     user: Optional[str] = None
+     tools: Optional[List[Tool]] = Field(default=None, examples=[None])
+@@ -1091,6 +1099,14 @@ class ChatCompletionRequest(PDRoutingFields):
+             raise ValueError("reasoning_effort must not be a boolean")
+         return value
+ 
++    @field_validator("max_tokens", "max_completion_tokens", mode="before")
++    @classmethod
++    def validate_output_limit_type(cls, value, info):
++        # Lax int parsing would read a boolean as a 0- or 1-token limit.
++        if isinstance(value, bool):
++            raise ValueError(f"{info.field_name} must not be a boolean")
++        return value
++
+     @model_validator(mode="before")
+     @classmethod
+     def normalize_reasoning_inputs(cls, values: Dict):
+@@ -1182,6 +1198,15 @@ class ChatCompletionRequest(PDRoutingFields):
+ 
+         return values
+ 
++    @property
++    def effective_max_tokens(self) -> Optional[int]:
++        """Prefer max_completion_tokens when set, including an explicit zero."""
++        return (
++            self.max_completion_tokens
++            if self.max_completion_tokens is not None
++            else self.max_tokens
++        )
++
+     def to_sampling_params(
+         self,
+         stop: List[str],
+@@ -1211,7 +1236,7 @@ class ChatCompletionRequest(PDRoutingFields):
+ 
+         sampling_params = {
+             "temperature": get_param("temperature"),
+-            "max_new_tokens": self.max_completion_tokens or self.max_tokens,
++            "max_new_tokens": self.effective_max_tokens,
+             "min_new_tokens": self.min_tokens,
+             "stop": stop,
+             "stop_token_ids": self.stop_token_ids,
+diff --git a/python/sglang/srt/entrypoints/openai/serving_chat.py b/python/sglang/srt/entrypoints/openai/serving_chat.py
+index 7e6f3fc..2b5a497 100644
+--- a/python/sglang/srt/entrypoints/openai/serving_chat.py
++++ b/python/sglang/srt/entrypoints/openai/serving_chat.py
+@@ -1177,7 +1177,7 @@ class OpenAIServingChat(OpenAIServingBase):
+                     "or contains a cycle."
+                 )
+ 
+-        max_output_tokens = request.max_completion_tokens or request.max_tokens
++        max_output_tokens = request.effective_max_tokens
+         server_context_length = get_model().context_length
+         if (
+             max_output_tokens
+diff --git a/python/sglang/srt/managers/io_struct.py b/python/sglang/srt/managers/io_struct.py
+index 84e3619..98b70b4 100644
+--- a/python/sglang/srt/managers/io_struct.py
++++ b/python/sglang/srt/managers/io_struct.py
+@@ -64,7 +64,7 @@ from sglang.srt.managers.schedule_batch import (
+ )
+ from sglang.srt.multimodal.mm_utils import has_valid_data
+ from sglang.srt.sampling.sampling_mask import SamplingMaskChunk
+-from sglang.srt.sampling.sampling_params import SamplingParams
++from sglang.srt.sampling.sampling_params import SamplingParams, validate_n
+ from sglang.srt.utils import ImageData, VideoData
+ from sglang.srt.utils.field_validators import validate_optional_list_i64_1d_2d
+ from sglang.srt.utils.msgpack_utils import dec_hook, enc_hook, ext_hook
+@@ -534,12 +534,13 @@ class GenerateReqInput:
+         if self.sampling_params is None:
+             self.parallel_sample_num = 1
+             return
++        # Validate before inputs are expanded n times; verify() runs too late.
+         elif isinstance(self.sampling_params, dict):
+-            self.parallel_sample_num = self.sampling_params.get("n", 1)
++            self.parallel_sample_num = validate_n(self.sampling_params.get("n", 1))
+         else:  # isinstance(self.sampling_params, list):
+-            self.parallel_sample_num = self.sampling_params[0].get("n", 1)
++            self.parallel_sample_num = validate_n(self.sampling_params[0].get("n", 1))
+             for sampling_params in self.sampling_params:
+-                if self.parallel_sample_num != sampling_params.get("n", 1):
++                if self.parallel_sample_num != validate_n(sampling_params.get("n", 1)):
+                     raise ValueError(
+                         "The parallel_sample_num should be the same for all samples in sample params."
+                     )
+diff --git a/python/sglang/srt/managers/tokenizer_manager.py b/python/sglang/srt/managers/tokenizer_manager.py
+index 28971df..f4d7ab2 100644
+--- a/python/sglang/srt/managers/tokenizer_manager.py
++++ b/python/sglang/srt/managers/tokenizer_manager.py
+@@ -1393,6 +1393,7 @@ class TokenizerManager(TokenizerControlMixin, TokenizerManagerScoreMixin):
+         # Validate generation-specific fields
+         if isinstance(obj, GenerateReqInput):
+             self._validate_token_ids_logprob(obj)
++            self._validate_top_logprobs_num(obj)
+             requested_hidden_mode = get_request_return_hidden_states_mode(
+                 obj.return_hidden_states
+             )
+@@ -1532,6 +1533,18 @@ class TokenizerManager(TokenizerControlMixin, TokenizerManagerScoreMixin):
+                     f"{token_id}; valid range is [0, {vocab_size})."
+                 )
+ 
++    def _validate_top_logprobs_num(self, obj: GenerateReqInput) -> None:
++        # Invalid counts can corrupt the batch or fail torch.topk past the vocab size.
++        top_logprobs_num = obj.top_logprobs_num
++        if not obj.return_logprob or top_logprobs_num is None:
++            return
++        vocab_size = self.model_config.vocab_size
++        if type(top_logprobs_num) is not int or not 0 <= top_logprobs_num <= vocab_size:
++            raise ValueError(
++                f"top_logprobs must be an integer in [0, {vocab_size}], "
++                f"got {top_logprobs_num!r}."
++            )
++
+     def _create_tokenized_object(
+         self,
+         obj: Union[GenerateReqInput, EmbeddingReqInput],
+@@ -1590,7 +1603,8 @@ class TokenizerManager(TokenizerControlMixin, TokenizerManagerScoreMixin):
+                 sampling_params=sampling_params,
+                 return_logprob=obj.return_logprob,
+                 logprob_start_len=obj.logprob_start_len,
+-                top_logprobs_num=obj.top_logprobs_num,
++                # A logprob batch gathers every request's count, including disabled ones.
++                top_logprobs_num=obj.top_logprobs_num if obj.return_logprob else 0,
+                 token_ids_logprob=obj.token_ids_logprob,
+                 return_sampling_mask=obj.return_sampling_mask,
+                 sampling_logprobs_mode=obj.sampling_logprobs_mode or "selected",
+diff --git a/python/sglang/srt/sampling/penaltylib/min_new_tokens.py b/python/sglang/srt/sampling/penaltylib/min_new_tokens.py
+index 51ad26c..006ee88 100644
+--- a/python/sglang/srt/sampling/penaltylib/min_new_tokens.py
++++ b/python/sglang/srt/sampling/penaltylib/min_new_tokens.py
+@@ -29,6 +29,7 @@ class BatchedMinNewTokensPenalizer(_BatchedPenalizer):
+             .unsqueeze_(1)
+         )
+ 
++        vocab_size = self.orchestrator.vocab_size
+         padded_stop_token_ids_cpu = torch.nn.utils.rnn.pad_sequence(
+             sequences=[
+                 torch.tensor(
+@@ -44,7 +45,9 @@ class BatchedMinNewTokensPenalizer(_BatchedPenalizer):
+                                 else set()
+                             )
+                         )
+-                        if token_id is not None
++                        # Out-of-vocab ids can never be sampled;
++                        # scattering them would index outside the penalty tensor.
++                        if token_id is not None and 0 <= token_id < vocab_size
+                     ],
+                     dtype=torch.int64,
+                 )
+diff --git a/python/sglang/srt/sampling/sampling_params.py b/python/sglang/srt/sampling/sampling_params.py
+index 21befa6..a2c984b 100644
+--- a/python/sglang/srt/sampling/sampling_params.py
++++ b/python/sglang/srt/sampling/sampling_params.py
+@@ -15,10 +15,11 @@
+ 
+ import logging
+ import math
+-from typing import Dict, List, Optional, Sequence, Set, Union
++from typing import Any, Dict, List, Optional, Sequence, Set, Union
+ 
+ import msgspec
+ 
++from sglang.srt.environ import envs
+ from sglang.srt.sampling.watermarking.core import (
+     WatermarkRequestConfig,
+     normalize_watermark_request,
+@@ -41,6 +42,9 @@ CustomParamValue = Union[
+ 
+ _SAMPLING_EPS = 1e-6
+ TOP_K_ALL = 1 << 30
++# The float32 bias is divided by a temperature of at least _SAMPLING_EPS; larger
++# values overflow to inf and NaN the softmax.
++LOGIT_BIAS_ABS_MAX = 1e30
+ MAX_STOP_COUNT = 32
+ MAX_STOP_REGEX_LEN = 256
+ MAX_STOP_REGEX_COUNT = 32
+@@ -137,6 +141,15 @@ def set_request_reasoning_in_grammar(sampling_params: Dict, enabled: bool) -> No
+     sampling_params["custom_params"] = custom_params
+ 
+ 
++def validate_n(n: Any) -> int:
++    # A negative limit disables the cap, matching the Rust server.
++    max_n = envs.SGLANG_MAX_BATCH_REQS_PER_HTTP_REQ.get()
++    if type(n) is not int or n < 1 or 0 <= max_n < n:
++        bound = f"in [1, {max_n}]" if max_n >= 0 else ">= 1"
++        raise ValueError(f"n must be an integer {bound}, got {n!r}.")
++    return n
++
++
+ class SamplingParams(msgspec.Struct, kw_only=True, array_like=True):
+     """
+     The sampling parameters.
+@@ -250,6 +263,7 @@ class SamplingParams(msgspec.Struct, kw_only=True, array_like=True):
+             self.top_k = TOP_K_ALL  # whole vocabulary
+ 
+     def verify(self, vocab_size):
++        validate_n(self.n)
+         if self.beam_width is not None and self.beam_width < 1:
+             raise ValueError(f"beam_width must be at least 1, got {self.beam_width}.")
+         if not math.isfinite(self.temperature) or self.temperature < 0.0:
+@@ -293,12 +307,24 @@ class SamplingParams(msgspec.Struct, kw_only=True, array_like=True):
+                     f"{self.min_new_tokens}."
+                 )
+         if self.logit_bias is not None:
+-            for token_id in self.logit_bias:
++            for token_id, bias in self.logit_bias.items():
+                 if not 0 <= int(token_id) < vocab_size:
+                     raise ValueError(
+                         f"logit_bias must has keys in [0, {vocab_size - 1}], got "
+                         f"{token_id}."
+                     )
++                if type(bias) not in (int, float):
++                    finite = False
++                else:
++                    try:
++                        finite = math.isfinite(bias) and abs(bias) <= LOGIT_BIAS_ABS_MAX
++                    except OverflowError:  # int beyond float64
++                        finite = False
++                if not finite:
++                    raise ValueError(
++                        "logit_bias values must be finite numbers with magnitude <= 1e30, "
++                        f"got {bias!r} for token {token_id}."
++                    )
+         if self.sampling_seed is not None:
+             if not isinstance(self.sampling_seed, int):
+                 raise ValueError(
+diff --git a/test/registered/unit/beam_search/test_beam_search_core.py b/test/registered/unit/beam_search/test_beam_search_core.py
+index 97c8060..d98d40a 100644
+--- a/test/registered/unit/beam_search/test_beam_search_core.py
++++ b/test/registered/unit/beam_search/test_beam_search_core.py
+@@ -7,6 +7,7 @@ a naive walk-in-order loop written here, not the implementation under test.
+ 
+ import random
+ import unittest
++from types import SimpleNamespace
+ 
+ import torch
+ 
+@@ -250,6 +251,19 @@ class TestBeamGroup(CustomTestCase):
+         group2 = self._make_group(length_penalty=1.0)
+         self.assertAlmostEqual(group2.beam_score(-0.3, 2), -0.15, places=6)
+ 
++    def test_out_of_vocab_stop_ids_are_dropped(self):
++        """Out-of-vocab stop ids never match and must not break the group's tensor."""
++        from sglang.srt.beam_search.coordinator import BeamCoordinator
++
++        req = SimpleNamespace(eos_token_ids={2}, tokenizer=None)
++        params = SimpleNamespace(
++            ignore_eos=False, stop_token_ids={-1, 0, 5, 31, 32, 2**63}
++        )
++        ids = BeamCoordinator._collect_stop_token_ids(req, params, vocab_size=32)
++        self.assertEqual(ids, [0, 2, 5, 31])
++        group = self._make_group(stop_token_ids=ids)
++        self.assertEqual(group.stop_token_ids.tolist(), ids)
++
+ 
+ if __name__ == "__main__":
+     unittest.main()
+diff --git a/test/registered/unit/entrypoints/openai/test_protocol.py b/test/registered/unit/entrypoints/openai/test_protocol.py
+index efc37b2..f431124 100644
+--- a/test/registered/unit/entrypoints/openai/test_protocol.py
++++ b/test/registered/unit/entrypoints/openai/test_protocol.py
+@@ -20,6 +20,7 @@ from typing import List, Optional
+ from pydantic import BaseModel, Field, TypeAdapter, ValidationError
+ 
+ from sglang.srt.entrypoints.openai.protocol import (
++    OPENAI_MAX_N,
+     ChatCompletionMessageContentAudioPart,
+     ChatCompletionMessageContentAudioURLPart,
+     ChatCompletionMessageContentImageURL,
+@@ -37,12 +38,14 @@ from sglang.srt.entrypoints.openai.protocol import (
+     ToolCall,
+     UsageInfo,
+ )
++from sglang.srt.sampling.sampling_params import SamplingParams
+ from sglang.test.ci.ci_register import register_cpu_ci
++from sglang.test.test_utils import CustomTestCase
+ 
+ register_cpu_ci(est_time=6, suite="base-a-test-cpu")
+ 
+ 
+-class TestCompletionRequest(unittest.TestCase):
++class TestCompletionRequest(CustomTestCase):
+     """Test CompletionRequest protocol model"""
+ 
+     def test_basic_completion_request(self):
+@@ -64,10 +67,32 @@ class TestCompletionRequest(unittest.TestCase):
+         with self.assertRaises(ValidationError):
+             CompletionRequest(model="test-model")  # missing prompt
+ 
++    def test_completion_n_bounds(self):
++        """n outside [1, OPENAI_MAX_N] must be rejected before the response path."""
++        for n in (-1, 0, OPENAI_MAX_N + 1):
++            with self.subTest(n=n), self.assertRaises(ValidationError):
++                CompletionRequest(model="test-model", prompt="Hello", n=n)
++        for n in (1, OPENAI_MAX_N):
++            self.assertEqual(
++                CompletionRequest(model="test-model", prompt="Hello", n=n).n, n
++            )
++
+ 
+-class TestChatCompletionRequest(unittest.TestCase):
++class TestChatCompletionRequest(CustomTestCase):
+     """Test ChatCompletionRequest protocol model"""
+ 
++    def _chat_request(self, **params):
++        return ChatCompletionRequest(
++            model="test-model",
++            messages=[{"role": "user", "content": "Hello"}],
++            **params,
++        )
++
++    def _assert_rejected_field(self, field, **params):
++        with self.assertRaises(ValidationError) as ctx:
++            self._chat_request(**params)
++        self.assertEqual([error["loc"] for error in ctx.exception.errors()], [(field,)])
++
+     def test_full_assistant_ebnf_preserves_explicit_output_constraints(self):
+         constraint = ("full_assistant_ebnf", 'root ::= "generated"')
+         for explicit in (
+@@ -516,8 +541,77 @@ class TestChatCompletionRequest(unittest.TestCase):
+         )
+         self.assertNotIn("json_schema", sampling_params)
+ 
++    def test_zero_output_limits_preserve_precedence(self):
++        """An explicit zero completion limit must survive request conversion."""
++        for params, expected in (
++            ({}, None),
++            ({"max_tokens": None, "max_completion_tokens": None}, None),
++            ({"max_tokens": 0}, 0),
++            ({"max_completion_tokens": 0}, 0),
++            ({"max_tokens": 5, "max_completion_tokens": 0}, 0),
++            ({"max_tokens": 0, "max_completion_tokens": 5}, 5),
++            ({"max_tokens": 5, "max_completion_tokens": None}, 5),
++        ):
++            with self.subTest(params=params):
++                request = ChatCompletionRequest(
++                    messages=[{"role": "user", "content": "Hello"}], **params
++                )
++                sampling_params = SamplingParams(**request.to_sampling_params([], {}))
++                sampling_params.verify(vocab_size=32)
++                self.assertEqual(sampling_params.max_new_tokens, expected)
++
++    def test_out_of_range_sampling_params_are_rejected(self):
++        """Out-of-range sampling values previously passed validation."""
++        for field, value in (
++            ("n", -1),
++            ("n", 0),
++            ("n", OPENAI_MAX_N + 1),
++            ("top_logprobs", -1),
++            ("temperature", -0.1),
++            ("temperature", float("inf")),
++        ):
++            with self.subTest(field=field, value=value):
++                self._assert_rejected_field(field, **{field: value}, logprobs=True)
++
++    def test_invalid_output_limits_are_rejected(self):
++        """Invalid limits must not be hidden by precedence or coerced from booleans."""
++        for params, field in (
++            ({"max_tokens": -1}, "max_tokens"),
++            ({"max_completion_tokens": -1}, "max_completion_tokens"),
++            ({"max_tokens": -1, "max_completion_tokens": 1}, "max_tokens"),
++            ({"max_tokens": False}, "max_tokens"),
++            ({"max_tokens": True}, "max_tokens"),
++            (
++                {"max_tokens": 5, "max_completion_tokens": False},
++                "max_completion_tokens",
++            ),
++        ):
++            with self.subTest(params=params):
++                self._assert_rejected_field(field, **params)
++
++    def test_sampling_param_boundaries_are_accepted(self):
++        for params in (
++            {"n": 1, "logprobs": True, "top_logprobs": 0},
++            {"n": OPENAI_MAX_N, "logprobs": True, "top_logprobs": 20},
++            {"temperature": 0.0},
++        ):
++            with self.subTest(params=params):
++                self._chat_request(**params)
++        self.assertIsNone(self._chat_request().temperature)
++
++    def test_openai_limits_are_deliberately_not_enforced(self):
++        """The engine applies these values as expected; they must not be rejected."""
++        for params in (
++            {"temperature": 3.0},
++            {"logprobs": True, "top_logprobs": 50},
++            {"top_logprobs": 3},
++            {"logit_bias": {"1": -1000, "2": 1e4}},
++        ):
++            with self.subTest(params=params):
++                self._chat_request(**params)
++
+ 
+-class TestAudioContentParts(unittest.TestCase):
++class TestAudioContentParts(CustomTestCase):
+     """Test audio content parts and the input_audio conversion"""
+ 
+     def _audio_part(self, part):
+@@ -586,7 +680,7 @@ class TestAudioContentParts(unittest.TestCase):
+         )
+ 
+ 
+-class TestModelSerialization(unittest.TestCase):
++class TestModelSerialization(CustomTestCase):
+     """Test model serialization with hidden states"""
+ 
+     def _chat_payloads(self, tool_calls):
+@@ -703,7 +797,7 @@ class TestModelSerialization(unittest.TestCase):
+         self.assertEqual(data["meta_info"], {"prompt_tokens": 3})
+ 
+ 
+-class TestFunctionDeferLoading(unittest.TestCase):
++class TestFunctionDeferLoading(CustomTestCase):
+     """Test defer_loading field behavior on Function/Tool."""
+ 
+     def test_function_defaults_omit_optional_contract_fields(self):
+@@ -785,7 +879,7 @@ class TestFunctionDeferLoading(unittest.TestCase):
+         self.assertEqual(parts[1].type, "text")
+ 
+ 
+-class TestValidationEdgeCases(unittest.TestCase):
++class TestValidationEdgeCases(CustomTestCase):
+     """Test edge cases and validation scenarios"""
+ 
+     def test_negative_token_limits(self):
+diff --git a/test/registered/unit/entrypoints/openai/test_serving_chat.py b/test/registered/unit/entrypoints/openai/test_serving_chat.py
+index 415c885..de78f18 100644
+--- a/test/registered/unit/entrypoints/openai/test_serving_chat.py
++++ b/test/registered/unit/entrypoints/openai/test_serving_chat.py
+@@ -916,6 +916,45 @@ class ServingChatTestCase(CustomTestCase):
+         )
+         self.assertIsNone(self.chat._validate_request(multimodal_request))
+ 
++    def test_output_limit_precedence_preserves_zero_during_validation(self):
++        """A zero completion limit must not fall back during context validation."""
++        with patch(
++            "sglang.srt.entrypoints.openai.serving_chat.get_model",
++            return_value=Mock(context_length=4),
++        ):
++            zero_limit = ChatCompletionRequest(
++                messages=[{"role": "user", "content": "Hello"}],
++                max_completion_tokens=0,
++                max_tokens=5,
++            )
++            self.assertIsNone(self.chat._validate_request(zero_limit))
++
++            excessive_limit = ChatCompletionRequest(
++                messages=[{"role": "user", "content": "Hello"}],
++                max_completion_tokens=5,
++                max_tokens=0,
++            )
++            self.assertIn("too large", self.chat._validate_request(excessive_limit))
++
++    def test_output_limit_boundary_and_auto_truncate_during_validation(self):
++        """Only a limit above the context length is rejected, unless auto-truncating."""
++        messages = [{"role": "user", "content": "Hello"}]
++        with patch(
++            "sglang.srt.entrypoints.openai.serving_chat.get_model",
++            return_value=Mock(context_length=4),
++        ):
++            at_limit = ChatCompletionRequest(messages=messages, max_completion_tokens=4)
++            self.assertIsNone(self.chat._validate_request(at_limit))
++
++            above_limit = ChatCompletionRequest(
++                messages=messages, max_completion_tokens=5
++            )
++            with patch(
++                "sglang.srt.entrypoints.openai.serving_chat.get_serving",
++                return_value=Mock(allow_auto_truncate=True),
++            ):
++                self.assertIsNone(self.chat._validate_request(above_limit))
++
+     # ------------- conversion tests -------------
+     def test_convert_to_internal_request_single(self):
+         with (
+diff --git a/test/registered/unit/entrypoints/openai/test_serving_decisions.py b/test/registered/unit/entrypoints/openai/test_serving_decisions.py
+index 0de8c57..7f1de0e 100644
+--- a/test/registered/unit/entrypoints/openai/test_serving_decisions.py
++++ b/test/registered/unit/entrypoints/openai/test_serving_decisions.py
+@@ -1334,10 +1334,11 @@ class TestSystemOne(unittest.IsolatedAsyncioTestCase):
+                         }
+                     ],
+                 )
+-                decisions = await validation_exception_handler(
+-                    request(root_path, "/v1/decisions"), error
+-                )
+-                self.assertEqual(decisions.status_code, 400)
++                for path in ["/v1/decisions", "/v1/chat/completions"]:
++                    response = await validation_exception_handler(
++                        request(root_path, path), error
++                    )
++                    self.assertEqual(response.status_code, 400)
+ 
+     async def test_levels_the_legend_cannot_return_are_refused_before_scoring(self):
+         def nested(depth):
+diff --git a/test/registered/unit/managers/test_io_struct.py b/test/registered/unit/managers/test_io_struct.py
+index 609d6c9..a4395e7 100644
+--- a/test/registered/unit/managers/test_io_struct.py
++++ b/test/registered/unit/managers/test_io_struct.py
+@@ -9,6 +9,8 @@ import msgspec
+ import numpy as np
+ import torch
+ 
++from sglang.srt.entrypoints.openai.protocol import OPENAI_MAX_N
++from sglang.srt.environ import envs
+ from sglang.srt.managers.io_struct import (
+     EmbeddingReqInput,
+     GenerateReqInput,
+@@ -500,6 +502,40 @@ class TestGenerateReqInputNormalization(CustomTestCase):
+         # Check modalities
+         self.assertEqual(req.modalities, [None, "image"])
+ 
++    def test_oversized_n_rejected_before_fan_out(self):
++        """An out-of-range n must be rejected before inputs are expanded n times."""
++        with envs.SGLANG_MAX_BATCH_REQS_PER_HTTP_REQ.override(4096):
++            for n in (0, -1, 4097, True, "2", None, 2.0):
++                for sampling_params in ({"n": n}, [{"n": n}, {"n": n}]):
++                    with self.subTest(n=n, sampling_params=sampling_params):
++                        text = (
++                            "Hello" if isinstance(sampling_params, dict) else ["a", "b"]
++                        )
++                        req = GenerateReqInput(
++                            text=text, sampling_params=sampling_params
++                        )
++                        with self.assertRaisesRegex(ValueError, "n must be an integer"):
++                            req.normalize_batch_and_arguments()
++                        self.assertIsNone(req.rid)
++
++            # Native requests are not limited to OpenAI's n.
++            req = GenerateReqInput(
++                text="Hello", sampling_params={"n": OPENAI_MAX_N + 1}
++            )
++            req.normalize_batch_and_arguments()
++            self.assertEqual(len(req.text), OPENAI_MAX_N + 1)
++
++    def test_list_n_validated_for_every_element(self):
++        """A later element equal to the first by value must still be validated."""
++        for later in (True, 2.0):
++            first = 1 if later is True else 2
++            with self.subTest(later=later):
++                req = GenerateReqInput(
++                    text=["a", "b"], sampling_params=[{"n": first}, {"n": later}]
++                )
++                with self.assertRaisesRegex(ValueError, "n must be an integer"):
++                    req.normalize_batch_and_arguments()
++
+     def test_expanding_parallel_sample_correlation(self):
+         """Test that when expanding with parallel samples, prompts, images and modalities are properly correlated."""
+         req = copy.deepcopy(self.base_req)
+diff --git a/test/registered/unit/managers/test_sampling_mask_validation.py b/test/registered/unit/managers/test_sampling_mask_validation.py
+index abfd8cc..8b0a907 100644
+--- a/test/registered/unit/managers/test_sampling_mask_validation.py
++++ b/test/registered/unit/managers/test_sampling_mask_validation.py
+@@ -3,11 +3,13 @@ from types import SimpleNamespace
+ 
+ from sglang.srt.managers.io_struct import GenerateReqInput
+ from sglang.srt.managers.tokenizer_manager import TokenizerManager
++from sglang.srt.observability.req_time_stats import APIServerReqTimeStats
+ from sglang.srt.runtime_context import get_context
+ from sglang.srt.sampling.custom_logit_processor import (
+     DisallowedTokensLogitsProcessor,
+     Qwen3ThinkingBudgetLogitProcessor,
+ )
++from sglang.srt.sampling.sampling_params import SamplingParams
+ from sglang.test.ci.ci_register import register_cpu_ci
+ from sglang.test.test_utils import CustomTestCase
+ 
+@@ -46,6 +48,60 @@ class TestSamplingMaskValidation(CustomTestCase):
+         )
+         self.manager._validate_one_request(req, req.input_ids)
+ 
++    def test_top_logprobs_num_must_be_a_valid_count_when_logprobs_requested(self):
++        """A malformed or oversized candidate count must not reach the scheduler."""
++        self.manager.model_config.vocab_size = 32
++        for top_logprobs_num, return_logprob, accepted in (
++            (None, True, True),
++            (0, True, True),
++            (32, True, True),
++            (33, True, False),
++            (-3, True, False),
++            ([33], True, False),
++            (33, False, True),
++        ):
++            with self.subTest(top_logprobs_num=top_logprobs_num, rl=return_logprob):
++                req = GenerateReqInput(
++                    input_ids=[1, 2, 3],
++                    sampling_params={},
++                    return_logprob=return_logprob,
++                    top_logprobs_num=top_logprobs_num,
++                )
++                if accepted:
++                    self.manager._validate_one_request(req, req.input_ids)
++                else:
++                    with self.assertRaisesRegex(ValueError, "top_logprobs"):
++                        self.manager._validate_one_request(req, req.input_ids)
++
++    def test_mixed_batch_forwards_zero_count_for_logprob_disabled_items(self):
++        """Disabled items must not contribute their raw count to a shared topk.
++
++        Each enabled item keeps its own count.
++        """
++        self.manager.model_config.vocab_size = 32
++        self.manager.preferred_sampling_params = None
++        self.manager.sampling_params_class = SamplingParams
++        self.manager.tokenizer = None
++        self.manager.fake_bootstrap_room_counter = 0
++        req = GenerateReqInput(
++            input_ids=[[1, 2, 3], [4, 5, 6], [7, 8, 9], [10, 11, 12]],
++            sampling_params={},
++            return_logprob=[True, False, False, True],
++            top_logprobs_num=[5, 33, "many", 7],
++        )
++        req.normalize_batch_and_arguments()
++        self.manager.rid_to_state = {
++            rid: SimpleNamespace(time_stats=APIServerReqTimeStats()) for rid in req.rid
++        }
++        forwarded_counts = []
++        for i in range(4):
++            self.manager._validate_one_request(req[i], req[i].input_ids)
++            tokenized_request = self.manager._create_tokenized_object(
++                req[i], "", req[i].input_ids
++            )
++            forwarded_counts.append(tokenized_request.top_logprobs_num)
++        self.assertEqual(forwarded_counts, [5, 0, 0, 7])
++
+     def test_accepts_hard_exclusion(self):
+         class BoundMask(DisallowedTokensLogitsProcessor):
+             def __call__(self, logits, custom_param_list=None):
+diff --git a/test/registered/unit/sampling/test_penaltylib.py b/test/registered/unit/sampling/test_penaltylib.py
+index 1a13d19..d9f3093 100644
+--- a/test/registered/unit/sampling/test_penaltylib.py
++++ b/test/registered/unit/sampling/test_penaltylib.py
+@@ -358,6 +358,23 @@ class TestBatchedMinNewTokensPenalizer(CustomTestCase):
+         pen.apply(logits)
+         self.assertTrue(torch.isneginf(logits[0, 6]))
+ 
++    def test_ignores_stop_ids_outside_vocab(self):
++        """Stop ids outside the vocab never match and must not break the batch."""
++        _, pen = self._setup(
++            [
++                (3, {-1, 0, 5, VOCAB_SIZE - 1, VOCAB_SIZE, VOCAB_SIZE + 7, 2**63}, 2),
++                # No min_new_tokens of its own; shares the batch with one that has it.
++                (0, {VOCAB_SIZE + 1}, 2),
++            ]
++        )
++        logits = torch.zeros(2, VOCAB_SIZE)
++        pen.apply(logits)
++        blocked = torch.isneginf(logits)
++        self.assertEqual(
++            blocked[0].nonzero().flatten().tolist(), [0, 2, 5, VOCAB_SIZE - 1]
++        )
++        self.assertFalse(blocked[1].any())
++
+     def test_filter_keeps_subset(self):
+         """Test that filter keeps the second request (min_tokens=5) and drops the first."""
+         orch, pen = self._setup([(3, None, 2), (5, None, 2)])
+diff --git a/test/registered/unit/sampling/test_sampling_params.py b/test/registered/unit/sampling/test_sampling_params.py
+index 9965977..1c85cf0 100644
+--- a/test/registered/unit/sampling/test_sampling_params.py
++++ b/test/registered/unit/sampling/test_sampling_params.py
+@@ -14,7 +14,10 @@ from unittest.mock import MagicMock
+ 
+ import msgspec
+ 
++from sglang.srt.entrypoints.openai.protocol import OPENAI_MAX_N
++from sglang.srt.environ import envs
+ from sglang.srt.sampling.sampling_params import (
++    LOGIT_BIAS_ABS_MAX,
+     MAX_LEN,
+     MAX_REQUEST_REASONING_END_TOKEN_IDS,
+     MAX_STOP_COUNT,
+@@ -110,6 +113,27 @@ class TestSamplingParamsVerify(CustomTestCase):
+         sp = self._make()
+         sp.verify(self.VOCAB_SIZE)
+ 
++    def test_n_bounds(self):
++        """Native n is bounded by SGLANG_MAX_BATCH_REQS_PER_HTTP_REQ, not OpenAI's."""
++        with envs.SGLANG_MAX_BATCH_REQS_PER_HTTP_REQ.override(4096):
++            for value in (-1, 0, 4097, "2"):
++                with self.subTest(value=value):
++                    with self.assertRaisesRegex(ValueError, "n must be"):
++                        self._make(n=value).verify(self.VOCAB_SIZE)
++
++            for value in (1, OPENAI_MAX_N + 1, 4096):
++                self._make(n=value).verify(self.VOCAB_SIZE)
++
++        with envs.SGLANG_MAX_BATCH_REQS_PER_HTTP_REQ.override(8192):
++            self._make(n=8192).verify(self.VOCAB_SIZE)
++
++        # A negative limit disables the cap, matching the Rust server.
++        with envs.SGLANG_MAX_BATCH_REQS_PER_HTTP_REQ.override(-1):
++            for value in (1, 10**6):
++                self._make(n=value).verify(self.VOCAB_SIZE)
++            with self.assertRaisesRegex(ValueError, "n must be an integer >= 1"):
++                self._make(n=0).verify(self.VOCAB_SIZE)
++
+     def test_request_reasoning_end_token_ids_are_vocab_bounded_integers(self):
+         self._make(
+             custom_params={REQUEST_REASONING_END_TOKEN_IDS_KEY: [17, 18]}
+@@ -310,11 +334,54 @@ class TestSamplingParamsVerify(CustomTestCase):
+         with self.assertRaises(ValueError):
+             sp.verify(self.VOCAB_SIZE)
+ 
++    def test_logit_bias_token_id_at_vocab_size_raises(self):
++        """The first id past the vocabulary must be rejected, not the last one."""
++        with self.assertRaises(ValueError):
++            self._make(logit_bias={str(self.VOCAB_SIZE): 1.0}).verify(self.VOCAB_SIZE)
++
+     def test_logit_bias_valid_tokens(self):
+         """Test that logit_bias with token_ids within [0, vocab_size) is accepted."""
+         sp = self._make(logit_bias={"0": 1.0, "31999": -0.5})
+         sp.verify(self.VOCAB_SIZE)
+ 
++    def test_logit_bias_value_types(self):
++        """Non-finite, non-numeric and bool bias values must fail admission."""
++        for value in (
++            float("nan"),
++            float("inf"),
++            float("-inf"),
++            "abc",
++            None,
++            True,
++            1 << 2000,
++            -(1 << 2000),
++        ):
++            with self.subTest(value=value):
++                with self.assertRaisesRegex(ValueError, "logit_bias"):
++                    self._make(logit_bias={"0": value}).verify(self.VOCAB_SIZE)
++
++    def test_logit_bias_outside_openai_range_is_accepted(self):
++        """Integer biases and values outside OpenAI's range must remain accepted."""
++        self._make(logit_bias={"0": -1e4, "1": 5, "31999": 1e4}).verify(self.VOCAB_SIZE)
++
++    def test_logit_bias_beyond_overflow_bound_is_rejected(self):
++        """A bias that overflows after the temperature division must fail admission."""
++        for value in (1e39, -1e39, 3e38, 1.1 * LOGIT_BIAS_ABS_MAX):
++            with self.subTest(value=value):
++                with self.assertRaisesRegex(ValueError, "logit_bias"):
++                    self._make(logit_bias={"0": value}).verify(self.VOCAB_SIZE)
++        self._make(
++            logit_bias={"0": LOGIT_BIAS_ABS_MAX, "1": -LOGIT_BIAS_ABS_MAX}
++        ).verify(self.VOCAB_SIZE)
++
++    def test_stop_token_ids_outside_vocab_are_accepted(self):
++        """Stop IDs outside the vocab are accepted (they never match), not rejected."""
++        for token_id in (-1, self.VOCAB_SIZE, self.VOCAB_SIZE + 1):
++            with self.subTest(token_id=token_id):
++                self._make(stop_token_ids=[token_id], min_new_tokens=1).verify(
++                    self.VOCAB_SIZE
++                )
++
+     # --- sampling_seed ---
+     def test_sampling_seed_valid(self):
+         """Test that None (the default) and the int64 min/max boundaries are accepted."""

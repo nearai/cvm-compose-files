@@ -1,0 +1,141 @@
+diff --git a/python/sglang/srt/managers/io_struct.py b/python/sglang/srt/managers/io_struct.py
+index 98b70b4..01b36cc 100644
+--- a/python/sglang/srt/managers/io_struct.py
++++ b/python/sglang/srt/managers/io_struct.py
+@@ -155,6 +155,30 @@ class SessionParams(msgspec.Struct, kw_only=True, array_like=True):
+     # Not supported in streaming sessions.
+     drop_previous_output: Optional[bool] = None
+ 
++    def __post_init__(self):
++        if self.id is not None and not isinstance(self.id, str):
++            raise TypeError(
++                f"session_params.id must be a string or None, got {type(self.id).__name__}"
++            )
++        if self.rid is not None and not isinstance(self.rid, str):
++            raise TypeError(
++                f"session_params.rid must be a string or None, got {type(self.rid).__name__}"
++            )
++        if self.offset is not None and type(self.offset) is not int:
++            raise TypeError(
++                f"session_params.offset must be an integer or None, got {type(self.offset).__name__}"
++            )
++        if self.replace is not None and not isinstance(self.replace, bool):
++            raise TypeError(
++                f"session_params.replace must be a bool or None, got {type(self.replace).__name__}"
++            )
++        if self.drop_previous_output is not None and not isinstance(
++            self.drop_previous_output, bool
++        ):
++            raise TypeError(
++                f"session_params.drop_previous_output must be a bool or None, got {type(self.drop_previous_output).__name__}"
++            )
++
+ 
+ # Type definitions for multimodal input data
+ # Individual data item types for each modality
+diff --git a/python/sglang/srt/managers/tokenizer_manager.py b/python/sglang/srt/managers/tokenizer_manager.py
+index b1daf70..d2f0f41 100644
+--- a/python/sglang/srt/managers/tokenizer_manager.py
++++ b/python/sglang/srt/managers/tokenizer_manager.py
+@@ -1605,9 +1605,12 @@ class TokenizerManager(TokenizerControlMixin, TokenizerManagerScoreMixin):
+ 
+         # Build return object
+         if isinstance(obj, GenerateReqInput):
+-            session_params = (
+-                SessionParams(**obj.session_params) if obj.session_params else None
+-            )
++            try:
++                session_params = (
++                    SessionParams(**obj.session_params) if obj.session_params else None
++                )
++            except TypeError as e:
++                raise ValueError(f"Invalid session_params field type: {e}") from e
+ 
+             bootstrap_room = obj.bootstrap_room
+             if (
+diff --git a/python/sglang/srt/session/session_controller.py b/python/sglang/srt/session/session_controller.py
+index 41f29b1..d05b0a2 100644
+--- a/python/sglang/srt/session/session_controller.py
++++ b/python/sglang/srt/session/session_controller.py
+@@ -59,7 +59,7 @@ class SessionReqNode:
+ 
+         if self.req.finished_reason is None:
+             self.req.to_finish = FINISH_ABORT()
+-        del req_dict[self.req.rid]
++        req_dict.pop(self.req.rid, None)
+ 
+     def abort(self):
+         if self.req.finished_reason is None:
+@@ -242,8 +242,11 @@ class Session:
+                 last_req = last_req_node.req
+         elif session_params.replace:
+             if session_params.rid is None:
+-                for _, req_node in self.req_nodes.items():
+-                    req_node.clear(self.req_nodes)
++                # Iterate a snapshot: clear() removes the node and its subtree
++                # from req_nodes, so mutating the live dict raised in the scheduler.
++                for req_node in list(self.req_nodes.values()):
++                    if req_node.req.rid in self.req_nodes:
++                        req_node.clear(self.req_nodes)
+             else:
+                 if session_params.rid not in self.req_nodes:
+                     abort = True
+diff --git a/test/registered/unit/managers/test_io_struct.py b/test/registered/unit/managers/test_io_struct.py
+index a4395e7..8fbcb58 100644
+--- a/test/registered/unit/managers/test_io_struct.py
++++ b/test/registered/unit/managers/test_io_struct.py
+@@ -14,6 +14,7 @@ from sglang.srt.environ import envs
+ from sglang.srt.managers.io_struct import (
+     EmbeddingReqInput,
+     GenerateReqInput,
++    SessionParams,
+     TokenizedEmbeddingReqInput,
+     TokenizedGenerateReqInput,
+     msgpack_decode,
+@@ -1422,5 +1423,46 @@ class TestEmbeddingReqInputGetItem(CustomTestCase):
+             req.normalize_batch_and_arguments()
+ 
+ 
++class TestSessionParamsValidation(CustomTestCase):
++    def test_session_params_valid(self):
++        # All None
++        SessionParams()
++        # Fully filled valid
++        SessionParams(
++            id="sid", rid="rid", offset=5, replace=True, drop_previous_output=False
++        )
++
++    def test_session_params_invalid_types(self):
++        cases = [
++            ({"id": [123]}, "session_params.id must be a string or None"),
++            ({"rid": {}}, "session_params.rid must be a string or None"),
++            ({"offset": True}, "session_params.offset must be an integer or None"),
++            ({"offset": "100"}, "session_params.offset must be an integer or None"),
++            ({"replace": 1}, "session_params.replace must be a bool or None"),
++            (
++                {"drop_previous_output": 0},
++                "session_params.drop_previous_output must be a bool or None",
++            ),
++        ]
++        for kwargs, err_msg in cases:
++            with self.subTest(kwargs=kwargs):
++                with self.assertRaisesRegex(TypeError, err_msg):
++                    SessionParams(**kwargs)
++
++    def test_session_params_wraps_type_error_to_value_error(self):
++        """
++        Replicate the try-except logic inside tokenizer_manager.tokenize_generate_input
++        to verify TypeError from SessionParams construction is wrapped into ValueError.
++        """
++        from sglang.srt.managers.io_struct import SessionParams
++
++        bad_kwargs = {"id": 123}
++        with self.assertRaisesRegex(ValueError, "Invalid session_params"):
++            try:
++                session_params = SessionParams(**bad_kwargs)
++            except TypeError as e:
++                raise ValueError(f"Invalid session_params: {e}") from e
++
++
+ if __name__ == "__main__":
+     unittest.main()

@@ -180,7 +180,9 @@ nothing in this repo binds a host to a file. Deviations CI detects in live files
 | `pins.hf-revision` | 1 | a model loaded without a pinned revision |
 | `pins.remote-code` | 1 | remote code enabled for that model |
 | `layout.ext`, `layout.size` | 1 each | the adapter weights file in `adapters/` |
-| `public.domain` | 6 | an internal telemetry endpoint |
+| `public.domain` | 8 | an internal telemetry endpoint (6); in SGLang patches, a file name with a line number and an SSRF test host (2) |
+| `public.ignore` | 3 | linter markers in upstream SGLang source carried inside patches |
+| `public.ip` | 10 | SSRF test vectors in the diffusion URL-policy tests |
 | `public.host` | 27 | host names in config values, labels or service names |
 | `public.repo` | 2 | references to repositories outside the public allowlist |
 | `status.key-set` | 1 | a candidate with model downloaders its live file does not have |
