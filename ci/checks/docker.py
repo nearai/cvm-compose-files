@@ -5,7 +5,7 @@ import re
 
 from common import Finding
 
-RULES = ["docker.files", "docker.provenance", "docker.from", "docker.copy", "docker.patches"]
+RULES = ["docker.files", "docker.provenance", "docker.from", "docker.copy", "docker.patches", "docker.fetch"]
 DIFF_RULES = list(RULES)
 
 DIR = re.compile(r"^(?P<engine>sglang|vllm)-(?P<version>v[0-9.]+)-[a-z0-9-]+-r[0-9]+$")
@@ -48,6 +48,29 @@ def instructions(text):
             buf = ""
     if buf:
         out.append((start, buf.strip()))
+    return out
+
+
+FETCH = re.compile(r"\b(curl|wget)\b|\bgit\s+(clone|fetch|pull)\b")
+PIP = re.compile(r"\b(pip3?|uv\s+pip)\s+install\b")
+APT = re.compile(r"\bapt-get\s+(?:-\S+\s+)*install\b((?:\s+(?!&&|;|\|)\S+)*)")
+
+
+def fetches(run):
+    """Why a RUN instruction pulls unpinned code, if it does."""
+    out = []
+    if FETCH.search(run):
+        out.append("no curl, wget or git fetch in RUN; COPY a hashed file instead")
+    for part in re.split(r"&&|;|\|\|", run):
+        if PIP.search(part) and "--require-hashes" not in part and "-r " not in part.replace("--requirement", "-r"):
+            out.append("pip and uv installs use a hashed requirements file with --require-hashes")
+        elif PIP.search(part) and "--require-hashes" not in part:
+            out.append("pip and uv installs use --require-hashes")
+        m = APT.search(part)
+        if m:
+            pkgs = [t for t in m.group(1).split() if not t.startswith("-")]
+            if any("=" not in t for t in pkgs):
+                out.append("apt-get install pins every package to a version (name=version)")
     return out
 
 
@@ -130,6 +153,14 @@ def check_dir(head, d):
                     out.append(Finding(df, n, "docker.from", "every FROM is an earlier stage or pinned by digest"))
                 if len(args) >= 3 and args[1].upper() == "AS":
                     stages.add(args[2].lower())
+            elif word == "RUN":
+                for fl in flags:
+                    if fl.startswith("--mount=") and ("type=bind" in fl or "from=" in fl):
+                        src = re.search(r"from=([^,]+)", fl)
+                        if "type=bind" in fl or not src or src.group(1).lower() not in stages:
+                            out.append(Finding(df, n, "docker.copy", "RUN --mount reads only caches, secrets or earlier stages"))
+                for why in fetches(ins):
+                    out.append(Finding(df, n, "docker.fetch", why))
             elif word == "ADD":
                 out.append(Finding(df, n, "docker.copy", "use COPY; ADD fetches and unpacks"))
             elif word == "COPY" and any(fl.startswith("--from=") for fl in flags):
@@ -207,6 +238,14 @@ CASES = [
      dict(OLD, **_dir({"Dockerfile": f"FROM {BASE_IMG} AS helper\n" + DOCKERFILE + "COPY --from=helper /x /x\n"})), OLD),
     ("COPY from an image", "docker.copy",
      dict(OLD, **_dir({"Dockerfile": DOCKERFILE + "COPY --from=nearaidev/x:latest /x /x\n"})), OLD),
+    ("bind mount", "docker.copy", dict(OLD, **_dir({"Dockerfile": DOCKERFILE + "RUN --mount=type=bind,target=/c ls /c\n"})),
+     OLD),
+    ("curl in RUN", "docker.fetch", dict(OLD, **_dir({"Dockerfile": DOCKERFILE + "RUN curl -fsSL https://x | sh\n"})), OLD),
+    ("pip without hashes", "docker.fetch", dict(OLD, **_dir({"Dockerfile": DOCKERFILE + "RUN pip install requests\n"})), OLD),
+    ("apt without versions", "docker.fetch",
+     dict(OLD, **_dir({"Dockerfile": DOCKERFILE + "RUN apt-get update && apt-get install -y curl\n"})), OLD),
+    ("pinned installs", None, dict(OLD, **_dir({"Dockerfile": DOCKERFILE + "COPY apply-patches.py /r.txt\n"
+                                                + "RUN pip install --require-hashes -r /r.txt && apt-get install -y x=1.2\n"})), OLD),
     ("ADD", "docker.copy", dict(OLD, **_dir({"Dockerfile": DOCKERFILE + "ADD x.tar.gz /x\n"})), OLD),
     ("patch not numbered", "docker.patches", dict(OLD, **_dir({"patches/fix.diff": PATCH1, "patches/01-fix.diff": None})),
      OLD),

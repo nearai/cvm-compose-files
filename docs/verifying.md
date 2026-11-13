@@ -131,6 +131,7 @@ Images built from the build dirs in `docker/`. The source commit and build dir c
 BuildKit provenance (step 4); every source commit is on `main`. A short digest in `built FROM` is the
 prefix of another row of this table. A build dir that is no longer in `docker/` at `HEAD` is read at its
 source commit, like every other.
+Rows with tag `-` are base images of other rows; they stay in the registry so the chain can be followed.
 
 | digest (`sha256:`) | tag | build dir | source commit | built `FROM` |
 |---|---|---|---|---|
