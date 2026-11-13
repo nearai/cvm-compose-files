@@ -213,6 +213,11 @@ def check_workflows(ctx):
             if sorted(needs) != others:
                 out.append(Finding(p, find_line(text, r"^  all-green:"), "layout.all-green",
                                    "all-green.needs must list every other job"))
+            # A job or step that cannot fail would let all-green pass on a broken check.
+            for pat, what in ((r"(?m)^\s*continue-on-error\s*:", "continue-on-error"),
+                              (r"(?m)\|\|\s*(true|:)\s*$", "a command ending in `|| true`")):
+                if re.search(pat, text):
+                    out.append(Finding(p, find_line(text, pat), "layout.all-green", f"ci.yaml must not use {what}"))
             if ag.get("name", "all-green") != "all-green":
                 out.append(Finding(p, find_line(text, r"^  all-green:"), "layout.all-green",
                                    "all-green must keep its name"))
@@ -325,6 +330,12 @@ CASES = [
     ("ci.yaml drops a job", "layout.all-green",
      dict(BASE_FILES, **{".github/workflows/ci.yaml": WF_OK.replace(_job("lint"), "").replace(
          "guards, lint, secrets]", "guards, secrets]")}), BASE_FILES),
+    ("ci step that cannot fail", "layout.all-green",
+     dict(BASE_FILES, **{".github/workflows/ci.yaml": WF_OK.replace(
+         "python3 ci/run.py --self-test\n", "python3 ci/run.py --self-test || true\n")}), BASE_FILES),
+    ("ci job with continue-on-error", "layout.all-green",
+     dict(BASE_FILES, **{".github/workflows/ci.yaml": WF_OK.replace(
+         "  lint:\n", "  lint:\n    continue-on-error: true\n")}), BASE_FILES),
     ("all-green without always()", "layout.all-green",
      dict(BASE_FILES, **{".github/workflows/ci.yaml": WF_OK.replace("    if: always()\n", "")}), BASE_FILES),
     ("all-green counts results itself", "layout.all-green",
