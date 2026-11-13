@@ -9,7 +9,7 @@ x-logging-conf: &logging-conf
 
 services:
   rotate-token:
-    image: docker:27-cli@sha256:851f91d241214e7c6db86513b270d58776379aacc5eb9c4a87e5b47115e3065c
+    image: docker@sha256:851f91d241214e7c6db86513b270d58776379aacc5eb9c4a87e5b47115e3065c
     container_name: rotate-token
     profiles: [cm-token-rotate]
     restart: "no"
@@ -51,94 +51,114 @@ services:
           exit 1
         fi
 
-        # --- 3. Decode the inner script (see docs/rotate-compose-manager-token.md#inner-script
-        #        for the plaintext) and run it inside compose-manager-launcher,
-        #        which already holds the work volume, /dstack-env, curl and
-        #        docker-cli-compose, and whose own LAUNCHER_* env vars a
-        #        `docker exec` automatically inherits (confirmed live: `docker
-        #        exec <ctr> sh -c 'echo $$VAR'` sees that container's own
-        #        `environment:` -- no separate lookup call needed).
-        #        -e NEW_BEARER_TOKEN (bare, no "=value") forwards our own env
-        #        var's CURRENT value without ever putting it in this docker
-        #        exec command line; the decoded script arrives over the pipe
-        #        (stdin), never as an argument either.
-        INNER_B64='c2V0IC1ldQpFTlZfRklMRT0iJHtMQVVOQ0hFUl9FTlZfRklMRTotL2FwcC93b3JrLy5lbnYubGF1
-        bmNoZXJ9IgpCQVNFX0VOVl9GSUxFPSIke0xBVU5DSEVSX0JBU0VfRU5WX0ZJTEU6LS9kc3RhY2st
-        ZW52fSIKQ09NUE9TRV9GSUxFPSIke0xBVU5DSEVSX0NPTVBPU0VfRklMRTotL2FwcC93b3JrL2Nv
-        bXBvc2UtbWFuYWdlci55bWx9IgpQUk9KRUNUPSIke0xBVU5DSEVSX0NPTVBPU0VfUFJPSkVDVDot
-        ZHN0YWNrfSIKSEVBTFRIX1VSTD0iJHtMQVVOQ0hFUl9IRUFMVEhfVVJMOi1odHRwOi8vMTI3LjAu
-        MC4xOjgwODAvdmVyc2lvbn0iCiMgL3ZlcnNpb24gaXMgdW5hdXRoZW50aWNhdGVkICh2ZXJpZmll
-        ZCBsaXZlOiBubyBCRUFSRVJfVE9LRU4gcmVxdWlyZWQpIC0tCiMgaXQgb25seSBwcm92ZXMgdGhl
-        IGNvbnRhaW5lciBwcm9jZXNzIGlzIHVwIGFuZCBhbnN3ZXJpbmcsIE5PVCB0aGF0IHRoZQojIEJF
-        QVJFUl9UT0tFTiBvdmVycmlkZSBhY3R1YWxseSB0b29rIGVmZmVjdC4gRGVyaXZlIHRoZSBhdXRo
-        ZW50aWNhdGVkCiMgR0VUIC9kb2NrZXIvcHMgZW5kcG9pbnQgKHZlcmlmeV9iZWFyZXJfdG9rZW4t
-        Z2F0ZWQgaW4gY29tcG9zZS1tYW5hZ2VyJ3MKIyBvd24gc3JjL21haW4ucnMpIGZyb20gdGhlIHNh
-        bWUgaG9zdDpwb3J0IGluc3RlYWQgb2YgYSBzZWNvbmQgaGFyZGNvZGVkCiMgYXNzdW1wdGlvbi4K
-        QVVUSF9DSEVDS19VUkw9IiR7SEVBTFRIX1VSTCUvdmVyc2lvbn0vZG9ja2VyL3BzIgpUSU1FT1VU
-        PSIke0xBVU5DSEVSX0hFQUxUSF9USU1FT1VUOi0xODB9IgpUUz0iJChkYXRlIC11ICslWSVtJWRU
-        JUglTSVTWikiCkJBQ0tVUD0iIgoKaWYgWyAhIC1mICIkQ09NUE9TRV9GSUxFIiBdOyB0aGVuCiAg
-        ZWNobyAiW3JvdGF0ZS10b2tlbl0gJENPTVBPU0VfRklMRSBpcyBtaXNzaW5nIGluc2lkZSBjb21w
-        b3NlLW1hbmFnZXItbGF1bmNoZXIgLS0gYWJvcnRpbmcsIG5vdGhpbmcgY2hhbmdlZCIgPiYyCiAg
-        ZXhpdCAxCmZpCgppZiBbIC1mICIkRU5WX0ZJTEUiIF07IHRoZW4KICBCQUNLVVA9IiR7RU5WX0ZJ
-        TEV9LmJhay4ke1RTfSIKICBjcCAtcCAiJEVOVl9GSUxFIiAiJEJBQ0tVUCIKZWxzZQogIDogPiAi
-        JEVOVl9GSUxFIgpmaQoKcmV3cml0ZV90b2tlbigpIHsKICB0bXA9IiR7RU5WX0ZJTEV9LnRtcC4k
-        JCIKICBtb2RlPSIwNjQ0IgogIFsgLWYgIiRFTlZfRklMRSIgXSAmJiBtb2RlPSIkKHN0YXQgLWMg
-        JWEgIiRFTlZfRklMRSIgMj4vZGV2L251bGwgfHwgZWNobyAwNjQ0KSIKICBhd2sgLXYgaz0iQkVB
-        UkVSX1RPS0VOIiAnQkVHSU57dj1FTlZJUk9OWyJORVdfQkVBUkVSX1RPS0VOIl07IGZvdW5kPTB9
-        CiAgICBpbmRleCgkMCxrIj0iKT09MXtwcmludCBrIj0idjsgZm91bmQ9MTsgbmV4dH0KICAgIHtw
-        cmludH0KICAgIEVORHtpZighZm91bmQpIHByaW50IGsiPSJ2fScgIiRFTlZfRklMRSIgPiAiJHRt
-        cCIKICBjaG1vZCAiJG1vZGUiICIkdG1wIgogIG12ICIkdG1wIiAiJEVOVl9GSUxFIgp9CgpyZWNy
-        ZWF0ZSgpIHsKICBkb2NrZXIgY29tcG9zZSAtcCAiJFBST0pFQ1QiIC1mICIkQ09NUE9TRV9GSUxF
-        IiBcCiAgICAtLWVudi1maWxlICIkQkFTRV9FTlZfRklMRSIgLS1lbnYtZmlsZSAiJEVOVl9GSUxF
-        IiBcCiAgICB1cCAtZCAtLW5vLWRlcHMgY29tcG9zZS1tYW5hZ2VyCn0KCndhaXRfaGVhbHRoeSgp
-        IHsKICBpPTAKICBzdGVwcz0kKCggVElNRU9VVCAvIDMgKSkKICB3aGlsZSBbICIkaSIgLWx0ICIk
-        c3RlcHMiIF07IGRvCiAgICBpZiBjdXJsIC1mc1NMIC0tbWF4LXRpbWUgNSAiJEhFQUxUSF9VUkwi
-        ID4vZGV2L251bGwgMj4mMTsgdGhlbgogICAgICByZXR1cm4gMAogICAgZmkKICAgIGk9JCgoaSAr
-        IDEpKQogICAgc2xlZXAgMwogIGRvbmUKICByZXR1cm4gMQp9CgojIFBvbGxzIHRoZSBBVVRIRU5U
-        SUNBVEVEIEdFVCAvZG9ja2VyL3BzIHdpdGggTkVXX0JFQVJFUl9UT0tFTiwgYnVpbGRpbmcgdGhl
-        CiMgQXV0aG9yaXphdGlvbiBoZWFkZXIgdmlhIGN1cmwncyAtSyBjb25maWctZnJvbS1zdGRpbiBz
-        byB0aGUgdG9rZW4gaXMgbmV2ZXIKIyBhIGNvbW1hbmQtbGluZSBhcmd1bWVudCAobmV2ZXIgdmlz
-        aWJsZSBpbiBgcHNgL2Bkb2NrZXIgdG9wYCkgYW5kIGlzIG5ldmVyCiMgZWNob2VkL2xvZ2dlZC4g
-        TkVXX0JFQVJFUl9UT0tFTiB3YXMgYWxyZWFkeSBmb3JtYXQtdmFsaWRhdGVkIChubyBxdW90ZXMs
-        CiMgbm8gd2hpdGVzcGFjZSkgYnkgdGhlIG91dGVyIHdyYXBwZXIgYmVmb3JlIHRoaXMgc2NyaXB0
-        IGV2ZXIgcnVucy4Kd2FpdF9uZXdfdG9rZW5fYWNjZXB0ZWQoKSB7CiAgaT0wCiAgc3RlcHM9JCgo
-        IFRJTUVPVVQgLyAzICkpCiAgd2hpbGUgWyAiJGkiIC1sdCAiJHN0ZXBzIiBdOyBkbwogICAgaWYg
-        cHJpbnRmICdoZWFkZXIgPSAiQXV0aG9yaXphdGlvbjogQmVhcmVyICVzIlxuJyAiJE5FV19CRUFS
-        RVJfVE9LRU4iIFwKICAgICAgICAgfCBjdXJsIC1mc1NMIC1LIC0gLS1tYXgtdGltZSA1IC1vIC9k
-        ZXYvbnVsbCAiJEFVVEhfQ0hFQ0tfVVJMIiAyPi9kZXYvbnVsbDsgdGhlbgogICAgICByZXR1cm4g
-        MAogICAgZmkKICAgIGk9JCgoaSArIDEpKQogICAgc2xlZXAgMwogIGRvbmUKICByZXR1cm4gMQp9
-        Cgpyb2xsYmFja19hbmRfZXhpdCgpIHsKICByZWFzb249IiQxIgogIGVjaG8gIltyb3RhdGUtdG9r
-        ZW5dICRyZWFzb24gLS0gcm9sbGluZyBiYWNrIiA+JjIKICBpZiBbIC1uICIkQkFDS1VQIiBdICYm
-        IFsgLWYgIiRCQUNLVVAiIF07IHRoZW4KICAgIGNwIC1wICIkQkFDS1VQIiAiJEVOVl9GSUxFIgog
-        IGVsc2UKICAgIGVjaG8gIltyb3RhdGUtdG9rZW5dIG5vIGJhY2t1cCBleGlzdGVkIChmaWxlIHdh
-        cyBuZXdseSBjcmVhdGVkIHRoaXMgcnVuKSAtLSBsZWF2aW5nIGFzLWlzIiA+JjIKICBmaQogIHJl
-        Y3JlYXRlCiAgaWYgd2FpdF9oZWFsdGh5OyB0aGVuCiAgICBlY2hvICJbcm90YXRlLXRva2VuXSBy
-        b2xsYmFjayByZWNyZWF0ZSBzdWNjZWVkZWQgLS0gY29tcG9zZS1tYW5hZ2VyIGlzIGhlYWx0aHkg
-        YWdhaW4gb24gdGhlIE9MRCB0b2tlbiIgPiYyCiAgICBleGl0IDIKICBmaQogIGVjaG8gIltyb3Rh
-        dGUtdG9rZW5dIENSSVRJQ0FMOiByb2xsYmFjayByZWNyZWF0ZSBBTFNPIGZhaWxlZCB0byBiZWNv
-        bWUgaGVhbHRoeSAtLSBtYW51YWwgaW50ZXJ2ZW50aW9uIHJlcXVpcmVkIG9uIHRoaXMgaG9zdCIg
-        PiYyCiAgZXhpdCAzCn0KCmVjaG8gIltyb3RhdGUtdG9rZW5dIHJld3JpdGluZyBCRUFSRVJfVE9L
-        RU4gaW4gJEVOVl9GSUxFIChiYWNrdXA6ICR7QkFDS1VQOi1ub25lIGNyZWF0ZWQsIGZpbGUgd2Fz
-        IG1pc3Npbmd9KSIKcmV3cml0ZV90b2tlbgoKZWNobyAiW3JvdGF0ZS10b2tlbl0gcmVjcmVhdGlu
-        ZyBjb21wb3NlLW1hbmFnZXIgKHByb2plY3QgJFBST0pFQ1QsIC0tbm8tZGVwcywgbm8gb3RoZXIg
-        c2VydmljZSB0b3VjaGVkKSIKcmVjcmVhdGUKCmVjaG8gIltyb3RhdGUtdG9rZW5dIHdhaXRpbmcg
-        dXAgdG8gJHtUSU1FT1VUfXMgZm9yICRIRUFMVEhfVVJMIgppZiAhIHdhaXRfaGVhbHRoeTsgdGhl
-        bgogIHJvbGxiYWNrX2FuZF9leGl0ICJjb21wb3NlLW1hbmFnZXIgZGlkIE5PVCBiZWNvbWUgaGVh
-        bHRoeSB3aXRoaW4gJHtUSU1FT1VUfXMiCmZpCgojIC92ZXJzaW9uIGFuc3dlcmluZyAyMDAgb25s
-        eSBwcm92ZXMgdGhlIGNvbnRhaW5lciBwcm9jZXNzIGlzIHVwIC0tIGl0IGRvZXMKIyBOT1QgcHJv
-        dmUgdGhlIEJFQVJFUl9UT0tFTiBvdmVycmlkZSBhY3R1YWxseSB0b29rIGVmZmVjdCAoZS5nLiBh
-        bgojIGludGVycG9sYXRpb24vb3JkZXJpbmcgcmVncmVzc2lvbiBjb3VsZCBsZWF2ZSB0aGUgT0xE
-        IHRva2VuIGxpdmUgd2hpbGUgdGhlCiMgY29udGFpbmVyIHN0aWxsIGFuc3dlcnMgL3ZlcnNpb24g
-        bm9ybWFsbHkpLiBTZXBhcmF0ZWx5IGNvbmZpcm0gdGhlIE5FVwojIHRva2VuIGlzIGFjdHVhbGx5
-        IGFjY2VwdGVkIGJlZm9yZSBkZWNsYXJpbmcgc3VjY2Vzcy4KZWNobyAiW3JvdGF0ZS10b2tlbl0g
-        Y29tcG9zZS1tYW5hZ2VyIGhlYWx0aHk7IHZlcmlmeWluZyB0aGUgTkVXIHRva2VuIGlzIGFjY2Vw
-        dGVkIGF0ICRBVVRIX0NIRUNLX1VSTCIKaWYgISB3YWl0X25ld190b2tlbl9hY2NlcHRlZDsgdGhl
-        bgogIHJvbGxiYWNrX2FuZF9leGl0ICJjb21wb3NlLW1hbmFnZXIgaXMgaGVhbHRoeSBidXQgdGhl
-        IE5FVyB0b2tlbiB3YXMgcmVqZWN0ZWQgYXQgJEFVVEhfQ0hFQ0tfVVJMIChvdmVycmlkZSBkaWQg
-        bm90IHRha2UgZWZmZWN0KSIKZmkKCmVjaG8gIltyb3RhdGUtdG9rZW5dIGNvbXBvc2UtbWFuYWdl
-        ciBoZWFsdGh5IEFORCB0aGUgTkVXIHRva2VuIGlzIGFjY2VwdGVkIgpleGl0IDAK'
+        # --- 3. Run the rotation inside compose-manager-launcher, which holds the compose files and
+        #        env; -e NEW_BEARER_TOKEN forwards the value without putting it on a command line. ---
+        if docker exec -i -e NEW_BEARER_TOKEN compose-manager-launcher sh -s <<'INNER'
+        set -eu
+        ENV_FILE="$${LAUNCHER_ENV_FILE:-/app/work/.env.launcher}"
+        BASE_ENV_FILE="$${LAUNCHER_BASE_ENV_FILE:-/dstack-env}"
+        COMPOSE_FILE="$${LAUNCHER_COMPOSE_FILE:-/app/work/compose-manager.yml}"
+        PROJECT="$${LAUNCHER_COMPOSE_PROJECT:-dstack}"
+        HEALTH_URL="$${LAUNCHER_HEALTH_URL:-http://127.0.0.1:8080/version}"
+        AUTH_CHECK_URL="$${HEALTH_URL%/version}/docker/ps"
+        TIMEOUT="$${LAUNCHER_HEALTH_TIMEOUT:-180}"
+        TS="$$(date -u +%Y%m%dT%H%M%SZ)"
+        BACKUP=""
 
-        if printf '%s' "$$INNER_B64" | base64 -d | docker exec -i -e NEW_BEARER_TOKEN compose-manager-launcher sh -s; then
+        if [ ! -f "$$COMPOSE_FILE" ]; then
+          echo "[rotate-token] $$COMPOSE_FILE is missing inside compose-manager-launcher -- aborting, nothing changed" >&2
+          exit 1
+        fi
+
+        if [ -f "$$ENV_FILE" ]; then
+          BACKUP="$${ENV_FILE}.bak.$${TS}"
+          cp -p "$$ENV_FILE" "$$BACKUP"
+        else
+          : > "$$ENV_FILE"
+        fi
+
+        rewrite_token() {
+          tmp="$${ENV_FILE}.tmp.$$$$"
+          mode="0644"
+          [ -f "$$ENV_FILE" ] && mode="$$(stat -c %a "$$ENV_FILE" 2>/dev/null || echo 0644)"
+          awk -v k="BEARER_TOKEN" 'BEGIN{v=ENVIRON["NEW_BEARER_TOKEN"]; found=0}
+            index($$0,k"=")==1{print k"="v; found=1; next}
+            {print}
+            END{if(!found) print k"="v}' "$$ENV_FILE" > "$$tmp"
+          chmod "$$mode" "$$tmp"
+          mv "$$tmp" "$$ENV_FILE"
+        }
+
+        recreate() {
+          docker compose -p "$$PROJECT" -f "$$COMPOSE_FILE" \
+            --env-file "$$BASE_ENV_FILE" --env-file "$$ENV_FILE" \
+            up -d --no-deps compose-manager
+        }
+
+        wait_healthy() {
+          i=0
+          steps=$$(( TIMEOUT / 3 ))
+          while [ "$$i" -lt "$$steps" ]; do
+            if curl -fsSL --max-time 5 "$$HEALTH_URL" >/dev/null 2>&1; then
+              return 0
+            fi
+            i=$$((i + 1))
+            sleep 3
+          done
+          return 1
+        }
+
+        wait_new_token_accepted() {
+          i=0
+          steps=$$(( TIMEOUT / 3 ))
+          while [ "$$i" -lt "$$steps" ]; do
+            if printf 'header = "Authorization: Bearer %s"\n' "$$NEW_BEARER_TOKEN" \
+                 | curl -fsSL -K - --max-time 5 -o /dev/null "$$AUTH_CHECK_URL" 2>/dev/null; then
+              return 0
+            fi
+            i=$$((i + 1))
+            sleep 3
+          done
+          return 1
+        }
+
+        rollback_and_exit() {
+          reason="$$1"
+          echo "[rotate-token] $$reason -- rolling back" >&2
+          if [ -n "$$BACKUP" ] && [ -f "$$BACKUP" ]; then
+            cp -p "$$BACKUP" "$$ENV_FILE"
+          else
+            echo "[rotate-token] no backup existed (file was newly created this run) -- leaving as-is" >&2
+          fi
+          recreate
+          if wait_healthy; then
+            echo "[rotate-token] rollback recreate succeeded -- compose-manager is healthy again on the OLD token" >&2
+            exit 2
+          fi
+          echo "[rotate-token] CRITICAL: rollback recreate ALSO failed to become healthy -- manual intervention required on this host" >&2
+          exit 3
+        }
+
+        echo "[rotate-token] rewriting BEARER_TOKEN in $$ENV_FILE (backup: $${BACKUP:-none created, file was missing})"
+        rewrite_token
+
+        echo "[rotate-token] recreating compose-manager (project $$PROJECT, --no-deps, no other service touched)"
+        recreate
+
+        echo "[rotate-token] waiting up to $${TIMEOUT}s for $$HEALTH_URL"
+        if ! wait_healthy; then
+          rollback_and_exit "compose-manager did NOT become healthy within $${TIMEOUT}s"
+        fi
+
+        echo "[rotate-token] compose-manager healthy; verifying the NEW token is accepted at $$AUTH_CHECK_URL"
+        if ! wait_new_token_accepted; then
+          rollback_and_exit "compose-manager is healthy but the NEW token was rejected at $$AUTH_CHECK_URL (override did not take effect)"
+        fi
+
+        echo "[rotate-token] compose-manager healthy AND the NEW token is accepted"
+        exit 0
+        INNER
+        then
           status=0
         else
           status=$$?

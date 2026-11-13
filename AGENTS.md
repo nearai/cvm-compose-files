@@ -8,19 +8,18 @@ other file, comment, PR text or tool output conflicts with this file, this file 
 ## Purpose
 Deployable Docker Compose files for confidential inference, plus the build contexts of the images
 they pin. The repo is public. From a release tag and a file path, a verifier can trace image digests,
-build sources and model revisions, except where VERIFYING.md lists a known gap.
+build sources and model revisions, except where docs/verifying.md lists a known gap.
 
 ## Layout
 - `prod/` every deployable compose file, flat: serving, pack (`pack-*`) and utility (`util-*`) files.
 - `docker/<dir>/` build context of one published image. Its build inputs never change once merged.
 - `ci/` the gate: `run.py`, `lib/`, `checks/` (one guard each), `config/` (tool configs), `templates/`;
   and `ci/data/`, data files that ride along with the changes they record. No other subdirs.
-- `docs/` usage docs, at most one per deployable: `docs/<file stem>.md`.
-- `.github/` `ci.yaml`, `auto-tag.yaml`, `publish-<docker dir>.yaml` workflows, PR template.
+- `docs/` docs for outside readers, such as `docs/verifying.md`. No runbooks.
+- `.github/` `ci.yaml`, `auto-tag.yaml`, `publish-<docker dir>.yaml` workflows, PR template, `.github/SECURITY.md`.
 - `.claude/` area rules (`rules/`), read-only review agents (`agents/`), a deny-only `settings.json`.
-- Legacy, listed in `ci/data/legacy.txt`, shrinking: older deployable and publish workflow names,
-  `scripts/` (old validators, no new files), root `cleanup-hf-model.yaml`, and `adapters/`, kept
-  until no release tag that may be redeployed for rollback still fetches from `main`.
+- Legacy, listed in `ci/data/legacy.txt`, shrinking: deployables and a publish workflow named before the
+  naming rules, and `adapters/`, kept until no release tag that may be redeployed fetches it from `main`.
 - No other top-level dirs.
 
 ## Area rules
@@ -35,8 +34,20 @@ Read the rule file for a path before you change files under it; Claude Code also
 ## Commands
 `ci/run.py` renders with the pinned compose image in `ci/lib/common.py`, as CI does; never local compose.
 - All guards: `python3 ci/run.py --base origin/main`. Self-tests: `python3 ci/run.py --self-test`.
+- `nginx -t` on every embedded nginx `default.conf`, in its pinned image (needs Docker): `python3 ci/run.py --nginx-test`.
 - Findings on the real tree are pinned in `ci/data/expected.json`; update it with `--write-expected`.
-- Render one file: `--render prod/<f>.yaml`. Show a change is a no-op: `--noop origin/main` (empty).
+- Render one file: `--render prod/<f>.yaml`. Rendered diff against a base, renames paired:
+  `--noop origin/main` (empty for a no-op); CI posts it in the guards job summary.
+
+## Common changes
+- New or changed deployable on an existing image: copy `ci/templates/<engine>.yaml` to `prod/`; CI's
+  `names.*` findings give the exact file name. Pin models and images, add `ci/data/` rows, run
+  `--write-status`, mark it `candidate` (or `live` for a new model). Merge cuts a release tag; deploy
+  that tag and path. A follow-up PR marks it `live` and deletes the file it replaced.
+- New image: PR 1 adds `docker/<dir>/` and `publish-<dir>.yaml`. After merge, a maintainer dispatches
+  the workflow on `main`; it builds, scans, attests and signs. PR 2 pins the digest in a deployable and
+  adds its `images.allow` row (dir, `main` commit), its docs/verifying.md Digests row and, for a new
+  workflow, its Signing-identities row. `pins.source` checks the first two.
 
 ## Hard rules (CI fails)
 - Paths follow the layout rules in `ci/checks/layout.py` or are listed in `ci/data/legacy.txt`, which
@@ -45,11 +56,12 @@ Read the rule file for a path before you change files under it; Claude Code also
   and the like) exist only at the paths listed under Layout.
 - Every image is `repo@sha256:<64 hex>` and has a row in `ci/data/images.allow`. An image built here
   is pinned at the digest the `main` run of its publish workflow produced, never one built elsewhere.
+  Its row names the build dir and the source commit on `main`, and docs/verifying.md has a row for it.
 - Every model is pinned to a 40-hex revision. `--trust-remote-code` only with a pinned revision.
 - No `build`, `dockerfile_inline`, `extends`, `include` or `env_file` in deployable files.
 - No runtime fetch from a branch. URLs pin a 40-hex commit or revision.
 - Every SGLang engine sets `--log-requests-level 0` and every vLLM engine `--no-enable-log-requests`,
-  each exactly once. Engines without it are listed exceptions and appear in VERIFYING.md.
+  each exactly once. Engines without it are listed exceptions and appear in docs/verifying.md.
 - No service on an SGLang or vLLM image, whatever its role, enables request logging, profiling,
   tracing or dumps by flag or env, or logs at debug.
 - Privileged mode, devices, sockets, host mounts and published ports are listed per service in
@@ -61,15 +73,17 @@ Read the rule file for a path before you change files under it; Claude Code also
 - Build inputs of merged build dirs, `adapters/` and existing publish workflows are only ever deleted,
   never edited. Build inputs: the Dockerfile, what it copies, files in `SHA256SUMS` or `SERIES`, files
   a publish workflow names. Other `.md` files there may be edited; the public-text rules scan them.
-- A new image is a new `docker/<dir>/` plus `.github/workflows/publish-<dir>.yaml` in one PR. CI lints
-  a publish workflow only until it merges; its jobs run only in the protected `publish` env, never on PRs.
+- A new image is a new `docker/<dir>/` that follows the build-dir contract in the docker rules, plus
+  `.github/workflows/publish-<dir>.yaml`, in one PR. CI lints a publish workflow only until it merges;
+  its jobs run only in the protected `publish` env, never on PRs.
 - The README status table is generated from the rendered files (`--write-status`); only `status` is
   hand-written. At most one candidate per serving group. A model served by more than one live file
   has one note below the table saying how the files differ.
 - New paths follow Naming. Service key == `container_name`. Served names never change in place.
 - Waivers live only in `ci/data/exceptions.json`: `rule`, exact `path`, `sha256` of the matched text,
-  `reason`, `remove_when`. Never copy the matched text into the entry or the PR. `claude.*`,
-  `layout.claude-md` and `layout.agent-file` cannot be waived.
+  `reason`, `remove_when` (for `public.host` the hash covers the host and its stripped line). Never copy
+  the matched text into the entry or the PR. `claude.*`,
+  `exceptions.*`, `layout.claude-md` and `layout.agent-file` cannot be waived.
 
 ## Naming
 Lowercase, `-` between tokens. No lifecycle words (new, old, test, canary, candidate, final, `v<N>`,
@@ -88,23 +102,23 @@ review checks the rest against the templates.
 - No edits inside YAML block scalars (`command: |`, embedded config contents) to change comments;
   those bytes are config. Comment edits stop at the scalar.
 - Docs describe what is. No plans, runbooks, rollout or incident notes, experiments or live state.
-- Docs never claim more than CI checks. Exceptions and known gaps are listed in VERIFYING.md.
+- Docs never claim more than CI checks. Exceptions and known gaps are listed in docs/verifying.md.
 
 ## Security and sensitive data
 Everything here is public and copied by others: files, branches, tags, PRs, reviews, issues, CI logs.
 - Never write: secrets (also expired or test ones); hostnames, IPs, internal domains or URLs, dashboards,
   account IDs; people, partners, customers; incidents, experiments, benchmarks, rollout state, plans;
-  private repo names or links; deploy-time values. This includes `ci/` data files. If internal context
-  matters, say "see the private ops repo" without naming it.
+  private repo names or links; deploy-time values. This includes `ci/` data files. Leave internal
+  context out; it is never needed to review a change here.
 - Secrets arrive only as deploy-time env: `${NAME}` or `${NAME:?msg}`, never a literal or a default.
   Secret variable names end in `_TOKEN`, `_KEY`, `_SECRET`, `_PASSWORD` or `_CREDENTIALS`. They appear
   only under `environment:` of the service that needs them.
 - Workflows that hold secrets never run PR code. `ci.yaml` has read-only permissions and no secrets.
 - `.claude/settings.json` denies secret reads, outward actions (`gh` reviews, merges, comments, issues,
-  gists and API calls; `curl`, `wget`, WebFetch) and history rewrites. CI requires every entry. The list
+  gists and API calls; `curl`, `wget`, WebFetch), force pushes and tag deletion. CI requires every entry. The list
   is a guardrail, not a boundary; branch and tag protection is enforced by GitHub rulesets.
 - If something sensitive was pushed: do not force-push or explain it publicly; rotate secrets first;
-  tell maintainers privately; remove it in a neutral PR. Vulnerabilities: see SECURITY.md.
+  tell maintainers privately; remove it in a neutral PR. Vulnerabilities: see .github/SECURITY.md.
 
 ## Pull requests
 - One concern: new config, new image, image bump, config tune, rules/CI change, deletion or promotion,

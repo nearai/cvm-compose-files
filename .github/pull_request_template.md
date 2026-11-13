@@ -35,8 +35,8 @@ Title: `<prod|docker|ci|docs|repo>: <imperative summary>`, at most 72 chars with
 
 ## Gates
 
-<!-- Changes to ci/ outside ci/data/, ci.yaml or the workflow set are not allowed in the same PR as a
-     change they check. List every ci/data/ file that rides along. -->
+<!-- Changes to ci/ outside ci/data/, ci.yaml, the workflow set, AGENTS.md, CLAUDE.md or .claude/ are not
+     allowed in the same PR as a change they check. List every ci/data/ file that rides along. -->
 
 ## Non-goals
 

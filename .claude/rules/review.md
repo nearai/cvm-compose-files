@@ -12,14 +12,14 @@ Review from a worktree of the base branch, so the change cannot edit the rules o
       reject if the PR body does not name it.
 - [ ] Check the Gates rule in AGENTS.md (Pull requests); reject a gate change mixed with what it checks.
 - [ ] Check waiver entries and PR text; reject if either copies the matched text (AGENTS.md, Hard rules).
-- [ ] Check prose (README, VERIFYING, comments, PR text) against the config; reject if it claims more.
+- [ ] Check prose (README, docs/verifying.md, comments, PR text) against the config; reject if it claims more.
 - [ ] Check for names of people, partners or customers and other leaks CI cannot see; reject any.
 - [ ] Check new variables; reject a secret-like one without a secret suffix.
 - [ ] Check naming, header, key and service order and labels against the templates; reject if
       `config_variant` did not change when it had to.
-- [ ] Check docs: one per deployable, links resolve; reject a removed row in the VERIFYING.md signing
+- [ ] Check docs: no runbooks, links resolve; reject a removed row in the docs/verifying.md signing
       identity table.
-- [ ] Check that changed files updated their references (README table, `ci/data/`, VERIFYING.md); reject
+- [ ] Check that changed files updated their references (README table, `ci/data/`, docs/verifying.md); reject
       if one is stale.
 - [ ] Check rule text (AGENTS.md, `.claude/`) against the code; reject a contradiction or a rule stated
       twice.

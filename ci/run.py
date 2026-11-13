@@ -8,6 +8,7 @@
   run.py --noop <rev>     rendered diff of every deployable between <rev> and the working tree
   run.py --write-expected rewrite ci/data/expected.json from the working tree
   run.py --write-status   rewrite the README status table from the rendered files, keeping each status
+  run.py --nginx-test     nginx -t of every nginx default.conf, in its pinned image (needs Docker)
 
 Supported Python: 3.12, the python3 of the ubuntu-24.04 runner; CI fails on any other version. Stdlib only.
 """
@@ -22,19 +23,23 @@ import sys
 sys.path[:0] = [os.path.join(os.path.dirname(os.path.abspath(__file__)), d) for d in ("lib", "checks")]
 
 import claude
+import docker
 import frozen
 import layout
+import names
+import nginx
 import pins
 import privacy
 import public
+import stack
 import status
 from common import (
     EXCEPTIONS, EXPECTED, IMAGES, ROOT, SERVICES, TEMPLATES, Finding, RenderError, Renderer, Tree, env_lines, git,
-    load_json, render_dir, sha256,
+    git_history, load_json, render_dir, sha256,
 )
 
-GUARDS = [layout, status, pins, privacy, public, frozen, claude]
-RULES = ["run.render", "exceptions.format", "exceptions.unused"]
+GUARDS = [layout, status, pins, privacy, public, frozen, claude, stack, nginx, docker, names]
+RULES = ["run.render", "exceptions.format", "exceptions.unused", "exceptions.counts"]
 ALL_RULES = RULES + [r for g in GUARDS for r in g.RULES]
 ENTRY_KEYS = {"rule", "path", "sha256", "reason", "remove_when"}
 # Rules that guard the agent setup and the waivers themselves.
@@ -43,13 +48,19 @@ UNWAIVABLE = {"layout.claude-md", "layout.agent-file"}
 
 
 class Context:
-    def __init__(self, head, base=None, rendered=None, rendered_base=None, name_status=(), commits=(), pr=None):
+    def __init__(self, head, base=None, rendered=None, rendered_base=None, name_status=(), commits=(), pr=None,
+                 raw=None, history=None):
         self.head, self.base = head, base
+        # Source commits are checked against git history; fixtures pass their own answers or skip it.
+        # Ancestry is tested against the base (main), never the PR head, so a commit only on the branch fails.
+        on = base.rev if base is not None and base.rev else "HEAD"
+        self.history = history if history is not None else (
+            None if head.fixture else (lambda c, d: git_history(c, d, on)))
         self.bootstrap = base is not None and not base.has("ci/lib/common.py")
         self.services_allow = load_json(head, SERVICES, {})
         self.services_allow_base = load_json(base, SERVICES, {}) if base else {}
         self.templates = [t for t in TEMPLATES if head.has(t)]
-        self._rendered, self._rendered_base = rendered, rendered_base
+        self._rendered, self._rendered_base, self._raw = rendered, rendered_base, raw
         self.name_status, self.commits, self.pr = list(name_status), list(commits), pr or {}
         self.render_errors = []
 
@@ -62,6 +73,10 @@ class Context:
 
     def rendered(self, path):
         return self._get(self._rendered, path) if self._rendered else None
+
+    def raw(self, path):
+        """The render with `${NAME:-default}` and `$$` kept as written; see stack.py."""
+        return self._get(self._raw, path) if self._raw else None
 
     def rendered_base(self, path):
         return self._get(self._rendered_base, path) if self._rendered_base else None
@@ -110,7 +125,30 @@ def apply_exceptions(ctx, findings):
     for k, i in sorted(valid.items(), key=lambda x: x[1]):
         if k not in used and k[1] not in unrendered:
             out.append(Finding(EXCEPTIONS, 0, "exceptions.unused", f"entry {i + 1} ({k[0]} {k[1]}) matches nothing"))
-    return out
+    return out + waiver_counts(ctx.head, [e for e in entries if isinstance(e, dict)])
+
+
+VERIFYING = "docs/verifying.md"
+COUNT_ROW = re.compile(r"^\| ((?:`[a-z0-9.-]+`(?:, )?)+) \| (\d+)(?: each)? \|")
+
+
+def waiver_counts(head, entries):
+    """The per-rule counts in docs/verifying.md equal the entries in exceptions.json."""
+    if not head.has(VERIFYING):
+        return []
+    actual, documented, line = {}, {}, 0
+    for e in entries:
+        actual[str(e.get("rule"))] = actual.get(str(e.get("rule")), 0) + 1
+    for n, text in enumerate(head.text(VERIFYING).splitlines(), 1):
+        m = COUNT_ROW.match(text)
+        if m:
+            line = line or n
+            for rule in re.findall(r"`([^`]+)`", m.group(1)):
+                documented[rule] = int(m.group(2))
+    if documented == actual or not (documented or actual):
+        return []
+    diff = sorted(r for r in set(documented) | set(actual) if documented.get(r) != actual.get(r))
+    return [Finding(VERIFYING, line, "exceptions.counts", "waiver counts differ from exceptions.json for " + ", ".join(diff))]
 
 
 def run_guards(ctx, guards=GUARDS):
@@ -170,9 +208,9 @@ def probe_lines(head, rendered):
     return sorted(out)
 
 
-def expected_doc(head, rendered):
+def expected_doc(head, rendered, raw=None):
     """Raw findings (before exceptions) of a head-only run, plus the probe results."""
-    ctx = Context(head, None, rendered)
+    ctx = Context(head, None, rendered, raw=raw)
     findings = [f for g in GUARDS for f in g.check(ctx)]
     lines = sorted({f"{f.rule} {f.path} {sha256(f.key)}" for f in findings})
     return {"findings": lines, "probes": probe_lines(head, rendered)}
@@ -223,7 +261,9 @@ def case_ctx(case):
     rendered_base = case[5] if len(case) > 5 else None
     extra = case[6] if len(case) > 6 else {}
     return Context(_tree(files), _tree(base), _fake(rendered), _fake(rendered_base),
-                   extra.get("name_status", ()), extra.get("commits", ()), extra.get("pr"))
+                   extra.get("name_status", ()), extra.get("commits", ()), extra.get("pr"),
+                   raw=_fake(extra.get("raw")),
+                   history=(lambda c, d, ok=extra["history"]: (c, d) in ok) if "history" in extra else None)
 
 
 GOOD_EX = [{"rule": "layout.ext", "path": "prod/a.bin", "sha256": sha256("prod/a.bin"), "reason": "r",
@@ -240,6 +280,10 @@ RUN_CASES = [
     ("waiver of layout.claude-md", "exceptions.format",
      {"prod/a.bin": "x", "CLAUDE.md": "x", "ci/data/exceptions.json": json.dumps(
          GOOD_EX + [dict(GOOD_EX[0], rule="layout.claude-md", path="CLAUDE.md", sha256=sha256("CLAUDE.md"))])}, None),
+    ("waiver counts documented", None, {"prod/a.bin": "x", "ci/data/exceptions.json": json.dumps(GOOD_EX),
+                                         "docs/verifying.md": "| `layout.ext` | 1 | x |\n"}, None),
+    ("waiver count stale", "exceptions.counts", {"prod/a.bin": "x", "ci/data/exceptions.json": json.dumps(GOOD_EX),
+                                                 "docs/verifying.md": "| `layout.ext` | 2 | x |\n"}, None),
     ("unused exception", "exceptions.unused",
      {"prod/a.yaml": "x", "ci/data/exceptions.json": json.dumps([dict(GOOD_EX[0], path="prod/a.yaml")])}, None),
 ]
@@ -345,7 +389,7 @@ def real_ctx(base_rev):
                 sha, parents, msg = x.strip("\n").split("\0", 2)
                 commits.append((sha, msg, len(parents.split()) > 1))
     ctx = Context(head, base, Renderer(head, sa), Renderer(base, load_json(base, SERVICES, {}) or sa) if base else None,
-                  name_status, commits, public.env_pr())
+                  name_status, commits, public.env_pr(), raw=Renderer(head, sa, interpolate=False))
     return ctx
 
 
@@ -358,9 +402,12 @@ def main():
     ap.add_argument("--noop")
     ap.add_argument("--write-expected", action="store_true")
     ap.add_argument("--write-status", action="store_true")
+    ap.add_argument("--nginx-test", action="store_true")
     a = ap.parse_args()
     if a.self_test:
         return self_test()
+    if a.nginx_test:
+        return nginx_test()
     if a.list_deployables:
         print("\n".join(Tree().deployables()))
         return 0
@@ -372,14 +419,15 @@ def main():
         return noop(a.noop)
     if a.write_expected:
         head = Tree()
-        write_expected(expected_doc(head, Renderer(head, load_json(head, SERVICES, {}))))
+        sa = load_json(head, SERVICES, {})
+        write_expected(expected_doc(head, Renderer(head, sa), Renderer(head, sa, interpolate=False)))
         return 0
     if a.write_status:
         text = status.write_status(real_ctx(None))
         with open(os.path.join(ROOT, "README.md"), "w") as f:
             f.write(text)
         return 0
-    ctx = real_ctx(a.base)
+    ctx = real_ctx(a.base or None)
     if ctx.base is None:
         for g in GUARDS:
             for r in g.DIFF_RULES:
@@ -388,11 +436,29 @@ def main():
         print("bootstrap mode: ci/lib/common.py is absent at base")
     findings = run_guards(ctx)
     if not ctx.render_errors:
-        findings += check_expected(ctx.head, expected_doc(ctx.head, ctx._rendered))
+        findings += check_expected(ctx.head, expected_doc(ctx.head, ctx._rendered, ctx._raw))
     for f in sorted(findings, key=lambda f: (f.path, f.line, f.rule)):
         print(f)
     if findings:
         print(f"FAIL ({len(findings)} findings)")
+        return 1
+    print("OK")
+    return 0
+
+
+def nginx_test():
+    """`nginx -t` for every nginx default.conf in the working tree, in its pinned image."""
+    head = Tree()
+    raw = Renderer(head, load_json(head, SERVICES, {}), interpolate=False)
+    try:
+        models = {p: raw(p) for p in head.deployables()}
+    except RenderError as e:
+        print(f"FAIL render: {e}")
+        return 1
+    failures = nginx.nginx_test(models)
+    for f in failures:
+        print(f"FAIL {f}")
+    if failures:
         return 1
     print("OK")
     return 0
@@ -405,7 +471,24 @@ def noop(base_rev):
     rh, rb = Renderer(head, sa), Renderer(base, sa)
     paths = sorted(set(head.deployables()) | set(base.deployables()))
     changed = 0
+    # Renames are paired by git's rename detection, so a moved file shows its rendered diff.
+    renamed = {}
+    for line in git("diff", "-M", "--name-status", resolve(base_rev), "--", "prod/").decode().splitlines():
+        parts = line.split("\t")
+        if parts[0].startswith("R") and len(parts) == 3:
+            renamed[parts[2]] = parts[1]
     for p in paths:
+        if p in renamed.values():
+            continue
+        if p in renamed:
+            a = json.dumps(rb(renamed[p]), indent=1, sort_keys=True).splitlines()
+            b = json.dumps(rh(p), indent=1, sort_keys=True).splitlines()
+            diff = list(difflib.unified_diff(a, b, f"base/{renamed[p]}", f"head/{p}", lineterm=""))
+            print(f"renamed: {renamed[p]} -> {p}" + ("" if diff else " (render unchanged)"))
+            if diff:
+                print("\n".join(diff))
+            changed += 1
+            continue
         if not head.has(p) or not base.has(p):
             print(f"only in {'head' if head.has(p) else 'base'}: {p}")
             changed += 1
