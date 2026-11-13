@@ -172,15 +172,15 @@ nothing in this repo binds a host to a file. Deviations CI detects in live files
 |---|---|---|
 | `privacy.no-log-flag` | 12 | vLLM engines that set no request-logging flag and rely on the engine default |
 | `privacy.secret` | 8 | secret variables with an empty default, or used inside an embedded config |
-| `pins.digest` | 12 | image references with a tag next to the digest, pinned by tag only, or built on the host |
+| `pins.digest` | 11 | image references with a tag next to the digest, pinned by tag only, or built on the host |
 | `pins.raw-key` | 4 | `build` or `dockerfile_inline` in a deployable (images built on the host, unsigned) |
 | `pins.hf-revision` | 1 | a model loaded without a pinned revision |
 | `pins.remote-code` | 1 | remote code enabled for that model |
 | `layout.ext`, `layout.size` | 1 each | the adapter weights file in `adapters/` |
 | `public.domain` | 5 | an internal telemetry endpoint |
-| `public.host` | 8 | host names in config values, labels or service names |
+| `public.host` | 21 | host names in config values, labels or service names |
 | `public.repo` | 3 | references to repositories outside the public allowlist |
-| `public.runner` | 4 | publish workflows on a self-hosted runner |
+| `public.runner` | 3 | publish workflows on a self-hosted runner |
 
 Gaps that are not exceptions:
 - The logging rules check flags and env only, on services the guards classify as SGLang or vLLM by
