@@ -152,15 +152,14 @@ at earlier release tags or are bases of another image.
 
 What verification does not cover by design:
 
-- Release tags: a verifier checks that the tag's commit is on `main` (step 1).
+- Release tags: a verifier checks that the tag's commit is on `main` (step 1). Nothing in this repo binds
+  a host to a file, and values supplied at deploy time are not in the deployment record.
 - Some pinned images are not built in this repo. Only their digests are pinned; this repo has no build
   record or signing identity for them. Some images are defined inline in a deployable and have no
   digest. The pins rules below count them.
 - Not every image has a build provenance attestation; the signature is the identity proof.
-- CI checks compose files, build contexts, workflows and repo text. It does not check image contents,
-  and nothing in this repo binds a host to a file. Values supplied at deploy time are not in the
-  deployment record.
 - The logging rules apply to services classified as SGLang or vLLM (see What the proof covers).
+- CI checks compose files, build contexts, workflows and repo text. It does not check image contents.
 - The CI guards are partial checks, not a full review. Review reads what they do not parse.
 
 Deviations CI detects in live files are entries in `ci/data/exceptions.json`; each binds one rule, one
@@ -173,7 +172,7 @@ file and the matched value. Counts per rule:
 | `pins.hf-revision` | 1 | a model referenced by name without a revision pin |
 | `pins.raw-key` | 8 | images defined inline in a deployable |
 | `pins.remote-code` | 1 | the remote-code setting on that model |
-| `privacy.no-log-flag` | 12 | vLLM engines without an explicit request-logging flag; the engine default does not log requests |
+| `privacy.no-log-flag` | 12 | vLLM engine without an explicit request-logging flag |
 | `privacy.secret` | 9 | secret variables without a required-value check, or used inside an embedded config |
 | `public.domain` | 6 | domain names outside the public allowlist |
 | `public.host` | 27 | host names in config values, labels or service names |
