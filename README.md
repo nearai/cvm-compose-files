@@ -69,15 +69,23 @@ file-name grammar in `.claude/rules/prod.md`. `privacy`: `flag set` (explicit no
 | `prod/glm-5.3-flash-sglang-tp4x2-long.yaml` | z-ai/glm-5.3-flash | graphistry/GLM-5.3-Flash-W4AFP8@99f1fa70408c | docker/sglang-glm53-hicache-w4afp8 | tp4x2 | flag set | live |
 | `prod/glm-5.3-flash-sglang-tp4x2-long.yaml` | z-ai/glm-5.3-flash | graphistry/GLM-5.3-Flash-W4AFP8@99f1fa70408c | docker/sglang-glm53-v0523 | tp2x4 | flag set | live |
 | `prod/pack-sage.yaml` | - | - | - | - | n.a. | live |
-| `prod/pack-small-models.yaml` | Qwen/Qwen3-Embedding-0.6B | Qwen/Qwen3-Embedding-0.6B@97b0c614be4d | third-party vllm/vllm-openai | tp1 | waived | live |
-| `prod/pack-small-models.yaml` | Qwen/Qwen3-Reranker-0.6B | Qwen/Qwen3-Reranker-0.6B@e61197ed4502 | third-party vllm/vllm-openai | tp1 | waived | live |
-| `prod/pack-small-models.yaml` | Qwen/Qwen3-VL-30B-A3B-Instruct | Qwen/Qwen3-VL-30B-A3B-Instruct-FP8@d9748a51ae66 | third-party vllm/vllm-openai | tp1 | waived | live |
-| `prod/pack-small-models.yaml` | Qwen/Qwen3.6-35B-A3B-FP8 | Qwen/Qwen3.6-35B-A3B-FP8@95a723d08a94 | docker/sglang-v0523-secure | tp1 | flag set | live |
-| `prod/pack-small-models.yaml` | Qwen/Qwen3.8-27B | Qwen/Qwen3.8-27B-FP8@017b9c7af6b5 | docker/sglang-v0523-secure | tp1 | flag set | live |
-| `prod/pack-small-models.yaml` | black-forest-labs/FLUX.2-klein-4B | black-forest-labs/FLUX.2-klein-4B@- | docker/sglang-v0523-secure | tp1 | flag set | live |
-| `prod/pack-small-models.yaml` | openai/whisper-large-v3 | openai/whisper-large-v3@06f233fe06e7 | built on host | tp1 | waived | live |
-| `prod/pack-small-models.yaml` | z-ai/glm-5.3-flash | graphistry/GLM-5.3-Flash-W4AFP8@99f1fa70408c | docker/sglang-glm53-v0523 | tp2x2 | flag set | live |
+| `prod/pack-small-models.yaml` | Qwen/Qwen3-Embedding-0.6B | Qwen/Qwen3-Embedding-0.6B@97b0c614be4d | third-party vllm/vllm-openai | tp1 | flag set | candidate |
+| `prod/pack-small-models.yaml` | Qwen/Qwen3-Reranker-0.6B | Qwen/Qwen3-Reranker-0.6B@e61197ed4502 | third-party vllm/vllm-openai | tp1 | flag set | candidate |
+| `prod/pack-small-models.yaml` | Qwen/Qwen3-VL-30B-A3B-Instruct | Qwen/Qwen3-VL-30B-A3B-Instruct-FP8@d9748a51ae66 | third-party vllm/vllm-openai | tp1 | flag set | candidate |
+| `prod/pack-small-models.yaml` | Qwen/Qwen3.6-35B-A3B-FP8 | Qwen/Qwen3.6-35B-A3B-FP8@95a723d08a94 | docker/sglang-v0523-secure | tp1 | flag set | candidate |
+| `prod/pack-small-models.yaml` | Qwen/Qwen3.8-27B | Qwen/Qwen3.8-27B-FP8@017b9c7af6b5 | docker/sglang-v0523-secure | tp1 | flag set | candidate |
+| `prod/pack-small-models.yaml` | black-forest-labs/FLUX.2-klein-4B | black-forest-labs/FLUX.2-klein-4B@- | docker/sglang-v0523-secure | tp1 | flag set | candidate |
+| `prod/pack-small-models.yaml` | openai/whisper-large-v3 | openai/whisper-large-v3@06f233fe06e7 | built on host | tp1 | flag set | candidate |
+| `prod/pack-small-models.yaml` | z-ai/glm-5.3-flash | graphistry/GLM-5.3-Flash-W4AFP8@99f1fa70408c | docker/sglang-glm53-v0523 | tp2x2 | flag set | candidate |
 | `prod/qwen3.8-27b-sglang-tp1.yaml` | Qwen/Qwen3.8-27B | Qwen/Qwen3.8-27B-FP8@017b9c7af6b5 | third-party lmsysorg/sglang | tp1 | flag set | live |
+| `prod/small-models.yaml` (legacy name) | Qwen/Qwen3-Embedding-0.6B | Qwen/Qwen3-Embedding-0.6B@97b0c614be4d | third-party vllm/vllm-openai | tp1 | waived | live |
+| `prod/small-models.yaml` (legacy name) | Qwen/Qwen3-Reranker-0.6B | Qwen/Qwen3-Reranker-0.6B@e61197ed4502 | third-party vllm/vllm-openai | tp1 | waived | live |
+| `prod/small-models.yaml` (legacy name) | Qwen/Qwen3-VL-30B-A3B-Instruct | Qwen/Qwen3-VL-30B-A3B-Instruct-FP8@d9748a51ae66 | third-party vllm/vllm-openai | tp1 | waived | live |
+| `prod/small-models.yaml` (legacy name) | Qwen/Qwen3.6-35B-A3B-FP8 | Qwen/Qwen3.6-35B-A3B-FP8@95a723d08a94 | docker/sglang-v0523-secure | tp1 | flag set | live |
+| `prod/small-models.yaml` (legacy name) | Qwen/Qwen3.8-27B | Qwen/Qwen3.8-27B-FP8@017b9c7af6b5 | docker/sglang-v0523-secure | tp1 | flag set | live |
+| `prod/small-models.yaml` (legacy name) | black-forest-labs/FLUX.2-klein-4B | black-forest-labs/FLUX.2-klein-4B@- | docker/sglang-v0523-secure | tp1 | flag set | live |
+| `prod/small-models.yaml` (legacy name) | openai/whisper-large-v3 | openai/whisper-large-v3@06f233fe06e7 | built on host | tp1 | waived | live |
+| `prod/small-models.yaml` (legacy name) | z-ai/glm-5.3-flash | graphistry/GLM-5.3-Flash-W4AFP8@99f1fa70408c | docker/sglang-glm53-v0523 | tp2x2 | flag set | live |
 | `prod/util-pull-sage.yaml` | - | - | - | - | n.a. | live |
 | `prod/util-rotate-token.yaml` | - | - | - | - | n.a. | live |
 <!-- status:end -->

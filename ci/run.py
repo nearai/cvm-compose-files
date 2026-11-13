@@ -38,7 +38,7 @@ from common import (
 )
 
 GUARDS = [layout, status, pins, privacy, public, frozen, claude, stack, nginx, docker]
-RULES = ["run.render", "exceptions.format", "exceptions.unused"]
+RULES = ["run.render", "exceptions.format", "exceptions.unused", "exceptions.counts"]
 ALL_RULES = RULES + [r for g in GUARDS for r in g.RULES]
 ENTRY_KEYS = {"rule", "path", "sha256", "reason", "remove_when"}
 # Rules that guard the agent setup and the waivers themselves.
@@ -119,7 +119,30 @@ def apply_exceptions(ctx, findings):
     for k, i in sorted(valid.items(), key=lambda x: x[1]):
         if k not in used and k[1] not in unrendered:
             out.append(Finding(EXCEPTIONS, 0, "exceptions.unused", f"entry {i + 1} ({k[0]} {k[1]}) matches nothing"))
-    return out
+    return out + waiver_counts(ctx.head, [e for e in entries if isinstance(e, dict)])
+
+
+VERIFYING = "docs/verifying.md"
+COUNT_ROW = re.compile(r"^\| ((?:`[a-z0-9.-]+`(?:, )?)+) \| (\d+)(?: each)? \|")
+
+
+def waiver_counts(head, entries):
+    """The per-rule counts in docs/verifying.md equal the entries in exceptions.json."""
+    if not head.has(VERIFYING):
+        return []
+    actual, documented, line = {}, {}, 0
+    for e in entries:
+        actual[e.get("rule")] = actual.get(e.get("rule"), 0) + 1
+    for n, text in enumerate(head.text(VERIFYING).splitlines(), 1):
+        m = COUNT_ROW.match(text)
+        if m:
+            line = line or n
+            for rule in re.findall(r"`([^`]+)`", m.group(1)):
+                documented[rule] = int(m.group(2))
+    if documented == actual or not (documented or actual):
+        return []
+    diff = sorted(r for r in set(documented) | set(actual) if documented.get(r) != actual.get(r))
+    return [Finding(VERIFYING, line, "exceptions.counts", "waiver counts differ from exceptions.json for " + ", ".join(diff))]
 
 
 def run_guards(ctx, guards=GUARDS):
@@ -250,6 +273,10 @@ RUN_CASES = [
     ("waiver of layout.claude-md", "exceptions.format",
      {"prod/a.bin": "x", "CLAUDE.md": "x", "ci/data/exceptions.json": json.dumps(
          GOOD_EX + [dict(GOOD_EX[0], rule="layout.claude-md", path="CLAUDE.md", sha256=sha256("CLAUDE.md"))])}, None),
+    ("waiver counts documented", None, {"prod/a.bin": "x", "ci/data/exceptions.json": json.dumps(GOOD_EX),
+                                         "docs/verifying.md": "| `layout.ext` | 1 | x |\n"}, None),
+    ("waiver count stale", "exceptions.counts", {"prod/a.bin": "x", "ci/data/exceptions.json": json.dumps(GOOD_EX),
+                                                 "docs/verifying.md": "| `layout.ext` | 2 | x |\n"}, None),
     ("unused exception", "exceptions.unused",
      {"prod/a.yaml": "x", "ci/data/exceptions.json": json.dumps([dict(GOOD_EX[0], path="prod/a.yaml")])}, None),
 ]

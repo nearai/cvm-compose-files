@@ -170,16 +170,15 @@ nothing in this repo binds a host to a file. Deviations CI detects in live files
 | rule | entries | what it waives |
 |---|---|---|
 | `privacy.no-log-flag` | 12 | vLLM engines that set no request-logging flag and rely on the engine default |
-| `privacy.secret` | 8 | secret variables with an empty default, or used inside an embedded config |
-| `pins.digest` | 11 | image references with a tag next to the digest, pinned by tag only, or built on the host |
-| `pins.raw-key` | 4 | `build` or `dockerfile_inline` in a deployable (images built on the host, unsigned) |
-| `pins.hf-revision` | 1 | a model loaded without a pinned revision |
-| `pins.remote-code` | 1 | remote code enabled for that model |
+| `privacy.secret` | 9 | secret variables with an empty default, or used inside an embedded config |
+| `pins.digest` | 13 | image references with a tag next to the digest, pinned by tag only, or built on the host |
+| `pins.raw-key` | 8 | `build` or `dockerfile_inline` in a deployable (images built on the host, unsigned) |
+| `pins.hf-revision` | 2 | models loaded without a pinned revision |
+| `pins.remote-code` | 2 | remote code enabled for those models |
 | `layout.ext`, `layout.size` | 1 each | the adapter weights file in `adapters/` |
-| `public.domain` | 5 | an internal telemetry endpoint |
-| `public.host` | 21 | host names in config values, labels or service names |
-| `public.repo` | 3 | references to repositories outside the public allowlist |
-| `public.runner` | 3 | publish workflows on a self-hosted runner |
+| `public.domain` | 6 | an internal telemetry endpoint |
+| `public.host` | 27 | host names in config values, labels or service names |
+| `public.repo` | 2 | references to repositories outside the public allowlist |
 
 Gaps that are not exceptions:
 - The logging rules check flags and env only, on services the guards classify as SGLang or vLLM by
@@ -187,14 +186,14 @@ Gaps that are not exceptions:
   flag; other services on those images, such as every `role: aux` entry in
   `ci/data/services.allow.json`, are checked for flags and env that enable logging.
 - actionlint and zizmor check a publish workflow only until it merges. Publish workflows that exist
-  at the base commit are frozen and not linted, so findings in them stay. All six current ones have
-  known findings: a self-hosted runner label, shellcheck info and style notes, and zizmor
-  `artipacked` (checkout without `persist-credentials: false`).
+  at the base commit are frozen and not linted, so any findings in them stay until the workflow is
+  deleted with the last build dir it publishes.
 - Some pinned images are neither standard upstream images nor built here: `nearaidev/vllm-proxy-rs`
   and `nearaidev/compose-manager-launcher` are built outside this repo, and the image of
   `prod/pack-sage.yaml` and `prod/util-pull-sage.yaml` comes from a vendor. This repo has no build record or
   signing identity for them; only their digests are pinned. The Whisper engine in
-  `prod/pack-small-models.yaml` is built on the host (`pins.raw-key`) and has no digest at all.
+  `prod/small-models.yaml` and `prod/pack-small-models.yaml` is built on the host (`pins.raw-key`) and
+  has no digest at all.
 - Two vLLM publish workflows skip the provenance attestation when resuming from an already pushed digest;
   such an image has a signature only.
 - Repository settings applied at merge: a `v*` tag ruleset blocks moving and deleting tags, but

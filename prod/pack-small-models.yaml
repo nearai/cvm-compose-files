@@ -1,3 +1,4 @@
+# Small models pack | SGLang, vLLM | tp1, tp2x2
 x-logging-conf: &logging-conf
   driver: "json-file"
   options:
@@ -39,13 +40,19 @@ x-vllm-proxy-common: &vllm-proxy-common
 
 x-vllm-env:
   environment: &vllm-env
-    - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
-    - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0}
-    - VLLM_LOGGING_LEVEL=INFO
-    - NVIDIA_DRIVER_CAPABILITIES=compute,utility
-    - OPENBLAS_L2_SIZE=2097152
-    - NCCL_DEBUG=INFO
-    - VLLM_CACHE_ROOT=/root/.cache/vllm
+    HF_TOKEN: ${HUGGING_FACE_HUB_TOKEN}
+    HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-0}
+    VLLM_LOGGING_LEVEL: INFO
+    NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    OPENBLAS_L2_SIZE: "2097152"
+    NCCL_DEBUG: INFO
+    VLLM_CACHE_ROOT: /root/.cache/vllm
+
+# vLLM 0.33's V2 model runner device-asserts on position indices under concurrent requests for these services.
+x-vllm-env-v1-runner:
+  environment: &vllm-env-v1-runner
+    <<: *vllm-env
+    VLLM_USE_V2_MODEL_RUNNER: "0"
 
 x-sglang-env:
   environment: &sglang-env
@@ -146,6 +153,7 @@ x-qwen3-8-27b-dedicated: &qwen3-8-27b-dedicated
 
 x-flux-common: &flux-common
   <<: *vllm-common
+  # Offload and pinned host memory stay off, so the pipeline's placement never depends on free memory at startup.
   image: docker.io/nearaidev/sglang@sha256:6de632a5e9422be4b6e84e32cf475679c0f29c4bb6d58984d873ff9f7ba92a65
   command: >
       sglang serve
@@ -157,6 +165,12 @@ x-flux-common: &flux-common
       --log-requests-level 0
       --enable-torch-compile
       --enable-metrics
+      --dit-cpu-offload false
+      --text-encoder-cpu-offload false
+      --image-encoder-cpu-offload false
+      --vae-cpu-offload false
+      --dit-layerwise-offload false
+      --pin-cpu-memory false
   volumes:
     - hugginface_cache:/root/.cache/huggingface
     - vllm_cache:/root/.cache/vllm
@@ -170,7 +184,7 @@ x-flux-common: &flux-common
             capabilities: [gpu]
 
 x-downloader-common: &downloader-common
-  image: ghcr.io/astral-sh/uv:python3.11-bookworm-slim@sha256:4f5d923c9dcea037f57bda425dd209f3ec643da2f0b74227f68d09dab0b3bb36
+  image: ghcr.io/astral-sh/uv@sha256:4f5d923c9dcea037f57bda425dd209f3ec643da2f0b74227f68d09dab0b3bb36
   entrypoint: ["sh", "-c"]
   restart: "no"
   logging: *logging-conf
@@ -265,7 +279,7 @@ x-sg-glm53-flash-common: &sg-glm53-flash-common
   stop_grace_period: 5m
   logging: *logging-conf
 
-x-sg-glm53-flash-candidate: &sg-glm53-flash-candidate
+x-sg-glm53-flash-tp2: &sg-glm53-flash-tp2
   <<: *sg-glm53-flash-common
   command: >
       sglang serve
@@ -327,7 +341,6 @@ x-privacy-filter-common: &privacy-filter-common
       # syntax=docker/dockerfile:1.4
       FROM pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime
       # transformers 5.20+ needs PyTorch >=2.6; this 2.5.1 base crash-loops on fresh builds.
-      # 5.16.1 matches gpu13's working image built on 2026-09-02.
       RUN pip install --no-cache-dir \
           "transformers==5.16.1" \
           accelerate \
@@ -368,7 +381,7 @@ x-privacy-filter-common: &privacy-filter-common
           return window if window >= 8 else None
 
 
-      # GPU 0 has served privacy-filter since 33b77d5. Left unbounded,
+      # Left unbounded,
       # the HF pipeline's CUDA caching allocator ratchets its reserved memory up
       # under traffic and never releases it, eventually filling the card.
       # Defence in depth (all tunable via env, no rebuild):
@@ -704,10 +717,10 @@ services:
     environment:
       - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
     labels:
-      com.datadoghq.ad.logs: '[{"source":"model-downloader","service":"model-downloader","tags":["model:multi","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.logs: '[{"source":"model-downloader","service":"model-downloader","tags":["model:multi","deployment:pack-small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
 
   hf-cleanup:
-    image: alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
+    image: alpine@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
     container_name: hf-cleanup
     profiles: ["maintenance"]
     restart: "no"
@@ -789,7 +802,7 @@ services:
     restart: unless-stopped
     logging: *logging-conf
     labels:
-      com.datadoghq.ad.logs: '[{"source":"nginx","service":"nginx","tags":["model:multi","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.logs: '[{"source":"nginx","service":"nginx","tags":["model:multi","deployment:pack-small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
 
   model-proxy-registrar:
     image: curlimages/curl@sha256:d94d07ba9e7d6de898b6d96c1a072f6f8266c687af78a74f380087a0addf5d17
@@ -812,7 +825,7 @@ services:
         mode: 0755
     logging: *logging-conf
     labels:
-      com.datadoghq.ad.logs: '[{"source":"model-proxy-registrar","service":"model-proxy-registrar","tags":["model:multi","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.logs: '[{"source":"model-proxy-registrar","service":"model-proxy-registrar","tags":["model:multi","deployment:pack-small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
 
   proxy-qwen36-35b-a3b:
     <<: *vllm-proxy-common
@@ -836,7 +849,7 @@ services:
       - VLLM_PROXY_INLINE_MEDIA=${VLLM_PROXY_INLINE_MEDIA:-1}
       - VLLM_PROXY_REJECTED_CONTENT_PART_TYPES=${VLLM_PROXY_REJECTED_CONTENT_PART_TYPES:-video_url}
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:Qwen/Qwen3.6-35B-A3B-FP8","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8008"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:Qwen/Qwen3.6-35B-A3B-FP8","deployment:pack-small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8008"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "inference-proxy"
       nearai.otel.service: "vllm-proxy"
@@ -845,7 +858,7 @@ services:
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "Qwen/Qwen3.6-35B-A3B-FP8"
-      nearai.otel.deployment: "small-models"
+      nearai.otel.deployment: "pack-small-models"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
       nearai.otel.host_machine: "${CVM_HOST}"
@@ -863,7 +876,7 @@ services:
               device_ids: ["1"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:Qwen/Qwen3.6-35B-A3B-FP8","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8008","instance:1"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:Qwen/Qwen3.6-35B-A3B-FP8","deployment:pack-small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8008","instance:1"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -872,7 +885,12 @@ services:
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "Qwen/Qwen3.6-35B-A3B-FP8"
-      nearai.otel.deployment: "small-models"
+      nearai.otel.served_model: "Qwen/Qwen3.6-35B-A3B-FP8"
+      nearai.otel.model_path: "Qwen/Qwen3.6-35B-A3B-FP8"
+      nearai.otel.engine_image: "6de632a5e942"
+      nearai.otel.instance: "1"
+      nearai.otel.config_variant: "qwen36-tp1"
+      nearai.otel.deployment: "pack-small-models"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
       nearai.otel.host_machine: "${CVM_HOST}"
@@ -893,7 +911,7 @@ services:
     environment:
       - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
     labels:
-      com.datadoghq.ad.logs: '[{"source":"model-downloader","service":"model-downloader","tags":["model:Qwen/Qwen3.8-27B-FP8","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.logs: '[{"source":"model-downloader","service":"model-downloader","tags":["model:Qwen/Qwen3.8-27B-FP8","deployment:pack-small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
 
   proxy-qwen38-27b:
     <<: *vllm-proxy-common
@@ -927,7 +945,7 @@ services:
       - VLLM_PROXY_INLINE_MEDIA=${VLLM_PROXY_INLINE_MEDIA:-1}
       - VLLM_PROXY_REJECTED_CONTENT_PART_TYPES=${VLLM_PROXY_REJECTED_CONTENT_PART_TYPES:-video_url}
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:Qwen/Qwen3.8-27B","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","gpu_pair:2","config_variant:qwen38-gpu2-coloc-only"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:Qwen/Qwen3.8-27B","deployment:pack-small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","gpu_pair:2","config_variant:qwen38-coloc-only"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "inference-proxy"
       nearai.otel.service: "vllm-proxy"
@@ -936,14 +954,14 @@ services:
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "Qwen/Qwen3.8-27B"
-      nearai.otel.deployment: "small-models"
+      nearai.otel.deployment: "pack-small-models"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
       nearai.otel.host_machine: "${CVM_HOST}"
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.gpu_pair: "2"
-      nearai.otel.config_variant: "qwen38-gpu2-coloc-only"
+      nearai.otel.config_variant: "qwen38-coloc-only"
 
   model-sg-qwen38-27b-fp8-tp1-coloc:
     <<: *qwen3-8-27b-dedicated
@@ -1005,7 +1023,7 @@ services:
               device_ids: ["2"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:Qwen/Qwen3.8-27B-FP8","served_model:Qwen/Qwen3.8-27B","model_revision:017b9c7af6b5689d5dd426a76e0bc077eb5ca20a","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:0","gpu_pair:2","config_variant:qwen38-gpu2-coloc-fa3-m96-prio-v0523","quantization:fp8","lora:abliterated-r1","sglang_revision:0.5.23-near-secure","engine_image:6de632a5e942"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:Qwen/Qwen3.8-27B-FP8","served_model:Qwen/Qwen3.8-27B","model_revision:017b9c7af6b5689d5dd426a76e0bc077eb5ca20a","deployment:pack-small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:0","gpu_pair:2","config_variant:qwen38-coloc-fa3-m96-prio-v0523","quantization:fp8","lora:abliterated-r1","sglang_revision:0.5.23-near-secure","engine_image:6de632a5e942"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -1014,9 +1032,10 @@ services:
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "Qwen/Qwen3.8-27B-FP8"
+      nearai.otel.model_path: "Qwen/Qwen3.8-27B-FP8"
       nearai.otel.served_model: "Qwen/Qwen3.8-27B"
       nearai.otel.model_revision: "017b9c7af6b5689d5dd426a76e0bc077eb5ca20a"
-      nearai.otel.deployment: "small-models"
+      nearai.otel.deployment: "pack-small-models"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
       nearai.otel.host_machine: "${CVM_HOST}"
@@ -1024,7 +1043,7 @@ services:
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.instance: "0"
       nearai.otel.gpu_pair: "2"
-      nearai.otel.config_variant: "qwen38-gpu2-coloc-fa3-m96-prio-v0523"
+      nearai.otel.config_variant: "qwen38-coloc-fa3-m96-prio-v0523"
       nearai.otel.quantization: "fp8"
       nearai.otel.chunk_size: "4096"
       nearai.otel.max_prefill_tokens: "4096"
@@ -1054,7 +1073,7 @@ services:
     restart: unless-stopped
     logging: *logging-conf
     labels:
-      com.datadoghq.ad.logs: '[{"source":"nginx","service":"nginx","tags":["model:Qwen/Qwen3.8-27B","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000"]}]'
+      com.datadoghq.ad.logs: '[{"source":"nginx","service":"nginx","tags":["model:Qwen/Qwen3.8-27B","deployment:pack-small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000"]}]'
 
   qwen38-registrar:
     image: curlimages/curl@sha256:d94d07ba9e7d6de898b6d96c1a072f6f8266c687af78a74f380087a0addf5d17
@@ -1080,7 +1099,7 @@ services:
         mode: 0755
     logging: *logging-conf
     labels:
-      com.datadoghq.ad.logs: '[{"source":"model-proxy-registrar","service":"model-proxy-registrar","tags":["model:Qwen/Qwen3.8-27B","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.logs: '[{"source":"model-proxy-registrar","service":"model-proxy-registrar","tags":["model:Qwen/Qwen3.8-27B","deployment:pack-small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
 
   qwen38-lora-adapter-downloader:
     <<: *downloader-common
@@ -1114,7 +1133,7 @@ services:
     volumes:
       - lora_adapter:/adapters
     labels:
-      com.datadoghq.ad.logs: '[{"source":"model-downloader","service":"model-downloader","tags":["model:Qwen/Qwen3.8-27B-abliterated","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","config_variant:qwen38-lora-canary","lora:abliterated-r1"]}]'
+      com.datadoghq.ad.logs: '[{"source":"model-downloader","service":"model-downloader","tags":["model:Qwen/Qwen3.8-27B-abliterated","deployment:pack-small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","config_variant:qwen38-lora","lora:abliterated-r1"]}]'
 
   proxy-qwen38-27b-abliterated:
     <<: *vllm-proxy-common
@@ -1150,7 +1169,7 @@ services:
       - VLLM_PROXY_INLINE_MEDIA=${VLLM_PROXY_INLINE_MEDIA:-1}
       - VLLM_PROXY_REJECTED_CONTENT_PART_TYPES=${VLLM_PROXY_REJECTED_CONTENT_PART_TYPES:-video_url}
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:Qwen/Qwen3.8-27B-abliterated","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","gpu_pair:2","config_variant:qwen38-lora-canary","lora:abliterated-r1"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:Qwen/Qwen3.8-27B-abliterated","deployment:pack-small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","gpu_pair:2","config_variant:qwen38-lora","lora:abliterated-r1"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "inference-proxy"
       nearai.otel.service: "vllm-proxy"
@@ -1159,14 +1178,14 @@ services:
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "Qwen/Qwen3.8-27B-abliterated"
-      nearai.otel.deployment: "small-models"
+      nearai.otel.deployment: "pack-small-models"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
       nearai.otel.host_machine: "${CVM_HOST}"
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.gpu_pair: "2"
-      nearai.otel.config_variant: "qwen38-lora-canary"
+      nearai.otel.config_variant: "qwen38-lora"
 
   qwen38-abliterated-registrar:
     image: curlimages/curl@sha256:d94d07ba9e7d6de898b6d96c1a072f6f8266c687af78a74f380087a0addf5d17
@@ -1192,7 +1211,7 @@ services:
         mode: 0755
     logging: *logging-conf
     labels:
-      com.datadoghq.ad.logs: '[{"source":"model-proxy-registrar","service":"model-proxy-registrar","tags":["model:Qwen/Qwen3.8-27B-abliterated","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","config_variant:qwen38-lora-canary","lora:abliterated-r1"]}]'
+      com.datadoghq.ad.logs: '[{"source":"model-proxy-registrar","service":"model-proxy-registrar","tags":["model:Qwen/Qwen3.8-27B-abliterated","deployment:pack-small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","config_variant:qwen38-lora","lora:abliterated-r1"]}]'
 
   proxy-glm53:
     <<: *vllm-proxy-common
@@ -1222,7 +1241,7 @@ services:
       - REPLICA_STATE_REDIS_CA_CERT=${REPLICA_STATE_REDIS_CA_CERT:-}
       - REPLICA_STATE_HOST_ID=${CVM_HOST:-}
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:z-ai/glm-5.3-flash","deployment:glm53-flash-sgl-tp2x4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8009"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:z-ai/glm-5.3-flash","deployment:pack-small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8009"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "inference-proxy"
       nearai.otel.service: "vllm-proxy"
@@ -1231,7 +1250,7 @@ services:
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "z-ai/glm-5.3-flash"
-      nearai.otel.deployment: "glm53-flash-sgl-tp2x4"
+      nearai.otel.deployment: "pack-small-models"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
       nearai.otel.host_machine: "${CVM_HOST}"
@@ -1239,7 +1258,7 @@ services:
       nearai.otel.ip: "${HOST_IP}"
 
   model-sg-glm53-w4afp8-tp2-r1:
-    <<: *sg-glm53-flash-candidate
+    <<: *sg-glm53-flash-tp2
     container_name: model-sg-glm53-w4afp8-tp2-r1
     depends_on:
       model-downloader:
@@ -1252,7 +1271,7 @@ services:
               device_ids: ["4","5"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-fp8-kv","deployment:glm53-flash-sgl-tp2x4","config_variant:w4afp8-qsplit-hicacheoff-mamba380-fp8kv-memopt086-mr64-c8192-admission-reserve-v10-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192-obs-v1-v0523","request_logging:disabled","engine_image:050b1adf961c","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8009","instance:1"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-fp8-kv","deployment:pack-small-models","config_variant:w4afp8-qsplit-hicacheoff-mamba380-fp8kv-memopt086-mr64-c8192-admission-reserve-v10-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192-obs-v1-v0523","request_logging:disabled","engine_image:050b1adf961c","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8009","instance:1"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -1263,7 +1282,7 @@ services:
       nearai.otel.model: "z-ai/glm-5.3-flash"
       nearai.otel.model_path: "graphistry/GLM-5.3-Flash-W4AFP8"
       nearai.otel.served_model: "z-ai/glm-5.3-flash"
-      nearai.otel.deployment: "glm53-flash-sgl-tp2x4"
+      nearai.otel.deployment: "pack-small-models"
       nearai.otel.config_variant: "w4afp8-qsplit-hicacheoff-mamba380-fp8kv-memopt086-mr64-c8192-admission-reserve-v10-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192-obs-v1-v0523"
       nearai.otel.thinking_budget_policy: "default8192-public-to-native"
       nearai.otel.request_logging: "disabled"
@@ -1276,7 +1295,7 @@ services:
       nearai.otel.ip: "${HOST_IP}"
 
   model-sg-glm53-w4afp8-tp2-r2:
-    <<: *sg-glm53-flash-candidate
+    <<: *sg-glm53-flash-tp2
     container_name: model-sg-glm53-w4afp8-tp2-r2
     environment:
       - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
@@ -1323,7 +1342,7 @@ services:
               device_ids: ["6","7"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-fp8-kv","deployment:glm53-flash-sgl-tp2x4","config_variant:w4afp8-qsplit-hicacheoff-mamba380-fp8kv-memopt086-mr64-c8192-admission-reserve-v10-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192-obs-v1-v0523","request_logging:disabled","engine_image:050b1adf961c","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8009","instance:2"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-fp8-kv","deployment:pack-small-models","config_variant:w4afp8-qsplit-hicacheoff-mamba380-fp8kv-memopt086-mr64-c8192-admission-reserve-v10-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192-obs-v1-v0523","request_logging:disabled","engine_image:050b1adf961c","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8009","instance:2"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -1334,7 +1353,7 @@ services:
       nearai.otel.model: "z-ai/glm-5.3-flash"
       nearai.otel.model_path: "graphistry/GLM-5.3-Flash-W4AFP8"
       nearai.otel.served_model: "z-ai/glm-5.3-flash"
-      nearai.otel.deployment: "glm53-flash-sgl-tp2x4"
+      nearai.otel.deployment: "pack-small-models"
       nearai.otel.config_variant: "w4afp8-qsplit-hicacheoff-mamba380-fp8kv-memopt086-mr64-c8192-admission-reserve-v10-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192-obs-v1-v0523"
       nearai.otel.thinking_budget_policy: "default8192-public-to-native"
       nearai.otel.request_logging: "disabled"
@@ -1365,7 +1384,7 @@ services:
     restart: unless-stopped
     logging: *logging-conf
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang-ghost-aggregator","service":"sglang-ghost-aggregator","tags":["model:z-ai/glm-5.3-flash","served_model:z-ai/glm-5.3-flash","deployment:glm53-flash-sgl-tp2x4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang-ghost-aggregator","service":"sglang-ghost-aggregator","tags":["model:z-ai/glm-5.3-flash","served_model:z-ai/glm-5.3-flash","deployment:pack-small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "ghost-aggregator"
       nearai.otel.service: "sglang-ghost-aggregator"
@@ -1375,7 +1394,7 @@ services:
       nearai.otel.path: "/metrics"
       nearai.otel.model: "z-ai/glm-5.3-flash"
       nearai.otel.served_model: "z-ai/glm-5.3-flash"
-      nearai.otel.deployment: "glm53-flash-sgl-tp2x4"
+      nearai.otel.deployment: "pack-small-models"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
       nearai.otel.host_machine: "${CVM_HOST}"
@@ -1404,7 +1423,7 @@ services:
       - VLLM_PROXY_INLINE_MEDIA=${VLLM_PROXY_INLINE_MEDIA:-1}
       - VLLM_PROXY_REJECTED_CONTENT_PART_TYPES=${VLLM_PROXY_REJECTED_CONTENT_PART_TYPES:-video_url}
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:black-forest-labs/FLUX.2-klein-4B","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8002"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:black-forest-labs/FLUX.2-klein-4B","deployment:pack-small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8002"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "inference-proxy"
       nearai.otel.service: "vllm-proxy"
@@ -1413,7 +1432,7 @@ services:
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "black-forest-labs/FLUX.2-klein-4B"
-      nearai.otel.deployment: "small-models"
+      nearai.otel.deployment: "pack-small-models"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
       nearai.otel.host_machine: "${CVM_HOST}"
@@ -1424,7 +1443,7 @@ services:
     <<: *flux-common
     container_name: model-sg-flux2-klein-4b-tp1
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:black-forest-labs/FLUX.2-klein-4B","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8002","instance:1"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:black-forest-labs/FLUX.2-klein-4B","deployment:pack-small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8002","instance:1"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -1433,7 +1452,12 @@ services:
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "black-forest-labs/FLUX.2-klein-4B"
-      nearai.otel.deployment: "small-models"
+      nearai.otel.served_model: "black-forest-labs/FLUX.2-klein-4B"
+      nearai.otel.model_path: "black-forest-labs/FLUX.2-klein-4B"
+      nearai.otel.engine_image: "6de632a5e942"
+      nearai.otel.instance: "1"
+      nearai.otel.config_variant: "flux2-klein-resident"
+      nearai.otel.deployment: "pack-small-models"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
       nearai.otel.host_machine: "${CVM_HOST}"
@@ -1462,7 +1486,7 @@ services:
       - VLLM_PROXY_INLINE_MEDIA=${VLLM_PROXY_INLINE_MEDIA:-1}
       - VLLM_PROXY_REJECTED_CONTENT_PART_TYPES=${VLLM_PROXY_REJECTED_CONTENT_PART_TYPES:-video_url}
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:Qwen/Qwen3-VL-30B-A3B-Instruct","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8003"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:Qwen/Qwen3-VL-30B-A3B-Instruct","deployment:pack-small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8003"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "inference-proxy"
       nearai.otel.service: "vllm-proxy"
@@ -1471,13 +1495,15 @@ services:
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "Qwen/Qwen3-VL-30B-A3B-Instruct"
-      nearai.otel.deployment: "small-models"
+      nearai.otel.deployment: "pack-small-models"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
       nearai.otel.host_machine: "${CVM_HOST}"
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
+  # KV size is pinned with --kv-cache-memory-bytes so a neighbour restart can't change it. The pin ignores the
+  # utilization setting, which only gates the startup free-memory check, and must fit the GPU's free memory.
   model-vllm-qwen3vl-30b-a3b-fp8-tp1:
     <<: *vllm-common
     image: vllm/vllm-openai@sha256:d825baf9ce4b1b6bfc5ecc7b79880c7e6748c65a72d697ce3d47607aafa84c6e
@@ -1489,6 +1515,8 @@ services:
         --enable-prefix-caching
         --tensor-parallel-size 1
         --gpu-memory-utilization 0.35
+        --no-enable-log-requests
+        --kv-cache-memory-bytes 17179869184
         --max-model-len 16384
         --max-num-seqs 16
         --max-num-batched-tokens 8K
@@ -1505,7 +1533,7 @@ services:
               device_ids: ["3"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:Qwen/Qwen3-VL-30B-A3B-Instruct","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8003"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:Qwen/Qwen3-VL-30B-A3B-Instruct","deployment:pack-small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8003"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
@@ -1514,7 +1542,12 @@ services:
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "Qwen/Qwen3-VL-30B-A3B-Instruct"
-      nearai.otel.deployment: "small-models"
+      nearai.otel.served_model: "Qwen/Qwen3-VL-30B-A3B-Instruct"
+      nearai.otel.model_path: "Qwen/Qwen3-VL-30B-A3B-Instruct-FP8"
+      nearai.otel.engine_image: "d825baf9ce4b"
+      nearai.otel.instance: "1"
+      nearai.otel.config_variant: "qwen3vl-kv16g"
+      nearai.otel.deployment: "pack-small-models"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
       nearai.otel.host_machine: "${CVM_HOST}"
@@ -1543,7 +1576,7 @@ services:
       - VLLM_PROXY_INLINE_MEDIA=${VLLM_PROXY_INLINE_MEDIA:-1}
       - VLLM_PROXY_REJECTED_CONTENT_PART_TYPES=${VLLM_PROXY_REJECTED_CONTENT_PART_TYPES:-video_url}
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:Qwen/Qwen3-Embedding-0.6B","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8004"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:Qwen/Qwen3-Embedding-0.6B","deployment:pack-small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8004"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "inference-proxy"
       nearai.otel.service: "vllm-proxy"
@@ -1552,7 +1585,7 @@ services:
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "Qwen/Qwen3-Embedding-0.6B"
-      nearai.otel.deployment: "small-models"
+      nearai.otel.deployment: "pack-small-models"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
       nearai.otel.host_machine: "${CVM_HOST}"
@@ -1568,10 +1601,12 @@ services:
         --revision 97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3
         --runner pooling
         --gpu-memory-utilization 0.06
+        --no-enable-log-requests
+        --kv-cache-memory-bytes 8589934592
     volumes:
       - hugginface_cache:/root/.cache/huggingface
       - vllm_cache:/root/.cache/vllm
-    environment: *vllm-env
+    environment: *vllm-env-v1-runner
     deploy:
       resources:
         reservations:
@@ -1580,7 +1615,7 @@ services:
               device_ids: ["3"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:Qwen/Qwen3-Embedding-0.6B","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8004"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:Qwen/Qwen3-Embedding-0.6B","deployment:pack-small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8004"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
@@ -1589,7 +1624,12 @@ services:
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "Qwen/Qwen3-Embedding-0.6B"
-      nearai.otel.deployment: "small-models"
+      nearai.otel.served_model: "Qwen/Qwen3-Embedding-0.6B"
+      nearai.otel.model_path: "Qwen/Qwen3-Embedding-0.6B"
+      nearai.otel.engine_image: "d825baf9ce4b"
+      nearai.otel.instance: "1"
+      nearai.otel.config_variant: "embedding-kv8g-v1runner"
+      nearai.otel.deployment: "pack-small-models"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
       nearai.otel.host_machine: "${CVM_HOST}"
@@ -1618,7 +1658,7 @@ services:
       - VLLM_PROXY_INLINE_MEDIA=${VLLM_PROXY_INLINE_MEDIA:-1}
       - VLLM_PROXY_REJECTED_CONTENT_PART_TYPES=${VLLM_PROXY_REJECTED_CONTENT_PART_TYPES:-video_url}
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:Qwen/Qwen3-Reranker-0.6B","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8005"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:Qwen/Qwen3-Reranker-0.6B","deployment:pack-small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8005"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "inference-proxy"
       nearai.otel.service: "vllm-proxy"
@@ -1627,7 +1667,7 @@ services:
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "Qwen/Qwen3-Reranker-0.6B"
-      nearai.otel.deployment: "small-models"
+      nearai.otel.deployment: "pack-small-models"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
       nearai.otel.host_machine: "${CVM_HOST}"
@@ -1643,12 +1683,14 @@ services:
         --revision e61197ed45024b0ed8a2d74b80b4d909f1255473
         --runner pooling
         --gpu-memory-utilization 0.06
+        --no-enable-log-requests
+        --kv-cache-memory-bytes 7516192768
         --hf-overrides '{"architectures":["Qwen3ForSequenceClassification"],"classifier_from_token":["no","yes"],"is_original_qwen3_reranker":true}'
         --chat-template /vllm-workspace/examples/pooling/score/template/qwen3_reranker.jinja
     volumes:
       - hugginface_cache:/root/.cache/huggingface
       - vllm_cache:/root/.cache/vllm
-    environment: *vllm-env
+    environment: *vllm-env-v1-runner
     deploy:
       resources:
         reservations:
@@ -1657,7 +1699,7 @@ services:
               device_ids: ["3"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:Qwen/Qwen3-Reranker-0.6B","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8005"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:Qwen/Qwen3-Reranker-0.6B","deployment:pack-small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8005"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
@@ -1666,7 +1708,12 @@ services:
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "Qwen/Qwen3-Reranker-0.6B"
-      nearai.otel.deployment: "small-models"
+      nearai.otel.served_model: "Qwen/Qwen3-Reranker-0.6B"
+      nearai.otel.model_path: "Qwen/Qwen3-Reranker-0.6B"
+      nearai.otel.engine_image: "d825baf9ce4b"
+      nearai.otel.instance: "1"
+      nearai.otel.config_variant: "reranker-kv7g-v1runner"
+      nearai.otel.deployment: "pack-small-models"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
       nearai.otel.host_machine: "${CVM_HOST}"
@@ -1695,7 +1742,7 @@ services:
       - VLLM_PROXY_INLINE_MEDIA=${VLLM_PROXY_INLINE_MEDIA:-1}
       - VLLM_PROXY_REJECTED_CONTENT_PART_TYPES=${VLLM_PROXY_REJECTED_CONTENT_PART_TYPES:-video_url}
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:openai/whisper-large-v3","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8006"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:openai/whisper-large-v3","deployment:pack-small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8006"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "inference-proxy"
       nearai.otel.service: "vllm-proxy"
@@ -1704,7 +1751,7 @@ services:
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "openai/whisper-large-v3"
-      nearai.otel.deployment: "small-models"
+      nearai.otel.deployment: "pack-small-models"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
       nearai.otel.host_machine: "${CVM_HOST}"
@@ -1742,10 +1789,12 @@ services:
         openai/whisper-large-v3
         --revision 06f233fe06e710322aca913c1bc4249a0d71fce1
         --gpu-memory-utilization 0.20
+        --no-enable-log-requests
+        --kv-cache-memory-bytes 25769803776
     volumes:
       - hugginface_cache:/root/.cache/huggingface
       - vllm_cache:/root/.cache/vllm
-    environment: *vllm-env
+    environment: *vllm-env-v1-runner
     deploy:
       resources:
         reservations:
@@ -1754,7 +1803,7 @@ services:
               device_ids: ["3"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:openai/whisper-large-v3","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8006"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:openai/whisper-large-v3","deployment:pack-small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8006"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
@@ -1763,7 +1812,12 @@ services:
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "openai/whisper-large-v3"
-      nearai.otel.deployment: "small-models"
+      nearai.otel.served_model: "openai/whisper-large-v3"
+      nearai.otel.model_path: "openai/whisper-large-v3"
+      nearai.otel.engine_image: "vllm-with-audio-v0330-langfix"
+      nearai.otel.instance: "1"
+      nearai.otel.config_variant: "whisper-kv24g-v1runner"
+      nearai.otel.deployment: "pack-small-models"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
       nearai.otel.host_machine: "${CVM_HOST}"
@@ -1792,7 +1846,7 @@ services:
       - VLLM_PROXY_INLINE_MEDIA=${VLLM_PROXY_INLINE_MEDIA:-1}
       - VLLM_PROXY_REJECTED_CONTENT_PART_TYPES=${VLLM_PROXY_REJECTED_CONTENT_PART_TYPES:-video_url}
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:openai/privacy-filter","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8007"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:openai/privacy-filter","deployment:pack-small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8007"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "inference-proxy"
       nearai.otel.service: "vllm-proxy"
@@ -1801,7 +1855,7 @@ services:
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "openai/privacy-filter"
-      nearai.otel.deployment: "small-models"
+      nearai.otel.deployment: "pack-small-models"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
       nearai.otel.host_machine: "${CVM_HOST}"
@@ -1812,7 +1866,7 @@ services:
     <<: *privacy-filter-common
     container_name: model-privacy-filter
     labels:
-      com.datadoghq.ad.logs: '[{"source":"privacy-filter","service":"privacy-filter","tags":["model:openai/privacy-filter","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8007"]}]'
+      com.datadoghq.ad.logs: '[{"source":"privacy-filter","service":"privacy-filter","tags":["model:openai/privacy-filter","deployment:pack-small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8007"]}]'
 
   dcgm-privacy-filter:
     <<: *dcgm-common
@@ -1825,7 +1879,7 @@ services:
               device_ids: ["2"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:openai/privacy-filter","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:openai/privacy-filter","deployment:pack-small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "dcgm"
       nearai.otel.service: "dcgm-exporter"
@@ -1834,7 +1888,7 @@ services:
       nearai.otel.port: "9400"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "openai/privacy-filter"
-      nearai.otel.deployment: "small-models"
+      nearai.otel.deployment: "pack-small-models"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
       nearai.otel.host_machine: "${CVM_HOST}"
@@ -1852,7 +1906,7 @@ services:
               device_ids: ["1"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:Qwen/Qwen3.6-35B-A3B-FP8","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:Qwen/Qwen3.6-35B-A3B-FP8","deployment:pack-small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "dcgm"
       nearai.otel.service: "dcgm-exporter"
@@ -1861,7 +1915,7 @@ services:
       nearai.otel.port: "9400"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "Qwen/Qwen3.6-35B-A3B-FP8"
-      nearai.otel.deployment: "small-models"
+      nearai.otel.deployment: "pack-small-models"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
       nearai.otel.host_machine: "${CVM_HOST}"
@@ -1879,7 +1933,7 @@ services:
               device_ids: ["4","5","6","7"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:z-ai/glm-5.3-flash","deployment:glm53-flash-sgl-tp2x4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","gpu_pair:4-7"]}]'
+      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:z-ai/glm-5.3-flash","deployment:pack-small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","gpu_pair:4-7"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "dcgm"
       nearai.otel.service: "dcgm-exporter"
@@ -1888,7 +1942,7 @@ services:
       nearai.otel.port: "9400"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "z-ai/glm-5.3-flash"
-      nearai.otel.deployment: "glm53-flash-sgl-tp2x4"
+      nearai.otel.deployment: "pack-small-models"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
       nearai.otel.host_machine: "${CVM_HOST}"
@@ -1908,7 +1962,7 @@ services:
               device_ids: ["3"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:shared","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:shared","deployment:pack-small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "dcgm"
       nearai.otel.service: "dcgm-exporter"
@@ -1917,7 +1971,7 @@ services:
       nearai.otel.port: "9400"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "shared"
-      nearai.otel.deployment: "small-models"
+      nearai.otel.deployment: "pack-small-models"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
       nearai.otel.host_machine: "${CVM_HOST}"
@@ -1988,7 +2042,7 @@ services:
       SAGE_LOG_AWS_SECRET_ACCESS_KEY: ${SAGE_LOG_AWS_SECRET_ACCESS_KEY}
       SAGE_ADMIN_TOKEN: ${SAGE_ADMIN_TOKEN}
       BRAVE_API_KEY: ${SAGE_SEARCH_API_KEY}
-      NVIDIA_VISIBLE_DEVICES: GPU-9ec3a20b-6169-7fdc-a19a-6058228132c1
+      NVIDIA_VISIBLE_DEVICES: ${SAGE_GPU_UUID:?SAGE_GPU_UUID is required}
     volumes:
       - sage-data:/workspace
       - /var/run/sage-dstack/dstack.sock:/var/run/dstack.sock
@@ -2013,7 +2067,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["GPU-9ec3a20b-6169-7fdc-a19a-6058228132c1"]
+              device_ids: ["${SAGE_GPU_UUID:?SAGE_GPU_UUID is required}"]
               capabilities: [gpu]
 
   dcgm-sage:
@@ -2024,10 +2078,10 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["GPU-9ec3a20b-6169-7fdc-a19a-6058228132c1"]
+              device_ids: ["${SAGE_GPU_UUID:?SAGE_GPU_UUID is required}"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:levanto/sage","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:levanto/sage","deployment:pack-small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "dcgm"
       nearai.otel.service: "dcgm-exporter"
@@ -2036,7 +2090,7 @@ services:
       nearai.otel.port: "9400"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "levanto/sage"
-      nearai.otel.deployment: "small-models"
+      nearai.otel.deployment: "pack-small-models"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
       nearai.otel.host_machine: "${CVM_HOST}"
@@ -2079,7 +2133,7 @@ services:
         exit "$$fail"
     logging: *logging-conf
     labels:
-      com.datadoghq.ad.logs: '[{"source":"engine-egress-probe","service":"engine-egress-probe","tags":["model:Qwen/Qwen3.8-27B","deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.logs: '[{"source":"engine-egress-probe","service":"engine-egress-probe","tags":["model:Qwen/Qwen3.8-27B","deployment:pack-small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
 
   otelcol-contrib:
     networks:
@@ -2111,22 +2165,7 @@ services:
         max-size: "20m"
         max-file: "3"
     labels:
-      com.datadoghq.ad.logs: '[{"source":"otelcol-contrib","service":"otelcol-contrib","tags":["deployment:small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
-
-networks:
-  sage:
-    name: sage_net
-    driver: bridge
-    enable_ipv6: false
-    ipam:
-      config:
-        - subnet: 172.31.250.0/24
-  default:
-    external: true
-    name: dstack_default
-  engine-qwen38:
-    name: engine_qwen38
-    internal: true
+      com.datadoghq.ad.logs: '[{"source":"otelcol-contrib","service":"otelcol-contrib","tags":["deployment:pack-small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
 
 volumes:
   otelcol_app_storage:
@@ -2146,6 +2185,21 @@ volumes:
   certs:
     external: true
     name: certs
+
+networks:
+  sage:
+    name: sage_net
+    driver: bridge
+    enable_ipv6: false
+    ipam:
+      config:
+        - subnet: 172.31.250.0/24
+  default:
+    external: true
+    name: dstack_default
+  engine-qwen38:
+    name: engine_qwen38
+    internal: true
 
 configs:
   otelcol_app_config:
@@ -2249,7 +2303,7 @@ configs:
                       source: "sglang"
                       container_name: "model-sg-qwen36-35b-a3b-fp8-tp1-r1"
                       model: "Qwen/Qwen3.6-35B-A3B-FP8"
-                      deployment: "small-models"
+                      deployment: "pack-small-models"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
                       host_machine: "${CVM_HOST}"
@@ -2270,7 +2324,7 @@ configs:
                       model_path: "graphistry/GLM-5.3-Flash-W4AFP8"
                       served_model: "z-ai/glm-5.3-flash"
                       precision: "int4-weights-fp8-activations-fp8-kv"
-                      deployment: "glm53-flash-sgl-tp2x4"
+                      deployment: "pack-small-models"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
                       host_machine: "${CVM_HOST}"
@@ -2296,7 +2350,7 @@ configs:
                       model_path: "graphistry/GLM-5.3-Flash-W4AFP8"
                       served_model: "z-ai/glm-5.3-flash"
                       precision: "int4-weights-fp8-activations-fp8-kv"
-                      deployment: "glm53-flash-sgl-tp2x4"
+                      deployment: "pack-small-models"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
                       host_machine: "${CVM_HOST}"
@@ -2320,7 +2374,7 @@ configs:
                       container_name: "glm53-ghost-aggregator"
                       model: "z-ai/glm-5.3-flash"
                       served_model: "z-ai/glm-5.3-flash"
-                      deployment: "glm53-flash-sgl-tp2x4"
+                      deployment: "pack-small-models"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
                       host_machine: "${CVM_HOST}"
@@ -2337,7 +2391,7 @@ configs:
                       source: "sglang"
                       container_name: "model-sg-flux2-klein-4b-tp1"
                       model: "black-forest-labs/FLUX.2-klein-4B"
-                      deployment: "small-models"
+                      deployment: "pack-small-models"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
                       host_machine: "${CVM_HOST}"
@@ -2355,7 +2409,7 @@ configs:
                       source: "vllm"
                       container_name: "model-vllm-qwen3vl-30b-a3b-fp8-tp1"
                       model: "Qwen/Qwen3-VL-30B-A3B-Instruct"
-                      deployment: "small-models"
+                      deployment: "pack-small-models"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
                       host_machine: "${CVM_HOST}"
@@ -2372,7 +2426,7 @@ configs:
                       source: "vllm"
                       container_name: "model-vllm-qwen3-embedding-0.6b-tp1"
                       model: "Qwen/Qwen3-Embedding-0.6B"
-                      deployment: "small-models"
+                      deployment: "pack-small-models"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
                       host_machine: "${CVM_HOST}"
@@ -2389,7 +2443,7 @@ configs:
                       source: "vllm"
                       container_name: "model-vllm-qwen3-reranker-0.6b-tp1"
                       model: "Qwen/Qwen3-Reranker-0.6B"
-                      deployment: "small-models"
+                      deployment: "pack-small-models"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
                       host_machine: "${CVM_HOST}"
@@ -2406,7 +2460,7 @@ configs:
                       source: "vllm"
                       container_name: "model-vllm-whisper-large-v3-tp1"
                       model: "openai/whisper-large-v3"
-                      deployment: "small-models"
+                      deployment: "pack-small-models"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
                       host_machine: "${CVM_HOST}"
@@ -2423,7 +2477,7 @@ configs:
                       source: "dcgm-exporter"
                       container_name: "dcgm-privacy-filter"
                       model: "openai/privacy-filter"
-                      deployment: "small-models"
+                      deployment: "pack-small-models"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
                       host_machine: "${CVM_HOST}"
@@ -2440,7 +2494,7 @@ configs:
                       source: "dcgm-exporter"
                       container_name: "dcgm-qwen36-35b-a3b"
                       model: "Qwen/Qwen3.6-35B-A3B-FP8"
-                      deployment: "small-models"
+                      deployment: "pack-small-models"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
                       host_machine: "${CVM_HOST}"
@@ -2460,7 +2514,7 @@ configs:
                       model: "z-ai/glm-5.3-flash"
                       model_path: "graphistry/GLM-5.3-Flash-W4AFP8"
                       served_model: "z-ai/glm-5.3-flash"
-                      deployment: "glm53-flash-sgl-tp2x4"
+                      deployment: "pack-small-models"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
                       host_machine: "${CVM_HOST}"
@@ -2479,7 +2533,7 @@ configs:
                       source: "dcgm-exporter"
                       container_name: "dcgm-shared-gpu3"
                       model: "shared"
-                      deployment: "small-models"
+                      deployment: "pack-small-models"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
                       host_machine: "${CVM_HOST}"
@@ -2496,7 +2550,7 @@ configs:
                       source: "dcgm-exporter"
                       container_name: "dcgm-sage"
                       model: "levanto/sage"
-                      deployment: "small-models"
+                      deployment: "pack-small-models"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
                       host_machine: "${CVM_HOST}"
@@ -2513,7 +2567,7 @@ configs:
                       source: "vllm-proxy"
                       container_name: "proxy-qwen36-35b-a3b"
                       model: "Qwen/Qwen3.6-35B-A3B-FP8"
-                      deployment: "small-models"
+                      deployment: "pack-small-models"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
                       host_machine: "${CVM_HOST}"
@@ -2531,7 +2585,7 @@ configs:
                       container_name: "model-sg-qwen38-27b-fp8-tp1-coloc"
                       model: "Qwen/Qwen3.8-27B-FP8"
                       served_model: "Qwen/Qwen3.8-27B"
-                      deployment: "small-models"
+                      deployment: "pack-small-models"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
                       host_machine: "${CVM_HOST}"
@@ -2541,7 +2595,7 @@ configs:
                       instance: "0"
                       gpu_pair: "2"
                       model_revision: "017b9c7af6b5689d5dd426a76e0bc077eb5ca20a"
-                      config_variant: "qwen38-gpu2-coloc-fa3-m96-prio-v0523"
+                      config_variant: "qwen38-coloc-fa3-m96-prio-v0523"
                       quantization: "fp8"
                       chunk_size: "4096"
                       max_prefill_tokens: "4096"
@@ -2562,7 +2616,7 @@ configs:
                       source: "vllm-proxy"
                       container_name: "proxy-qwen38-27b"
                       model: "Qwen/Qwen3.8-27B"
-                      deployment: "small-models"
+                      deployment: "pack-small-models"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
                       host_machine: "${CVM_HOST}"
@@ -2570,7 +2624,7 @@ configs:
                       ip: "${HOST_IP}"
                       port: "8000"
                       gpu_pair: "2"
-                      config_variant: "qwen38-gpu2-coloc-only"
+                      config_variant: "qwen38-coloc-only"
               - job_name: inference-proxy-proxy-qwen38-27b-abliterated
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -2581,7 +2635,7 @@ configs:
                       source: "vllm-proxy"
                       container_name: "proxy-qwen38-27b-abliterated"
                       model: "Qwen/Qwen3.8-27B-abliterated"
-                      deployment: "small-models"
+                      deployment: "pack-small-models"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
                       host_machine: "${CVM_HOST}"
@@ -2589,7 +2643,7 @@ configs:
                       ip: "${HOST_IP}"
                       port: "8000"
                       gpu_pair: "2"
-                      config_variant: "qwen38-lora-canary"
+                      config_variant: "qwen38-lora"
               - job_name: inference-proxy-proxy-glm53
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -2600,7 +2654,7 @@ configs:
                       source: "vllm-proxy"
                       container_name: "proxy-glm53"
                       model: "z-ai/glm-5.3-flash"
-                      deployment: "glm53-flash-sgl-tp2x4"
+                      deployment: "pack-small-models"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
                       host_machine: "${CVM_HOST}"
@@ -2618,7 +2672,7 @@ configs:
                       source: "vllm-proxy"
                       container_name: "proxy-flux2-klein-4b"
                       model: "black-forest-labs/FLUX.2-klein-4B"
-                      deployment: "small-models"
+                      deployment: "pack-small-models"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
                       host_machine: "${CVM_HOST}"
@@ -2635,7 +2689,7 @@ configs:
                       source: "vllm-proxy"
                       container_name: "proxy-qwen3vl-30b-a3b"
                       model: "Qwen/Qwen3-VL-30B-A3B-Instruct"
-                      deployment: "small-models"
+                      deployment: "pack-small-models"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
                       host_machine: "${CVM_HOST}"
@@ -2652,7 +2706,7 @@ configs:
                       source: "vllm-proxy"
                       container_name: "proxy-qwen3-embedding-0.6b"
                       model: "Qwen/Qwen3-Embedding-0.6B"
-                      deployment: "small-models"
+                      deployment: "pack-small-models"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
                       host_machine: "${CVM_HOST}"
@@ -2669,7 +2723,7 @@ configs:
                       source: "vllm-proxy"
                       container_name: "proxy-qwen3-reranker-0.6b"
                       model: "Qwen/Qwen3-Reranker-0.6B"
-                      deployment: "small-models"
+                      deployment: "pack-small-models"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
                       host_machine: "${CVM_HOST}"
@@ -2686,7 +2740,7 @@ configs:
                       source: "vllm-proxy"
                       container_name: "proxy-whisper-large-v3"
                       model: "openai/whisper-large-v3"
-                      deployment: "small-models"
+                      deployment: "pack-small-models"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
                       host_machine: "${CVM_HOST}"
@@ -2703,7 +2757,7 @@ configs:
                       source: "vllm-proxy"
                       container_name: "proxy-privacy-filter"
                       model: "openai/privacy-filter"
-                      deployment: "small-models"
+                      deployment: "pack-small-models"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
                       host_machine: "${CVM_HOST}"
@@ -2898,7 +2952,7 @@ configs:
       # (e.g. after a backend container is recreated independently), wedging
       # every port's health check so all 8 models silently drop to 0 backends.
       # HOST_IP:<port> is the endpoint model-proxy actually routes to and never
-      # depends on inter-container DNS. See cvm-compose-files#57. ($1 = host:port)
+      # depends on inter-container DNS. ($1 = host:port)
       check_chat() {
         curl -sf --max-time 45 -X POST "http://$$1/v1/chat/completions" \
           -H "Authorization: Bearer $$INFERENCE_TOKEN" \
@@ -2991,7 +3045,7 @@ configs:
       # readiness gate forever and silently drops every model to 0 backends.
       # Bounded + loud so a persistent probe failure falls through to the
       # registration loop (which health-checks each backend directly) instead
-      # of hanging here forever. See cvm-compose-files#57.
+      # of hanging here forever.
       READY_URL="http://$${HOST_IP}:8002/v1/models"
       echo "Waiting for first model to be ready (probing $$READY_URL)..."
       ready_attempts=0
@@ -3013,7 +3067,7 @@ configs:
           # Liveness marker for the container healthcheck (see service def);
           # refreshed each port so a slow-but-progressing serial loop (these
           # probes can take minutes in aggregate) is not falsely marked
-          # unhealthy. See cvm-compose-files#57.
+          # unhealthy.
           date +%s > /tmp/registrar_alive
           eval "was_reg=\$$REG_$$port"
           eval "fails=\$$FAIL_COUNT_$$port"
@@ -3044,7 +3098,7 @@ configs:
         # when every replica restarts, so re-assert it each pass, like the model mappings above.
         register_alias "qwen3-30b.completions.near.ai" "qwen3-6-35b.completions.near.ai"
         # GLM-5.3 Flash (:8009, base tier). model-proxy's model->domain map is one domain per id,
-        # last-writer-wins: this is the same mapping gpu03 and gpu04 register, never the long domain.
+        # last-writer-wins: the other base-tier hosts register the same mapping, never the long domain.
         register_model "z-ai/glm-5.3-flash" "glm-5-3-flash.completions.near.ai"
         # Refresh liveness after the register_model calls, before the long sleep.
         date +%s > /tmp/registrar_alive
@@ -3145,9 +3199,7 @@ configs:
       # and staging `completions-stg.near.ai` zones. Without the staging
       # server_names, `*.completions-stg.near.ai` SNIs fall through to the
       # default server (lexically first model) and return the wrong model's
-      # signing pubkey, breaking E2EE on staging — see nearai/infra#143
-      # (rotation-SNI variant) and nearai/infra#164 (staging-SNI variant),
-      # plus the L4-SNI-rewrite analysis in nearai/model-proxy#30.
+      # signing pubkey, breaking E2EE on staging.
 
       server {
           listen 443 ssl http2;
@@ -3256,8 +3308,7 @@ configs:
 
       server {
           listen 443 ssl http2;
-          # Base names only (canonical, staging, rotation -i<N>, per-backend -b<hex12>). The -long-* names are not
-          # served here: gpu13 is not a long-tier host.
+          # Base names only (canonical, staging, rotation -i<N>, per-backend -b<hex12>); no -long-* names.
           server_name glm-5-3-flash.completions.near.ai
                       glm-5-3-flash.completions-stg.near.ai
                       ~^glm-5-3-flash-i\d+\.completions(-stg)?\.near\.ai$$
@@ -3425,9 +3476,8 @@ configs:
               ;;
             28)
               # A 1-token probe queues behind long prefills and can pass 45 s on a healthy
-              # engine: on 2026-11-02 ~250K-token prompts withdrew both Qwen3.8 replicas
-              # this way. /v1/models answers from the HTTP layer, so 2xx means busy, not
-              # dead. Same rule as the GLM-5.3 registrars (#277).
+              # engine. /v1/models answers from the HTTP layer, so 2xx means busy, not
+              # dead.
               if curl -sf --connect-timeout 5 --max-time 10 \
                 -H "Authorization: Bearer $$INFERENCE_TOKEN" \
                 "http://$$1/v1/models" > /dev/null 2>&1; then
