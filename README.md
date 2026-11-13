@@ -40,8 +40,8 @@ Legacy paths are listed in `ci/data/legacy.txt` and only shrink.
 
 | name | form | example |
 |---|---|---|
-| serving file | `prod/<checkpoint>-<engine>-<topology>[-<tier>].yaml` | `prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8-V12Q8.yaml` |
-| other deployable | `prod/pack-<purpose>.yaml`, `prod/util-<verb>-<object>.yaml` | `prod/rotate-compose-manager-token.yaml` |
+| serving file | `prod/<served>-<engine>-<topology>[-<tier>].yaml` | `prod/glm-5.3-flash-sglang-tp2x4.yaml` |
+| other deployable | `prod/pack-<purpose>.yaml`, `prod/util-<verb>-<object>.yaml` | `prod/util-rotate-token.yaml` |
 | build dir | `docker/<engine>-v<upstream>-<scope>-r<N>/` | `docker/sglang-v0.5.23-glm53-r1/` |
 | image tag | build dir without `<engine>-` | `v0.5.23-glm53-r1` |
 | publish workflow | `.github/workflows/publish-<build dir>.yaml` | `publish-sglang-v0.5.23-glm53-r1.yaml` |

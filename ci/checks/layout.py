@@ -39,7 +39,7 @@ FIXED = {
     ".github/workflows/ci.yaml", ".github/workflows/auto-tag.yaml",
     "ci/run.py", "ci/lib/common.py",
     "ci/checks/layout.py", "ci/checks/status.py", "ci/checks/pins.py", "ci/checks/privacy.py", "ci/checks/public.py",
-    "ci/checks/frozen.py", "ci/checks/claude.py", "ci/checks/docker.py", "ci/checks/stack.py", "ci/checks/nginx.py",
+    "ci/checks/frozen.py", "ci/checks/claude.py", "ci/checks/docker.py", "ci/checks/names.py", "ci/checks/stack.py", "ci/checks/nginx.py",
     "ci/data/legacy.txt", "ci/data/images.allow", "ci/data/services.allow.json", "ci/data/public.json",
     "ci/data/exceptions.json", "ci/data/expected.json",
     "ci/config/yamllint.yaml", "ci/config/gitleaks.toml",
@@ -63,9 +63,12 @@ def conforms(path, tree):
     if path in FIXED or DOCS.match(path) or CLAUDE_DIR.match(path):
         return True
     if path.startswith("prod/"):
-        if not (SERVING.match(path) or PACK.match(path) or UTIL.match(path)):
+        m = SERVING.match(path)
+        if not (m or PACK.match(path) or UTIL.match(path)):
             return False
-        return not LIFECYCLE.search(path[len("prod/"):])
+        # A served model's own name may hold version tokens (v4.1); the parts chosen here may not.
+        chosen = (m.group("tier") or "") if m else path[len("prod/"):]
+        return not LIFECYCLE.search(chosen)
     m = PUBLISH.match(path)
     if m:
         return any(p.startswith(f"docker/{m.group('dir')}/") for p in tree.paths)
@@ -301,6 +304,10 @@ CASES = [
     ("publish on pull_request", "layout.w2",
      dict(BASE_FILES, **{".github/workflows/publish-sglang-v1-x-r1.yaml": PUB_OK.replace(
          "  workflow_dispatch:\n", "  workflow_dispatch:\n  pull_request_target:\n")}), BASE_FILES),
+    ("model version token in a serving name", None,
+     dict(BASE_FILES, **{"prod/deepseek-v4.1-flash-vllm-dep8.yaml": "services: {}\n"}), BASE_FILES),
+    ("lifecycle tier", "layout.path", dict(BASE_FILES, **{"prod/glm-5.3-sglang-tp4-new.yaml": "services: {}\n"}),
+     BASE_FILES),
     ("unpinned action", "layout.w3",
      dict(BASE_FILES, **{".github/workflows/ci.yaml": WF_OK.replace("@" + "a" * 40, "@v4")}), BASE_FILES),
     ("second job named all-green", "layout.all-green",

@@ -26,6 +26,7 @@ import claude
 import docker
 import frozen
 import layout
+import names
 import nginx
 import pins
 import privacy
@@ -37,7 +38,7 @@ from common import (
     load_json, render_dir, sha256,
 )
 
-GUARDS = [layout, status, pins, privacy, public, frozen, claude, stack, nginx, docker]
+GUARDS = [layout, status, pins, privacy, public, frozen, claude, stack, nginx, docker, names]
 RULES = ["run.render", "exceptions.format", "exceptions.unused", "exceptions.counts"]
 ALL_RULES = RULES + [r for g in GUARDS for r in g.RULES]
 ENTRY_KEYS = {"rule", "path", "sha256", "reason", "remove_when"}
