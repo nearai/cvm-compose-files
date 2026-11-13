@@ -19,14 +19,12 @@ attestation are the proof.
   host. CI enforces it only through the flags and env of services it classifies as SGLang or vLLM (by
   service key, image name, command or `role: engine`), `aux` services included. It does not cover
   services on other images (nginx, the collector, GPU exporters, downloaders, registrars, `sage`,
-  `model-privacy-filter`), and it cannot see what any image logs by default. The SGLang images built
-  here also carry log-redaction patches, which CI does not check:
-  [14-admin-auth-redaction](../docker/sglang-v0523-secure/patches/14-admin-auth-redaction.diff),
-  [15-customer-data-log-redaction](../docker/sglang-v0523-secure/patches/15-customer-data-log-redaction.diff),
-  [26-log-format-followup](../docker/sglang-v0523-secure/patches/26-log-format-followup.diff) (same files in
-  `sglang-glm53-v0523`), and in `sglang-glm53-hicache-w4afp8`
-  [admin-auth-redaction](../docker/sglang-glm53-hicache-w4afp8/admin-auth-redaction.diff) and
-  [log-format](../docker/sglang-glm53-hicache-w4afp8/log-format.diff).
+  `model-privacy-filter`), and it cannot see what any image logs by default. The published
+  `sglang-v0523-secure` and `sglang-glm53-v0523` images also carry log-redaction patches, which CI does
+  not check: [14-admin-auth-redaction](../docker/sglang-v0523-secure/patches/14-admin-auth-redaction.diff)
+  and [15-customer-data-log-redaction](../docker/sglang-v0523-secure/patches/15-customer-data-log-redaction.diff).
+  Patch 26 in those dirs and the redaction patches in `sglang-glm53-hicache-w4afp8` are not in any
+  published image; the `SERIES` or Dockerfile at an image's source commit records what it contains.
 
 Start from the deployment record: a release tag `v0.0.N`, a file path and the file's SHA-256. Always
 verify by digest. Image tags on the registry can be moved; digests cannot.
