@@ -338,7 +338,7 @@ x-privacy-filter-common: &privacy-filter-common
     dockerfile_inline: |
       # syntax=docker/dockerfile:1.4
       FROM pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime
-      # transformers 5.20+ needs PyTorch >=2.6; this 2.5.1 base uses 5.16.1.
+      # transformers 5.20+ needs PyTorch >=2.6; the 2.5.1 base needs the pinned 5.16.1.
       RUN pip install --no-cache-dir \
           "transformers==5.16.1" \
           accelerate \
@@ -3160,8 +3160,7 @@ configs:
       # compose service DNS name. A service-name probe fails with curl (6)
       # "Could not resolve host" if the registrar loses compose-network DNS
       # (e.g. after a backend container is recreated independently).
-      # HOST_IP:<port> is the endpoint model-proxy actually routes to and does not
-      # depend on inter-container DNS. ($1 = host:port)
+      # HOST_IP:<port> is the endpoint model-proxy routes to. ($1 = host:port)
       check_chat() {
         curl -sf --max-time 45 -X POST "http://$$1/v1/chat/completions" \
           -H "Authorization: Bearer $$INFERENCE_TOKEN" \
@@ -3249,9 +3248,8 @@ configs:
       }
 
       # Probe the host-published nginx port via HOST_IP instead of the
-      # "nginx" compose DNS name. The wait is bounded, so a persistent probe
-      # failure continues to the registration loop (which health-checks each
-      # backend directly).
+      # "nginx" compose DNS name. The wait is bounded; the registration loop
+      # then health-checks each backend directly.
       READY_URL="http://$${HOST_IP}:8002/v1/models"
       echo "Waiting for first model to be ready (probing $$READY_URL)..."
       ready_attempts=0
@@ -3676,9 +3674,8 @@ configs:
               return 0
               ;;
             28)
-              # A 1-token probe queues behind long prefills and can pass 45 s on a healthy
-              # engine. /v1/models answers from the HTTP layer, so 2xx means busy, not
-              # dead.
+              # /v1/models answers from the HTTP layer, so 2xx means busy, not dead (a 1-token
+              # probe can queue behind long prefills).
               if curl -sf --connect-timeout 5 --max-time 10 \
                 -H "Authorization: Bearer $$INFERENCE_TOKEN" \
                 "http://$$1/v1/models" > /dev/null 2>&1; then
@@ -3762,9 +3759,8 @@ configs:
     content: |
       #!/bin/sh
       # Maps the adapter id to its domain; never registers or unregisters an endpoint.
-      # Discovery probes base's HOST_IP:8000, whose /v1/models (the engine list) carries the
-      # adapter id, and routes its domain to HOST_IP:8001, where nginx-qwen38 selects the
-      # abliterated proxy by SNI.
+      # Discovery probes base's HOST_IP:8000 (its /v1/models carries the adapter id) and
+      # routes the domain to HOST_IP:8001, where nginx-qwen38 selects the proxy by SNI.
       PROXY_URL="https://completions.near.ai"
       TOKEN="$${MODEL_PROXY_TOKEN}"
       INFERENCE_TOKEN="$${PROXY_TOKEN}"

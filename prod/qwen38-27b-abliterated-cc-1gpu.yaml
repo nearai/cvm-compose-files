@@ -991,8 +991,8 @@ configs:
               return 0
               ;;
             28)
-              # A 1-token probe can queue behind long prefills and exceed 45 s on a healthy
-              # engine. /v1/models answers from the HTTP layer, so 2xx means busy, not dead.
+              # /v1/models answers from the HTTP layer, so 2xx means busy, not dead (a 1-token
+              # probe can queue behind long prefills).
               if curl -sf --connect-timeout 5 --max-time 10 \
                 -H "Host: $$chat_host" \
                 -H "Authorization: Bearer $$2" \
@@ -1113,9 +1113,8 @@ configs:
     content: |
       #!/bin/sh
       # Maps the adapter id to its domain; never registers or unregisters an endpoint.
-      # Discovery probes the base endpoint, whose /v1/models (the engine list) carries the
-      # adapter id, and routes its domain to the same routing port, where nginx-qwen38
-      # selects the abliterated proxy by SNI. The base endpoint is owned by qwen38-registrar.
+      # Discovery probes the base endpoint (its /v1/models carries the adapter id) and routes
+      # the domain to the same port, where nginx-qwen38 selects the proxy by SNI.
       MODE="$${MODEL_PROXY_REGISTRATION:-disabled}"
       TOKEN="$${MODEL_PROXY_TOKEN}"
       INFERENCE_TOKEN="$${PROXY_TOKEN}"
