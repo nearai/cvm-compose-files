@@ -48,24 +48,24 @@ DISCLOSURE = [
     ("D2", r"\bvulnerab\w*|\bexploit\w*|\bRCE\b|\bSSRF\b|\bzero[- ]?day\b|\battacker\w*"),
     ("D3", r"\bbefore this (?:change|fix|pr|patch)\b|\b(?:was|were) (?:exposed|exploitable|leaking|vulnerable|"
            r"reachable by)\b|\bno longer (?:exposed|leaks?|leaking|reachable|vulnerable|possible)\b|"
-           r"\bsecurity (?:fix|hole|issue|bug|flaw|gap)"),
-    ("D4", r"\b(?:incident|outage|breach|post-?mortem|pentest|penetration test|bug bounty)\b|"
-           r"\b(?:found|discovered|reported) by\b"),
-    ("D5", r"\bseverity\b|\bCVSS\b|\bhighest[- ]impact\b|\b(?:critical|high)[- ](?:severity|risk)\b"),
-    ("D6", r"\bstill (?:open|unfixed|unpatched|vulnerable|exposed|lacks?)\b|\bun(?:fixed|patched)\b|"
+           r"(?<![\w-])security (?:fix|hole|issue|bug|flaw|gap)"),
+    ("D4", r"\b(?:incident|post-?mortem|pentest|penetration test|bug bounty)\b|\breported by\b"),
+    ("D5", r"\bCVSS\b|\bhighest[- ]impact\b|\b(?:critical|high)[- ](?:severity|risk)\b"),
+    ("D6", r"\bstill (?:unfixed|unpatched|vulnerable|exposed)\b|\bunfixed\b|"
            r"\bnot yet (?:fixed|patched|deployed|rolled out)\b"),
-    ("D7", r"\baffect(?:s|ed|ing)? (?:all|every|both|\d+) (?:hosts?|replicas?|nodes?|deployments?|users?|customers?)\b"),
+    ("D7", r"\baffect(?:s|ed|ing)? (?:all|every|both|\d+) (?:users?|customers?)\b"),
 ]
 DISCLOSURE_RE = [(cat, re.compile(rx, re.I)) for cat, rx in DISCLOSURE]
 # D2 is not applied to the policy file that has to name the subject.
 D2_EXEMPT = {".github/SECURITY.md"}
-ZERO_WIDTH = dict.fromkeys(map(ord, "\u200b\u200c\u200d\ufeff\u00ad\u2060\u200e\u200f"))
-ZERO_WIDTH.update({0x2010: "-", 0x2011: "-"})
+EMPHASIS = re.compile(r"(?<=[^\W_])[*_`]+(?=[^\W_])")
+COMMENT_TEXT = re.compile(r"(?:^|\s)#(?!!)(.*)$")
 SPACES = re.compile(r"\s+")
 BREAK = re.compile(r"^(?:\||#|```|[-*+] |\d+[.)] )")
-BRANCH_PREFIX = ("vuln", "exploit", "cve", "ghsa", "leak", "incident", "breach", "attack")
-BRANCH_EXACT = {"rce", "ssrf"}
-PATCHES = re.compile(r"^docker/[^/]+/patches/|\.(?:diff|patch)$")
+BRANCH_PREFIX = ("vuln", "exploit", "cve", "ghsa", "incident", "breach", "attack", "0day")
+BRANCH_EXACT = {"rce", "ssrf", "xss"}
+CAMEL = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+PATCHES = re.compile(r"^docker/[^/]+/patches/.*\.(?:diff|patch)$")
 
 
 def public_host(h):
@@ -184,7 +184,10 @@ def line_of(text, needle, after=None):
 
 
 def norm(line):
-    return SPACES.sub(" ", unicodedata.normalize("NFKC", line).translate(ZERO_WIDTH)).strip()
+    s = unicodedata.normalize("NFKC", line)
+    s = "".join("-" if unicodedata.category(c) == "Pd" or c == "\u2212" else c
+                for c in s if unicodedata.category(c) != "Cf")
+    return SPACES.sub(" ", EMPHASIS.sub("", s)).strip()
 
 
 def scan_paragraph(path, entries, rule="public.disclosure", d2=True):
@@ -274,6 +277,9 @@ def disclosure_findings(ctx, base_build):
             continue
         data = head.data(p)
         if not is_text(data):
+            if is_md or is_yaml:
+                out.append(Finding(p, 0, "public.disclosure", "file is not readable as UTF-8 text; the wording "
+                                   "check cannot scan it", key=f"unreadable:{p}"))
             continue
         text = data.decode("utf-8")
         if is_md:
@@ -316,7 +322,7 @@ def diff_findings(ctx, base_build):
         p = paths[-1]
         if status == "D" or not ctx.head.has(p):
             continue
-        if p.endswith(".md") or p in (EXCEPTIONS, EXPECTED) or PATCHES.search(p) or p == "ci/checks/public.py":
+        if p.endswith(".md") or p in (EXCEPTIONS, EXPECTED) or PATCHES.search(p):
             continue
         if frozen_build_path(ctx, base_build, p):
             continue
@@ -329,18 +335,20 @@ def diff_findings(ctx, base_build):
         lines = text.split("\n")
         skip = {n for n, _, _ in yaml_comments(text)} if re.search(r"\.ya?ml$", p) else set()
         run = []
+        # Only comment text is read; commands, flags and field names are not wording.
         for n in added_lines(before, lines) + [None]:
-            if n is not None and n not in skip and run and n == run[-1][0] + 1:
-                run.append((n, lines[n - 1]))
+            m = COMMENT_TEXT.search(lines[n - 1]) if n is not None and n not in skip else None
+            if m and run and n == run[-1][0] + 1:
+                run.append((n, m.group(1)))
                 continue
             if run:
                 out += scan_paragraph(p, run, "public.disclosure-added")
-            run = [(n, lines[n - 1])] if n is not None and n not in skip else []
+            run = [(n, m.group(1))] if m else []
     return out
 
 
 def branch_findings(branch):
-    tokens = [t for t in re.split(r"[/._-]+", branch.lower()) if t]
+    tokens = [t for t in re.split(r"[/._\s-]+", CAMEL.sub(" ", branch).lower()) if t]
     hit = any(t in BRANCH_EXACT or t.startswith(BRANCH_PREFIX) for t in tokens) or \
         any(a == "hotfix" and b == "security" for a, b in zip(tokens, tokens[1:]))
     return [Finding("pr branch", 1, "public.branch", "branch name has a weakness, advisory or operational-event "
@@ -457,8 +465,8 @@ def j(*parts):
 S = privacy.SENTINEL
 W_ID, W_VOCAB, W_DELTA = j("CV", "E-2026-1"), j("vulner", "able"), j("was ex", "posed to callers")
 W_PAST, W_HIST, W_RATE = j("no lon", "ger exposed"), j("inci", "dent"), j("high", "est-impact")
-W_OPEN, W_SCOPE = j("still un", "patched"), j("affects ev", "ery\nreplica")
-LEGIT = ("The attestation socket is read-only; `security_opt` stays; image sglang-v0523-secure; "
+W_OPEN, W_SCOPE = j("still un", "patched"), j("affects ev", "ery\ncustomer")
+LEGIT = ("The cache directory is read-only; `security_opt` stays; image sglang-v0523-secure; "
          "`--trust-remote-code`; `privacy.secret`; set HF_TOKEN and ADMIN_API_KEY at deploy.\n")
 XB = "docker/sglang-x-r1/"
 XWF = ".github/workflows/publish-sglang-x-r1.yaml"
@@ -471,7 +479,7 @@ EX = [{"rule": "public.ip", "path": "README.md", "sha256": sha256(_IP), "reason"
        "remove_when": "w"}]
 CASES += [
     ("legit config words pass", None, dict(FILES, **{"README.md": LEGIT, P: FILES[P] + "# " + LEGIT.split(";")[1] + "\n"}),
-     None, None, None, {"pr": {"title": "repo: tidy", "body": LEGIT, "branch": "prod/glm-engine-admin-key"},
+     None, None, None, {"pr": {"title": "repo: tidy", "body": LEGIT, "branch": "prod/engine-cache-warmup"},
                         "commits": [("a" * 40, "ci: x\n\n" + LEGIT)]}),
     ("advisory id in a doc", "public.disclosure", dict(FILES, **{"README.md": f"{S} {W_ID}\n"}), None, None, None, {}),
     ("phrase split across wrapped lines", "public.disclosure", dict(FILES, **{"README.md": f"{S} It {W_SCOPE} now.\n"}),
@@ -528,8 +536,32 @@ CASES += [
      dict(FILES, **{P: FILES[P] + f"# {S} {W_DELTA}\n"}), FILES, None, None, {"name_status": [("M", P)]}),
     ("added line in a patch file", None, dict(FILES, **{"docker/a/patches/p.diff": f"+ {W_VOCAB}\n"}), FILES, None, None,
      {"name_status": [("A", "docker/a/patches/p.diff")]}),
-    ("branch with a weakness token", "public.branch", FILES, None, None, None, {"pr": {"branch": "fix/key-leak-" + S}}),
+    ("branch with a weakness token", "public.branch", FILES, None, None, None, {"pr": {"branch": "fix/key-" + j("vul", "n") + "-" + S}}),
     ("branch with an adjacent pair", "public.branch", FILES, None, None, None, {"pr": {"branch": "hotfix-security-x"}}),
     ("branch words that only contain a token", None, FILES, None, None, None,
      {"pr": {"branch": "chore/resource-force-patch-1"}}),
+    ("branch with a camelCase token", "public.branch", FILES, None, None, None, {"pr": {"branch": "fix/keyExploit_" + S}}),
+    ("branch with an xss token", "public.branch", FILES, None, None, None, {"pr": {"branch": "fix/xss_" + S}}),
+    ("branch about a memory leak", None, FILES, None, None, None, {"pr": {"branch": "fix/memory-leak"}}),
+    ("scanner step in a workflow", None,
+     dict(FILES, **{WF[0]: WF[1] + "      - name: Scan image\n        run: |\n          scan --" + j("sever", "ity") +
+                    " HIGH --ignore-" + j("un", "fixed") + " | jq '.[] | " + j(".vulner", "abilities") + "'\n"}),
+     FILES, None, None, {"name_status": [("M", WF[0])]}),
+    ("ordinary ops wording", None,
+     dict(FILES, **{"README.md": "Discovered by the proxy; log " + j("sever", "ity") + "; SLO " + j("brea", "ch") +
+                    "; no " + j("out", "age") + "; connection still open; " + j("un", "patched") +
+                    " source; affects every replica.\n"}), None, None, None, {}),
+    ("suite name before a word", None,
+     dict(SH_FILES, **{SH: SH_OLD + "# Upgrade to the noble-" + j("secur", "ity fix") + " pocket.\n"}), SH_FILES, None, None,
+     {"name_status": [("M", SH)]}),
+    ("unicode minus in a phrase", "public.disclosure",
+     dict(FILES, **{"README.md": f"{S} {W_RATE.replace('-', chr(0x2212))}\n"}), None, None, None, {}),
+    ("emphasis inside a word", "public.disclosure",
+     dict(FILES, **{"README.md": f"{S} {W_VOCAB[:4]}**{W_VOCAB[4:]}**\n"}), None, None, None, {}),
+    ("invisible format character", "public.disclosure",
+     dict(FILES, **{"README.md": f"{S} {W_VOCAB[:4]}\u2064{W_VOCAB[4:]}\n"}), None, None, None, {}),
+    ("unreadable markdown file", "public.disclosure", dict(FILES, **{"docs/b.md": b"\xff\xfe" + S.encode()}), None, None,
+     None, {}),
+    ("added line in a non-comment shell command", None, dict(SH_FILES, **{SH: SH_OLD + "echo " + W_DELTA + "\n"}), SH_FILES,
+     None, None, {"name_status": [("M", SH)]}),
 ]
