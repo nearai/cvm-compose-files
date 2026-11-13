@@ -6,7 +6,7 @@ index 5d7fed3c9..d24ef214a 100644
      from vllm.platforms import current_platform
  
      # TODO: Add more requirements for UVA if needed.
-+    # NEAR (10-27): under TDX + GPU PPCIe the GPU sees a stale snapshot of pinned host
++    # NEAR: under TDX + GPU PPCIe the GPU sees a stale snapshot of pinned host
 +    # memory, so UVA buffers rewritten on the host each step (V2 runner block tables,
 +    # positions, ...) are read stale and decode produces NaN. Copy to device instead.
 +    import os

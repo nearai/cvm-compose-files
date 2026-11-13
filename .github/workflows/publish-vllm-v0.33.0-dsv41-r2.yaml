@@ -71,7 +71,7 @@ jobs:
           git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
           git merge-base --is-ancestor "$SOURCE_REVISION" origin/main
           test "$(sha256sum "$BUILD_CONTEXT/Dockerfile" | awk '{print $1}')" = \
-            f1c330e3fc82288850bd0d125a1811e36bc6eb2b28d79631a41d204593debc75
+            38143b305c09b12872e5726d4f462fdfa9f2ab3ae9447a4cdff9a7743ace65c8
           (cd "$BUILD_CONTEXT" && sha256sum --check --strict SHA256SUMS)
           grep -Fxq \
             'base_image=vllm/vllm-openai@sha256:d825baf9ce4b1b6bfc5ecc7b79880c7e6748c65a72d697ce3d47607aafa84c6e' \
@@ -141,8 +141,9 @@ jobs:
              .config.Labels["nearai.vllm.dsv41_supports_lora_patch_sha256"] == "a4ff8a08bd1aade5bb108af3b15fb163a0edd3f80af1dff81eca414c33bd988f" and
              .config.Labels["nearai.vllm.moe_lora_only_when_targeted_patch_sha256"] == "60374d690ace180c8084ef22f489419dfc98edb720f224afd5c648c41ba07899" and
              .config.Labels["nearai.vllm.decoder_replay_lora_rows_patch_sha256"] == "065be72658ef5a9b58f2f76b5d7aef49c63aa0e51ba785b2854411dd11ae6640" and
-             .config.Labels["nearai.vllm.engram_peer_reads_kill_switch_patch_sha256"] == "3b2e41d848877c4556b84eb46ff91ffdd20f05ef25f64ada9e5753799681f3c7" and
+             .config.Labels["nearai.vllm.engram_peer_reads_kill_switch_patch_sha256"] == "694a75c29aae8b6ee5b4a096599694bcd044d80e73e65093484ab569a261c516" and
              .config.Labels["nearai.vllm.cc_explicit_copies_patch_sha256"] == "ae42a1eb886d5a66863efef28339c2cb9986960e6e5eb11c8b44fd180ba374f6" and
+             .config.Labels["nearai.vllm.cc_retain_ep_fault_flag_patch_sha256"] == "2039df25e33e55c3a8b2cdc62d5dc90764e08816fd882481ff2c23572d60e606" and
              .config.Labels["nearai.security.linux_libc_dev"] == "6.8.0-149.149"' \
             image-config.json
 
@@ -298,7 +299,7 @@ jobs:
             echo "- tag: \`$IMAGE_REF\`"
             echo "- immutable: \`$IMAGE_IMMUTABLE_REF\`"
             echo "- base: \`vllm/vllm-openai:v0.33.0\` (d825baf9)"
-            echo "- patches: 01-08 (docker/vllm-v0.33.0-dsv41-r2/SHA256SUMS), incl. the VLLM_CONFIDENTIAL_COMPUTE copy paths"
+            echo "- patches: 01-09 (docker/vllm-v0.33.0-dsv41-r2/SHA256SUMS), incl. the VLLM_CONFIDENTIAL_COMPUTE copy paths"
             echo "- embedded BuildKit provenance: verified"
             echo "- Trivy fixed HIGH findings: $TRIVY_HIGH"
             echo "- Trivy fixed CRITICAL findings: $TRIVY_CRITICAL"

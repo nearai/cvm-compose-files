@@ -12,13 +12,15 @@ LABEL nearai.vllm.moe_lora_only_when_targeted_patch_sha256="60374d690ace180c8084
 LABEL nearai.vllm.decoder_replay_lora_rows="nearai; adapted to v0.33 num_padded replay rows: padding rows carry LoRA index -1"
 LABEL nearai.vllm.decoder_replay_lora_rows_patch_sha256="065be72658ef5a9b58f2f76b5d7aef49c63aa0e51ba785b2854411dd11ae6640"
 LABEL nearai.vllm.cc_disable_uva="nearai; VLLM_NEAR_DISABLE_UVA=1: under TDX + GPU PPCIe the GPU reads stale pinned host memory; v0.33 UvaBufferPool users fall back to explicit copies"
-LABEL nearai.vllm.cc_disable_uva_patch_sha256="27d2b1bcd616950629a438ad15292bebc86b63280a6591282b626b11a914c1b7"
-LABEL nearai.vllm.engram_cpu_gather_patch_sha256="b2cdaf320f7d19213e6e0b71f63d3cf46ffe2093d00ad29f0e483f75ae4a2f30"
-LABEL nearai.vllm.engram_fast_gather_patch_sha256="9f8a001ac8121f43f7cf99e9b506133961b81cf35f99e7c05e6a5cb201bdb111"
+LABEL nearai.vllm.cc_disable_uva_patch_sha256="e728ad59c10180a95de6ea4f12b9bb2c8f53f616ede6840913a7ea89369bcaa5"
+LABEL nearai.vllm.engram_cpu_gather_patch_sha256="9de6c5d0ce8b839ccd47339382da5e6236ff40bb9d099c099ad5980b49de0d30"
+LABEL nearai.vllm.engram_fast_gather_patch_sha256="7d52dbaef6651a83fee9d3d4d72d0d4cccdec7c81a89e73228b45cbc8dfa4ba6"
 LABEL nearai.vllm.engram_peer_reads_kill_switch="nearai; VLLM_NEAR_ENGRAM_PEER_READS=0 keeps the v0.32 DP-collective Engram lookup instead of v0.33 peer-HBM reads (#62091)"
-LABEL nearai.vllm.engram_peer_reads_kill_switch_patch_sha256="3b2e41d848877c4556b84eb46ff91ffdd20f05ef25f64ada9e5753799681f3c7"
+LABEL nearai.vllm.engram_peer_reads_kill_switch_patch_sha256="694a75c29aae8b6ee5b4a096599694bcd044d80e73e65093484ab569a261c516"
 LABEL nearai.vllm.cc_explicit_copies="port of vllm-project/vllm#59981 (head 0340d9a7); VLLM_CONFIDENTIAL_COMPUTE=1 only, no NVML auto-detect: V2 runner H2D on a staging stream, D2H from a worker thread"
 LABEL nearai.vllm.cc_explicit_copies_patch_sha256="ae42a1eb886d5a66863efef28339c2cb9986960e6e5eb11c8b44fd180ba374f6"
+LABEL nearai.vllm.cc_retain_ep_fault_flag="nearai; under CC the EP fault flag is written on the main stream, so the async D2H keeps a reference until the copy has run"
+LABEL nearai.vllm.cc_retain_ep_fault_flag_patch_sha256="2039df25e33e55c3a8b2cdc62d5dc90764e08816fd882481ff2c23572d60e606"
 LABEL nearai.security.upgrades="python packages: none needed (the v0.33.0 base ships certifi 2026.10.23, pip 26.2.2 and uv 0.13.6); OS: linux-libc-dev 6.8.0-149.149"
 LABEL nearai.security.linux_libc_dev="6.8.0-149.149"
 
@@ -30,11 +32,12 @@ RUN cd /usr/local/lib/python3.12/dist-packages \
        "a4ff8a08bd1aade5bb108af3b15fb163a0edd3f80af1dff81eca414c33bd988f  /tmp/near/patches/01-dsv41-supports-lora-wo-b.diff" \
        "60374d690ace180c8084ef22f489419dfc98edb720f224afd5c648c41ba07899  /tmp/near/patches/02-moe-lora-only-when-targeted.diff" \
        "065be72658ef5a9b58f2f76b5d7aef49c63aa0e51ba785b2854411dd11ae6640  /tmp/near/patches/03-decoder-replay-lora-rows.diff" \
-       "27d2b1bcd616950629a438ad15292bebc86b63280a6591282b626b11a914c1b7  /tmp/near/patches/04-cc-disable-uva.diff" \
-       "b2cdaf320f7d19213e6e0b71f63d3cf46ffe2093d00ad29f0e483f75ae4a2f30  /tmp/near/patches/05-engram-cpu-gather.diff" \
-       "9f8a001ac8121f43f7cf99e9b506133961b81cf35f99e7c05e6a5cb201bdb111  /tmp/near/patches/06-engram-fast-gather.diff" \
-       "3b2e41d848877c4556b84eb46ff91ffdd20f05ef25f64ada9e5753799681f3c7  /tmp/near/patches/07-engram-peer-reads-kill-switch.diff" \
+       "e728ad59c10180a95de6ea4f12b9bb2c8f53f616ede6840913a7ea89369bcaa5  /tmp/near/patches/04-cc-disable-uva.diff" \
+       "9de6c5d0ce8b839ccd47339382da5e6236ff40bb9d099c099ad5980b49de0d30  /tmp/near/patches/05-engram-cpu-gather.diff" \
+       "7d52dbaef6651a83fee9d3d4d72d0d4cccdec7c81a89e73228b45cbc8dfa4ba6  /tmp/near/patches/06-engram-fast-gather.diff" \
+       "694a75c29aae8b6ee5b4a096599694bcd044d80e73e65093484ab569a261c516  /tmp/near/patches/07-engram-peer-reads-kill-switch.diff" \
        "ae42a1eb886d5a66863efef28339c2cb9986960e6e5eb11c8b44fd180ba374f6  /tmp/near/patches/08-cc-explicit-copies.diff" \
+       "2039df25e33e55c3a8b2cdc62d5dc90764e08816fd882481ff2c23572d60e606  /tmp/near/patches/09-cc-retain-ep-fault-flag.diff" \
        "c9af2eed017387380ec43ac1aa41dc11a05c42bcbab1fc4fa1cc8971bde0bebd  vllm/model_executor/layers/fused_moe/layer.py" \
        "720923ccd796dfdeab4b396eeeea79cd4c11a9dcd2e6ef8d57c0390fa4cf7ab2  vllm/models/deepseek_v41/common/engram.py" \
        "0038dd2ee11cfd3234c89226b772db958388216d5f3a7bd74b33c8d22dd03880  vllm/models/deepseek_v41/decoder_replay_layers.py" \
@@ -49,13 +52,13 @@ RUN cd /usr/local/lib/python3.12/dist-packages \
     && for p in /tmp/near/patches/0*.diff; do patch -p1 --dry-run -s < "$p" && patch -p1 -s < "$p" || exit 1; done \
     && printf '%s\n' \
        "debd88ab5e8d8153ea9f335ba50f47054ca79f395204844b4f78332f27064d16  vllm/model_executor/layers/fused_moe/layer.py" \
-       "57d02ddd66c39f0154dcf8baceea59c5cc0fa6bdf4f8c6bb3e939eea4bbfbfb5  vllm/models/deepseek_v41/common/engram.py" \
+       "ef5596225e616ab9ca4c9697c895bad03f4b1ee2c6172748d0c7bcebfadaa97f  vllm/models/deepseek_v41/common/engram.py" \
        "3e36b391d50c0db1c1705eb67812d363c25d177c69259ad2d99f35a2a4770395  vllm/models/deepseek_v41/decoder_replay_layers.py" \
        "6ed98852e2f411a9927110b23d0318a34d497fb499d558ff5f26eb873de6ef0b  vllm/models/deepseek_v41/nvidia/model.py" \
        "03366dab71dc7c88e394da27a03649c075bbd34ab0d8a3cd4ab205f3622a77d1  vllm/models/deepseek_v41/nvidia/vl_model.py" \
-       "ba5c76b276e89595dd3bd35784524ef9da3fe8d2608fd64ccb2ca0066e281e1b  vllm/utils/platform_utils.py" \
+       "54679239ccd729c43247adb64a34843828f01cd727d6013994afdd14415814d8  vllm/utils/platform_utils.py" \
        "1a0082edb606140a7db2714b3e43903f5d1795a6405e640acff99df46f196ded  vllm/v1/conf_compute_utils.py" \
-       "ad1a4728e44489c133f497da34c90031620bdaab6c7e0c189bd51ed0f5c72849  vllm/v1/worker/gpu/async_utils.py" \
+       "d57286c26f3d4d374cf96f3d594ef46e43afa75214a4d24c4651f7805c0308d2  vllm/v1/worker/gpu/async_utils.py" \
        "32bb197462e6ca5af4c6db676ef181ddfb7c7bc7f627feee4baf45234f86efee  vllm/v1/worker/gpu/buffer_utils.py" \
        "514fa2b412d475319fc814857bf50d37fd021bc6b66e0804f6265877e108415e  vllm/v1/worker/gpu/spec_decode/utils.py" \
        | sha256sum --check --strict \
@@ -71,6 +74,7 @@ RUN cd /usr/local/lib/python3.12/dist-packages \
     && grep -Fq 'cc_disables_uva()' vllm/v1/worker/gpu/buffer_utils.py \
     && grep -Fq 'output_copy_stream(main_stream.device)' vllm/v1/worker/gpu/async_utils.py \
     && grep -Fq 'new_d2h_stream(device)' vllm/v1/worker/gpu/spec_decode/utils.py \
+    && grep -Fq '_has_fault_gpu = has_fault' vllm/v1/worker/gpu/async_utils.py \
     && python3 -m compileall -q \
         vllm/models/deepseek_v41/nvidia/vl_model.py \
         vllm/model_executor/layers/fused_moe/layer.py \
