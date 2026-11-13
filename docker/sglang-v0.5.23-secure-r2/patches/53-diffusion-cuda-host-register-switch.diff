@@ -1,0 +1,67 @@
+diff --git a/python/sglang/multimodal_gen/runtime/managers/memory_managers/layerwise_offload.py b/python/sglang/multimodal_gen/runtime/managers/memory_managers/layerwise_offload.py
+index a305c1f..fc5fd93 100644
+--- a/python/sglang/multimodal_gen/runtime/managers/memory_managers/layerwise_offload.py
++++ b/python/sglang/multimodal_gen/runtime/managers/memory_managers/layerwise_offload.py
+@@ -401,13 +401,50 @@ _DIRECT_CHUNK = 64 << 20
+ MAPPED_DIRECT_READ_MIN_BYTES = 8 * 1024**3
+ 
+ 
++# cudaHostRegister is not supported in some environments (confidential-computing
++# VMs such as TDX with protected PCIe return cudaErrorNotSupported). Setting this
++# env var skips it: every pinned buffer then comes from torch's pinned pool
++# (cudaHostAlloc), as below _REGISTER_MIN_BYTES. Default: unchanged.
++DISABLE_HOST_REGISTER_ENV = "SGLANG_DIFFUSION_DISABLE_CUDA_HOST_REGISTER"
++
++
++def _host_register_disabled() -> bool:
++    return os.environ.get(DISABLE_HOST_REGISTER_ENV, "").strip().lower() in (
++        "1",
++        "true",
++        "yes",
++        "on",
++    )
++
++
++def _clear_cuda_runtime_error() -> None:
++    """Reset the CUDA runtime's per-thread last error after a handled failure.
++
++    torch's cudaHostRegister binding returns the error code but leaves it as the
++    runtime's last error, and the next kernel launch check (cudaGetLastError)
++    then raises it from an unrelated op, e.g. a later module.to(). torch exposes
++    no cudaGetLastError, so call it on the libcudart torch itself loaded.
++    """
++    try:
++        paths = set()
++        with open("/proc/self/maps") as maps:
++            for line in maps:
++                fields = line.split()
++                if len(fields) >= 6 and "/libcudart.so" in fields[5]:
++                    paths.add(fields[5])
++        for path in sorted(paths):
++            ctypes.CDLL(path).cudaGetLastError()
++    except Exception:
++        pass
++
++
+ def _pin_in_place(tensor: torch.Tensor) -> bool:
+     """Page-lock an allocated CPU tensor in place, at exactly its size.
+ 
+     torch's pinned pool rounds each block up to a power of two (a 1.20 GiB
+     layer store costs 2 GiB), which the pin budget never charged for.
+     """
+-    if not torch.cuda.is_available():
++    if not torch.cuda.is_available() or _host_register_disabled():
+         return False
+     storage = tensor.untyped_storage()
+     nbytes = storage.nbytes()
+@@ -416,8 +453,10 @@ def _pin_in_place(tensor: torch.Tensor) -> bool:
+     try:
+         cudart = torch.cuda.cudart()
+         if int(cudart.cudaHostRegister(storage.data_ptr(), nbytes, 0)) != 0:
++            _clear_cuda_runtime_error()
+             return False
+     except Exception:
++        _clear_cuda_runtime_error()
+         return False
+     weakref.finalize(storage, _unpin_in_place, storage.data_ptr())
+     return True

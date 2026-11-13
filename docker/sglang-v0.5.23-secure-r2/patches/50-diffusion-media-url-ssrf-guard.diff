@@ -1,0 +1,425 @@
+diff --git a/python/sglang/multimodal_gen/runtime/entrypoints/openai/utils.py b/python/sglang/multimodal_gen/runtime/entrypoints/openai/utils.py
+index b9d775b..fba777a 100644
+--- a/python/sglang/multimodal_gen/runtime/entrypoints/openai/utils.py
++++ b/python/sglang/multimodal_gen/runtime/entrypoints/openai/utils.py
+@@ -46,6 +46,7 @@ from sglang.multimodal_gen.runtime.utils.logging_utils import (
+     log_generation_timer,
+ )
+ from sglang.multimodal_gen.runtime.utils.trace_wrapper import trace_req
++from sglang.multimodal_gen.runtime.utils.url_guard import open_public_url_async
+ from sglang.srt.utils.log_redaction import redact_text, redact_url
+ 
+ # re-export LoRA protocol types for backward compatibility
+@@ -417,10 +418,9 @@ async def _maybe_url_image(
+         return None
+ 
+     if img_url.lower().startswith(("http://", "https://")):
+-        # Only bypass persistence when the caller explicitly disables input saves.
+-        # Otherwise keep the prefetch outside the measured server stages.
+-        if prefer_remote_source:
+-            return img_url
++        # Always fetch a client URL here, under the outbound URL policy
++        # (url_guard), even when input saves are disabled: handing the URL to the
++        # pipeline would fetch it later without the private-address check.
+         # download image from URL and persist on disk
+         input_path = await _save_url_image_to_path(
+             img_url, target_path, uploads_root=uploads_root
+@@ -490,12 +490,12 @@ async def _save_url_image_to_path(
+     backoff_seconds = 0.2
+ 
+     try:
+-        async with httpx.AsyncClient(follow_redirects=True) as client:
++        async with httpx.AsyncClient(follow_redirects=False) as client:
+             for attempt in range(1, max_attempts + 1):
+                 part_path = None
+                 try:
+-                    async with client.stream(
+-                        "GET", image_url, timeout=10.0
++                    async with open_public_url_async(
++                        client, image_url, timeout=10.0
+                     ) as response:
+                         response.raise_for_status()
+                         part_path = await _download_capped_to_temp_file(
+diff --git a/python/sglang/multimodal_gen/runtime/utils/url_guard.py b/python/sglang/multimodal_gen/runtime/utils/url_guard.py
+new file mode 100644
+index 0000000..bf5c8d9
+--- /dev/null
++++ b/python/sglang/multimodal_gen/runtime/utils/url_guard.py
+@@ -0,0 +1,230 @@
++"""Outbound policy for client-supplied media URLs (SSRF guard).
++
++A request may name an http(s) URL that the server then fetches. Without a
++check, that URL can point at loopback, the container network or a cloud
++metadata service. Every fetch of a client URL goes through this module:
++
++1. only http and https URLs with a host are accepted;
++2. the host is resolved once and every address must be public (not private,
++   loopback, link-local, CGNAT, multicast, reserved or unspecified, including
++   IPv4 addresses embedded in IPv6 forms);
++3. the connection goes to the address that was checked (the URL host is
++   replaced by the IP, with the original Host header and TLS server name), so
++   a DNS answer cannot change between the check and the connection;
++4. redirects are followed by hand, at most MAX_REDIRECTS, and each target is
++   checked the same way.
++
++SGLANG_DIFFUSION_ALLOW_PRIVATE_MEDIA_URLS=1 turns off the address check (2, 3)
++for lab setups that serve test images from a private host. Scheme checks and
++the redirect limit stay on.
++"""
++
++from __future__ import annotations
++
++import asyncio
++import ipaddress
++import os
++import socket
++from contextlib import asynccontextmanager, contextmanager
++from typing import AsyncIterator, Iterator
++from urllib.parse import urljoin, urlsplit, urlunsplit
++
++import httpx
++
++ALLOW_PRIVATE_ENV = "SGLANG_DIFFUSION_ALLOW_PRIVATE_MEDIA_URLS"
++MAX_REDIRECTS = 5
++_REDIRECT_STATUS_CODES = frozenset({301, 302, 303, 307, 308})
++_DEFAULT_PORTS = {"http": 80, "https": 443}
++_NAT64_NETWORKS = (
++    ipaddress.ip_network("64:ff9b::/96"),
++    ipaddress.ip_network("64:ff9b:1::/48"),
++)
++_IPV4_COMPATIBLE = ipaddress.ip_network("::/96")
++
++IPAddress = ipaddress.IPv4Address | ipaddress.IPv6Address
++
++
++class BlockedURLError(ValueError):
++    """The URL is not allowed by the outbound media URL policy."""
++
++
++def private_urls_allowed() -> bool:
++    return os.environ.get(ALLOW_PRIVATE_ENV, "").strip().lower() in (
++        "1",
++        "true",
++        "yes",
++        "on",
++    )
++
++
++def is_public_address(ip: IPAddress) -> bool:
++    """True only for a globally routable unicast address."""
++    if isinstance(ip, ipaddress.IPv6Address):
++        if ip in _IPV4_COMPATIBLE:
++            return False
++        embedded = [ip.ipv4_mapped, ip.sixtofour]
++        if ip.teredo is not None:
++            embedded.append(ip.teredo[1])
++        if any(ip in net for net in _NAT64_NETWORKS):
++            embedded.append(ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF))
++        for inner in embedded:
++            if inner is not None and not is_public_address(inner):
++                return False
++    return bool(
++        ip.is_global
++        and not ip.is_multicast
++        and not ip.is_private
++        and not ip.is_loopback
++        and not ip.is_link_local
++        and not ip.is_reserved
++        and not ip.is_unspecified
++    )
++
++
++def _split_http_url(url: str):
++    if not isinstance(url, str):
++        raise BlockedURLError("media URL must be a string")
++    try:
++        parts = urlsplit(url.strip())
++        port = parts.port
++    except ValueError as e:
++        raise BlockedURLError("invalid media URL") from e
++    scheme = parts.scheme.lower()
++    if scheme not in _DEFAULT_PORTS or not parts.hostname:
++        raise BlockedURLError("only http and https media URLs are allowed")
++    return parts, scheme, port
++
++
++def resolve_public_addresses(host: str, port: int) -> list[IPAddress]:
++    """Resolve `host` and require every address to be public."""
++    try:
++        literal = ipaddress.ip_address(host)
++    except ValueError:
++        literal = None
++    if literal is not None:
++        addresses = [literal]
++    else:
++        try:
++            infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
++        except (socket.gaierror, UnicodeError) as e:
++            raise BlockedURLError("media URL host does not resolve") from e
++        addresses = []
++        for info in infos:
++            ip = ipaddress.ip_address(info[4][0].split("%", 1)[0])
++            if ip not in addresses:
++                addresses.append(ip)
++    if not addresses:
++        raise BlockedURLError("media URL host does not resolve")
++    for ip in addresses:
++        if not is_public_address(ip):
++            raise BlockedURLError("media URL resolves to a non-public address")
++    return addresses
++
++
++def pinned_request(url: str) -> tuple[str, dict[str, str], dict[str, bytes]]:
++    """Check `url` and return (request_url, headers, httpx extensions).
++
++    The request URL carries the checked IP; the Host header and TLS server name
++    keep the original host so virtual hosting and certificate checks still work.
++    """
++    parts, scheme, port = _split_http_url(url)
++    clean = urlunsplit((scheme, parts.netloc.rsplit("@", 1)[-1], parts.path, parts.query, ""))
++    if private_urls_allowed():
++        return clean, {}, {}
++
++    host = parts.hostname
++    try:
++        ascii_host = host.encode("idna").decode("ascii")
++    except UnicodeError as e:
++        raise BlockedURLError("invalid media URL host") from e
++    addresses = resolve_public_addresses(ascii_host, port or _DEFAULT_PORTS[scheme])
++    ip = addresses[0]
++    ip_text = f"[{ip}]" if ip.version == 6 else str(ip)
++    port_suffix = f":{port}" if port else ""
++    request_url = urlunsplit(
++        (scheme, ip_text + port_suffix, parts.path, parts.query, "")
++    )
++    host_text = f"[{ascii_host}]" if ":" in ascii_host else ascii_host
++    headers = {"Host": host_text + port_suffix}
++    extensions: dict[str, bytes] = {}
++    is_literal = True
++    try:
++        ipaddress.ip_address(ascii_host)
++    except ValueError:
++        is_literal = False
++    if scheme == "https" and not is_literal:
++        extensions["sni_hostname"] = ascii_host.encode("ascii")
++    return request_url, headers, extensions
++
++
++def _redirect_target(current: str, response: httpx.Response) -> str | None:
++    location = response.headers.get("location")
++    if response.status_code in _REDIRECT_STATUS_CODES and location:
++        return urljoin(current, location)
++    return None
++
++
++@asynccontextmanager
++async def open_public_url_async(
++    client: httpx.AsyncClient, url: str, *, timeout: float
++) -> AsyncIterator[httpx.Response]:
++    """Stream GET `url` under the policy; `client` must not follow redirects."""
++    current = url
++    for hop in range(MAX_REDIRECTS + 1):
++        request_url, headers, extensions = await asyncio.to_thread(
++            pinned_request, current
++        )
++        async with client.stream(
++            "GET",
++            request_url,
++            headers=headers,
++            extensions=extensions,
++            timeout=timeout,
++            follow_redirects=False,
++        ) as response:
++            target = _redirect_target(current, response)
++            if target is None:
++                yield response
++                return
++        if hop == MAX_REDIRECTS:
++            raise BlockedURLError(f"media URL exceeded {MAX_REDIRECTS} redirects")
++        current = target
++
++
++@contextmanager
++def open_public_url(url: str, *, timeout: float) -> Iterator[httpx.Response]:
++    """Synchronous `open_public_url_async` with its own client."""
++    current = url
++    with httpx.Client(follow_redirects=False) as client:
++        for hop in range(MAX_REDIRECTS + 1):
++            request_url, headers, extensions = pinned_request(current)
++            with client.stream(
++                "GET",
++                request_url,
++                headers=headers,
++                extensions=extensions,
++                timeout=timeout,
++                follow_redirects=False,
++            ) as response:
++                target = _redirect_target(current, response)
++                if target is None:
++                    yield response
++                    return
++            if hop == MAX_REDIRECTS:
++                raise BlockedURLError(f"media URL exceeded {MAX_REDIRECTS} redirects")
++            current = target
++
++
++def fetch_public_url_bytes(url: str, *, timeout: float, max_bytes: int) -> bytes:
++    """GET `url` under the policy and return at most `max_bytes` of body."""
++    with open_public_url(url, timeout=timeout) as response:
++        response.raise_for_status()
++        declared = response.headers.get("content-length")
++        if declared and declared.isdigit() and int(declared) > max_bytes:
++            raise ValueError(f"media URL body exceeds the {max_bytes} byte limit")
++        body = bytearray()
++        for chunk in response.iter_bytes():
++            body += chunk
++            if len(body) > max_bytes:
++                raise ValueError(f"media URL body exceeds the {max_bytes} byte limit")
++        return bytes(body)
+diff --git a/python/sglang/multimodal_gen/runtime/utils/vision.py b/python/sglang/multimodal_gen/runtime/utils/vision.py
+index b5aee41..64107ff 100644
+--- a/python/sglang/multimodal_gen/runtime/utils/vision.py
++++ b/python/sglang/multimodal_gen/runtime/utils/vision.py
+@@ -5,7 +5,6 @@
+ import os
+ import tempfile
+ from collections.abc import Callable
+-from contextlib import closing
+ from io import BytesIO
+ from urllib.parse import unquote, urlparse
+ 
+@@ -13,14 +12,23 @@ import imageio
+ import numpy as np
+ import PIL.Image
+ import PIL.ImageOps
+-import requests
+ import torch
+ from packaging import version
+ 
+ from sglang.kernels import get_kernel
+ from sglang.srt.environ import envs
++from sglang.multimodal_gen.runtime.utils.url_guard import (
++    fetch_public_url_bytes,
++    open_public_url,
++)
+ from sglang.srt.utils.common import get_image_bytes as srt_get_image_bytes
+ 
++# Client image URLs fetched by the pipeline (url_guard policy).
++_IMAGE_DOWNLOAD_TIMEOUT_S = 30
++_MAX_IMAGE_DOWNLOAD_BYTES = 50 * 1024 * 1024
++# A video URL is streamed to a temp file; cap it so one request cannot fill the disk.
++_MAX_VIDEO_DOWNLOAD_BYTES = 2 * 1024 * 1024 * 1024
++
+ if version.parse(version.parse(PIL.__version__).base_version) >= version.parse("9.1.0"):
+     PIL_INTERPOLATION = {
+         "linear": PIL.Image.Resampling.BILINEAR,
+@@ -154,6 +162,18 @@ def load_image(
+     if isinstance(image, (str, bytes)):
+         if isinstance(image, str) and os.path.isfile(image):
+             image = PIL.Image.open(image)
++        elif isinstance(image, str) and image.lower().startswith(
++            ("http://", "https://")
++        ):
++            image = PIL.Image.open(
++                BytesIO(
++                    fetch_public_url_bytes(
++                        image,
++                        timeout=_IMAGE_DOWNLOAD_TIMEOUT_S,
++                        max_bytes=_MAX_IMAGE_DOWNLOAD_BYTES,
++                    )
++                )
++            )
+         else:
+             # in-memory loading path
+             image = PIL.Image.open(BytesIO(srt_get_image_bytes(image)))
+@@ -215,15 +235,22 @@ def load_video(
+         suffix = os.path.splitext(file_name)[1] or ".mp4"
+         with tempfile.TemporaryDirectory() as temp_dir:
+             video_path = os.path.join(temp_dir, f"video{suffix}")
+-            with closing(
+-                requests.get(video, stream=True, timeout=_VIDEO_DOWNLOAD_TIMEOUT_S)
++            with open_public_url(
++                video, timeout=_VIDEO_DOWNLOAD_TIMEOUT_S
+             ) as response:
+                 if response.status_code != 200:
+                     raise ValueError(
+                         f"Failed to download video. Status code: {response.status_code}"
+                     )
++                written = 0
+                 with open(video_path, "wb") as temp_file:
+-                    for chunk in response.iter_content(chunk_size=8192):
++                    for chunk in response.iter_bytes():
++                        written += len(chunk)
++                        if written > _MAX_VIDEO_DOWNLOAD_BYTES:
++                            raise ValueError(
++                                "Video exceeds the "
++                                f"{_MAX_VIDEO_DOWNLOAD_BYTES} byte download limit"
++                            )
+                         temp_file.write(chunk)
+             pil_images = _read_video_frames(video_path, max_frames)
+     else:
+diff --git a/python/sglang/multimodal_gen/test/unit/test_openai_security.py b/python/sglang/multimodal_gen/test/unit/test_openai_security.py
+index 00c0b87..0095d93 100644
+--- a/python/sglang/multimodal_gen/test/unit/test_openai_security.py
++++ b/python/sglang/multimodal_gen/test/unit/test_openai_security.py
+@@ -148,6 +148,8 @@ def image_source(request, monkeypatch):
+     if request.param == "base64":
+         return "data:image/png;base64,aW1hZ2U=", ".png"
+ 
++    # example.invalid does not resolve: skip the address check, keep the fetch path
++    monkeypatch.setenv("SGLANG_DIFFUSION_ALLOW_PRIVATE_MEDIA_URLS", "1")
+     client_cls = httpx.AsyncClient
+     transport = httpx.MockTransport(
+         lambda req: httpx.Response(
+@@ -244,9 +246,7 @@ def test_final_upload_path_cannot_follow_symlink_outside_root(tmp_path, image_so
+     assert outside.read_bytes() == b"unchanged"
+ 
+ 
+-@pytest.mark.parametrize(
+-    "source", ["https://example.invalid/image.png", "data:image/png;base64,aW1hZ2U="]
+-)
++@pytest.mark.parametrize("source", ["data:image/png;base64,aW1hZ2U="])
+ def test_prefer_remote_source_still_avoids_disk_io(tmp_path, source):
+     root = tmp_path / "uploads"
+     saved = asyncio.run(
+@@ -521,6 +521,8 @@ def _patch_download(monkeypatch, tmp_path, handler):
+     part_dir = tmp_path / "parts"
+     part_dir.mkdir()
+     monkeypatch.setattr(utils.tempfile, "tempdir", str(part_dir))
++    # x.test does not resolve: skip the address check, keep the fetch path
++    monkeypatch.setenv("SGLANG_DIFFUSION_ALLOW_PRIVATE_MEDIA_URLS", "1")
+     real_client = httpx.AsyncClient
+     monkeypatch.setattr(
+         utils.httpx,
+diff --git a/python/sglang/multimodal_gen/test/unit/test_runtime_utils_regressions.py b/python/sglang/multimodal_gen/test/unit/test_runtime_utils_regressions.py
+index 968bf00..e99fd03 100644
+--- a/python/sglang/multimodal_gen/test/unit/test_runtime_utils_regressions.py
++++ b/python/sglang/multimodal_gen/test/unit/test_runtime_utils_regressions.py
+@@ -1,5 +1,6 @@
+ import base64
+ import io
++from contextlib import contextmanager
+ from types import SimpleNamespace
+ from unittest.mock import patch
+ 
+@@ -33,10 +34,17 @@ def test_load_video_removes_downloaded_temp_file(
+     closed = []
+     response = SimpleNamespace(
+         status_code=status_code,
+-        iter_content=lambda chunk_size: iter([payload]),
+-        close=lambda: closed.append(True),
++        iter_bytes=lambda: iter([payload]),
+     )
+-    monkeypatch.setattr(vision.requests, "get", lambda *args, **kwargs: response)
++
++    @contextmanager
++    def open_public_url(url, *, timeout):
++        try:
++            yield response
++        finally:
++            closed.append(True)
++
++    monkeypatch.setattr(vision, "open_public_url", open_public_url)
+ 
+     if error is None:
+         frames = vision.load_video("https://example.com/clip.gif")

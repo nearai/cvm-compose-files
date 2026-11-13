@@ -1,0 +1,240 @@
+diff --git a/python/sglang/multimodal_gen/runtime/entrypoints/http_server.py b/python/sglang/multimodal_gen/runtime/entrypoints/http_server.py
+index a549e08..9916e00 100644
+--- a/python/sglang/multimodal_gen/runtime/entrypoints/http_server.py
++++ b/python/sglang/multimodal_gen/runtime/entrypoints/http_server.py
+@@ -59,6 +59,7 @@ from sglang.srt.observability.http_request_metrics import (
+     init_http_request_metrics,
+ )
+ from sglang.srt.observability.trace import fastapi_telemetry_disabled_kwargs
++from sglang.srt.utils.auth import AuthLevel, decide_request_auth
+ from sglang.srt.utils.common import add_prometheus_middleware
+ from sglang.srt.utils.json_response import orjson_response
+ from sglang.version import __version__
+@@ -72,6 +73,73 @@ if TYPE_CHECKING:
+ logger = init_logger(__name__)
+ 
+ VERTEX_ROUTE = os.environ.get("AIP_PREDICT_ROUTE", "/vertex_generate")
++# Bearer keys for the HTTP API, read from the environment (never argv or
++# server_args, so they stay out of `ps`, logs and /server_info). Same semantics
++# as the LLM server's --api-key / --admin-api-key (sglang.srt.utils.auth):
++# - API_KEY: required on every route except /health*, /metrics;
++# - ADMIN_API_KEY: required on admin routes (LoRA, weight updates, memory
++#   release, rollout); when both are set, admin routes accept only the admin key.
++API_KEY_ENV = "SGLANG_DIFFUSION_API_KEY"
++ADMIN_API_KEY_ENV = "SGLANG_DIFFUSION_ADMIN_API_KEY"
++
++
++def _configured_api_keys() -> tuple[str | None, str | None]:
++    return (
++        os.environ.get(API_KEY_ENV) or None,
++        os.environ.get(ADMIN_API_KEY_ENV) or None,
++    )
++
++
++def _admin_paths(*routers: APIRouter) -> frozenset[str]:
++    """Paths of the routes marked @auth_level(ADMIN_OPTIONAL) in these routers.
++
++    The srt middleware resolves the level by matching app.routes, which does not
++    look inside routers added with include_router (all routes here), so the
++    level is looked up by exact path instead.
++    """
++    return frozenset(
++        route.path
++        for router in routers
++        for route in router.routes
++        if getattr(getattr(route, "endpoint", None), "_auth_level", None)
++        == AuthLevel.ADMIN_OPTIONAL
++    )
++
++
++def _add_api_key_middleware(
++    app: FastAPI,
++    *,
++    api_key: str | None,
++    admin_api_key: str | None,
++    admin_paths: frozenset[str],
++) -> None:
++    @app.middleware("http")
++    async def check_api_key(request: Request, call_next):
++        path = request.scope["path"]
++        decision = decide_request_auth(
++            method=request.method,
++            path=path,
++            authorization_header=request.headers.get("Authorization"),
++            api_key=api_key,
++            admin_api_key=admin_api_key,
++            auth_level=(
++                AuthLevel.ADMIN_OPTIONAL if path in admin_paths else AuthLevel.NORMAL
++            ),
++        )
++        if not decision.allowed:
++            return orjson_response(
++                {
++                    "error": (
++                        "Unauthorized"
++                        if decision.error_status_code == 401
++                        else "Forbidden"
++                    )
++                },
++                status_code=decision.error_status_code,
++            )
++        return await call_next(request)
++
++
+ SERVER_WARMUP_BYPASS_PATHS = (
+     "/metrics",
+     "/liveness",
+@@ -85,6 +153,8 @@ SERVER_WARMUP_BYPASS_PATHS = (
+ async def _wait_until_http_live(server_args: ServerArgs) -> None:
+     """for server warmup"""
+     liveness_url = f"{server_args.url()}/liveness"
++    api_key, _ = _configured_api_keys()
++    auth = {"headers": {"Authorization": f"Bearer {api_key}"}} if api_key else {}
+     # Probe the local server directly: a loopback liveness check must never be
+     # routed through an HTTP proxy. trust_env=False also avoids crashing startup
+     # on a malformed proxy env var, since httpx parses *_PROXY/NO_PROXY when the
+@@ -92,7 +162,9 @@ async def _wait_until_http_live(server_args: ServerArgs) -> None:
+     async with httpx.AsyncClient(trust_env=False) as client:
+         for _ in range(120):
+             try:
+-                response = await client.get(liveness_url, timeout=5.0)
++                response = await client.get(
++                    liveness_url, timeout=5.0, **auth
++                )
+                 if response.status_code == 200:
+                     return
+             except httpx.HTTPError:
+@@ -540,6 +612,18 @@ def create_app(
+     app.include_router(weights_api.router)
+     app.include_router(rollout_api.router)
+ 
++    api_key, admin_api_key = _configured_api_keys()
++    if api_key or admin_api_key:
++        # added last, so it runs first: unauthenticated requests never wait on warmup
++        _add_api_key_middleware(
++            app,
++            api_key=api_key,
++            admin_api_key=admin_api_key,
++            admin_paths=_admin_paths(
++                common_api.router, weights_api.router, rollout_api.router
++            ),
++        )
++
+     app.state.server_args = server_args
+     app.state.prompt_enhancer = None
+     return app
+diff --git a/python/sglang/multimodal_gen/runtime/entrypoints/openai/common_api.py b/python/sglang/multimodal_gen/runtime/entrypoints/openai/common_api.py
+index 5a099de..7b43ae7 100644
+--- a/python/sglang/multimodal_gen/runtime/entrypoints/openai/common_api.py
++++ b/python/sglang/multimodal_gen/runtime/entrypoints/openai/common_api.py
+@@ -18,6 +18,7 @@ from sglang.multimodal_gen.runtime.pipelines_core.schedule_batch import OutputBa
+ from sglang.multimodal_gen.runtime.scheduler_client import async_scheduler_client
+ from sglang.multimodal_gen.runtime.server_args import ServerArgs, get_global_server_args
+ from sglang.multimodal_gen.runtime.utils.logging_utils import init_logger
++from sglang.srt.utils.auth import AuthLevel, auth_level
+ from sglang.srt.utils.json_response import orjson_response
+ 
+ router = APIRouter(prefix="/v1")
+@@ -97,6 +98,7 @@ async def _handle_lora_request(req: Any, success_msg: str, failure_msg: str):
+ 
+ 
+ @router.post("/set_lora")
++@auth_level(AuthLevel.ADMIN_OPTIONAL)
+ async def set_lora(
+     lora_nickname: Union[str, List[str]] = Body(..., embed=True),
+     lora_path: Optional[Union[str, List[Optional[str]]]] = Body(None, embed=True),
+@@ -145,6 +147,7 @@ async def set_lora(
+ 
+ 
+ @router.post("/merge_lora_weights")
++@auth_level(AuthLevel.ADMIN_OPTIONAL)
+ async def merge_lora_weights(
+     target: str = Body("all", embed=True),
+     strength: float = Body(1.0, embed=True),
+@@ -167,6 +170,7 @@ async def merge_lora_weights(
+ 
+ 
+ @router.post("/unmerge_lora_weights")
++@auth_level(AuthLevel.ADMIN_OPTIONAL)
+ async def unmerge_lora_weights(
+     target: str = Body("all", embed=True),
+ ):
+diff --git a/python/sglang/multimodal_gen/runtime/entrypoints/post_training/rollout_api.py b/python/sglang/multimodal_gen/runtime/entrypoints/post_training/rollout_api.py
+index 7149252..7af5027 100644
+--- a/python/sglang/multimodal_gen/runtime/entrypoints/post_training/rollout_api.py
++++ b/python/sglang/multimodal_gen/runtime/entrypoints/post_training/rollout_api.py
+@@ -28,6 +28,7 @@ from sglang.multimodal_gen.runtime.post_training.rl_dataclasses import (
+ from sglang.multimodal_gen.runtime.scheduler_client import async_scheduler_client
+ from sglang.multimodal_gen.runtime.server_args import get_global_server_args
+ from sglang.multimodal_gen.runtime.utils.logging_utils import init_logger
++from sglang.srt.utils.auth import AuthLevel, auth_level
+ 
+ logger = init_logger(__name__)
+ router = APIRouter(prefix="/rollout", tags=["rollout"])
+@@ -316,6 +317,7 @@ def _build_sampling_kwargs(request: RolloutRequest) -> dict:
+         }
+     },
+ )
++@auth_level(AuthLevel.ADMIN_OPTIONAL)
+ async def rollout_generate(request: RolloutRequest):
+     request_id = generate_request_id()
+     server_args = get_global_server_args()
+diff --git a/python/sglang/multimodal_gen/runtime/entrypoints/post_training/weights_api.py b/python/sglang/multimodal_gen/runtime/entrypoints/post_training/weights_api.py
+index 2e9a095..296d02c 100644
+--- a/python/sglang/multimodal_gen/runtime/entrypoints/post_training/weights_api.py
++++ b/python/sglang/multimodal_gen/runtime/entrypoints/post_training/weights_api.py
+@@ -11,12 +11,14 @@ from sglang.multimodal_gen.runtime.entrypoints.post_training.io_struct import (
+     UpdateWeightFromTensorReqInput,
+ )
+ from sglang.multimodal_gen.runtime.scheduler_client import async_scheduler_client
++from sglang.srt.utils.auth import AuthLevel, auth_level
+ from sglang.srt.utils.json_response import orjson_response
+ 
+ router = APIRouter()
+ 
+ 
+ @router.post("/update_weights_from_disk")
++@auth_level(AuthLevel.ADMIN_OPTIONAL)
+ async def update_weights_from_disk(request: Request):
+     """Update model weights from disk inplace without restarting the server."""
+     body = await request.json()
+@@ -58,6 +60,7 @@ async def update_weights_from_disk(request: Request):
+ 
+ 
+ @router.post("/update_weights_from_tensor")
++@auth_level(AuthLevel.ADMIN_OPTIONAL)
+ async def update_weights_from_tensor(request: Request):
+     """Update model weights from serialized tensor payloads."""
+     body = await request.json()
+@@ -94,6 +97,7 @@ async def update_weights_from_tensor(request: Request):
+ 
+ 
+ @router.post("/update_weights_from_tensor_checker")
++@auth_level(AuthLevel.ADMIN_OPTIONAL)
+ async def update_weights_from_tensor_checker(request: Request):
+     """Verify live module weights against expected SHA-256 values."""
+     body = await request.json()
+@@ -140,6 +144,7 @@ async def update_weights_from_tensor_checker(request: Request):
+ 
+ 
+ @router.post("/get_weights_checksum")
++@auth_level(AuthLevel.ADMIN_OPTIONAL)
+ async def get_weights_checksum(request: Request):
+     """Return SHA-256 checksum of each requested module's weights."""
+     body = await request.json()
+@@ -156,6 +161,7 @@ async def get_weights_checksum(request: Request):
+ 
+ 
+ @router.post("/release_memory_occupation")
++@auth_level(AuthLevel.ADMIN_OPTIONAL)
+ async def release_memory_occupation():
+     """Release GPU memory occupation (sleep the engine)."""
+     try:
+@@ -180,6 +186,7 @@ async def release_memory_occupation():
+ 
+ 
+ @router.post("/resume_memory_occupation")
++@auth_level(AuthLevel.ADMIN_OPTIONAL)
+ async def resume_memory_occupation():
+     """Resume GPU memory occupation (wake the engine)."""
+     try:

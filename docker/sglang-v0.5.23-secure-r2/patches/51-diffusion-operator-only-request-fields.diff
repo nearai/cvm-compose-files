@@ -1,0 +1,57 @@
+diff --git a/python/sglang/multimodal_gen/runtime/entrypoints/openai/utils.py b/python/sglang/multimodal_gen/runtime/entrypoints/openai/utils.py
+index fba777a..df3edaa 100644
+--- a/python/sglang/multimodal_gen/runtime/entrypoints/openai/utils.py
++++ b/python/sglang/multimodal_gen/runtime/entrypoints/openai/utils.py
+@@ -249,6 +249,44 @@ def _reject_remote_model_paths(kwargs: dict[str, Any]) -> None:
+             )
+ 
+ 
++# Operator-only request fields. A network client must not choose where the server
++# writes files (perf_dump_path), turn on the torch profiler, or make the server
++# download a model repo (upscaling/frame-interpolation model paths). Callers that
++# need them (lab benchmarks) set SGLANG_DIFFUSION_ALLOW_REQUEST_DEBUG_FIELDS=1;
++# the CLI and Python API do not go through this function.
++_OPERATOR_ONLY_FIELDS = (
++    "perf_dump_path",
++    "profile",
++    "profile_all_stages",
++    "upscaling_model_path",
++    "frame_interpolation_model_path",
++)
++# Only meaningful with profile=True; dropped when profiling is refused.
++_PROFILE_ONLY_FIELDS = ("num_profiled_timesteps",)
++
++
++def _request_debug_fields_allowed() -> bool:
++    return os.environ.get(
++        "SGLANG_DIFFUSION_ALLOW_REQUEST_DEBUG_FIELDS", ""
++    ).strip().lower() in ("1", "true", "yes", "on")
++
++
++def _reject_operator_only_fields(kwargs: dict[str, Any]) -> None:
++    """400 on a request that sets an operator-only field; drop profile-only ones."""
++    if _request_debug_fields_allowed():
++        return
++    for name in _OPERATOR_ONLY_FIELDS:
++        value = kwargs.get(name)
++        if value is None or value is False or value == "":
++            continue
++        raise HTTPException(
++            status_code=400,
++            detail=f"{name} is not accepted in requests to this server",
++        )
++    for name in _PROFILE_ONLY_FIELDS:
++        kwargs.pop(name, None)
++
++
+ def build_sampling_params(request_id: str, **kwargs) -> SamplingParams:
+     """Build SamplingParams from request parameters.
+ 
+@@ -273,6 +311,7 @@ def build_sampling_params(request_id: str, **kwargs) -> SamplingParams:
+         except ValueError as exc:
+             raise HTTPException(status_code=400, detail=str(exc)) from exc
+ 
++    _reject_operator_only_fields(kwargs)
+     _reject_remote_model_paths(kwargs)
+     has_explicit_compression = kwargs.get("output_compression") is not None
+ 
