@@ -52,7 +52,10 @@ class Context:
                  raw=None, history=None):
         self.head, self.base = head, base
         # Source commits are checked against git history; fixtures pass their own answers or skip it.
-        self.history = history if history is not None else (None if head.fixture else git_history)
+        # Ancestry is tested against the base (main), never the PR head, so a commit only on the branch fails.
+        on = base.rev if base is not None and base.rev else "HEAD"
+        self.history = history if history is not None else (
+            None if head.fixture else (lambda c, d: git_history(c, d, on)))
         self.bootstrap = base is not None and not base.has("ci/lib/common.py")
         self.services_allow = load_json(head, SERVICES, {})
         self.services_allow_base = load_json(base, SERVICES, {}) if base else {}

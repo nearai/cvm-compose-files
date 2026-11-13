@@ -628,9 +628,9 @@ def served_names(kind, tokens):
     return [m] if m else []
 
 
-def git_history(commit, d):
-    """True when commit is on the checked-out history and has docker/<d>/Dockerfile."""
-    for args in (["merge-base", "--is-ancestor", commit, "HEAD"], ["cat-file", "-e", f"{commit}:docker/{d}/Dockerfile"]):
+def git_history(commit, d, on="HEAD"):
+    """True when commit is an ancestor of `on` (the base: main) and has docker/<d>/Dockerfile."""
+    for args in (["merge-base", "--is-ancestor", commit, on], ["cat-file", "-e", f"{commit}:docker/{d}/Dockerfile"]):
         r = subprocess.run(["git", "-C", ROOT] + args, capture_output=True)
         if r.returncode != 0:
             return False

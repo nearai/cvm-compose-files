@@ -55,12 +55,24 @@ def check(ctx):
     return out
 
 
+# Image repos the publish workflows here push to; every image in them is built from a dir here.
+PUBLISHED_HERE = {"nearaidev/sglang", "nearaidev/vllm"}
+
+
 def check_sources(ctx, rows):
     """Every image built here names a source commit on main that has its build dir, and a docs row."""
     out = []
     verifying = ctx.head.text("docs/verifying.md") if ctx.head.has("docs/verifying.md") else None
     for ref, (n, parts) in rows.items():
-        if len(parts) != 4 or parts[2] == "-" or not SHA40.match(parts[3]):
+        if len(parts) != 4:
+            continue
+        repo = ref.split("@")[0].split(":")[0].removeprefix("docker.io/")
+        if parts[2] == "-":
+            if repo in PUBLISHED_HERE:
+                out.append(Finding(IMAGES, n, "pins.source", "an image this repo publishes names its tag, dir and commit"))
+            continue
+        if not SHA40.match(parts[3]):
+            out.append(Finding(IMAGES, n, "pins.source", "a row with a build dir names its 40-hex source commit"))
             continue
         if ctx.history is not None and not ctx.history(parts[3], parts[2]):
             out.append(Finding(IMAGES, n, "pins.source", "source commit is not on main or has no docker/<dir>/Dockerfile"))
@@ -204,6 +216,11 @@ CASES = [
     ("pinned engine and downloader", None, FILES, FILES, REND, None),
     ("source commit on main", None, FILES, FILES, REND, None, {"history": {("d" * 40, "sglang-x-r1")}}),
     ("source commit not on main", "pins.source", FILES, FILES, REND, None, {"history": set()}),
+    ("build dir without a commit", "pins.source",
+     dict(FILES, **{"ci/data/images.allow": ROWS.replace("d" * 40, "-")}), FILES, REND, None, {"history": set()}),
+    ("own image listed as third party", "pins.source",
+     dict(FILES, **{"ci/data/images.allow": ROWS + f"nearaidev/vllm@sha256:{'f' * 64} - - -\n"}), FILES, REND, None,
+     {"history": {("d" * 40, "sglang-x-r1")}}),
     ("image built here without a docs row", "pins.source", dict(FILES, **{"docs/verifying.md": "no rows\n"}), FILES,
      REND, None),
     ("diff rules green without base allowlist", None, FILES, {P: "x"}, REND, None),
