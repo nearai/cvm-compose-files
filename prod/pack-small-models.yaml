@@ -1502,8 +1502,8 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
-  # KV size is pinned with --kv-cache-memory-bytes so a neighbour restart can't change it. The pin ignores
-  # --gpu-memory-utilization (that only gates the startup free-memory check) and must fit the GPU's free memory.
+  # KV size is pinned with --kv-cache-memory-bytes so a neighbour restart can't change it. The pin ignores the
+  # utilization setting, which only gates the startup free-memory check, and must fit the GPU's free memory.
   model-vllm-qwen3vl-30b-a3b-fp8-tp1:
     <<: *vllm-common
     image: vllm/vllm-openai@sha256:d825baf9ce4b1b6bfc5ecc7b79880c7e6748c65a72d697ce3d47607aafa84c6e
