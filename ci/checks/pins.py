@@ -10,7 +10,7 @@ from common import (
 
 RULES = [
     "pins.digest", "pins.allow", "pins.rows", "pins.docker-dir", "pins.hf-revision", "pins.remote-code", "pins.url",
-    "pins.raw-key",
+    "pins.raw-key", "pins.source",
 ]
 DIFF_RULES = ["pins.rows", "pins.docker-dir"]
 
@@ -51,6 +51,37 @@ def check(ctx):
             out += check_file(p, text, r, rows, ctx)
         out += check_raw(p, text)
     out += check_rows(ctx, rows, base_rows)
+    out += check_sources(ctx, rows)
+    return out
+
+
+# Image repos the publish workflows here push to; every image in them is built from a dir here.
+PUBLISHED_HERE = {"nearaidev/sglang", "nearaidev/vllm"}
+
+
+def check_sources(ctx, rows):
+    """Every image built here names a source commit on main that has its build dir, and a docs row."""
+    out = []
+    verifying = ctx.head.text("docs/verifying.md") if ctx.head.has("docs/verifying.md") else None
+    for ref, (n, parts) in rows.items():
+        if len(parts) != 4:
+            continue
+        repo = re.sub(r"^(docker\.io|index\.docker\.io|registry-1\.docker\.io)/", "", ref.split("@")[0].split(":")[0])
+        if parts[2] == "-":
+            if repo in PUBLISHED_HERE:
+                out.append(Finding(IMAGES, n, "pins.source", "an image this repo publishes names its tag, dir and commit"))
+            continue
+        if not SHA40.match(parts[3]):
+            out.append(Finding(IMAGES, n, "pins.source", "a row with a build dir names its 40-hex source commit"))
+            continue
+        if ctx.history is not None and not ctx.history(parts[3], parts[2]):
+            out.append(Finding(IMAGES, n, "pins.source", "source commit is not on main or has no docker/<dir>/Dockerfile"))
+        digest = ref.rpartition("@sha256:")[2]
+        if verifying is not None:
+            row = next((l for l in verifying.splitlines() if l.startswith(f"| `{digest}` |")), None)
+            if row is None or f"`{parts[2]}`" not in row or f"`{parts[3]}`" not in row:
+                out.append(Finding(IMAGES, n, "pins.source",
+                                   "image built here needs a docs/verifying.md Digests row with the same dir and commit"))
     return out
 
 
@@ -158,9 +189,12 @@ def check_rows(ctx, rows, base_rows):
                 out.append(Finding(df, 0, "pins.docker-dir", "new build dir needs a Dockerfile"))
                 continue
             text = head.text(df)
+            stages = set()
             for n, line in enumerate(text.splitlines(), 1):
-                m = re.match(r"(?i)^\s*FROM\s+(?:--\S+\s+)*(\S+)", line)
-                if m and not (DIGEST_REF.match(m.group(1)) and m.group(1) in rows):
+                m = re.match(r"(?i)^\s*FROM\s+(?:--\S+\s+)*(\S+)(?:\s+AS\s+(\S+))?", line)
+                if m and m.group(2):
+                    stages.add(m.group(2).lower())
+                if m and m.group(1).lower() not in stages and not (DIGEST_REF.match(m.group(1)) and m.group(1) in rows):
                     out.append(Finding(df, n, "pins.docker-dir", "FROM must be a digest with a row", key=m.group(1)))
     return out
 
@@ -186,6 +220,15 @@ def _svc(**kw):
 
 CASES = [
     ("pinned engine and downloader", None, FILES, FILES, REND, None),
+    ("source commit on main", None, FILES, FILES, REND, None, {"history": {("d" * 40, "sglang-x-r1")}}),
+    ("source commit not on main", "pins.source", FILES, FILES, REND, None, {"history": set()}),
+    ("build dir without a commit", "pins.source",
+     dict(FILES, **{"ci/data/images.allow": ROWS.replace("d" * 40, "-")}), FILES, REND, None, {"history": set()}),
+    ("own image listed as third party", "pins.source",
+     dict(FILES, **{"ci/data/images.allow": ROWS + f"nearaidev/vllm@sha256:{'f' * 64} - - -\n"}), FILES, REND, None,
+     {"history": {("d" * 40, "sglang-x-r1")}}),
+    ("image built here without a docs row", "pins.source", dict(FILES, **{"docs/verifying.md": "no rows\n"}), FILES,
+     REND, None),
     ("diff rules green without base allowlist", None, FILES, {P: "x"}, REND, None),
     ("tag-only image", "pins.digest", FILES, FILES, _svc(image="nearaidev/sglang:latest"), None),
     ("digest without a row", "pins.allow", FILES, FILES, _svc(image=IMG.replace("a" * 64, "b" * 64)), None),

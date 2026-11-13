@@ -25,4 +25,5 @@ Python 3 standard library only. After every change here run `python3 ci/run.py -
 ## Data files
 - Paths in `ci/data/legacy.txt` and `ci/data/exceptions.json` are exact, no globs or comments.
   `legacy.txt` is sorted and unique.
-- `ci/data/public.json` lists only hosts, owners and repos that are public already.
+- `ci/data/public.json` lists only hosts, owners and repos that are public already. An addition widens
+  what every file may contain: list it under Gates in the PR and review it like a gate.

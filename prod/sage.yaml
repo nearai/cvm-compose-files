@@ -65,7 +65,7 @@ services:
       SAGE_LOG_AWS_SECRET_ACCESS_KEY: ${SAGE_LOG_AWS_SECRET_ACCESS_KEY}
       SAGE_ADMIN_TOKEN: ${SAGE_ADMIN_TOKEN}
       BRAVE_API_KEY: ${SAGE_SEARCH_API_KEY}
-      NVIDIA_VISIBLE_DEVICES: GPU-bafbdde0-cd41-8379-fa93-149864963329
+      NVIDIA_VISIBLE_DEVICES: ${SAGE_GPU_UUID:?SAGE_GPU_UUID is required}
     volumes:
       - sage-data:/workspace
       - /var/run/sage-dstack/dstack.sock:/var/run/dstack.sock
@@ -90,7 +90,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["GPU-bafbdde0-cd41-8379-fa93-149864963329"]
+              device_ids: ["${SAGE_GPU_UUID:?SAGE_GPU_UUID is required}"]
               capabilities: [gpu]
 
 networks:
