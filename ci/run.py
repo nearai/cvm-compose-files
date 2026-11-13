@@ -437,7 +437,24 @@ def noop(base_rev):
     rh, rb = Renderer(head, sa), Renderer(base, sa)
     paths = sorted(set(head.deployables()) | set(base.deployables()))
     changed = 0
+    # Renames are paired by git's rename detection, so a moved file shows its rendered diff.
+    renamed = {}
+    for line in git("diff", "-M", "--name-status", resolve(base_rev), "--", "prod/").decode().splitlines():
+        parts = line.split("\t")
+        if parts[0].startswith("R") and len(parts) == 3:
+            renamed[parts[2]] = parts[1]
     for p in paths:
+        if p in renamed.values():
+            continue
+        if p in renamed:
+            a = json.dumps(rb(renamed[p]), indent=1, sort_keys=True).splitlines()
+            b = json.dumps(rh(p), indent=1, sort_keys=True).splitlines()
+            diff = list(difflib.unified_diff(a, b, f"base/{renamed[p]}", f"head/{p}", lineterm=""))
+            print(f"renamed: {renamed[p]} -> {p}" + ("" if diff else " (render unchanged)"))
+            if diff:
+                print("\n".join(diff))
+            changed += 1
+            continue
         if not head.has(p) or not base.has(p):
             print(f"only in {'head' if head.has(p) else 'base'}: {p}")
             changed += 1

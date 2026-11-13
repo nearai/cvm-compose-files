@@ -81,6 +81,21 @@ jobs:
             python3 ci/run.py
           fi
 
+      # Reviewers read what each changed deployable renders to; the guards above decide pass or fail.
+      - name: Rendered diff summary
+        if: needs.base.outputs.sha != ''
+        env:
+          BASE: ${{ needs.base.outputs.sha }}
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/noop.txt"
+          if python3 ci/run.py --noop "$BASE" > "$out"; then
+            echo "No deployable renders differently from the base." >> "$GITHUB_STEP_SUMMARY"
+          else
+            { echo '## Rendered diff against the base'; echo '```diff'; head -c 900000 "$out"; echo; echo '```'; } \
+              >> "$GITHUB_STEP_SUMMARY"
+          fi
+
   compose:
     runs-on: ubuntu-24.04
     timeout-minutes: 30

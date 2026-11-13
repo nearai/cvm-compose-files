@@ -36,7 +36,8 @@ Read the rule file for a path before you change files under it; Claude Code also
 - All guards: `python3 ci/run.py --base origin/main`. Self-tests: `python3 ci/run.py --self-test`.
 - `nginx -t` on every nginx config, in its pinned image (needs Docker): `python3 ci/run.py --nginx-test`.
 - Findings on the real tree are pinned in `ci/data/expected.json`; update it with `--write-expected`.
-- Render one file: `--render prod/<f>.yaml`. Show a change is a no-op: `--noop origin/main` (empty).
+- Render one file: `--render prod/<f>.yaml`. Rendered diff against a base, renames paired:
+  `--noop origin/main` (empty for a no-op); CI posts it in the guards job summary.
 
 ## Hard rules (CI fails)
 - Paths follow the layout rules in `ci/checks/layout.py` or are listed in `ci/data/legacy.txt`, which
