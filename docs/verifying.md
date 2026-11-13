@@ -188,7 +188,7 @@ Gaps that are not exceptions:
   flag; other services on those images, such as every `role: aux` entry in
   `ci/data/services.allow.json`, are checked for flags and env that enable logging.
 - actionlint and zizmor check a publish workflow only until it merges. Publish workflows that exist
-  at the base commit are frozen and not linted, so findings in them stay. All seven current ones have
+  at the base commit are frozen and not linted, so findings in them stay. All six current ones have
   known findings: a self-hosted runner label, shellcheck info and style notes, and zizmor
   `artipacked` (checkout without `persist-credentials: false`).
 - Some pinned images are neither standard upstream images nor built here: `nearaidev/vllm-proxy-rs`
