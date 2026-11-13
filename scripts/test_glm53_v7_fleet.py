@@ -40,8 +40,8 @@ V12_IMAGE = "docker.io/nearaidev/sglang@sha256:da8d4e4b5ec667499b58a21e56050aae9
 V12_LABEL = "da8d4e4b5ec6"
 V6_IMAGE = "docker.io/nearaidev/sglang@sha256:9c6ddd4319c4ab00e351d8650459e68b8830e36ffcc029d67fa5e19d0ac3ed17"
 OLD_PROXY_IMAGE = "nearaidev/vllm-proxy-rs@sha256:d61357da39918a57126864a451eaf054f06a6989c03fe9a1666f7e6374ba6907"
-NEW_PROXY_IMAGE = "nearaidev/vllm-proxy-rs@sha256:e2893ff46404d112bc39c9e77de6c20f6a889227f99a49f7190bff5b2063d441"
-SMALL_PROXY_IMAGE = "nearaidev/vllm-proxy-rs@sha256:e2893ff46404d112bc39c9e77de6c20f6a889227f99a49f7190bff5b2063d441"
+NEW_PROXY_IMAGE = "nearaidev/vllm-proxy-rs@sha256:60d08c207b285697f39e134533081eac7006739ec5019c89c2f4c67869062f45"
+SMALL_PROXY_IMAGE = "nearaidev/vllm-proxy-rs@sha256:60d08c207b285697f39e134533081eac7006739ec5019c89c2f4c67869062f45"
 FLEET_ENV = [
     "SGLANG_PREPROCESS_WORKERS=4",
     "SGLANG_PREPROCESS_TIMEOUT_S=60",
@@ -342,7 +342,7 @@ LORA_CONFIGS = ("qwen38_abliterated_registrar_script",)
 LORA_JOB = "inference-proxy-proxy-qwen38-27b-abliterated"
 LORA_BLOCK_HASHES = {
     "qwen38-lora-adapter-downloader": "f00890986a1cbe050f1158fc94fb46c6a2910fad7ac622387bc09f21f47e7d4b",
-    "proxy-qwen38-27b-abliterated": "6c7fbc21f673cfaed5c3762f49dd4ab095257ea90a69d9072240293f282be677",
+    "proxy-qwen38-27b-abliterated": "65a08535088162e00f159098b0114cbe00bbee7e8b911577dc98a4732163e7f5",
     "qwen38-abliterated-registrar": "abbc11eca5f3f296b108cc4ec308ee5c59e04a04c99f4f7a6ce691586031c895",
     "qwen38_abliterated_registrar_script": "bf512180438d8e6258a37b59e02f9f6abc2bcab5ea79ac92b91b31b62f6afbe7",
     LORA_JOB: "300953b485fbe7ab94916efc464b5fdbdd784fbd6c554392491da0f653f3c505",

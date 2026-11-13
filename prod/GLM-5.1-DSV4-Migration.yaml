@@ -100,7 +100,7 @@ services:
     labels:
       com.datadoghq.ad.logs: '[{"source":"model-proxy-registrar","service":"model-proxy-registrar","tags":["model:QuantTrio/GLM-5.1-AWQ","deployment:GLM-5.1-SGL-AWQ-TP4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
   proxy-glm51:
-    image: nearaidev/vllm-proxy-rs@sha256:e2893ff46404d112bc39c9e77de6c20f6a889227f99a49f7190bff5b2063d441
+    image: nearaidev/vllm-proxy-rs@sha256:60d08c207b285697f39e134533081eac7006739ec5019c89c2f4c67869062f45
     user: root
     privileged: true
     runtime: nvidia
@@ -316,7 +316,7 @@ services:
     labels:
       com.datadoghq.ad.logs: '[{"source":"otelcol-contrib","service":"otelcol-contrib","tags":["deployment:GLM-5.1-SGL-AWQ-TP4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
   proxy-dsv4-flash:
-    image: nearaidev/vllm-proxy-rs@sha256:e2893ff46404d112bc39c9e77de6c20f6a889227f99a49f7190bff5b2063d441
+    image: nearaidev/vllm-proxy-rs@sha256:60d08c207b285697f39e134533081eac7006739ec5019c89c2f4c67869062f45
     user: root
     privileged: true
     runtime: nvidia

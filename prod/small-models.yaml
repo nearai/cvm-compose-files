@@ -27,7 +27,7 @@ x-vllm-common: &vllm-common
   logging: *logging-conf
 
 x-vllm-proxy-common: &vllm-proxy-common
-  image: nearaidev/vllm-proxy-rs@sha256:e2893ff46404d112bc39c9e77de6c20f6a889227f99a49f7190bff5b2063d441
+  image: nearaidev/vllm-proxy-rs@sha256:60d08c207b285697f39e134533081eac7006739ec5019c89c2f4c67869062f45
   user: root
   privileged: true
   <<: *nvidia
@@ -1019,7 +1019,7 @@ services:
     # refusal. The coloc engine serves the abliterated adapter too, so this proxy
     # must keep VLLM_PROXY_STRICT_REQUEST_MODEL on.
     # This image is inference-proxy 53d79441 (#337). It includes #336's opt-in size tiers below.
-    image: nearaidev/vllm-proxy-rs@sha256:e2893ff46404d112bc39c9e77de6c20f6a889227f99a49f7190bff5b2063d441
+    image: nearaidev/vllm-proxy-rs@sha256:60d08c207b285697f39e134533081eac7006739ec5019c89c2f4c67869062f45
     container_name: proxy-qwen38-27b
     networks:
       - default
@@ -1292,7 +1292,7 @@ services:
     <<: *vllm-proxy-common
     # inference-proxy 5faff1b (#329), same as proxy-qwen38-27b: VLLM_PROXY_BACKEND_LORA.
     # This image is inference-proxy 53d79441 (#337). It includes #336's opt-in size tiers below.
-    image: nearaidev/vllm-proxy-rs@sha256:e2893ff46404d112bc39c9e77de6c20f6a889227f99a49f7190bff5b2063d441
+    image: nearaidev/vllm-proxy-rs@sha256:60d08c207b285697f39e134533081eac7006739ec5019c89c2f4c67869062f45
     container_name: proxy-qwen38-27b-abliterated
     networks:
       - default
