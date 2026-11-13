@@ -905,45 +905,6 @@ services:
     labels:
       com.datadoghq.ad.logs: '[{"source":"glm53-perception-check","service":"glm53-perception-check","tags":["model:z-ai/glm-5.3-flash","deployment:glm53-flash-sgl-tp4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
 
-  glm53-soak-relay:
-    image: nginx@sha256:1d13701a5f9f3fb01aaa88cef2344d65b6b5bf6b7d9fa4cf0dca557a8d7702ba
-    container_name: glm53-soak-relay
-    profiles: ["verification"]
-    runtime: runc
-    cap_drop: [ALL]
-    cap_add: [CHOWN, SETUID, SETGID]
-    security_opt: ["no-new-privileges:true"]
-    restart: "no"
-    mem_limit: 256m
-    cpus: 1
-    stop_grace_period: 5m
-    ports:
-      - "8008:8008"
-      - "8009:8009"
-    volumes:
-      - certs:/etc/letsencrypt:ro
-    tmpfs:
-      - /var/cache/nginx:rw,noexec,nosuid,size=64m
-      - /var/run:rw,noexec,nosuid,size=4m
-    environment:
-      - GLM53_SOAK_TOKEN=${GLM53_SOAK_TOKEN}
-    entrypoint: ["sh", "-ec"]
-    command:
-      - |
-        [ "$${#GLM53_SOAK_TOKEN}" -ge 32 ] || exit 1
-        case "$$GLM53_SOAK_TOKEN" in *[!A-Za-z0-9._~-]*) exit 1;; esac
-        umask 077
-        envsubst '$$GLM53_SOAK_TOKEN' < /etc/nginx/soak.conf.template > /var/run/soak.conf
-        unset GLM53_SOAK_TOKEN
-        exec nginx -c /var/run/soak.conf -g 'daemon off;'
-    configs:
-      - source: glm53_soak_nginx_template
-        target: /etc/nginx/soak.conf.template
-        mode: 0444
-    logging: *logging-conf
-    labels:
-      com.datadoghq.ad.logs: '[{"source":"nginx","service":"nginx","tags":["model:z-ai/glm-5.3-flash","deployment:glm53-flash-sgl-tp4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
-
   glm53-ghost-aggregator:
     image: docker.io/nearaidev/sglang@sha256:da8d4e4b5ec667499b58a21e56050aae9bcfc4df9669b3ac27e2e20af033d681
     container_name: glm53-ghost-aggregator
@@ -1061,62 +1022,6 @@ volumes:
     name: certs
 
 configs:
-  glm53_soak_nginx_template:
-    content: |
-      user nginx;
-      worker_processes 1;
-      pid /var/run/nginx.pid;
-      error_log /dev/null;
-      events { worker_connections 64; }
-      http {
-        # No request/response logging or disk buffering of qualification traffic.
-        access_log off;
-        client_max_body_size 100m;
-        client_body_timeout 3600s;
-        send_timeout 3600s;
-        resolver 127.0.0.11 valid=5s ipv6=off;
-        map_hash_bucket_size 256;
-        map $$http_authorization $$soak_authorized {
-          default 0;
-          "Bearer $$GLM53_SOAK_TOKEN" 1;
-        }
-        ssl_certificate /etc/letsencrypt/live/completions.near.ai/fullchain.pem;
-        ssl_certificate_key /etc/letsencrypt/live/completions.near.ai/privkey.pem;
-        ssl_protocols TLSv1.2 TLSv1.3;
-        proxy_http_version 1.1;
-        proxy_request_buffering off;
-        proxy_buffering off;
-        proxy_max_temp_file_size 0;
-        proxy_connect_timeout 10s;
-        proxy_read_timeout 3600s;
-        proxy_send_timeout 3600s;
-        proxy_set_header Authorization "";
-        proxy_set_header Connection "";
-        proxy_next_upstream off;
-        server {
-          listen 8008 ssl;
-          server_name _;
-          if ($$soak_authorized = 0) { return 401; }
-          set $$backend http://model-sg-glm53-w4afp8-tp4-r1:8000;
-          location ~ ^/(health|metrics|v1/models|v1/chat/completions|v1/completions|v1/responses)$$ {
-            limit_except GET POST { deny all; }
-            proxy_pass $$backend$$request_uri;
-          }
-          location / { return 404; }
-        }
-        server {
-          listen 8009 ssl;
-          server_name _;
-          if ($$soak_authorized = 0) { return 401; }
-          set $$backend http://model-sg-glm53-w4afp8-tp4-r2:8000;
-          location ~ ^/(health|metrics|v1/models|v1/chat/completions|v1/completions|v1/responses)$$ {
-            limit_except GET POST { deny all; }
-            proxy_pass $$backend$$request_uri;
-          }
-          location / { return 404; }
-        }
-      }
-
   dcgm_h200_metrics:
     content: |
       # NEAR AI H200 operational collector for DCGM 4.6.0 / exporter 4.8.3.

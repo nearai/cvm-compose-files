@@ -141,20 +141,6 @@
     },
     {
       "file": "prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8-V12Q8.yaml",
-      "service": "glm53-soak-relay",
-      "items": [
-        "cap_add:CHOWN",
-        "cap_add:SETGID",
-        "cap_add:SETUID",
-        "port:8008/tcp",
-        "port:8009/tcp",
-        "port:8010/tcp",
-        "port:8011/tcp",
-        "security_opt:no-new-privileges:true"
-      ]
-    },
-    {
-      "file": "prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8-V12Q8.yaml",
       "service": "model-sg-glm53-w4afp8-tp2-r1",
       "items": [
         "ipc:host",
@@ -230,18 +216,6 @@
       "service": "glm53-perception-check",
       "role": "aux",
       "items": [
-        "security_opt:no-new-privileges:true"
-      ]
-    },
-    {
-      "file": "prod/GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext.yaml",
-      "service": "glm53-soak-relay",
-      "items": [
-        "cap_add:CHOWN",
-        "cap_add:SETGID",
-        "cap_add:SETUID",
-        "port:8008/tcp",
-        "port:8009/tcp",
         "security_opt:no-new-privileges:true"
       ]
     },
@@ -998,11 +972,6 @@
       "name": "GLM53_R2_HICACHE_RAM_BUDGET",
       "egress": false,
       "default_ok": true
-    },
-    {
-      "name": "GLM53_SOAK_TOKEN",
-      "egress": false,
-      "dummy": "ci-placeholder"
     },
     {
       "name": "HF_HUB_OFFLINE",
