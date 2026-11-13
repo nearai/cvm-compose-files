@@ -1249,7 +1249,7 @@ services:
       - REPLICA_STATE_REDIS_CA_CERT=${REPLICA_STATE_REDIS_CA_CERT:-}
       - REPLICA_STATE_HOST_ID=${CVM_HOST:-}
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:z-ai/glm-5.3-flash","deployment:glm53-flash-sgl-tp2x4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8009"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:z-ai/glm-5.3-flash","deployment:pack-small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8009"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "inference-proxy"
       nearai.otel.service: "vllm-proxy"
@@ -1258,7 +1258,7 @@ services:
       nearai.otel.port: "8000"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "z-ai/glm-5.3-flash"
-      nearai.otel.deployment: "glm53-flash-sgl-tp2x4"
+      nearai.otel.deployment: "pack-small-models"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
       nearai.otel.host_machine: "${CVM_HOST}"
@@ -1279,7 +1279,7 @@ services:
               device_ids: ["4","5"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-fp8-kv","deployment:glm53-flash-sgl-tp2x4","config_variant:w4afp8-qsplit-hicacheoff-mamba380-fp8kv-memopt086-mr64-c8192-admission-reserve-v10-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192-obs-v1-v0523","request_logging:disabled","engine_image:050b1adf961c","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8009","instance:1"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-fp8-kv","deployment:pack-small-models","config_variant:w4afp8-qsplit-hicacheoff-mamba380-fp8kv-memopt086-mr64-c8192-admission-reserve-v10-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192-obs-v1-v0523","request_logging:disabled","engine_image:050b1adf961c","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8009","instance:1"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -1290,7 +1290,7 @@ services:
       nearai.otel.model: "z-ai/glm-5.3-flash"
       nearai.otel.model_path: "graphistry/GLM-5.3-Flash-W4AFP8"
       nearai.otel.served_model: "z-ai/glm-5.3-flash"
-      nearai.otel.deployment: "glm53-flash-sgl-tp2x4"
+      nearai.otel.deployment: "pack-small-models"
       nearai.otel.config_variant: "w4afp8-qsplit-hicacheoff-mamba380-fp8kv-memopt086-mr64-c8192-admission-reserve-v10-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192-obs-v1-v0523"
       nearai.otel.thinking_budget_policy: "default8192-public-to-native"
       nearai.otel.request_logging: "disabled"
@@ -1350,7 +1350,7 @@ services:
               device_ids: ["6","7"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-fp8-kv","deployment:glm53-flash-sgl-tp2x4","config_variant:w4afp8-qsplit-hicacheoff-mamba380-fp8kv-memopt086-mr64-c8192-admission-reserve-v10-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192-obs-v1-v0523","request_logging:disabled","engine_image:050b1adf961c","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8009","instance:2"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-fp8-kv","deployment:pack-small-models","config_variant:w4afp8-qsplit-hicacheoff-mamba380-fp8kv-memopt086-mr64-c8192-admission-reserve-v10-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192-obs-v1-v0523","request_logging:disabled","engine_image:050b1adf961c","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8009","instance:2"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -1361,7 +1361,7 @@ services:
       nearai.otel.model: "z-ai/glm-5.3-flash"
       nearai.otel.model_path: "graphistry/GLM-5.3-Flash-W4AFP8"
       nearai.otel.served_model: "z-ai/glm-5.3-flash"
-      nearai.otel.deployment: "glm53-flash-sgl-tp2x4"
+      nearai.otel.deployment: "pack-small-models"
       nearai.otel.config_variant: "w4afp8-qsplit-hicacheoff-mamba380-fp8kv-memopt086-mr64-c8192-admission-reserve-v10-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192-obs-v1-v0523"
       nearai.otel.thinking_budget_policy: "default8192-public-to-native"
       nearai.otel.request_logging: "disabled"
@@ -1392,7 +1392,7 @@ services:
     restart: unless-stopped
     logging: *logging-conf
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang-ghost-aggregator","service":"sglang-ghost-aggregator","tags":["model:z-ai/glm-5.3-flash","served_model:z-ai/glm-5.3-flash","deployment:glm53-flash-sgl-tp2x4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang-ghost-aggregator","service":"sglang-ghost-aggregator","tags":["model:z-ai/glm-5.3-flash","served_model:z-ai/glm-5.3-flash","deployment:pack-small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "ghost-aggregator"
       nearai.otel.service: "sglang-ghost-aggregator"
@@ -1402,7 +1402,7 @@ services:
       nearai.otel.path: "/metrics"
       nearai.otel.model: "z-ai/glm-5.3-flash"
       nearai.otel.served_model: "z-ai/glm-5.3-flash"
-      nearai.otel.deployment: "glm53-flash-sgl-tp2x4"
+      nearai.otel.deployment: "pack-small-models"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
       nearai.otel.host_machine: "${CVM_HOST}"
@@ -1937,7 +1937,7 @@ services:
               device_ids: ["4","5","6","7"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:z-ai/glm-5.3-flash","deployment:glm53-flash-sgl-tp2x4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","gpu_pair:4-7"]}]'
+      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:z-ai/glm-5.3-flash","deployment:pack-small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","gpu_pair:4-7"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "dcgm"
       nearai.otel.service: "dcgm-exporter"
@@ -1946,7 +1946,7 @@ services:
       nearai.otel.port: "9400"
       nearai.otel.path: "/metrics"
       nearai.otel.model: "z-ai/glm-5.3-flash"
-      nearai.otel.deployment: "glm53-flash-sgl-tp2x4"
+      nearai.otel.deployment: "pack-small-models"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
       nearai.otel.host_machine: "${CVM_HOST}"
@@ -2328,7 +2328,7 @@ configs:
                       model_path: "graphistry/GLM-5.3-Flash-W4AFP8"
                       served_model: "z-ai/glm-5.3-flash"
                       precision: "int4-weights-fp8-activations-fp8-kv"
-                      deployment: "glm53-flash-sgl-tp2x4"
+                      deployment: "pack-small-models"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
                       host_machine: "${CVM_HOST}"
@@ -2354,7 +2354,7 @@ configs:
                       model_path: "graphistry/GLM-5.3-Flash-W4AFP8"
                       served_model: "z-ai/glm-5.3-flash"
                       precision: "int4-weights-fp8-activations-fp8-kv"
-                      deployment: "glm53-flash-sgl-tp2x4"
+                      deployment: "pack-small-models"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
                       host_machine: "${CVM_HOST}"
@@ -2378,7 +2378,7 @@ configs:
                       container_name: "glm53-ghost-aggregator"
                       model: "z-ai/glm-5.3-flash"
                       served_model: "z-ai/glm-5.3-flash"
-                      deployment: "glm53-flash-sgl-tp2x4"
+                      deployment: "pack-small-models"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
                       host_machine: "${CVM_HOST}"
@@ -2518,7 +2518,7 @@ configs:
                       model: "z-ai/glm-5.3-flash"
                       model_path: "graphistry/GLM-5.3-Flash-W4AFP8"
                       served_model: "z-ai/glm-5.3-flash"
-                      deployment: "glm53-flash-sgl-tp2x4"
+                      deployment: "pack-small-models"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
                       host_machine: "${CVM_HOST}"
@@ -2658,7 +2658,7 @@ configs:
                       source: "vllm-proxy"
                       container_name: "proxy-glm53"
                       model: "z-ai/glm-5.3-flash"
-                      deployment: "glm53-flash-sgl-tp2x4"
+                      deployment: "pack-small-models"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
                       host_machine: "${CVM_HOST}"
