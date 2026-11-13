@@ -25,7 +25,7 @@ prevents. If you cannot name either, it is a candidate to remove.
    helpers with one caller; options nothing passes.
 2. Data: `ci/data/` rows for files, images or services that no longer exist; allowlist entries wider
    than what they allow.
-3. Repeats: a statement in more than one place (AGENTS.md, `.claude/`, README, VERIFYING.md, docs, PR
+3. Repeats: a statement in more than one place (AGENTS.md, `.claude/`, README, docs/verifying.md, docs, PR
    template). It belongs in the file AGENTS.md assigns; everything else links to it.
 4. Contradictions: rule text that conflicts with an AGENTS.md hard rule, with another rule file, or
    with what the code does.

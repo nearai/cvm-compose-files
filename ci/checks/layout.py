@@ -23,7 +23,7 @@ DOCKER = re.compile(r"^docker/([a-z0-9][a-z0-9.-]*)/.+$")
 # New build dirs only; dirs present at the base keep their names.
 BUILD_DIR = re.compile(r"(sglang|vllm)-v[0-9.]+-[a-z0-9-]+-r[0-9]+")
 PUBLISH = re.compile(r"^\.github/workflows/publish-(?P<dir>[a-z0-9][a-z0-9.-]*)\.yaml$")
-DOCS = re.compile(r"^(README|AGENTS|CLAUDE|VERIFYING|SECURITY)\.md$|^docs/[a-z0-9._-]+\.md$")
+DOCS = re.compile(r"^(README|AGENTS|CLAUDE)\.md$|^docs/[a-z0-9._-]+\.md$")
 # Shared Claude Code files only; ci/checks/claude.py checks their content.
 CLAUDE_DIR = re.compile(r"^\.claude/(settings\.json|(rules|agents)/[a-z][a-z0-9-]*\.md)$")
 # Files coding agents load as instructions or config. Only the root CLAUDE.md and AGENTS.md and the
@@ -35,11 +35,11 @@ AGENT_FILE = re.compile(
     r"|(^|/)\.github/(instructions|prompts|chatmodes)/"
 )
 FIXED = {
-    ".gitignore", ".gitattributes", ".github/pull_request_template.md",
+    ".gitignore", ".gitattributes", ".github/pull_request_template.md", ".github/SECURITY.md",
     ".github/workflows/ci.yaml", ".github/workflows/auto-tag.yaml",
     "ci/run.py", "ci/lib/common.py",
     "ci/checks/layout.py", "ci/checks/status.py", "ci/checks/pins.py", "ci/checks/privacy.py", "ci/checks/public.py",
-    "ci/checks/frozen.py", "ci/checks/claude.py",
+    "ci/checks/frozen.py", "ci/checks/claude.py", "ci/checks/docker.py", "ci/checks/names.py", "ci/checks/stack.py", "ci/checks/nginx.py",
     "ci/data/legacy.txt", "ci/data/images.allow", "ci/data/services.allow.json", "ci/data/public.json",
     "ci/data/exceptions.json", "ci/data/expected.json",
     "ci/config/yamllint.yaml", "ci/config/gitleaks.toml",
@@ -63,13 +63,53 @@ def conforms(path, tree):
     if path in FIXED or DOCS.match(path) or CLAUDE_DIR.match(path):
         return True
     if path.startswith("prod/"):
-        if not (SERVING.match(path) or PACK.match(path) or UTIL.match(path)):
+        m = SERVING.match(path)
+        if not (m or PACK.match(path) or UTIL.match(path)):
             return False
-        return not LIFECYCLE.search(path[len("prod/"):])
+        # A served model's own name may hold version tokens (v4.1); the parts chosen here may not.
+        chosen = (m.group("tier") or "") if m else path[len("prod/"):]
+        return not LIFECYCLE.search(chosen)
     m = PUBLISH.match(path)
     if m:
         return any(p.startswith(f"docker/{m.group('dir')}/") for p in tree.paths)
     return bool(DOCKER.match(path))
+
+
+SOFT_RUN = re.compile(r"(?m)\|\|\s*(\S*/)?(true|:|exit(\s+0)?)(?![\w)])|\|\|\s*(echo|printf|\()|^\s*set\s+\+(e\b|o\s+errexit)")
+NGINX_CALL = "python3 ci/run.py --nginx-test"
+
+
+def soft_fail(jobs, doc=None):
+    """Reasons a job or step in ci.yaml could pass while its check fails."""
+    out = []
+    if isinstance(doc, dict) and "defaults" in doc:
+        out.append("must not set workflow defaults")
+    for name, job in jobs.items():
+        if not isinstance(job, dict):
+            continue
+        if "defaults" in job:
+            out.append(f"job {name} must not set defaults")
+        if "continue-on-error" in job:
+            out.append(f"job {name} must not set continue-on-error")
+        for i, st in enumerate(job.get("steps") or [], 1):
+            if not isinstance(st, dict):
+                continue
+            if "continue-on-error" in st:
+                out.append(f"job {name} step {i} must not set continue-on-error")
+            if str(st.get("if", "")).strip().strip("${} ").lower() in ("false", "0", "''"):
+                out.append(f"job {name} step {i} is switched off by if:")
+            if "shell" in st:
+                out.append(f"job {name} step {i} must use the default shell")
+            run = str(st.get("run", ""))
+            if SOFT_RUN.search(run):
+                out.append(f"job {name} step {i} must not swallow a failure (|| true, || exit 0, set +e)")
+            if any(c in run for c in GUARD_CALLS + (NGINX_CALL,)):
+                if "if" in st:
+                    out.append(f"job {name} step {i} runs a required check and must not have if:")
+                # A required step is the command alone: anything around it could change its exit status.
+                if run.strip() not in GUARD_CALLS + (NGINX_CALL,):
+                    out.append(f"job {name} step {i} runs a required check and must be exactly that command")
+    return out
 
 
 def check(ctx):
@@ -213,6 +253,14 @@ def check_workflows(ctx):
             if sorted(needs) != others:
                 out.append(Finding(p, find_line(text, r"^  all-green:"), "layout.all-green",
                                    "all-green.needs must list every other job"))
+            # A job or step that cannot fail would let all-green pass on a broken check.
+            for why in soft_fail(jobs, doc):
+                out.append(Finding(p, find_line(text, r"^jobs:"), "layout.all-green", f"ci.yaml {why}"))
+            compose = jobs.get("compose") if isinstance(jobs.get("compose"), dict) else {}
+            cruns = "\n".join(str(st.get("run", "")) for st in compose.get("steps") or [] if isinstance(st, dict))
+            if not re.search(rf"(?m)^\s*{re.escape(NGINX_CALL)}(\s|$)", cruns):
+                out.append(Finding(p, find_line(text, r"^  compose:"), "layout.all-green",
+                                   f"the compose job must run `{NGINX_CALL}`"))
             if ag.get("name", "all-green") != "all-green":
                 out.append(Finding(p, find_line(text, r"^  all-green:"), "layout.all-green",
                                    "all-green must keep its name"))
@@ -236,7 +284,7 @@ WF_OK = (
     "name: ci\non:\n  pull_request:\npermissions:\n  contents: read\njobs:\n" + _job("base")
     + _job("guards", "      - uses: actions/checkout@" + "a" * 40 + "\n      - run: python3 ci/run.py --self-test\n"
            "      - run: |\n          python3 ci/run.py --base \"$BASE\"\n")
-    + _job("compose") + _job("lint") + _job("secrets") + ALL_GREEN
+    + _job("compose", "      - run: python3 ci/run.py --nginx-test\n") + _job("lint") + _job("secrets") + ALL_GREEN
 )
 PUB_OK = (
     "name: Publish x\non:\n  workflow_dispatch:\njobs:\n  publish:\n    environment: " + PUBLISH_ENV + "\n"
@@ -296,6 +344,10 @@ CASES = [
     ("publish on pull_request", "layout.w2",
      dict(BASE_FILES, **{".github/workflows/publish-sglang-v1-x-r1.yaml": PUB_OK.replace(
          "  workflow_dispatch:\n", "  workflow_dispatch:\n  pull_request_target:\n")}), BASE_FILES),
+    ("model version token in a serving name", None,
+     dict(BASE_FILES, **{"prod/deepseek-v4.1-flash-vllm-dep8.yaml": "services: {}\n"}), BASE_FILES),
+    ("lifecycle tier", "layout.path", dict(BASE_FILES, **{"prod/glm-5.3-sglang-tp4-new.yaml": "services: {}\n"}),
+     BASE_FILES),
     ("unpinned action", "layout.w3",
      dict(BASE_FILES, **{".github/workflows/ci.yaml": WF_OK.replace("@" + "a" * 40, "@v4")}), BASE_FILES),
     ("second job named all-green", "layout.all-green",
@@ -325,6 +377,46 @@ CASES = [
     ("ci.yaml drops a job", "layout.all-green",
      dict(BASE_FILES, **{".github/workflows/ci.yaml": WF_OK.replace(_job("lint"), "").replace(
          "guards, lint, secrets]", "guards, secrets]")}), BASE_FILES),
+    ("ci step that cannot fail", "layout.all-green",
+     dict(BASE_FILES, **{".github/workflows/ci.yaml": WF_OK.replace(
+         "python3 ci/run.py --self-test\n", "python3 ci/run.py --self-test || true\n")}), BASE_FILES),
+    ("ci step exits 0 on failure", "layout.all-green",
+     dict(BASE_FILES, **{".github/workflows/ci.yaml": WF_OK.replace(
+         "python3 ci/run.py --self-test\n", "python3 ci/run.py --self-test || exit 0\n")}), BASE_FILES),
+    ("required check piped", "layout.all-green",
+     dict(BASE_FILES, **{".github/workflows/ci.yaml": WF_OK.replace(
+         "python3 ci/run.py --self-test\n", "python3 ci/run.py --self-test | tee x\n")}), BASE_FILES),
+    ("required check wrapped in a function", "layout.all-green",
+     dict(BASE_FILES, **{".github/workflows/ci.yaml": WF_OK.replace(
+         "      - run: python3 ci/run.py --self-test\n",
+         "      - run: |\n          python3() { true; }\n          python3 ci/run.py --self-test\n")}), BASE_FILES),
+    ("required check chained", "layout.all-green",
+     dict(BASE_FILES, **{".github/workflows/ci.yaml": WF_OK.replace(
+         "python3 ci/run.py --self-test\n", "python3 ci/run.py --self-test && echo ok\n")}), BASE_FILES),
+    ("any step switched off", "layout.all-green",
+     dict(BASE_FILES, **{".github/workflows/ci.yaml": WF_OK.replace(
+         '      - run: python3 ci/run.py --nginx-test\n', '      - run: python3 ci/run.py --nginx-test\n      - if: ${{ false }}\n        run: x\n')}),
+     BASE_FILES),
+    ("fallback printf", "layout.all-green",
+     dict(BASE_FILES, **{".github/workflows/ci.yaml": WF_OK.replace(
+         '      - run: python3 ci/run.py --nginx-test\n', '      - run: python3 ci/run.py --nginx-test\n      - run: x || printf ok\n')}),
+     BASE_FILES),
+    ("fallback echo", "layout.all-green",
+     dict(BASE_FILES, **{".github/workflows/ci.yaml": WF_OK.replace(
+         "python3 ci/run.py --self-test\n", "python3 ci/run.py --self-test || echo failed\n")}), BASE_FILES),
+    ("workflow default shell", "layout.all-green",
+     dict(BASE_FILES, **{".github/workflows/ci.yaml": WF_OK.replace(
+         "jobs:\n", "defaults:\n  run:\n    shell: bash {0}\njobs:\n", 1)}), BASE_FILES),
+    ("guard step skipped by if", "layout.all-green",
+     dict(BASE_FILES, **{".github/workflows/ci.yaml": WF_OK.replace(
+         "      - run: python3 ci/run.py --self-test\n", "      - if: false\n        run: python3 ci/run.py --self-test\n")}),
+     BASE_FILES),
+    ("nginx test dropped", "layout.all-green",
+     dict(BASE_FILES, **{".github/workflows/ci.yaml": WF_OK.replace("      - run: python3 ci/run.py --nginx-test\n",
+                                                                   '      - run: "true"\n')}), BASE_FILES),
+    ("ci job with continue-on-error", "layout.all-green",
+     dict(BASE_FILES, **{".github/workflows/ci.yaml": WF_OK.replace(
+         "  lint:\n", "  lint:\n    continue-on-error: true\n")}), BASE_FILES),
     ("all-green without always()", "layout.all-green",
      dict(BASE_FILES, **{".github/workflows/ci.yaml": WF_OK.replace("    if: always()\n", "")}), BASE_FILES),
     ("all-green counts results itself", "layout.all-green",

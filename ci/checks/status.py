@@ -19,6 +19,7 @@ RULES = [
 ]
 DIFF_RULES = ["status.stability"]
 BEGIN, END = "<!-- status:begin -->", "<!-- status:end -->"
+REPO_URL = "https://github.com/nearai/cvm-compose-files"
 HEADER = ["file", "serves", "model@revision", "engine image", "topology", "privacy", "status"]
 NOTE = re.compile(r"^- `([^`]+)`: \S")
 
@@ -59,8 +60,9 @@ def _image(svc, rows):
     if row is None:
         return "built on host" if svc.get("build") else "not listed"
     parts = row[1]
-    if len(parts) > 2 and parts[2] != "-":
-        return f"docker/{parts[2]}"
+    if len(parts) > 3 and parts[2] != "-":
+        # Link the build dir at the commit the image was built from; the dir may be gone from HEAD.
+        return f"[docker/{parts[2]}@{parts[3][:7]}]({REPO_URL}/tree/{parts[3]}/docker/{parts[2]})"
     return "third-party " + parts[0].split("@")[0]
 
 
@@ -78,8 +80,8 @@ def file_rows(path, rendered, services_allow, rows, waived, legacy):
     for key in engines(path, rendered, services_allow):
         svc = rendered["services"][key]
         kind, toks = engine_kind(key, svc), service_tokens(svc)
-        tp = _int(toks, ("--tp-size", "--tp", "--tensor-parallel-size"))
-        dp = _int(toks, ("--dp-size", "--dp", "--data-parallel-size"))
+        tp = _int(toks, ("--tp-size", "--tp", "--tensor-parallel-size", "-tp"))
+        dp = _int(toks, ("--dp-size", "--dp", "--data-parallel-size", "-dp"))
         ep = "--enable-expert-parallel" in toks or "--enable-dp-attention" in toks
         unit = (f"dep{dp}" if ep else f"dp{dp}") if dp > 1 else f"tp{tp}"
         # One engine spans dp services when each service is a single data-parallel rank.
