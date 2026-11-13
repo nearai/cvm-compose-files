@@ -75,6 +75,33 @@ def conforms(path, tree):
     return bool(DOCKER.match(path))
 
 
+SOFT_RUN = re.compile(r"(?m)(\|\|\s*(true|:|exit(\s+0)?)\s*(#.*)?$|^\s*set\s+\+e\b)")
+NGINX_CALL = "python3 ci/run.py --nginx-test"
+
+
+def soft_fail(jobs):
+    """Reasons a job or step in ci.yaml could pass while its check fails."""
+    out = []
+    for name, job in jobs.items():
+        if not isinstance(job, dict):
+            continue
+        if "continue-on-error" in job:
+            out.append(f"job {name} must not set continue-on-error")
+        for i, st in enumerate(job.get("steps") or [], 1):
+            if not isinstance(st, dict):
+                continue
+            if "continue-on-error" in st:
+                out.append(f"job {name} step {i} must not set continue-on-error")
+            if "shell" in st:
+                out.append(f"job {name} step {i} must use the default shell")
+            run = str(st.get("run", ""))
+            if SOFT_RUN.search(run):
+                out.append(f"job {name} step {i} must not swallow a failure (|| true, || exit 0, set +e)")
+            if any(c in run for c in GUARD_CALLS + (NGINX_CALL,)) and "if" in st:
+                out.append(f"job {name} step {i} runs a required check and must not have if:")
+    return out
+
+
 def check(ctx):
     out, head = [], ctx.head
     legacy = legacy_lines(head) or []
@@ -217,10 +244,13 @@ def check_workflows(ctx):
                 out.append(Finding(p, find_line(text, r"^  all-green:"), "layout.all-green",
                                    "all-green.needs must list every other job"))
             # A job or step that cannot fail would let all-green pass on a broken check.
-            for pat, what in ((r"(?m)^\s*continue-on-error\s*:", "continue-on-error"),
-                              (r"(?m)\|\|\s*(true|:)\s*$", "a command ending in `|| true`")):
-                if re.search(pat, text):
-                    out.append(Finding(p, find_line(text, pat), "layout.all-green", f"ci.yaml must not use {what}"))
+            for why in soft_fail(jobs):
+                out.append(Finding(p, find_line(text, r"^jobs:"), "layout.all-green", f"ci.yaml {why}"))
+            compose = jobs.get("compose") if isinstance(jobs.get("compose"), dict) else {}
+            cruns = "\n".join(str(st.get("run", "")) for st in compose.get("steps") or [] if isinstance(st, dict))
+            if not re.search(rf"(?m)^\s*{re.escape(NGINX_CALL)}(\s|$)", cruns):
+                out.append(Finding(p, find_line(text, r"^  compose:"), "layout.all-green",
+                                   f"the compose job must run `{NGINX_CALL}`"))
             if ag.get("name", "all-green") != "all-green":
                 out.append(Finding(p, find_line(text, r"^  all-green:"), "layout.all-green",
                                    "all-green must keep its name"))
@@ -244,7 +274,7 @@ WF_OK = (
     "name: ci\non:\n  pull_request:\npermissions:\n  contents: read\njobs:\n" + _job("base")
     + _job("guards", "      - uses: actions/checkout@" + "a" * 40 + "\n      - run: python3 ci/run.py --self-test\n"
            "      - run: |\n          python3 ci/run.py --base \"$BASE\"\n")
-    + _job("compose") + _job("lint") + _job("secrets") + ALL_GREEN
+    + _job("compose", "      - run: python3 ci/run.py --nginx-test\n") + _job("lint") + _job("secrets") + ALL_GREEN
 )
 PUB_OK = (
     "name: Publish x\non:\n  workflow_dispatch:\njobs:\n  publish:\n    environment: " + PUBLISH_ENV + "\n"
@@ -340,6 +370,16 @@ CASES = [
     ("ci step that cannot fail", "layout.all-green",
      dict(BASE_FILES, **{".github/workflows/ci.yaml": WF_OK.replace(
          "python3 ci/run.py --self-test\n", "python3 ci/run.py --self-test || true\n")}), BASE_FILES),
+    ("ci step exits 0 on failure", "layout.all-green",
+     dict(BASE_FILES, **{".github/workflows/ci.yaml": WF_OK.replace(
+         "python3 ci/run.py --self-test\n", "python3 ci/run.py --self-test || exit 0\n")}), BASE_FILES),
+    ("guard step skipped by if", "layout.all-green",
+     dict(BASE_FILES, **{".github/workflows/ci.yaml": WF_OK.replace(
+         "      - run: python3 ci/run.py --self-test\n", "      - if: false\n        run: python3 ci/run.py --self-test\n")}),
+     BASE_FILES),
+    ("nginx test dropped", "layout.all-green",
+     dict(BASE_FILES, **{".github/workflows/ci.yaml": WF_OK.replace("      - run: python3 ci/run.py --nginx-test\n",
+                                                                   '      - run: "true"\n')}), BASE_FILES),
     ("ci job with continue-on-error", "layout.all-green",
      dict(BASE_FILES, **{".github/workflows/ci.yaml": WF_OK.replace(
          "  lint:\n", "  lint:\n    continue-on-error: true\n")}), BASE_FILES),

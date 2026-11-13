@@ -8,6 +8,7 @@ import copy
 import json
 import re
 
+from privacy import SENTINEL
 from common import SERVICES, Finding, YamlError, parse_yaml
 
 RULES = [
@@ -119,7 +120,7 @@ def proxy_backends(path, services, out):
                 backend = host if host in services else by_container.get(host)
                 if backend is None:
                     out.append(Finding(path, 0, "stack.engine-backend",
-                                       f"services.{name}: backend URL {url!r} does not name a service in this file",
+                                       f"services.{name}: a backend URL does not name a service in this file",
                                        key=f"{name}:{url}"))
                 else:
                     found.append(backend)
@@ -263,7 +264,7 @@ def check_proxy_env(path, services, out):
     for name, svc in services.items():
         env = env_of(svc)
         is_proxy = ("MODEL_NAME" in env and "CLOUD_API_URL" in env) or \
-            (path.startswith("prod/") and image_of(svc).startswith(PROXY_IMAGE_PREFIX))
+            (path.startswith("prod/") and image_of(svc).removeprefix("docker.io/").startswith(PROXY_IMAGE_PREFIX))
         if not is_proxy:
             continue
         if path.startswith("prod/"):
@@ -271,7 +272,7 @@ def check_proxy_env(path, services, out):
                 actual = env.get(var)
                 if actual == expected:
                     continue
-                problem = "is missing" if actual is None else f"is {actual!r}"
+                problem = "is missing" if actual is None else "has another value"
                 out.append(Finding(path, 0, "stack.proxy-env",
                                    f'{path}: services.{name}.environment {var} {problem}, expected "{expected}"',
                                    key=f"{name}:{var}"))
@@ -315,17 +316,16 @@ def check_registrar(path, model, services, out):
         return
     if env_of(registrar).get("PROXY_TOKEN") != PROXY_TOKEN_ENV:
         out.append(Finding(path, 0, "stack.registrar-auth",
-                           f"{path}: services.model-proxy-registrar.environment missing PROXY_TOKEN={PROXY_TOKEN_ENV}",
+                           f"{path}: services.model-proxy-registrar.environment must pass PROXY_TOKEN through",
                            key="registrar-env"))
     if INFERENCE_TOKEN not in script:
         out.append(Finding(path, 0, "stack.registrar-auth",
-                           f"{path}: configs.registrar_script.content missing {INFERENCE_TOKEN}",
+                           f"{path}: configs.registrar_script.content does not take INFERENCE_TOKEN from PROXY_TOKEN",
                            key="registrar-token"))
     for i, block in enumerate(blocks):
         if AUTH_HEADER not in block:
-            first = block.splitlines()[0].strip()
             out.append(Finding(path, 0, "stack.registrar-auth",
-                               f"{path}: registrar inference probe {i + 1} missing {AUTH_HEADER}: {first}",
+                               f"{path}: registrar inference probe {i + 1} has no bearer Authorization header",
                                key=f"probe-{i}"))
 
 
@@ -450,13 +450,12 @@ def check_otel_logs(path, services, out):
         otel_source = labels.get("nearai.otel.source")
         if otel_source is not None and source != otel_source:
             out.append(Finding(path, 0, "stack.otel-logs",
-                               f"{where}: source {source!r} does not match nearai.otel.source {otel_source!r}",
+                               f"{where}: source does not match nearai.otel.source",
                                key=f"{name}:otel-source"))
         otel_service = labels.get("nearai.otel.service")
         if otel_service is not None and service_label != otel_service:
             out.append(Finding(path, 0, "stack.otel-logs",
-                               f"{where}: service {service_label!r} does not match nearai.otel.service "
-                               f"{otel_service!r}", key=f"{name}:otel-service"))
+                               f"{where}: service does not match nearai.otel.service", key=f"{name}:otel-service"))
         tags_by_service[name] = tags
     return tags_by_service
 
@@ -507,12 +506,11 @@ def check_otel_scrape(path, model, services, tags_by_service, out):
         expected_target = f"{name}:{_s(labels.get('nearai.otel.port'))}"
         if _s(target["target"]) != expected_target:
             out.append(Finding(path, 0, "stack.otel-scrape",
-                               f"{where}: {name} target {target['target']!r} should be {expected_target!r}",
+                               f"{where}: {name} scrape target does not match its service and nearai.otel.port",
                                key=f"{name}:target-value"))
         if target["metrics_path"] != labels.get("nearai.otel.path"):
             out.append(Finding(path, 0, "stack.otel-scrape",
-                               f"{where}: {name} metrics_path {target['metrics_path']!r} does not match "
-                               "nearai.otel.path", key=f"{name}:path"))
+                               f"{where}: {name} metrics_path does not match nearai.otel.path", key=f"{name}:path"))
         tlabels = target["labels"]
         expected_labels = {
             "service": labels.get("nearai.otel.service"), "source": labels.get("nearai.otel.source"),
@@ -526,7 +524,7 @@ def check_otel_scrape(path, model, services, tags_by_service, out):
             if _s(expected) == "" or tlabels.get(key) == expected:
                 continue
             out.append(Finding(path, 0, "stack.otel-scrape",
-                               f"{where}: {name} {key} label {tlabels.get(key)!r} should be {expected!r}",
+                               f"{where}: {name} {key} label does not match nearai.otel.{key}",
                                key=f"{name}:{key}"))
         log_tags = tags_by_service.get(name) or {}
         for key in OPTIONAL_SCRAPE_TAGS:
@@ -534,7 +532,7 @@ def check_otel_scrape(path, model, services, tags_by_service, out):
             if expected is None or tlabels.get(key) == expected:
                 continue
             out.append(Finding(path, 0, "stack.otel-scrape",
-                               f"{where}: {name} optional {key} label {tlabels.get(key)!r} should be {expected!r}",
+                               f"{where}: {name} {key} label does not match its log tag",
                                key=f"{name}:opt-{key}"))
         expected_port = expected_ports.get(name)
         if expected_port is None:
@@ -543,7 +541,7 @@ def check_otel_scrape(path, model, services, tags_by_service, out):
             expected_port = labels.get("nearai.otel.port")
         if expected_port is not None and tlabels.get("port") != expected_port:
             out.append(Finding(path, 0, "stack.otel-scrape",
-                               f"{where}: {name} public port label {tlabels.get('port')!r} should be {expected_port!r}",
+                               f"{where}: {name} port label does not match the public port",
                                key=f"{name}:port"))
     for name in sorted(set(targets) - scrape_services):
         out.append(Finding(path, 0, "stack.otel-scrape",
@@ -579,9 +577,14 @@ def check(ctx):
         check_proxy_env(path, services, out)
         check_registrar(path, model, services, out)
         if otel_scope(services):
-            check_otel_collector(path, model, services, out)
-            tags = check_otel_logs(path, services, out)
-            check_otel_scrape(path, model, services, tags, out)
+            # A collector config of an unexpected shape is a finding, never a crash.
+            try:
+                check_otel_collector(path, model, services, out)
+                tags = check_otel_logs(path, services, out)
+                check_otel_scrape(path, model, services, tags, out)
+            except (AttributeError, KeyError, TypeError, ValueError):
+                out.append(Finding(path, 0, "stack.otel-collector", f"{path}: collector config has an unexpected shape",
+                                   key="shape"))
     return out
 
 
@@ -703,6 +706,9 @@ CASES = [
     _case("proxy backend names no service", "stack.engine-backend",
           _mut((("services", "proxy-x", "environment"),
                 [v.replace("http://e:8000", "http://nowhere:8000") for v in PROXY_ENV]))),
+    _case("backend value is never printed", "stack.engine-backend",
+          _mut((("services", "proxy-x", "environment"),
+                [v.replace("http://e:8000", "http://" + SENTINEL + ":8000") for v in PROXY_ENV]))),
     ("pending engine follows the contract", "stack.engine-pending", PENDING, None, None, None,
      {"raw": {P: GOOD}}),
     ("pending service is not in the file", "stack.engine-pending", PENDING_GONE, None, None, None,

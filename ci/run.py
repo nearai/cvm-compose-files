@@ -133,7 +133,7 @@ def waiver_counts(head, entries):
         return []
     actual, documented, line = {}, {}, 0
     for e in entries:
-        actual[e.get("rule")] = actual.get(e.get("rule"), 0) + 1
+        actual[str(e.get("rule"))] = actual.get(str(e.get("rule")), 0) + 1
     for n, text in enumerate(head.text(VERIFYING).splitlines(), 1):
         m = COUNT_ROW.match(text)
         if m:

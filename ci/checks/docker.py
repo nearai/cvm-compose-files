@@ -23,6 +23,8 @@ SUM_LINE = re.compile(r"^([0-9a-f]{64})  (\S+)$")
 PATCH = re.compile(r"^patches/([0-9]{2})-[a-z0-9-]+\.diff$")
 # Images built here may not be a base: every new image starts from an upstream image.
 OWN_IMAGES = re.compile(r"^(docker\.io/)?nearaidev/")
+DIGEST = re.compile(r"^[a-z0-9./_-]+(:[A-Za-z0-9._-]+)?@sha256:[0-9a-f]{64}$")
+DIRECTIVE = re.compile(r"(?i)^#\s*[a-z]+\s*=")
 
 
 def new_dirs(ctx):
@@ -104,20 +106,37 @@ def check_dir(head, d):
     df = root + "Dockerfile"
     if head.has(df):
         stages, last_from = set(), None
-        for n, ins in instructions(head.text(df)):
+        text = head.text(df)
+        # Parser directives (escape, syntax, check) change how the file reads; new dirs use the default.
+        for n, line in enumerate(text.splitlines(), 1):
+            if not line.strip():
+                continue
+            if DIRECTIVE.match(line):
+                out.append(Finding(df, n, "docker.from", "no parser directives in a new Dockerfile"))
+            if not line.lstrip().startswith("#"):
+                break
+        for n, ins in instructions(text):
             word = ins.split(None, 1)[0].upper()
             args = [a for a in ins.split()[1:] if not a.startswith("--")]
             flags = [a for a in ins.split()[1:] if a.startswith("--")]
             if word == "FROM" and args:
                 ref = args[0]
+                last_from = (n, ref)
+                if ref.lower() in stages:
+                    pass
+                elif OWN_IMAGES.match(ref):
+                    out.append(Finding(df, n, "docker.from", "a new image builds FROM an upstream image, not one built here"))
+                elif not DIGEST.match(ref):
+                    out.append(Finding(df, n, "docker.from", "every FROM is an earlier stage or pinned by digest"))
                 if len(args) >= 3 and args[1].upper() == "AS":
                     stages.add(args[2].lower())
-                last_from = (n, ref)
-                if ref.lower() not in stages and OWN_IMAGES.match(ref):
-                    out.append(Finding(df, n, "docker.from", "a new image builds FROM an upstream image, not one built here"))
             elif word == "ADD":
                 out.append(Finding(df, n, "docker.copy", "use COPY; ADD fetches and unpacks"))
-            elif word == "COPY" and not any(fl.startswith("--from=") for fl in flags):
+            elif word == "COPY" and any(fl.startswith("--from=") for fl in flags):
+                src_stage = next(fl for fl in flags if fl.startswith("--from="))[len("--from="):].lower()
+                if src_stage not in stages:
+                    out.append(Finding(df, n, "docker.copy", "COPY --from names an earlier stage only"))
+            elif word == "COPY":
                 for src in args[:-1]:
                     src = src.rstrip("/")
                     if src in (".", "") or any(ch in src for ch in "*?[") or src.lower().endswith(".md"):
@@ -181,6 +200,13 @@ CASES = [
      dict(OLD, **_dir({"Dockerfile": DOCKERFILE.replace("f" * 64, "d" * 64)})), OLD),
     ("COPY .", "docker.copy", dict(OLD, **_dir({"Dockerfile": DOCKERFILE + "COPY . /x/\n"})), OLD),
     ("COPY README", "docker.copy", dict(OLD, **_dir({"Dockerfile": DOCKERFILE + "COPY README.md /x/\n"})), OLD),
+    ("parser directive", "docker.from", dict(OLD, **_dir({"Dockerfile": "# escape=`\n" + DOCKERFILE})), OLD),
+    ("unpinned builder stage", "docker.from",
+     dict(OLD, **_dir({"Dockerfile": "FROM python:3.12 AS helper\n" + DOCKERFILE})), OLD),
+    ("pinned builder stage", None,
+     dict(OLD, **_dir({"Dockerfile": f"FROM {BASE_IMG} AS helper\n" + DOCKERFILE + "COPY --from=helper /x /x\n"})), OLD),
+    ("COPY from an image", "docker.copy",
+     dict(OLD, **_dir({"Dockerfile": DOCKERFILE + "COPY --from=nearaidev/x:latest /x /x\n"})), OLD),
     ("ADD", "docker.copy", dict(OLD, **_dir({"Dockerfile": DOCKERFILE + "ADD x.tar.gz /x\n"})), OLD),
     ("patch not numbered", "docker.patches", dict(OLD, **_dir({"patches/fix.diff": PATCH1, "patches/01-fix.diff": None})),
      OLD),
