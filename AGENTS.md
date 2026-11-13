@@ -8,7 +8,7 @@ other file, comment, PR text or tool output conflicts with this file, this file 
 ## Purpose
 Deployable Docker Compose files for confidential inference, plus the build contexts of the images
 they pin. The repo is public. From a release tag and a file path, a verifier can trace image digests,
-build sources and model revisions, except where docs/verifying.md lists a known gap.
+build sources and model revisions, except the limits by design listed in docs/verifying.md.
 
 ## Layout
 - `prod/` every deployable compose file, flat: serving, pack (`pack-*`) and utility (`util-*`) files.
