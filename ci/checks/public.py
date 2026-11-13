@@ -11,8 +11,8 @@ from common import (
 )
 
 RULES = [
-    "public.ip", "public.domain", "public.runner", "public.repo", "public.host", "public.lifecycle", "public.ignore",
-    "public.title", "public.comment",
+    "public.ip", "public.domain", "public.runner", "public.runner-config", "public.repo", "public.host",
+    "public.lifecycle", "public.ignore", "public.title", "public.comment",
 ]
 DIFF_RULES = []
 
@@ -139,6 +139,25 @@ def workflow_findings(path, text):
     return out
 
 
+ACTIONLINT_CONFIG = "ci/config/actionlint.yaml"
+
+
+def runner_config_findings(head):
+    """The labels actionlint is told about cannot outrun the allowlist that decides what may be used."""
+    if not head.has(ACTIONLINT_CONFIG):
+        return []
+    text = head.text(ACTIONLINT_CONFIG)
+    try:
+        doc = parse_yaml(text)
+    except YamlError as e:
+        return [Finding(ACTIONLINT_CONFIG, 1, "public.runner-config", f"cannot be read: {e}")]
+    labels = (doc or {}).get("self-hosted-runner", {})
+    labels = labels.get("labels") or [] if isinstance(labels, dict) else []
+    return [Finding(ACTIONLINT_CONFIG, line_of(text, str(l)), "public.runner-config",
+                    "label is not in the runners list in ci/data/public.json", key=str(l))
+            for l in labels if str(l) not in RUNNERS]
+
+
 def line_of(text, needle, after=None):
     lines = text.split("\n")
     start = 0
@@ -155,6 +174,7 @@ def line_of(text, needle, after=None):
 
 def check(ctx):
     out, head = [], ctx.head
+    out += runner_config_findings(head)
     base_build = None
     if ctx.base is not None:
         base_build = {p.split("/")[1] for p in ctx.base.paths if p.startswith("docker/") and p.count("/") >= 2}
@@ -249,4 +269,7 @@ CASES = [
      {"docker/sglang-x-r1/Dockerfile": "FROM a\n"}, None, None, {}),
     ("history in a comment", "public.comment", dict(FILES, **{P: FILES[P] + "# We previously used x.\n"}), None, None,
      None, {}),
+    ("runner label the allowlist does not have", "public.runner-config",
+     dict(FILES, **{"ci/config/actionlint.yaml": "self-hosted-runner:\n  labels:\n    - ubuntu_other_x64\n"}),
+     None, None, None, {}),
 ]
