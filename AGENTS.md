@@ -19,7 +19,7 @@ build sources and model revisions, except where docs/verifying.md lists a known 
 - `.github/` `ci.yaml`, `auto-tag.yaml`, `publish-<docker dir>.yaml` workflows, PR template.
 - `.claude/` area rules (`rules/`), read-only review agents (`agents/`), a deny-only `settings.json`.
 - Legacy, listed in `ci/data/legacy.txt`, shrinking: older deployable and publish workflow names,
-  `scripts/` (old validators, no new files) and `adapters/`, kept
+  `adapters/`, kept
   until no release tag that may be redeployed for rollback still fetches from `main`.
 - No other top-level dirs.
 
@@ -35,6 +35,7 @@ Read the rule file for a path before you change files under it; Claude Code also
 ## Commands
 `ci/run.py` renders with the pinned compose image in `ci/lib/common.py`, as CI does; never local compose.
 - All guards: `python3 ci/run.py --base origin/main`. Self-tests: `python3 ci/run.py --self-test`.
+- `nginx -t` on every nginx config, in its pinned image (needs Docker): `python3 ci/run.py --nginx-test`.
 - Findings on the real tree are pinned in `ci/data/expected.json`; update it with `--write-expected`.
 - Render one file: `--render prod/<f>.yaml`. Show a change is a no-op: `--noop origin/main` (empty).
 

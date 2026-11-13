@@ -32,7 +32,6 @@ downloaders and monitoring. Hosts run a file from a release tag `v0.0.N`.
 | `ci/data/` | allowlists, waivers, the legacy list and expected findings; they change with what they record |
 | `docs/` | docs for outside readers: how to verify a deployment |
 | `.github/` | `ci.yaml`, `auto-tag.yaml`, one `publish-*.yaml` per image, PR template |
-| `scripts/` | legacy validators, still run by CI |
 | `adapters/` | legacy: a LoRA adapter some deployables fetch at runtime |
 
 Legacy paths are listed in `ci/data/legacy.txt` and only shrink.
