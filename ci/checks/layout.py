@@ -42,7 +42,7 @@ FIXED = {
     "ci/checks/frozen.py", "ci/checks/claude.py",
     "ci/data/legacy.txt", "ci/data/images.allow", "ci/data/services.allow.json", "ci/data/public.json",
     "ci/data/exceptions.json", "ci/data/expected.json",
-    "ci/config/yamllint.yaml", "ci/config/gitleaks.toml",
+    "ci/config/yamllint.yaml", "ci/config/gitleaks.toml", "ci/config/actionlint.yaml",
     "ci/templates/sglang.yaml", "ci/templates/vllm.yaml",
 }
 BANNED_EXT = re.compile(r"\.(pyc|safetensors|bin|pt|gguf|onnx|ipynb|log|zip|tar(\.[a-z0-9]+)?)$|(^|/)__pycache__/", re.I)
