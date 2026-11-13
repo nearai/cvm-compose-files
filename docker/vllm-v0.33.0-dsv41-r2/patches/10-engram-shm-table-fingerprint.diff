@@ -9,12 +9,12 @@ diff --git a/vllm/models/deepseek_v41/common/engram.py b/vllm/models/deepseek_v4
  import time
  import mmap
  import os
-@@ -91,7 +92,22 @@
+@@ -91,7 +92,23 @@
  # buffers, async H2D. Copies only: the GPU still never reads host memory.
  _NEAR_FAST_GATHER = _NEAR_CPU_GATHER and os.environ.get("VLLM_NEAR_ENGRAM_FAST_GATHER") == "1"
  _NEAR_READY = ("w", "s")
 +_NEAR_SAMPLE = 4 << 20
- 
++
 +
 +def _near_fingerprint(mapping) -> str:
 +    """Bounded content fingerprint of a shared Engram table.
@@ -28,18 +28,19 @@ diff --git a/vllm/models/deepseek_v41/common/engram.py b/vllm/models/deepseek_v4
 +    for start in (0, max(0, num_bytes // 2 - span // 2), num_bytes - span):
 +        digest.update(mapping[start : start + span])
 +    return digest.hexdigest()
+ 
 +
  # Per-rank token slot from which the Engram DP exchange switches from peer
  # reads to all-to-all.
  ENGRAM_A2A_MIN_SLOT = 128
-@@ -855,8 +871,29 @@
+@@ -855,7 +872,28 @@
              "NEAR Engram host table %s (%.2f GiB) role=%s, CPU gather (no UVA)",
              path, num_bytes / 1024**3, role,
          )
 +        if role == "reuse" and group.rank_in_group == 0:
 +            self._near_verify()
          return torch.from_numpy(np.frombuffer(self._near_mapping, dtype=np.uint8))
- 
++
 +    def _near_verify(self) -> None:
 +        """The ready markers say a load finished, not that these are still its bytes."""
 +        try:
@@ -58,11 +59,10 @@ diff --git a/vllm/models/deepseek_v41/common/engram.py b/vllm/models/deepseek_v4
 +            "NEAR Engram: the shared table does not match the fingerprint it was loaded "
 +            "with. Its markers are cleared, so the next start loads the table again."
 +        )
-+
+ 
      def _allocate(self, num_bytes: int) -> torch.Tensor:
          """Map and register one physical allocation across a node-local DP group."""
-         if _NEAR_CPU_GATHER:
-@@ -948,6 +985,8 @@
+@@ -948,6 +986,8 @@
              if self._near_lock is not None and all(
                  os.path.exists(f"{self._near_path}.{p}.ready") for p in _NEAR_READY
              ):

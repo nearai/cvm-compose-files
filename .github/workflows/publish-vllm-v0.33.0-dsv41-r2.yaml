@@ -77,7 +77,7 @@ jobs:
           git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
           git merge-base --is-ancestor "$SOURCE_REVISION" origin/main
           test "$(sha256sum "$BUILD_CONTEXT/Dockerfile" | awk '{print $1}')" = \
-            c875cefdd5a6b1a28c383387e3ef8be03016df360bd2f34fad2c3668828c7526
+            7dd30c8b3cdf34e68d51a6d2c97961b9c42b84e14034ff626ecf36f0e94fe720
           (cd "$BUILD_CONTEXT" && sha256sum --check --strict SHA256SUMS)
           grep -Fxq \
             'base_image=vllm/vllm-openai@sha256:d825baf9ce4b1b6bfc5ecc7b79880c7e6748c65a72d697ce3d47607aafa84c6e' \
@@ -150,7 +150,7 @@ jobs:
              .config.Labels["nearai.vllm.engram_peer_reads_kill_switch_patch_sha256"] == "694a75c29aae8b6ee5b4a096599694bcd044d80e73e65093484ab569a261c516" and
              .config.Labels["nearai.vllm.cc_explicit_copies_patch_sha256"] == "ae42a1eb886d5a66863efef28339c2cb9986960e6e5eb11c8b44fd180ba374f6" and
              .config.Labels["nearai.vllm.cc_retain_ep_fault_flag_patch_sha256"] == "2039df25e33e55c3a8b2cdc62d5dc90764e08816fd882481ff2c23572d60e606" and
-             .config.Labels["nearai.vllm.engram_shm_table_fingerprint_patch_sha256"] == "38d59cc5ba8d6e4110ddcf330e55d00e40bcf5c3b386037307ca3a90a21120ec" and
+             .config.Labels["nearai.vllm.engram_shm_table_fingerprint_patch_sha256"] == "9da0fba3b83b64f40424e1a718d60a59dafdb71d27fe2baaec773c6cf228ef06" and
              .config.Labels["nearai.security.linux_libc_dev"] == "6.8.0-149.149"' \
             image-config.json
 
