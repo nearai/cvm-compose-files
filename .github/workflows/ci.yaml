@@ -15,8 +15,6 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  RUBY_IMAGE: docker.io/library/ruby@sha256:2fda53cb7c1c93618593afce7404e311b2b44b0eab35bfeace3981aa0be4ff54 # 3.3-alpine
-  PYTHON_IMAGE: docker.io/library/python@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b # 3.12-slim
   YAMLLINT_IMAGE: docker.io/pipelinecomponents/yamllint@sha256:f7f7b4f8824839e33690a880dbe20944128b0dc9c55522a0b92a29b3a905cecf # 0.35.27
   ACTIONLINT_IMAGE: docker.io/rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 # 1.7.12
   ZIZMOR_IMAGE: ghcr.io/zizmorcore/zizmor@sha256:3014cc8f68f663935f69b3c3e0e41f5ce102b268d97db13db0f62208747f860d # 1.32.0
@@ -117,22 +115,9 @@ jobs:
             fi
           done
 
-      - name: Ruby validators
-        run: |
-          set -euo pipefail
-          for s in otel_labels proxy_dependencies proxy_environment registrar_auth engine_network; do
-            echo "validate_$s"
-            docker run --rm --network none -v "$PWD:/repo:ro" -w /repo "$RUBY_IMAGE" ruby "scripts/validate_$s.rb"
-          done
-          echo "validate_engine_network --self-test"
-          docker run --rm --network none -v "$PWD:/repo:ro" -w /repo "$RUBY_IMAGE" ruby scripts/validate_engine_network.rb --self-test
-
-      - name: Public metrics validator
-        run: docker run --rm --network none -v "$PWD:/repo:ro" -w /repo "$PYTHON_IMAGE" python3 scripts/validate_public_metrics.py
-
-      # Runs on the host so it can start the pinned nginx image itself.
-      - name: Streaming keepalive validator
-        run: python3 scripts/validate_streaming_keepalive.py
+      # Each nginx default.conf is tested in its own pinned image with a throwaway certificate.
+      - name: nginx -t
+        run: python3 ci/run.py --nginx-test
 
   lint:
     needs: [base]
