@@ -18,9 +18,8 @@ build sources and model revisions, except where docs/verifying.md lists a known 
 - `docs/` docs for outside readers, such as `docs/verifying.md`. Runbooks live in the private ops repo.
 - `.github/` `ci.yaml`, `auto-tag.yaml`, `publish-<docker dir>.yaml` workflows, PR template.
 - `.claude/` area rules (`rules/`), read-only review agents (`agents/`), a deny-only `settings.json`.
-- Legacy, listed in `ci/data/legacy.txt`, shrinking: older deployable and publish workflow names,
-  `adapters/`, kept
-  until no release tag that may be redeployed for rollback still fetches from `main`.
+- Legacy, listed in `ci/data/legacy.txt`, shrinking: older publish workflow names and `adapters/`,
+  kept until no release tag that may be redeployed for rollback still fetches from `main`.
 - No other top-level dirs.
 
 ## Area rules

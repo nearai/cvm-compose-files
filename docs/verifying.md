@@ -193,9 +193,9 @@ Gaps that are not exceptions:
   `artipacked` (checkout without `persist-credentials: false`).
 - Some pinned images are neither standard upstream images nor built here: `nearaidev/vllm-proxy-rs`
   and `nearaidev/compose-manager-launcher` are built outside this repo, and the image of
-  `prod/sage.yaml` and `prod/sage-pull.yaml` comes from a vendor. This repo has no build record or
+  `prod/pack-sage.yaml` and `prod/util-pull-sage.yaml` comes from a vendor. This repo has no build record or
   signing identity for them; only their digests are pinned. The Whisper engine in
-  `prod/small-models.yaml` is built on the host (`pins.raw-key`) and has no digest at all.
+  `prod/pack-small-models.yaml` is built on the host (`pins.raw-key`) and has no digest at all.
 - Two vLLM publish workflows skip the provenance attestation when resuming from an already pushed digest;
   such an image has a signature only.
 - Repository settings applied at merge: a `v*` tag ruleset blocks moving and deleting tags, but
