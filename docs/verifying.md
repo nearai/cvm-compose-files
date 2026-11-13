@@ -23,8 +23,8 @@ attestation are the proof.
   `sglang-v0523-secure` and `sglang-glm53-v0523` images also carry log-redaction patches, which CI does
   not check: [14-admin-auth-redaction](../docker/sglang-v0523-secure/patches/14-admin-auth-redaction.diff)
   and [15-customer-data-log-redaction](../docker/sglang-v0523-secure/patches/15-customer-data-log-redaction.diff).
-  Patch 26 in those dirs and the redaction patches in `sglang-glm53-hicache-w4afp8` are not in any
-  published image; the `SERIES` or Dockerfile at an image's source commit records what it contains.
+  Patch 26 in those dirs and the redaction patches of the former `sglang-glm53-hicache-w4afp8` dir are
+  not in any published image; the `SERIES` or Dockerfile at an image's source commit records what it contains.
 
 Start from the deployment record: a release tag `v0.0.N`, a file path and the file's SHA-256. Always
 verify by digest. Image tags on the registry can be moved; digests cannot.
@@ -109,17 +109,17 @@ workflow's existing signatures stay valid for the images it published.
 
 | workflow | identity (prefix `https://github.com/nearai/cvm-compose-files/`) | images | state |
 |---|---|---|---|
-| `publish-glm53-admission-reserve.yaml` | `.github/workflows/publish-glm53-admission-reserve.yaml@refs/heads/main` | `nearaidev/sglang` | active |
-| `publish-glm53-fc91d24.yaml` | `.github/workflows/publish-glm53-fc91d24.yaml@refs/heads/main` | `nearaidev/sglang` | active |
-| `publish-glm53-hicache.yaml` | `.github/workflows/publish-glm53-hicache.yaml@refs/heads/main` | `nearaidev/sglang` | active |
 | `publish-glm53-v0523.yaml` | `.github/workflows/publish-glm53-v0523.yaml@refs/heads/main` | `nearaidev/sglang` | active |
 | `publish-sglang-v0523-secure.yaml` | `.github/workflows/publish-sglang-v0523-secure.yaml@refs/heads/main` | `nearaidev/sglang` | active |
 | `publish-vllm-dsv41-v033.yaml` | `.github/workflows/publish-vllm-dsv41-v033.yaml@refs/heads/main` | `nearaidev/vllm` | active |
+| `publish-glm53-admission-reserve.yaml` | `.github/workflows/publish-glm53-admission-reserve.yaml@refs/heads/main` | `nearaidev/sglang` | retired |
+| `publish-glm53-fc91d24.yaml` | `.github/workflows/publish-glm53-fc91d24.yaml@refs/heads/main` | `nearaidev/sglang` | retired |
+| `publish-glm53-hicache.yaml` | `.github/workflows/publish-glm53-hicache.yaml@refs/heads/main` | `nearaidev/sglang` | retired |
 | `publish-vllm-dsv41-lora.yaml` | `.github/workflows/publish-vllm-dsv41-lora.yaml@refs/heads/main` | `nearaidev/vllm` | retired |
 | `publish-glm53-v0519.yaml` | `.github/workflows/publish-glm53-v0519.yaml@refs/heads/main` | `nearaidev/sglang` | retired |
 | `publish-dsv4-0731.yaml` | `.github/workflows/publish-dsv4-0731.yaml@refs/heads/main` | `nearaidev/sglang` | retired |
 
-`publish-glm53-admission-reserve.yaml` builds `sglang-glm53-admission-reserve`,
+`publish-glm53-admission-reserve.yaml` built `sglang-glm53-admission-reserve`,
 `sglang-glm53-hicache-admission-reserve` and `sglang-glm53-hicache-w4afp8`. Each other workflow builds
 the one dir its name points to. These names predate the `publish-<build dir>.yaml` rule that new images
 follow. This repo does not record which identity signed each older digest; if a digest in the Digests
@@ -129,7 +129,8 @@ and build dirs table fails every identity in this table, treat it as unsigned.
 
 Images built from the build dirs in `docker/`. The source commit and build dir come from each image's
 BuildKit provenance (step 4); every source commit is on `main`. A short digest in `built FROM` is the
-prefix of another row of this table.
+prefix of another row of this table. A build dir that is no longer in `docker/` at `HEAD` is read at its
+source commit, like every other.
 
 | digest (`sha256:`) | tag | build dir | source commit | built `FROM` |
 |---|---|---|---|---|
