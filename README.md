@@ -34,7 +34,6 @@ downloaders and monitoring. Hosts run a file from a release tag `v0.0.N`.
 | `.github/` | `ci.yaml`, `auto-tag.yaml`, one `publish-*.yaml` per image, PR template |
 | `scripts/` | legacy validators, still run by CI |
 | `adapters/` | legacy: a LoRA adapter some deployables fetch at runtime |
-| `cleanup-hf-model.yaml` | legacy: a utility deployable outside `prod/` |
 
 Legacy paths are listed in `ci/data/legacy.txt` and only shrink.
 
@@ -66,7 +65,6 @@ file-name grammar in `.claude/rules/prod.md`. `privacy`: `flag set` (explicit no
 <!-- status:begin -->
 | file | serves | model@revision | engine image | topology | privacy | status |
 |---|---|---|---|---|---|---|
-| `cleanup-hf-model.yaml` (legacy name) | - | - | - | - | n.a. | live |
 | `prod/DeepSeek-V4.1-Flash-1017-vLLM-DEP8-Abliterated.yaml` (legacy name) | deepseek-ai/DeepSeek-V4.1-Flash-1017 | deepseek-ai/DeepSeek-V4.1-Flash-1017@1bae0e108899 | docker/vllm-dsv41-v033 | dep8 | waived | live |
 | `prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8-V12Q8.yaml` (legacy name) | z-ai/glm-5.3-flash | graphistry/GLM-5.3-Flash-W4AFP8@99f1fa70408c | docker/sglang-glm53-v0523 | tp2x4 | flag set | live |
 | `prod/GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext.yaml` (legacy name) | z-ai/glm-5.3-flash | graphistry/GLM-5.3-Flash-W4AFP8@99f1fa70408c | docker/sglang-glm53-hicache-w4afp8 | tp4x2 | flag set | live |

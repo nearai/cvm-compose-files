@@ -100,7 +100,7 @@ class Tree:
         return self.data(path).decode("utf-8", errors="replace")
 
     def deployables(self):
-        return [p for p in self.paths if re.fullmatch(r"prod/[^/]+\.yaml", p) or p == "cleanup-hf-model.yaml"]
+        return [p for p in self.paths if re.fullmatch(r"prod/[^/]+\.yaml", p)]
 
 
 def is_text(data):

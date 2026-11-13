@@ -19,7 +19,7 @@ build sources and model revisions, except where VERIFYING.md lists a known gap.
 - `.github/` `ci.yaml`, `auto-tag.yaml`, `publish-<docker dir>.yaml` workflows, PR template.
 - `.claude/` area rules (`rules/`), read-only review agents (`agents/`), a deny-only `settings.json`.
 - Legacy, listed in `ci/data/legacy.txt`, shrinking: older deployable and publish workflow names,
-  `scripts/` (old validators, no new files), root `cleanup-hf-model.yaml`, and `adapters/`, kept
+  `scripts/` (old validators, no new files) and `adapters/`, kept
   until no release tag that may be redeployed for rollback still fetches from `main`.
 - No other top-level dirs.
 
