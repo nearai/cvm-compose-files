@@ -26,8 +26,9 @@ Describe the config as it is after the change. Invented examples:
   or when it is fixed. Pass: `docs: describe setting X`. Fail: `rollout of the fix in a later PR`.
 - An upstream commit or public PR may be cited as the source of a patch, described by what it does. Pass:
   `Backport of upstream <sha>: validate input Y.` Fail: a note on its security status.
-- A reply about a weakness cites `<agent>:<check>` and `path:line` only; never quote, restate or ask
-  about it in public. Other review feedback on config may explain. Pass:
+- A reply to a finding that a change would weaken privacy, isolation, pins or verification cites
+  `<agent>:<check>` and `path:line` only; never quote, restate or ask about it in public. Other review
+  feedback on config may explain. Pass:
   `public-reviewer:7 | <path>:12 | state current behaviour`.
 - Do not reword a sentence only to pass CI; remove what it says.
 

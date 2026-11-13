@@ -99,9 +99,9 @@ served-name stability; review checks the rest against the templates.
 ## Comments and docs
 - Comments say why, at most 2 lines in a row. No history, dates, names, hosts, plans, run IDs, PR
   numbers, TODO/FIXME/HACK or commented-out config.
-- Block scalars (`command: |`, embedded config contents) are config bytes: edit only their comment
-  lines, in a `prod:` PR whose rendered diff (`--noop`) shows only comment lines; the PR body notes
-  that the file hash changes.
+- Block scalars (`command: |`, embedded config contents) are config bytes, in legacy files too: edit
+  only comment lines (first non-space character `#`; not a shebang, parser directive or here-document
+  content), in a `prod:` PR whose `--noop` diff shows only those; the PR body notes the hash change.
 - Docs describe what is. No plans, runbooks, rollout or operational-event notes, experiments or live state.
 - Docs never claim more than CI checks. docs/verifying.md lists waivers and limits by design, never a defect.
 
