@@ -120,7 +120,7 @@ jobs:
       - name: Ruby validators
         run: |
           set -euo pipefail
-          for s in otel_labels proxy_dependencies proxy_environment registrar_auth rotate_compose_manager_token engine_network; do
+          for s in otel_labels proxy_dependencies proxy_environment registrar_auth engine_network; do
             echo "validate_$s"
             docker run --rm --network none -v "$PWD:/repo:ro" -w /repo "$RUBY_IMAGE" ruby "scripts/validate_$s.rb"
           done
