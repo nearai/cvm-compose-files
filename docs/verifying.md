@@ -159,7 +159,7 @@ Known gaps, highest impact first:
 
 1. `privacy.no-log-flag`: some vLLM engines set no explicit no-log flag.
 2. `pins.raw-key`, `pins.digest`: some images are built on the host or pinned by tag.
-3. `pins.hf-revision`, `pins.remote-code`: some models load without a pinned revision.
+3. `pins.hf-revision`, `pins.remote-code`: one model loads without a pinned revision.
 4. `layout.ext`, `layout.size`: `adapters/` holds a LoRA adapter that earlier release tags fetch from
    `main`; `HEAD` fetches it at a pinned commit.
 5. `privacy.secret`: some secrets have empty defaults or sit inside embedded configs.
@@ -177,12 +177,13 @@ nothing in this repo binds a host to a file. Deviations CI detects in live files
 | `privacy.secret` | 9 | secret variables with an empty default, or used inside an embedded config |
 | `pins.digest` | 12 | image references with a tag next to the digest, pinned by tag only, or built on the host |
 | `pins.raw-key` | 8 | `build` or `dockerfile_inline` in a deployable (images built on the host, unsigned) |
-| `pins.hf-revision` | 2 | models loaded without a pinned revision |
-| `pins.remote-code` | 2 | remote code enabled for those models |
+| `pins.hf-revision` | 1 | a model loaded without a pinned revision |
+| `pins.remote-code` | 1 | remote code enabled for that model |
 | `layout.ext`, `layout.size` | 1 each | the adapter weights file in `adapters/` |
 | `public.domain` | 6 | an internal telemetry endpoint |
 | `public.host` | 27 | host names in config values, labels or service names |
 | `public.repo` | 2 | references to repositories outside the public allowlist |
+| `status.key-set` | 1 | a candidate with model downloaders its live file does not have |
 
 Gaps that are not exceptions:
 - The logging rules check flags and env only, on services the guards classify as SGLang or vLLM by
