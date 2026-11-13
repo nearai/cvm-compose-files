@@ -61,8 +61,9 @@ Read the rule file for a path before you change files under it; Claude Code also
 - Build inputs of merged build dirs, `adapters/` and existing publish workflows are only ever deleted,
   never edited. Build inputs: the Dockerfile, what it copies, files in `SHA256SUMS` or `SERIES`, files
   a publish workflow names. Other `.md` files there may be edited; the public-text rules scan them.
-- A new image is a new `docker/<dir>/` plus `.github/workflows/publish-<dir>.yaml` in one PR. CI lints
-  a publish workflow only until it merges; its jobs run only in the protected `publish` env, never on PRs.
+- A new image is a new `docker/<dir>/` that follows the build-dir contract in the docker rules, plus
+  `.github/workflows/publish-<dir>.yaml`, in one PR. CI lints a publish workflow only until it merges;
+  its jobs run only in the protected `publish` env, never on PRs.
 - The README status table is generated from the rendered files (`--write-status`); only `status` is
   hand-written. At most one candidate per serving group. A model served by more than one live file
   has one note below the table saying how the files differ.

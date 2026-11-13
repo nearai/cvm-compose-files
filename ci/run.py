@@ -23,6 +23,7 @@ import sys
 sys.path[:0] = [os.path.join(os.path.dirname(os.path.abspath(__file__)), d) for d in ("lib", "checks")]
 
 import claude
+import docker
 import frozen
 import layout
 import nginx
@@ -36,7 +37,7 @@ from common import (
     load_json, render_dir, sha256,
 )
 
-GUARDS = [layout, status, pins, privacy, public, frozen, claude, stack, nginx]
+GUARDS = [layout, status, pins, privacy, public, frozen, claude, stack, nginx, docker]
 RULES = ["run.render", "exceptions.format", "exceptions.unused"]
 ALL_RULES = RULES + [r for g in GUARDS for r in g.RULES]
 ENTRY_KEYS = {"rule", "path", "sha256", "reason", "remove_when"}

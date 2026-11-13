@@ -39,7 +39,7 @@ FIXED = {
     ".github/workflows/ci.yaml", ".github/workflows/auto-tag.yaml",
     "ci/run.py", "ci/lib/common.py",
     "ci/checks/layout.py", "ci/checks/status.py", "ci/checks/pins.py", "ci/checks/privacy.py", "ci/checks/public.py",
-    "ci/checks/frozen.py", "ci/checks/claude.py", "ci/checks/stack.py", "ci/checks/nginx.py",
+    "ci/checks/frozen.py", "ci/checks/claude.py", "ci/checks/docker.py", "ci/checks/stack.py", "ci/checks/nginx.py",
     "ci/data/legacy.txt", "ci/data/images.allow", "ci/data/services.allow.json", "ci/data/public.json",
     "ci/data/exceptions.json", "ci/data/expected.json",
     "ci/config/yamllint.yaml", "ci/config/gitleaks.toml",
