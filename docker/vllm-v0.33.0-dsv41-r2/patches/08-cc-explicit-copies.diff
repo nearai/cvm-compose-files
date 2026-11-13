@@ -1,6 +1,6 @@
 --- /dev/null
 +++ b/vllm/v1/conf_compute_utils.py
-@@ -0,0 +1,476 @@
+@@ -0,0 +1,475 @@
 +# SPDX-License-Identifier: Apache-2.0
 +# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 +"""Keep non-blocking host<->device copies non-blocking under NVIDIA CC.
@@ -112,9 +112,8 @@
 +        return False
 +    enabled = forced == "1"
 +    logger.info(
-+        "NVIDIA Confidential Computing copy paths %s by VLLM_CONFIDENTIAL_COMPUTE=%r",
++        "NVIDIA Confidential Computing copy paths %s by VLLM_CONFIDENTIAL_COMPUTE",
 +        "enabled" if enabled else "disabled",
-+        forced,
 +    )
 +    return enabled
 +
