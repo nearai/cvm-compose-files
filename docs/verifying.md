@@ -120,7 +120,8 @@ workflow's existing signatures stay valid for the images it published.
 | `publish-dsv4-0731.yaml` | `.github/workflows/publish-dsv4-0731.yaml@refs/heads/main` | `nearaidev/sglang` | retired |
 
 `publish-glm53-admission-reserve.yaml` built `sglang-glm53-admission-reserve`,
-`sglang-glm53-hicache-admission-reserve` and `sglang-glm53-hicache-w4afp8`. Each other workflow builds
+`sglang-glm53-hicache-admission-reserve`, `sglang-glm53-hicache-w4afp8` and three earlier dirs whose
+images have no row here. Each other workflow builds
 the one dir its name points to. These names predate the `publish-<build dir>.yaml` rule that new images
 follow. This repo does not record which identity signed each older digest; if a digest in the Digests
 and build dirs table fails every identity in this table, treat it as unsigned.
@@ -131,7 +132,8 @@ Images built from the build dirs in `docker/`. The source commit and build dir c
 BuildKit provenance (step 4); every source commit is on `main`. A short digest in `built FROM` is the
 prefix of another row of this table. A build dir that is no longer in `docker/` at `HEAD` is read at its
 source commit, like every other.
-Rows with tag `-` are base images of other rows; they stay in the registry so the chain can be followed.
+Rows with tag `-` are base images of other rows. If one is removed from the registry, the chain above it
+can no longer be followed.
 
 | digest (`sha256:`) | tag | build dir | source commit | built `FROM` |
 |---|---|---|---|---|
