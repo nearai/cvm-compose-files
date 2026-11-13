@@ -13,7 +13,8 @@
       "service": "model-vllm-dsv41-dp0",
       "items": [
         "ipc:host",
-        "network:host"
+        "network:host",
+        "security_opt:no-new-privileges:true"
       ]
     },
     {
@@ -21,7 +22,8 @@
       "service": "model-vllm-dsv41-dp1",
       "items": [
         "ipc:host",
-        "network:host"
+        "network:host",
+        "security_opt:no-new-privileges:true"
       ]
     },
     {
@@ -29,7 +31,8 @@
       "service": "model-vllm-dsv41-dp2",
       "items": [
         "ipc:host",
-        "network:host"
+        "network:host",
+        "security_opt:no-new-privileges:true"
       ]
     },
     {
@@ -37,7 +40,8 @@
       "service": "model-vllm-dsv41-dp3",
       "items": [
         "ipc:host",
-        "network:host"
+        "network:host",
+        "security_opt:no-new-privileges:true"
       ]
     },
     {
@@ -45,7 +49,8 @@
       "service": "model-vllm-dsv41-dp4",
       "items": [
         "ipc:host",
-        "network:host"
+        "network:host",
+        "security_opt:no-new-privileges:true"
       ]
     },
     {
@@ -53,7 +58,8 @@
       "service": "model-vllm-dsv41-dp5",
       "items": [
         "ipc:host",
-        "network:host"
+        "network:host",
+        "security_opt:no-new-privileges:true"
       ]
     },
     {
@@ -61,7 +67,8 @@
       "service": "model-vllm-dsv41-dp6",
       "items": [
         "ipc:host",
-        "network:host"
+        "network:host",
+        "security_opt:no-new-privileges:true"
       ]
     },
     {
@@ -69,7 +76,8 @@
       "service": "model-vllm-dsv41-dp7",
       "items": [
         "ipc:host",
-        "network:host"
+        "network:host",
+        "security_opt:no-new-privileges:true"
       ]
     },
     {
@@ -149,28 +157,32 @@
       "file": "prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8-V12Q8.yaml",
       "service": "model-sg-glm53-w4afp8-tp2-r1",
       "items": [
-        "ipc:host"
+        "ipc:host",
+        "security_opt:no-new-privileges:true"
       ]
     },
     {
       "file": "prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8-V12Q8.yaml",
       "service": "model-sg-glm53-w4afp8-tp2-r2",
       "items": [
-        "ipc:host"
+        "ipc:host",
+        "security_opt:no-new-privileges:true"
       ]
     },
     {
       "file": "prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8-V12Q8.yaml",
       "service": "model-sg-glm53-w4afp8-tp2-r3",
       "items": [
-        "ipc:host"
+        "ipc:host",
+        "security_opt:no-new-privileges:true"
       ]
     },
     {
       "file": "prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8-V12Q8.yaml",
       "service": "model-sg-glm53-w4afp8-tp2-r4",
       "items": [
-        "ipc:host"
+        "ipc:host",
+        "security_opt:no-new-privileges:true"
       ]
     },
     {
@@ -237,42 +249,48 @@
       "file": "prod/GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext.yaml",
       "service": "model-sg-glm53-w4afp8-tp2-r1a",
       "items": [
-        "ipc:host"
+        "ipc:host",
+        "security_opt:no-new-privileges:true"
       ]
     },
     {
       "file": "prod/GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext.yaml",
       "service": "model-sg-glm53-w4afp8-tp2-r1b",
       "items": [
-        "ipc:host"
+        "ipc:host",
+        "security_opt:no-new-privileges:true"
       ]
     },
     {
       "file": "prod/GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext.yaml",
       "service": "model-sg-glm53-w4afp8-tp2-r2a",
       "items": [
-        "ipc:host"
+        "ipc:host",
+        "security_opt:no-new-privileges:true"
       ]
     },
     {
       "file": "prod/GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext.yaml",
       "service": "model-sg-glm53-w4afp8-tp2-r2b",
       "items": [
-        "ipc:host"
+        "ipc:host",
+        "security_opt:no-new-privileges:true"
       ]
     },
     {
       "file": "prod/GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext.yaml",
       "service": "model-sg-glm53-w4afp8-tp4-r1",
       "items": [
-        "ipc:host"
+        "ipc:host",
+        "security_opt:no-new-privileges:true"
       ]
     },
     {
       "file": "prod/GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext.yaml",
       "service": "model-sg-glm53-w4afp8-tp4-r2",
       "items": [
-        "ipc:host"
+        "ipc:host",
+        "security_opt:no-new-privileges:true"
       ]
     },
     {
@@ -980,6 +998,11 @@
       "name": "GLM53_R2_HICACHE_RAM_BUDGET",
       "egress": false,
       "default_ok": true
+    },
+    {
+      "name": "GLM53_SOAK_TOKEN",
+      "egress": false,
+      "dummy": "ci-placeholder"
     },
     {
       "name": "HF_HUB_OFFLINE",
