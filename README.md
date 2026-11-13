@@ -40,8 +40,8 @@ Legacy paths are listed in `ci/data/legacy.txt` and only shrink.
 
 | name | form | example |
 |---|---|---|
-| serving file | `prod/<checkpoint>-<engine>-<topology>[-<tier>].yaml` | `prod/glm-5.3-flash-sglang-tp2x4.yaml` |
-| other deployable | `prod/pack-<purpose>.yaml`, `prod/util-<verb>-<object>.yaml` | `prod/util-rotate-token.yaml` |
+| serving file | `prod/<checkpoint>-<engine>-<topology>[-<tier>].yaml` | `prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8-V12Q8.yaml` |
+| other deployable | `prod/pack-<purpose>.yaml`, `prod/util-<verb>-<object>.yaml` | `prod/rotate-compose-manager-token.yaml` |
 | build dir | `docker/<engine>-v<upstream>-<scope>-r<N>/` | `docker/sglang-v0.5.23-glm53-r1/` |
 | image tag | build dir without `<engine>-` | `v0.5.23-glm53-r1` |
 | publish workflow | `.github/workflows/publish-<build dir>.yaml` | `publish-sglang-v0.5.23-glm53-r1.yaml` |
@@ -64,11 +64,10 @@ file-name grammar in `.claude/rules/prod.md`. `privacy`: `flag set` (explicit no
 <!-- status:begin -->
 | file | serves | model@revision | engine image | topology | privacy | status |
 |---|---|---|---|---|---|---|
-| `prod/deepseek-4.1-flash-1017-vllm-dep8.yaml` | deepseek-ai/DeepSeek-V4.1-Flash-1017 | deepseek-ai/DeepSeek-V4.1-Flash-1017@1bae0e108899 | docker/vllm-dsv41-v033 | dep8 | waived | live |
-| `prod/glm-5.3-flash-sglang-tp2x4.yaml` | z-ai/glm-5.3-flash | graphistry/GLM-5.3-Flash-W4AFP8@99f1fa70408c | docker/sglang-glm53-v0523 | tp2x4 | flag set | live |
-| `prod/glm-5.3-flash-sglang-tp4x2-long.yaml` | z-ai/glm-5.3-flash | graphistry/GLM-5.3-Flash-W4AFP8@99f1fa70408c | docker/sglang-glm53-hicache-w4afp8 | tp4x2 | flag set | live |
-| `prod/glm-5.3-flash-sglang-tp4x2-long.yaml` | z-ai/glm-5.3-flash | graphistry/GLM-5.3-Flash-W4AFP8@99f1fa70408c | docker/sglang-glm53-v0523 | tp2x4 | flag set | live |
-| `prod/pack-sage.yaml` | - | - | - | - | n.a. | live |
+| `prod/DeepSeek-V4.1-Flash-1017-vLLM-DEP8-Abliterated.yaml` (legacy name) | deepseek-ai/DeepSeek-V4.1-Flash-1017 | deepseek-ai/DeepSeek-V4.1-Flash-1017@1bae0e108899 | docker/vllm-dsv41-v033 | dep8 | waived | live |
+| `prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8-V12Q8.yaml` (legacy name) | z-ai/glm-5.3-flash | graphistry/GLM-5.3-Flash-W4AFP8@99f1fa70408c | docker/sglang-glm53-v0523 | tp2x4 | flag set | live |
+| `prod/GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext.yaml` (legacy name) | z-ai/glm-5.3-flash | graphistry/GLM-5.3-Flash-W4AFP8@99f1fa70408c | docker/sglang-glm53-hicache-w4afp8 | tp4x2 | flag set | live |
+| `prod/GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext.yaml` (legacy name) | z-ai/glm-5.3-flash | graphistry/GLM-5.3-Flash-W4AFP8@99f1fa70408c | docker/sglang-glm53-v0523 | tp2x4 | flag set | live |
 | `prod/pack-small-models.yaml` | Qwen/Qwen3-Embedding-0.6B | Qwen/Qwen3-Embedding-0.6B@97b0c614be4d | third-party vllm/vllm-openai | tp1 | flag set | candidate |
 | `prod/pack-small-models.yaml` | Qwen/Qwen3-Reranker-0.6B | Qwen/Qwen3-Reranker-0.6B@e61197ed4502 | third-party vllm/vllm-openai | tp1 | flag set | candidate |
 | `prod/pack-small-models.yaml` | Qwen/Qwen3-VL-30B-A3B-Instruct | Qwen/Qwen3-VL-30B-A3B-Instruct-FP8@d9748a51ae66 | third-party vllm/vllm-openai | tp1 | flag set | candidate |
@@ -77,7 +76,10 @@ file-name grammar in `.claude/rules/prod.md`. `privacy`: `flag set` (explicit no
 | `prod/pack-small-models.yaml` | black-forest-labs/FLUX.2-klein-4B | black-forest-labs/FLUX.2-klein-4B@- | docker/sglang-v0523-secure | tp1 | flag set | candidate |
 | `prod/pack-small-models.yaml` | openai/whisper-large-v3 | openai/whisper-large-v3@06f233fe06e7 | built on host | tp1 | flag set | candidate |
 | `prod/pack-small-models.yaml` | z-ai/glm-5.3-flash | graphistry/GLM-5.3-Flash-W4AFP8@99f1fa70408c | docker/sglang-glm53-v0523 | tp2x2 | flag set | candidate |
-| `prod/qwen3.8-27b-sglang-tp1.yaml` | Qwen/Qwen3.8-27B | Qwen/Qwen3.8-27B-FP8@017b9c7af6b5 | third-party lmsysorg/sglang | tp1 | flag set | live |
+| `prod/qwen38-27b-abliterated-cc-1gpu.yaml` (legacy name) | Qwen/Qwen3.8-27B | Qwen/Qwen3.8-27B-FP8@017b9c7af6b5 | third-party lmsysorg/sglang | tp1 | flag set | live |
+| `prod/rotate-compose-manager-token.yaml` (legacy name) | - | - | - | - | n.a. | live |
+| `prod/sage-pull.yaml` (legacy name) | - | - | - | - | n.a. | live |
+| `prod/sage.yaml` (legacy name) | - | - | - | - | n.a. | live |
 | `prod/small-models.yaml` (legacy name) | Qwen/Qwen3-Embedding-0.6B | Qwen/Qwen3-Embedding-0.6B@97b0c614be4d | third-party vllm/vllm-openai | tp1 | waived | live |
 | `prod/small-models.yaml` (legacy name) | Qwen/Qwen3-Reranker-0.6B | Qwen/Qwen3-Reranker-0.6B@e61197ed4502 | third-party vllm/vllm-openai | tp1 | waived | live |
 | `prod/small-models.yaml` (legacy name) | Qwen/Qwen3-VL-30B-A3B-Instruct | Qwen/Qwen3-VL-30B-A3B-Instruct-FP8@d9748a51ae66 | third-party vllm/vllm-openai | tp1 | waived | live |
@@ -86,8 +88,6 @@ file-name grammar in `.claude/rules/prod.md`. `privacy`: `flag set` (explicit no
 | `prod/small-models.yaml` (legacy name) | black-forest-labs/FLUX.2-klein-4B | black-forest-labs/FLUX.2-klein-4B@- | docker/sglang-v0523-secure | tp1 | flag set | live |
 | `prod/small-models.yaml` (legacy name) | openai/whisper-large-v3 | openai/whisper-large-v3@06f233fe06e7 | built on host | tp1 | waived | live |
 | `prod/small-models.yaml` (legacy name) | z-ai/glm-5.3-flash | graphistry/GLM-5.3-Flash-W4AFP8@99f1fa70408c | docker/sglang-glm53-v0523 | tp2x2 | flag set | live |
-| `prod/util-pull-sage.yaml` | - | - | - | - | n.a. | live |
-| `prod/util-rotate-token.yaml` | - | - | - | - | n.a. | live |
 <!-- status:end -->
 
 `live` runs in production. Files that run nowhere are deleted; older versions stay reachable through

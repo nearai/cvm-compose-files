@@ -190,7 +190,7 @@ Gaps that are not exceptions:
   deleted with the last build dir it publishes.
 - Some pinned images are neither standard upstream images nor built here: `nearaidev/vllm-proxy-rs`
   and `nearaidev/compose-manager-launcher` are built outside this repo, and the image of
-  `prod/pack-sage.yaml` and `prod/util-pull-sage.yaml` comes from a vendor. This repo has no build record or
+  `prod/sage.yaml` and `prod/sage-pull.yaml` comes from a vendor. This repo has no build record or
   signing identity for them; only their digests are pinned. The Whisper engine in
   `prod/small-models.yaml` and `prod/pack-small-models.yaml` is built on the host (`pins.raw-key`) and
   has no digest at all.
