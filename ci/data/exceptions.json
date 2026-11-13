@@ -57,13 +57,6 @@
   },
   {
     "rule": "pins.digest",
-    "path": "prod/rotate-compose-manager-token.yaml",
-    "sha256": "f3a747fd9f31c7f7e7c0d4deff2ce85561bf0756eebf0fd73b2e06fb1c611294",
-    "reason": "image carries a tag next to its digest; the digest decides what runs",
-    "remove_when": "next functional change of this file"
-  },
-  {
-    "rule": "pins.digest",
     "path": "prod/small-models.yaml",
     "sha256": "9dcd945c608f77ac55d0026d57d2e617d98b911b4a54e7f9ad4cce9c83a87d43",
     "reason": "image carries a tag next to its digest; the digest decides what runs",
@@ -578,6 +571,6 @@
     "path": "prod/pack-small-models.yaml",
     "sha256": "e67bf1fe5f5dceecba68fe6a4e61026f5e5a6c1e503f1ef9cd5b54b5482d3480",
     "reason": "secret has an empty default, so the service starts without it",
-    "remove_when": "the collector env contract in scripts/validate_otel_labels.rb no longer requires the soft default"
+    "remove_when": "the collector env contract in ci/checks/stack.py no longer requires the soft default"
   }
 ]

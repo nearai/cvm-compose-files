@@ -27,5 +27,6 @@ docker/<engine>-v<upstream>-<scope>-r<N>/
   build never reads stays editable for the life of the dir.
 - No lab results, benchmarks, dates, hosts, experiment ids or incident notes in any file of the dir.
 - The image's own digest is recorded in `ci/data/images.allow` and `docs/verifying.md`, never in the dir.
-- A dir leaves `docker/` once nothing at `HEAD` pins its image. Verifiers read it at the source commit.
+- A dir may leave `docker/` while its images are still pinned: verifiers read it at the source commit
+  recorded in the image's provenance, and its rows in docs/verifying.md stay.
 

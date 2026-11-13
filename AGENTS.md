@@ -15,7 +15,7 @@ build sources and model revisions, except where docs/verifying.md lists a known 
 - `docker/<dir>/` build context of one published image. Its build inputs never change once merged.
 - `ci/` the gate: `run.py`, `lib/`, `checks/` (one guard each), `config/` (tool configs), `templates/`;
   and `ci/data/`, data files that ride along with the changes they record. No other subdirs.
-- `docs/` docs for outside readers, such as `docs/verifying.md`. Runbooks live in the private ops repo.
+- `docs/` docs for outside readers, such as `docs/verifying.md`. No runbooks.
 - `.github/` `ci.yaml`, `auto-tag.yaml`, `publish-<docker dir>.yaml` workflows, PR template.
 - `.claude/` area rules (`rules/`), read-only review agents (`agents/`), a deny-only `settings.json`.
 - Legacy, listed in `ci/data/legacy.txt`, shrinking: older publish workflow names and `adapters/`,
@@ -34,7 +34,7 @@ Read the rule file for a path before you change files under it; Claude Code also
 ## Commands
 `ci/run.py` renders with the pinned compose image in `ci/lib/common.py`, as CI does; never local compose.
 - All guards: `python3 ci/run.py --base origin/main`. Self-tests: `python3 ci/run.py --self-test`.
-- `nginx -t` on every nginx config, in its pinned image (needs Docker): `python3 ci/run.py --nginx-test`.
+- `nginx -t` on every embedded nginx `default.conf`, in its pinned image (needs Docker): `python3 ci/run.py --nginx-test`.
 - Findings on the real tree are pinned in `ci/data/expected.json`; update it with `--write-expected`.
 - Render one file: `--render prod/<f>.yaml`. Rendered diff against a base, renames paired:
   `--noop origin/main` (empty for a no-op); CI posts it in the guards job summary.
@@ -97,14 +97,14 @@ review checks the rest against the templates.
 Everything here is public and copied by others: files, branches, tags, PRs, reviews, issues, CI logs.
 - Never write: secrets (also expired or test ones); hostnames, IPs, internal domains or URLs, dashboards,
   account IDs; people, partners, customers; incidents, experiments, benchmarks, rollout state, plans;
-  private repo names or links; deploy-time values. This includes `ci/` data files. If internal context
-  matters, say "see the private ops repo" without naming it.
+  private repo names or links; deploy-time values. This includes `ci/` data files. Leave internal
+  context out; it is never needed to review a change here.
 - Secrets arrive only as deploy-time env: `${NAME}` or `${NAME:?msg}`, never a literal or a default.
   Secret variable names end in `_TOKEN`, `_KEY`, `_SECRET`, `_PASSWORD` or `_CREDENTIALS`. They appear
   only under `environment:` of the service that needs them.
 - Workflows that hold secrets never run PR code. `ci.yaml` has read-only permissions and no secrets.
 - `.claude/settings.json` denies secret reads, outward actions (`gh` reviews, merges, comments, issues,
-  gists and API calls; `curl`, `wget`, WebFetch) and history rewrites. CI requires every entry. The list
+  gists and API calls; `curl`, `wget`, WebFetch) force pushes and tag deletion. CI requires every entry. The list
   is a guardrail, not a boundary; branch and tag protection is enforced by GitHub rulesets.
 - If something sensitive was pushed: do not force-push or explain it publicly; rotate secrets first;
   tell maintainers privately; remove it in a neutral PR. Vulnerabilities: see .github/SECURITY.md.

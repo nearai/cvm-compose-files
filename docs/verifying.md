@@ -152,16 +152,15 @@ at earlier release tags or are bases of another image.
 
 ## Known gaps
 
-Order in which the gaps below are to be closed, highest impact first:
+Known gaps, highest impact first:
 
-1. `privacy.no-log-flag`: set the explicit no-log flag on every vLLM engine.
-2. `pins.raw-key`, `pins.digest`: replace images built on the host or pinned by tag with images built
-   here and pinned by digest.
-3. `pins.hf-revision`, `pins.remote-code`: pin the model revision.
-4. `layout.ext`, `layout.size`: delete `adapters/` once no release tag that may be redeployed fetches
-   the LoRA adapter from `main`; `HEAD` fetches it at a pinned commit.
-5. `privacy.secret`: no empty defaults, no secrets inside embedded configs.
-6. `public.*`: move internal names out of config values, labels and workflows.
+1. `privacy.no-log-flag`: some vLLM engines set no explicit no-log flag.
+2. `pins.raw-key`, `pins.digest`: some images are built on the host or pinned by tag.
+3. `pins.hf-revision`, `pins.remote-code`: some models load without a pinned revision.
+4. `layout.ext`, `layout.size`: `adapters/` holds a LoRA adapter that earlier release tags fetch from
+   `main`; `HEAD` fetches it at a pinned commit.
+5. `privacy.secret`: some secrets have empty defaults or sit inside embedded configs.
+6. `public.*`: some config values, labels and workflows hold internal names.
 
 CI checks compose files, build contexts, workflows and repo text. It does not check image contents, and
 nothing in this repo binds a host to a file. Deviations CI detects in live files are entries in
@@ -171,7 +170,7 @@ nothing in this repo binds a host to a file. Deviations CI detects in live files
 |---|---|---|
 | `privacy.no-log-flag` | 12 | vLLM engines that set no request-logging flag and rely on the engine default |
 | `privacy.secret` | 9 | secret variables with an empty default, or used inside an embedded config |
-| `pins.digest` | 13 | image references with a tag next to the digest, pinned by tag only, or built on the host |
+| `pins.digest` | 12 | image references with a tag next to the digest, pinned by tag only, or built on the host |
 | `pins.raw-key` | 8 | `build` or `dockerfile_inline` in a deployable (images built on the host, unsigned) |
 | `pins.hf-revision` | 2 | models loaded without a pinned revision |
 | `pins.remote-code` | 2 | remote code enabled for those models |
@@ -194,8 +193,8 @@ Gaps that are not exceptions:
   signing identity for them; only their digests are pinned. The Whisper engine in
   `prod/small-models.yaml` and `prod/pack-small-models.yaml` is built on the host (`pins.raw-key`) and
   has no digest at all.
-- Two vLLM publish workflows skip the provenance attestation when resuming from an already pushed digest;
-  such an image has a signature only.
+- `publish-vllm-dsv41-v033.yaml` skips the provenance attestation when it resumes from an already
+  pushed digest; such an image has a signature only.
 - Repository settings applied at merge: a `v*` tag ruleset blocks moving and deleting tags, but
   maintainers can create tags, so check that a tag's commit is on `main` (step 1).
 - Build inputs of build dirs that existed before the CI guards are frozen, not scanned by the
