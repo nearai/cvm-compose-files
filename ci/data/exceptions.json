@@ -476,20 +476,6 @@
     "remove_when": "the image is built from a build dir and pinned by digest"
   },
   {
-    "rule": "pins.hf-revision",
-    "path": "prod/pack-small-models.yaml",
-    "sha256": "de63e2d3f0ade1b53d66e1d6cce9e377203130a65985ad92a1d21859548fcb13",
-    "reason": "model referenced by name without a revision pin",
-    "remove_when": "the model revision is pinned"
-  },
-  {
-    "rule": "pins.remote-code",
-    "path": "prod/pack-small-models.yaml",
-    "sha256": "de63e2d3f0ade1b53d66e1d6cce9e377203130a65985ad92a1d21859548fcb13",
-    "reason": "model referenced by name without a revision pin",
-    "remove_when": "the model revision is pinned"
-  },
-  {
     "rule": "pins.raw-key",
     "path": "prod/pack-small-models.yaml",
     "sha256": "43230bf33499a3c292df6a0a5b309833a206f8333d5feb1d9d7612c3e1b6eb97",
@@ -572,5 +558,12 @@
     "sha256": "e67bf1fe5f5dceecba68fe6a4e61026f5e5a6c1e503f1ef9cd5b54b5482d3480",
     "reason": "secret variable without a required-value check",
     "remove_when": "the secret has a required-value check"
+  },
+  {
+    "rule": "status.key-set",
+    "path": "prod/pack-small-models.yaml",
+    "sha256": "fcd1551dfa9984cca41fe57171fd323dc6571c5cc6bca22d33544337b0c7ff5d",
+    "reason": "candidate whose service set differs from its live file",
+    "remove_when": "the candidate replaces its live file"
   }
 ]

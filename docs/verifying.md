@@ -172,9 +172,10 @@ file and the matched value. Counts per rule:
 | `privacy.secret` | 9 | secret variables without a required-value check, or used inside an embedded config |
 | `pins.digest` | 12 | image references pinned by tag, or defined inline |
 | `pins.raw-key` | 8 | images defined inline in a deployable |
-| `pins.hf-revision` | 2 | models referenced by name without a revision pin |
-| `pins.remote-code` | 2 | the remote-code setting on those models |
+| `pins.hf-revision` | 1 | a model referenced by name without a revision pin |
+| `pins.remote-code` | 1 | the remote-code setting on that model |
 | `layout.ext`, `layout.size` | 1 each | the adapter weights file in `adapters/` |
 | `public.domain` | 6 | domain names outside the public allowlist |
 | `public.host` | 27 | host names in config values, labels or service names |
 | `public.repo` | 2 | repository references outside the public allowlist |
+| `status.key-set` | 1 | a candidate whose services differ from its live file |
