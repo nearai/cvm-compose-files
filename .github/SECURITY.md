@@ -12,16 +12,16 @@ In scope:
   pull an unpinned image or model, widen host access, or expose a secret.
 - Image build contexts in `docker/` and the workflows that publish and sign images, including any way
   to publish or sign an image from a branch other than `main`.
-- The verification path in VERIFYING.md: any way to make a published image, signature or
+- The verification path in docs/verifying.md: any way to make a published image, signature or
   attestation look valid when it should not.
 - Secrets or private data committed anywhere in this repository or its history.
 
-Items listed under "Known gaps" in VERIFYING.md are already known; reports that show a gap is wider
+Items listed under "Known gaps" in docs/verifying.md are already known; reports that show a gap is wider
 than described are in scope.
 
 Out of scope (report to the project concerned):
 - Bugs in upstream inference engines, base images or models.
 - Denial of service or load testing against live endpoints.
-- Findings that need control of the deploying host beyond what the trust model in README.md assumes.
+- Findings that need control of the deploying host beyond what the trust model in the README assumes.
 
 Please give us reasonable time to fix an issue before you disclose it.

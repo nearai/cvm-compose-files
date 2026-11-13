@@ -72,7 +72,7 @@ class Tree:
     """Files of one revision. rev None = the working tree (tracked files)."""
 
     def __init__(self, rev=None, files=None):
-        self.rev, self._cache = rev, {}
+        self.rev, self._cache, self.fixture = rev, {}, files is not None
         if files is not None:
             self._cache = {p: (c.encode() if isinstance(c, str) else c) for p, c in files.items()}
             self.paths = sorted(self._cache)
@@ -100,7 +100,7 @@ class Tree:
         return self.data(path).decode("utf-8", errors="replace")
 
     def deployables(self):
-        return [p for p in self.paths if re.fullmatch(r"prod/[^/]+\.yaml", p) or p == "cleanup-hf-model.yaml"]
+        return [p for p in self.paths if re.fullmatch(r"prod/[^/]+\.yaml", p)]
 
 
 def is_text(data):
@@ -119,8 +119,11 @@ def env_lines(services_allow):
     return "".join(f"{e['name']}={e.get('dummy', 'ci-placeholder')}\n" for e in services_allow.get("env", []))
 
 
-def render_dir(directory, path, env_text):
-    """Render one compose file with the pinned renderer; returns parsed JSON."""
+def render_dir(directory, path, env_text, interpolate=True):
+    """Render one compose file with the pinned renderer; returns parsed JSON.
+
+    interpolate=False keeps `${NAME:-default}` and `$$` as written, with anchors resolved.
+    """
     with tempfile.TemporaryDirectory() as tmp:
         with open(os.path.join(tmp, "ci.env"), "w") as f:
             f.write(env_text)
@@ -130,6 +133,8 @@ def render_dir(directory, path, env_text):
             COMPOSE_IMAGE, "docker", "compose", "-p", "ci", "--profile", "*",
             "--env-file", "/ci-env/ci.env", "-f", path, "config", "--format", "json",
         ]
+        if not interpolate:
+            cmd.insert(cmd.index("config") + 1, "--no-interpolate")
         r = subprocess.run(cmd, capture_output=True)
     if r.returncode != 0:
         raise RenderError(path, r.stderr.decode(errors="replace").strip().splitlines()[-1:] or ["render failed"])
@@ -145,8 +150,9 @@ class RenderError(Exception):
 class Renderer:
     """Renders deployables of a Tree; base trees are exported to a temp dir."""
 
-    def __init__(self, tree, services_allow):
+    def __init__(self, tree, services_allow, interpolate=True):
         self.tree, self.env, self._cache, self._dir = tree, env_lines(services_allow), {}, None
+        self.interpolate = interpolate
 
     def directory(self):
         if self._dir is None:
@@ -161,7 +167,7 @@ class Renderer:
 
     def __call__(self, path):
         if path not in self._cache:
-            self._cache[path] = render_dir(self.directory(), path, self.env)
+            self._cache[path] = render_dir(self.directory(), path, self.env, self.interpolate)
         return self._cache[path]
 
 
@@ -620,3 +626,13 @@ def served_names(kind, tokens):
         return names
     m = model_ref(kind, tokens)
     return [m] if m else []
+
+
+def git_history(commit, d, on="HEAD"):
+    """True when commit is an ancestor of `on` (the base: main) and has docker/<d>/Dockerfile."""
+    for args in (["merge-base", "--is-ancestor", commit, on], ["cat-file", "-e", f"{commit}:docker/{d}/Dockerfile"]):
+        r = subprocess.run(["git", "-C", ROOT] + args, capture_output=True)
+        if r.returncode != 0:
+            return False
+    return True
+

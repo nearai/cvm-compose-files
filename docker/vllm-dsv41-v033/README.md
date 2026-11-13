@@ -1,6 +1,6 @@
 # vLLM v0.33.0 for DeepSeek-V4.1-Flash-1017 with a LoRA adapter
 
-The base is `vllm/vllm-openai:v0.33.0` (upstream tag `4ba787ec9`), pinned by digest in the Dockerfile. Patches 01-06 are ported from `docker/vllm-dsv41-lora/` (v0.32.0); patch 07 is new. `PROVENANCE` lists each patch with its sha256.
+The base is `vllm/vllm-openai:v0.33.0` (upstream tag `4ba787ec9`), pinned by digest in the Dockerfile. Patches 01-06 are ported from the earlier v0.32.0 build dir `docker/vllm-dsv41-lora/`, which earlier release tags still contain; patch 07 is new. `PROVENANCE` lists each patch with its sha256.
 
 | patch | what | against v0.33.0 |
 |---|---|---|

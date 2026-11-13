@@ -42,10 +42,11 @@ OUTWARD_DENY = {
     "Bash(gh pr review*)", "Bash(gh pr merge*)", "Bash(gh pr comment*)", "Bash(gh issue*)", "Bash(gh gist*)",
     "Bash(gh api*)", "Bash(curl*)", "Bash(wget*)", "WebFetch",
 }
+# No `git push :<ref>` entry: a trailing `:*` is Claude Code prefix syntax and would deny every push.
 HISTORY_DENY = {
     "Bash(git push --force*)", "Bash(git push * --force*)", "Bash(git push -f*)", "Bash(git push * -f*)",
     "Bash(git push +*)", "Bash(git push * +*)", "Bash(git push --delete*)", "Bash(git push * --delete*)",
-    "Bash(git push :*)", "Bash(git push * :*)", "Bash(git -C * push*)", "Bash(git -c * push*)",
+    "Bash(git -C * push*)", "Bash(git -c * push*)",
     "Bash(git tag -d*)", "Bash(git tag * -d*)", "Bash(git tag -f*)", "Bash(git tag * -f*)",
     "Bash(git tag --delete*)", "Bash(git tag --force*)",
 }

@@ -19,14 +19,12 @@ attestation are the proof.
   host. CI enforces it only through the flags and env of services it classifies as SGLang or vLLM (by
   service key, image name, command or `role: engine`), `aux` services included. It does not cover
   services on other images (nginx, the collector, GPU exporters, downloaders, registrars, `sage`,
-  `model-privacy-filter`), and it cannot see what any image logs by default. The SGLang images built
-  here also carry log-redaction patches, which CI does not check:
-  [14-admin-auth-redaction](docker/sglang-v0523-secure/patches/14-admin-auth-redaction.diff),
-  [15-customer-data-log-redaction](docker/sglang-v0523-secure/patches/15-customer-data-log-redaction.diff),
-  [26-log-format-followup](docker/sglang-v0523-secure/patches/26-log-format-followup.diff) (same files in
-  `sglang-glm53-v0523`), and in `sglang-glm53-hicache-w4afp8`
-  [admin-auth-redaction](docker/sglang-glm53-hicache-w4afp8/admin-auth-redaction.diff) and
-  [log-format](docker/sglang-glm53-hicache-w4afp8/log-format.diff).
+  `model-privacy-filter`), and it cannot see what any image logs by default. The published
+  `sglang-v0523-secure` and `sglang-glm53-v0523` images also carry log-redaction patches, which CI does
+  not check: [14-admin-auth-redaction](../docker/sglang-v0523-secure/patches/14-admin-auth-redaction.diff)
+  and [15-customer-data-log-redaction](../docker/sglang-v0523-secure/patches/15-customer-data-log-redaction.diff).
+  Patch 26 in those dirs and the redaction patches of the former `sglang-glm53-hicache-w4afp8` dir are
+  not in any published image; the `SERIES` or Dockerfile at an image's source commit records what it contains.
 
 Start from the deployment record: a release tag `v0.0.N`, a file path and the file's SHA-256. Always
 verify by digest. Image tags on the registry can be moved; digests cannot.
@@ -111,18 +109,19 @@ workflow's existing signatures stay valid for the images it published.
 
 | workflow | identity (prefix `https://github.com/nearai/cvm-compose-files/`) | images | state |
 |---|---|---|---|
-| `publish-glm53-admission-reserve.yaml` | `.github/workflows/publish-glm53-admission-reserve.yaml@refs/heads/main` | `nearaidev/sglang` | active |
-| `publish-glm53-fc91d24.yaml` | `.github/workflows/publish-glm53-fc91d24.yaml@refs/heads/main` | `nearaidev/sglang` | active |
-| `publish-glm53-hicache.yaml` | `.github/workflows/publish-glm53-hicache.yaml@refs/heads/main` | `nearaidev/sglang` | active |
 | `publish-glm53-v0523.yaml` | `.github/workflows/publish-glm53-v0523.yaml@refs/heads/main` | `nearaidev/sglang` | active |
 | `publish-sglang-v0523-secure.yaml` | `.github/workflows/publish-sglang-v0523-secure.yaml@refs/heads/main` | `nearaidev/sglang` | active |
-| `publish-vllm-dsv41-lora.yaml` | `.github/workflows/publish-vllm-dsv41-lora.yaml@refs/heads/main` | `nearaidev/vllm` | active |
 | `publish-vllm-dsv41-v033.yaml` | `.github/workflows/publish-vllm-dsv41-v033.yaml@refs/heads/main` | `nearaidev/vllm` | active |
+| `publish-glm53-admission-reserve.yaml` | `.github/workflows/publish-glm53-admission-reserve.yaml@refs/heads/main` | `nearaidev/sglang` | retired |
+| `publish-glm53-fc91d24.yaml` | `.github/workflows/publish-glm53-fc91d24.yaml@refs/heads/main` | `nearaidev/sglang` | retired |
+| `publish-glm53-hicache.yaml` | `.github/workflows/publish-glm53-hicache.yaml@refs/heads/main` | `nearaidev/sglang` | retired |
+| `publish-vllm-dsv41-lora.yaml` | `.github/workflows/publish-vllm-dsv41-lora.yaml@refs/heads/main` | `nearaidev/vllm` | retired |
 | `publish-glm53-v0519.yaml` | `.github/workflows/publish-glm53-v0519.yaml@refs/heads/main` | `nearaidev/sglang` | retired |
 | `publish-dsv4-0731.yaml` | `.github/workflows/publish-dsv4-0731.yaml@refs/heads/main` | `nearaidev/sglang` | retired |
 
-`publish-glm53-admission-reserve.yaml` builds `sglang-glm53-admission-reserve`,
-`sglang-glm53-hicache-admission-reserve` and `sglang-glm53-hicache-w4afp8`. Each other workflow builds
+`publish-glm53-admission-reserve.yaml` built `sglang-glm53-admission-reserve`,
+`sglang-glm53-hicache-admission-reserve`, `sglang-glm53-hicache-w4afp8` and three earlier dirs whose
+images have no row here. Each other workflow builds
 the one dir its name points to. These names predate the `publish-<build dir>.yaml` rule that new images
 follow. This repo does not record which identity signed each older digest; if a digest in the Digests
 and build dirs table fails every identity in this table, treat it as unsigned.
@@ -131,7 +130,10 @@ and build dirs table fails every identity in this table, treat it as unsigned.
 
 Images built from the build dirs in `docker/`. The source commit and build dir come from each image's
 BuildKit provenance (step 4); every source commit is on `main`. A short digest in `built FROM` is the
-prefix of another row of this table.
+prefix of another row of this table. A build dir that is no longer in `docker/` at `HEAD` is read at its
+source commit, like every other.
+Rows with tag `-` are base images of other rows. If one is removed from the registry, the chain above it
+can no longer be followed.
 
 | digest (`sha256:`) | tag | build dir | source commit | built `FROM` |
 |---|---|---|---|---|
@@ -153,16 +155,17 @@ at earlier release tags or are bases of another image.
 
 ## Known gaps
 
-Order in which the gaps below are to be closed, highest impact first:
+Known gaps, highest impact first:
 
-1. `privacy.no-log-flag`: set the explicit no-log flag on every vLLM engine.
-2. `pins.raw-key`, `pins.digest`: replace images built on the host or pinned by tag with images built
-   here and pinned by digest.
-3. `pins.hf-revision`, `pins.remote-code`: pin the model revision.
-4. `pins.url`, `layout.ext`, `layout.size`: fetch the LoRA adapter at a pinned revision, then delete
-   `adapters/`.
-5. `privacy.secret`: no empty defaults, no secrets inside embedded configs.
-6. `public.*`: move internal names out of config values, labels and workflows.
+1. `privacy.no-log-flag`: some vLLM engines set no explicit no-log flag.
+2. `pins.raw-key`, `pins.digest`: some images are built on the host or pinned by tag.
+3. `pins.hf-revision`, `pins.remote-code`: some models load without a pinned revision.
+4. `layout.ext`, `layout.size`: `adapters/` holds a LoRA adapter that earlier release tags fetch from
+   `main`; `HEAD` fetches it at a pinned commit.
+5. `privacy.secret`: some secrets have empty defaults or sit inside embedded configs.
+6. `public.*`: some config values, labels and workflows hold internal names.
+7. The GPU a Sage service runs on is the deploy-time value `SAGE_GPU_UUID`, so the deployment record
+   does not show it. The file fails to start without it.
 
 CI checks compose files, build contexts, workflows and repo text. It does not check image contents, and
 nothing in this repo binds a host to a file. Deviations CI detects in live files are entries in
@@ -171,17 +174,15 @@ nothing in this repo binds a host to a file. Deviations CI detects in live files
 | rule | entries | what it waives |
 |---|---|---|
 | `privacy.no-log-flag` | 12 | vLLM engines that set no request-logging flag and rely on the engine default |
-| `privacy.secret` | 8 | secret variables with an empty default, or used inside an embedded config |
+| `privacy.secret` | 9 | secret variables with an empty default, or used inside an embedded config |
 | `pins.digest` | 12 | image references with a tag next to the digest, pinned by tag only, or built on the host |
-| `pins.raw-key` | 4 | `build` or `dockerfile_inline` in a deployable (images built on the host, unsigned) |
-| `pins.hf-revision` | 1 | a model loaded without a pinned revision |
-| `pins.remote-code` | 1 | remote code enabled for that model |
-| `pins.url` | 2 | a LoRA adapter fetched from this repo's `main` branch; SHA-256-checked, fails closed |
+| `pins.raw-key` | 8 | `build` or `dockerfile_inline` in a deployable (images built on the host, unsigned) |
+| `pins.hf-revision` | 2 | models loaded without a pinned revision |
+| `pins.remote-code` | 2 | remote code enabled for those models |
 | `layout.ext`, `layout.size` | 1 each | the adapter weights file in `adapters/` |
-| `public.domain` | 5 | an internal telemetry endpoint |
-| `public.host` | 8 | host names in config values, labels or service names |
-| `public.repo` | 3 | references to repositories outside the public allowlist |
-| `public.runner` | 4 | publish workflows on a self-hosted runner |
+| `public.domain` | 6 | an internal telemetry endpoint |
+| `public.host` | 27 | host names in config values, labels or service names |
+| `public.repo` | 2 | references to repositories outside the public allowlist |
 
 Gaps that are not exceptions:
 - The logging rules check flags and env only, on services the guards classify as SGLang or vLLM by
@@ -189,16 +190,20 @@ Gaps that are not exceptions:
   flag; other services on those images, such as every `role: aux` entry in
   `ci/data/services.allow.json`, are checked for flags and env that enable logging.
 - actionlint and zizmor check a publish workflow only until it merges. Publish workflows that exist
-  at the base commit are frozen and not linted, so findings in them stay. All seven current ones have
-  known findings: a self-hosted runner label, shellcheck info and style notes, and zizmor
-  `artipacked` (checkout without `persist-credentials: false`).
+  at the base commit are frozen and not linted, so any findings in them stay until the workflow is
+  deleted with the last build dir it publishes. The three current ones check out the repository
+  without `persist-credentials: false` (zizmor `artipacked`).
 - Some pinned images are neither standard upstream images nor built here: `nearaidev/vllm-proxy-rs`
   and `nearaidev/compose-manager-launcher` are built outside this repo, and the image of
   `prod/sage.yaml` and `prod/sage-pull.yaml` comes from a vendor. This repo has no build record or
   signing identity for them; only their digests are pinned. The Whisper engine in
-  `prod/small-models.yaml` is built on the host (`pins.raw-key`) and has no digest at all.
-- Two vLLM publish workflows skip the provenance attestation when resuming from an already pushed digest;
-  such an image has a signature only.
+  `prod/small-models.yaml` and `prod/pack-small-models.yaml` is built on the host (`pins.raw-key`) and
+  has no digest at all.
+- The nginx checks read `location` blocks and explicit `proxy_pass`, `rewrite` and `return` targets on
+  TLS inference listeners. They do not follow a `proxy_pass` that maps one prefix onto another or an
+  `upstream` block; review reads those.
+- `publish-vllm-dsv41-v033.yaml` skips the provenance attestation when it resumes from an already
+  pushed digest; such an image has a signature only.
 - Repository settings applied at merge: a `v*` tag ruleset blocks moving and deleting tags, but
   maintainers can create tags, so check that a tag's commit is on `main` (step 1).
 - Build inputs of build dirs that existed before the CI guards are frozen, not scanned by the
