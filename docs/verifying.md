@@ -159,7 +159,7 @@ Known gaps, highest impact first:
 
 1. `privacy.no-log-flag`: some vLLM engines set no explicit no-log flag.
 2. `pins.raw-key`, `pins.digest`: some images are built on the host or pinned by tag.
-3. `pins.hf-revision`, `pins.remote-code`: some models load without a pinned revision.
+3. `pins.hf-revision`, `pins.remote-code`: one model loads without a pinned revision.
 4. `layout.ext`, `layout.size`: `adapters/` holds a LoRA adapter that earlier release tags fetch from
    `main`; `HEAD` fetches it at a pinned commit.
 5. `privacy.secret`: some secrets have empty defaults or sit inside embedded configs.
