@@ -10,8 +10,8 @@ downloaders and monitoring. Hosts run a file from a release tag `v0.0.N`.
   the host's attestation; [docs/verifying.md](docs/verifying.md) shows how to check them. The compose file itself
   is not part of the host's hardware measurement.
 - Images are pinned by digest, except as listed in [Known gaps](docs/verifying.md#known-gaps). Images built
-  here are published by publish workflows on `main` and signed with a keyless Sigstore identity; for
-  older digests the repo does not record which identity signed them. Most also get a build provenance
+  here are published by publish workflows on `main` and signed with a keyless Sigstore identity; a digest
+  that fails every identity listed in docs/verifying.md is treated as unsigned. Most also get a build provenance
   attestation.
 - Privacy here means the serving containers must not log prompts or outputs. CI checks this through the
   flags and env of SGLang and vLLM services only; docs/verifying.md says exactly what is covered.
@@ -19,7 +19,7 @@ downloaders and monitoring. Hosts run a file from a release tag `v0.0.N`.
   a gap.
 - CI checks the compose files, build contexts, workflows and text in this repo. It does not inspect the
   contents of published images, and it cannot see what a host was told to deploy.
-- Some live files predate these rules. Each deviation CI detects in them is a listed exception; see
+- Each deviation CI detects in live files is a listed exception; see
   [Known gaps](docs/verifying.md#known-gaps).
 
 ## Layout
@@ -112,4 +112,4 @@ attestation, its build context and the model revision.
 ## Rules
 
 [AGENTS.md](AGENTS.md) holds the rules for changing and reviewing this repo; `python3 ci/run.py` runs the
-same guards as CI. Report vulnerabilities as described in [SECURITY.md](.github/SECURITY.md).
+same guards as CI. To report a problem privately, follow [SECURITY.md](.github/SECURITY.md).

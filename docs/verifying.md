@@ -18,13 +18,9 @@ attestation are the proof.
   logs. It matters because the telemetry collector in each serving file ships container logs off the
   host. CI enforces it only through the flags and env of services it classifies as SGLang or vLLM (by
   service key, image name, command or `role: engine`), `aux` services included. It does not cover
-  services on other images (nginx, the collector, GPU exporters, downloaders, registrars, `sage`,
-  `model-privacy-filter`), and it cannot see what any image logs by default. The published
-  `sglang-v0523-secure` and `sglang-glm53-v0523` images also carry log-redaction patches, which CI does
-  not check: [14-admin-auth-redaction](../docker/sglang-v0523-secure/patches/14-admin-auth-redaction.diff)
-  and [15-customer-data-log-redaction](../docker/sglang-v0523-secure/patches/15-customer-data-log-redaction.diff).
-  Patch 26 in those dirs and the redaction patches of the former `sglang-glm53-hicache-w4afp8` dir are
-  not in any published image; the `SERIES` or Dockerfile at an image's source commit records what it contains.
+  services on other images, and it cannot see what any image logs by default. Some published images
+  also carry log-redaction patches, which CI does not check; the `SERIES` or Dockerfile at an image's
+  source commit records which patches it contains.
 
 Start from the deployment record: a release tag `v0.0.N`, a file path and the file's SHA-256. Always
 verify by digest. Image tags on the registry can be moved; digests cannot.
@@ -122,9 +118,8 @@ workflow's existing signatures stay valid for the images it published.
 `publish-glm53-admission-reserve.yaml` built `sglang-glm53-admission-reserve`,
 `sglang-glm53-hicache-admission-reserve`, `sglang-glm53-hicache-w4afp8` and three earlier dirs whose
 images have no row here. Each other workflow builds
-the one dir its name points to. These names predate the `publish-<build dir>.yaml` rule that new images
-follow. This repo does not record which identity signed each older digest; if a digest in the Digests
-and build dirs table fails every identity in this table, treat it as unsigned.
+the one dir its name points to. New images follow the `publish-<build dir>.yaml` rule. A digest in the Digests
+and build dirs table that fails every identity in this table has no signature this repo vouches for; treat it as unsigned.
 
 ## Digests and build dirs
 
@@ -155,57 +150,31 @@ at earlier release tags or are bases of another image.
 
 ## Known gaps
 
-Known gaps, highest impact first:
+What verification does not cover by design:
 
-1. `privacy.no-log-flag`: some vLLM engines set no explicit no-log flag.
-2. `pins.raw-key`, `pins.digest`: some images are built on the host or pinned by tag.
-3. `pins.hf-revision`, `pins.remote-code`: some models load without a pinned revision.
-4. `layout.ext`, `layout.size`: `adapters/` holds a LoRA adapter that earlier release tags fetch from
-   `main`; `HEAD` fetches it at a pinned commit.
-5. `privacy.secret`: some secrets have empty defaults or sit inside embedded configs.
-6. `public.*`: some config values, labels and workflows hold internal names.
-7. The GPU a Sage service runs on is the deploy-time value `SAGE_GPU_UUID`, so the deployment record
-   does not show it. The file fails to start without it.
+- CI checks compose files, build contexts, workflows and repo text. It does not check image contents,
+  and nothing in this repo binds a host to a file. Values supplied at deploy time are not in the
+  deployment record.
+- Some pinned images are not built in this repo. Only their digests are pinned; this repo has no build
+  record or signing identity for them. Some images are defined inline in a deployable and have no
+  digest. The pins rules below count them.
+- Not every image has a build provenance attestation; the signature is the identity proof.
+- The logging rules apply to services classified as SGLang or vLLM (see What the proof covers).
+- The CI guards are partial checks, not a full review. Review reads what they do not parse.
+- Release tags are protected by a repository ruleset; check that a tag's commit is on `main` (step 1).
 
-CI checks compose files, build contexts, workflows and repo text. It does not check image contents, and
-nothing in this repo binds a host to a file. Deviations CI detects in live files are entries in
-`ci/data/exceptions.json`; each binds one rule, one file and the matched value. Counts per rule:
+Deviations CI detects in live files are entries in `ci/data/exceptions.json`; each binds one rule, one
+file and the matched value. Counts per rule:
 
 | rule | entries | what it waives |
 |---|---|---|
-| `privacy.no-log-flag` | 12 | vLLM engines that set no request-logging flag and rely on the engine default |
-| `privacy.secret` | 9 | secret variables with an empty default, or used inside an embedded config |
-| `pins.digest` | 12 | image references with a tag next to the digest, pinned by tag only, or built on the host |
-| `pins.raw-key` | 8 | `build` or `dockerfile_inline` in a deployable (images built on the host, unsigned) |
-| `pins.hf-revision` | 2 | models loaded without a pinned revision |
-| `pins.remote-code` | 2 | remote code enabled for those models |
+| `privacy.no-log-flag` | 12 | vLLM engines without an explicit request-logging flag |
+| `privacy.secret` | 9 | secret variables without a required-value check, or used inside an embedded config |
+| `pins.digest` | 12 | image references pinned by tag, or defined inline |
+| `pins.raw-key` | 8 | images defined inline in a deployable |
+| `pins.hf-revision` | 2 | models referenced by name without a revision pin |
+| `pins.remote-code` | 2 | the remote-code setting on those models |
 | `layout.ext`, `layout.size` | 1 each | the adapter weights file in `adapters/` |
-| `public.domain` | 6 | an internal telemetry endpoint |
+| `public.domain` | 6 | domain names outside the public allowlist |
 | `public.host` | 27 | host names in config values, labels or service names |
-| `public.repo` | 2 | references to repositories outside the public allowlist |
-
-Gaps that are not exceptions:
-- The logging rules check flags and env only, on services the guards classify as SGLang or vLLM by
-  key, image, command or role (see What the proof covers). Only engines must set an explicit no-log
-  flag; other services on those images, such as every `role: aux` entry in
-  `ci/data/services.allow.json`, are checked for flags and env that enable logging.
-- actionlint and zizmor check a publish workflow only until it merges. Publish workflows that exist
-  at the base commit are frozen and not linted, so any findings in them stay until the workflow is
-  deleted with the last build dir it publishes. The three current ones check out the repository
-  without `persist-credentials: false` (zizmor `artipacked`).
-- Some pinned images are neither standard upstream images nor built here: `nearaidev/vllm-proxy-rs`
-  and `nearaidev/compose-manager-launcher` are built outside this repo, and the image of
-  `prod/sage.yaml` and `prod/sage-pull.yaml` comes from a vendor. This repo has no build record or
-  signing identity for them; only their digests are pinned. The Whisper engine in
-  `prod/small-models.yaml` and `prod/pack-small-models.yaml` is built on the host (`pins.raw-key`) and
-  has no digest at all.
-- The nginx checks read `location` blocks and explicit `proxy_pass`, `rewrite` and `return` targets on
-  TLS inference listeners. They do not follow a `proxy_pass` that maps one prefix onto another or an
-  `upstream` block; review reads those.
-- `publish-vllm-dsv41-v033.yaml` skips the provenance attestation when it resumes from an already
-  pushed digest; such an image has a signature only.
-- Repository settings applied at merge: a `v*` tag ruleset blocks moving and deleting tags, but
-  maintainers can create tags, so check that a tag's commit is on `main` (step 1).
-- Build inputs of build dirs that existed before the CI guards are frozen, not scanned by the
-  public-text rules, and hold internal references (host names, internal domains, repo names). Docs
-  in those dirs that no build reads are scanned.
+| `public.repo` | 2 | repository references outside the public allowlist |

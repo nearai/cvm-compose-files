@@ -48,7 +48,7 @@ x-vllm-env:
     NCCL_DEBUG: INFO
     VLLM_CACHE_ROOT: /root/.cache/vllm
 
-# vLLM 0.33's V2 runner reads stale inputs from pinned host memory in a CVM; use V1.
+# vLLM 0.33 serves these models on the V1 model runner.
 x-vllm-env-v1-runner:
   environment: &vllm-env-v1-runner
     <<: *vllm-env
