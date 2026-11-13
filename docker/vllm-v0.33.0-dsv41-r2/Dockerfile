@@ -21,6 +21,8 @@ LABEL nearai.vllm.cc_explicit_copies="port of vllm-project/vllm#59981 (head 0340
 LABEL nearai.vllm.cc_explicit_copies_patch_sha256="ae42a1eb886d5a66863efef28339c2cb9986960e6e5eb11c8b44fd180ba374f6"
 LABEL nearai.vllm.cc_retain_ep_fault_flag="nearai; under CC the EP fault flag is written on the main stream, so the async D2H keeps a reference until the copy has run"
 LABEL nearai.vllm.cc_retain_ep_fault_flag_patch_sha256="2039df25e33e55c3a8b2cdc62d5dc90764e08816fd882481ff2c23572d60e606"
+LABEL nearai.vllm.engram_shm_table_fingerprint="nearai; a reused /dev/shm Engram table is checked against the fingerprint recorded when it was loaded"
+LABEL nearai.vllm.engram_shm_table_fingerprint_patch_sha256="38d59cc5ba8d6e4110ddcf330e55d00e40bcf5c3b386037307ca3a90a21120ec"
 LABEL nearai.security.upgrades="python packages: none needed (the v0.33.0 base ships certifi 2026.10.23, pip 26.2.2 and uv 0.13.6); OS: linux-libc-dev 6.8.0-149.149"
 LABEL nearai.security.linux_libc_dev="6.8.0-149.149"
 
@@ -38,6 +40,7 @@ RUN cd /usr/local/lib/python3.12/dist-packages \
        "694a75c29aae8b6ee5b4a096599694bcd044d80e73e65093484ab569a261c516  /tmp/near/patches/07-engram-peer-reads-kill-switch.diff" \
        "ae42a1eb886d5a66863efef28339c2cb9986960e6e5eb11c8b44fd180ba374f6  /tmp/near/patches/08-cc-explicit-copies.diff" \
        "2039df25e33e55c3a8b2cdc62d5dc90764e08816fd882481ff2c23572d60e606  /tmp/near/patches/09-cc-retain-ep-fault-flag.diff" \
+       "38d59cc5ba8d6e4110ddcf330e55d00e40bcf5c3b386037307ca3a90a21120ec  /tmp/near/patches/10-engram-shm-table-fingerprint.diff" \
        "c9af2eed017387380ec43ac1aa41dc11a05c42bcbab1fc4fa1cc8971bde0bebd  vllm/model_executor/layers/fused_moe/layer.py" \
        "720923ccd796dfdeab4b396eeeea79cd4c11a9dcd2e6ef8d57c0390fa4cf7ab2  vllm/models/deepseek_v41/common/engram.py" \
        "0038dd2ee11cfd3234c89226b772db958388216d5f3a7bd74b33c8d22dd03880  vllm/models/deepseek_v41/decoder_replay_layers.py" \
@@ -49,10 +52,10 @@ RUN cd /usr/local/lib/python3.12/dist-packages \
        "7a7e245ecdf5041e309813b940dd8a2c67b7c658924ac31726dec86442a11d19  vllm/v1/worker/gpu/spec_decode/utils.py" \
        | sha256sum --check --strict \
     && test ! -e vllm/v1/conf_compute_utils.py \
-    && for p in /tmp/near/patches/0*.diff; do patch -p1 --dry-run -s < "$p" && patch -p1 -s < "$p" || exit 1; done \
+    && for p in /tmp/near/patches/[0-9][0-9]-*.diff; do patch -p1 --dry-run -s < "$p" && patch -p1 -s < "$p" || exit 1; done \
     && printf '%s\n' \
        "debd88ab5e8d8153ea9f335ba50f47054ca79f395204844b4f78332f27064d16  vllm/model_executor/layers/fused_moe/layer.py" \
-       "ef5596225e616ab9ca4c9697c895bad03f4b1ee2c6172748d0c7bcebfadaa97f  vllm/models/deepseek_v41/common/engram.py" \
+       "8e1bf83e057f4f6853878c696824bc46efefe69b19c60099e2a22c8bb5186da4  vllm/models/deepseek_v41/common/engram.py" \
        "3e36b391d50c0db1c1705eb67812d363c25d177c69259ad2d99f35a2a4770395  vllm/models/deepseek_v41/decoder_replay_layers.py" \
        "6ed98852e2f411a9927110b23d0318a34d497fb499d558ff5f26eb873de6ef0b  vllm/models/deepseek_v41/nvidia/model.py" \
        "03366dab71dc7c88e394da27a03649c075bbd34ab0d8a3cd4ab205f3622a77d1  vllm/models/deepseek_v41/nvidia/vl_model.py" \
@@ -75,6 +78,7 @@ RUN cd /usr/local/lib/python3.12/dist-packages \
     && grep -Fq 'output_copy_stream(main_stream.device)' vllm/v1/worker/gpu/async_utils.py \
     && grep -Fq 'new_d2h_stream(device)' vllm/v1/worker/gpu/spec_decode/utils.py \
     && grep -Fq '_has_fault_gpu = has_fault' vllm/v1/worker/gpu/async_utils.py \
+    && grep -Fq 'def _near_verify' vllm/models/deepseek_v41/common/engram.py \
     && python3 -m compileall -q \
         vllm/models/deepseek_v41/nvidia/vl_model.py \
         vllm/model_executor/layers/fused_moe/layer.py \

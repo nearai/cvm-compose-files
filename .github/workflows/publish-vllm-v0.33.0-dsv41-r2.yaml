@@ -55,6 +55,12 @@ jobs:
           SOURCE_REVISION: ${{ inputs.source_revision }}
         run: |
           set -euo pipefail
+          # The signing identity is pinned to this file on main; refuse rather than let a
+          # dispatch from anywhere else fail later at the signature check.
+          if [ "$GITHUB_REF" != refs/heads/main ]; then
+            echo "This workflow runs only from main, not $GITHUB_REF" >&2
+            exit 1
+          fi
           if [[ ! "$IMAGE_TAG" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$ ]]; then
             echo "Invalid Docker tag: $IMAGE_TAG" >&2
             exit 1
@@ -71,7 +77,7 @@ jobs:
           git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
           git merge-base --is-ancestor "$SOURCE_REVISION" origin/main
           test "$(sha256sum "$BUILD_CONTEXT/Dockerfile" | awk '{print $1}')" = \
-            38143b305c09b12872e5726d4f462fdfa9f2ab3ae9447a4cdff9a7743ace65c8
+            c875cefdd5a6b1a28c383387e3ef8be03016df360bd2f34fad2c3668828c7526
           (cd "$BUILD_CONTEXT" && sha256sum --check --strict SHA256SUMS)
           grep -Fxq \
             'base_image=vllm/vllm-openai@sha256:d825baf9ce4b1b6bfc5ecc7b79880c7e6748c65a72d697ce3d47607aafa84c6e' \
@@ -144,6 +150,7 @@ jobs:
              .config.Labels["nearai.vllm.engram_peer_reads_kill_switch_patch_sha256"] == "694a75c29aae8b6ee5b4a096599694bcd044d80e73e65093484ab569a261c516" and
              .config.Labels["nearai.vllm.cc_explicit_copies_patch_sha256"] == "ae42a1eb886d5a66863efef28339c2cb9986960e6e5eb11c8b44fd180ba374f6" and
              .config.Labels["nearai.vllm.cc_retain_ep_fault_flag_patch_sha256"] == "2039df25e33e55c3a8b2cdc62d5dc90764e08816fd882481ff2c23572d60e606" and
+             .config.Labels["nearai.vllm.engram_shm_table_fingerprint_patch_sha256"] == "38d59cc5ba8d6e4110ddcf330e55d00e40bcf5c3b386037307ca3a90a21120ec" and
              .config.Labels["nearai.security.linux_libc_dev"] == "6.8.0-149.149"' \
             image-config.json
 
@@ -299,7 +306,7 @@ jobs:
             echo "- tag: \`$IMAGE_REF\`"
             echo "- immutable: \`$IMAGE_IMMUTABLE_REF\`"
             echo "- base: \`vllm/vllm-openai:v0.33.0\` (d825baf9)"
-            echo "- patches: 01-09 (docker/vllm-v0.33.0-dsv41-r2/SHA256SUMS), incl. the VLLM_CONFIDENTIAL_COMPUTE copy paths"
+            echo "- patches: 01-10 (docker/vllm-v0.33.0-dsv41-r2/SHA256SUMS), incl. the VLLM_CONFIDENTIAL_COMPUTE copy paths"
             echo "- embedded BuildKit provenance: verified"
             echo "- Trivy fixed HIGH findings: $TRIVY_HIGH"
             echo "- Trivy fixed CRITICAL findings: $TRIVY_CRITICAL"
