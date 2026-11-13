@@ -14,6 +14,8 @@ Review from a worktree of the base branch, so the change cannot edit the rules o
 - [ ] Check waiver entries and PR text; reject if either copies the matched text (AGENTS.md, Hard rules).
 - [ ] Check prose (README, docs/verifying.md, comments, PR text) against the config; reject if it claims more.
 - [ ] Check for names of people, partners or customers and other leaks CI cannot see; reject any.
+- [ ] Check all public text of the change against .claude/rules/docs.md; reject any sentence it forbids.
+      Write review comments as check number and `path:line`.
 - [ ] Check new variables; reject a secret-like one without a secret suffix.
 - [ ] Check naming, header, key and service order and labels against the templates; reject if
       `config_variant` did not change when it had to.
