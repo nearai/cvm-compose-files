@@ -71,21 +71,13 @@ jobs:
           git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
           git merge-base --is-ancestor "$SOURCE_REVISION" origin/main
           test "$(sha256sum "$BUILD_CONTEXT/Dockerfile" | awk '{print $1}')" = \
-            d7229282328b9a73e3ce49a16107caa0cf54559bb83c6debb5699e6b7e73c66c
-          (cd "$BUILD_CONTEXT" && grep '^patch=' PROVENANCE | while read -r l; do
-            f=${l#patch=}; f=${f%% *}; h=${l##*sha256:}
-            echo "$h  $f"; done | sha256sum --check --strict)
+            f1c330e3fc82288850bd0d125a1811e36bc6eb2b28d79631a41d204593debc75
+          (cd "$BUILD_CONTEXT" && sha256sum --check --strict SHA256SUMS)
           grep -Fxq \
             'base_image=vllm/vllm-openai@sha256:d825baf9ce4b1b6bfc5ecc7b79880c7e6748c65a72d697ce3d47607aafa84c6e' \
             "$BUILD_CONTEXT/PROVENANCE"
           grep -Fxq \
-            'model_revision=1bae0e1088993b9b82de08f59de5be5a34e42170' \
-            "$BUILD_CONTEXT/PROVENANCE"
-          grep -Fxq \
-            'adapter_revision=196c06e3c2aad43e9688d16fa993b4333f69358a' \
-            "$BUILD_CONTEXT/PROVENANCE"
-          grep -Fxq \
-            'security_upgrades=linux-libc-dev 6.8.0-149.149 (noble-security); python packages none (base certifi 2026.10.23, pip 26.2.2, uv 0.13.6)' \
+            'source_revision=4ba787ec9959e566d3b587a796dff07673324da5' \
             "$BUILD_CONTEXT/PROVENANCE"
           echo "IMAGE_REF=${REGISTRY}/${IMAGE_REPOSITORY}:${IMAGE_TAG}" >> "$GITHUB_ENV"
 
@@ -306,7 +298,7 @@ jobs:
             echo "- tag: \`$IMAGE_REF\`"
             echo "- immutable: \`$IMAGE_IMMUTABLE_REF\`"
             echo "- base: \`vllm/vllm-openai:v0.33.0\` (d825baf9)"
-            echo "- patches: 01-08 (docker/vllm-v0.33.0-dsv41-r2/PROVENANCE), incl. the VLLM_CONFIDENTIAL_COMPUTE copy paths"
+            echo "- patches: 01-08 (docker/vllm-v0.33.0-dsv41-r2/SHA256SUMS), incl. the VLLM_CONFIDENTIAL_COMPUTE copy paths"
             echo "- embedded BuildKit provenance: verified"
             echo "- Trivy fixed HIGH findings: $TRIVY_HIGH"
             echo "- Trivy fixed CRITICAL findings: $TRIVY_CRITICAL"

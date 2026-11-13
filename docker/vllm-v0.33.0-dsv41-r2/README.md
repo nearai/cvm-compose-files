@@ -1,6 +1,6 @@
 # vLLM v0.33.0 for DeepSeek-V4.1-Flash-1017 with a LoRA adapter
 
-The base is `vllm/vllm-openai:v0.33.0` (upstream tag `4ba787ec9`), pinned by digest in the Dockerfile. Patches 01-06 and 08 are ported from `docker/vllm-dsv41-lora/` (v0.32.0); patch 07 is new. `PROVENANCE` lists each patch with its sha256.
+The base is `vllm/vllm-openai:v0.33.0` (upstream tag `4ba787ec9`), pinned by digest in the Dockerfile. Patches 01-06 and 08 are ported from `docker/vllm-dsv41-lora/` (v0.32.0); patch 07 is new. `SHA256SUMS` lists each patch with its sha256.
 
 | patch | what | against v0.33.0 |
 |---|---|---|
@@ -17,4 +17,4 @@ The base is `vllm/vllm-openai:v0.33.0` (upstream tag `4ba787ec9`), pinned by dig
 
 **Peer-HBM Engram reads:** with vllm#62091, when HBM Engram runs with TP1 per rank and NVLink fully connected, each rank reads Engram rows from its peers' HBM through IPC pointers instead of using DP collectives. That is GPU-to-GPU traffic under TDX+PPCIe. `VLLM_NEAR_ENGRAM_PEER_READS=0` restores the v0.32 path without an image change.
 
-**Security:** the v0.33.0 base needs no Python package upgrades; the Dockerfile upgrades `linux-libc-dev` (see `PROVENANCE`).
+**Security:** the v0.33.0 base needs no Python package upgrades; the Dockerfile upgrades `linux-libc-dev` to the exact noble-security fix.

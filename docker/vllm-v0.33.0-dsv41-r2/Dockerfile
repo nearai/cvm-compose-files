@@ -22,21 +22,19 @@ LABEL nearai.vllm.cc_explicit_copies_patch_sha256="ae42a1eb886d5a66863efef28339c
 LABEL nearai.security.upgrades="python packages: none needed (the v0.33.0 base ships certifi 2026.10.23, pip 26.2.2 and uv 0.13.6); OS: linux-libc-dev 6.8.0-149.149"
 LABEL nearai.security.linux_libc_dev="6.8.0-149.149"
 
-COPY 01-dsv41-supports-lora-wo-b.patch 02-moe-lora-only-when-targeted.patch 03-decoder-replay-lora-rows.patch \
-     04-cc-disable-uva.patch 05-engram-cpu-gather.patch 06-engram-fast-gather.patch \
-     07-engram-peer-reads-kill-switch.patch 08-cc-explicit-copies.patch /tmp/near/
+COPY patches /tmp/near/patches
 
 # The patches are against the image's own files: refuse to build if any upstream file differs.
 RUN cd /usr/local/lib/python3.12/dist-packages \
     && printf '%s\n' \
-       "a4ff8a08bd1aade5bb108af3b15fb163a0edd3f80af1dff81eca414c33bd988f  /tmp/near/01-dsv41-supports-lora-wo-b.patch" \
-       "60374d690ace180c8084ef22f489419dfc98edb720f224afd5c648c41ba07899  /tmp/near/02-moe-lora-only-when-targeted.patch" \
-       "065be72658ef5a9b58f2f76b5d7aef49c63aa0e51ba785b2854411dd11ae6640  /tmp/near/03-decoder-replay-lora-rows.patch" \
-       "27d2b1bcd616950629a438ad15292bebc86b63280a6591282b626b11a914c1b7  /tmp/near/04-cc-disable-uva.patch" \
-       "b2cdaf320f7d19213e6e0b71f63d3cf46ffe2093d00ad29f0e483f75ae4a2f30  /tmp/near/05-engram-cpu-gather.patch" \
-       "9f8a001ac8121f43f7cf99e9b506133961b81cf35f99e7c05e6a5cb201bdb111  /tmp/near/06-engram-fast-gather.patch" \
-       "3b2e41d848877c4556b84eb46ff91ffdd20f05ef25f64ada9e5753799681f3c7  /tmp/near/07-engram-peer-reads-kill-switch.patch" \
-       "ae42a1eb886d5a66863efef28339c2cb9986960e6e5eb11c8b44fd180ba374f6  /tmp/near/08-cc-explicit-copies.patch" \
+       "a4ff8a08bd1aade5bb108af3b15fb163a0edd3f80af1dff81eca414c33bd988f  /tmp/near/patches/01-dsv41-supports-lora-wo-b.diff" \
+       "60374d690ace180c8084ef22f489419dfc98edb720f224afd5c648c41ba07899  /tmp/near/patches/02-moe-lora-only-when-targeted.diff" \
+       "065be72658ef5a9b58f2f76b5d7aef49c63aa0e51ba785b2854411dd11ae6640  /tmp/near/patches/03-decoder-replay-lora-rows.diff" \
+       "27d2b1bcd616950629a438ad15292bebc86b63280a6591282b626b11a914c1b7  /tmp/near/patches/04-cc-disable-uva.diff" \
+       "b2cdaf320f7d19213e6e0b71f63d3cf46ffe2093d00ad29f0e483f75ae4a2f30  /tmp/near/patches/05-engram-cpu-gather.diff" \
+       "9f8a001ac8121f43f7cf99e9b506133961b81cf35f99e7c05e6a5cb201bdb111  /tmp/near/patches/06-engram-fast-gather.diff" \
+       "3b2e41d848877c4556b84eb46ff91ffdd20f05ef25f64ada9e5753799681f3c7  /tmp/near/patches/07-engram-peer-reads-kill-switch.diff" \
+       "ae42a1eb886d5a66863efef28339c2cb9986960e6e5eb11c8b44fd180ba374f6  /tmp/near/patches/08-cc-explicit-copies.diff" \
        "c9af2eed017387380ec43ac1aa41dc11a05c42bcbab1fc4fa1cc8971bde0bebd  vllm/model_executor/layers/fused_moe/layer.py" \
        "720923ccd796dfdeab4b396eeeea79cd4c11a9dcd2e6ef8d57c0390fa4cf7ab2  vllm/models/deepseek_v41/common/engram.py" \
        "0038dd2ee11cfd3234c89226b772db958388216d5f3a7bd74b33c8d22dd03880  vllm/models/deepseek_v41/decoder_replay_layers.py" \
@@ -48,7 +46,7 @@ RUN cd /usr/local/lib/python3.12/dist-packages \
        "7a7e245ecdf5041e309813b940dd8a2c67b7c658924ac31726dec86442a11d19  vllm/v1/worker/gpu/spec_decode/utils.py" \
        | sha256sum --check --strict \
     && test ! -e vllm/v1/conf_compute_utils.py \
-    && for p in /tmp/near/0*.patch; do patch -p1 --dry-run -s < "$p" && patch -p1 -s < "$p" || exit 1; done \
+    && for p in /tmp/near/patches/0*.diff; do patch -p1 --dry-run -s < "$p" && patch -p1 -s < "$p" || exit 1; done \
     && printf '%s\n' \
        "debd88ab5e8d8153ea9f335ba50f47054ca79f395204844b4f78332f27064d16  vllm/model_executor/layers/fused_moe/layer.py" \
        "57d02ddd66c39f0154dcf8baceea59c5cc0fa6bdf4f8c6bb3e939eea4bbfbfb5  vllm/models/deepseek_v41/common/engram.py" \
