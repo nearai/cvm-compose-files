@@ -413,20 +413,6 @@
     "remove_when": "the image is published from a build dir and pinned by digest"
   },
   {
-    "rule": "pins.hf-revision",
-    "path": "prod/pack-small-models.yaml",
-    "sha256": "de63e2d3f0ade1b53d66e1d6cce9e377203130a65985ad92a1d21859548fcb13",
-    "reason": "engine loads a model without a pinned revision",
-    "remove_when": "the Flux engine pins a model revision"
-  },
-  {
-    "rule": "pins.remote-code",
-    "path": "prod/pack-small-models.yaml",
-    "sha256": "de63e2d3f0ade1b53d66e1d6cce9e377203130a65985ad92a1d21859548fcb13",
-    "reason": "engine loads a model without a pinned revision",
-    "remove_when": "the Flux engine pins a model revision"
-  },
-  {
     "rule": "pins.raw-key",
     "path": "prod/pack-small-models.yaml",
     "sha256": "43230bf33499a3c292df6a0a5b309833a206f8333d5feb1d9d7612c3e1b6eb97",
@@ -509,5 +495,12 @@
     "sha256": "e67bf1fe5f5dceecba68fe6a4e61026f5e5a6c1e503f1ef9cd5b54b5482d3480",
     "reason": "secret has an empty default, so the service starts without it",
     "remove_when": "the collector env contract in ci/checks/stack.py no longer requires the soft default"
+  },
+  {
+    "rule": "status.key-set",
+    "path": "prod/pack-small-models.yaml",
+    "sha256": "fcd1551dfa9984cca41fe57171fd323dc6571c5cc6bca22d33544337b0c7ff5d",
+    "reason": "the candidate adds one model downloader per engine that starts offline",
+    "remove_when": "this file replaces the live file it is a candidate for"
   }
 ]
