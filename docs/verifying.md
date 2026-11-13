@@ -181,8 +181,7 @@ nothing in this repo binds a host to a file. Deviations CI detects in live files
 | `pins.remote-code` | 2 | remote code enabled for those models |
 | `layout.ext`, `layout.size` | 1 each | the adapter weights file in `adapters/` |
 | `public.domain` | 6 | an internal telemetry endpoint |
-| `public.host` | 27 | host names in config values, labels or service names |
-| `public.repo` | 2 | references to repositories outside the public allowlist |
+| `public.host` | 20 | host names in config values, labels or service names |
 
 Gaps that are not exceptions:
 - The logging rules check flags and env only, on services the guards classify as SGLang or vLLM by
