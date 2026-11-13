@@ -165,21 +165,21 @@ Order in which the gaps below are to be closed, highest impact first:
 6. `public.*`: move internal names out of config values, labels and workflows.
 
 CI checks compose files, build contexts, workflows and repo text. It does not check image contents, and
-nothing in this repo binds a host to a file. Deviations CI detects in live files are entries in
+nothing in this repo binds a host to a file. Deviations CI detects in deployable files are entries in
 `ci/data/exceptions.json`; each binds one rule, one file and the matched value. Counts per rule:
 
 | rule | entries | what it waives |
 |---|---|---|
 | `privacy.no-log-flag` | 12 | vLLM engines that set no request-logging flag and rely on the engine default |
-| `privacy.secret` | 8 | secret variables with an empty default, or used inside an embedded config |
-| `pins.digest` | 12 | image references with a tag next to the digest, pinned by tag only, or built on the host |
-| `pins.raw-key` | 4 | `build` or `dockerfile_inline` in a deployable (images built on the host, unsigned) |
-| `pins.hf-revision` | 1 | a model loaded without a pinned revision |
-| `pins.remote-code` | 1 | remote code enabled for that model |
-| `pins.url` | 2 | a LoRA adapter fetched from this repo's `main` branch; SHA-256-checked, fails closed |
+| `privacy.secret` | 9 | secret variables with an empty default, or used inside an embedded config |
+| `pins.digest` | 14 | image references with a tag next to the digest, pinned by tag only, or built on the host |
+| `pins.raw-key` | 8 | `build` or `dockerfile_inline` in a deployable (images built on the host, unsigned) |
+| `pins.hf-revision` | 2 | a model loaded without a pinned revision |
+| `pins.remote-code` | 2 | remote code enabled for that model |
+| `pins.url` | 3 | a LoRA adapter fetched from this repo's `main` branch; SHA-256-checked, fails closed |
 | `layout.ext`, `layout.size` | 1 each | the adapter weights file in `adapters/` |
-| `public.domain` | 5 | an internal telemetry endpoint |
-| `public.host` | 8 | host names in config values, labels or service names |
+| `public.domain` | 6 | an internal telemetry endpoint |
+| `public.host` | 27 | host names in config values, labels or service names |
 | `public.repo` | 3 | references to repositories outside the public allowlist |
 | `public.runner` | 4 | publish workflows on a self-hosted runner |
 
@@ -196,7 +196,8 @@ Gaps that are not exceptions:
   and `nearaidev/compose-manager-launcher` are built outside this repo, and the image of
   `prod/sage.yaml` and `prod/sage-pull.yaml` comes from a vendor. This repo has no build record or
   signing identity for them; only their digests are pinned. The Whisper engine in
-  `prod/small-models.yaml` is built on the host (`pins.raw-key`) and has no digest at all.
+  `prod/small-models.yaml` and `prod/pack-small-models.yaml` is built on the host (`pins.raw-key`)
+  and has no digest at all.
 - Two vLLM publish workflows skip the provenance attestation when resuming from an already pushed digest;
   such an image has a signature only.
 - Repository settings applied at merge: a `v*` tag ruleset blocks moving and deleting tags, but
