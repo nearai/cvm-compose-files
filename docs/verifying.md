@@ -173,8 +173,8 @@ nothing in this repo binds a host to a file. Deviations CI detects in live files
 
 | rule | entries | what it waives |
 |---|---|---|
-| `privacy.no-log-flag` | 12 | vLLM engines that set no request-logging flag and rely on the engine default |
-| `privacy.secret` | 9 | secret variables with an empty default, or used inside an embedded config |
+| `privacy.no-log-flag` | 4 | vLLM engines that set no request-logging flag and rely on the engine default |
+| `privacy.secret` | 7 | secret variables with an empty default, or used inside an embedded config |
 | `pins.digest` | 12 | image references with a tag next to the digest, pinned by tag only, or built on the host |
 | `pins.raw-key` | 8 | `build` or `dockerfile_inline` in a deployable (images built on the host, unsigned) |
 | `pins.hf-revision` | 2 | models loaded without a pinned revision |
