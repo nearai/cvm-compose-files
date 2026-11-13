@@ -74,12 +74,8 @@ jobs:
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_BODY: ${{ github.event.pull_request.body }}
           PR_BRANCH: ${{ github.head_ref }}
-        run: |
-          if [ -n "$BASE" ]; then
-            python3 ci/run.py --base "$BASE"
-          else
-            python3 ci/run.py
-          fi
+        # An empty BASE (first commit) runs the guards without diff rules.
+        run: python3 ci/run.py --base "$BASE"
 
       # Reviewers read what each changed deployable renders to; the guards above decide pass or fail.
       - name: Rendered diff summary

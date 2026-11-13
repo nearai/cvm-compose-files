@@ -427,7 +427,7 @@ def main():
         with open(os.path.join(ROOT, "README.md"), "w") as f:
             f.write(text)
         return 0
-    ctx = real_ctx(a.base)
+    ctx = real_ctx(a.base or None)
     if ctx.base is None:
         for g in GUARDS:
             for r in g.DIFF_RULES:

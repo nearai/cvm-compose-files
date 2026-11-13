@@ -182,7 +182,7 @@ def check_dir(head, d):
                     try:
                         args = [str(a) for a in json.loads(body)]
                     except ValueError:
-                        args = []
+                        args = body.strip("[]").replace(",", " ").replace("'", " ").replace('"', " ").split()
                 for src in args[:-1]:
                     src = src.rstrip("/")
                     if src in (".", "") or any(ch in src for ch in "*?[") or src.lower().endswith(".md"):

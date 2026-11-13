@@ -76,8 +76,6 @@ def conforms(path, tree):
 
 
 SOFT_RUN = re.compile(r"(?m)\|\|\s*(\S*/)?(true|:|exit(\s+0)?)(?![\w)])|\|\|\s*(echo|printf|\()|^\s*set\s+\+(e\b|o\s+errexit)")
-# A step that runs a required check is plain: no pipes, no fallbacks, no shell overrides.
-REQUIRED_STEP_BAN = re.compile(r"\|\||(?<![|])\|(?![|])|&&|&\s*$|\bset\s+\+|\bthen\s+:|\btrap\b", re.M)
 NGINX_CALL = "python3 ci/run.py --nginx-test"
 
 
@@ -108,8 +106,9 @@ def soft_fail(jobs, doc=None):
             if any(c in run for c in GUARD_CALLS + (NGINX_CALL,)):
                 if "if" in st:
                     out.append(f"job {name} step {i} runs a required check and must not have if:")
-                if REQUIRED_STEP_BAN.search(run):
-                    out.append(f"job {name} step {i} runs a required check and must not pipe or fall back")
+                # A required step is the command alone: anything around it could change its exit status.
+                if run.strip() not in GUARD_CALLS + (NGINX_CALL,):
+                    out.append(f"job {name} step {i} runs a required check and must be exactly that command")
     return out
 
 
@@ -387,6 +386,10 @@ CASES = [
     ("required check piped", "layout.all-green",
      dict(BASE_FILES, **{".github/workflows/ci.yaml": WF_OK.replace(
          "python3 ci/run.py --self-test\n", "python3 ci/run.py --self-test | tee x\n")}), BASE_FILES),
+    ("required check wrapped in a function", "layout.all-green",
+     dict(BASE_FILES, **{".github/workflows/ci.yaml": WF_OK.replace(
+         "      - run: python3 ci/run.py --self-test\n",
+         "      - run: |\n          python3() { true; }\n          python3 ci/run.py --self-test\n")}), BASE_FILES),
     ("required check chained", "layout.all-green",
      dict(BASE_FILES, **{".github/workflows/ci.yaml": WF_OK.replace(
          "python3 ci/run.py --self-test\n", "python3 ci/run.py --self-test && echo ok\n")}), BASE_FILES),
