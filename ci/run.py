@@ -35,7 +35,7 @@ import stack
 import status
 from common import (
     EXCEPTIONS, EXPECTED, IMAGES, ROOT, SERVICES, TEMPLATES, Finding, RenderError, Renderer, Tree, env_lines, git,
-    load_json, render_dir, sha256,
+    git_history, load_json, render_dir, sha256,
 )
 
 GUARDS = [layout, status, pins, privacy, public, frozen, claude, stack, nginx, docker, names]
@@ -49,8 +49,10 @@ UNWAIVABLE = {"layout.claude-md", "layout.agent-file"}
 
 class Context:
     def __init__(self, head, base=None, rendered=None, rendered_base=None, name_status=(), commits=(), pr=None,
-                 raw=None):
+                 raw=None, history=None):
         self.head, self.base = head, base
+        # Source commits are checked against git history; fixtures pass their own answers or skip it.
+        self.history = history if history is not None else (None if head.fixture else git_history)
         self.bootstrap = base is not None and not base.has("ci/lib/common.py")
         self.services_allow = load_json(head, SERVICES, {})
         self.services_allow_base = load_json(base, SERVICES, {}) if base else {}
@@ -257,7 +259,8 @@ def case_ctx(case):
     extra = case[6] if len(case) > 6 else {}
     return Context(_tree(files), _tree(base), _fake(rendered), _fake(rendered_base),
                    extra.get("name_status", ()), extra.get("commits", ()), extra.get("pr"),
-                   raw=_fake(extra.get("raw")))
+                   raw=_fake(extra.get("raw")),
+                   history=(lambda c, d, ok=extra["history"]: (c, d) in ok) if "history" in extra else None)
 
 
 GOOD_EX = [{"rule": "layout.ext", "path": "prod/a.bin", "sha256": sha256("prod/a.bin"), "reason": "r",

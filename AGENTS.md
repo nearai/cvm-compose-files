@@ -39,6 +39,16 @@ Read the rule file for a path before you change files under it; Claude Code also
 - Render one file: `--render prod/<f>.yaml`. Rendered diff against a base, renames paired:
   `--noop origin/main` (empty for a no-op); CI posts it in the guards job summary.
 
+## Common changes
+- New or changed deployable on an existing image: copy `ci/templates/<engine>.yaml` to `prod/`; CI's
+  `names.*` findings give the exact file name. Pin models and images, add `ci/data/` rows, run
+  `--write-status`, mark it `candidate` (or `live` for a new model). Merge cuts a release tag; deploy
+  that tag and path. A follow-up PR marks it `live` and deletes the file it replaced.
+- New image: PR 1 adds `docker/<dir>/` and `publish-<dir>.yaml`. After merge, a maintainer dispatches
+  the workflow on `main`; it builds, scans, attests and signs. PR 2 pins the digest in a deployable and
+  adds its `images.allow` row (dir and the `main` commit it was built from) and its docs/verifying.md
+  rows. `pins.source` checks both.
+
 ## Hard rules (CI fails)
 - Paths follow the layout rules in `ci/checks/layout.py` or are listed in `ci/data/legacy.txt`, which
   only shrinks. No binaries, bytecode, notebooks, logs or secret files. Size cap per file.
@@ -46,6 +56,7 @@ Read the rule file for a path before you change files under it; Claude Code also
   and the like) exist only at the paths listed under Layout.
 - Every image is `repo@sha256:<64 hex>` and has a row in `ci/data/images.allow`. An image built here
   is pinned at the digest the `main` run of its publish workflow produced, never one built elsewhere.
+  Its row names the build dir and the source commit on `main`, and docs/verifying.md has a row for it.
 - Every model is pinned to a 40-hex revision. `--trust-remote-code` only with a pinned revision.
 - No `build`, `dockerfile_inline`, `extends`, `include` or `env_file` in deployable files.
 - No runtime fetch from a branch. URLs pin a 40-hex commit or revision.

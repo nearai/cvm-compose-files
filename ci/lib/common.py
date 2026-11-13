@@ -72,7 +72,7 @@ class Tree:
     """Files of one revision. rev None = the working tree (tracked files)."""
 
     def __init__(self, rev=None, files=None):
-        self.rev, self._cache = rev, {}
+        self.rev, self._cache, self.fixture = rev, {}, files is not None
         if files is not None:
             self._cache = {p: (c.encode() if isinstance(c, str) else c) for p, c in files.items()}
             self.paths = sorted(self._cache)
@@ -626,3 +626,13 @@ def served_names(kind, tokens):
         return names
     m = model_ref(kind, tokens)
     return [m] if m else []
+
+
+def git_history(commit, d):
+    """True when commit is on the checked-out history and has docker/<d>/Dockerfile."""
+    for args in (["merge-base", "--is-ancestor", commit, "HEAD"], ["cat-file", "-e", f"{commit}:docker/{d}/Dockerfile"]):
+        r = subprocess.run(["git", "-C", ROOT] + args, capture_output=True)
+        if r.returncode != 0:
+            return False
+    return True
+

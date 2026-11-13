@@ -10,7 +10,7 @@ from common import (
 
 RULES = [
     "pins.digest", "pins.allow", "pins.rows", "pins.docker-dir", "pins.hf-revision", "pins.remote-code", "pins.url",
-    "pins.raw-key",
+    "pins.raw-key", "pins.source",
 ]
 DIFF_RULES = ["pins.rows", "pins.docker-dir"]
 
@@ -51,6 +51,22 @@ def check(ctx):
             out += check_file(p, text, r, rows, ctx)
         out += check_raw(p, text)
     out += check_rows(ctx, rows, base_rows)
+    out += check_sources(ctx, rows)
+    return out
+
+
+def check_sources(ctx, rows):
+    """Every image built here names a source commit on main that has its build dir, and a docs row."""
+    out = []
+    verifying = ctx.head.text("docs/verifying.md") if ctx.head.has("docs/verifying.md") else None
+    for ref, (n, parts) in rows.items():
+        if len(parts) != 4 or parts[2] == "-" or not SHA40.match(parts[3]):
+            continue
+        if ctx.history is not None and not ctx.history(parts[3], parts[2]):
+            out.append(Finding(IMAGES, n, "pins.source", "source commit is not on main or has no docker/<dir>/Dockerfile"))
+        digest = ref.rpartition("@sha256:")[2]
+        if verifying is not None and f"`{digest}`" not in verifying:
+            out.append(Finding(IMAGES, n, "pins.source", "image built here needs a row in docs/verifying.md"))
     return out
 
 
@@ -186,6 +202,10 @@ def _svc(**kw):
 
 CASES = [
     ("pinned engine and downloader", None, FILES, FILES, REND, None),
+    ("source commit on main", None, FILES, FILES, REND, None, {"history": {("d" * 40, "sglang-x-r1")}}),
+    ("source commit not on main", "pins.source", FILES, FILES, REND, None, {"history": set()}),
+    ("image built here without a docs row", "pins.source", dict(FILES, **{"docs/verifying.md": "no rows\n"}), FILES,
+     REND, None),
     ("diff rules green without base allowlist", None, FILES, {P: "x"}, REND, None),
     ("tag-only image", "pins.digest", FILES, FILES, _svc(image="nearaidev/sglang:latest"), None),
     ("digest without a row", "pins.allow", FILES, FILES, _svc(image=IMG.replace("a" * 64, "b" * 64)), None),
