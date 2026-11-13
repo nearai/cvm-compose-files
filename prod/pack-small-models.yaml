@@ -48,7 +48,7 @@ x-vllm-env:
     NCCL_DEBUG: INFO
     VLLM_CACHE_ROOT: /root/.cache/vllm
 
-# vLLM 0.33's V2 model runner device-asserts on position indices under concurrent requests for these services.
+# vLLM 0.33's V2 runner reads stale inputs from pinned host memory in a CVM; use V1.
 x-vllm-env-v1-runner:
   environment: &vllm-env-v1-runner
     <<: *vllm-env
@@ -1524,7 +1524,7 @@ services:
     volumes:
       - hugginface_cache:/root/.cache/huggingface
       - vllm_cache:/root/.cache/vllm
-    environment: *vllm-env
+    environment: *vllm-env-v1-runner
     deploy:
       resources:
         reservations:
@@ -1546,7 +1546,7 @@ services:
       nearai.otel.model_path: "Qwen/Qwen3-VL-30B-A3B-Instruct-FP8"
       nearai.otel.engine_image: "d825baf9ce4b"
       nearai.otel.instance: "1"
-      nearai.otel.config_variant: "qwen3vl-kv16g"
+      nearai.otel.config_variant: "qwen3vl-kv16g-v1runner"
       nearai.otel.deployment: "pack-small-models"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
