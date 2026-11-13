@@ -13,6 +13,18 @@ require "yaml"
 ROOT = File.expand_path("..", __dir__)
 # File => engine services that do not follow the contract yet.
 ISOLATED_FILES = {
+  "prod/pack-small-models.yaml" => %w[
+    model-sg-qwen36-35b-a3b-fp8-tp1-r1
+    model-sg-glm53-w4afp8-tp2-r1
+    model-sg-glm53-w4afp8-tp2-r2
+    glm53-ghost-aggregator
+    model-sg-flux2-klein-4b-tp1
+    model-vllm-qwen3vl-30b-a3b-fp8-tp1
+    model-vllm-qwen3-embedding-0.6b-tp1
+    model-vllm-qwen3-reranker-0.6b-tp1
+    model-vllm-whisper-large-v3-tp1
+    model-privacy-filter
+  ],
   "prod/qwen38-27b-abliterated-cc-1gpu.yaml" => [],
   "prod/small-models.yaml" => %w[
     model-sg-qwen36-35b-a3b-fp8-tp1-r1
