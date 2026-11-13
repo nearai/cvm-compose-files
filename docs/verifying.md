@@ -172,8 +172,8 @@ file and the matched value. Counts per rule:
 | `pins.hf-revision` | 1 | a model referenced by name without a revision pin |
 | `pins.raw-key` | 8 | images defined inline in a deployable |
 | `pins.remote-code` | 1 | the remote-code setting on that model |
-| `privacy.no-log-flag` | 12 | vLLM engine without an explicit request-logging flag |
-| `privacy.secret` | 9 | secret variables without a required-value check, or used inside an embedded config |
+| `privacy.no-log-flag` | 4 | vLLM engine without an explicit request-logging flag |
+| `privacy.secret` | 7 | secret variables without a required-value check |
 | `public.domain` | 6 | domain names outside the public allowlist |
 | `public.host` | 27 | host names in config values, labels or service names |
 | `public.repo` | 2 | repository references outside the public allowlist |
