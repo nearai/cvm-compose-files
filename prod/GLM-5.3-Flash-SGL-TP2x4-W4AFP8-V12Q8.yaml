@@ -759,8 +759,8 @@ configs:
       DCGM_FI_PROF_PCIE_RX_BYTES, gauge, PCIe receive throughput in bytes per second.
       DCGM_FI_DEV_PCIE_REPLAY_COUNTER, counter, Total PCIe replay events.
 
-      # Raw and exporter-owned incident signals. Windowed counts provide a
-      # stable zero series; cumulative totals preserve observed event labels.
+      # Raw and exporter-owned error signals. Windowed counts provide a
+      # stable zero series; cumulative totals preserve event labels.
       DCGM_FI_DEV_XID_ERRORS, gauge, Last XID error encountered.
       DCGM_EXP_XID_ERRORS_COUNT, gauge, XID records observed in the configured window.
       DCGM_EXP_XID_ERRORS_TOTAL, counter, XID records observed since exporter start.
@@ -1263,17 +1263,7 @@ configs:
               return 2
               ;;
             28)
-              # Probe timeout is NOT proof of death: a 1-token completion
-              # queues behind long-context prefills and legitimately exceeds
-              # 45s under prod load, with no 503/backpressure signal. Observed
-              # 2026-09-17 on the GLM-5.3 long-context tier: with one replica
-              # warming, the other's 250K-token prefills pushed a 1-token probe
-              # past 45 s three times and the host unregistered itself while
-              # serving fine. Disambiguate with a fast /v1/models probe - it
-              # answers from the HTTP layer even at full queue depth, so 2xx
-              # here means alive-but-saturated. Genuinely dead backends still
-              # fail this and unregister; model-proxy's own /healthz checker +
-              # breaker (PR#42) covers them within seconds regardless.
+              # /v1/models answers from the HTTP layer, so a 2xx means busy, not down.
               if curl -sf --connect-timeout 5 --max-time 10 \
                 -H "Authorization: Bearer $$INFERENCE_TOKEN" \
                 "http://$${HOST_IP}:$${HTTP_PORT}/v1/models" > /dev/null 2>&1; then
@@ -1404,10 +1394,7 @@ configs:
                     glm-5-3-flash.completions-stg.near.ai
                     ~^glm-5-3-flash-i\d+\.completions(-stg)?\.near\.ai$$;
         # Keep H2 connections from cloud-api alive across long idle gaps so the
-        # bucket-pinned TCP connection survives between chats. Without this,
-        # nginx defaults (75s idle, 1000 req/conn) close the connection and the
-        # next request opens a new TCP via model-proxy's L4 LB → may land on a
-        # different backend → signature 404. Pairs with cloud-api H2 keepalive
+        # connection survives between chats. Pairs with cloud-api H2 keepalive
         # PINGs (http2_keep_alive_while_idle).
         keepalive_timeout 1h;
         keepalive_requests 1000000;
