@@ -105,9 +105,9 @@ workflow's existing signatures stay valid for the images it published.
 
 | workflow | identity (prefix `https://github.com/nearai/cvm-compose-files/`) | images | state |
 |---|---|---|---|
-| `publish-glm53-v0523.yaml` | `.github/workflows/publish-glm53-v0523.yaml@refs/heads/main` | `nearaidev/sglang` | active |
-| `publish-sglang-v0523-secure.yaml` | `.github/workflows/publish-sglang-v0523-secure.yaml@refs/heads/main` | `nearaidev/sglang` | active |
 | `publish-vllm-dsv41-v033.yaml` | `.github/workflows/publish-vllm-dsv41-v033.yaml@refs/heads/main` | `nearaidev/vllm` | active |
+| `publish-glm53-v0523.yaml` | `.github/workflows/publish-glm53-v0523.yaml@refs/heads/main` | `nearaidev/sglang` | retired |
+| `publish-sglang-v0523-secure.yaml` | `.github/workflows/publish-sglang-v0523-secure.yaml@refs/heads/main` | `nearaidev/sglang` | retired |
 | `publish-glm53-admission-reserve.yaml` | `.github/workflows/publish-glm53-admission-reserve.yaml@refs/heads/main` | `nearaidev/sglang` | retired |
 | `publish-glm53-fc91d24.yaml` | `.github/workflows/publish-glm53-fc91d24.yaml@refs/heads/main` | `nearaidev/sglang` | retired |
 | `publish-glm53-hicache.yaml` | `.github/workflows/publish-glm53-hicache.yaml@refs/heads/main` | `nearaidev/sglang` | retired |
