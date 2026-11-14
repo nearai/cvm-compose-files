@@ -36,7 +36,7 @@ index 17cf03dd7971950a759c78dfc08e2d865f6ebc65..6a2a10ae9078f1d7195f089284cf392c
          if self._sync_client is None or not self.reuse_client:
 -            session = requests.Session()
 +            session = _session_without_cookies()
-             protective_adapter = _SSRFProtectiveAdapter()
+             protective_adapter = _PinnedPublicIPAdapter()
              session.mount("http://", protective_adapter)
              session.mount("https://", protective_adapter)
 @@ -665,7 +676,9 @@ class HTTPConnection:

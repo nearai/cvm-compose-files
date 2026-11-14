@@ -8,7 +8,7 @@ LABEL nearai.vllm.base.linux_amd64.digest="sha256:91ee972ab751fb7180bc71c175865e
 LABEL nearai.vllm.upstream.revision="4ba787ec9959e566d3b587a796dff07673324da5"
 LABEL nearai.build.recipe="docker/vllm-v0.33.0-dsv41-r3/Dockerfile"
 LABEL nearai.vllm.patch_series="01-17"
-LABEL nearai.vllm.patched_files_sha256="56205a51d8773899827363d2600fb7039511609855dd81e4e1a45442a08cfa23"
+LABEL nearai.vllm.patched_files_sha256="f64c686622401cb42801934553a8af4e4dde8d17e3614e34931ecb8fdeedcf68"
 LABEL nearai.os.linux_libc_dev="6.8.0-149.149"
 LABEL nearai.os.packages="openssl=3.0.13-0ubuntu3.16 libc6=2.39-0ubuntu8.12 linux-libc-dev=6.8.0-149.149"
 

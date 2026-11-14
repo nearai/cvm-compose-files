@@ -1,4 +1,4 @@
-name: Publish DS4.1-Flash LoRA vLLM image
+name: Publish DS4.1-Flash LoRA and confidential-compute vLLM image
 
 on:
   workflow_dispatch:
@@ -72,9 +72,9 @@ jobs:
           git merge-base --is-ancestor "$SOURCE_REVISION" origin/main
           test "$GITHUB_REF" = refs/heads/main
           test "$(sha256sum "$BUILD_CONTEXT/Dockerfile" | awk '{print $1}')" = \
-            923203ead33a426cbc6f9adefed35b6240a39ad554ff0ef1b4d9fac2955a4ebb
+            ce2c8f523d0ffe0641d34683a9f503c314b2a393fb1820a819b33cec7aecf967
           test "$(sha256sum "$BUILD_CONTEXT/SHA256SUMS" | awk '{print $1}')" = \
-            7e95879b4226ad452176312a7f04c208fc1c81daa5b44fe15c4dc20487d74909
+            2b30819f2c4b344e6640219c078aef3f2cab30c979783d7e270cd6827cacf2ed
           (cd "$BUILD_CONTEXT" && sha256sum --check --strict SHA256SUMS)
           for line in \
             'base_image=vllm/vllm-openai@sha256:d825baf9ce4b1b6bfc5ecc7b79880c7e6748c65a72d697ce3d47607aafa84c6e' \
@@ -295,7 +295,7 @@ jobs:
       - name: Publish summary
         run: |
           {
-            echo '## DS4.1-Flash LoRA vLLM image'
+            echo '## DS4.1-Flash LoRA and confidential-compute vLLM image'
             echo
             echo "- tag: \`$IMAGE_REF\`"
             echo "- immutable: \`$IMAGE_IMMUTABLE_REF\`"

@@ -42,8 +42,8 @@ index 2913a640e0cbff44cf38e12ab0e9497ac91cb8f2..17cf03dd7971950a759c78dfc08e2d86
 +    """Resolve a hostname once, returning every unique IP in answer order.
 +
 +    A single resolution per hop (instead of one at check time and another at
-+    connect time) closes the DNS-rebinding TOCTOU: the addresses validated
-+    here are the addresses dialed below.
++    connect time) means the addresses validated here are the addresses
++    dialed below.
 +    """
 +    try:
 +        infos = socket.getaddrinfo(hostname, None, type=socket.SOCK_STREAM)
@@ -60,8 +60,8 @@ index 2913a640e0cbff44cf38e12ab0e9497ac91cb8f2..17cf03dd7971950a759c78dfc08e2d86
 +
 +    Every resolved IP must be globally reachable (this rejects loopback,
 +    RFC1918, link-local, multicast, reserved, and unspecified addresses);
-+    a hostname with mixed answers is refused outright so a rebinding
-+    rotation cannot smuggle one bad record past the check. Returns the
++    a hostname whose answers are not all public is refused outright, so
++    one non-public record rejects it. Returns the
 +    first resolved IP, which the caller must dial directly instead of
 +    resolving again. `VLLM_MEDIA_URL_ALLOW_PRIVATE_IPS=1` opts out (tests,
 +    trusted networks) but still pins the resolved IP.
@@ -174,7 +174,7 @@ index 2913a640e0cbff44cf38e12ab0e9497ac91cb8f2..17cf03dd7971950a759c78dfc08e2d86
 +        return conn
 +
 +
-+class _SSRFProtectiveAdapter(HTTPAdapter):
++class _PinnedPublicIPAdapter(HTTPAdapter):
 +    """requests adapter that resolves once, validates, and dials the IP.
 +
 +    For every proxy-free request the hostname is resolved a single time,
@@ -239,8 +239,8 @@ index 2913a640e0cbff44cf38e12ab0e9497ac91cb8f2..17cf03dd7971950a759c78dfc08e2d86
 +    """aiohttp connector that only dials validated IPs.
 +
 +    Hostname, SNI, and certificate verification keep using the original
-+    URL host; DNS answers are restricted to the IPs validated here, so a
-+    rebinding rotation cannot smuggle a private address past the check.
++    URL host; DNS answers are restricted to the IPs validated here, so
++    every connection goes to an address that passed validation.
 +    Every redirect hop re-resolves through this path.
 +    """
 +
@@ -305,7 +305,7 @@ index 2913a640e0cbff44cf38e12ab0e9497ac91cb8f2..17cf03dd7971950a759c78dfc08e2d86
          if self._sync_client is None or not self.reuse_client:
 -            self._sync_client = requests.Session()
 +            session = requests.Session()
-+            protective_adapter = _SSRFProtectiveAdapter()
++            protective_adapter = _PinnedPublicIPAdapter()
 +            session.mount("http://", protective_adapter)
 +            session.mount("https://", protective_adapter)
 +            self._sync_client = session
@@ -352,9 +352,9 @@ index 2913a640e0cbff44cf38e12ab0e9497ac91cb8f2..17cf03dd7971950a759c78dfc08e2d86
 +            # caller performed, because earlier hops are invisible upstream.
 +            _check_allowed_domains(current_url, allowed_domains)
 +            # Resolve once and IP-validate before connecting; the transport
-+            # dials exactly this address (see _SSRFProtectiveAdapter), so a
-+            # rebinding rotation between check and connect cannot smuggle a
-+            # private destination past the check.
++            # dials exactly this address (see _PinnedPublicIPAdapter), so the
++            # address that was validated is the address connected to, with
++            # no second resolution in between.
 +            _resolve_validated_ip(urlsplit(current_url).hostname or "")
 +            with self.get_response(
 +                current_url,
@@ -447,7 +447,7 @@ index 28d7a7ebd7fc8dcbbcce598d685924c263cec42a..6619938c386e469a9f981a3d09dae617
      ),
 +    # Whether to allow media fetches (and every redirect hop) to resolve to
 +    # non-public IPs (loopback, RFC1918, link-local, multicast, reserved).
-+    # Default to False: leaving it off closes the SSRF hole in #57157.
++    # Default to False: media fetches resolve to public IPs only (#57157).
 +    # Opt in (e.g. for tests serving fixtures from localhost) with "1".
 +    "VLLM_MEDIA_URL_ALLOW_PRIVATE_IPS": lambda: bool(
 +        int(os.getenv("VLLM_MEDIA_URL_ALLOW_PRIVATE_IPS", "0"))
