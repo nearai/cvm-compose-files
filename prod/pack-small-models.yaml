@@ -338,7 +338,7 @@ x-privacy-filter-common: &privacy-filter-common
     dockerfile_inline: |
       # syntax=docker/dockerfile:1.4
       FROM pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime
-      # transformers 5.20+ needs PyTorch >=2.6; this 2.5.1 base crash-loops on fresh builds.
+      # transformers 5.20+ needs PyTorch >=2.6; the 2.5.1 base needs the pinned 5.16.1.
       RUN pip install --no-cache-dir \
           "transformers==5.16.1" \
           accelerate \
@@ -3140,10 +3140,8 @@ configs:
       # Health check via the host-published port (HOST_IP:<port>), NOT the
       # compose service DNS name. A service-name probe fails with curl (6)
       # "Could not resolve host" if the registrar loses compose-network DNS
-      # (e.g. after a backend container is recreated independently), wedging
-      # every port's health check so all 8 models silently drop to 0 backends.
-      # HOST_IP:<port> is the endpoint model-proxy actually routes to and never
-      # depends on inter-container DNS. ($1 = host:port)
+      # (e.g. after a backend container is recreated independently).
+      # HOST_IP:<port> is the endpoint model-proxy routes to. ($1 = host:port)
       check_chat() {
         curl -sf --max-time 45 -X POST "http://$$1/v1/chat/completions" \
           -H "Authorization: Bearer $$INFERENCE_TOKEN" \
@@ -3231,12 +3229,8 @@ configs:
       }
 
       # Probe the host-published nginx port via HOST_IP instead of the
-      # "nginx" compose DNS name. A stale/abandoned docker service-name
-      # resolution (e.g. after nginx is recreated) otherwise wedges this
-      # readiness gate forever and silently drops every model to 0 backends.
-      # Bounded + loud so a persistent probe failure falls through to the
-      # registration loop (which health-checks each backend directly) instead
-      # of hanging here forever.
+      # "nginx" compose DNS name. The wait is bounded; the registration loop
+      # then health-checks each backend directly.
       READY_URL="http://$${HOST_IP}:8002/v1/models"
       echo "Waiting for first model to be ready (probing $$READY_URL)..."
       ready_attempts=0
@@ -3288,8 +3282,7 @@ configs:
         # Legacy hostname for the retired Qwen3-30B. model-proxy keeps aliases in memory only and loses them
         # when every replica restarts, so re-assert it each pass, like the model mappings above.
         register_alias "qwen3-30b.completions.near.ai" "qwen3-6-35b.completions.near.ai"
-        # GLM-5.3 Flash (:8009, base tier). model-proxy's model->domain map is one domain per id,
-        # last-writer-wins: the other base-tier hosts register the same mapping, never the long domain.
+        # GLM-5.3 Flash (:8009, base tier). Registers the base domain, never the long domain.
         register_model "z-ai/glm-5.3-flash" "glm-5-3-flash.completions.near.ai"
         # Refresh liveness after the register_model calls, before the long sleep.
         date +%s > /tmp/registrar_alive
@@ -3385,12 +3378,8 @@ configs:
       ssl_protocols TLSv1.2 TLSv1.3;
 
       # Each model accepts both its canonical SNI and the rotation-SNI form
-      # `<canonical>-i<N>.completions.near.ai` used by cloud-api's discovery
-      # (model-proxy's parse_indexed_sni), in both the prod `completions.near.ai`
-      # and staging `completions-stg.near.ai` zones. Without the staging
-      # server_names, `*.completions-stg.near.ai` SNIs fall through to the
-      # default server (lexically first model) and return the wrong model's
-      # signing pubkey, breaking E2EE on staging.
+      # `<canonical>-i<N>.completions.near.ai` used by cloud-api's discovery,
+      # in both the prod `completions.near.ai` and staging `completions-stg.near.ai` zones.
 
       server {
           listen 443 ssl http2;
@@ -3476,7 +3465,7 @@ configs:
 
       # qwen3-30b.* is a model-proxy domain alias for qwen3-6-35b (retired Qwen3-30B; the
       # registrar re-asserts it). model-proxy passes the ClientHello through unchanged, so the
-      # legacy SNI must match here or it falls through to the default (flux2-klein) vhost.
+      # legacy SNI must match here.
       server {
           listen 443 ssl http2;
           server_name qwen3-6-35b.completions.near.ai
@@ -3666,9 +3655,7 @@ configs:
               return 0
               ;;
             28)
-              # A 1-token probe queues behind long prefills and can pass 45 s on a healthy
-              # engine. /v1/models answers from the HTTP layer, so 2xx means busy, not
-              # dead.
+              # /v1/models answers from the HTTP layer, so a 2xx means busy, not down.
               if curl -sf --connect-timeout 5 --max-time 10 \
                 -H "Authorization: Bearer $$INFERENCE_TOKEN" \
                 "http://$$1/v1/models" > /dev/null 2>&1; then
@@ -3752,10 +3739,8 @@ configs:
     content: |
       #!/bin/sh
       # Maps the adapter id to its domain; never registers or unregisters an endpoint.
-      # model-proxy keys probes by ip:port, so /unregister/endpoint for HOST_IP:8000 would
-      # drop base Qwen3.8 (and propagate to peers). Discovery already probes base's
-      # HOST_IP:8000, whose /v1/models (the engine list) carries the adapter id, and routes
-      # its domain to HOST_IP:8001, where nginx-qwen38 selects the abliterated proxy by SNI.
+      # Discovery probes base's HOST_IP:8000 (its /v1/models carries the adapter id) and
+      # routes the domain to HOST_IP:8001, where nginx-qwen38 selects the proxy by SNI.
       PROXY_URL="https://completions.near.ai"
       TOKEN="$${MODEL_PROXY_TOKEN}"
       INFERENCE_TOKEN="$${PROXY_TOKEN}"
@@ -3780,8 +3765,7 @@ configs:
           -d "{\"model\":\"$$1\",\"domain\":\"$$2\"}" || true
       }
 
-      # Nothing to withdraw: /unregister/model is not propagated and peer sync restores
-      # the mapping, so stopping proxy-qwen38-27b-abliterated is the off switch.
+      # No endpoint is owned here, so there is nothing to withdraw.
       cleanup() {
         echo "SIGTERM received; leaving model-proxy untouched (no endpoint is owned here)"
         exit 0

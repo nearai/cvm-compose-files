@@ -44,7 +44,7 @@ ALL_RULES = RULES + [r for g in GUARDS for r in g.RULES]
 ENTRY_KEYS = {"rule", "path", "sha256", "reason", "remove_when"}
 # Rules that guard the agent setup and the waivers themselves.
 UNWAIVABLE_PREFIX = ("exceptions.", "claude.")
-UNWAIVABLE = {"layout.claude-md", "layout.agent-file"}
+UNWAIVABLE = {"layout.claude-md", "layout.agent-file", "public.disclosure", "public.disclosure-added", "public.branch"}
 
 
 class Context:
@@ -211,7 +211,8 @@ def probe_lines(head, rendered):
 def expected_doc(head, rendered, raw=None):
     """Raw findings (before exceptions) of a head-only run, plus the probe results."""
     ctx = Context(head, None, rendered, raw=raw)
-    findings = [f for g in GUARDS for f in g.check(ctx)]
+    # Unwaivable rules are never recorded as expected: any finding of theirs fails on its own.
+    findings = [f for g in GUARDS for f in g.check(ctx) if not (f.rule.startswith(UNWAIVABLE_PREFIX) or f.rule in UNWAIVABLE)]
     lines = sorted({f"{f.rule} {f.path} {sha256(f.key)}" for f in findings})
     return {"findings": lines, "probes": probe_lines(head, rendered)}
 
@@ -280,6 +281,9 @@ RUN_CASES = [
     ("waiver of layout.claude-md", "exceptions.format",
      {"prod/a.bin": "x", "CLAUDE.md": "x", "ci/data/exceptions.json": json.dumps(
          GOOD_EX + [dict(GOOD_EX[0], rule="layout.claude-md", path="CLAUDE.md", sha256=sha256("CLAUDE.md"))])}, None),
+    ("waiver of a wording rule", "exceptions.format",
+     {"prod/a.bin": "x", "README.md": "x", "ci/data/exceptions.json": json.dumps(
+         GOOD_EX + [dict(GOOD_EX[0], rule="public.disclosure", path="README.md", sha256=sha256("README.md"))])}, None),
     ("waiver counts documented", None, {"prod/a.bin": "x", "ci/data/exceptions.json": json.dumps(GOOD_EX),
                                          "docs/verifying.md": "| `layout.ext` | 1 | x |\n"}, None),
     ("waiver count stale", "exceptions.counts", {"prod/a.bin": "x", "ci/data/exceptions.json": json.dumps(GOOD_EX),
