@@ -1,0 +1,31 @@
+diff --git a/vllm/renderers/chat_utils/chat_message.py b/vllm/renderers/chat_utils/chat_message.py
+index aad31fc2c6ee8a5ef0d5efc5a480b536a19e94f4..d5294e85326813fa99b5c2427c61370e7af5fd23 100644
+--- a/vllm/renderers/chat_utils/chat_message.py
++++ b/vllm/renderers/chat_utils/chat_message.py
+@@ -59,6 +59,14 @@ from .types import (
+ 
+ logger = init_logger(__name__)
+ 
++_MAX_MM_UUID_LENGTH: Final[int] = 128
++"""Maximum length of a multimodal content-part `uuid`.
++
++The uuid flows into the EngineCore block-hash pickle+SHA-256 path on the
++scheduler thread; bounding it mirrors the `cache_salt` cap shipped for
++GHSA-wpww-v874-ph2p (see validate_cache_salt).
++"""
++
+ 
+ _PROMPT_EMBEDS_MISSING_DATA_ERROR: Final[str] = (
+     "prompt_embeds content part requires a non-empty `data` field "
+@@ -488,6 +496,11 @@ def parse_chat_message_content_part(
+     uuid = part.get("uuid", None)
+     if uuid is not None:
+         uuid = str(uuid)
++        if len(uuid) > _MAX_MM_UUID_LENGTH:
++            raise VLLMValidationError(
++                f"Multimodal content-part 'uuid' must be at most "
++                f"{_MAX_MM_UUID_LENGTH} characters."
++            )
+ 
+     modality = None
+     prompt_embeds_placeholder = None

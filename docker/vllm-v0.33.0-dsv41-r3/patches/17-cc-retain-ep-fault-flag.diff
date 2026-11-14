@@ -1,0 +1,22 @@
+diff --git a/vllm/v1/worker/gpu/async_utils.py b/vllm/v1/worker/gpu/async_utils.py
+index d58eb32d4f6cd36f22e2d59c2c299b8d50a697d0..1d72c1ede16b7f8d857987223b8955388d3fd34f 100644
+--- a/vllm/v1/worker/gpu/async_utils.py
++++ b/vllm/v1/worker/gpu/async_utils.py
+@@ -135,6 +135,7 @@ class AsyncOutput(AsyncModelRunnerOutput):
+         # Blocking (sleep) event to avoid busy-polling the CUDA driver lock.
+         self.copy_event = torch.cuda.Event(blocking=True)
+         self._has_fault: torch.Tensor | None = None
++        self._has_fault_gpu: torch.Tensor | None = None
+         cc = is_confidential_compute()
+         if cc:
+             # The runner's copy stream comes from torch's pool; the D2H patches
+@@ -180,6 +181,9 @@ class AsyncOutput(AsyncModelRunnerOutput):
+                 # NEAR: without CC, unchanged image path (on the copy stream).
+                 if not cc:
+                     has_fault = get_ep_all2all_manager().query_fault()
++                # Retained like the tensors above: under CC the flag comes from the
++                # main stream, so a freed block could be reused before this copy runs.
++                self._has_fault_gpu = has_fault
+                 self._has_fault = has_fault.to("cpu", non_blocking=True)
+             self.copy_event.record(copy_stream)
+ 
