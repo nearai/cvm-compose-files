@@ -20,8 +20,6 @@ Upstream numbers are vllm-project/vllm pull requests and name where a patch come
 | 12-media-client-no-cookies | shared media HTTP clients keep no cookies | #56588 |
 | 13-whisper-langdetect-fallback | a detected language vLLM does not list falls back to "en" instead of HTTP 500 | NEAR |
 
-Patches 01-04, 08 and 10-12 are byte-identical to 08-15 of `docker/vllm-v0.33.0-dsv41-r3`.
-
 Defaults this image sets, which differ from stock v0.33.0:
 - 02 takes cached-token counts from the engine.
 - 05 caps list inputs at 2048 on the pooling routes; /v1/completions prompt lists get the same 2048
@@ -33,9 +31,8 @@ Defaults this image sets, which differ from stock v0.33.0:
 
 Video decoding is patched by 07 only, so Qwen3-VL on this image runs with video disabled.
 
-Regex compilation is left as upstream v0.33.0 has it: a compile is bounded by
-`VLLM_REGEX_COMPILATION_TIMEOUT_S`. #52119 moves it to a killable worker, at a per-compile process
-cost of up to 10x on regex structured outputs, so it is not carried here.
+Regex compilation keeps the upstream v0.33.0 behaviour: each compile is bounded by
+`VLLM_REGEX_COMPILATION_TIMEOUT_S`, on the thread that requested it.
 
 OS: openssl/libssl3t64 3.0.13-0ubuntu3.16 and libc6/libc-bin/libc6-dev/libc-dev-bin
 2.39-0ubuntu8.12, pinned by exact version; the engine's media fetches load them (TLS, DNS). pip,

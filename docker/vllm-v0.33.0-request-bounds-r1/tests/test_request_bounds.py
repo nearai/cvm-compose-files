@@ -57,7 +57,7 @@ def test_02_output_processor_ignores_untrusted_cached_tokens(monkeypatch):
             "kv_transfer_params": {"do_remote_prefill": True, "remote_prefill_cached_tokens": 999999}
         },
     )
-    # Admission was bypassed (built while trusted); the output side must still ignore it.
+    # The request was built while trusted; the output side must still ignore it.
     monkeypatch.setenv("VLLM_TRUST_REMOTE_PREFILL_CACHED_TOKENS", "0")
     op = OutputProcessor(tokenizer=None, log_stats=False)
     op.add_request(

@@ -94,8 +94,8 @@ index 0000000..125da85
 +# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 +"""Tests that VLLM_MAX_COMPLETION_PROMPTS is enforced on pooling/scoring routes.
 +
-+The fan-out bound was originally only applied to /v1/completions
-+(CVE-2026-73559). These tests verify it is now also enforced on
++VLLM_MAX_COMPLETION_PROMPTS bounds the fan-out on /v1/completions.
++These tests verify that the same bound is enforced on
 +/score, /rerank, /pooling, and /classify request models.
 +"""
 +
@@ -1650,7 +1650,7 @@ index 7dc30d4..9e94af9 100644
          ),
          pooling_params=None,
      )
-+    # Exercise sink protection even if admission was bypassed.
++    # Exercise the output-side bound independently of admission.
 +    monkeypatch.setenv("VLLM_TRUST_REMOTE_PREFILL_CACHED_TOKENS", str(int(trusted)))
      output_processor.add_request(request, prompt=None)
  
