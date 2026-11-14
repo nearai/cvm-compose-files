@@ -4,6 +4,8 @@
 Report vulnerabilities privately through GitHub: Security tab -> "Report a vulnerability".
 This is the only reporting channel. Do not open a public issue or pull request, and do not include
 secrets or user data in the report.
+When the fix path in .claude/rules/docs.md applies, a maintainer opens a private fork and adds you;
+otherwise the fix is a normal public PR.
 If you find a credential in this repository, report it the same way and do not use it.
 
 ## Scope
@@ -16,8 +18,8 @@ In scope:
   attestation look valid when it should not.
 - Secrets or private data committed anywhere in this repository or its history.
 
-Items listed under "Known gaps" in docs/verifying.md are already known; reports that show a gap is wider
-than described are in scope.
+Items listed under "Known gaps" in docs/verifying.md are limits by design; reports that show a limit is
+wider than described are in scope.
 
 Out of scope (report to the project concerned):
 - Bugs in upstream inference engines, base images or models.

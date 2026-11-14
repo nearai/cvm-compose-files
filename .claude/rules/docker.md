@@ -28,7 +28,8 @@ docker/<engine>-v<upstream>-<scope>-r<N>/
 - Every `FROM` is an earlier stage or pinned by digest; no parser directives (`# syntax=`, `# escape=`).
 - `RUN` fetches nothing unpinned: no curl, wget or git; pip and uv use `--require-hashes`; apt-get
   installs `name=version`; no here-documents. CI catches the common forms; review reads every `RUN`.
-- No lab results, benchmarks, dates, hosts, experiment ids or incident notes in any file of the dir.
+- No lab results, benchmarks, dates, hosts, experiment ids or operational-event notes in any file of the dir.
+- READMEs and patch headers describe a patch by what it does; wording follows [docs.md](docs.md).
 - The image's own digest is recorded in `ci/data/images.allow` and `docs/verifying.md`, never in the dir.
 - A dir may leave `docker/` while its images are still pinned: verifiers read it at the source commit
   recorded in the image's provenance, and its rows in docs/verifying.md stay.

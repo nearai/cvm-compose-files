@@ -10,8 +10,8 @@ downloaders and monitoring. Hosts run a file from a release tag `v0.0.N`.
   the host's attestation; [docs/verifying.md](docs/verifying.md) shows how to check them. The compose file itself
   is not part of the host's hardware measurement.
 - Images are pinned by digest, except as listed in [Known gaps](docs/verifying.md#known-gaps). Images built
-  here are published by publish workflows on `main` and signed with a keyless Sigstore identity; for
-  older digests the repo does not record which identity signed them. Most also get a build provenance
+  here are published by publish workflows on `main` and signed with a keyless Sigstore identity; a digest
+  that fails every identity listed in docs/verifying.md is treated as unsigned. Most also get a build provenance
   attestation.
 - Privacy here means the serving containers must not log prompts or outputs. CI checks this through the
   flags and env of SGLang and vLLM services only; docs/verifying.md says exactly what is covered.
@@ -19,7 +19,7 @@ downloaders and monitoring. Hosts run a file from a release tag `v0.0.N`.
   a gap.
 - CI checks the compose files, build contexts, workflows and text in this repo. It does not inspect the
   contents of published images, and it cannot see what a host was told to deploy.
-- Some live files predate these rules. Each deviation CI detects in them is a listed exception; see
+- Each deviation CI detects in live files is a listed exception; see
   [Known gaps](docs/verifying.md#known-gaps).
 
 ## Layout
@@ -65,7 +65,7 @@ file-name grammar in `.claude/rules/prod.md`. `privacy`: `flag set` (explicit no
 <!-- status:begin -->
 | file | serves | model@revision | engine image | topology | privacy | status |
 |---|---|---|---|---|---|---|
-| `prod/DeepSeek-V4.1-Flash-1017-vLLM-DEP8-Abliterated.yaml` (legacy name) | deepseek-ai/DeepSeek-V4.1-Flash-1017 | deepseek-ai/DeepSeek-V4.1-Flash-1017@1bae0e108899 | [docker/vllm-dsv41-v033@7469ed1](https://github.com/nearai/cvm-compose-files/tree/7469ed1c47d216ceee4a5329515e6fa0901d90df/docker/vllm-dsv41-v033) | dep8 | waived | live |
+| `prod/DeepSeek-V4.1-Flash-1017-vLLM-DEP8-Abliterated.yaml` (legacy name) | deepseek-ai/DeepSeek-V4.1-Flash-1017 | deepseek-ai/DeepSeek-V4.1-Flash-1017@1bae0e108899 | [docker/vllm-dsv41-v033@7469ed1](https://github.com/nearai/cvm-compose-files/tree/7469ed1c47d216ceee4a5329515e6fa0901d90df/docker/vllm-dsv41-v033) | dep8 | flag set | live |
 | `prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8-V12Q8.yaml` (legacy name) | z-ai/glm-5.3-flash | graphistry/GLM-5.3-Flash-W4AFP8@99f1fa70408c | [docker/sglang-glm53-v0523@2cf337c](https://github.com/nearai/cvm-compose-files/tree/2cf337c2c5fc3fa78570a5ae0e3dd432abaefde8/docker/sglang-glm53-v0523) | tp2x4 | flag set | live |
 | `prod/GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext.yaml` (legacy name) | z-ai/glm-5.3-flash | graphistry/GLM-5.3-Flash-W4AFP8@99f1fa70408c | [docker/sglang-glm53-hicache-w4afp8@678a6b5](https://github.com/nearai/cvm-compose-files/tree/678a6b5ee3e4e7b83340f810c76530958eecc499/docker/sglang-glm53-hicache-w4afp8) | tp4x2 | flag set | live |
 | `prod/GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext.yaml` (legacy name) | z-ai/glm-5.3-flash | graphistry/GLM-5.3-Flash-W4AFP8@99f1fa70408c | [docker/sglang-glm53-v0523@2cf337c](https://github.com/nearai/cvm-compose-files/tree/2cf337c2c5fc3fa78570a5ae0e3dd432abaefde8/docker/sglang-glm53-v0523) | tp2x4 | flag set | live |
@@ -74,7 +74,7 @@ file-name grammar in `.claude/rules/prod.md`. `privacy`: `flag set` (explicit no
 | `prod/pack-small-models.yaml` | Qwen/Qwen3-VL-30B-A3B-Instruct | Qwen/Qwen3-VL-30B-A3B-Instruct-FP8@d9748a51ae66 | third-party vllm/vllm-openai | tp1 | flag set | candidate |
 | `prod/pack-small-models.yaml` | Qwen/Qwen3.6-35B-A3B-FP8 | Qwen/Qwen3.6-35B-A3B-FP8@95a723d08a94 | [docker/sglang-v0523-secure@a07dea8](https://github.com/nearai/cvm-compose-files/tree/a07dea8faf1523d85f20e328031977b7964be3e4/docker/sglang-v0523-secure) | tp1 | flag set | candidate |
 | `prod/pack-small-models.yaml` | Qwen/Qwen3.8-27B | Qwen/Qwen3.8-27B-FP8@017b9c7af6b5 | [docker/sglang-v0523-secure@a07dea8](https://github.com/nearai/cvm-compose-files/tree/a07dea8faf1523d85f20e328031977b7964be3e4/docker/sglang-v0523-secure) | tp1 | flag set | candidate |
-| `prod/pack-small-models.yaml` | black-forest-labs/FLUX.2-klein-4B | black-forest-labs/FLUX.2-klein-4B@- | [docker/sglang-v0523-secure@a07dea8](https://github.com/nearai/cvm-compose-files/tree/a07dea8faf1523d85f20e328031977b7964be3e4/docker/sglang-v0523-secure) | tp1 | flag set | candidate |
+| `prod/pack-small-models.yaml` | black-forest-labs/FLUX.2-klein-4B | black-forest-labs/FLUX.2-klein-4B@e7b7dc27f91d | [docker/sglang-v0523-secure@a07dea8](https://github.com/nearai/cvm-compose-files/tree/a07dea8faf1523d85f20e328031977b7964be3e4/docker/sglang-v0523-secure) | tp1 | flag set | candidate |
 | `prod/pack-small-models.yaml` | openai/whisper-large-v3 | openai/whisper-large-v3@06f233fe06e7 | built on host | tp1 | flag set | candidate |
 | `prod/pack-small-models.yaml` | z-ai/glm-5.3-flash | graphistry/GLM-5.3-Flash-W4AFP8@99f1fa70408c | [docker/sglang-glm53-v0523@2cf337c](https://github.com/nearai/cvm-compose-files/tree/2cf337c2c5fc3fa78570a5ae0e3dd432abaefde8/docker/sglang-glm53-v0523) | tp2x2 | flag set | candidate |
 | `prod/qwen38-27b-abliterated-cc-1gpu.yaml` (legacy name) | Qwen/Qwen3.8-27B | Qwen/Qwen3.8-27B-FP8@017b9c7af6b5 | third-party lmsysorg/sglang | tp1 | flag set | live |
@@ -112,4 +112,4 @@ attestation, its build context and the model revision.
 ## Rules
 
 [AGENTS.md](AGENTS.md) holds the rules for changing and reviewing this repo; `python3 ci/run.py` runs the
-same guards as CI. Report vulnerabilities as described in [SECURITY.md](.github/SECURITY.md).
+same guards as CI. To report a problem privately, follow [SECURITY.md](.github/SECURITY.md).

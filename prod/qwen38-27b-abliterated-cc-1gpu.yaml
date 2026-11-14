@@ -202,8 +202,6 @@ services:
       - VLLM_PROXY_STRICT_REQUEST_MODEL=true
       - OHTTP_ENABLED=true
       - TOKEN=${PROXY_TOKEN}${PROXY_TOKEN_NEXT:+,${PROXY_TOKEN_NEXT}}
-      - FUSION_ENABLED=${FUSION_ENABLED}
-      - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
       - VLLM_BACKEND_URLS=http://model-sg-qwen38-27b-fp8-tp1-lora:8000
       - VLLM_PROXY_MAX_REQUEST_SIZE=104857600
       - VLLM_PROXY_PRIORITY_SIZE_TIERS=16000:10,65536:5,*:0
@@ -250,8 +248,6 @@ services:
       - VLLM_PROXY_ALLOWED_ORG_IDS=${QWEN38_ABLITERATED_ALLOWED_ORG_IDS:-__no_organizations__}
       - OHTTP_ENABLED=true
       - TOKEN=${QWEN38_ABLITERATED_PROXY_TOKEN}${QWEN38_ABLITERATED_PROXY_TOKEN_NEXT:+,${QWEN38_ABLITERATED_PROXY_TOKEN_NEXT}}
-      - FUSION_ENABLED=${FUSION_ENABLED}
-      - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
       - VLLM_BACKEND_URLS=http://model-sg-qwen38-27b-fp8-tp1-lora:8000
       - VLLM_PROXY_MAX_REQUEST_SIZE=104857600
       - VLLM_PROXY_PRIORITY_SIZE_TIERS=16000:10,65536:5,*:0
@@ -785,7 +781,7 @@ configs:
       # :8000 - base Qwen3.8-27B (host B+0): model-proxy's probe and the base registrar.
       # Default server, so the probe (no Host match) reaches the base proxy, whose
       # /v1/models is the engine list and carries both ids. /v1/metrics is proxied here
-      # (not 404) for model-proxy capacity sampling, as on gpu13; /metrics stays private.
+      # for model-proxy capacity sampling.
       server {
           listen 8000 default_server;
           location ^~ /metrics { return 404; }
@@ -815,9 +811,7 @@ configs:
       ssl_protocols TLSv1.2 TLSv1.3;
 
       # :8444 - TLS routing port (host B+44) for base Qwen3.8-27B. Canonical, staging-zone
-      # and rotation-SNI (-i<N>) names as on gpu13. default_server, so the instance's
-      # direct host name and unknown SNI reach the base proxy (gpu13's base block is the
-      # first, hence the default, server on :8001).
+      # and rotation-SNI (-i<N>) names.
       server {
           listen 8444 ssl http2 default_server;
           server_name qwen3-8-27b.completions.near.ai
@@ -854,11 +848,8 @@ configs:
       # Owns THIS instance's endpoint (host ports) and registers the base model with
       # model-proxy. Guest ports are never advertised.
       #
-      # Tradeoff: base and abliterated share ONE endpoint and model-proxy has no per-model
-      # endpoint health or withdrawal, so each cycle checks BOTH routes (base chat + TLS,
-      # abliterated chat + TLS SNI) and any failure counts toward the same threshold. One
-      # failing model withdraws both from this instance (fail-closed, intended); an
-      # abliterated-only failure never registers on first boot.
+      # Base and abliterated share one endpoint, so each cycle checks both routes (base chat + TLS,
+      # abliterated chat + TLS SNI) and any failure counts toward the same threshold.
       MODE="$${MODEL_PROXY_REGISTRATION:-disabled}"
       TOKEN="$${MODEL_PROXY_TOKEN}"
       INFERENCE_TOKEN="$${PROXY_TOKEN}"
@@ -996,10 +987,7 @@ configs:
               return 0
               ;;
             28)
-              # A 1-token probe queues behind long prefills and can pass 45 s on a healthy
-              # engine: on 2026-11-02 ~250K-token prompts withdrew both Qwen3.8 replicas
-              # this way. /v1/models answers from the HTTP layer, so 2xx means busy, not
-              # dead. Same rule as the GLM-5.3 registrars (#277).
+              # /v1/models answers from the HTTP layer, so a 2xx means busy, not down.
               if curl -sf --connect-timeout 5 --max-time 10 \
                 -H "Host: $$chat_host" \
                 -H "Authorization: Bearer $$2" \
@@ -1120,11 +1108,8 @@ configs:
     content: |
       #!/bin/sh
       # Maps the adapter id to its domain; never registers or unregisters an endpoint.
-      # model-proxy keys probes by ip:port, so /unregister/endpoint for the base endpoint
-      # would drop base Qwen3.8 (and propagate to peers). Discovery already probes the base
-      # endpoint, whose /v1/models (the engine list) carries the adapter id, and routes its
-      # domain to the same routing port, where nginx-qwen38 selects the abliterated proxy
-      # by SNI. The base endpoint is owned by qwen38-registrar.
+      # Discovery probes the base endpoint (its /v1/models carries the adapter id) and routes
+      # the domain to the same port, where nginx-qwen38 selects the proxy by SNI.
       MODE="$${MODEL_PROXY_REGISTRATION:-disabled}"
       TOKEN="$${MODEL_PROXY_TOKEN}"
       INFERENCE_TOKEN="$${PROXY_TOKEN}"
@@ -1178,8 +1163,7 @@ configs:
           -d "{\"model\":\"$$1\",\"domain\":\"$$2\"}" || true
       }
 
-      # Nothing to withdraw: /unregister/model is not propagated and peer sync restores
-      # the mapping, so stopping proxy-qwen38-27b-abliterated is the off switch.
+      # No endpoint is owned here, so there is nothing to withdraw.
       cleanup() {
         echo "SIGTERM received; leaving model-proxy untouched (no endpoint is owned here)"
         exit 0

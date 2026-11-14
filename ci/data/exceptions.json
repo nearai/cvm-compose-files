@@ -3,574 +3,434 @@
     "rule": "layout.ext",
     "path": "adapters/qwen38-27b-abliterated-r1/adapter_model.safetensors",
     "sha256": "f913e7fe37f0c0ce19a8eb6ef859b4d8887f9449eee725630b8e2b6eec105c33",
-    "reason": "LoRA adapter weights fetched at runtime by the qwen38 deployables",
-    "remove_when": "no release tag that may be redeployed for rollback still fetches the adapter from main; then adapters/ is deleted"
+    "reason": "LoRA adapter weights fetched at runtime by deployables",
+    "remove_when": "adapters/ is removed"
   },
   {
     "rule": "layout.size",
     "path": "adapters/qwen38-27b-abliterated-r1/adapter_model.safetensors",
     "sha256": "f913e7fe37f0c0ce19a8eb6ef859b4d8887f9449eee725630b8e2b6eec105c33",
-    "reason": "LoRA adapter weights fetched at runtime by the qwen38 deployables",
-    "remove_when": "no release tag that may be redeployed for rollback still fetches the adapter from main; then adapters/ is deleted"
+    "reason": "LoRA adapter weights fetched at runtime by deployables",
+    "remove_when": "adapters/ is removed"
   },
   {
     "rule": "pins.digest",
     "path": "prod/DeepSeek-V4.1-Flash-1017-vLLM-DEP8-Abliterated.yaml",
     "sha256": "9dcd945c608f77ac55d0026d57d2e617d98b911b4a54e7f9ad4cce9c83a87d43",
     "reason": "image carries a tag next to its digest; the digest decides what runs",
-    "remove_when": "next functional change of this file"
+    "remove_when": "the image reference is a digest without a tag"
   },
   {
     "rule": "pins.digest",
     "path": "prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8-V12Q8.yaml",
     "sha256": "9dcd945c608f77ac55d0026d57d2e617d98b911b4a54e7f9ad4cce9c83a87d43",
     "reason": "image carries a tag next to its digest; the digest decides what runs",
-    "remove_when": "next functional change of this file"
+    "remove_when": "the image reference is a digest without a tag"
   },
   {
     "rule": "pins.digest",
     "path": "prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8-V12Q8.yaml",
     "sha256": "a2116dc4f7b9160acd4574cb3028d9148d5ece77065865a15c2eee123ceb75fc",
     "reason": "image carries a tag next to its digest; the digest decides what runs",
-    "remove_when": "next functional change of this file"
+    "remove_when": "the image reference is a digest without a tag"
   },
   {
     "rule": "pins.digest",
     "path": "prod/GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext.yaml",
     "sha256": "9dcd945c608f77ac55d0026d57d2e617d98b911b4a54e7f9ad4cce9c83a87d43",
     "reason": "image carries a tag next to its digest; the digest decides what runs",
-    "remove_when": "next functional change of this file"
+    "remove_when": "the image reference is a digest without a tag"
   },
   {
     "rule": "pins.digest",
     "path": "prod/GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext.yaml",
     "sha256": "a2116dc4f7b9160acd4574cb3028d9148d5ece77065865a15c2eee123ceb75fc",
     "reason": "image carries a tag next to its digest; the digest decides what runs",
-    "remove_when": "next functional change of this file"
+    "remove_when": "the image reference is a digest without a tag"
   },
   {
     "rule": "pins.digest",
     "path": "prod/qwen38-27b-abliterated-cc-1gpu.yaml",
     "sha256": "9dcd945c608f77ac55d0026d57d2e617d98b911b4a54e7f9ad4cce9c83a87d43",
     "reason": "image carries a tag next to its digest; the digest decides what runs",
-    "remove_when": "next functional change of this file"
+    "remove_when": "the image reference is a digest without a tag"
   },
   {
     "rule": "pins.digest",
     "path": "prod/small-models.yaml",
     "sha256": "9dcd945c608f77ac55d0026d57d2e617d98b911b4a54e7f9ad4cce9c83a87d43",
     "reason": "image carries a tag next to its digest; the digest decides what runs",
-    "remove_when": "next functional change of this file"
+    "remove_when": "the image reference is a digest without a tag"
   },
   {
     "rule": "pins.digest",
     "path": "prod/small-models.yaml",
     "sha256": "a2116dc4f7b9160acd4574cb3028d9148d5ece77065865a15c2eee123ceb75fc",
     "reason": "image carries a tag next to its digest; the digest decides what runs",
-    "remove_when": "next functional change of this file"
+    "remove_when": "the image reference is a digest without a tag"
   },
   {
     "rule": "pins.digest",
     "path": "prod/small-models.yaml",
     "sha256": "6bafa1ee9f2d89a69dccbc1a27295fdc4bba621c81dd0b0c40e24abb0b4362aa",
-    "reason": "image is built on the host from an inline Dockerfile",
-    "remove_when": "the image is published from a build dir and pinned by digest"
+    "reason": "image is defined by an inline Dockerfile",
+    "remove_when": "the image is built from a build dir and pinned by digest"
   },
   {
     "rule": "pins.digest",
     "path": "prod/small-models.yaml",
     "sha256": "acf2a14d229a7978f6d41635691cd873dd04061198461d24178d292d67c50311",
-    "reason": "image is built on the host from an inline Dockerfile",
-    "remove_when": "the image is published from a build dir and pinned by digest"
+    "reason": "image is defined by an inline Dockerfile",
+    "remove_when": "the image is built from a build dir and pinned by digest"
   },
   {
     "rule": "pins.hf-revision",
     "path": "prod/small-models.yaml",
     "sha256": "de63e2d3f0ade1b53d66e1d6cce9e377203130a65985ad92a1d21859548fcb13",
-    "reason": "engine loads a model without a pinned revision",
-    "remove_when": "the engine pins --revision at its next functional change of this file"
+    "reason": "model referenced by name without a revision pin",
+    "remove_when": "the service sets --revision explicitly"
   },
   {
     "rule": "pins.raw-key",
     "path": "prod/small-models.yaml",
     "sha256": "43230bf33499a3c292df6a0a5b309833a206f8333d5feb1d9d7612c3e1b6eb97",
-    "reason": "image is built on the host from an inline Dockerfile",
-    "remove_when": "the image is published from a build dir and pinned by digest"
+    "reason": "image is defined by an inline Dockerfile",
+    "remove_when": "the image is built from a build dir and pinned by digest"
   },
   {
     "rule": "pins.raw-key",
     "path": "prod/small-models.yaml",
     "sha256": "a6c694f7f099bd7fa51fdb02e9fd7bedb0d155fb6b2b9523bc12bff5aeea83ab",
-    "reason": "image is built on the host from an inline Dockerfile",
-    "remove_when": "the image is published from a build dir and pinned by digest"
+    "reason": "image is defined by an inline Dockerfile",
+    "remove_when": "the image is built from a build dir and pinned by digest"
   },
   {
     "rule": "pins.raw-key",
     "path": "prod/small-models.yaml",
     "sha256": "28eb769da442bb99c3b7a246d8a889c4fe1bb01cd6cf5ca2a5c6d21beab20243",
-    "reason": "image is built on the host from an inline Dockerfile",
-    "remove_when": "the image is published from a build dir and pinned by digest"
+    "reason": "image is defined by an inline Dockerfile",
+    "remove_when": "the image is built from a build dir and pinned by digest"
   },
   {
     "rule": "pins.raw-key",
     "path": "prod/small-models.yaml",
     "sha256": "bedf68897f0b713834418b187e304e6493eed30ec0c38782febbe888a469f921",
-    "reason": "image is built on the host from an inline Dockerfile",
-    "remove_when": "the image is published from a build dir and pinned by digest"
+    "reason": "image is defined by an inline Dockerfile",
+    "remove_when": "the image is built from a build dir and pinned by digest"
   },
   {
     "rule": "pins.remote-code",
     "path": "prod/small-models.yaml",
     "sha256": "de63e2d3f0ade1b53d66e1d6cce9e377203130a65985ad92a1d21859548fcb13",
-    "reason": "engine loads a model without a pinned revision",
-    "remove_when": "the engine pins --revision at its next functional change of this file"
-  },
-  {
-    "rule": "privacy.no-log-flag",
-    "path": "prod/DeepSeek-V4.1-Flash-1017-vLLM-DEP8-Abliterated.yaml",
-    "sha256": "1152f438a62cc95433755ea7a66b19780a6bd99e6464136da5ca6d87c76bbcf0",
-    "reason": "vLLM engine sets no request-logging flag and relies on the engine default, which is off",
-    "remove_when": "the service sets --no-enable-log-requests at its next functional change"
-  },
-  {
-    "rule": "privacy.no-log-flag",
-    "path": "prod/DeepSeek-V4.1-Flash-1017-vLLM-DEP8-Abliterated.yaml",
-    "sha256": "95fca11a249d51c2a87d6c202eb609dc052c1c967c44756e9eaecb093c7f3b96",
-    "reason": "vLLM engine sets no request-logging flag and relies on the engine default, which is off",
-    "remove_when": "the service sets --no-enable-log-requests at its next functional change"
-  },
-  {
-    "rule": "privacy.no-log-flag",
-    "path": "prod/DeepSeek-V4.1-Flash-1017-vLLM-DEP8-Abliterated.yaml",
-    "sha256": "e5c3524f64e435f9e3043a6f292e2ab07bb43773724c23229d5507c0d5a3b354",
-    "reason": "vLLM engine sets no request-logging flag and relies on the engine default, which is off",
-    "remove_when": "the service sets --no-enable-log-requests at its next functional change"
-  },
-  {
-    "rule": "privacy.no-log-flag",
-    "path": "prod/DeepSeek-V4.1-Flash-1017-vLLM-DEP8-Abliterated.yaml",
-    "sha256": "368eb31bbc740b00f9eb6e0160594614a1d82142ab7a502ac8dab10366afae79",
-    "reason": "vLLM engine sets no request-logging flag and relies on the engine default, which is off",
-    "remove_when": "the service sets --no-enable-log-requests at its next functional change"
-  },
-  {
-    "rule": "privacy.no-log-flag",
-    "path": "prod/DeepSeek-V4.1-Flash-1017-vLLM-DEP8-Abliterated.yaml",
-    "sha256": "16e4cb55f98ce2367a7d449fd5c90c537b0980a8da20e88f481be7a51b549b7a",
-    "reason": "vLLM engine sets no request-logging flag and relies on the engine default, which is off",
-    "remove_when": "the service sets --no-enable-log-requests at its next functional change"
-  },
-  {
-    "rule": "privacy.no-log-flag",
-    "path": "prod/DeepSeek-V4.1-Flash-1017-vLLM-DEP8-Abliterated.yaml",
-    "sha256": "fb73da2370ec9506dec2ebd4f06459e596d059cac9d89966fc97c91fb4e36eda",
-    "reason": "vLLM engine sets no request-logging flag and relies on the engine default, which is off",
-    "remove_when": "the service sets --no-enable-log-requests at its next functional change"
-  },
-  {
-    "rule": "privacy.no-log-flag",
-    "path": "prod/DeepSeek-V4.1-Flash-1017-vLLM-DEP8-Abliterated.yaml",
-    "sha256": "42b2293331e72991e76925b5b3556f79f4a6a9e3d103b7b607f0766d58bbb816",
-    "reason": "vLLM engine sets no request-logging flag and relies on the engine default, which is off",
-    "remove_when": "the service sets --no-enable-log-requests at its next functional change"
-  },
-  {
-    "rule": "privacy.no-log-flag",
-    "path": "prod/DeepSeek-V4.1-Flash-1017-vLLM-DEP8-Abliterated.yaml",
-    "sha256": "31bdd4725c5e4b18e7b3721c1620485dc43937bd17ad9732c888a041628db091",
-    "reason": "vLLM engine sets no request-logging flag and relies on the engine default, which is off",
-    "remove_when": "the service sets --no-enable-log-requests at its next functional change"
+    "reason": "model referenced by name without a revision pin",
+    "remove_when": "the service sets --revision explicitly"
   },
   {
     "rule": "privacy.no-log-flag",
     "path": "prod/small-models.yaml",
     "sha256": "0c0a447b1e7e2efaf6d6ef8a2db4fbaeefe1289102af32fe082462b68e974c49",
-    "reason": "vLLM engine sets no request-logging flag and relies on the engine default, which is off",
-    "remove_when": "the service sets --no-enable-log-requests at its next functional change"
+    "reason": "vLLM engine without an explicit request-logging flag",
+    "remove_when": "the service sets --no-enable-log-requests"
   },
   {
     "rule": "privacy.no-log-flag",
     "path": "prod/small-models.yaml",
     "sha256": "4778515c5deeea0944b2a5447303ed7b2c39496dfe03f18508e342e420978d54",
-    "reason": "vLLM engine sets no request-logging flag and relies on the engine default, which is off",
-    "remove_when": "the service sets --no-enable-log-requests at its next functional change"
+    "reason": "vLLM engine without an explicit request-logging flag",
+    "remove_when": "the service sets --no-enable-log-requests"
   },
   {
     "rule": "privacy.no-log-flag",
     "path": "prod/small-models.yaml",
     "sha256": "a4e69060e05adcc78c54295041e61a0a9d803b087a0a9f6dfaaa78a8bb7555e2",
-    "reason": "vLLM engine sets no request-logging flag and relies on the engine default, which is off",
-    "remove_when": "the service sets --no-enable-log-requests at its next functional change"
+    "reason": "vLLM engine without an explicit request-logging flag",
+    "remove_when": "the service sets --no-enable-log-requests"
   },
   {
     "rule": "privacy.no-log-flag",
     "path": "prod/small-models.yaml",
     "sha256": "bd34b018d6da23083292856a55f1dafd2773af859593718311c942eeade025db",
-    "reason": "vLLM engine sets no request-logging flag and relies on the engine default, which is off",
-    "remove_when": "the service sets --no-enable-log-requests at its next functional change"
+    "reason": "vLLM engine without an explicit request-logging flag",
+    "remove_when": "the service sets --no-enable-log-requests"
   },
   {
     "rule": "privacy.secret",
     "path": "prod/DeepSeek-V4.1-Flash-1017-vLLM-DEP8-Abliterated.yaml",
     "sha256": "e67bf1fe5f5dceecba68fe6a4e61026f5e5a6c1e503f1ef9cd5b54b5482d3480",
-    "reason": "secret has an empty default, so the service starts without it",
-    "remove_when": "next functional change of this file"
+    "reason": "secret variable without a required-value check",
+    "remove_when": "the secret has a required-value check"
   },
   {
     "rule": "privacy.secret",
     "path": "prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8-V12Q8.yaml",
     "sha256": "e67bf1fe5f5dceecba68fe6a4e61026f5e5a6c1e503f1ef9cd5b54b5482d3480",
-    "reason": "secret has an empty default, so the service starts without it",
-    "remove_when": "next functional change of this file"
-  },
-  {
-    "rule": "privacy.secret",
-    "path": "prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8-V12Q8.yaml",
-    "sha256": "ec10ed8784ab44b4b3353348f54ec8e6cf22a4d4300b27ebb3d5b03573278efd",
-    "reason": "secret is interpolated into an embedded proxy config",
-    "remove_when": "next functional change of this file"
+    "reason": "secret variable without a required-value check",
+    "remove_when": "the secret has a required-value check"
   },
   {
     "rule": "privacy.secret",
     "path": "prod/GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext.yaml",
     "sha256": "e67bf1fe5f5dceecba68fe6a4e61026f5e5a6c1e503f1ef9cd5b54b5482d3480",
-    "reason": "secret has an empty default, so the service starts without it",
-    "remove_when": "next functional change of this file"
-  },
-  {
-    "rule": "privacy.secret",
-    "path": "prod/GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext.yaml",
-    "sha256": "ec10ed8784ab44b4b3353348f54ec8e6cf22a4d4300b27ebb3d5b03573278efd",
-    "reason": "secret is interpolated into an embedded proxy config",
-    "remove_when": "next functional change of this file"
+    "reason": "secret variable without a required-value check",
+    "remove_when": "the secret has a required-value check"
   },
   {
     "rule": "privacy.secret",
     "path": "prod/qwen38-27b-abliterated-cc-1gpu.yaml",
     "sha256": "4b2db711ce2fb4cb6274b924c951db5c89641a4f9b967f270de563cd0f63ca6f",
-    "reason": "secret has an empty default, so the service starts without it",
-    "remove_when": "next functional change of this file"
+    "reason": "secret variable without a required-value check",
+    "remove_when": "the secret has a required-value check"
   },
   {
     "rule": "privacy.secret",
     "path": "prod/qwen38-27b-abliterated-cc-1gpu.yaml",
     "sha256": "e67bf1fe5f5dceecba68fe6a4e61026f5e5a6c1e503f1ef9cd5b54b5482d3480",
-    "reason": "secret has an empty default, so the service starts without it",
-    "remove_when": "next functional change of this file"
+    "reason": "secret variable without a required-value check",
+    "remove_when": "the secret has a required-value check"
   },
   {
     "rule": "privacy.secret",
     "path": "prod/small-models.yaml",
     "sha256": "e67bf1fe5f5dceecba68fe6a4e61026f5e5a6c1e503f1ef9cd5b54b5482d3480",
-    "reason": "secret has an empty default, so the service starts without it",
-    "remove_when": "next functional change of this file"
+    "reason": "secret variable without a required-value check",
+    "remove_when": "the secret has a required-value check"
   },
   {
     "rule": "public.domain",
     "path": "prod/DeepSeek-V4.1-Flash-1017-vLLM-DEP8-Abliterated.yaml",
     "sha256": "2857d6988af093f27ae2d89387c18ed6e11a009c52b2d96df637c2936a9b2918",
-    "reason": "internal telemetry endpoint inside an embedded config",
-    "remove_when": "next functional change of this file"
+    "reason": "domain outside the public allowlist inside an embedded config",
+    "remove_when": "the value is a deploy-time variable"
   },
   {
     "rule": "public.domain",
     "path": "prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8-V12Q8.yaml",
     "sha256": "2857d6988af093f27ae2d89387c18ed6e11a009c52b2d96df637c2936a9b2918",
-    "reason": "internal telemetry endpoint inside an embedded config",
-    "remove_when": "next functional change of this file"
+    "reason": "domain outside the public allowlist inside an embedded config",
+    "remove_when": "the value is a deploy-time variable"
   },
   {
     "rule": "public.domain",
     "path": "prod/GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext.yaml",
     "sha256": "2857d6988af093f27ae2d89387c18ed6e11a009c52b2d96df637c2936a9b2918",
-    "reason": "internal telemetry endpoint inside an embedded config",
-    "remove_when": "next functional change of this file"
+    "reason": "domain outside the public allowlist inside an embedded config",
+    "remove_when": "the value is a deploy-time variable"
   },
   {
     "rule": "public.domain",
     "path": "prod/qwen38-27b-abliterated-cc-1gpu.yaml",
     "sha256": "2857d6988af093f27ae2d89387c18ed6e11a009c52b2d96df637c2936a9b2918",
-    "reason": "internal telemetry endpoint inside an embedded config",
-    "remove_when": "next functional change of this file"
+    "reason": "domain outside the public allowlist inside an embedded config",
+    "remove_when": "the value is a deploy-time variable"
   },
   {
     "rule": "public.domain",
     "path": "prod/small-models.yaml",
     "sha256": "2857d6988af093f27ae2d89387c18ed6e11a009c52b2d96df637c2936a9b2918",
-    "reason": "internal telemetry endpoint inside an embedded config",
-    "remove_when": "next functional change of this file"
+    "reason": "domain outside the public allowlist inside an embedded config",
+    "remove_when": "the value is a deploy-time variable"
   },
   {
     "rule": "public.host",
     "path": "ci/data/services.allow.json",
     "sha256": "761fa5e00c40790206d5eb1b2686a347c6fc9dcf679e2eba35070e1aa01f6d20",
     "reason": "service name of a live deployable",
-    "remove_when": "the service is renamed in the next generation of its file"
-  },
-  {
-    "rule": "public.host",
-    "path": "prod/qwen38-27b-abliterated-cc-1gpu.yaml",
-    "sha256": "082e5bae33a7e140b34c81ea80ceaa3561465ebaeaa820f06002f1e9028e0e45",
-    "reason": "host name inside a config value, label or service name",
-    "remove_when": "next functional change of this file"
-  },
-  {
-    "rule": "public.host",
-    "path": "prod/qwen38-27b-abliterated-cc-1gpu.yaml",
-    "sha256": "93798533c89cb3456ab260da718ea65ac8752e230cfce3771981155899a7e046",
-    "reason": "host name inside a config value, label or service name",
-    "remove_when": "next functional change of this file"
-  },
-  {
-    "rule": "public.host",
-    "path": "prod/qwen38-27b-abliterated-cc-1gpu.yaml",
-    "sha256": "1ab1b2286d7416f95abe932611e9671a89515d625925077dfb82a2627a1e63f0",
-    "reason": "host name inside a config value, label or service name",
-    "remove_when": "next functional change of this file"
-  },
-  {
-    "rule": "public.host",
-    "path": "prod/small-models.yaml",
-    "sha256": "2d230015941599a785ba208d65c0bb82145541dfbeead39eb1461488f7e981a1",
-    "reason": "host name inside a config value, label or service name",
-    "remove_when": "next functional change of this file"
-  },
-  {
-    "rule": "public.host",
-    "path": "prod/small-models.yaml",
-    "sha256": "70121eb7fb2b03b830681250f5371d0a0c2af391c48929c3802fb94317cbc40d",
-    "reason": "host name inside a config value, label or service name",
-    "remove_when": "next functional change of this file"
+    "remove_when": "the service name is generic"
   },
   {
     "rule": "public.host",
     "path": "prod/small-models.yaml",
     "sha256": "f540a732c83ff3c962a4f2b5e480283c0844bb4e33336a3ad4a801163f72b7c7",
     "reason": "host name inside a config value, label or service name",
-    "remove_when": "next functional change of this file"
+    "remove_when": "the value contains no host name"
   },
   {
     "rule": "public.host",
     "path": "prod/small-models.yaml",
     "sha256": "17216086078d771008d1ca4a7573c5aee55b3dd8df8b76ba80933e6127defb78",
     "reason": "host name inside a config value, label or service name",
-    "remove_when": "next functional change of this file"
+    "remove_when": "the value contains no host name"
   },
   {
     "rule": "public.host",
     "path": "prod/small-models.yaml",
     "sha256": "6b37804834f67165f27575879a7ad8f776b88d419f8b95ecd38806c41c8732bd",
     "reason": "host name inside a config value, label or service name",
-    "remove_when": "next functional change of this file"
+    "remove_when": "the value contains no host name"
   },
   {
     "rule": "public.host",
     "path": "prod/small-models.yaml",
     "sha256": "659ed62c2f0ad9d55ad3ad4dd9131da2e242984b1868c586116f5038372367f9",
     "reason": "host name inside a config value, label or service name",
-    "remove_when": "next functional change of this file"
+    "remove_when": "the value contains no host name"
   },
   {
     "rule": "public.host",
     "path": "prod/small-models.yaml",
     "sha256": "3d1804fbe22678366ee2e2e638ef43e3d7c0086f4c799d18324587e867eb45b4",
     "reason": "host name inside a config value, label or service name",
-    "remove_when": "next functional change of this file"
+    "remove_when": "the value contains no host name"
   },
   {
     "rule": "public.host",
     "path": "prod/small-models.yaml",
     "sha256": "1e169e6e150f2dd2311c36fccb8d2bdfd6c6f333ae6a1bfad0f5e57722453a4f",
     "reason": "host name inside a config value, label or service name",
-    "remove_when": "next functional change of this file"
+    "remove_when": "the value contains no host name"
   },
   {
     "rule": "public.host",
     "path": "prod/small-models.yaml",
     "sha256": "2a48d06c72c1ee5577ce2110ecaa3bec4c52627a63fa2054bdb5f5cb9e36be89",
     "reason": "host name inside a config value, label or service name",
-    "remove_when": "next functional change of this file"
+    "remove_when": "the value contains no host name"
   },
   {
     "rule": "public.host",
     "path": "prod/small-models.yaml",
     "sha256": "43863052b70980f9d247ca622e3ef0625197f3ff146e5c444ced55311065c4f4",
     "reason": "host name inside a config value, label or service name",
-    "remove_when": "next functional change of this file"
+    "remove_when": "the value contains no host name"
   },
   {
     "rule": "public.host",
     "path": "prod/small-models.yaml",
     "sha256": "78b3a229bafec16714afd02b875f2d55593b9ca850e9742fa6f2a0050b645568",
     "reason": "host name inside a config value, label or service name",
-    "remove_when": "next functional change of this file"
+    "remove_when": "the value contains no host name"
   },
   {
     "rule": "public.host",
     "path": "prod/small-models.yaml",
     "sha256": "dd93139976ab297666a0702cf202341306aacde6cb2a989fae8859a55de8fc60",
     "reason": "host name inside a config value, label or service name",
-    "remove_when": "next functional change of this file"
+    "remove_when": "the value contains no host name"
   },
   {
     "rule": "public.host",
     "path": "prod/small-models.yaml",
     "sha256": "03809c16f6543b576aae880c8c07acdd2a7b9776218fe08c5457a18033167e53",
     "reason": "host name inside a config value, label or service name",
-    "remove_when": "next functional change of this file"
+    "remove_when": "the value contains no host name"
   },
   {
     "rule": "public.host",
     "path": "prod/small-models.yaml",
     "sha256": "ac8d3d5cefc387b03795e29206c16287eacbe7c0561ae535da5207fb72616e70",
     "reason": "host name inside a config value, label or service name",
-    "remove_when": "next functional change of this file"
+    "remove_when": "the value contains no host name"
   },
   {
     "rule": "public.host",
     "path": "prod/small-models.yaml",
     "sha256": "1327d44764b544bb1993fcd4fa0418fd6bbe81e169290ea3d4b58426146714fc",
     "reason": "host name inside a config value, label or service name",
-    "remove_when": "next functional change of this file"
-  },
-  {
-    "rule": "public.host",
-    "path": "prod/small-models.yaml",
-    "sha256": "dc10a50ad99dcb5fce598856c6a7b97b1a682aa32d4232bd3fd920ffdafdfbb1",
-    "reason": "host name inside a config value, label or service name",
-    "remove_when": "next functional change of this file"
-  },
-  {
-    "rule": "public.host",
-    "path": "prod/small-models.yaml",
-    "sha256": "c5beb2f1341d4fab23ad9c58d864745676a4f93e892a8ba930d718db1831986a",
-    "reason": "host name inside a config value, label or service name",
-    "remove_when": "next functional change of this file"
-  },
-  {
-    "rule": "public.repo",
-    "path": "prod/small-models.yaml",
-    "sha256": "bd0062f36798023232fd1e9aac15590a1c5ddca453e7db383b909266b94dbadd",
-    "reason": "private repository reference inside an embedded script",
-    "remove_when": "next functional change of this file"
-  },
-  {
-    "rule": "public.repo",
-    "path": "prod/small-models.yaml",
-    "sha256": "12d4f230f06dab17949ba36ba571492d3d00be0cf2743349cccabf70c752c8db",
-    "reason": "private repository reference inside an embedded script",
-    "remove_when": "next functional change of this file"
+    "remove_when": "the value contains no host name"
   },
   {
     "rule": "pins.digest",
     "path": "prod/pack-small-models.yaml",
     "sha256": "acf2a14d229a7978f6d41635691cd873dd04061198461d24178d292d67c50311",
-    "reason": "image is built on the host from an inline Dockerfile",
-    "remove_when": "the image is published from a build dir and pinned by digest"
+    "reason": "image is defined by an inline Dockerfile",
+    "remove_when": "the image is built from a build dir and pinned by digest"
   },
   {
     "rule": "pins.digest",
     "path": "prod/pack-small-models.yaml",
     "sha256": "6bafa1ee9f2d89a69dccbc1a27295fdc4bba621c81dd0b0c40e24abb0b4362aa",
-    "reason": "image is built on the host from an inline Dockerfile",
-    "remove_when": "the image is published from a build dir and pinned by digest"
-  },
-  {
-    "rule": "pins.hf-revision",
-    "path": "prod/pack-small-models.yaml",
-    "sha256": "de63e2d3f0ade1b53d66e1d6cce9e377203130a65985ad92a1d21859548fcb13",
-    "reason": "engine loads a model without a pinned revision",
-    "remove_when": "the Flux engine pins a model revision"
-  },
-  {
-    "rule": "pins.remote-code",
-    "path": "prod/pack-small-models.yaml",
-    "sha256": "de63e2d3f0ade1b53d66e1d6cce9e377203130a65985ad92a1d21859548fcb13",
-    "reason": "engine loads a model without a pinned revision",
-    "remove_when": "the Flux engine pins a model revision"
+    "reason": "image is defined by an inline Dockerfile",
+    "remove_when": "the image is built from a build dir and pinned by digest"
   },
   {
     "rule": "pins.raw-key",
     "path": "prod/pack-small-models.yaml",
     "sha256": "43230bf33499a3c292df6a0a5b309833a206f8333d5feb1d9d7612c3e1b6eb97",
-    "reason": "image is built on the host from an inline Dockerfile",
-    "remove_when": "the image is published from a build dir and pinned by digest"
+    "reason": "image is defined by an inline Dockerfile",
+    "remove_when": "the image is built from a build dir and pinned by digest"
   },
   {
     "rule": "pins.raw-key",
     "path": "prod/pack-small-models.yaml",
     "sha256": "a6c694f7f099bd7fa51fdb02e9fd7bedb0d155fb6b2b9523bc12bff5aeea83ab",
-    "reason": "image is built on the host from an inline Dockerfile",
-    "remove_when": "the image is published from a build dir and pinned by digest"
+    "reason": "image is defined by an inline Dockerfile",
+    "remove_when": "the image is built from a build dir and pinned by digest"
   },
   {
     "rule": "pins.raw-key",
     "path": "prod/pack-small-models.yaml",
     "sha256": "28eb769da442bb99c3b7a246d8a889c4fe1bb01cd6cf5ca2a5c6d21beab20243",
-    "reason": "image is built on the host from an inline Dockerfile",
-    "remove_when": "the image is published from a build dir and pinned by digest"
+    "reason": "image is defined by an inline Dockerfile",
+    "remove_when": "the image is built from a build dir and pinned by digest"
   },
   {
     "rule": "pins.raw-key",
     "path": "prod/pack-small-models.yaml",
     "sha256": "bedf68897f0b713834418b187e304e6493eed30ec0c38782febbe888a469f921",
-    "reason": "image is built on the host from an inline Dockerfile",
-    "remove_when": "the image is published from a build dir and pinned by digest"
+    "reason": "image is defined by an inline Dockerfile",
+    "remove_when": "the image is built from a build dir and pinned by digest"
   },
   {
     "rule": "public.host",
     "path": "prod/pack-small-models.yaml",
     "sha256": "43863052b70980f9d247ca622e3ef0625197f3ff146e5c444ced55311065c4f4",
     "reason": "host name inside a config value, label or service name",
-    "remove_when": "the service is renamed in an announced change"
+    "remove_when": "the service name is generic"
   },
   {
     "rule": "public.host",
     "path": "prod/pack-small-models.yaml",
     "sha256": "78b3a229bafec16714afd02b875f2d55593b9ca850e9742fa6f2a0050b645568",
     "reason": "host name inside a config value, label or service name",
-    "remove_when": "the service is renamed in an announced change"
+    "remove_when": "the service name is generic"
   },
   {
     "rule": "public.host",
     "path": "prod/pack-small-models.yaml",
     "sha256": "dd93139976ab297666a0702cf202341306aacde6cb2a989fae8859a55de8fc60",
     "reason": "host name inside a config value, label or service name",
-    "remove_when": "the service is renamed in an announced change"
+    "remove_when": "the service name is generic"
   },
   {
     "rule": "public.host",
     "path": "prod/pack-small-models.yaml",
     "sha256": "03809c16f6543b576aae880c8c07acdd2a7b9776218fe08c5457a18033167e53",
     "reason": "host name inside a config value, label or service name",
-    "remove_when": "the service is renamed in an announced change"
+    "remove_when": "the service name is generic"
   },
   {
     "rule": "public.host",
     "path": "prod/pack-small-models.yaml",
     "sha256": "ac8d3d5cefc387b03795e29206c16287eacbe7c0561ae535da5207fb72616e70",
     "reason": "host name inside a config value, label or service name",
-    "remove_when": "the service is renamed in an announced change"
+    "remove_when": "the service name is generic"
   },
   {
     "rule": "public.host",
     "path": "prod/pack-small-models.yaml",
     "sha256": "1327d44764b544bb1993fcd4fa0418fd6bbe81e169290ea3d4b58426146714fc",
     "reason": "host name inside a config value, label or service name",
-    "remove_when": "the service is renamed in an announced change"
+    "remove_when": "the service name is generic"
   },
   {
     "rule": "public.domain",
     "path": "prod/pack-small-models.yaml",
     "sha256": "2857d6988af093f27ae2d89387c18ed6e11a009c52b2d96df637c2936a9b2918",
-    "reason": "internal telemetry endpoint inside an embedded config",
-    "remove_when": "the endpoint becomes a deploy-time variable"
+    "reason": "domain outside the public allowlist inside an embedded config",
+    "remove_when": "the value becomes a deploy-time variable"
   },
   {
     "rule": "privacy.secret",
     "path": "prod/pack-small-models.yaml",
     "sha256": "e67bf1fe5f5dceecba68fe6a4e61026f5e5a6c1e503f1ef9cd5b54b5482d3480",
-    "reason": "secret has an empty default, so the service starts without it",
-    "remove_when": "the collector env contract in ci/checks/stack.py no longer requires the soft default"
+    "reason": "secret variable without a required-value check",
+    "remove_when": "the secret has a required-value check"
+  },
+  {
+    "rule": "status.key-set",
+    "path": "prod/pack-small-models.yaml",
+    "sha256": "fcd1551dfa9984cca41fe57171fd323dc6571c5cc6bca22d33544337b0c7ff5d",
+    "reason": "candidate whose service set differs from its live file",
+    "remove_when": "the candidate replaces its live file"
   }
 ]

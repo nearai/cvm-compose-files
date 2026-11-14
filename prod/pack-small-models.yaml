@@ -26,7 +26,7 @@ x-vllm-common: &vllm-common
   logging: *logging-conf
 
 x-vllm-proxy-common: &vllm-proxy-common
-  image: nearaidev/vllm-proxy-rs@sha256:60d08c207b285697f39e134533081eac7006739ec5019c89c2f4c67869062f45
+  image: nearaidev/vllm-proxy-rs@sha256:c57cd9ea8374fa9134b9b79ede199f21d134dd710826ac94dead4bbf381f57df
   user: root
   privileged: true
   <<: *nvidia
@@ -40,15 +40,14 @@ x-vllm-proxy-common: &vllm-proxy-common
 
 x-vllm-env:
   environment: &vllm-env
-    HF_TOKEN: ${HUGGING_FACE_HUB_TOKEN}
-    HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-0}
+    HF_HUB_OFFLINE: "1"
     VLLM_LOGGING_LEVEL: INFO
     NVIDIA_DRIVER_CAPABILITIES: compute,utility
     OPENBLAS_L2_SIZE: "2097152"
     NCCL_DEBUG: INFO
     VLLM_CACHE_ROOT: /root/.cache/vllm
 
-# vLLM 0.33's V2 runner reads stale inputs from pinned host memory in a CVM; use V1.
+# vLLM 0.33 serves these models on the V1 model runner.
 x-vllm-env-v1-runner:
   environment: &vllm-env-v1-runner
     <<: *vllm-env
@@ -56,8 +55,7 @@ x-vllm-env-v1-runner:
 
 x-sglang-env:
   environment: &sglang-env
-    - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
-    - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0}
+    - HF_HUB_OFFLINE=1
     - VLLM_LOGGING_LEVEL=INFO
     - NVIDIA_DRIVER_CAPABILITIES=compute,utility
     - OPENBLAS_L2_SIZE=2097152
@@ -100,8 +98,7 @@ x-qwen3-6-common: &qwen3-6-common
     - hugginface_cache:/root/.cache/huggingface
     - kernel_cache:/root/.cache/deep_gemm
   environment:
-    - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
-    - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0}
+    - HF_HUB_OFFLINE=1
     - NVIDIA_DRIVER_CAPABILITIES=compute,utility
     - OPENBLAS_L2_SIZE=2097152
     - NCCL_DEBUG=WARN
@@ -157,7 +154,8 @@ x-flux-common: &flux-common
   image: docker.io/nearaidev/sglang@sha256:6de632a5e9422be4b6e84e32cf475679c0f29c4bb6d58984d873ff9f7ba92a65
   command: >
       sglang serve
-      --model-path black-forest-labs/FLUX.2-klein-4B
+      --model-path /root/.cache/huggingface/hub/models--black-forest-labs--FLUX.2-klein-4B/snapshots/e7b7dc27f91deacad38e78976d1f2b499d76a294
+      --served-model-name black-forest-labs/FLUX.2-klein-4B
       --tp-size 1
       --port 8000
       --host 0.0.0.0
@@ -340,7 +338,7 @@ x-privacy-filter-common: &privacy-filter-common
     dockerfile_inline: |
       # syntax=docker/dockerfile:1.4
       FROM pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime
-      # transformers 5.20+ needs PyTorch >=2.6; this 2.5.1 base crash-loops on fresh builds.
+      # transformers 5.20+ needs PyTorch >=2.6; the 2.5.1 base needs the pinned 5.16.1.
       RUN pip install --no-cache-dir \
           "transformers==5.16.1" \
           accelerate \
@@ -674,8 +672,7 @@ x-privacy-filter-common: &privacy-filter-common
   volumes:
     - hugginface_cache:/root/.cache/huggingface
   environment:
-    - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
-    - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0}
+    - HF_HUB_OFFLINE=1
     - NVIDIA_DRIVER_CAPABILITIES=compute,utility
     - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
     - GPU_MEM_LIMIT_GB=36
@@ -827,9 +824,27 @@ services:
     labels:
       com.datadoghq.ad.logs: '[{"source":"model-proxy-registrar","service":"model-proxy-registrar","tags":["model:multi","deployment:pack-small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
 
+  model-downloader-qwen36:
+    <<: *downloader-common
+    container_name: model-downloader-qwen36
+    command:
+      - |
+        set -e
+        uvx --from 'huggingface_hub[hf_xet]' hf download Qwen/Qwen3.6-35B-A3B-FP8 --revision 95a723d08a9490559dae23d0cff1d9466213d989
+    volumes:
+      - hugginface_cache:/root/.cache/huggingface
+    environment:
+      - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+
   proxy-qwen36-35b-a3b:
     <<: *vllm-proxy-common
     container_name: proxy-qwen36-35b-a3b
+    networks:
+      - default
+      - engine-qwen36
+    depends_on:
+      engine-egress-probe:
+        condition: service_completed_successfully
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - CLOUD_API_URL=https://cloud-api.near.ai
@@ -839,8 +854,6 @@ services:
       - MODEL_NAME=Qwen/Qwen3.6-35B-A3B-FP8
       - OHTTP_ENABLED=true
       - TOKEN=${PROXY_TOKEN}${PROXY_TOKEN_NEXT:+,${PROXY_TOKEN_NEXT}}
-      - FUSION_ENABLED=${FUSION_ENABLED}
-      - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
       - VLLM_BACKEND_URLS=http://model-sg-qwen36-35b-a3b-fp8-tp1-r1:8000
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
@@ -868,6 +881,13 @@ services:
   model-sg-qwen36-35b-a3b-fp8-tp1-r1:
     <<: *qwen3-6-common
     container_name: model-sg-qwen36-35b-a3b-fp8-tp1-r1
+    networks:
+      - engine-qwen36
+    ipc: private
+    shm_size: 16gb
+    depends_on:
+      model-downloader-qwen36:
+        condition: service_completed_successfully
     deploy:
       resources:
         reservations:
@@ -889,7 +909,7 @@ services:
       nearai.otel.model_path: "Qwen/Qwen3.6-35B-A3B-FP8"
       nearai.otel.engine_image: "6de632a5e942"
       nearai.otel.instance: "1"
-      nearai.otel.config_variant: "qwen36-tp1"
+      nearai.otel.config_variant: "qwen36-tp1-offline"
       nearai.otel.deployment: "pack-small-models"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
@@ -915,7 +935,7 @@ services:
 
   proxy-qwen38-27b:
     <<: *vllm-proxy-common
-    image: nearaidev/vllm-proxy-rs@sha256:60d08c207b285697f39e134533081eac7006739ec5019c89c2f4c67869062f45
+    image: nearaidev/vllm-proxy-rs@sha256:c57cd9ea8374fa9134b9b79ede199f21d134dd710826ac94dead4bbf381f57df
     container_name: proxy-qwen38-27b
     networks:
       - default
@@ -933,8 +953,6 @@ services:
       - VLLM_PROXY_STRICT_REQUEST_MODEL=true
       - OHTTP_ENABLED=true
       - TOKEN=${PROXY_TOKEN}${PROXY_TOKEN_NEXT:+,${PROXY_TOKEN_NEXT}}
-      - FUSION_ENABLED=${FUSION_ENABLED}
-      - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
       - VLLM_BACKEND_URLS=http://model-sg-qwen38-27b-fp8-tp1-coloc:8000
       - VLLM_PROXY_MAX_REQUEST_SIZE=104857600
       - VLLM_PROXY_PRIORITY_SIZE_TIERS=16000:10,65536:5,*:0
@@ -1137,7 +1155,7 @@ services:
 
   proxy-qwen38-27b-abliterated:
     <<: *vllm-proxy-common
-    image: nearaidev/vllm-proxy-rs@sha256:60d08c207b285697f39e134533081eac7006739ec5019c89c2f4c67869062f45
+    image: nearaidev/vllm-proxy-rs@sha256:c57cd9ea8374fa9134b9b79ede199f21d134dd710826ac94dead4bbf381f57df
     container_name: proxy-qwen38-27b-abliterated
     networks:
       - default
@@ -1157,8 +1175,6 @@ services:
       - VLLM_PROXY_ALLOWED_ORG_IDS=${QWEN38_ABLITERATED_ALLOWED_ORG_IDS:-__no_organizations__}
       - OHTTP_ENABLED=true
       - TOKEN=${QWEN38_ABLITERATED_PROXY_TOKEN}${QWEN38_ABLITERATED_PROXY_TOKEN_NEXT:+,${QWEN38_ABLITERATED_PROXY_TOKEN_NEXT}}
-      - FUSION_ENABLED=${FUSION_ENABLED}
-      - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
       - VLLM_BACKEND_URLS=http://model-sg-qwen38-27b-fp8-tp1-coloc:8000
       - VLLM_PROXY_MAX_REQUEST_SIZE=104857600
       - VLLM_PROXY_PRIORITY_SIZE_TIERS=16000:10,65536:5,*:0
@@ -1215,6 +1231,7 @@ services:
 
   proxy-glm53:
     <<: *vllm-proxy-common
+    image: nearaidev/vllm-proxy-rs@sha256:c57cd9ea8374fa9134b9b79ede199f21d134dd710826ac94dead4bbf381f57df
     container_name: proxy-glm53
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
@@ -1225,8 +1242,6 @@ services:
       - MODEL_NAME=z-ai/glm-5.3-flash
       - OHTTP_ENABLED=true
       - TOKEN=${PROXY_TOKEN}${PROXY_TOKEN_NEXT:+,${PROXY_TOKEN_NEXT}}
-      - FUSION_ENABLED=${FUSION_ENABLED}
-      - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
       - VLLM_BACKEND_URLS=http://model-sg-glm53-w4afp8-tp2-r1:8000,http://model-sg-glm53-w4afp8-tp2-r2:8000
       - VLLM_BACKEND_CONVERSATION_AFFINITY=1
       - VLLM_PROXY_MAX_REQUEST_SIZE=104857600
@@ -1401,9 +1416,27 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
+  model-downloader-flux2:
+    <<: *downloader-common
+    container_name: model-downloader-flux2
+    command:
+      - |
+        set -e
+        uvx --from 'huggingface_hub[hf_xet]' hf download black-forest-labs/FLUX.2-klein-4B --revision e7b7dc27f91deacad38e78976d1f2b499d76a294
+    volumes:
+      - hugginface_cache:/root/.cache/huggingface
+    environment:
+      - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+
   proxy-flux2-klein-4b:
     <<: *vllm-proxy-common
     container_name: proxy-flux2-klein-4b
+    networks:
+      - default
+      - engine-flux2
+    depends_on:
+      engine-egress-probe:
+        condition: service_completed_successfully
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - CLOUD_API_URL=https://cloud-api.near.ai
@@ -1413,8 +1446,6 @@ services:
       - MODEL_NAME=black-forest-labs/FLUX.2-klein-4B
       - OHTTP_ENABLED=true
       - TOKEN=${PROXY_TOKEN}${PROXY_TOKEN_NEXT:+,${PROXY_TOKEN_NEXT}}
-      - FUSION_ENABLED=${FUSION_ENABLED}
-      - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
       - VLLM_BASE_URL=http://model-sg-flux2-klein-4b-tp1:8000
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
@@ -1442,6 +1473,13 @@ services:
   model-sg-flux2-klein-4b-tp1:
     <<: *flux-common
     container_name: model-sg-flux2-klein-4b-tp1
+    networks:
+      - engine-flux2
+    ipc: private
+    shm_size: 16gb
+    depends_on:
+      model-downloader-flux2:
+        condition: service_completed_successfully
     labels:
       com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:black-forest-labs/FLUX.2-klein-4B","deployment:pack-small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8002","instance:1"]}]'
       nearai.otel.scrape: "true"
@@ -1456,7 +1494,7 @@ services:
       nearai.otel.model_path: "black-forest-labs/FLUX.2-klein-4B"
       nearai.otel.engine_image: "6de632a5e942"
       nearai.otel.instance: "1"
-      nearai.otel.config_variant: "flux2-klein-resident"
+      nearai.otel.config_variant: "flux2-klein-resident-offline"
       nearai.otel.deployment: "pack-small-models"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
@@ -1464,9 +1502,27 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
+  model-downloader-qwen3vl:
+    <<: *downloader-common
+    container_name: model-downloader-qwen3vl
+    command:
+      - |
+        set -e
+        uvx --from 'huggingface_hub[hf_xet]' hf download Qwen/Qwen3-VL-30B-A3B-Instruct-FP8 --revision d9748a51ae66354c4dad665aab2c71f26cf2c8cd
+    volumes:
+      - hugginface_cache:/root/.cache/huggingface
+    environment:
+      - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+
   proxy-qwen3vl-30b-a3b:
     <<: *vllm-proxy-common
     container_name: proxy-qwen3vl-30b-a3b
+    networks:
+      - default
+      - engine-qwen3vl
+    depends_on:
+      engine-egress-probe:
+        condition: service_completed_successfully
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - CLOUD_API_URL=https://cloud-api.near.ai
@@ -1476,8 +1532,6 @@ services:
       - MODEL_NAME=Qwen/Qwen3-VL-30B-A3B-Instruct
       - OHTTP_ENABLED=true
       - TOKEN=${PROXY_TOKEN}${PROXY_TOKEN_NEXT:+,${PROXY_TOKEN_NEXT}}
-      - FUSION_ENABLED=${FUSION_ENABLED}
-      - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
       - VLLM_BASE_URL=http://model-vllm-qwen3vl-30b-a3b-fp8-tp1:8000
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
@@ -1508,6 +1562,13 @@ services:
     <<: *vllm-common
     image: vllm/vllm-openai@sha256:d825baf9ce4b1b6bfc5ecc7b79880c7e6748c65a72d697ce3d47607aafa84c6e
     container_name: model-vllm-qwen3vl-30b-a3b-fp8-tp1
+    networks:
+      - engine-qwen3vl
+    ipc: private
+    shm_size: 16gb
+    depends_on:
+      model-downloader-qwen3vl:
+        condition: service_completed_successfully
     command: >
         Qwen/Qwen3-VL-30B-A3B-Instruct-FP8
         --revision d9748a51ae66354c4dad665aab2c71f26cf2c8cd
@@ -1546,7 +1607,7 @@ services:
       nearai.otel.model_path: "Qwen/Qwen3-VL-30B-A3B-Instruct-FP8"
       nearai.otel.engine_image: "d825baf9ce4b"
       nearai.otel.instance: "1"
-      nearai.otel.config_variant: "qwen3vl-kv16g-v1runner"
+      nearai.otel.config_variant: "qwen3vl-kv16g-v1runner-offline"
       nearai.otel.deployment: "pack-small-models"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
@@ -1554,9 +1615,27 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
+  model-downloader-qwen3-embedding:
+    <<: *downloader-common
+    container_name: model-downloader-qwen3-embedding
+    command:
+      - |
+        set -e
+        uvx --from 'huggingface_hub[hf_xet]' hf download Qwen/Qwen3-Embedding-0.6B --revision 97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3
+    volumes:
+      - hugginface_cache:/root/.cache/huggingface
+    environment:
+      - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+
   proxy-qwen3-embedding-0.6b:
     <<: *vllm-proxy-common
     container_name: proxy-qwen3-embedding-0.6b
+    networks:
+      - default
+      - engine-qwen3-embedding
+    depends_on:
+      engine-egress-probe:
+        condition: service_completed_successfully
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - CLOUD_API_URL=https://cloud-api.near.ai
@@ -1566,8 +1645,6 @@ services:
       - MODEL_NAME=Qwen/Qwen3-Embedding-0.6B
       - OHTTP_ENABLED=true
       - TOKEN=${PROXY_TOKEN}${PROXY_TOKEN_NEXT:+,${PROXY_TOKEN_NEXT}}
-      - FUSION_ENABLED=${FUSION_ENABLED}
-      - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
       - VLLM_BASE_URL=http://model-vllm-qwen3-embedding-0.6b-tp1:8000
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
@@ -1596,6 +1673,13 @@ services:
     <<: *vllm-common
     image: vllm/vllm-openai@sha256:d825baf9ce4b1b6bfc5ecc7b79880c7e6748c65a72d697ce3d47607aafa84c6e
     container_name: model-vllm-qwen3-embedding-0.6b-tp1
+    networks:
+      - engine-qwen3-embedding
+    ipc: private
+    shm_size: 16gb
+    depends_on:
+      model-downloader-qwen3-embedding:
+        condition: service_completed_successfully
     command: >
         Qwen/Qwen3-Embedding-0.6B
         --revision 97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3
@@ -1628,7 +1712,7 @@ services:
       nearai.otel.model_path: "Qwen/Qwen3-Embedding-0.6B"
       nearai.otel.engine_image: "d825baf9ce4b"
       nearai.otel.instance: "1"
-      nearai.otel.config_variant: "embedding-kv8g-v1runner"
+      nearai.otel.config_variant: "embedding-kv8g-v1runner-offline"
       nearai.otel.deployment: "pack-small-models"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
@@ -1636,9 +1720,27 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
+  model-downloader-qwen3-reranker:
+    <<: *downloader-common
+    container_name: model-downloader-qwen3-reranker
+    command:
+      - |
+        set -e
+        uvx --from 'huggingface_hub[hf_xet]' hf download Qwen/Qwen3-Reranker-0.6B --revision e61197ed45024b0ed8a2d74b80b4d909f1255473
+    volumes:
+      - hugginface_cache:/root/.cache/huggingface
+    environment:
+      - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+
   proxy-qwen3-reranker-0.6b:
     <<: *vllm-proxy-common
     container_name: proxy-qwen3-reranker-0.6b
+    networks:
+      - default
+      - engine-qwen3-reranker
+    depends_on:
+      engine-egress-probe:
+        condition: service_completed_successfully
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - CLOUD_API_URL=https://cloud-api.near.ai
@@ -1648,8 +1750,6 @@ services:
       - MODEL_NAME=Qwen/Qwen3-Reranker-0.6B
       - OHTTP_ENABLED=true
       - TOKEN=${PROXY_TOKEN}${PROXY_TOKEN_NEXT:+,${PROXY_TOKEN_NEXT}}
-      - FUSION_ENABLED=${FUSION_ENABLED}
-      - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
       - VLLM_BASE_URL=http://model-vllm-qwen3-reranker-0.6b-tp1:8000
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
@@ -1678,6 +1778,13 @@ services:
     <<: *vllm-common
     image: vllm/vllm-openai@sha256:d825baf9ce4b1b6bfc5ecc7b79880c7e6748c65a72d697ce3d47607aafa84c6e
     container_name: model-vllm-qwen3-reranker-0.6b-tp1
+    networks:
+      - engine-qwen3-reranker
+    ipc: private
+    shm_size: 16gb
+    depends_on:
+      model-downloader-qwen3-reranker:
+        condition: service_completed_successfully
     command: >
         Qwen/Qwen3-Reranker-0.6B
         --revision e61197ed45024b0ed8a2d74b80b4d909f1255473
@@ -1712,7 +1819,7 @@ services:
       nearai.otel.model_path: "Qwen/Qwen3-Reranker-0.6B"
       nearai.otel.engine_image: "d825baf9ce4b"
       nearai.otel.instance: "1"
-      nearai.otel.config_variant: "reranker-kv7g-v1runner"
+      nearai.otel.config_variant: "reranker-kv7g-v1runner-offline"
       nearai.otel.deployment: "pack-small-models"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
@@ -1720,9 +1827,27 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
+  model-downloader-whisper:
+    <<: *downloader-common
+    container_name: model-downloader-whisper
+    command:
+      - |
+        set -e
+        uvx --from 'huggingface_hub[hf_xet]' hf download openai/whisper-large-v3 --revision 06f233fe06e710322aca913c1bc4249a0d71fce1
+    volumes:
+      - hugginface_cache:/root/.cache/huggingface
+    environment:
+      - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+
   proxy-whisper-large-v3:
     <<: *vllm-proxy-common
     container_name: proxy-whisper-large-v3
+    networks:
+      - default
+      - engine-whisper
+    depends_on:
+      engine-egress-probe:
+        condition: service_completed_successfully
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - CLOUD_API_URL=https://cloud-api.near.ai
@@ -1732,8 +1857,6 @@ services:
       - MODEL_NAME=openai/whisper-large-v3
       - OHTTP_ENABLED=true
       - TOKEN=${PROXY_TOKEN}${PROXY_TOKEN_NEXT:+,${PROXY_TOKEN_NEXT}}
-      - FUSION_ENABLED=${FUSION_ENABLED}
-      - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
       - VLLM_BASE_URL=http://model-vllm-whisper-large-v3-tp1:8000
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
@@ -1785,6 +1908,13 @@ services:
               assert s.count(old) == 1, "whisper.py: language-detection block not found exactly once"; p.write_text(s.replace(old, new))' \
             && grep -qxF '        return lang_code if lang_code in cls.supported_languages else "en"' /usr/local/lib/python3.12/dist-packages/vllm/model_executor/models/whisper.py
     container_name: model-vllm-whisper-large-v3-tp1
+    networks:
+      - engine-whisper
+    ipc: private
+    shm_size: 16gb
+    depends_on:
+      model-downloader-whisper:
+        condition: service_completed_successfully
     command: >
         openai/whisper-large-v3
         --revision 06f233fe06e710322aca913c1bc4249a0d71fce1
@@ -1816,7 +1946,7 @@ services:
       nearai.otel.model_path: "openai/whisper-large-v3"
       nearai.otel.engine_image: "vllm-with-audio-v0330-langfix"
       nearai.otel.instance: "1"
-      nearai.otel.config_variant: "whisper-kv24g-v1runner"
+      nearai.otel.config_variant: "whisper-kv24g-v1runner-offline"
       nearai.otel.deployment: "pack-small-models"
       nearai.otel.env: "${ENV}"
       nearai.otel.host: "${CVM_HOST}"
@@ -1824,9 +1954,27 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
+  model-downloader-privacy-filter:
+    <<: *downloader-common
+    container_name: model-downloader-privacy-filter
+    command:
+      - |
+        set -e
+        uvx --from 'huggingface_hub[hf_xet]' hf download openai/privacy-filter --revision 7ffa9a043d54d1be65afb281eddf0ffbe629385b
+    volumes:
+      - hugginface_cache:/root/.cache/huggingface
+    environment:
+      - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+
   proxy-privacy-filter:
     <<: *vllm-proxy-common
     container_name: proxy-privacy-filter
+    networks:
+      - default
+      - engine-privacy-filter
+    depends_on:
+      engine-egress-probe:
+        condition: service_completed_successfully
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - CLOUD_API_URL=https://cloud-api.near.ai
@@ -1836,8 +1984,6 @@ services:
       - MODEL_NAME=openai/privacy-filter
       - OHTTP_ENABLED=true
       - TOKEN=${PROXY_TOKEN}${PROXY_TOKEN_NEXT:+,${PROXY_TOKEN_NEXT}}
-      - FUSION_ENABLED=${FUSION_ENABLED}
-      - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
       - VLLM_BASE_URL=http://model-privacy-filter:8000
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
@@ -1865,6 +2011,13 @@ services:
   model-privacy-filter:
     <<: *privacy-filter-common
     container_name: model-privacy-filter
+    networks:
+      - engine-privacy-filter
+    ipc: private
+    shm_size: 16gb
+    depends_on:
+      model-downloader-privacy-filter:
+        condition: service_completed_successfully
     labels:
       com.datadoghq.ad.logs: '[{"source":"privacy-filter","service":"privacy-filter","tags":["model:openai/privacy-filter","deployment:pack-small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8007"]}]'
 
@@ -2103,6 +2256,13 @@ services:
     restart: "no"
     networks:
       - engine-qwen38
+      - engine-qwen36
+      - engine-flux2
+      - engine-qwen3vl
+      - engine-qwen3-embedding
+      - engine-qwen3-reranker
+      - engine-whisper
+      - engine-privacy-filter
     extra_hosts:
       - "compose-manager:host-gateway"
     entrypoint:
@@ -2112,24 +2272,28 @@ services:
         fail=0
         reached() { echo "engine-egress-probe reached $$1"; fail=1; }
         if ip -4 route | grep -q '^default'; then echo "engine-egress-probe found a default route"; fail=1; fi
-        subnet=$$(ip -4 route | awk '$$1 ~ "/" {print $$1; exit}')
-        base=$${subnet%/*}
-        if [ -z "$$base" ]; then
-          echo "engine-egress-probe found no network to test"; fail=1
-        else
-          gateway="$${base%.*}.$$(( $${base##*.} + 1 ))"
-          for host in "$$gateway" compose-manager; do
-            for port in 22 80 8000 8001 8080 8444; do
-              if nc -z -w 3 "$$host" "$$port" 2>/dev/null; then reached "$$host:$$port"; fi
-            done
-          done
-        fi
+        subnets=$$(ip -4 route | awk '$$1 ~ "/" {print $$1}')
+        if [ -z "$$subnets" ]; then echo "engine-egress-probe found no network to test"; fail=1; fi
+        hosts=compose-manager
+        for subnet in $$subnets; do
+          base=$${subnet%/*}
+          hosts="$$hosts $${base%.*}.$$(( $${base##*.} + 1 ))"
+        done
+        hits=$$(mktemp)
+        for host in $$hosts; do
+          ( for port in 22 80 8000 8001 8080 8444; do
+              if nc -z -w 2 "$$host" "$$port" 2>/dev/null; then echo "$$host:$$port" >> "$$hits"; fi
+            done ) &
+        done
+        wait
+        while read -r hit; do reached "$$hit"; done < "$$hits"
         for target in "1.1.1.1 443" "1.1.1.1 53" "169.254.169.254 80"; do
           if nc -z -w 3 $$target 2>/dev/null; then reached "$$target"; fi
         done
         if curl -s -o /dev/null -m 5 https://huggingface.co; then reached https://huggingface.co; fi
         if nslookup huggingface.co >/dev/null 2>&1; then echo "engine-egress-probe resolved an outside name"; fail=1; fi
-        if [ "$$fail" = 0 ]; then echo "engine-egress-probe PASS: no route out"; else echo "engine-egress-probe FAIL"; fi
+        count=$$(echo "$$subnets" | wc -w)
+        if [ "$$fail" = 0 ]; then echo "engine-egress-probe PASS: no route out of $$count networks"; else echo "engine-egress-probe FAIL"; fi
         exit "$$fail"
     logging: *logging-conf
     labels:
@@ -2139,6 +2303,12 @@ services:
     networks:
       - default
       - engine-qwen38
+      - engine-qwen36
+      - engine-flux2
+      - engine-qwen3vl
+      - engine-qwen3-embedding
+      - engine-qwen3-reranker
+      - engine-whisper
     image: otel/opentelemetry-collector-contrib@sha256:85ac41c2db88d0df9bd6145e608a3cb023f5d8443868adbfbbf66efb51087917
     container_name: otelcol-contrib
     command: ["--config=/etc/otelcol-contrib/config.yaml"]
@@ -2199,6 +2369,27 @@ networks:
     name: dstack_default
   engine-qwen38:
     name: engine_qwen38
+    internal: true
+  engine-qwen36:
+    name: engine_qwen36
+    internal: true
+  engine-flux2:
+    name: engine_flux2
+    internal: true
+  engine-qwen3vl:
+    name: engine_qwen3vl
+    internal: true
+  engine-qwen3-embedding:
+    name: engine_qwen3_embedding
+    internal: true
+  engine-qwen3-reranker:
+    name: engine_qwen3_reranker
+    internal: true
+  engine-whisper:
+    name: engine_whisper
+    internal: true
+  engine-privacy-filter:
+    name: engine_privacy_filter
     internal: true
 
 configs:
@@ -2949,10 +3140,8 @@ configs:
       # Health check via the host-published port (HOST_IP:<port>), NOT the
       # compose service DNS name. A service-name probe fails with curl (6)
       # "Could not resolve host" if the registrar loses compose-network DNS
-      # (e.g. after a backend container is recreated independently), wedging
-      # every port's health check so all 8 models silently drop to 0 backends.
-      # HOST_IP:<port> is the endpoint model-proxy actually routes to and never
-      # depends on inter-container DNS. ($1 = host:port)
+      # (e.g. after a backend container is recreated independently).
+      # HOST_IP:<port> is the endpoint model-proxy routes to. ($1 = host:port)
       check_chat() {
         curl -sf --max-time 45 -X POST "http://$$1/v1/chat/completions" \
           -H "Authorization: Bearer $$INFERENCE_TOKEN" \
@@ -3040,12 +3229,8 @@ configs:
       }
 
       # Probe the host-published nginx port via HOST_IP instead of the
-      # "nginx" compose DNS name. A stale/abandoned docker service-name
-      # resolution (e.g. after nginx is recreated) otherwise wedges this
-      # readiness gate forever and silently drops every model to 0 backends.
-      # Bounded + loud so a persistent probe failure falls through to the
-      # registration loop (which health-checks each backend directly) instead
-      # of hanging here forever.
+      # "nginx" compose DNS name. The wait is bounded; the registration loop
+      # then health-checks each backend directly.
       READY_URL="http://$${HOST_IP}:8002/v1/models"
       echo "Waiting for first model to be ready (probing $$READY_URL)..."
       ready_attempts=0
@@ -3097,8 +3282,7 @@ configs:
         # Legacy hostname for the retired Qwen3-30B. model-proxy keeps aliases in memory only and loses them
         # when every replica restarts, so re-assert it each pass, like the model mappings above.
         register_alias "qwen3-30b.completions.near.ai" "qwen3-6-35b.completions.near.ai"
-        # GLM-5.3 Flash (:8009, base tier). model-proxy's model->domain map is one domain per id,
-        # last-writer-wins: the other base-tier hosts register the same mapping, never the long domain.
+        # GLM-5.3 Flash (:8009, base tier). Registers the base domain, never the long domain.
         register_model "z-ai/glm-5.3-flash" "glm-5-3-flash.completions.near.ai"
         # Refresh liveness after the register_model calls, before the long sleep.
         date +%s > /tmp/registrar_alive
@@ -3194,12 +3378,8 @@ configs:
       ssl_protocols TLSv1.2 TLSv1.3;
 
       # Each model accepts both its canonical SNI and the rotation-SNI form
-      # `<canonical>-i<N>.completions.near.ai` used by cloud-api's discovery
-      # (model-proxy's parse_indexed_sni), in both the prod `completions.near.ai`
-      # and staging `completions-stg.near.ai` zones. Without the staging
-      # server_names, `*.completions-stg.near.ai` SNIs fall through to the
-      # default server (lexically first model) and return the wrong model's
-      # signing pubkey, breaking E2EE on staging.
+      # `<canonical>-i<N>.completions.near.ai` used by cloud-api's discovery,
+      # in both the prod `completions.near.ai` and staging `completions-stg.near.ai` zones.
 
       server {
           listen 443 ssl http2;
@@ -3285,7 +3465,7 @@ configs:
 
       # qwen3-30b.* is a model-proxy domain alias for qwen3-6-35b (retired Qwen3-30B; the
       # registrar re-asserts it). model-proxy passes the ClientHello through unchanged, so the
-      # legacy SNI must match here or it falls through to the default (flux2-klein) vhost.
+      # legacy SNI must match here.
       server {
           listen 443 ssl http2;
           server_name qwen3-6-35b.completions.near.ai
@@ -3475,9 +3655,7 @@ configs:
               return 0
               ;;
             28)
-              # A 1-token probe queues behind long prefills and can pass 45 s on a healthy
-              # engine. /v1/models answers from the HTTP layer, so 2xx means busy, not
-              # dead.
+              # /v1/models answers from the HTTP layer, so a 2xx means busy, not down.
               if curl -sf --connect-timeout 5 --max-time 10 \
                 -H "Authorization: Bearer $$INFERENCE_TOKEN" \
                 "http://$$1/v1/models" > /dev/null 2>&1; then
@@ -3561,10 +3739,8 @@ configs:
     content: |
       #!/bin/sh
       # Maps the adapter id to its domain; never registers or unregisters an endpoint.
-      # model-proxy keys probes by ip:port, so /unregister/endpoint for HOST_IP:8000 would
-      # drop base Qwen3.8 (and propagate to peers). Discovery already probes base's
-      # HOST_IP:8000, whose /v1/models (the engine list) carries the adapter id, and routes
-      # its domain to HOST_IP:8001, where nginx-qwen38 selects the abliterated proxy by SNI.
+      # Discovery probes base's HOST_IP:8000 (its /v1/models carries the adapter id) and
+      # routes the domain to HOST_IP:8001, where nginx-qwen38 selects the proxy by SNI.
       PROXY_URL="https://completions.near.ai"
       TOKEN="$${MODEL_PROXY_TOKEN}"
       INFERENCE_TOKEN="$${PROXY_TOKEN}"
@@ -3589,8 +3765,7 @@ configs:
           -d "{\"model\":\"$$1\",\"domain\":\"$$2\"}" || true
       }
 
-      # Nothing to withdraw: /unregister/model is not propagated and peer sync restores
-      # the mapping, so stopping proxy-qwen38-27b-abliterated is the off switch.
+      # No endpoint is owned here, so there is nothing to withdraw.
       cleanup() {
         echo "SIGTERM received; leaving model-proxy untouched (no endpoint is owned here)"
         exit 0

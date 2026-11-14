@@ -326,8 +326,7 @@ x-privacy-filter-common: &privacy-filter-common
     dockerfile_inline: |
       # syntax=docker/dockerfile:1.4
       FROM pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime
-      # transformers 5.20+ needs PyTorch >=2.6; this 2.5.1 base crash-loops on fresh builds.
-      # 5.16.1 matches gpu13's working image built on 2026-09-02.
+      # transformers 5.20+ needs PyTorch >=2.6; the 2.5.1 base needs the pinned 5.16.1.
       RUN pip install --no-cache-dir \
           "transformers==5.16.1" \
           accelerate \
@@ -826,8 +825,6 @@ services:
       - MODEL_NAME=Qwen/Qwen3.6-35B-A3B-FP8
       - OHTTP_ENABLED=true
       - TOKEN=${PROXY_TOKEN}${PROXY_TOKEN_NEXT:+,${PROXY_TOKEN_NEXT}}
-      - FUSION_ENABLED=${FUSION_ENABLED}
-      - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
       - VLLM_BACKEND_URLS=http://model-sg-qwen36-35b-a3b-fp8-tp1-r1:8000
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
@@ -915,8 +912,6 @@ services:
       - VLLM_PROXY_STRICT_REQUEST_MODEL=true
       - OHTTP_ENABLED=true
       - TOKEN=${PROXY_TOKEN}${PROXY_TOKEN_NEXT:+,${PROXY_TOKEN_NEXT}}
-      - FUSION_ENABLED=${FUSION_ENABLED}
-      - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
       - VLLM_BACKEND_URLS=http://model-sg-qwen38-27b-fp8-tp1-coloc:8000
       - VLLM_PROXY_MAX_REQUEST_SIZE=104857600
       - VLLM_PROXY_PRIORITY_SIZE_TIERS=16000:10,65536:5,*:0
@@ -1138,8 +1133,6 @@ services:
       - VLLM_PROXY_ALLOWED_ORG_IDS=${QWEN38_ABLITERATED_ALLOWED_ORG_IDS:-__no_organizations__}
       - OHTTP_ENABLED=true
       - TOKEN=${QWEN38_ABLITERATED_PROXY_TOKEN}${QWEN38_ABLITERATED_PROXY_TOKEN_NEXT:+,${QWEN38_ABLITERATED_PROXY_TOKEN_NEXT}}
-      - FUSION_ENABLED=${FUSION_ENABLED}
-      - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
       - VLLM_BACKEND_URLS=http://model-sg-qwen38-27b-fp8-tp1-coloc:8000
       - VLLM_PROXY_MAX_REQUEST_SIZE=104857600
       - VLLM_PROXY_PRIORITY_SIZE_TIERS=16000:10,65536:5,*:0
@@ -1206,8 +1199,6 @@ services:
       - MODEL_NAME=z-ai/glm-5.3-flash
       - OHTTP_ENABLED=true
       - TOKEN=${PROXY_TOKEN}${PROXY_TOKEN_NEXT:+,${PROXY_TOKEN_NEXT}}
-      - FUSION_ENABLED=${FUSION_ENABLED}
-      - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
       - VLLM_BACKEND_URLS=http://model-sg-glm53-w4afp8-tp2-r1:8000,http://model-sg-glm53-w4afp8-tp2-r2:8000
       - VLLM_BACKEND_CONVERSATION_AFFINITY=1
       - VLLM_PROXY_MAX_REQUEST_SIZE=104857600
@@ -1394,8 +1385,6 @@ services:
       - MODEL_NAME=black-forest-labs/FLUX.2-klein-4B
       - OHTTP_ENABLED=true
       - TOKEN=${PROXY_TOKEN}${PROXY_TOKEN_NEXT:+,${PROXY_TOKEN_NEXT}}
-      - FUSION_ENABLED=${FUSION_ENABLED}
-      - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
       - VLLM_BASE_URL=http://model-sg-flux2-klein-4b-tp1:8000
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
@@ -1452,8 +1441,6 @@ services:
       - MODEL_NAME=Qwen/Qwen3-VL-30B-A3B-Instruct
       - OHTTP_ENABLED=true
       - TOKEN=${PROXY_TOKEN}${PROXY_TOKEN_NEXT:+,${PROXY_TOKEN_NEXT}}
-      - FUSION_ENABLED=${FUSION_ENABLED}
-      - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
       - VLLM_BASE_URL=http://model-vllm-qwen3vl-30b-a3b-fp8-tp1:8000
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
@@ -1533,8 +1520,6 @@ services:
       - MODEL_NAME=Qwen/Qwen3-Embedding-0.6B
       - OHTTP_ENABLED=true
       - TOKEN=${PROXY_TOKEN}${PROXY_TOKEN_NEXT:+,${PROXY_TOKEN_NEXT}}
-      - FUSION_ENABLED=${FUSION_ENABLED}
-      - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
       - VLLM_BASE_URL=http://model-vllm-qwen3-embedding-0.6b-tp1:8000
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
@@ -1608,8 +1593,6 @@ services:
       - MODEL_NAME=Qwen/Qwen3-Reranker-0.6B
       - OHTTP_ENABLED=true
       - TOKEN=${PROXY_TOKEN}${PROXY_TOKEN_NEXT:+,${PROXY_TOKEN_NEXT}}
-      - FUSION_ENABLED=${FUSION_ENABLED}
-      - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
       - VLLM_BASE_URL=http://model-vllm-qwen3-reranker-0.6b-tp1:8000
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
@@ -1685,8 +1668,6 @@ services:
       - MODEL_NAME=openai/whisper-large-v3
       - OHTTP_ENABLED=true
       - TOKEN=${PROXY_TOKEN}${PROXY_TOKEN_NEXT:+,${PROXY_TOKEN_NEXT}}
-      - FUSION_ENABLED=${FUSION_ENABLED}
-      - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
       - VLLM_BASE_URL=http://model-vllm-whisper-large-v3-tp1:8000
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
@@ -1782,8 +1763,6 @@ services:
       - MODEL_NAME=openai/privacy-filter
       - OHTTP_ENABLED=true
       - TOKEN=${PROXY_TOKEN}${PROXY_TOKEN_NEXT:+,${PROXY_TOKEN_NEXT}}
-      - FUSION_ENABLED=${FUSION_ENABLED}
-      - FUSION_INTERNAL_BEARER_TOKEN=${FUSION_INTERNAL_BEARER_TOKEN}
       - VLLM_BASE_URL=http://model-privacy-filter:8000
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
       - USE_NV_ATTESTATION_SDK=true
@@ -2895,10 +2874,8 @@ configs:
       # Health check via the host-published port (HOST_IP:<port>), NOT the
       # compose service DNS name. A service-name probe fails with curl (6)
       # "Could not resolve host" if the registrar loses compose-network DNS
-      # (e.g. after a backend container is recreated independently), wedging
-      # every port's health check so all 8 models silently drop to 0 backends.
-      # HOST_IP:<port> is the endpoint model-proxy actually routes to and never
-      # depends on inter-container DNS. See cvm-compose-files#57. ($1 = host:port)
+      # (e.g. after a backend container is recreated independently).
+      # HOST_IP:<port> is the endpoint model-proxy routes to. ($1 = host:port)
       check_chat() {
         curl -sf --max-time 45 -X POST "http://$$1/v1/chat/completions" \
           -H "Authorization: Bearer $$INFERENCE_TOKEN" \
@@ -2986,12 +2963,8 @@ configs:
       }
 
       # Probe the host-published nginx port via HOST_IP instead of the
-      # "nginx" compose DNS name. A stale/abandoned docker service-name
-      # resolution (e.g. after nginx is recreated) otherwise wedges this
-      # readiness gate forever and silently drops every model to 0 backends.
-      # Bounded + loud so a persistent probe failure falls through to the
-      # registration loop (which health-checks each backend directly) instead
-      # of hanging here forever. See cvm-compose-files#57.
+      # "nginx" compose DNS name. The wait is bounded; the registration loop
+      # then health-checks each backend directly.
       READY_URL="http://$${HOST_IP}:8002/v1/models"
       echo "Waiting for first model to be ready (probing $$READY_URL)..."
       ready_attempts=0
@@ -3011,9 +2984,7 @@ configs:
       while true; do
         for port in 8002 8003 8004 8005 8006 8007 8008 8009; do
           # Liveness marker for the container healthcheck (see service def);
-          # refreshed each port so a slow-but-progressing serial loop (these
-          # probes can take minutes in aggregate) is not falsely marked
-          # unhealthy. See cvm-compose-files#57.
+          # refreshed each port so a slow serial loop is not marked unhealthy.
           date +%s > /tmp/registrar_alive
           eval "was_reg=\$$REG_$$port"
           eval "fails=\$$FAIL_COUNT_$$port"
@@ -3043,8 +3014,7 @@ configs:
         # Legacy hostname for the retired Qwen3-30B. model-proxy keeps aliases in memory only and loses them
         # when every replica restarts, so re-assert it each pass, like the model mappings above.
         register_alias "qwen3-30b.completions.near.ai" "qwen3-6-35b.completions.near.ai"
-        # GLM-5.3 Flash (:8009, base tier). model-proxy's model->domain map is one domain per id,
-        # last-writer-wins: this is the same mapping gpu03 and gpu04 register, never the long domain.
+        # GLM-5.3 Flash (:8009, base tier). Registers the base domain, never the long domain.
         register_model "z-ai/glm-5.3-flash" "glm-5-3-flash.completions.near.ai"
         # Refresh liveness after the register_model calls, before the long sleep.
         date +%s > /tmp/registrar_alive
@@ -3140,14 +3110,8 @@ configs:
       ssl_protocols TLSv1.2 TLSv1.3;
 
       # Each model accepts both its canonical SNI and the rotation-SNI form
-      # `<canonical>-i<N>.completions.near.ai` used by cloud-api's discovery
-      # (model-proxy's parse_indexed_sni), in both the prod `completions.near.ai`
-      # and staging `completions-stg.near.ai` zones. Without the staging
-      # server_names, `*.completions-stg.near.ai` SNIs fall through to the
-      # default server (lexically first model) and return the wrong model's
-      # signing pubkey, breaking E2EE on staging — see nearai/infra#143
-      # (rotation-SNI variant) and nearai/infra#164 (staging-SNI variant),
-      # plus the L4-SNI-rewrite analysis in nearai/model-proxy#30.
+      # `<canonical>-i<N>.completions.near.ai` used by cloud-api's discovery,
+      # in both the prod `completions.near.ai` and staging `completions-stg.near.ai` zones.
 
       server {
           listen 443 ssl http2;
@@ -3233,7 +3197,7 @@ configs:
 
       # qwen3-30b.* is a model-proxy domain alias for qwen3-6-35b (retired Qwen3-30B; the
       # registrar re-asserts it). model-proxy passes the ClientHello through unchanged, so the
-      # legacy SNI must match here or it falls through to the default (flux2-klein) vhost.
+      # legacy SNI must match here.
       server {
           listen 443 ssl http2;
           server_name qwen3-6-35b.completions.near.ai
@@ -3256,8 +3220,7 @@ configs:
 
       server {
           listen 443 ssl http2;
-          # Base names only (canonical, staging, rotation -i<N>, per-backend -b<hex12>). The -long-* names are not
-          # served here: gpu13 is not a long-tier host.
+          # Base names only (canonical, staging, rotation -i<N>, per-backend -b<hex12>); no -long-* names.
           server_name glm-5-3-flash.completions.near.ai
                       glm-5-3-flash.completions-stg.near.ai
                       ~^glm-5-3-flash-i\d+\.completions(-stg)?\.near\.ai$$
@@ -3424,10 +3387,7 @@ configs:
               return 0
               ;;
             28)
-              # A 1-token probe queues behind long prefills and can pass 45 s on a healthy
-              # engine: on 2026-11-02 ~250K-token prompts withdrew both Qwen3.8 replicas
-              # this way. /v1/models answers from the HTTP layer, so 2xx means busy, not
-              # dead. Same rule as the GLM-5.3 registrars (#277).
+              # /v1/models answers from the HTTP layer, so a 2xx means busy, not down.
               if curl -sf --connect-timeout 5 --max-time 10 \
                 -H "Authorization: Bearer $$INFERENCE_TOKEN" \
                 "http://$$1/v1/models" > /dev/null 2>&1; then
@@ -3511,10 +3471,8 @@ configs:
     content: |
       #!/bin/sh
       # Maps the adapter id to its domain; never registers or unregisters an endpoint.
-      # model-proxy keys probes by ip:port, so /unregister/endpoint for HOST_IP:8000 would
-      # drop base Qwen3.8 (and propagate to peers). Discovery already probes base's
-      # HOST_IP:8000, whose /v1/models (the engine list) carries the adapter id, and routes
-      # its domain to HOST_IP:8001, where nginx-qwen38 selects the abliterated proxy by SNI.
+      # Discovery probes base's HOST_IP:8000 (its /v1/models carries the adapter id) and
+      # routes the domain to HOST_IP:8001, where nginx-qwen38 selects the proxy by SNI.
       PROXY_URL="https://completions.near.ai"
       TOKEN="$${MODEL_PROXY_TOKEN}"
       INFERENCE_TOKEN="$${PROXY_TOKEN}"
@@ -3539,8 +3497,7 @@ configs:
           -d "{\"model\":\"$$1\",\"domain\":\"$$2\"}" || true
       }
 
-      # Nothing to withdraw: /unregister/model is not propagated and peer sync restores
-      # the mapping, so stopping proxy-qwen38-27b-abliterated is the off switch.
+      # No endpoint is owned here, so there is nothing to withdraw.
       cleanup() {
         echo "SIGTERM received; leaving model-proxy untouched (no endpoint is owned here)"
         exit 0
