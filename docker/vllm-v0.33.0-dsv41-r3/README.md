@@ -24,7 +24,7 @@ vllm-project/vllm pull requests or commits and name where a patch comes from.
 | 16-cc-explicit-copies | under `VLLM_CONFIDENTIAL_COMPUTE=1` only: H2D on a staging stream, D2H from a worker thread, pinned `NonUvaBuffer` copies; wraps `torch.Tensor.copy_`, `to` and `cuda` | NEAR port of #59981 |
 | 17-cc-retain-ep-fault-flag | keeps the EP fault flag referenced until the copy stream has read it | upstream fbcadab2, ported onto 16 |
 
-Patches 08-15 are byte-identical to 01-04, 08 and 10-12 of `docker/vllm-v0.33.0-secure-r1`.
+Patches 08-15 are byte-identical to 01-04, 08 and 10-12 of `docker/vllm-v0.33.0-request-bounds-r1`.
 Patches 04-07 differ from `docker/vllm-dsv41-v033` only in comment text.
 
 Defaults this image sets, which differ from stock v0.33.0: 09 takes cached-token counts from the
