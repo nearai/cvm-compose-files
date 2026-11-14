@@ -175,6 +175,5 @@ file and the matched value. Counts per rule:
 | `privacy.no-log-flag` | 4 | vLLM engine without an explicit request-logging flag |
 | `privacy.secret` | 7 | secret variables without a required-value check |
 | `public.domain` | 6 | domain names outside the public allowlist |
-| `public.host` | 27 | host names in config values, labels or service names |
-| `public.repo` | 2 | repository references outside the public allowlist |
+| `public.host` | 20 | host names in config values, labels or service names |
 | `status.key-set` | 1 | a candidate whose services differ from its live file |
