@@ -26,7 +26,7 @@ x-vllm-common: &vllm-common
   logging: *logging-conf
 
 x-vllm-proxy-common: &vllm-proxy-common
-  image: nearaidev/vllm-proxy-rs@sha256:60d08c207b285697f39e134533081eac7006739ec5019c89c2f4c67869062f45
+  image: nearaidev/vllm-proxy-rs@sha256:c57cd9ea8374fa9134b9b79ede199f21d134dd710826ac94dead4bbf381f57df
   user: root
   privileged: true
   <<: *nvidia
@@ -935,7 +935,7 @@ services:
 
   proxy-qwen38-27b:
     <<: *vllm-proxy-common
-    image: nearaidev/vllm-proxy-rs@sha256:60d08c207b285697f39e134533081eac7006739ec5019c89c2f4c67869062f45
+    image: nearaidev/vllm-proxy-rs@sha256:c57cd9ea8374fa9134b9b79ede199f21d134dd710826ac94dead4bbf381f57df
     container_name: proxy-qwen38-27b
     networks:
       - default
@@ -1155,7 +1155,7 @@ services:
 
   proxy-qwen38-27b-abliterated:
     <<: *vllm-proxy-common
-    image: nearaidev/vllm-proxy-rs@sha256:60d08c207b285697f39e134533081eac7006739ec5019c89c2f4c67869062f45
+    image: nearaidev/vllm-proxy-rs@sha256:c57cd9ea8374fa9134b9b79ede199f21d134dd710826ac94dead4bbf381f57df
     container_name: proxy-qwen38-27b-abliterated
     networks:
       - default
@@ -1231,6 +1231,7 @@ services:
 
   proxy-glm53:
     <<: *vllm-proxy-common
+    image: nearaidev/vllm-proxy-rs@sha256:60d08c207b285697f39e134533081eac7006739ec5019c89c2f4c67869062f45
     container_name: proxy-glm53
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
