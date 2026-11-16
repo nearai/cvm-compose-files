@@ -21,7 +21,7 @@ PACK = re.compile(r"^prod/pack-[a-z0-9]+(?:-[a-z0-9]+)*\.yaml$")
 UTIL = re.compile(r"^prod/util-[a-z0-9]+(?:-[a-z0-9]+)*\.yaml$")
 DOCKER = re.compile(r"^docker/([a-z0-9][a-z0-9.-]*)/.+$")
 # New build dirs only; dirs present at the base keep their names.
-BUILD_DIR = re.compile(r"(sglang|vllm)-v[0-9.]+-[a-z0-9-]+-r[0-9]+")
+BUILD_DIR = re.compile(r"(sglang|vllm|transformers)-v[0-9.]+-[a-z0-9-]+-r[0-9]+")
 PUBLISH = re.compile(r"^\.github/workflows/publish-(?P<dir>[a-z0-9][a-z0-9.-]*)\.yaml$")
 DOCS = re.compile(r"^(README|AGENTS|CLAUDE)\.md$|^docs/[a-z0-9._-]+\.md$")
 # Shared Claude Code files only; ci/checks/claude.py checks their content.
@@ -317,6 +317,10 @@ CASES = [
     ("diff rule green without base data file", None, BASE_FILES, {"docs/x.md": "x\n"}),
     ("new build dir with a standard name", None,
      _with(**{"docker/vllm-v0.33.0-dsv41-r1/Dockerfile": "FROM a\n"}), BASE_FILES),
+    ("new transformers build dir", None,
+     _with(**{"docker/transformers-v5.16.1-x-r1/Dockerfile": "FROM a\n"}), BASE_FILES),
+    ("new build dir with an unknown engine", "layout.build-dir",
+     _with(**{"docker/pytorch-v2.5.1-x-r1/Dockerfile": "FROM a\n"}), BASE_FILES),
     ("new build dir with a legacy-style name", "layout.build-dir",
      _with(**{"docker/sglang-glm53-r1/Dockerfile": "FROM a\n"}), BASE_FILES),
     ("unlisted bad path", "layout.path", dict(BASE_FILES, **{"prod/My-Config.yaml": "services: {}\n"}), BASE_FILES),
