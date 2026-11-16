@@ -60,7 +60,8 @@ services:
         COMPOSE_FILE="$${LAUNCHER_COMPOSE_FILE:-/app/work/compose-manager.yml}"
         PROJECT="$${LAUNCHER_COMPOSE_PROJECT:-dstack}"
         HEALTH_URL="$${LAUNCHER_HEALTH_URL:-http://127.0.0.1:8080/version}"
-        AUTH_CHECK_URL="$${HEALTH_URL%/version}/docker/ps"
+        AUTH_BASE="$${HEALTH_URL%/version}"
+        AUTH_CHECK_URL="https://$${AUTH_BASE#*://}/docker/ps"
         TIMEOUT="$${LAUNCHER_HEALTH_TIMEOUT:-180}"
         TS="$$(date -u +%Y%m%dT%H%M%SZ)"
         BACKUP=""
@@ -112,8 +113,9 @@ services:
           i=0
           steps=$$(( TIMEOUT / 3 ))
           while [ "$$i" -lt "$$steps" ]; do
+            # -k: the request stays on the loopback address and the certificate name does not match it.
             if printf 'header = "Authorization: Bearer %s"\n' "$$NEW_BEARER_TOKEN" \
-                 | curl -fsSL -K - --max-time 5 -o /dev/null "$$AUTH_CHECK_URL" 2>/dev/null; then
+                 | curl -fsSLk -K - --max-time 5 -o /dev/null "$$AUTH_CHECK_URL" 2>/dev/null; then
               return 0
             fi
             i=$$((i + 1))
