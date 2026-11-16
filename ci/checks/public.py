@@ -173,8 +173,12 @@ def workflow_findings(path, text):
 ACTIONLINT_CONFIG = "ci/config/actionlint.yaml"
 
 
+ONLY_LABELS = "the file carries only self-hosted-runner.labels"
+
+
 def runner_config_findings(head):
-    """The labels actionlint is told about cannot outrun the allowlist that decides what may be used."""
+    """The labels actionlint is told about cannot outrun the allowlist that decides what may be used,
+    and the file carries that list alone: any other key here changes which findings actionlint reports."""
     if not head.has(ACTIONLINT_CONFIG):
         return []
     text = head.text(ACTIONLINT_CONFIG)
@@ -182,11 +186,24 @@ def runner_config_findings(head):
         doc = parse_yaml(text)
     except YamlError as e:
         return [Finding(ACTIONLINT_CONFIG, 1, "public.runner-config", f"cannot be read: {e}")]
-    labels = (doc or {}).get("self-hosted-runner", {})
-    labels = labels.get("labels") or [] if isinstance(labels, dict) else []
-    return [Finding(ACTIONLINT_CONFIG, line_of(text, str(l)), "public.runner-config",
+    doc = doc or {}
+    out = [Finding(ACTIONLINT_CONFIG, line_of(text, str(k)), "public.runner-config", ONLY_LABELS, key=str(k))
+           for k in doc if str(k) != "self-hosted-runner"]
+    section = doc.get("self-hosted-runner") or {}
+    if not isinstance(section, dict):
+        return out + [Finding(ACTIONLINT_CONFIG, line_of(text, "self-hosted-runner"), "public.runner-config",
+                              "self-hosted-runner is not a mapping", key="self-hosted-runner")]
+    out += [Finding(ACTIONLINT_CONFIG, line_of(text, str(k), after="self-hosted-runner"), "public.runner-config",
+                    ONLY_LABELS, key=str(k))
+            for k in section if str(k) != "labels"]
+    labels = section.get("labels") or []
+    if not isinstance(labels, list):
+        return out + [Finding(ACTIONLINT_CONFIG, line_of(text, "labels", after="self-hosted-runner"),
+                              "public.runner-config", "labels is not a list", key="labels")]
+    out += [Finding(ACTIONLINT_CONFIG, line_of(text, str(l)), "public.runner-config",
                     "label is not in the runners list in ci/data/public.json", key=str(l))
             for l in labels if str(l) not in RUNNERS]
+    return out
 
 
 def line_of(text, needle, after=None):
@@ -476,6 +493,18 @@ CASES = [
      None, {}),
     ("runner label the allowlist does not have", "public.runner-config",
      dict(FILES, **{"ci/config/actionlint.yaml": "self-hosted-runner:\n  labels:\n    - ubuntu_other_x64\n"}),
+     None, None, None, {}),
+    ("actionlint config that silences paths", "public.runner-config",
+     dict(FILES, **{"ci/config/actionlint.yaml":
+                    "self-hosted-runner:\n  labels:\n    - ubuntu_large_x64\npaths:\n  .github/workflows/x.yaml:\n"
+                    "    ignore:\n      - shellcheck\n"}),
+     None, None, None, {}),
+    ("actionlint config with another runner key", "public.runner-config",
+     dict(FILES, **{"ci/config/actionlint.yaml":
+                    "self-hosted-runner:\n  labels:\n    - ubuntu_large_x64\n  config-variables:\n    - X\n"}),
+     None, None, None, {}),
+    ("actionlint config that is only the label list", None,
+     dict(FILES, **{"ci/config/actionlint.yaml": "self-hosted-runner:\n  labels:\n    - ubuntu_large_x64\n"}),
      None, None, None, {}),
 ]
 
