@@ -35,6 +35,6 @@ SHA-256:
 c2f78fe464c7c24d742e20d0fab6477647f848525736d2e5661f5bb4c66d0faf  adapter_config.json
 ```
 
-The Compose downloader in `prod/pack-small-models.yaml` fetches these files from this repository and
+The Compose downloader in `prod/small-models.yaml` fetches these files from this repository and
 checks both hashes before mounting the adapter into SGLang. The FP8 base model
 has its own pinned Hugging Face revision in the Compose file.
