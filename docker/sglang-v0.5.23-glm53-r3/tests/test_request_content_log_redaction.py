@@ -353,8 +353,9 @@ def followup(root: Path, r) -> None:
         except TypeError as e:
             check(False, f"set_finish_with_abort takes log_msg ({type(e).__name__})")
         cap.lines.clear()
-        ns["set_finish_with_abort"](req, "plain client text")
-        check(cap.lines == ["plain client text, self.rid='rid-1'"], "set_finish_with_abort without log_msg is unchanged")
+        ns["set_finish_with_abort"](req, f"client text {MARKER}")
+        check(cap.lines == ["Request aborted, self.rid='rid-1'"] and MARKER not in cap.lines[0],
+              "set_finish_with_abort omits client text without log_msg")
         cap.lines.clear()
 
     # summarize_grammar_error.

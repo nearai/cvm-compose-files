@@ -286,10 +286,10 @@ index f913abe9bc..e70a622be3 100644
          err_type: str = "BadRequestError",
 +        log_msg: Optional[str] = None,
      ):
-+        """``log_msg``, when given, is logged instead of ``error_msg``."""
++        """Log ``log_msg`` when provided; otherwise log a generic abort."""
          if get_parallel().tp_rank == 0:
 -            logger.error(f"{error_msg}, {self.rid=}")
-+            logger.error(f"{error_msg if log_msg is None else log_msg}, {self.rid=}")
++            logger.error(f"{log_msg if log_msg is not None else 'Request aborted'}, {self.rid=}")
          # Session requests share historical multimodal inputs with their prior
          # request. The session owns and releases those features when it closes.
          self.release_mm_inputs_on_abort()
