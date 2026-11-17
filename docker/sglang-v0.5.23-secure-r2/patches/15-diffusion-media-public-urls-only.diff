@@ -10,7 +10,7 @@ index b9d775b..611009a 100644
  from sglang.srt.utils.log_redaction import redact_text, redact_url
  
  # re-export LoRA protocol types for backward compatibility
-@@ -417,10 +418,9 @@ async def _maybe_url_image(
+@@ -417,10 +418,8 @@ async def _maybe_url_image(
          return None
  
      if img_url.lower().startswith(("http://", "https://")):
@@ -18,13 +18,12 @@ index b9d775b..611009a 100644
 -        # Otherwise keep the prefetch outside the measured server stages.
 -        if prefer_remote_source:
 -            return img_url
-+        # Always fetch a client URL here, under the outbound URL policy
-+        # (url_guard), even when input saves are disabled, so the pipeline only
-+        # reads files the server fetched under the address check.
++        # A client URL is always fetched here under the url_guard policy, even with input
++        # saves disabled, so the pipeline reads only files the server fetched.
          # download image from URL and persist on disk
          input_path = await _save_url_image_to_path(
              img_url, target_path, uploads_root=uploads_root
-@@ -490,12 +490,14 @@ async def _save_url_image_to_path(
+@@ -490,12 +489,14 @@ async def _save_url_image_to_path(
      backoff_seconds = 0.2
  
      try:
@@ -44,29 +43,31 @@ index b9d775b..611009a 100644
                          part_path = await _download_capped_to_temp_file(
 diff --git a/python/sglang/multimodal_gen/runtime/utils/url_guard.py b/python/sglang/multimodal_gen/runtime/utils/url_guard.py
 new file mode 100644
-index 0000000..75f99fc
+index 0000000..338a2bf
 --- /dev/null
 +++ b/python/sglang/multimodal_gen/runtime/utils/url_guard.py
-@@ -0,0 +1,234 @@
+@@ -0,0 +1,321 @@
 +"""Outbound policy for client-supplied media URLs.
 +
-+A request may name an http(s) URL that the server then fetches. The server
-+fetches it only from public addresses, never from loopback, the container
-+network or a link-local address. Every fetch of a client URL goes through this module:
++The server fetches a client URL only over http(s) and only from public addresses.
++Every fetch of a client URL goes through this module:
 +
 +1. only http and https URLs with a host are accepted;
-+2. the host is resolved once and every address must be public (not private,
-+   loopback, link-local, CGNAT, multicast, reserved or unspecified, including
-+   IPv4 addresses embedded in IPv6 forms);
-+3. the connection goes to the address that was checked (the URL host is
-+   replaced by the IP, with the original Host header and TLS server name), so
-+   a DNS answer cannot change between the check and the connection;
-+4. redirects are followed by hand, at most MAX_REDIRECTS, and each target is
-+   checked the same way.
++2. the host is resolved once per hop and every address must be public (not private,
++   loopback, link-local, CGNAT, multicast, reserved or unspecified, including IPv4
++   addresses embedded in IPv6 forms);
++3. connections go only to those checked addresses, in resolver order, each one tried
++   when the one before it cannot be reached. The URL host is replaced by the IP; the
++   Host header and the TLS server name keep the original host;
++4. redirects are followed by hand, at most MAX_REDIRECTS, and each target is checked
++   the same way;
++5. one deadline of ``timeout`` seconds covers name resolution, the connection attempts
++   and the response headers of every hop. An attempt may spend on connecting the
++   remaining time divided by the addresses not yet tried; each body read may take the
++   time that remained when its request was sent.
 +
-+SGLANG_DIFFUSION_ALLOW_PRIVATE_MEDIA_URLS=1 turns off the address check (2, 3)
-+for lab setups that serve test images from a private host. Scheme checks and
-+the redirect limit stay on.
++SGLANG_DIFFUSION_ALLOW_PRIVATE_MEDIA_URLS=1 turns off the address check (2, 3). Scheme
++checks, the redirect limit and the deadline stay on.
 +"""
 +
 +from __future__ import annotations
@@ -75,6 +76,8 @@ index 0000000..75f99fc
 +import ipaddress
 +import os
 +import socket
++import threading
++import time
 +from contextlib import asynccontextmanager, contextmanager
 +from typing import AsyncIterator, Iterator
 +from urllib.parse import urljoin, urlsplit, urlunsplit
@@ -90,8 +93,10 @@ index 0000000..75f99fc
 +    ipaddress.ip_network("64:ff9b:1::/48"),
 +)
 +_IPV4_COMPATIBLE = ipaddress.ip_network("::/96")
++_TIMEOUT_MESSAGE = "media URL timeout exceeded"
 +
 +IPAddress = ipaddress.IPv4Address | ipaddress.IPv6Address
++PinnedRequest = tuple[str, dict[str, str], dict[str, str]]
 +
 +
 +class BlockedURLError(ValueError):
@@ -145,8 +150,34 @@ index 0000000..75f99fc
 +    return parts, scheme, port
 +
 +
-+def resolve_public_addresses(host: str, port: int) -> list[IPAddress]:
-+    """Resolve `host` and require every address to be public."""
++def _getaddrinfo(host: str, port: int, timeout: float | None):
++    if timeout is None:
++        return socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
++    if timeout <= 0:
++        raise httpx.ConnectTimeout(_TIMEOUT_MESSAGE)
++    # A daemon thread, so a resolver that does not answer cannot hold the caller past the deadline.
++    result: dict = {}
++
++    def resolve() -> None:
++        try:
++            result["infos"] = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
++        except BaseException as e:
++            result["error"] = e
++
++    worker = threading.Thread(target=resolve, name="media-url-resolve", daemon=True)
++    worker.start()
++    worker.join(timeout)
++    if worker.is_alive():
++        raise httpx.ConnectTimeout(_TIMEOUT_MESSAGE)
++    if "error" in result:
++        raise result["error"]
++    return result["infos"]
++
++
++def resolve_public_addresses(
++    host: str, port: int, timeout: float | None = None
++) -> list[IPAddress]:
++    """Resolve `host` within `timeout` seconds and require every address to be public."""
 +    try:
 +        literal = ipaddress.ip_address(host)
 +    except ValueError:
@@ -155,7 +186,7 @@ index 0000000..75f99fc
 +        addresses = [literal]
 +    else:
 +        try:
-+            infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
++            infos = _getaddrinfo(host, port, timeout)
 +        except (socket.gaierror, UnicodeError) as e:
 +            raise BlockedURLError("media URL host does not resolve") from e
 +        addresses = []
@@ -171,29 +202,26 @@ index 0000000..75f99fc
 +    return addresses
 +
 +
-+def pinned_request(url: str) -> tuple[str, dict[str, str], dict[str, bytes]]:
-+    """Check `url` and return (request_url, headers, httpx extensions).
++def pinned_requests(url: str, *, timeout: float | None = None) -> list[PinnedRequest]:
++    """Check `url` and return one (request_url, headers, httpx extensions) per address.
 +
-+    The request URL carries the checked IP; the Host header and TLS server name
++    Each request URL carries one checked IP; the Host header and TLS server name
 +    keep the original host so virtual hosting and certificate checks still work.
 +    """
 +    parts, scheme, port = _split_http_url(url)
 +    clean = urlunsplit((scheme, parts.netloc.rsplit("@", 1)[-1], parts.path, parts.query, ""))
 +    if private_urls_allowed():
-+        return clean, {}, {}
++        return [(clean, {}, {})]
 +
 +    host = parts.hostname
 +    try:
 +        ascii_host = host.encode("idna").decode("ascii")
 +    except UnicodeError as e:
 +        raise BlockedURLError("invalid media URL host") from e
-+    addresses = resolve_public_addresses(ascii_host, port or _DEFAULT_PORTS[scheme])
-+    ip = addresses[0]
-+    ip_text = f"[{ip}]" if ip.version == 6 else str(ip)
-+    port_suffix = f":{port}" if port else ""
-+    request_url = urlunsplit(
-+        (scheme, ip_text + port_suffix, parts.path, parts.query, "")
++    addresses = resolve_public_addresses(
++        ascii_host, port or _DEFAULT_PORTS[scheme], timeout
 +    )
++    port_suffix = f":{port}" if port else ""
 +    host_text = f"[{ascii_host}]" if ":" in ascii_host else ascii_host
 +    headers = {"Host": host_text + port_suffix}
 +    extensions: dict[str, str] = {}
@@ -205,7 +233,19 @@ index 0000000..75f99fc
 +    if scheme == "https" and not is_literal:
 +        # httpcore hands this to ssl as server_hostname, which must be a str.
 +        extensions["sni_hostname"] = ascii_host
-+    return request_url, headers, extensions
++    pinned = []
++    for ip in addresses:
++        ip_text = f"[{ip}]" if ip.version == 6 else str(ip)
++        request_url = urlunsplit(
++            (scheme, ip_text + port_suffix, parts.path, parts.query, "")
++        )
++        pinned.append((request_url, dict(headers), dict(extensions)))
++    return pinned
++
++
++def pinned_request(url: str) -> PinnedRequest:
++    """`pinned_requests` for the first checked address."""
++    return pinned_requests(url)[0]
 +
 +
 +def _redirect_target(current: str, response: httpx.Response) -> str | None:
@@ -213,6 +253,56 @@ index 0000000..75f99fc
 +    if response.status_code in _REDIRECT_STATUS_CODES and location:
 +        return urljoin(current, location)
 +    return None
++
++
++def _remaining(deadline: float) -> float:
++    remaining = deadline - time.monotonic()
++    if remaining <= 0:
++        raise httpx.ConnectTimeout(_TIMEOUT_MESSAGE)
++    return remaining
++
++
++def _build_attempt(
++    client, target: PinnedRequest, deadline: float, untried: int
++) -> httpx.Request:
++    request_url, headers, extensions = target
++    remaining = _remaining(deadline)
++    return client.build_request(
++        "GET",
++        request_url,
++        headers=headers,
++        extensions=extensions,
++        timeout=httpx.Timeout(remaining, connect=remaining / untried),
++    )
++
++
++async def _send_async(
++    client: httpx.AsyncClient, targets: list[PinnedRequest], deadline: float
++) -> httpx.Response:
++    error: Exception | None = None
++    for index, target in enumerate(targets):
++        request = _build_attempt(client, target, deadline, len(targets) - index)
++        try:
++            async with asyncio.timeout(_remaining(deadline)):
++                return await client.send(request, stream=True, follow_redirects=False)
++        except TimeoutError:
++            raise httpx.ConnectTimeout(_TIMEOUT_MESSAGE, request=request) from None
++        except (httpx.ConnectError, httpx.ConnectTimeout) as e:
++            error = e
++    raise error
++
++
++def _send(
++    client: httpx.Client, targets: list[PinnedRequest], deadline: float
++) -> httpx.Response:
++    error: Exception | None = None
++    for index, target in enumerate(targets):
++        request = _build_attempt(client, target, deadline, len(targets) - index)
++        try:
++            return client.send(request, stream=True, follow_redirects=False)
++        except (httpx.ConnectError, httpx.ConnectTimeout) as e:
++            error = e
++    raise error
 +
 +
 +@asynccontextmanager
@@ -223,23 +313,22 @@ index 0000000..75f99fc
 +    if client.trust_env:
 +        # The request goes to the checked address itself, so the client reads no proxy settings.
 +        raise BlockedURLError("media URL client must not read proxy settings")
++    deadline = time.monotonic() + timeout
 +    current = url
 +    for hop in range(MAX_REDIRECTS + 1):
-+        request_url, headers, extensions = await asyncio.to_thread(
-+            pinned_request, current
-+        )
-+        async with client.stream(
-+            "GET",
-+            request_url,
-+            headers=headers,
-+            extensions=extensions,
-+            timeout=timeout,
-+            follow_redirects=False,
-+        ) as response:
++        try:
++            async with asyncio.timeout(_remaining(deadline)):
++                targets = await asyncio.to_thread(pinned_requests, current)
++        except TimeoutError:
++            raise httpx.ConnectTimeout(_TIMEOUT_MESSAGE) from None
++        response = await _send_async(client, targets, deadline)
++        try:
 +            target = _redirect_target(current, response)
 +            if target is None:
 +                yield response
 +                return
++        finally:
++            await response.aclose()
 +        if hop == MAX_REDIRECTS:
 +            raise BlockedURLError(f"media URL exceeded {MAX_REDIRECTS} redirects")
 +        current = target
@@ -248,22 +337,19 @@ index 0000000..75f99fc
 +@contextmanager
 +def open_public_url(url: str, *, timeout: float) -> Iterator[httpx.Response]:
 +    """Synchronous `open_public_url_async` with its own client."""
++    deadline = time.monotonic() + timeout
 +    current = url
 +    with httpx.Client(follow_redirects=False, trust_env=False) as client:
 +        for hop in range(MAX_REDIRECTS + 1):
-+            request_url, headers, extensions = pinned_request(current)
-+            with client.stream(
-+                "GET",
-+                request_url,
-+                headers=headers,
-+                extensions=extensions,
-+                timeout=timeout,
-+                follow_redirects=False,
-+            ) as response:
++            targets = pinned_requests(current, timeout=_remaining(deadline))
++            response = _send(client, targets, deadline)
++            try:
 +                target = _redirect_target(current, response)
 +                if target is None:
 +                    yield response
 +                    return
++            finally:
++                response.close()
 +            if hop == MAX_REDIRECTS:
 +                raise BlockedURLError(f"media URL exceeded {MAX_REDIRECTS} redirects")
 +            current = target

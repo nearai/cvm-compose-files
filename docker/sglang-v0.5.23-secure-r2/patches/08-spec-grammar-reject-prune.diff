@@ -2,7 +2,7 @@ diff --git a/python/sglang/srt/speculative/spec_utils.py b/python/sglang/srt/spe
 index 3f1836e..0a1eb4f 100644
 --- a/python/sglang/srt/speculative/spec_utils.py
 +++ b/python/sglang/srt/speculative/spec_utils.py
-@@ -620,22 +620,35 @@ def traverse_tree(
+@@ -620,22 +620,31 @@ def traverse_tree(
          if is_accepted:
              if curr != 0:
                  # Accept the current token
@@ -20,12 +20,8 @@ index 3f1836e..0a1eb4f 100644
 +                try:
 +                    grammar.accept_token(int(draft_tokens[curr]))
 +                except ValueError:
-+                    # The matcher can reject a draft token that passed the parent
-+                    # mask row (mask/matcher desync, e.g. a disagg retracted-request
-+                    # double-accept). Clear it in the parent row so verify won't
-+                    # accept it, and prune this branch rather than raising to -- and
-+                    # killing -- the scheduler. The accept failed, so the grammar is
-+                    # still at the parent state; no rollback is owed for this node.
++                    # A token the matcher rejects is cleared in the parent row and its branch
++                    # pruned; the grammar stays at the parent state, so no rollback is owed.
 +                    parent_bitmask[int(current_token) // 32] &= ~(
 +                        1 << (int(current_token) % 32)
                      )
@@ -57,7 +53,7 @@ diff --git a/test/registered/unit/spec/test_spec_utils_traverse_tree.py b/test/r
 index 5061d0d..c6fa0cc 100644
 --- a/test/registered/unit/spec/test_spec_utils_traverse_tree.py
 +++ b/test/registered/unit/spec/test_spec_utils_traverse_tree.py
-@@ -106,6 +106,58 @@ class TestTraverseTreePassesIntsToGrammar(unittest.TestCase):
+@@ -106,6 +106,55 @@ class TestTraverseTreePassesIntsToGrammar(unittest.TestCase):
          self.assertEqual(accept_calls, [5])
          self.assertEqual(fill_calls, [0, 1])
  
@@ -86,11 +82,8 @@ index 5061d0d..c6fa0cc 100644
 +        return grammar, accept_calls, fill_calls
 +
 +    def test_grammar_reject_prunes_branch_without_raising(self):
-+        # A draft token that passed the parent mask row can still be rejected by
-+        # the matcher. traverse_tree handles that ValueError inside the
-+        # scheduler: it must clear the token in the parent row, prune that
-+        # branch, and keep verifying sibling branches. Tree: root 0 -> child 1,
-+        # with 1's sibling 2 (both children of the root).
++        # Root 0 has children 1 and 2; the matcher rejects 1. traverse_tree clears 1 in
++        # the parent row, prunes that branch and still verifies sibling 2.
 +        retrieve_next_token = torch.tensor([1, -1, -1], dtype=torch.int32)
 +        retrieve_next_sibling = torch.tensor([-1, 2, -1], dtype=torch.int32)
 +        draft_tokens = torch.tensor([100, 11, 22], dtype=torch.int64)

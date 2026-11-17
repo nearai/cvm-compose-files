@@ -8,28 +8,32 @@ Runs outside the image (stdlib + `requests`):
 * utils/common.py download_remote_media / _redacted_request_exception are extracted with ast and
   run against a fake HTTP session that answers 404, times out, and fails to connect: the error text
   must keep inference-proxy's `NNN Client Error: ... for url: ` shape (src/proxy.rs
-  message_is_client_fetch_4xx) while carrying only `<url scheme=... sha256=...>`.
+  message_is_client_fetch_4xx) while carrying only `<url len=N>`.
 * Functions touched by log-redaction-more-sites are extracted with ast and run with a synthetic marker value.
 * Static checks of the log format at the remaining sites.
 """
 
 import argparse
 import ast
+import hashlib
 import importlib.util
 import json
 import logging
 import re
+import secrets
 import sys
 import types
 import typing
 from pathlib import Path
 
-URL = "https://cdn.example.com/users/u-8812734/uploads/IMG_holiday.png?X-Amz-Signature=deadbeefcafebabe&X-Amz-Credential=AKIAEXAMPLE"
-SECRET_BITS = ("u-8812734", "IMG_holiday", "X-Amz-Signature", "deadbeefcafebabe", "AKIAEXAMPLE", "/users/",
+# Signature, credential and password values are generated per run.
+SIG, CRED, PASSWORD = secrets.token_hex(8), secrets.token_hex(10), secrets.token_hex(8)
+URL = f"https://cdn.example.com/users/u-8812734/uploads/IMG_holiday.png?X-Amz-Signature={SIG}&X-Amz-Credential={CRED}"
+SECRET_BITS = ("u-8812734", "IMG_holiday", "X-Amz-Signature", SIG, CRED, "/users/",
                "cdn.example.com")
 # Synthetic value used by the log-redaction-more-sites checks.
 MARKER = "zq-marker-5521"
-URL_SHAPE = re.compile(r"<url scheme=https sha256=[0-9a-f]{8}>")
+URL_SHAPE = re.compile(r"<url len=\d+>")
 B64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
 DATA_URI = "data:image/png;base64," + B64
 
@@ -45,6 +49,13 @@ def check(cond, what):
 def no_secret(text, what):
     leaked = [b for b in SECRET_BITS if b in text]
     check(not leaked, f"{what} (leaked: {leaked})" if leaked else what)
+
+
+def no_digest(text, value, what):
+    """Neither a digest marker nor any 6+ hex prefix of the value's sha256 or md5 appears."""
+    data = value.encode() if isinstance(value, str) else bytes(value)
+    digests = (hashlib.sha256(data).hexdigest(), hashlib.md5(data).hexdigest())
+    check("sha256" not in text and not any(d[:6] in text for d in digests), what)
 
 
 def load_redaction(root: Path):
@@ -64,19 +75,22 @@ def proxy_maps_to_400(message: str) -> bool:
 
 
 def unit(r) -> None:
-    check(URL_SHAPE.fullmatch(r.redact_url(URL)) is not None, f"url format: {r.redact_url(URL)!r}")
-    no_secret(r.redact_url(URL), "url format: scheme and digest only")
-    check(r.redact_url(URL) == r.redact_url(URL) != r.redact_url(URL + "x"), "url format: stable digest")
-    red = r.redact_url("https://user:pw@h.example.com:8443/p")
-    check(URL_SHAPE.fullmatch(red) is not None and "h.example.com" not in red and "pw" not in red, "url format with userinfo and port")
-    check(r.redact_url("not a url").startswith("<url scheme=? sha256="), "url format without a scheme")
-    check(r.redact_media_ref(DATA_URI) == f"<base64 len={len(DATA_URI)}>", "data: URI -> <base64 len=N>")
+    check(r.redact_url(URL) == f"<url len={len(URL)}>", f"url format: kind and length only: {r.redact_url(URL)!r}")
+    no_secret(r.redact_url(URL), "url format: no scheme, host, path or query")
+    no_digest(r.redact_url(URL), URL, "url format: no digest of the URL")
+    red = r.redact_url(f"https://user:{PASSWORD}@h.example.com:8443/p")
+    check(URL_SHAPE.fullmatch(red) is not None and "example" not in red and "https" not in red and PASSWORD not in red,
+          "url format with userinfo and port")
+    check(r.redact_url("not a url") == "<url len=9>", "url format without a scheme")
+    check(r.redact_media_ref(DATA_URI) == f"<data-url len={len(DATA_URI)}>", "data: URI -> <data-url len=N>")
     check(r.redact_media_ref(B64).startswith("<base64 len="), "bare base64 -> <base64 len=N>")
     check(r.redact_media_ref(b"\x89PNG....") == "<bytes len=8>", "bytes -> <bytes len=N>")
     check(r.redact_media_ref({"url": URL}) == f"<dict url={r.redact_url(URL)}>", "dict with url")
-    fp = r.fingerprint('{"type":"object","properties":{"ssn":{"type":"string"}}}')
-    check(re.fullmatch(r"<len=\d+ sha256=[0-9a-f]{8}>", fp) is not None and "ssn" not in fp, "fingerprint = len + 8-hex sha256")
-    check(r.fingerprint("abc") == r.fingerprint("abc") != r.fingerprint("abd"), "fingerprint is stable and distinguishes values")
+    schema = '{"type":"object","properties":{"ssn":{"type":"string"}}}'
+    rv = r.redact_value(schema)
+    check(rv == f"<len={len(schema)}>", f"redact_value = length only: {rv!r}")
+    no_digest(rv, schema, "redact_value carries no digest")
+    check(r.redact_value(b"abc") == "<len=3>" and r.redact_value(None) == "<NoneType>", "redact_value on bytes and other types")
 
     text = f"404 Client Error: Not Found for url: {URL}"
     red = r.redact_text(text)
@@ -84,31 +98,39 @@ def unit(r) -> None:
     check(proxy_maps_to_400(red), "inference-proxy still maps the redacted text to 400")
     check(not proxy_maps_to_400(r.redact_text("500 Server Error: x for url: " + URL)), "a 5xx fetch is still not mapped")
     u3 = ("HTTPSConnectionPool(host='cdn.example.com', port=443): Max retries exceeded with url: "
-          "/users/u-8812734/uploads/IMG_holiday.png?X-Amz-Signature=deadbeefcafebabe (Caused by NewConnectionError('x'))")
+          f"/users/u-8812734/uploads/IMG_holiday.png?X-Amz-Signature={SIG} (Caused by NewConnectionError('x'))")
     red = r.redact_text(u3)
     no_secret(red, "urllib3 text format")
-    check("host='<len=15 sha256=" in red and "Caused by" in red, "urllib3 text keeps its structure")
-    for text in ("Failed to resolve 'cdn.example.com' ([Errno -2] Name or service not known)",
-                 "Connection to cdn.example.com timed out. (connect timeout=10)"):
+    check("host='<host>'" in red and "Caused by" in red, "urllib3 text keeps its structure")
+    no_digest(red, "cdn.example.com", "urllib3 text: no digest of the host")
+    for text, shape in (("Failed to resolve 'cdn.example.com' ([Errno -2] Name or service not known)", "resolve '<host>'"),
+                        ("Connection to cdn.example.com timed out. (connect timeout=10)", "Connection to <host> timed out")):
         red = r.redact_text(text)
         no_secret(red, f"urllib3 text format: {red!r}")
+        check(shape in red, f"urllib3 host placeholder: {red!r}")
+        no_digest(red, "cdn.example.com", "urllib3 text: no digest of the host")
     red = r.redact_text(f"Error while loading data {DATA_URI}: bad")
-    check(B64 not in red and "<base64 len=" in red, "data: URI inside text")
+    check(B64 not in red and "<data-url len=" in red, "data: URI inside text")
     path = "/sgl-workspace/sglang/python/sglang/srt/multimodal/processors/base_processor.py"
     check(path in r.redact_text(f'File "{path}", line 1'), "traceback source paths are left alone")
     check(r.redact_text("Qwen/Qwen3-8B model glm-5.3-flash") == "Qwen/Qwen3-8B model glm-5.3-flash", "ordinary text unchanged")
 
     try:
         try:
-            raise ValueError(f"404 Client Error: Not Found for url: {URL}")
+            inner_text = f"404 Client Error: Not Found for url: {URL}"
+            raise ValueError(inner_text)
         except ValueError as inner:
-            raise RuntimeError(f"wrap {inner}") from inner
+            text = f"{MARKER} {inner}"
+            raise RuntimeError(text) from inner
     except RuntimeError as e:
         tb = r.redacted_traceback(e)
         no_secret(tb, "redacted_traceback covers the cause chain")
         check("RuntimeError" in tb and "ValueError" in tb, "redacted_traceback keeps types")
+        check(MARKER not in tb and "Not Found" not in tb and "<url" not in tb, "redacted_traceback prints no message")
         ot = r.opaque_traceback(e)
-        check("wrap 404" not in ot and "u-8812734" not in ot and "RuntimeError: <len=" in ot and "Traceback" in ot, "opaque_traceback hides the message")
+        check(MARKER not in ot and "u-8812734" not in ot and ot.endswith("RuntimeError") and "Traceback" in ot,
+              "opaque_traceback hides the message")
+        check(r.redacted_exception(e) == "RuntimeError", "redacted_exception is the type name")
 
 
 def download(root: Path, r) -> None:
@@ -151,7 +173,7 @@ def download(root: Path, r) -> None:
                 raise requests.exceptions.ReadTimeout(f"HTTPSConnectionPool(host='cdn.example.com', port=443): Read timed out. (url: {url})")
             raise requests.exceptions.ConnectionError(
                 "HTTPSConnectionPool(host='cdn.example.com', port=443): Max retries exceeded with url: "
-                "/users/u-8812734/uploads/IMG_holiday.png?X-Amz-Signature=deadbeefcafebabe"
+                f"/users/u-8812734/uploads/IMG_holiday.png?X-Amz-Signature={SIG}"
             )
 
     session = Session()
@@ -188,13 +210,14 @@ def download(root: Path, r) -> None:
     except ValueError as e:
         no_secret(str(e), "Invalid media URL text is redacted")
     ns["_allowed_media_domains"] = frozenset({"media.example.net"})
-    ns["fingerprint"] = r.fingerprint
+    ns["redact_value"] = r.redact_value
     try:
         ns["_assert_media_url_allowed"](URL)
         check(False, "domain allowlist rejects the URL")
     except ValueError as e:
         check("Media URL domain is not allowed" in str(e), "domain allowlist wording kept")
         no_secret(str(e), "domain allowlist text format")
+        no_digest(str(e), "cdn.example.com", "domain allowlist text: no digest of the host")
 
 
 def static(root: Path) -> None:
@@ -208,6 +231,10 @@ def static(root: Path) -> None:
     for f in ("xgrammar_backend.py", "llguidance_backend.py", "outlines_backend.py"):
         t = (root / "constrained" / f).read_text()
         check("{key_string=}" not in t, f"{f}: no raw key_string in logs")
+        check("{e=}" not in t and "e={type(e).__name__}" in t, f"{f}: exceptions logged by type name")
+    lr = (root / "utils/log_redaction.py").read_text()
+    check("hashlib" not in lr and "sha256" not in lr, "log_redaction: no digests")
+    check('logger.info("DS32EncodingError")' in sb, "serving_base: DS32EncodingError logged by type name")
     for f in ("glm47_moe_detector.py", "glm4_moe_detector.py"):
         t = (root / "function_call" / f).read_text()
         check("Failed to parse '{value}'" not in t, f"{f}: number-parse warning does not quote the value")
@@ -229,7 +256,7 @@ def static(root: Path) -> None:
     check("cur_batch_for_debug.reqs=}" in ic, "invariant_checker: dump uses Req.__repr__")
     mm = (root.parent / "multimodal_gen/runtime/entrypoints/openai/utils.py").read_text()
     check("redact_url(image_url)" in mm and "URL {image_url}" not in mm, "multimodal_gen: image download url format")
-    check("redact_text(e)" in mm, "multimodal_gen: image download error format")
+    check("type(e).__name__," in mm, "multimodal_gen: image download retry logs the exception type")
 
 
 class _Capture(logging.Handler):
@@ -271,7 +298,7 @@ def followup(root: Path, r) -> None:
     if len(defs) == 2:
         def literal_eval(v):
             raise ValueError(v)
-        ns = _run_defs(defs.values(), {"json": json, "logger": log, "fingerprint": r.fingerprint,
+        ns = _run_defs(defs.values(), {"json": json, "logger": log, "redact_value": r.redact_value,
                                        "safe_literal_eval": literal_eval,
                                        "get_schema_properties": lambda p: p.get("properties", {}), "Any": typing.Any,
                                        "Optional": typing.Optional, "Tool": object})
@@ -284,9 +311,9 @@ def followup(root: Path, r) -> None:
         lines = list(cap.lines)
         check(len(lines) == 8, f"qwen3_coder: 8 warnings captured ({len(lines)})")
         check(all(MARKER not in m for m in lines), "qwen3_coder: warnings do not contain the marker")
-        check(sum("Parsed value <len=" in m for m in lines) == 6, "qwen3_coder: value format")
-        check(sum("'lookup_tool'" in m for m in lines) == 7, "qwen3_coder: declared tool name kept")
-        check(any("of parameter 'integer'" in m for m in lines), "qwen3_coder: declared parameter name kept")
+        check(sum(f"Parsed value <len={len(MARKER)}>" in m for m in lines) == 6, "qwen3_coder: value format")
+        check(not any("lookup_tool" in m or "integer'" in m for m in lines), "qwen3_coder: no tool or parameter names")
+        check(not any("sha256" in m for m in lines), "qwen3_coder: no digests")
         cap.lines.clear()
 
     # base_format_detector warning.
@@ -294,12 +321,12 @@ def followup(root: Path, r) -> None:
     check("parse_base_json" in defs, "base_format_detector.parse_base_json found")
     if defs:
         env = types.SimpleNamespace(SGLANG_FORWARD_UNKNOWN_TOOLS=types.SimpleNamespace(get=lambda: False))
-        ns = _run_defs(defs.values(), {"json": json, "logger": log, "fingerprint": r.fingerprint, "envs": env,
+        ns = _run_defs(defs.values(), {"json": json, "logger": log, "redact_value": r.redact_value, "envs": env,
                                        "ToolCallItem": dict, "List": typing.List, "Any": typing.Any, "Tool": object})
         self_ = types.SimpleNamespace(_get_tool_indices=lambda tools: {"known_tool": 0})
         out = ns["parse_base_json"](self_, {"name": MARKER, "parameters": {}}, [])
         check(out == [] and len(cap.lines) == 1, "base_format_detector: unknown tool dropped and warned once")
-        check(all(MARKER not in m for m in cap.lines) and "undefined function: <len=" in cap.lines[0],
+        check(all(MARKER not in m for m in cap.lines) and cap.lines[0].endswith(f"undefined function: <len={len(MARKER)}>"),
               f"base_format_detector: warning format: {cap.lines!r}")
         cap.lines.clear()
 
@@ -336,9 +363,10 @@ def followup(root: Path, r) -> None:
     check(s == "JSON Schema at <pointer> is not supported by xgrammar: keyword(s) minContains would be ignored",
           f"grammar error: unsupported-feature format: {s!r}")
     s = r.summarize_grammar_error(f"JSON Schema at #/properties/a is not supported by xgrammar: string format '{MARKER}' is not implemented")
-    check(MARKER not in s and "string format <len=" in s, f"grammar error: format name: {s!r}")
-    s = r.summarize_grammar_error(f"Invalid JSON schema near '{MARKER}'")
-    check(re.fullmatch(r"<len=\d+ sha256=[0-9a-f]{8}>", s) is not None, "grammar error: other text")
+    check(MARKER not in s and f"string format <len={len(MARKER) + 2}>" in s, f"grammar error: format name: {s!r}")
+    other = f"Invalid JSON schema near '{MARKER}'"
+    s = r.summarize_grammar_error(other)
+    check(s == f"<len={len(other)}>", f"grammar error: other text: {s!r}")
     for fixed in ("Grammar preprocessing timed out", "Unknown grammar error", "Invalid json: NUL bytes (\\u0000) are not allowed"):
         check(r.summarize_grammar_error(fixed) == fixed, f"grammar error: fixed text kept: {fixed!r}")
     log.removeHandler(cap)

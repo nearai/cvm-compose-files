@@ -2,13 +2,16 @@
 diffusion-operator-only-request-fields.
 
 Run inside the built image with pytest. No GPU and no network are needed: DNS
-answers and HTTP servers are stubbed. Every test fails on stock v0.5.23.
+answers and HTTP servers are stubbed or local.
 """
 
 import asyncio
 import ipaddress
 import os
+import secrets
 import socket
+import threading
+import time
 from io import BytesIO
 from types import SimpleNamespace
 
@@ -20,7 +23,10 @@ from sglang.multimodal_gen.runtime.entrypoints.openai import utils
 from sglang.multimodal_gen.runtime.utils import url_guard, vision
 
 PUBLIC_IP = "1.1.1.1"
+SECOND_PUBLIC_IP = "2606:4700:4700::1111"
 PRIVATE_IP = "172.31.250.5"
+# Userinfo for the URL-form cases, generated per run.
+USERINFO = f"user:{secrets.token_hex(6)}"
 
 
 def v4(*octets: int) -> str:
@@ -30,10 +36,11 @@ def v4(*octets: int) -> str:
 
 FAKE_DNS = {
     "public.example.com": PUBLIC_IP,
-    "rebind.example.com": "172.31.250.3",
+    "private.example.com": "172.31.250.3",
     "metadata.example.com": "169.254.169.254",
     "v6loop.example.com": "::1",
     "mixed.example.com": [PUBLIC_IP, PRIVATE_IP],
+    "multi.example.com": [PUBLIC_IP, SECOND_PUBLIC_IP],
 }
 
 
@@ -108,9 +115,9 @@ def test_public_addresses_are_accepted(ip):
         "http://[::ffff:7f00:1]/a.png",
         "http://169.254.169.254/latest/meta-data/",
         "http://metadata.example.com/x",
-        "http://rebind.example.com/x",
+        "http://private.example.com/x",
         "https://v6loop.example.com/x",
-        "http://user:pw@127.0.0.1/x",
+        f"http://{USERINFO}@127.0.0.1/x",
         "http://nxdomain.example.com/x",
         "http://mixed.example.com/x",
     ],
@@ -121,7 +128,7 @@ def test_pinned_request_rejects(url):
 
 
 def test_pinned_request_pins_ip_and_keeps_host_and_sni():
-    url, headers, ext = url_guard.pinned_request("https://user:pw@public.example.com:8443/a.png?x=1#f")
+    url, headers, ext = url_guard.pinned_request(f"https://{USERINFO}@public.example.com:8443/a.png?x=1#f")
     assert url == f"https://{PUBLIC_IP}:8443/a.png?x=1"
     assert headers == {"Host": "public.example.com:8443"}
     # httpcore passes this to ssl as server_hostname, which must be a str.
@@ -149,7 +156,7 @@ def _mock_async_client(monkeypatch, handler):
 def test_image_download_of_private_url_never_connects(monkeypatch, tmp_path):
     seen = []
     _mock_async_client(monkeypatch, lambda r: seen.append(r) or httpx.Response(200, content=b"x"))
-    for url in ("http://127.0.0.1:30000/flush_cache", "http://rebind.example.com/a.png"):
+    for url in ("http://127.0.0.1:30000/flush_cache", "http://private.example.com/a.png"):
         with pytest.raises(Exception, match="non-public"):
             asyncio.run(utils._save_url_image_to_path(url, str(tmp_path / "in" / "a.png")))
     assert seen == []
@@ -199,7 +206,7 @@ def test_redirect_loop_is_bounded(monkeypatch, tmp_path):
     assert len(calls) == url_guard.MAX_REDIRECTS + 1
 
 
-def test_prefer_remote_source_no_longer_passes_urls_through(tmp_path):
+def test_prefer_remote_source_still_fetches_urls_under_the_policy(tmp_path):
     with pytest.raises(Exception, match="non-public"):
         asyncio.run(
             utils.save_image_to_path(
@@ -403,6 +410,199 @@ def test_async_https_image_download_through_httpcore(monkeypatch, tmp_path, cert
         server.shutdown()
     assert dialed and dialed[0] == PUBLIC_IP
 
+def test_every_address_is_checked_and_pinned_in_resolver_order():
+    pinned = url_guard.pinned_requests("https://multi.example.com/a.png")
+    assert [p[0] for p in pinned] == [f"https://{PUBLIC_IP}/a.png", f"https://[{SECOND_PUBLIC_IP}]/a.png"]
+    assert all(p[1] == {"Host": "multi.example.com"} for p in pinned)
+    assert all(p[2] == {"sni_hostname": "multi.example.com"} for p in pinned)
+    with pytest.raises(url_guard.BlockedURLError, match="non-public"):
+        url_guard.pinned_requests("http://mixed.example.com/x")
+
+
+def _slow_resolver(monkeypatch, release):
+    """getaddrinfo that blocks for slow.example.com until `release` is set; counts calls."""
+    calls = []
+    inner = url_guard.socket.getaddrinfo
+
+    def getaddrinfo(host, port, *args, **kwargs):
+        calls.append(host)
+        if host == "slow.example.com":
+            release.wait(30)
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (PUBLIC_IP, port))]
+        return inner(host, port, *args, **kwargs)
+
+    monkeypatch.setattr(url_guard.socket, "getaddrinfo", getaddrinfo)
+    return calls
+
+
+def test_slow_resolver_fails_within_the_deadline(monkeypatch):
+    release = threading.Event()
+    calls = _slow_resolver(monkeypatch, release)
+    seen = []
+
+    async def run():
+        transport = httpx.MockTransport(lambda r: seen.append(r) or httpx.Response(200))
+        start = time.monotonic()
+        try:
+            async with httpx.AsyncClient(transport=transport, follow_redirects=False, trust_env=False) as client:
+                async with url_guard.open_public_url_async(client, "http://slow.example.com/a.png", timeout=0.5):
+                    pass
+        finally:
+            # Measured before asyncio.run joins the resolver thread at shutdown.
+            elapsed.append(time.monotonic() - start)
+            release.set()
+
+    elapsed = []
+    try:
+        with pytest.raises(httpx.ConnectTimeout):
+            asyncio.run(run())
+        async_elapsed = elapsed[0]
+        release.clear()
+        start = time.monotonic()
+        with pytest.raises(httpx.ConnectTimeout):
+            url_guard.fetch_public_url_bytes("http://slow.example.com/a.png", timeout=0.5, max_bytes=10)
+        sync_elapsed = time.monotonic() - start
+    finally:
+        release.set()
+    assert async_elapsed < 1.5 and sync_elapsed < 1.5
+    assert seen == [] and calls == ["slow.example.com", "slow.example.com"]
+
+
+def _plain_http_server():
+    import http.server
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            body = f"host={self.headers['Host']}".encode()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
+def _route_async(monkeypatch, behaviour, port):
+    """Route dials of the public test IPs: "hang" never connects, "refuse" fails, "ok" reaches `port`."""
+    import httpcore._backends.anyio as anyio_backend
+
+    real_connect = anyio_backend.anyio.connect_tcp
+    dialed = []
+
+    async def connect(remote_host, remote_port, **kwargs):
+        dialed.append(remote_host)
+        action = behaviour[remote_host]
+        if action == "hang":
+            await asyncio.sleep(3600)
+        if action == "refuse":
+            raise ConnectionRefusedError(111, "refused")
+        return await real_connect(remote_host="127.0.0.1", remote_port=port, **kwargs)
+
+    monkeypatch.setattr(anyio_backend.anyio, "connect_tcp", connect)
+    return dialed
+
+
+def _route_sync(monkeypatch, behaviour, port):
+    import httpcore._backends.sync as sync_backend
+
+    real_connect = socket.create_connection
+    dialed = []
+
+    def connect(address, timeout=None, *args, **kwargs):
+        dialed.append((address[0], timeout))
+        action = behaviour[address[0]]
+        if action == "hang":
+            time.sleep(timeout)
+            raise socket.timeout("timed out")
+        if action == "refuse":
+            raise ConnectionRefusedError(111, "refused")
+        return real_connect(("127.0.0.1", port), timeout, *args, **kwargs)
+
+    monkeypatch.setattr(sync_backend.socket, "create_connection", connect)
+    return dialed
+
+
+@pytest.mark.parametrize("first", ["refuse", "hang"])
+def test_unreachable_first_address_falls_back_to_the_second(monkeypatch, tmp_path, first):
+    server = _plain_http_server()
+    behaviour = {PUBLIC_IP: first, SECOND_PUBLIC_IP: "ok"}
+    try:
+        dialed = _route_async(monkeypatch, behaviour, server.server_address[1])
+        start = time.monotonic()
+        saved = asyncio.run(utils._save_url_image_to_path("http://multi.example.com/a.png", str(tmp_path / "in" / "a")))
+        assert open(saved, "rb").read() == b"host=multi.example.com"
+        assert time.monotonic() - start < 10.0
+        assert dialed == [PUBLIC_IP, SECOND_PUBLIC_IP]
+
+        sync_dialed = _route_sync(monkeypatch, behaviour, server.server_address[1])
+        start = time.monotonic()
+        body = url_guard.fetch_public_url_bytes("http://multi.example.com/b.png", timeout=2, max_bytes=100)
+        assert body == b"host=multi.example.com"
+        assert time.monotonic() - start < 2.0
+        # The first attempt may spend half the budget connecting; the last one gets what remains.
+        assert [d[0] for d in sync_dialed] == [PUBLIC_IP, SECOND_PUBLIC_IP]
+        assert sync_dialed[0][1] <= 1.0 and sync_dialed[1][1] <= 2.0
+    finally:
+        server.shutdown()
+
+
+def test_all_addresses_unreachable_fail_within_one_deadline(monkeypatch):
+    behaviour = {PUBLIC_IP: "hang", SECOND_PUBLIC_IP: "hang"}
+    dialed = _route_async(monkeypatch, behaviour, 9)
+
+    async def run():
+        async with httpx.AsyncClient(follow_redirects=False, trust_env=False) as client:
+            async with url_guard.open_public_url_async(client, "http://multi.example.com/a.png", timeout=1.0):
+                pass
+
+    start = time.monotonic()
+    with pytest.raises(httpx.ConnectTimeout):
+        asyncio.run(run())
+    assert time.monotonic() - start < 1.5
+    assert dialed == [PUBLIC_IP, SECOND_PUBLIC_IP]
+
+    sync_dialed = _route_sync(monkeypatch, behaviour, 9)
+    start = time.monotonic()
+    with pytest.raises(httpx.ConnectTimeout):
+        url_guard.fetch_public_url_bytes("http://multi.example.com/a.png", timeout=1.0, max_bytes=10)
+    assert time.monotonic() - start < 1.5
+    assert [d[0] for d in sync_dialed] == [PUBLIC_IP, SECOND_PUBLIC_IP]
+
+
+def test_fallback_keeps_tls_verification_of_the_url_host(monkeypatch, tmp_path):
+    server, trust = _tls_server(tmp_path, "multi.example.com")
+    dialed = _route_async(monkeypatch, {PUBLIC_IP: "refuse", SECOND_PUBLIC_IP: "ok"}, server.server_address[1])
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(utils.httpx, "AsyncClient", lambda **kw: real_client(verify=trust, **kw))
+    try:
+        saved = asyncio.run(utils._save_url_image_to_path("https://multi.example.com/a.png", str(tmp_path / "in" / "a")))
+        assert open(saved, "rb").read() == b"host=multi.example.com"
+    finally:
+        server.shutdown()
+    assert dialed == [PUBLIC_IP, SECOND_PUBLIC_IP]
+
+
+def test_mixed_answers_never_dial(monkeypatch):
+    dialed = _route_async(monkeypatch, {PUBLIC_IP: "ok", PRIVATE_IP: "ok"}, 9)
+    sync_dialed = _route_sync(monkeypatch, {PUBLIC_IP: "ok", PRIVATE_IP: "ok"}, 9)
+
+    async def run():
+        async with httpx.AsyncClient(follow_redirects=False, trust_env=False) as client:
+            async with url_guard.open_public_url_async(client, "http://mixed.example.com/a.png", timeout=1.0):
+                pass
+
+    with pytest.raises(url_guard.BlockedURLError, match="non-public"):
+        asyncio.run(run())
+    with pytest.raises(url_guard.BlockedURLError, match="non-public"):
+        url_guard.fetch_public_url_bytes("http://mixed.example.com/a.png", timeout=1.0, max_bytes=10)
+    assert dialed == [] and sync_dialed == []
+
+
 def _server_args(monkeypatch, input_save_path):
     import sglang.multimodal_gen.runtime.server_args as server_args_pkg
 
@@ -468,8 +668,8 @@ def test_client_paths_outside_the_server_dirs_are_still_refused(monkeypatch, tmp
         ("perf_dump_path", "/root/.bashrc"),
         ("profile", True),
         ("profile_all_stages", True),
-        ("upscaling_model_path", "someone/evil-repo:model.pth"),
-        ("frame_interpolation_model_path", "someone/evil-repo"),
+        ("upscaling_model_path", "org/other-repo:model.pth"),
+        ("frame_interpolation_model_path", "org/other-repo"),
     ],
 )
 def test_operator_only_fields_are_rejected(monkeypatch, field, value):

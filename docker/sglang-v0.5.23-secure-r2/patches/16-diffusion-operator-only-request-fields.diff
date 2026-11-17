@@ -2,15 +2,12 @@ diff --git a/python/sglang/multimodal_gen/runtime/entrypoints/openai/utils.py b/
 index fba777a..df3edaa 100644
 --- a/python/sglang/multimodal_gen/runtime/entrypoints/openai/utils.py
 +++ b/python/sglang/multimodal_gen/runtime/entrypoints/openai/utils.py
-@@ -249,6 +249,44 @@ def _reject_remote_model_paths(kwargs: dict[str, Any]) -> None:
+@@ -249,6 +249,41 @@ def _reject_remote_model_paths(kwargs: dict[str, Any]) -> None:
              )
  
  
-+# Operator-only request fields: where the server writes files (perf_dump_path), the
-+# torch profiler, and model repos the server downloads (upscaling/frame-interpolation
-+# model paths) are set by the operator, not by a network client. Callers that
-+# need them (lab benchmarks) set SGLANG_DIFFUSION_ALLOW_REQUEST_DEBUG_FIELDS=1;
-+# the CLI and Python API do not go through this function.
++# Server file paths, the profiler and downloaded model repos are operator settings; requests
++# carry them only with SGLANG_DIFFUSION_ALLOW_REQUEST_DEBUG_FIELDS=1 (the CLI skips this).
 +_OPERATOR_ONLY_FIELDS = (
 +    "perf_dump_path",
 +    "profile",
@@ -47,7 +44,7 @@ index fba777a..df3edaa 100644
  def build_sampling_params(request_id: str, **kwargs) -> SamplingParams:
      """Build SamplingParams from request parameters.
  
-@@ -273,6 +311,7 @@ def build_sampling_params(request_id: str, **kwargs) -> SamplingParams:
+@@ -273,6 +308,7 @@ def build_sampling_params(request_id: str, **kwargs) -> SamplingParams:
          except ValueError as exc:
              raise HTTPException(status_code=400, detail=str(exc)) from exc
  

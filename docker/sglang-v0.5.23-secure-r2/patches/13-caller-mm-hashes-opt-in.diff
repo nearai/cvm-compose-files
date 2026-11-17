@@ -2,16 +2,15 @@ diff --git a/python/sglang/srt/managers/tokenizer_manager.py b/python/sglang/srt
 index 5335d0b..248de67 100644
 --- a/python/sglang/srt/managers/tokenizer_manager.py
 +++ b/python/sglang/srt/managers/tokenizer_manager.py
-@@ -1241,6 +1241,13 @@ class TokenizerManager(TokenizerControlMixin, TokenizerManagerScoreMixin):
+@@ -1241,6 +1241,12 @@ class TokenizerManager(TokenizerControlMixin, TokenizerManagerScoreMixin):
              # mismatch we fall back to the internal recompute so a
              # malformed mm_hashes never blocks a request.
              caller_mm_hashes = getattr(obj, "mm_hashes", None)
 +            if caller_mm_hashes and not get_bool_env_var(
 +                "SGLANG_TRUST_CALLER_MM_HASHES"
 +            ):
-+                # The server computes each image's prefix-cache identity from its
-+                # content; a deployment whose router sends trusted hashes opts in
-+                # to keep them.
++                # The server computes each image's prefix-cache identity from its content;
++                # caller hashes are kept only with the operator opt-in.
 +                caller_mm_hashes = None
              if caller_mm_hashes and mm_inputs and mm_inputs.mm_items:
                  if len(caller_mm_hashes) != len(mm_inputs.mm_items):
