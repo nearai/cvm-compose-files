@@ -74,9 +74,9 @@ jobs:
           git merge-base --is-ancestor "$SOURCE_REVISION" origin/main
 
           test "$(sha256sum "$BUILD_CONTEXT/Dockerfile" | awk '{print $1}')" = \
-            b8e84cca11e8681a1834b3e28158a657925d84d6cd0abb2f6b0f563a12b41e15
+            62d4586d9b7d47b9b35f397ca808b0329ca062602dcb5d642510647c24f661db
           test "$(sha256sum "$BUILD_CONTEXT/SHA256SUMS" | awk '{print $1}')" = \
-            a988824fa6d47571136f8f1c7b519a46084a007c53d3b24558098d401658f6d6
+            3280825c76894a73a9ad89e17dedc7f9eecabb8fc541c1ebd2dab9b9ba271b92
           (cd "$BUILD_CONTEXT" && sha256sum --check --strict SHA256SUMS)
           printf '%s\n' \
             'engine=sglang' \
@@ -215,7 +215,7 @@ jobs:
              .config.Labels["nearai.build.recipe"] == "docker/sglang-v0.5.23-secure-r2/Dockerfile" and
              .config.Labels["nearai.build.source_revision"] == $source_revision and
              .config.Labels["nearai.sglang.upstream.build"] == "https://github.com/sgl-project/sglang/actions/runs/40978390987" and
-             .config.Labels["nearai.sglang.patch_series"] == "01-16" and
+             .config.Labels["nearai.sglang.patch_series"] == "01-17" and
              .config.Labels["nearai.python.packages"] == "nltk=3.10.3 defusedxml=0.7.1" and
              .config.Labels["nearai.os.linux_libc_dev"] == "6.8.0-149.149"' \
             image-config.json
@@ -400,7 +400,7 @@ jobs:
             echo "- immutable: \`$IMAGE_IMMUTABLE_REF\`"
             echo "- SGLang source: \`sgl-project/sglang@297e54fd105e974cdf401e5b4d20253a22c16f90\`"
             echo '- upstream image BuildKit provenance: verified'
-            echo '- patches: 01-16 (docker/sglang-v0.5.23-secure-r2/SERIES)'
+            echo '- patches: 01-17 (docker/sglang-v0.5.23-secure-r2/SERIES)'
             echo '- embedded BuildKit provenance: verified'
             echo '- embedded SPDX SBOM: verified'
             echo '- GitHub build attestation: verified'

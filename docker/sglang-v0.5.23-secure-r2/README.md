@@ -26,11 +26,12 @@ pull requests and name where a patch comes from.
 | 14-transcription-upload-cap | `/v1/audio/transcriptions` reads uploads in chunks and answers 413 above `--audio-transcription-max-file-size-mb` (default 25, 0 turns the cap off) | #43915 |
 | 15-diffusion-media-public-urls-only | sglang-diffusion fetches client image and video URLs only over http(s) from public addresses: every resolved address is checked, the connection goes to the checked address, each redirect is checked and proxy settings are not read; the loaders read files the server saved itself (the input save dir, `sglang_*` temp dirs) and other local paths only with `SGLANG_ALLOW_LOCAL_MEDIA_PATHS=1`; `SGLANG_DIFFUSION_ALLOW_PRIVATE_MEDIA_URLS=1` drops the address check | NEAR |
 | 16-diffusion-operator-only-request-fields | sglang-diffusion answers 400 to `perf_dump_path`, `profile`, `profile_all_stages`, `upscaling_model_path` and `frame_interpolation_model_path` in requests unless `SGLANG_DIFFUSION_ALLOW_REQUEST_DEBUG_FIELDS=1` | NEAR |
+| 17-token-id-vocab-bound | 400 on caller token ids outside `[0, vocab_size)`, ids beyond 64 bits included, on every route that takes token ids (`/generate`, `/encode`, `/v1/completions`, `/v1/embeddings`, `/v1/classify`, `/v1/score`) | NEAR |
 
 Defaults this image sets, which differ from stock v0.5.23: 05-07 and 10-12 reject the out-of-range
 values above; 09 and 15 refuse local media paths; 13 ignores caller cache hashes; 14 caps
 transcription uploads at 25 MB; 15 fetches diffusion media URLs from public addresses only; 16
-refuses the operator-only request fields.
+refuses the operator-only request fields; 17 rejects token ids outside the vocabulary.
 
 Packages: nltk 3.10.3 and defusedxml 0.7.1 from a hash-pinned `requirements.txt`, and
 `linux-libc-dev` 6.8.0-149.149 pinned by exact version. The image removes the two Nsight EFA
