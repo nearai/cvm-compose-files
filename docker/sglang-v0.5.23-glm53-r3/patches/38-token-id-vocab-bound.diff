@@ -1,0 +1,52 @@
+diff --git a/python/sglang/srt/managers/tokenizer_manager.py b/python/sglang/srt/managers/tokenizer_manager.py
+index 248de67..b462d28 100644
+--- a/python/sglang/srt/managers/tokenizer_manager.py
++++ b/python/sglang/srt/managers/tokenizer_manager.py
+@@ -1149,6 +1149,10 @@ class TokenizerManager(TokenizerControlMixin, TokenizerManagerScoreMixin):
+                     input_text, is_cross_encoder_request
+                 )
+ 
++        if obj.input_ids is not None and contains_mm_input:
++            # The multimodal processor reads caller ids before the vocab check runs.
++            self._input_ids_array(obj.input_ids, check_vocab=False)
++
+         if contains_mm_input and get_disagg().language_model_only:
+             raise ValueError(
+                 "Multimodal inputs are not supported when --language-model-only "
+@@ -1565,6 +1569,25 @@ class TokenizerManager(TokenizerControlMixin, TokenizerManagerScoreMixin):
+                 f"got {logprob_start_len!r}."
+             )
+ 
++    def _input_ids_array(self, input_ids, check_vocab: bool = True) -> array:
++        # Token ids index the embedding table. min/max over a zero-copy numpy view
++        # of the int64 array keeps the check cheap for long prompts.
++        try:
++            ids = array("q", input_ids)
++        except (TypeError, OverflowError):
++            raise ValueError(
++                "input_ids must be a flat list of 64-bit integers."
++            ) from None
++        if check_vocab and ids:
++            vocab_size = self.model_config.vocab_size
++            view = np.frombuffer(ids, dtype=np.int64)
++            if view.min() < 0 or view.max() >= vocab_size:
++                raise ValueError(
++                    "input_ids contains an out-of-vocabulary token id; "
++                    f"valid range is [0, {vocab_size})."
++                )
++        return ids
++
+     def _create_tokenized_object(
+         self,
+         obj: Union[GenerateReqInput, EmbeddingReqInput],
+@@ -1576,7 +1599,9 @@ class TokenizerManager(TokenizerControlMixin, TokenizerManagerScoreMixin):
+     ) -> Union[TokenizedGenerateReqInput, TokenizedEmbeddingReqInput]:
+         """Create a tokenized request object from common parameters."""
+         input_ids_arr: Optional[array[int]] = (
+-            array("q", input_ids) if input_ids is not None else None
++            self._input_ids_array(input_ids, check_vocab=obj.input_ids is not None)
++            if input_ids is not None
++            else None
+         )
+         # Parse sampling parameters
+         # Note: if there are preferred sampling params, we use them if they are not
