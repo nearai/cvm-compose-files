@@ -1,0 +1,147 @@
+diff --git a/python/sglang/srt/layers/attention/dsa/dsa_indexer_kpool.py b/python/sglang/srt/layers/attention/dsa/dsa_indexer_kpool.py
+index 6b307cf9ad..a96d6606d8 100644
+--- a/python/sglang/srt/layers/attention/dsa/dsa_indexer_kpool.py
++++ b/python/sglang/srt/layers/attention/dsa/dsa_indexer_kpool.py
+@@ -1,6 +1,7 @@
+ from __future__ import annotations
+ 
+ import logging
++import os
+ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+ 
+ import torch
+@@ -31,7 +32,14 @@ from sglang.srt.layers.attention.mqa_logits_utils import (
+ )
+ from sglang.srt.layers.layernorm import LayerNorm
+ from sglang.srt.layers.utils.multi_platform import MultiPlatformOp
+-from sglang.srt.utils import add_prefix, ceil_align, is_cuda, is_hip, is_npu
++from sglang.srt.utils import (
++    add_prefix,
++    ceil_align,
++    get_bool_env_var,
++    is_cuda,
++    is_hip,
++    is_npu,
++)
+ 
+ if is_cuda():
+     try:
+@@ -65,6 +73,26 @@ from sglang.srt.runtime_context import get_device, get_exec
+ 
+ logger = logging.getLogger(__name__)
+ 
++# Opt-in (SGLANG_DSA_INDEXER_QSPLIT=1): split the K-pool indexer's prefill query rows across the
++# attention-TP ranks instead of computing fp8_mqa_logits + top-k for every row on every rank.
++# Each rank scores rows [r*per, (r+1)*per) against the same gathered keys and the int32 top-k
++# rows are all-gathered. Rows are independent (each carries its own key range), so the selected
++# set matches the replicated path up to top-k tie order, and the logits scratch per rank shrinks
++# by the TP size. Only used for at least SGLANG_DSA_INDEXER_QSPLIT_MIN_ROWS rows (default 1024).
++# Each rank's slice still goes through the upstream free-memory row chunking (#40854).
++_QSPLIT = get_bool_env_var("SGLANG_DSA_INDEXER_QSPLIT", "false")
++_QSPLIT_MIN_ROWS = int(os.environ.get("SGLANG_DSA_INDEXER_QSPLIT_MIN_ROWS", "1024"))
++
++
++def _qsplit_group(n_rows: int):
++    """The attention-TP group to split over, or None. Identical on every rank (n_rows is shared)."""
++    if not _QSPLIT or n_rows < _QSPLIT_MIN_ROWS:
++        return None
++    from sglang.srt.distributed import get_attn_tp_group
++
++    group = get_attn_tp_group()
++    return group if group.world_size > 1 else None
++
+ if TYPE_CHECKING:
+     from sglang.srt.mem_cache.memory_pool import DSATokenToKVPool
+ 
+@@ -1236,6 +1264,25 @@ class IndexerKPool(MultiPlatformOp):
+         # The plan's table is req_to_token, indexed by request-pool ID.
+         assert page_table_all is None or page_table_row_index_all is not None
+ 
++        qsplit_group = _qsplit_group(n_real) if kv_fp8 is not None else None
++        if qsplit_group is not None:
++            return self._get_topk_ragged_kpool_plan_qsplit(
++                group=qsplit_group,
++                q_fp8=q_fp8,
++                weights=weights,
++                kv_fp8=kv_fp8,
++                ks_per_q=ks_per_q,
++                ke_per_q=ke_per_q,
++                pool_lens=pool_lens,
++                seq_lens_expanded=seq_lens_expanded,
++                page_table_all=page_table_all,
++                page_table_row_index_all=page_table_row_index_all,
++                topk_offsets_all=topk_offsets_all,
++                n_real=n_real,
++                total_q=total_q,
++                total_k_rows=total_k_rows,
++            )
++
+         return self._kpool_topk_by_row_chunks(
+             q_fp8=q_fp8,
+             weights=weights,
+@@ -1254,6 +1301,65 @@ class IndexerKPool(MultiPlatformOp):
+             out_rows=total_q,
+         )
+ 
++    def _get_topk_ragged_kpool_plan_qsplit(
++        self,
++        *,
++        group,
++        q_fp8: torch.Tensor,
++        weights: torch.Tensor,
++        kv_fp8: Tuple[torch.Tensor, torch.Tensor],
++        ks_per_q: torch.Tensor,
++        ke_per_q: torch.Tensor,
++        pool_lens: torch.Tensor,
++        seq_lens_expanded: torch.Tensor,
++        page_table_all: Optional[torch.Tensor],
++        page_table_row_index_all: Optional[torch.Tensor],
++        topk_offsets_all: Optional[torch.Tensor],
++        n_real: int,
++        total_q: int,
++        total_k_rows: int,
++    ) -> torch.Tensor:
++        world, rank = group.world_size, group.rank_in_group
++        per = -(-n_real // world)
++        lo, hi = min(rank * per, n_real), min((rank + 1) * per, n_real)
++        rows = slice(lo, hi)
++        local = self._kpool_topk_by_row_chunks(
++            q_fp8=q_fp8[rows],
++            weights=weights[rows],
++            kv_fp8=kv_fp8,
++            logits_starts=ks_per_q[rows],
++            logits_ends=ke_per_q[rows],
++            pool_lens=pool_lens[rows],
++            seq_lens=seq_lens_expanded[rows],
++            # Addressed by request-pool ID through the row index, so never sliced.
++            page_table=(
++                page_table_all
++                if page_table_row_index_all is not None
++                else _slice_rows(tensor=page_table_all, rows=rows)
++            ),
++            page_table_row_index=_slice_rows(
++                tensor=page_table_row_index_all, rows=rows
++            ),
++            topk_offsets=_slice_rows(tensor=topk_offsets_all, rows=rows),
++            topk_row_starts=ks_per_q[rows],
++            row_chunks=_mqa_logits_row_chunks(
++                num_rows=hi - lo, num_cols=total_k_rows, device=q_fp8.device
++            ),
++            # Pad every rank to `per` rows so the all-gather shapes match.
++            out_rows=per,
++        )
++        gathered = torch.empty(
++            (world * per, local.shape[1]), dtype=local.dtype, device=local.device
++        )
++        group.all_gather_into_tensor(gathered, local.contiguous())
++        if total_q == n_real:
++            return gathered[:n_real]
++        out = torch.full(
++            (total_q, local.shape[1]), -1, dtype=local.dtype, device=local.device
++        )
++        out[:n_real] = gathered[:n_real]
++        return out
++
+     def _get_topk_ragged_kpool(
+         self,
+         forward_batch: ForwardBatch,
