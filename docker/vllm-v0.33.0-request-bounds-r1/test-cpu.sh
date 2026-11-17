@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# CPU-only checks for this image; the README has the run commands. Optional step 3 needs network and a
-# v0.33.0 vLLM tests/ tree at $VLLM_TESTS. The script stops at the first failure.
+# CPU-only checks for this image. Optional step 3 needs network and a v0.33.0 vLLM tests/ tree at
+# $VLLM_TESTS. The script stops at the first failure.
 set -euo pipefail
 RECIPE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 T="$RECIPE_DIR/tests"
@@ -58,8 +58,8 @@ upstream /tmp/near-upstream-2.txt tests/tokenizers_/test_detokenize.py \
 # tests/multimodal/media cover it.
 { grep -hE '^(FAILED|ERROR) tests/' /tmp/near-upstream-1.txt /tmp/near-upstream-2.txt || true; } \
   | sed 's/ - .*//' | sort -u > /tmp/near-fails.txt
-# Environment-only failures, recorded on gpu-less CPU containers with network: fixtures that need
-# the gated meta-llama/Llama-3.2-1B or a GPU device; they fail identically on stock v0.33.0.
+# The listed failures are fixtures that need the gated meta-llama/Llama-3.2-1B or a GPU device;
+# stock v0.33.0 fails them the same way.
 new=$(comm -23 /tmp/near-fails.txt <(sort -u "$T/stock-v0330-known-failures.txt"))
 if [ -n "$new" ]; then
   echo "failures not in tests/stock-v0330-known-failures.txt:"; echo "$new"; exit 1

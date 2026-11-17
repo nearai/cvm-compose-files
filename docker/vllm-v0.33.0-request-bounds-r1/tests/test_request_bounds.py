@@ -2,8 +2,7 @@
 """CPU-only checks for the vLLM v0.33.0 request bounds in patches/
 
 Each test exercises one patch through the installed `vllm` package, needs no GPU, model or
-network, and fails on the stock v0.33.0 image. Run:
-    python3 -m pytest -q -p no:cacheprovider tests/test_request_bounds.py
+network, and fails on the stock v0.33.0 image.
 """
 
 import asyncio
@@ -108,12 +107,82 @@ def test_03_generation_config_eos_ids_reach_the_stop_set():
 
 
 # 04 detok-bounded-holdback (vllm#63668)
-def test_04_detokenizer_bounds_pending_tokens():
-    import inspect
+def _byte_level_tokenizer():
+    """A byte-level BPE tokenizer built in-process, with one token per byte."""
+    from tokenizers import Tokenizer, decoders, models, pre_tokenizers
+    from transformers import TokenizersBackend
 
-    import vllm.tokenizers.detokenizer_utils as du
+    vocab = {ch: i for i, ch in enumerate(_bytes_to_unicode())}
+    tok = Tokenizer(models.BPE(vocab=vocab, merges=[]))
+    tok.pre_tokenizer = pre_tokenizers.ByteLevel(add_prefix_space=False)
+    tok.decoder = decoders.ByteLevel()
+    backend = TokenizersBackend(tokenizer_object=tok)
+    byte_id = {b: vocab[ch] for b, ch in enumerate(_bytes_to_unicode())}
+    return backend, byte_id
 
-    assert "MAX_PENDING" in inspect.getsource(du).upper()
+
+def _bytes_to_unicode() -> list[str]:
+    bs = [*range(ord("!"), ord("~") + 1), *range(0xA1, 0xAD), *range(0xAE, 0x100)]
+    cs, extra = {b: b for b in bs}, 0
+    for b in range(256):
+        if b not in cs:
+            cs[b], extra = 256 + extra, extra + 1
+    return [chr(cs[b]) for b in range(256)]
+
+
+def _stream(tokenizer, fast: bool, prompt: list[int], ids: list[int]) -> tuple[str, int]:
+    from vllm import SamplingParams
+    from vllm.v1.engine import EngineCoreRequest
+    from vllm.v1.engine.detokenizer import (
+        FastIncrementalDetokenizer,
+        SlowIncrementalDetokenizer,
+    )
+
+    request = EngineCoreRequest(
+        request_id="r",
+        external_req_id="r",
+        prompt_token_ids=prompt,
+        mm_features=None,
+        sampling_params=SamplingParams(skip_special_tokens=True),
+        pooling_params=None,
+        arrival_time=0.0,
+        lora_request=None,
+        cache_salt=None,
+        data_parallel_rank=None,
+    )
+    cls = FastIncrementalDetokenizer if fast else SlowIncrementalDetokenizer
+    detok = cls(tokenizer, request)
+    text, most_held = "", 0
+    for i, token_id in enumerate(ids):
+        detok.update([token_id], False)
+        text += detok.get_next_output_text(False, delta=True)
+        most_held = max(most_held, i + 1 - len(text))
+    return text + detok.get_next_output_text(True, delta=True), most_held
+
+
+@pytest.mark.parametrize("fast", [True, False])
+def test_04_lead_byte_run_streams_with_bounded_holdback(fast):
+    from vllm.tokenizers.detokenizer_utils import MAX_PENDING_TOKENS
+
+    tokenizer, byte_id = _byte_level_tokenizer()
+    ids = [byte_id[0xE4]] * 1000 + tokenizer.encode(" world", add_special_tokens=False)
+    text, most_held = _stream(tokenizer, fast, [byte_id[0x48]], ids)
+    assert most_held <= MAX_PENDING_TOKENS
+    assert text == "\ufffd" * 1000 + " world"
+
+
+@pytest.mark.parametrize("fast", [True, False])
+@pytest.mark.parametrize("char", ["\u00e9", "\u4e2d", "\U0001f600"])
+def test_04_character_across_flush_boundary_matches_one_shot_decode(fast, char):
+    from vllm.tokenizers.detokenizer_utils import MAX_PENDING_TOKENS
+
+    tokenizer, byte_id = _byte_level_tokenizer()
+    tail = tokenizer.encode(" world", add_special_tokens=False)
+    for run in range(MAX_PENDING_TOKENS - 5, MAX_PENDING_TOKENS + 2):
+        ids = [byte_id[0xE4]] * run + [byte_id[b] for b in char.encode()] + tail
+        text, _ = _stream(tokenizer, fast, [byte_id[0x48]], ids)
+        assert text == tokenizer.decode(ids), f"{run=}"
+        assert text.endswith(char + " world")
 
 
 # 05 pooling-prompt-count-bound (vllm#53473)
@@ -177,8 +246,7 @@ def _wav(channels: int) -> bytes:
 def _audio_backends() -> list[str]:
     import importlib.util
 
-    # "auto" tries torchcodec, then soundfile, then PyAV. The base image ships only torchcodec;
-    # the Whisper build adds soundfile and PyAV.
+    # "auto" tries torchcodec, then soundfile, then PyAV; the last two run when installed.
     names = ["auto", "torchcodec"]
     names += [m for m, mod in (("soundfile", "soundfile"), ("pyav", "av")) if importlib.util.find_spec(mod)]
     return names
@@ -209,24 +277,157 @@ def test_10_multimodal_uuid_length_capped():
 
 
 # 11 media-fetch-public-ips-only (vllm#57825)
-@pytest.mark.parametrize("url", ["http://127.0.0.1:9/x.png", "http://169.254.169.254/x.png"])
-def test_11_media_fetch_refuses_private_destinations(monkeypatch, url):
+def _v4(*octets: int) -> str:
+    return ".".join(map(str, octets))
+
+
+_FAKE_DNS = {
+    "private.example.com": [_v4(10, 1, 2, 3)],
+    "mixed.example.com": ["1.1.1.1", _v4(10, 0, 0, 7)],
+    "mapped.example.com": ["::ffff:169.254.169.254"],
+}
+
+
+@pytest.fixture
+def media_net(monkeypatch):
+    """Fake DNS for _FAKE_DNS names, and a record of every socket connect.
+
+    A connect to anything but 127.0.0.1 fails the test before a packet is sent.
+    """
+    import socket
+
+    real_getaddrinfo, real_connect = socket.getaddrinfo, socket.socket.connect
+    dialed: list[str] = []
+
+    def getaddrinfo(host, port, *args, **kwargs):
+        if host in _FAKE_DNS:
+            return [
+                (socket.AF_INET6 if ":" in ip else socket.AF_INET, socket.SOCK_STREAM, 6, "",
+                 (ip, port or 0))
+                for ip in _FAKE_DNS[host]
+            ]
+        return real_getaddrinfo(host, port, *args, **kwargs)
+
+    def connect(sock, address):
+        dialed.append(address[0])
+        assert address[0] == "127.0.0.1", "a socket was opened to a refused address"
+        return real_connect(sock, address)
+
+    monkeypatch.setattr(socket, "getaddrinfo", getaddrinfo)
+    monkeypatch.setattr(socket.socket, "connect", connect)
+    monkeypatch.delenv("VLLM_MEDIA_URL_ALLOW_PRIVATE_IPS", raising=False)
+    monkeypatch.setenv("VLLM_MEDIA_FETCH_MAX_RETRIES", "1")
+    return dialed
+
+
+def _fetch_both(url: str, timeout: float = 2) -> list[Exception | bytes]:
     from vllm.connections import HTTPConnection
 
-    monkeypatch.delenv("VLLM_MEDIA_URL_ALLOW_PRIVATE_IPS", raising=False)
-    with pytest.raises(ValueError, match="non-public IP"):
-        HTTPConnection().get_bytes(url, timeout=2)
+    results: list[Exception | bytes] = []
+    try:
+        results.append(HTTPConnection().get_bytes(url, timeout=timeout))
+    except Exception as e:
+        results.append(e)
 
     async def fetch():
         conn = HTTPConnection()
         try:
-            await conn.async_get_bytes(url, timeout=2)
+            return await conn.async_get_bytes(url, timeout=timeout)
+        except Exception as e:
+            return e
         finally:
             if conn._async_client is not None:
                 await conn._async_client.close()
 
-    with pytest.raises(ValueError, match="non-public IP"):
-        asyncio.run(fetch())
+    results.append(asyncio.run(fetch()))
+    return results
+
+
+@pytest.mark.parametrize(
+    "host",
+    [
+        "127.0.0.1", _v4(10, 0, 0, 1), _v4(172, 16, 0, 1), _v4(192, 168, 0, 1),
+        "169.254.169.254", "0.0.0.0", _v4(224, 0, 0, 1), "[::1]", "[::ffff:127.0.0.1]",
+        "[::ffff:169.254.169.254]", "[fe80::1]", "[64:ff9b::a9fe:a9fe]", "2130706433",
+        "0x7f000001", "0177.0.0.1", "127.1",
+        "private.example.com", "mixed.example.com", "mapped.example.com",
+    ],
+)
+def test_11_media_fetch_refuses_non_public_destinations(media_net, host):
+    for result in _fetch_both(f"http://{host}:9/x.png"):
+        assert isinstance(result, ValueError), repr(result)
+        assert "non-public IP" in str(result)
+    assert media_net == []
+
+
+class _Recorder:
+    """Loopback HTTP server that counts requests and answers 200 or a redirect."""
+
+    def __init__(self, location: str | None = None) -> None:
+        import threading
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+        recorder = self
+        self.hits = 0
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                recorder.hits += 1
+                self.send_response(302 if location else 200)
+                if location:
+                    self.send_header("Location", location)
+                self.send_header("Content-Length", "2")
+                self.end_headers()
+                self.wfile.write(b"ok")
+
+            def log_message(self, *args):
+                pass
+
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.url = f"http://127.0.0.1:{self.server.server_port}"
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def close(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+
+
+def _accept_loopback(monkeypatch):
+    import vllm.connections as connections
+
+    real = connections._is_public_ip
+    monkeypatch.setattr(connections, "_is_public_ip", lambda ip: ip == "127.0.0.1" or real(ip))
+
+
+@pytest.mark.parametrize(
+    "target", ["http://169.254.169.254/x.png", "http://private.example.com/x.png"]
+)
+def test_11_redirect_to_refused_address_is_not_followed(media_net, monkeypatch, target):
+    _accept_loopback(monkeypatch)
+    server = _Recorder(location=target)
+    try:
+        for result in _fetch_both(server.url + "/start"):
+            assert isinstance(result, ValueError), repr(result)
+            assert "non-public IP" in str(result)
+    finally:
+        server.close()
+    assert server.hits == 2
+    assert set(media_net) == {"127.0.0.1"}
+
+
+def test_11_proxy_environment_is_ignored(media_net, monkeypatch):
+    _accept_loopback(monkeypatch)
+    proxy, target = _Recorder(), _Recorder()
+    for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy"):
+        monkeypatch.setenv(name, proxy.url)
+    monkeypatch.delenv("NO_PROXY", raising=False)
+    monkeypatch.delenv("no_proxy", raising=False)
+    try:
+        assert _fetch_both(target.url + "/x.png") == [b"ok", b"ok"]
+    finally:
+        proxy.close()
+        target.close()
+    assert (proxy.hits, target.hits) == (0, 2)
 
 
 def test_11_async_fetch_resolves_off_the_event_loop(monkeypatch):
@@ -285,7 +486,7 @@ def test_12_media_clients_keep_no_cookies():
     assert asyncio.run(get_jar()) is aiohttp.DummyCookieJar
 
 
-# 13 whisper-langdetect-fallback (same fix as the Whisper inline build step)
+# 13 whisper-langdetect-fallback
 @pytest.mark.parametrize("token,expected", [("<|yue|>", "en"), ("<|de|>", "de"), ("junk", "en")])
 def test_13_whisper_unlisted_language_falls_back(token, expected):
     from vllm.model_executor.models.whisper import WhisperForConditionalGeneration

@@ -9,14 +9,14 @@ Upstream numbers are vllm-project/vllm pull requests and name where a patch come
 | 01-error-sanitizer-linear-time | the error-message path sanitizer runs in time linear in the message length | #60233, tests from #52120 |
 | 02-cached-tokens-from-engine-only | `kv_transfer_params.remote_prefill_cached_tokens` from a client is rejected (400) and left out of usage, unless `VLLM_TRUST_REMOTE_PREFILL_CACHED_TOKENS=1` | #64918 |
 | 03-stop-and-bad-words-bounds | caps `stop_token_ids` (`VLLM_MAX_STOP_TOKEN_IDS`, 128), `stop` and `bad_words`; stop-token lookup uses a set; also changes `deepseek_v32_encoding.py`: `render_message` takes a required `last_user_idx` and a new optional `last_assistant_idx`, `drop_thinking_messages` requires `last_user_idx`, and a tool message is rendered after the last assistant message seen by `encode_messages` instead of by scanning back | #54721 |
-| 04-detok-bounded-holdback | flushes incremental detokenization after 16 tokens that never complete a UTF-8 character | #63668 |
+| 04-detok-bounded-holdback | flushes incremental detokenization after 16 tokens that never complete a UTF-8 character, keeping a trailing incomplete character so that streamed text matches a one-shot decode; a token id the decode stream rejects is skipped with a warning that carries the error type only | #63668, extended |
 | 05-pooling-prompt-count-bound | caps list inputs on /v1/embeddings, /pooling, /score, /rerank at `VLLM_MAX_COMPLETION_PROMPTS`, default raised to 2048 | #53473 |
 | 06-vision-rope-cache-byte-bound | bounds the Qwen3-VL / Qwen2.5-VL rotary-position cache by bytes | #60607 |
 | 07-media-reference-script-reject | accepts uploaded audio/video only when it is media, not an FFmpeg concat, HLS, SDP or XML script | #63701 |
 | 08-engine-add-rollback | rolls back request state when the engine add fails; bounds `top_k` and `stream_interval` | #56212 |
 | 09-audio-channel-cap | accepts audio up to `VLLM_MAX_AUDIO_CHANNELS` (8) channels, including on the torchcodec backend | #51894, extended |
 | 10-mm-uuid-length-cap | caps a multimodal content-part `uuid` at 128 characters | #57221 |
-| 11-media-fetch-public-ips-only | engine-side media fetches resolve to public unicast IPs only (`VLLM_MEDIA_URL_ALLOW_PRIVATE_IPS`, 0; loopback, private, link-local, multicast, NAT64 and reserved addresses are refused), pin the resolved IP and re-check it after a redirect; the async path resolves off the event loop; both clients ignore proxy environment variables; the per-IP pool cache holds at most 64 pools and is closed with the session | #57825, extended |
+| 11-media-fetch-public-ips-only | engine-side media fetches resolve to public unicast IPs only (`VLLM_MEDIA_URL_ALLOW_PRIVATE_IPS`, 0; loopback, private, link-local, multicast, NAT64 and reserved addresses are refused), connect only to the validated addresses, in answer order, and re-check them after a redirect; one fetch timeout covers name lookup, every connect attempt and every redirect hop; the async path resolves off the event loop; both clients ignore proxy environment variables; the per-host pool cache holds at most 64 pools and is closed with the session | #57825, extended |
 | 12-media-client-no-cookies | shared media HTTP clients keep no cookies: a `Set-Cookie` response header is not stored or sent back | #56588 |
 | 13-whisper-langdetect-fallback | a detected language vLLM does not list falls back to "en" instead of HTTP 500 | NEAR |
 | 14-media-retry-log-fields | media fetch retry warnings carry the attempt count and error type | NEAR |
@@ -42,17 +42,15 @@ of them. The engine's media fetches load OpenSSL and glibc (TLS, DNS). pip,
 opentelemetry, apt and gnupg are left as in the base: the serving process does not load them.
 
 ## Tests
-`test-cpu.sh` (CPU only) checks the patched files against `PATCHED-FILES.sha256`, runs
-`tests/test_request_bounds.py` (one check per patch; all but the listed-language Whisper case fail
-on stock v0.33.0), and with `VLLM_TESTS` set runs the upstream tests the patches add or edit
-(`tests/upstream-tests.diff`), failing on anything not in `tests/stock-v0330-known-failures.txt`.
+`test-cpu.sh` (CPU only, installed in the image) checks the patched files against
+`PATCHED-FILES.sha256`, runs `tests/test_request_bounds.py` (checks per patch; all but the
+listed-language Whisper case fail on stock v0.33.0), and with `VLLM_TESTS` set to a v0.33.0 `tests/`
+tree runs the upstream tests the patches add or edit (`tests/upstream-tests.diff`), failing on
+anything not in `tests/stock-v0330-known-failures.txt`.
 
-```
-docker build --build-arg BUILD_SOURCE_REVISION=$(git rev-parse HEAD) -t vllm-v0.33.0-request-bounds-r1 docker/vllm-v0.33.0-request-bounds-r1
-docker run --rm --runtime runc --entrypoint bash vllm-v0.33.0-request-bounds-r1 /usr/share/nearai/vllm-v0.33.0-request-bounds-r1/test-cpu.sh
-docker run --rm --runtime runc -v <vllm v0.33.0 checkout>:/src:ro -e VLLM_TESTS=/src/tests --entrypoint bash \
-  vllm-v0.33.0-request-bounds-r1 /usr/share/nearai/vllm-v0.33.0-request-bounds-r1/test-cpu.sh
-```
-
-Publish with `.github/workflows/publish-vllm-v0.33.0-request-bounds-r1.yaml` from a merged commit on
-main.
+The patch 04 checks compare streamed text with a one-shot decode for 2-, 3- and 4-byte characters
+across the flush boundary and bound the held-back tokens on an endless run of lead bytes. The patch
+11 checks cover refused destinations (literal, alternate numeric forms, IPv4-mapped IPv6, NAT64,
+names that resolve to them, mixed answers, redirects), proxy environment variables, a lookup slower
+than the timeout, and fallback to the next validated address when one is refused or does not
+answer, within one timeout.
