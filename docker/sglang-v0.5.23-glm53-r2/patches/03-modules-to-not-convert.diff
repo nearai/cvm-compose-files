@@ -1,0 +1,25 @@
+diff --git a/python/sglang/srt/layers/quantization/w4afp8.py b/python/sglang/srt/layers/quantization/w4afp8.py
+index 05ac19a51e..e8ed0d0ec4 100644
+--- a/python/sglang/srt/layers/quantization/w4afp8.py
++++ b/python/sglang/srt/layers/quantization/w4afp8.py
+@@ -82,11 +82,20 @@ class W4AFp8Config(QuantizationConfig):
+         linear_activation_scheme = "dynamic"
+         moe_activation_scheme = "static"
+         weight_block_size = [128, 128]
++        # Read the checkpoint's exclusion list under all three spellings, so layers listed in
++        # modules_to_not_convert keep their unquantized linear method.
++        ignored_layers = (
++            config.get("modules_to_not_convert")
++            or config.get("ignored_layers")
++            or config.get("ignore")
++            or []
++        )
+         return cls(
+             is_checkpoint_fp8_serialized=is_checkpoint_fp8_serialized,
+             is_checkpoint_w4afp8_serialized=is_checkpoint_w4afp8_serialized,
+             linear_activation_scheme=linear_activation_scheme,
+             moe_activation_scheme=moe_activation_scheme,
++            ignored_layers=ignored_layers,
+             weight_block_size=weight_block_size,
+         )
+ 

@@ -1,0 +1,66 @@
+diff --git a/python/sglang/srt/managers/tokenizer_manager.py b/python/sglang/srt/managers/tokenizer_manager.py
+index f4d7ab2..06305e7 100644
+--- a/python/sglang/srt/managers/tokenizer_manager.py
++++ b/python/sglang/srt/managers/tokenizer_manager.py
+@@ -1394,6 +1394,7 @@ class TokenizerManager(TokenizerControlMixin, TokenizerManagerScoreMixin):
+         if isinstance(obj, GenerateReqInput):
+             self._validate_token_ids_logprob(obj)
+             self._validate_top_logprobs_num(obj)
++            self._validate_logprob_start_len(obj)
+             requested_hidden_mode = get_request_return_hidden_states_mode(
+                 obj.return_hidden_states
+             )
+@@ -1545,6 +1546,18 @@ class TokenizerManager(TokenizerControlMixin, TokenizerManagerScoreMixin):
+                 f"got {top_logprobs_num!r}."
+             )
+ 
++    def _validate_logprob_start_len(self, obj: GenerateReqInput) -> None:
++        # -1 means output tokens only; a lower value slices the prompt from its
++        # end and fails an assert in the scheduler.
++        logprob_start_len = obj.logprob_start_len
++        if not obj.return_logprob or logprob_start_len is None:
++            return
++        if type(logprob_start_len) is not int or logprob_start_len < -1:
++            raise ValueError(
++                "logprob_start_len must be an integer >= -1, "
++                f"got {logprob_start_len!r}."
++            )
++
+     def _create_tokenized_object(
+         self,
+         obj: Union[GenerateReqInput, EmbeddingReqInput],
+diff --git a/test/registered/unit/managers/test_sampling_mask_validation.py b/test/registered/unit/managers/test_sampling_mask_validation.py
+index 8b0a907..c8ce09a 100644
+--- a/test/registered/unit/managers/test_sampling_mask_validation.py
++++ b/test/registered/unit/managers/test_sampling_mask_validation.py
+@@ -73,6 +73,30 @@ class TestSamplingMaskValidation(CustomTestCase):
+                     with self.assertRaisesRegex(ValueError, "top_logprobs"):
+                         self.manager._validate_one_request(req, req.input_ids)
+ 
++    def test_logprob_start_len_must_be_at_least_minus_one(self):
++        for logprob_start_len, return_logprob, accepted in (
++            (None, True, True),
++            (-1, True, True),
++            (0, True, True),
++            (2, True, True),
++            (-2, True, False),
++            (-5, True, False),
++            ([0], True, False),
++            (-5, False, True),
++        ):
++            with self.subTest(logprob_start_len=logprob_start_len, rl=return_logprob):
++                req = GenerateReqInput(
++                    input_ids=[1, 2, 3],
++                    sampling_params={},
++                    return_logprob=return_logprob,
++                    logprob_start_len=logprob_start_len,
++                )
++                if accepted:
++                    self.manager._validate_one_request(req, req.input_ids)
++                else:
++                    with self.assertRaisesRegex(ValueError, "logprob_start_len"):
++                        self.manager._validate_one_request(req, req.input_ids)
++
+     def test_mixed_batch_forwards_zero_count_for_logprob_disabled_items(self):
+         """Disabled items must not contribute their raw count to a shared topk.
+ 
