@@ -85,9 +85,8 @@ jobs:
           grep -Fq 'VLLM_VERSION = "0.33.0"' "$BUILD_CONTEXT/apply-patches.py"
           echo "IMAGE_REF=${REGISTRY}/${IMAGE_REPOSITORY}:${IMAGE_TAG}" >> "$GITHUB_ENV"
 
-      # The standard runner starts with about 20-30 GB free on /. The base image alone is about
-      # 10 GB compressed, so remove preinstalled toolchains this job never uses and stop early
-      # if the build still would not fit.
+      # The build peaks at about 35 GB on /. Remove preinstalled toolchains this job never uses
+      # and stop before building unless 60 GB is free.
       - name: Free runner disk
         run: |
           set -euo pipefail
