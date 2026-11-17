@@ -1,0 +1,155 @@
+diff --git a/vllm/entrypoints/pooling/base/protocol.py b/vllm/entrypoints/pooling/base/protocol.py
+index c6d11488ac238697f3f3ff2bcc221983f71397bc..8dce567a955bfdf963be07ec579b1f3da3ca77aa 100644
+--- a/vllm/entrypoints/pooling/base/protocol.py
++++ b/vllm/entrypoints/pooling/base/protocol.py
+@@ -6,6 +6,7 @@ from typing import Annotated, Any, Literal
+ 
+ from pydantic import Field, model_validator
+ 
++from vllm import envs
+ from vllm.config import ModelConfig
+ from vllm.entrypoints.generate.base.protocol import validate_cache_salt
+ from vllm.entrypoints.serve.engine.protocol import OpenAIBaseModel
+@@ -224,6 +225,26 @@ class CompletionRequestMixin(OpenAIBaseModel):
+     )
+     # --8<-- [end:completion-extra-params]
+ 
++    @model_validator(mode="before")
++    @classmethod
++    def validate_input_list_length(cls, data):
++        if not isinstance(data, dict):
++            return data
++        max_prompts = envs.VLLM_MAX_COMPLETION_PROMPTS
++        input_val = data.get("input")
++        if not isinstance(input_val, list) or len(input_val) == 0:
++            return data
++        if isinstance(input_val[0], int):
++            return data
++        if len(input_val) > max_prompts:
++            raise VLLMValidationError(
++                f"input list length {len(input_val)} exceeds the maximum "
++                f"allowed count of {max_prompts}. To increase this limit, "
++                "set the VLLM_MAX_COMPLETION_PROMPTS environment variable.",
++                parameter="input",
++            )
++        return data
++
+ 
+ class ChatRequestOptionsMixin(OpenAIBaseModel):
+     # --8<-- [start:chat-extra-params]
+diff --git a/vllm/entrypoints/pooling/pooling/protocol.py b/vllm/entrypoints/pooling/pooling/protocol.py
+index 078f2e63d6662f29e6f9bebd9a15acfb0a88c274..d6ed33f19d63babcac74ce671bf07a974c4e8242 100644
+--- a/vllm/entrypoints/pooling/pooling/protocol.py
++++ b/vllm/entrypoints/pooling/pooling/protocol.py
+@@ -3,11 +3,12 @@
+ import time
+ from typing import Annotated, Generic, TypeAlias, TypeVar
+ 
+-from pydantic import BeforeValidator, Field
++from pydantic import BeforeValidator, Field, model_validator
+ 
+-from vllm import PoolingParams
++from vllm import PoolingParams, envs
+ from vllm.config import ModelConfig
+ from vllm.entrypoints.serve.engine.protocol import OpenAIBaseModel, UsageInfo
++from vllm.exceptions import VLLMValidationError
+ from vllm.renderers import TokenizeParams
+ from vllm.tasks import PoolingTask
+ from vllm.utils import random_uuid
+@@ -65,6 +66,22 @@ class IOProcessorRequest(PoolingBasicRequestMixin, EncodingRequestMixin, Generic
+     data: T
+     task: PoolingTask = "plugin"
+ 
++    @model_validator(mode="before")
++    @classmethod
++    def validate_data_list_length(cls, data):
++        if not isinstance(data, dict):
++            return data
++        max_prompts = envs.VLLM_MAX_COMPLETION_PROMPTS
++        data_val = data.get("data")
++        if isinstance(data_val, list) and len(data_val) > max_prompts:
++            raise VLLMValidationError(
++                f"data list length {len(data_val)} exceeds the maximum "
++                f"allowed count of {max_prompts}. To increase this limit, "
++                "set the VLLM_MAX_COMPLETION_PROMPTS environment variable.",
++                parameter="data",
++            )
++        return data
++
+     def build_tok_params(self, model_config: ModelConfig) -> TokenizeParams:
+         return self._build_pooling_tok_params(
+             model_config,
+diff --git a/vllm/entrypoints/pooling/scoring/protocol.py b/vllm/entrypoints/pooling/scoring/protocol.py
+index 62227af0d436b892cf59bad44305ec0898dd9dc5..b24c60c1ef93c2da7e1578231d429ce5778664dc 100644
+--- a/vllm/entrypoints/pooling/scoring/protocol.py
++++ b/vllm/entrypoints/pooling/scoring/protocol.py
+@@ -5,9 +5,10 @@ from typing import Any, TypeAlias
+ 
+ from pydantic import BaseModel, Field, model_validator
+ 
+-from vllm import PoolingParams
++from vllm import PoolingParams, envs
+ from vllm.config import ModelConfig
+ from vllm.entrypoints.serve.engine.protocol import OpenAIBaseModel, UsageInfo
++from vllm.exceptions import VLLMValidationError
+ from vllm.renderers import TokenizeParams
+ from vllm.tasks import PoolingTask
+ from vllm.utils import random_uuid
+@@ -52,6 +53,32 @@ class ScoringRequestMixin(PoolingBasicRequestMixin, ClassifyRequestMixin):
+     )
+     # --8<-- [end:scoring-common-params]
+ 
++    @model_validator(mode="before")
++    @classmethod
++    def validate_input_list_length(cls, data):
++        if not isinstance(data, dict):
++            return data
++        max_prompts = envs.VLLM_MAX_COMPLETION_PROMPTS
++        for field_name in (
++            "documents",
++            "items",
++            "text_2",
++            "data_2",
++            "queries",
++            "data_1",
++            "text_1",
++        ):
++            value = data.get(field_name)
++            if isinstance(value, list) and len(value) > max_prompts:
++                raise VLLMValidationError(
++                    f"{field_name} list length {len(value)} exceeds the "
++                    f"maximum allowed count of {max_prompts}. To increase "
++                    "this limit, set the VLLM_MAX_COMPLETION_PROMPTS "
++                    "environment variable.",
++                    parameter=field_name,
++                )
++        return data
++
+     @model_validator(mode="after")
+     def _merge_instruction_into_kwargs(self) -> "ScoringRequestMixin":
+         """Fold the top-level `instruction` field into `chat_template_kwargs`.
+diff --git a/vllm/envs.py b/vllm/envs.py
+index 2d43d951761bd4376849a4e4c39b3c99afe0a38d..c48c10477e53c9e3d84e11eacc03675341042d7c 100755
+--- a/vllm/envs.py
++++ b/vllm/envs.py
+@@ -110,7 +110,7 @@ if TYPE_CHECKING:
+     VLLM_HTTP_TIMEOUT_KEEP_ALIVE: int = 5  # seconds
+     VLLM_HTTP_MAX_REQUEST_BODY_SIZE: int = 32 * 1024 * 1024  # bytes
+     VLLM_MAX_N_SEQUENCES: int = 16384
+-    VLLM_MAX_COMPLETION_PROMPTS: int = 1024
++    VLLM_MAX_COMPLETION_PROMPTS: int = 2048
+     VLLM_MAX_STOP_STRINGS: int = 4
+     VLLM_MAX_STOP_TOKEN_IDS: int = 128
+     VLLM_MAX_NUM_BAD_WORDS: int = 128
+@@ -1151,9 +1151,9 @@ environment_variables: dict[str, Callable[[], Any]] = {
+     ),
+     # Maximum number of prompts allowed in a single /v1/completions request
+     # when the prompt field is a list. Prevents unbounded fan-out of engine
+-    # requests from a single API call. Default: 1024.
++    # requests from a single API call. Default: 2048.
+     "VLLM_MAX_COMPLETION_PROMPTS": lambda: int(
+-        os.environ.get("VLLM_MAX_COMPLETION_PROMPTS", "1024")
++        os.environ.get("VLLM_MAX_COMPLETION_PROMPTS", "2048")
+     ),
+     # Maximum number of stop strings allowed in a single request.
+     "VLLM_MAX_STOP_STRINGS": lambda: int(os.environ.get("VLLM_MAX_STOP_STRINGS", "4")),

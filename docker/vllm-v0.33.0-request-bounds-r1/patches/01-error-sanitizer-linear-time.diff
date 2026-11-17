@@ -1,0 +1,17 @@
+diff --git a/vllm/entrypoints/serve/exception_handling/utils.py b/vllm/entrypoints/serve/exception_handling/utils.py
+index 6c1dd205167c673ef5c5830551c9e8d20c1bafb2..2693a84ce23bb3b8f194218c9256110953550704 100644
+--- a/vllm/entrypoints/serve/exception_handling/utils.py
++++ b/vllm/entrypoints/serve/exception_handling/utils.py
+@@ -11,5 +11,11 @@ def sanitize_message(message: str) -> str:
+     message = re.sub(
+         r"/(?:home|usr|opt|var|tmp|root|lib|mnt|srv)(?:/[\w.\-]+)+", "<path>", message
+     )
+-    message = re.sub(r"(?:/[\w\-]+)+/[\w\-]+\.\w+", "<path>", message)
++    # Match each run of /segments whole and check for an extension afterwards,
++    # so matching time stays linear in the message length.
++    message = re.sub(
++        r"(?:/[\w\-]+)+(\.\w+)?",
++        lambda m: "<path>" if m[1] and m[0].count("/") > 1 else m[0],
++        message,
++    )
+     return message.strip()
