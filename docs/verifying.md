@@ -106,6 +106,7 @@ workflow's existing signatures stay valid for the images it published.
 | workflow | identity (prefix `https://github.com/nearai/cvm-compose-files/`) | images | state |
 |---|---|---|---|
 | `publish-vllm-dsv41-v033.yaml` | `.github/workflows/publish-vllm-dsv41-v033.yaml@refs/heads/main` | `nearaidev/vllm` | active |
+| `publish-vllm-v0.33.0-dsv41-r3.yaml` | `.github/workflows/publish-vllm-v0.33.0-dsv41-r3.yaml@refs/heads/main` | `nearaidev/vllm` | active |
 | `publish-glm53-v0523.yaml` | `.github/workflows/publish-glm53-v0523.yaml@refs/heads/main` | `nearaidev/sglang` | retired |
 | `publish-sglang-v0523-secure.yaml` | `.github/workflows/publish-sglang-v0523-secure.yaml@refs/heads/main` | `nearaidev/sglang` | retired |
 | `publish-glm53-admission-reserve.yaml` | `.github/workflows/publish-glm53-admission-reserve.yaml@refs/heads/main` | `nearaidev/sglang` | retired |
