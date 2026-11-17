@@ -1,0 +1,52 @@
+diff --git a/vllm/connections.py b/vllm/connections.py
+index 17cf03dd7971950a759c78dfc08e2d865f6ebc65..6a2a10ae9078f1d7195f089284cf392c74421045 100644
+--- a/vllm/connections.py
++++ b/vllm/connections.py
+@@ -8,6 +8,7 @@ import socket
+ import threading
+ import time
+ from collections.abc import Callable, Collection, Coroutine, Mapping, MutableMapping
++from http.cookiejar import DefaultCookiePolicy
+ from pathlib import Path
+ from typing import Any, ParamSpec, TypeVar
+ from urllib.parse import urljoin, urlsplit
+@@ -631,8 +632,18 @@ class _ValidatingTCPConnector(aiohttp.TCPConnector):
+         return results
+ 
+ 
++def _session_without_cookies() -> requests.Session:
++    session = requests.Session()
++    session.cookies.set_policy(DefaultCookiePolicy(allowed_domains=()))
++    return session
++
++
+ class HTTPConnection:
+-    """Helper class to send HTTP requests."""
++    """Helper class to send HTTP requests.
++
++    Reused clients do not persist cookies, so caller-supplied media fetches
++    cannot replay another request's `Set-Cookie` state.
++    """
+ 
+     def __init__(self, *, reuse_client: bool = True) -> None:
+         super().__init__()
+@@ -645,7 +656,7 @@ class HTTPConnection:
+ 
+     def get_sync_client(self) -> requests.Session:
+         if self._sync_client is None or not self.reuse_client:
+-            session = requests.Session()
++            session = _session_without_cookies()
+             protective_adapter = _PinnedPublicIPAdapter()
+             session.mount("http://", protective_adapter)
+             session.mount("https://", protective_adapter)
+@@ -665,7 +676,9 @@ class HTTPConnection:
+                 # Owned by the session below, so it is released together.
+                 connector = _ValidatingTCPConnector()
+             self._async_client = aiohttp.ClientSession(
+-                trust_env=True, connector=connector
++                trust_env=True,
++                connector=connector,
++                cookie_jar=aiohttp.DummyCookieJar(),
+             )
+ 
+         return self._async_client
