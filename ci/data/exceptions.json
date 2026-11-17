@@ -22,6 +22,13 @@
   },
   {
     "rule": "pins.digest",
+    "path": "prod/deepseek-v4.1-flash-1017-vllm-dep4x2.yaml",
+    "sha256": "9dcd945c608f77ac55d0026d57d2e617d98b911b4a54e7f9ad4cce9c83a87d43",
+    "reason": "image carries a tag next to its digest; the digest decides what runs",
+    "remove_when": "the image reference is a digest without a tag"
+  },
+  {
+    "rule": "pins.digest",
     "path": "prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8-V12Q8.yaml",
     "sha256": "9dcd945c608f77ac55d0026d57d2e617d98b911b4a54e7f9ad4cce9c83a87d43",
     "reason": "image carries a tag next to its digest; the digest decides what runs",
@@ -51,6 +58,13 @@
   {
     "rule": "privacy.secret",
     "path": "prod/DeepSeek-V4.1-Flash-1017-vLLM-DEP8-Abliterated.yaml",
+    "sha256": "e67bf1fe5f5dceecba68fe6a4e61026f5e5a6c1e503f1ef9cd5b54b5482d3480",
+    "reason": "secret variable without a required-value check",
+    "remove_when": "the secret has a required-value check"
+  },
+  {
+    "rule": "privacy.secret",
+    "path": "prod/deepseek-v4.1-flash-1017-vllm-dep4x2.yaml",
     "sha256": "e67bf1fe5f5dceecba68fe6a4e61026f5e5a6c1e503f1ef9cd5b54b5482d3480",
     "reason": "secret variable without a required-value check",
     "remove_when": "the secret has a required-value check"
@@ -72,6 +86,13 @@
   {
     "rule": "public.domain",
     "path": "prod/DeepSeek-V4.1-Flash-1017-vLLM-DEP8-Abliterated.yaml",
+    "sha256": "2857d6988af093f27ae2d89387c18ed6e11a009c52b2d96df637c2936a9b2918",
+    "reason": "domain outside the public allowlist inside an embedded config",
+    "remove_when": "the value is a deploy-time variable"
+  },
+  {
+    "rule": "public.domain",
+    "path": "prod/deepseek-v4.1-flash-1017-vllm-dep4x2.yaml",
     "sha256": "2857d6988af093f27ae2d89387c18ed6e11a009c52b2d96df637c2936a9b2918",
     "reason": "domain outside the public allowlist inside an embedded config",
     "remove_when": "the value is a deploy-time variable"

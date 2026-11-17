@@ -1,0 +1,22 @@
+diff --git a/vllm/models/deepseek_v41/common/engram.py b/vllm/models/deepseek_v41/common/engram.py
+index 4ceae0a9a..0245f82d5 100644
+--- a/vllm/models/deepseek_v41/common/engram.py
++++ b/vllm/models/deepseek_v41/common/engram.py
+@@ -84,6 +84,9 @@ logger = init_logger(__name__)
+ 
+ # NEAR: CC-safe host Engram tables, see ParallelEngramEmbedding._near_cpu_lookup.
+ _NEAR_CPU_GATHER = os.environ.get("VLLM_NEAR_ENGRAM_CPU_GATHER") == "1"
++# NEAR: kill switch for the v0.33 peer-HBM Engram reads (#62091). "0" keeps the v0.32
++# DP-collective lookup, the path validated in TDX + PPCIe CVMs. Default on (upstream behaviour).
++_NEAR_PEER_READS = os.environ.get("VLLM_NEAR_ENGRAM_PEER_READS", "1") != "0"
+ # NEAR: one host sync per step for every Engram layer, gather into pinned
+ # buffers, async H2D. Copies only: the GPU still never reads host memory.
+ _NEAR_FAST_GATHER = _NEAR_CPU_GATHER and os.environ.get("VLLM_NEAR_ENGRAM_FAST_GATHER") == "1"
+@@ -1088,6 +1091,7 @@ class ParallelEngramEmbedding(nn.Module):
+         peer_group = None
+         if (
+             not cpu_offload
++            and _NEAR_PEER_READS
+             and self.dp_size > 1
+             and get_tensor_model_parallel_world_size() == 1
+         ):

@@ -106,6 +106,7 @@ workflow's existing signatures stay valid for the images it published.
 | workflow | identity (prefix `https://github.com/nearai/cvm-compose-files/`) | images | state |
 |---|---|---|---|
 | `publish-vllm-dsv41-v033.yaml` | `.github/workflows/publish-vllm-dsv41-v033.yaml@refs/heads/main` | `nearaidev/vllm` | active |
+| `publish-vllm-v0.33.0-dsv41-r3.yaml` | `.github/workflows/publish-vllm-v0.33.0-dsv41-r3.yaml@refs/heads/main` | `nearaidev/vllm` | active |
 | `publish-glm53-v0523.yaml` | `.github/workflows/publish-glm53-v0523.yaml@refs/heads/main` | `nearaidev/sglang` | retired |
 | `publish-sglang-v0523-secure.yaml` | `.github/workflows/publish-sglang-v0523-secure.yaml@refs/heads/main` | `nearaidev/sglang` | retired |
 | `publish-glm53-admission-reserve.yaml` | `.github/workflows/publish-glm53-admission-reserve.yaml@refs/heads/main` | `nearaidev/sglang` | retired |
@@ -135,6 +136,7 @@ can no longer be followed.
 | `050b1adf961c8621264d14696d24645f70d1a675509ad400a72ccfb1a3fddcb2` | `glm53-v0523-near-v1` | `sglang-glm53-v0523` | `2cf337c2c5fc3fa78570a5ae0e3dd432abaefde8` | upstream SGLang |
 | `6de632a5e9422be4b6e84e32cf475679c0f29c4bb6d58984d873ff9f7ba92a65` | `sglang-v0523-secure-near-v1` | `sglang-v0523-secure` | `a07dea8faf1523d85f20e328031977b7964be3e4` | upstream SGLang |
 | `a744ada2a362e2548a88527432da1662aa027012226d9e0ed4fce9cda1e6f0bd` | `dsv41-lora-v0.33.0-near-v1` | `vllm-dsv41-v033` | `7469ed1c47d216ceee4a5329515e6fa0901d90df` | upstream vLLM |
+| `2fe2385152c450c971ff1ac9262298d9f3ed1a09decd4c65b048a6465c1796ea` | `v0.33.0-dsv41-r3` | `vllm-v0.33.0-dsv41-r3` | `494e2854a811ae563c29058c811250b7cc756f8a` | upstream vLLM |
 | `5eaa0d4637080c10958b6cd8a371ae2ebb749b7a1e19c85bcb1abb89ee2540e4` | - | `vllm-dsv41-lora` | `c87715224cc5712f5f302ac0e486f533c99ce5c5` | upstream vLLM |
 | `9c6ddd4319c4ab00e351d8650459e68b8830e36ffcc029d67fa5e19d0ac3ed17` | `glm53-hicache-w4afp8-v6` | `sglang-glm53-hicache-w4afp8` | `678a6b5ee3e4e7b83340f810c76530958eecc499` | `3eccc307…` |
 | `fa730e6e62b2ae8058114ce540487ade33ab93bc42b1179ae78edc92bd563fc5` | - | `sglang-glm53-hicache-w4afp8` | `29a7db96822caedff38c571dfef8942110702a23` | `3eccc307…` |
@@ -168,8 +170,8 @@ file and the matched value. Counts per rule:
 | rule | entries | what it waives |
 |---|---|---|
 | `layout.ext`, `layout.size` | 1 each | the adapter weights file in `adapters/` |
-| `pins.digest` | 7 | image references pinned by tag, or defined inline |
+| `pins.digest` | 8 | image references pinned by tag, or defined inline |
 | `pins.raw-key` | 4 | images defined inline in a deployable |
-| `privacy.secret` | 4 | secret variables without a required-value check |
-| `public.domain` | 4 | domain names outside the public allowlist |
+| `privacy.secret` | 5 | secret variables without a required-value check |
+| `public.domain` | 5 | domain names outside the public allowlist |
 | `public.host` | 7 | host names in config values, labels or service names |
