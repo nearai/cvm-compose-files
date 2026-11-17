@@ -6,10 +6,10 @@ index debb575616..983b8b465c 100644
  # Bound the walk cost using scheduling passes, which agree across TP ranks.
  WAITING_PREFIX_REFRESH_INTERVAL = 32
  
-+# Lab port of the DS4F admission-fairness change: the scheduler always spends the
++# Admission reserve for chunked prefill: the scheduler otherwise spends the
 +# entire chunk budget on an in-flight long prefill, so requests that arrive after it
 +# cannot enter the same prefill batch. Reserve part of that budget for complete
-+# waiting requests. Zero preserves upstream behaviour.
++# waiting requests. Zero keeps the stock scheduler.
 +CHUNKED_PREFILL_ADMISSION_RESERVE = int(os.environ.get("SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE", "0"))
 +if CHUNKED_PREFILL_ADMISSION_RESERVE < 0:
 +    raise ValueError("SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE must be non-negative")
@@ -92,12 +92,12 @@ index a50c08585b..bd67990038 100644
  
 +
 +def _admission_reserve_need(waiting_queue, page_size, chunked_prefill_size=None):
-+    """Sum of page-aligned sizes of waiting requests small enough to fit in the admission reserve (lab port)."""
++    """Sum of page-aligned sizes of waiting requests small enough to fit in the admission reserve."""
 +    import os as _os
 +    cap = int(_os.environ.get("SGLANG_CHUNKED_PREFILL_ADMISSION_RESERVE", "0"))
 +    if cap <= 0 or not waiting_queue:
 +        return None
-+    # v9b: use the same cap the adder will apply (fairness fraction of the chunk, minus one page), so a waiter that
++    # Use the same cap the adder will apply (fairness fraction of the chunk, minus one page), so a waiter that
 +    # "fits" here also fits at admission; otherwise the reserve is carved for a request that is then skipped.
 +    if chunked_prefill_size:
 +        max_frac = float(_os.environ.get("SGLANG_ADMISSION_RESERVE_MAX_FRACTION", "0.5"))
@@ -107,11 +107,11 @@ index a50c08585b..bd67990038 100644
 +            return None
 +    need = 0
 +    fit_mode = _os.environ.get("SGLANG_ADMISSION_RESERVE_FIT", "extend")  # "extend" = uncached tokens after prefix match; "seqlen" = total
-+    # v10 age gate, RANK-DETERMINISTIC: a waiter only triggers the reserve after it has been seen by this scheduler in
++    # Rank-deterministic age gate: a waiter only triggers the reserve after it has been seen by this scheduler in
 +    # >= MIN_ITERS prefill-scheduling passes. Every TP rank runs the same scheduler loop over the same queue, so the
-+    # counter is identical on all ranks. (v8/v9 used a wall-clock age via perf_counter: ranks disagreed on who
-+    # qualified, built different batches, and the engine died on an NCCL collective mismatch / watchdog timeout.)
-+    # 0 = every waiter qualifies immediately (v5-v7 behaviour). Never gate on time here.
++    # counter is identical on all ranks. A wall-clock age differs between ranks, which would then build
++    # different batches, so the gate never uses time.
++    # 0 = every waiter qualifies immediately.
 +    min_iters = int(_os.environ.get("SGLANG_ADMISSION_RESERVE_MIN_ITERS", "0"))
 +    if _os.environ.get("SGLANG_ADMISSION_RESERVE_MIN_WAIT_S"):
 +        raise RuntimeError("SGLANG_ADMISSION_RESERVE_MIN_WAIT_S is not rank-deterministic and was removed; use SGLANG_ADMISSION_RESERVE_MIN_ITERS")
