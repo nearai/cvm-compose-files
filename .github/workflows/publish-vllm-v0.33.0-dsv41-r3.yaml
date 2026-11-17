@@ -35,8 +35,8 @@ jobs:
       contents: read
       attestations: write
       id-token: write
-    runs-on: ubuntu_large_x64
-    timeout-minutes: 120
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
     defaults:
       run:
         shell: bash
@@ -85,6 +85,23 @@ jobs:
           grep -Fq 'VLLM_VERSION = "0.33.0"' "$BUILD_CONTEXT/apply-patches.py"
           echo "IMAGE_REF=${REGISTRY}/${IMAGE_REPOSITORY}:${IMAGE_TAG}" >> "$GITHUB_ENV"
 
+      # The standard runner starts with about 20-30 GB free on /. The base image alone is about
+      # 10 GB compressed, so remove preinstalled toolchains this job never uses and stop early
+      # if the build still would not fit.
+      - name: Free runner disk
+        run: |
+          set -euo pipefail
+          df -h /
+          sudo rm -rf \
+            /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/boost /usr/share/swift \
+            /usr/local/share/powershell /usr/local/share/chromium /usr/lib/jvm /opt/az
+          sudo docker image prune --all --force
+          df -h /
+          FREE_GB=$(df --output=avail -BG / | tail -1 | tr -dc '0-9')
+          echo "free: ${FREE_GB} GB"
+          test "$FREE_GB" -ge 60
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
@@ -112,6 +129,13 @@ jobs:
           test -n "$DIGEST"
           echo "IMAGE_DIGEST=$DIGEST" >> "$GITHUB_ENV"
           echo "IMAGE_IMMUTABLE_REF=${REGISTRY}/${IMAGE_REPOSITORY}@${DIGEST}" >> "$GITHUB_ENV"
+
+      - name: Release build storage before the scan
+        run: |
+          set -euo pipefail
+          df -h /
+          docker buildx prune --all --force
+          df -h /
 
       - name: Resume exact published digest
         if: inputs.resume_digest != ''
