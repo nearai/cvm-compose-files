@@ -1,6 +1,6 @@
 --- /dev/null
 +++ b/vllm/v1/conf_compute_utils.py
-@@ -0,0 +1,476 @@
+@@ -0,0 +1,480 @@
 +# SPDX-License-Identifier: Apache-2.0
 +# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 +"""Keep non-blocking host<->device copies non-blocking under NVIDIA CC.
@@ -308,9 +308,14 @@
 +
 +
 +def _pending_snapshot() -> list[Future]:
++    """Return the unfinished copies; re-raise the error of a finished one."""
 +    with _pending_lock:
++        finished = [f for f in _pending if f.done()]
 +        _pending[:] = [f for f in _pending if not f.done()]
-+        return list(_pending)
++        snapshot = list(_pending)
++    for f in finished:
++        f.result()
++    return snapshot
 +
 +
 +def _wait_pending() -> None:

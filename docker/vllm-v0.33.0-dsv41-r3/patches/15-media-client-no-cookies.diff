@@ -1,16 +1,16 @@
 diff --git a/vllm/connections.py b/vllm/connections.py
-index 17cf03dd7971950a759c78dfc08e2d865f6ebc65..6a2a10ae9078f1d7195f089284cf392c74421045 100644
+index a7aaee0e4ecfd834ae032dc877f4b7edbb820372..fdd01c814e44e1a67d9d02c97972f8794629ad0a 100644
 --- a/vllm/connections.py
 +++ b/vllm/connections.py
-@@ -8,6 +8,7 @@ import socket
- import threading
+@@ -9,6 +9,7 @@ import threading
  import time
+ from collections import OrderedDict
  from collections.abc import Callable, Collection, Coroutine, Mapping, MutableMapping
 +from http.cookiejar import DefaultCookiePolicy
  from pathlib import Path
  from typing import Any, ParamSpec, TypeVar
  from urllib.parse import urljoin, urlsplit
-@@ -631,8 +632,18 @@ class _ValidatingTCPConnector(aiohttp.TCPConnector):
+@@ -664,8 +665,18 @@ class _ValidatingTCPConnector(aiohttp.TCPConnector):
          return results
  
  
@@ -30,21 +30,21 @@ index 17cf03dd7971950a759c78dfc08e2d865f6ebc65..6a2a10ae9078f1d7195f089284cf392c
  
      def __init__(self, *, reuse_client: bool = True) -> None:
          super().__init__()
-@@ -645,7 +656,7 @@ class HTTPConnection:
+@@ -678,7 +689,7 @@ class HTTPConnection:
  
      def get_sync_client(self) -> requests.Session:
          if self._sync_client is None or not self.reuse_client:
 -            session = requests.Session()
 +            session = _session_without_cookies()
-             protective_adapter = _PinnedPublicIPAdapter()
-             session.mount("http://", protective_adapter)
-             session.mount("https://", protective_adapter)
-@@ -665,7 +676,9 @@ class HTTPConnection:
+             # Proxy settings from the environment are ignored: the destination
+             # validation above applies to the address actually dialed.
+             session.trust_env = False
+@@ -701,7 +712,9 @@ class HTTPConnection:
                  # Owned by the session below, so it is released together.
                  connector = _ValidatingTCPConnector()
              self._async_client = aiohttp.ClientSession(
--                trust_env=True, connector=connector
-+                trust_env=True,
+-                trust_env=False, connector=connector
++                trust_env=False,
 +                connector=connector,
 +                cookie_jar=aiohttp.DummyCookieJar(),
              )

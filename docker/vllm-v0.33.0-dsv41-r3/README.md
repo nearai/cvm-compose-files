@@ -9,29 +9,39 @@ vllm-project/vllm pull requests or commits and name where a patch comes from.
 | 01-dsv41-supports-lora-wo-b | DS4.1 declares LoRA support for `wo_b` | NEAR |
 | 02-moe-lora-only-when-targeted | builds MoE LoRA wrappers only when MoE modules are targeted | NEAR |
 | 03-decoder-replay-lora-rows | maps LoRA token indices onto decoder-replay rows; padded rows get no adapter | NEAR, adapted to v0.33 row padding |
-| 04-cc-disable-uva | `VLLM_NEAR_DISABLE_UVA=1` keeps the engine on explicit copies, so the GPU reads only memory it owns | NEAR |
+| 04-cc-disable-uva | `VLLM_NEAR_DISABLE_UVA=1` keeps the engine on explicit copies, so the GPU reads only memory it owns; with `VLLM_CONFIDENTIAL_COMPUTE=1`, 16 relies on this switch to keep UVA off everywhere outside the runner buffers | NEAR |
 | 05-engram-cpu-gather | gathers host Engram rows on the CPU under CC; inert with `cpu_offload:false` | NEAR |
 | 06-engram-fast-gather | one host sync per step and pinned async H2D for 05; inert with `cpu_offload:false` | NEAR |
 | 07-engram-peer-reads-kill-switch | `VLLM_NEAR_ENGRAM_PEER_READS=0` keeps the DP-collective Engram lookup instead of peer-HBM reads | NEAR |
 | 08-error-sanitizer-linear-time | the error-message path sanitizer runs in time linear in the message length | #60233, tests from #52120 |
 | 09-cached-tokens-from-engine-only | cached-token counts come from the engine; a client-sent count applies only with `VLLM_TRUST_REMOTE_PREFILL_CACHED_TOKENS=1` | #64918 |
-| 10-stop-and-bad-words-bounds | caps `stop_token_ids`, `stop` and `bad_words` | #54721 |
+| 10-stop-and-bad-words-bounds | caps `stop_token_ids`, `stop` and `bad_words`; also changes `deepseek_v32_encoding.py`: `render_message` takes a required `last_user_idx` and a new optional `last_assistant_idx`, `drop_thinking_messages` requires `last_user_idx`, and a tool message is rendered after the last assistant message seen by `encode_messages` instead of by scanning back | #54721 |
 | 11-detok-bounded-holdback | flushes incremental detokenization after 16 tokens that never complete a UTF-8 character | #63668 |
-| 12-engine-add-rollback | rolls back request state when the engine add fails; bounds `top_k` and `stream_interval` | #56212 |
-| 13-mm-uuid-length-cap | caps a multimodal content-part `uuid` at 128 characters | #57221 |
-| 14-media-fetch-public-ips-only | engine-side media fetches resolve to public IPs only, pin the resolved IP and re-check it after a redirect; async resolution runs off the event loop | #57825, extended |
-| 15-media-client-no-cookies | shared media HTTP clients keep no cookies | #56588 |
-| 16-cc-explicit-copies | under `VLLM_CONFIDENTIAL_COMPUTE=1` only: H2D on a staging stream, D2H from a worker thread, pinned `NonUvaBuffer` copies; wraps `torch.Tensor.copy_`, `to` and `cuda` | NEAR port of #59981 |
+| 12-engine-add-rollback | rolls back request state when the engine add fails; requests with `top_k` below -1 or above 2**63-1, or `stream_interval` above 2**63-1, are rejected with a validation error | #56212 |
+| 13-mm-uuid-length-cap | caps a multimodal content-part `uuid` at 128 characters; a longer `uuid` is rejected | #57221 |
+| 14-media-fetch-public-ips-only | engine-side media fetches resolve to public unicast IPs only (loopback, private, link-local, multicast, NAT64 and reserved addresses are refused), pin the resolved IP and re-check it after a redirect; both clients ignore proxy environment variables; the per-IP pool cache holds at most 64 pools and is closed with the session | #57825, extended |
+| 15-media-client-no-cookies | shared media HTTP clients keep no cookies: a `Set-Cookie` response header is not stored or sent back | #56588 |
+| 16-cc-explicit-copies | under `VLLM_CONFIDENTIAL_COMPUTE=1` only: H2D on a staging stream, D2H from a worker thread, pinned `NonUvaBuffer` copies; wraps `torch.Tensor.copy_`, `to` and `cuda`; a failed D2H copy raises at the next event, stream or device synchronize or query | NEAR port of #59981 |
 | 17-cc-retain-ep-fault-flag | keeps the EP fault flag referenced until the copy stream has read it | upstream fbcadab2, ported onto 16 |
 
 Defaults this image sets, which differ from stock v0.33.0: 09 takes cached-token counts from the
-engine; 10 caps stop lists; 14 resolves engine-side media fetches to public IPs only, and on the
-async path honours `HTTP_PROXY`/`HTTPS_PROXY` only when the proxy itself is on a public IP (the
-compose files set no proxy).
+engine; 10 caps stop lists and changes tool-message rendering for DeepSeek chat templates; 11
+flushes detokenization after 16 incomplete tokens; 12 rejects out-of-range `top_k` and
+`stream_interval`; 13 rejects a `uuid` over 128 characters; 14 resolves engine-side media fetches
+to public unicast IPs only and ignores `HTTP_PROXY`/`HTTPS_PROXY`; 15 keeps no cookies.
+
+`VLLM_CONFIDENTIAL_COMPUTE=1` (patch 16) relies on `VLLM_NEAR_DISABLE_UVA=1` (patch 04) to keep
+UVA off outside the runner buffers. `VLLM_CONFIDENTIAL_COMPUTE_KEEP_UVA=1` affects only those
+runner buffers.
 
 OS: openssl/libssl3t64 3.0.13-0ubuntu3.16, libc6/libc-bin/libc6-dev/libc-dev-bin 2.39-0ubuntu8.12
-and linux-libc-dev 6.8.0-149.149, pinned by exact version. The image needs no Python package
-upgrades.
+and linux-libc-dev 6.8.0-149.149, pinned by exact version; the `nearai.os.packages` label lists
+all of them. The image needs no Python package upgrades.
+
+To bump an apt pin, change the version in every place it appears: the `pkgs=` list and the
+`apt-get install` arguments in the `Dockerfile`, and the `nearai.os.packages` and
+`nearai.os.linux_libc_dev` labels. Then refresh `SHA256SUMS` and the `Dockerfile` and `SHA256SUMS`
+pins in the publish workflow.
 
 `apply-patches.py` refuses any vLLM other than 0.33.0, dry-runs and applies the patches in order,
 and checks every touched file against `PATCHED-FILES.sha256`. Publish with
