@@ -1,8 +1,8 @@
 diff --git a/vllm/connections.py b/vllm/connections.py
-index 2913a640e0cbff44cf38e12ab0e9497ac91cb8f2..17cf03dd7971950a759c78dfc08e2d865f6ebc65 100644
+index 2913a640e0cbff44cf38e12ab0e9497ac91cb8f2..a7aaee0e4ecfd834ae032dc877f4b7edbb820372 100644
 --- a/vllm/connections.py
 +++ b/vllm/connections.py
-@@ -3,14 +3,23 @@
+@@ -3,14 +3,24 @@
  
  import asyncio
  import functools
@@ -11,6 +11,7 @@ index 2913a640e0cbff44cf38e12ab0e9497ac91cb8f2..17cf03dd7971950a759c78dfc08e2d86
  import threading
  import time
 -from collections.abc import Callable, Coroutine, Mapping, MutableMapping
++from collections import OrderedDict
 +from collections.abc import Callable, Collection, Coroutine, Mapping, MutableMapping
  from pathlib import Path
  from typing import Any, ParamSpec, TypeVar
@@ -27,7 +28,7 @@ index 2913a640e0cbff44cf38e12ab0e9497ac91cb8f2..17cf03dd7971950a759c78dfc08e2d86
  from urllib3.util import parse_url
  
  import vllm.envs as envs
-@@ -127,6 +136,79 @@ def _check_content_length(
+@@ -127,6 +137,98 @@ def _check_content_length(
          _raise_size_exceeded(max_bytes, parsed_length, media_download_limit)
  
  
@@ -55,16 +56,39 @@ index 2913a640e0cbff44cf38e12ab0e9497ac91cb8f2..17cf03dd7971950a759c78dfc08e2d86
 +    return ips
 +
 +
++# NAT64 well-known prefix: embeds an arbitrary IPv4 address in an IPv6 one.
++_NAT64_NETWORK = ipaddress.ip_network("64:ff9b::/96")
++
++
++def _is_public_ip(ip: str) -> bool:
++    """Whether `ip` is a globally reachable unicast address.
++
++    Multicast and the NAT64 prefix are rejected on top of `is_global`, which
++    is True for both.
++    """
++    try:
++        addr = ipaddress.ip_address(ip)
++    except ValueError:
++        return False
++    if addr.is_multicast:
++        return False
++    if addr.version == 6 and addr in _NAT64_NETWORK:
++        return False
++    return addr.is_global
++
++
 +def _resolve_validated_ip(hostname: str) -> str:
 +    """Resolve `hostname` once and refuse non-public destinations.
 +
-+    Every resolved IP must be globally reachable (this rejects loopback,
-+    RFC1918, link-local, multicast, reserved, and unspecified addresses);
-+    a hostname whose answers are not all public is refused outright, so
-+    one non-public record rejects it. Returns the
-+    first resolved IP, which the caller must dial directly instead of
-+    resolving again. `VLLM_MEDIA_URL_ALLOW_PRIVATE_IPS=1` opts out (tests,
-+    trusted networks) but still pins the resolved IP.
++    Every resolved IP must be a public unicast address (this rejects loopback,
++    RFC1918, link-local, multicast, NAT64, reserved, and unspecified
++    addresses); a hostname whose answers are not all public is refused
++    outright, so one non-public record rejects it. Returns the first resolved
++    IP, which the pinned adapter dials. This is a pre-check: the connection
++    itself is made to the pinned address by _PinnedPublicIPAdapter, which
++    resolves and validates again when it builds the pool.
++    `VLLM_MEDIA_URL_ALLOW_PRIVATE_IPS=1` opts out (tests, trusted networks)
++    but still pins the resolved IP.
 +    """
 +    if not hostname:
 +        raise ValueError("Cannot fetch media URL with a missing hostname")
@@ -72,15 +96,11 @@ index 2913a640e0cbff44cf38e12ab0e9497ac91cb8f2..17cf03dd7971950a759c78dfc08e2d86
 +    if envs.VLLM_MEDIA_URL_ALLOW_PRIVATE_IPS:
 +        return ips[0]
 +    for ip in ips:
-+        try:
-+            public = ipaddress.ip_address(ip).is_global
-+        except ValueError:
-+            public = False
-+        if not public:
++        if not _is_public_ip(ip):
 +            raise ValueError(
 +                f"Refusing to fetch media URL with non-public IP {ip} "
 +                f"(host {hostname!r}). Loopback, private, link-local, "
-+                "multicast, and reserved destinations are blocked by "
++                "multicast, NAT64, and reserved destinations are blocked by "
 +                "default; set VLLM_MEDIA_URL_ALLOW_PRIVATE_IPS=1 to allow "
 +                "them."
 +            )
@@ -107,7 +127,7 @@ index 2913a640e0cbff44cf38e12ab0e9497ac91cb8f2..17cf03dd7971950a759c78dfc08e2d86
  def _append_chunk(
      chunks: list[bytes],
      chunk: bytes,
-@@ -368,6 +450,187 @@ def _async_retry(
+@@ -368,6 +470,200 @@ def _async_retry(
      return wrapper  # type: ignore[return-value]
  
  
@@ -146,6 +166,9 @@ index 2913a640e0cbff44cf38e12ab0e9497ac91cb8f2..17cf03dd7971950a759c78dfc08e2d86
 +# (ssl_context, cert_reqs, ca_certs, ...) are only valid on HTTPS pools and
 +# would break HTTPConnection.__init__.
 +_HTTP_POOL_KWARGS = frozenset({"timeout", "maxsize", "block", "headers", "retries"})
++
++# Upper bound on cached per-(host, port, IP) pools in one adapter.
++_MAX_PINNED_POOLS = 64
 +
 +
 +class _PinnedHTTPConnectionPool(HTTPConnectionPool):
@@ -189,9 +212,17 @@ index 2913a640e0cbff44cf38e12ab0e9497ac91cb8f2..17cf03dd7971950a759c78dfc08e2d86
 +    def __init__(self, *args: Any, **kwargs: Any) -> None:
 +        super().__init__(*args, **kwargs)
 +        self._pinned_lock = threading.Lock()
-+        self._pinned_pools: dict[
++        self._pinned_pools: OrderedDict[
 +            tuple[str, str, int, str], HTTPConnectionPool | HTTPSConnectionPool
-+        ] = {}
++        ] = OrderedDict()
++
++    def close(self) -> None:
++        with self._pinned_lock:
++            pools = list(self._pinned_pools.values())
++            self._pinned_pools.clear()
++        for pool in pools:
++            pool.close()
++        super().close()
 +
 +    def get_connection_with_tls_context(
 +        self,
@@ -219,7 +250,9 @@ index 2913a640e0cbff44cf38e12ab0e9497ac91cb8f2..17cf03dd7971950a759c78dfc08e2d86
 +        key = (scheme, host, port, ip)
 +        with self._pinned_lock:
 +            pool = self._pinned_pools.get(key)
-+            if pool is None:
++            if pool is not None:
++                self._pinned_pools.move_to_end(key)
++            else:
 +                if scheme == "https":
 +                    pool = _PinnedHTTPSConnectionPool(
 +                        host, port, dial_host=ip, **pool_kwargs
@@ -232,6 +265,10 @@ index 2913a640e0cbff44cf38e12ab0e9497ac91cb8f2..17cf03dd7971950a759c78dfc08e2d86
 +                        host, port, dial_host=ip, **safe_kwargs
 +                    )
 +                self._pinned_pools[key] = pool
++                # Bound the cache; the least recently used pool is closed.
++                while len(self._pinned_pools) > _MAX_PINNED_POOLS:
++                    _, evicted = self._pinned_pools.popitem(last=False)
++                    evicted.close()
 +            return pool
 +
 +
@@ -265,16 +302,12 @@ index 2913a640e0cbff44cf38e12ab0e9497ac91cb8f2..17cf03dd7971950a759c78dfc08e2d86
 +                continue
 +            seen.add(ip)
 +            if not envs.VLLM_MEDIA_URL_ALLOW_PRIVATE_IPS:
-+                try:
-+                    public = ipaddress.ip_address(ip).is_global
-+                except ValueError:
-+                    public = False
-+                if not public:
++                if not _is_public_ip(ip):
 +                    raise ValueError(
 +                        f"Refusing to fetch media URL with non-public IP "
 +                        f"{ip} (host {host!r}). Loopback, private, "
-+                        "link-local, multicast, and reserved destinations "
-+                        "are blocked by default; set "
++                        "link-local, multicast, NAT64, and reserved "
++                        "destinations are blocked by default; set "
 +                        "VLLM_MEDIA_URL_ALLOW_PRIVATE_IPS=1 to allow them."
 +                    )
 +            results.append(
@@ -295,7 +328,7 @@ index 2913a640e0cbff44cf38e12ab0e9497ac91cb8f2..17cf03dd7971950a759c78dfc08e2d86
  class HTTPConnection:
      """Helper class to send HTTP requests."""
  
-@@ -378,10 +641,15 @@ class HTTPConnection:
+@@ -378,10 +674,18 @@ class HTTPConnection:
  
          self._sync_client: requests.Session | None = None
          self._async_client: aiohttp.ClientSession | None = None
@@ -305,6 +338,9 @@ index 2913a640e0cbff44cf38e12ab0e9497ac91cb8f2..17cf03dd7971950a759c78dfc08e2d86
          if self._sync_client is None or not self.reuse_client:
 -            self._sync_client = requests.Session()
 +            session = requests.Session()
++            # Proxy settings from the environment are ignored: the destination
++            # validation above applies to the address actually dialed.
++            session.trust_env = False
 +            protective_adapter = _PinnedPublicIPAdapter()
 +            session.mount("http://", protective_adapter)
 +            session.mount("https://", protective_adapter)
@@ -312,7 +348,7 @@ index 2913a640e0cbff44cf38e12ab0e9497ac91cb8f2..17cf03dd7971950a759c78dfc08e2d86
  
          return self._sync_client
  
-@@ -389,7 +657,16 @@ class HTTPConnection:
+@@ -389,7 +693,16 @@ class HTTPConnection:
      # required, so that the client is only accessible inside async event loop
      async def get_async_client(self) -> aiohttp.ClientSession:
          if self._async_client is None or not self.reuse_client:
@@ -325,12 +361,12 @@ index 2913a640e0cbff44cf38e12ab0e9497ac91cb8f2..17cf03dd7971950a759c78dfc08e2d86
 +                # Owned by the session below, so it is released together.
 +                connector = _ValidatingTCPConnector()
 +            self._async_client = aiohttp.ClientSession(
-+                trust_env=True, connector=connector
++                trust_env=False, connector=connector
 +            )
  
          return self._async_client
  
-@@ -455,16 +732,40 @@ class HTTPConnection:
+@@ -455,16 +768,40 @@ class HTTPConnection:
          allow_redirects: bool = True,
          max_bytes: int | None = None,
          request_budget: MediaRequestDownloadBudget | None = None,
@@ -344,8 +380,7 @@ index 2913a640e0cbff44cf38e12ab0e9497ac91cb8f2..17cf03dd7971950a759c78dfc08e2d86
 -        ) as r:
 -            r.raise_for_status()
 +        self._validate_http_url(url)
- 
--            return _read_response_bytes(r, max_bytes, request_budget)
++
 +        current_url = url
 +        for _ in range(_MEDIA_MAX_REDIRECTS + 1):
 +            # Every hop — including the first — repeats the domain check the
@@ -370,7 +405,8 @@ index 2913a640e0cbff44cf38e12ab0e9497ac91cb8f2..17cf03dd7971950a759c78dfc08e2d86
 +                    current_url = urljoin(current_url, r.headers["location"])
 +                    continue
 +                r.raise_for_status()
-+
+ 
+-            return _read_response_bytes(r, max_bytes, request_budget)
 +                return _read_response_bytes(r, max_bytes, request_budget)
 +
 +        raise TooManyRedirects(
@@ -379,7 +415,7 @@ index 2913a640e0cbff44cf38e12ab0e9497ac91cb8f2..17cf03dd7971950a759c78dfc08e2d86
  
      @_async_retry
      async def async_get_bytes(
-@@ -475,15 +776,42 @@ class HTTPConnection:
+@@ -475,15 +812,42 @@ class HTTPConnection:
          allow_redirects: bool = True,
          max_bytes: int | None = None,
          request_budget: MediaRequestDownloadBudget | None = None,
@@ -392,8 +428,7 @@ index 2913a640e0cbff44cf38e12ab0e9497ac91cb8f2..17cf03dd7971950a759c78dfc08e2d86
 -        ) as r:
 -            r.raise_for_status()
 +        self._validate_http_url(url)
- 
--            return await _async_read_response_bytes(r, max_bytes, request_budget)
++
 +        current_url = url
 +        for _ in range(_MEDIA_MAX_REDIRECTS + 1):
 +            _check_allowed_domains(current_url, allowed_domains)
@@ -415,7 +450,8 @@ index 2913a640e0cbff44cf38e12ab0e9497ac91cb8f2..17cf03dd7971950a759c78dfc08e2d86
 +                    current_url = urljoin(current_url, location)
 +                    continue
 +                r.raise_for_status()
-+
+ 
+-            return await _async_read_response_bytes(r, max_bytes, request_budget)
 +                return await _async_read_response_bytes(r, max_bytes, request_budget)
 +
 +        raise aiohttp.TooManyRedirects(

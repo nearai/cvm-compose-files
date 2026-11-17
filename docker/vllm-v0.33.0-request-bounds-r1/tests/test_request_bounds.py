@@ -292,3 +292,15 @@ def test_13_whisper_unlisted_language_falls_back(token, expected):
 
     tok = SimpleNamespace(decode=lambda ids, skip_special_tokens=False: token)
     assert WhisperForConditionalGeneration.parse_language_detection_output([1], tok) == expected
+
+
+# 14 media-retry-log-fields
+def test_14_retry_warning_carries_attempt_count_and_error_type(monkeypatch):
+    import vllm.connections as connections
+
+    lines = []
+    monkeypatch.setattr(connections.logger, "warning", lambda msg, *args: lines.append(msg % args))
+    connections._log_retry(
+        (None, "http://example.com/x"), {}, 1, 3, 2.0, ConnectionError("refused"), 2.0, 1.0
+    )
+    assert lines == ["HTTP fetch failed (attempt 2/3): ConnectionError; retrying"]

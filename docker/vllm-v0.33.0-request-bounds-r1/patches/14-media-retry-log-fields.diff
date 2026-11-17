@@ -1,0 +1,32 @@
+diff --git a/vllm/connections.py b/vllm/connections.py
+index fdd01c814e44e1a67d9d02c97972f8794629ad0a..56e6e0896af53e78cca402528a0e03f845bed2dc 100644
+--- a/vllm/connections.py
++++ b/vllm/connections.py
+@@ -357,25 +357,11 @@ def _log_retry(
+     backoff: float,
+     base_timeout: float | None,
+ ) -> None:
+-    # args[0] is `self` (bound method), args[1] is the URL
+-    url = args[1] if len(args) > 1 else kwargs.get("url")
+-    timeout_info = (
+-        f"timeout={attempt_timeout:.3f}s" if base_timeout is not None else "no timeout"
+-    )
+-    next_timeout = (
+-        f" with timeout={base_timeout * (_RETRY_BACKOFF_FACTOR ** (attempt + 1)):.3f}s"
+-        if base_timeout is not None
+-        else ""
+-    )
+     logger.warning(
+-        "HTTP fetch failed for %s (attempt %d/%d, %s): %s -- retrying in %.3fs%s",
+-        url,
++        "HTTP fetch failed (attempt %d/%d): %s; retrying",
+         attempt + 1,
+         max_retries,
+-        timeout_info,
+-        exc,
+-        backoff,
+-        next_timeout,
++        type(exc).__name__,
+     )
+ 
+ 
