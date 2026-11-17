@@ -31,13 +31,12 @@ diff --git a/python/sglang/srt/utils/common.py b/python/sglang/srt/utils/common.
 index 81f8c5f..47f2f4d 100644
 --- a/python/sglang/srt/utils/common.py
 +++ b/python/sglang/srt/utils/common.py
-@@ -1938,6 +1938,24 @@ def get_mm_http_session() -> requests.Session:
+@@ -1938,6 +1938,23 @@ def get_mm_http_session() -> requests.Session:
      return session
  
  
-+# Media inputs come from request bodies, so the loaders below accept http(s)
-+# and data: inputs; file:// URLs and server paths need the operator opt-in
-+# (offline Engine use, tests).
++# Media inputs come from request bodies: the loaders below accept http(s) and data:
++# inputs, and file:// URLs and server paths only with the operator opt-in.
 +LOCAL_MEDIA_ENV = "SGLANG_ALLOW_LOCAL_MEDIA_PATHS"
 +
 +
@@ -56,7 +55,7 @@ index 81f8c5f..47f2f4d 100644
  # Raised by the loaders below when client-supplied media cannot be fetched or
  # decoded. ValueError is in the set because invalid base64 raises binascii.Error.
  CLIENT_MEDIA_EXCEPTIONS = (
-@@ -1964,8 +1982,10 @@ def load_audio(
+@@ -1964,8 +1981,10 @@ def load_audio(
          timeout = int(os.getenv("REQUEST_TIMEOUT", "5"))
          source = download_remote_media(audio_file, timeout=timeout)
      elif isinstance(audio_file, str) and audio_file.startswith("file://"):
@@ -67,7 +66,7 @@ index 81f8c5f..47f2f4d 100644
          source = audio_file
      else:
          raise ValueError(f"Invalid audio format: {redact_media_ref(audio_file)}")
-@@ -2233,6 +2253,7 @@ def get_image_bytes(image_file: Union[str, bytes]) -> bytes:
+@@ -2233,6 +2252,7 @@ def get_image_bytes(image_file: Union[str, bytes]) -> bytes:
          timeout = int(os.getenv("REQUEST_TIMEOUT", "3"))
          return download_remote_media(image_file, timeout=timeout)
      if image_file.startswith(("file://", "/")):
@@ -75,7 +74,7 @@ index 81f8c5f..47f2f4d 100644
          with open(image_file, "rb") as f:
              return f.read()
      if isinstance(image_file, str) and image_file.startswith("data:"):
-@@ -2262,8 +2283,11 @@ def _normalize_video_input(
+@@ -2262,8 +2282,11 @@ def _normalize_video_input(
              _, encoded = video_file.split(",", 1)
              return pybase64.b64decode(encoded, validate=True)
          elif video_file.startswith("file://"):

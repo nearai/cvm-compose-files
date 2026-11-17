@@ -1,12 +1,12 @@
 diff --git a/python/sglang/srt/constrained/base_grammar_backend.py b/python/sglang/srt/constrained/base_grammar_backend.py
-index 0574e6b587..174ed04faf 100644
+index 0574e6b587..e4570b3c5a 100644
 --- a/python/sglang/srt/constrained/base_grammar_backend.py
 +++ b/python/sglang/srt/constrained/base_grammar_backend.py
 @@ -30,6 +30,7 @@ from sglang.srt.runtime_context import (
      get_serving,
  )
  from sglang.srt.server_args import ServerArgs
-+from sglang.srt.utils.log_redaction import fingerprint
++from sglang.srt.utils.log_redaction import redact_value
  
  logger = logging.getLogger(__name__)
  
@@ -15,19 +15,19 @@ index 0574e6b587..174ed04faf 100644
  
      def _not_supported(self, key_type: str, key_string: str) -> BaseGrammarObject:
 -        logger.warning(f"Skip unsupported {key_type=}, {key_string=}")
-+        logger.warning(f"Skip unsupported {key_type=}, key_string={fingerprint(key_string)}")
++        logger.warning(f"Skip unsupported {key_type=}, key_string={redact_value(key_string)}")
          return InvalidGrammarObject()
  
      @property
 diff --git a/python/sglang/srt/constrained/llguidance_backend.py b/python/sglang/srt/constrained/llguidance_backend.py
-index 55203ff48e..3b3d9557e9 100644
+index 55203ff48e..f0d0cc49c3 100644
 --- a/python/sglang/srt/constrained/llguidance_backend.py
 +++ b/python/sglang/srt/constrained/llguidance_backend.py
 @@ -39,6 +39,7 @@ from sglang.srt.constrained.base_grammar_backend import (
  )
  from sglang.srt.constrained.utils import is_legacy_structural_tag
  from sglang.srt.utils import get_int_env_var
-+from sglang.srt.utils.log_redaction import fingerprint
++from sglang.srt.utils.log_redaction import redact_value
  
  logger = logging.getLogger(__name__)
  _LLGUIDANCE_LOG_LEVEL = get_int_env_var("LLGUIDANCE_LOG_LEVEL", 1)
@@ -36,7 +36,7 @@ index 55203ff48e..3b3d9557e9 100644
              )
          except Exception as e:
 -            logger.error(f"Hit invalid grammar: {serialized_grammar=}, {e=}")
-+            logger.error(f"Hit invalid grammar: serialized_grammar={fingerprint(serialized_grammar)}, e={type(e).__name__}{fingerprint(e)}")
++            logger.error(f"Hit invalid grammar: serialized_grammar={redact_value(serialized_grammar)}, e={type(e).__name__}")
              return InvalidGrammarObject(str(e))
  
      def dispatch_json(self, key_string: str) -> BaseGrammarObject:
@@ -45,7 +45,7 @@ index 55203ff48e..3b3d9557e9 100644
              )
          except Exception as e:
 -            logger.error(f"Hit invalid json_schema: {key_string=}, {e=}")
-+            logger.error(f"Hit invalid json_schema: key_string={fingerprint(key_string)}, e={type(e).__name__}{fingerprint(e)}")
++            logger.error(f"Hit invalid json_schema: key_string={redact_value(key_string)}, e={type(e).__name__}")
              return InvalidGrammarObject(str(e))
          return self._from_serialized(serialized_grammar)
  
@@ -54,7 +54,7 @@ index 55203ff48e..3b3d9557e9 100644
              return self._from_serialized(serialized_grammar)
          except ValueError as e:
 -            logger.error(f"Hit invalid ebnf: {key_string=}, {e=}")
-+            logger.error(f"Hit invalid ebnf: key_string={fingerprint(key_string)}, e={type(e).__name__}{fingerprint(e)}")
++            logger.error(f"Hit invalid ebnf: key_string={redact_value(key_string)}, e={type(e).__name__}")
              return InvalidGrammarObject(str(e))
  
      def dispatch_structural_tag(self, key_string: str) -> BaseGrammarObject:
@@ -63,17 +63,17 @@ index 55203ff48e..3b3d9557e9 100644
              return self._from_serialized(g)
          except Exception as e:
 -            logger.error(f"Hit invalid structural_tag: {key_string=}, {e=}")
-+            logger.error(f"Hit invalid structural_tag: key_string={fingerprint(key_string)}, e={type(e).__name__}{fingerprint(e)}")
++            logger.error(f"Hit invalid structural_tag: key_string={redact_value(key_string)}, e={type(e).__name__}")
              return InvalidGrammarObject(str(e))
 diff --git a/python/sglang/srt/constrained/outlines_backend.py b/python/sglang/srt/constrained/outlines_backend.py
-index 578b3ada46..c255706b6a 100644
+index 578b3ada46..b8d909e825 100644
 --- a/python/sglang/srt/constrained/outlines_backend.py
 +++ b/python/sglang/srt/constrained/outlines_backend.py
 @@ -32,6 +32,7 @@ from sglang.srt.constrained.json_schema_validation import (
      validate_outlines_json_schema,
  )
  from sglang.srt.constrained.outlines_jump_forward import OutlinesJumpForwardMap
-+from sglang.srt.utils.log_redaction import fingerprint
++from sglang.srt.utils.log_redaction import redact_value
  
  try:
      from outlines.fsm.json_schema import build_regex_from_schema
@@ -82,7 +82,7 @@ index 578b3ada46..c255706b6a 100644
                  guide = RegexGuide(regex, self.outlines_tokenizer)
          except interegular.patterns.InvalidSyntax as e:
 -            logger.error(f"Hit invalid regex schema: {regex=}, {e=}")
-+            logger.error(f"Hit invalid regex schema: regex={fingerprint(regex)}, e={type(e).__name__}{fingerprint(e)}")
++            logger.error(f"Hit invalid regex schema: regex={redact_value(regex)}, e={type(e).__name__}")
              return InvalidGrammarObject(str(e))
  
          jump_forward_map = None
@@ -91,19 +91,19 @@ index 578b3ada46..c255706b6a 100644
              ValueError,
          ) as e:
 -            logger.error(f"Hit invalid json_schema: {key_string=}, {e=}")
-+            logger.error(f"Hit invalid json_schema: key_string={fingerprint(key_string)}, e={type(e).__name__}{fingerprint(e)}")
++            logger.error(f"Hit invalid json_schema: key_string={redact_value(key_string)}, e={type(e).__name__}")
              return InvalidGrammarObject(str(e))
          return self._compile_regex(regex)
  
 diff --git a/python/sglang/srt/constrained/outlines_jump_forward.py b/python/sglang/srt/constrained/outlines_jump_forward.py
-index 8e19742c66..632f117802 100644
+index 8e19742c66..7d4f037533 100644
 --- a/python/sglang/srt/constrained/outlines_jump_forward.py
 +++ b/python/sglang/srt/constrained/outlines_jump_forward.py
 @@ -26,6 +26,7 @@ from interegular import InvalidSyntax
  from outlines.caching import cache
  
  from sglang.srt.utils import get_bool_env_var
-+from sglang.srt.utils.log_redaction import fingerprint
++from sglang.srt.utils.log_redaction import redact_value
  
  try:
      # outlines >= 0.1.0
@@ -112,19 +112,19 @@ index 8e19742c66..632f117802 100644
          regex_pattern = interegular.parse_pattern(regex_string)
      except InvalidSyntax as e:
 -        logger.warning(f"skip invalid regex: {regex_string}, {e=}")
-+        logger.warning(f"skip invalid regex: {fingerprint(regex_string)}, e={type(e).__name__}{fingerprint(e)}")
++        logger.warning(f"skip invalid regex: {redact_value(regex_string)}, e={type(e).__name__}")
          return
  
      byte_fsm = make_byte_level_fsm(regex_pattern.to_fsm().reduce(), keep_utf8=True)
 diff --git a/python/sglang/srt/constrained/xgrammar_backend.py b/python/sglang/srt/constrained/xgrammar_backend.py
-index 1645eca471..9da800ed08 100644
+index 1645eca471..1666a7f1d6 100644
 --- a/python/sglang/srt/constrained/xgrammar_backend.py
 +++ b/python/sglang/srt/constrained/xgrammar_backend.py
 @@ -58,6 +58,7 @@ from sglang.kernels.ops.grammar.token_filter_ops import set_token_filter_triton
  from sglang.srt.constrained.torch_ops.token_filter_torch_ops import (
      set_token_filter_torch,
  )
-+from sglang.srt.utils.log_redaction import fingerprint
++from sglang.srt.utils.log_redaction import redact_value
  
  logger = logging.getLogger(__name__)
  MAX_ROLLBACK_TOKENS = 200
@@ -133,7 +133,7 @@ index 1645eca471..9da800ed08 100644
  
      def __repr__(self):
 -        return f"XGrammarGrammar({self.key_string=}, {self.accepted_tokens=}, {self.current_token=})"
-+        return f"XGrammarGrammar(key_string={fingerprint(self.key_string)}, {self.accepted_tokens=}, {self.current_token=})"
++        return f"XGrammarGrammar(key_string={redact_value(self.key_string)}, {self.accepted_tokens=}, {self.current_token=})"
  
  
  class TokenizerNotSupportedError(Exception):
@@ -142,7 +142,7 @@ index 1645eca471..9da800ed08 100644
              UnicodeDecodeError,
          ) as e:
 -            logger.error(f"Hit invalid json_schema: {key_string=}, {e=}")
-+            logger.error(f"Hit invalid json_schema: key_string={fingerprint(key_string)}, e={type(e).__name__}{fingerprint(e)}")
++            logger.error(f"Hit invalid json_schema: key_string={redact_value(key_string)}, e={type(e).__name__}")
              return InvalidGrammarObject(str(e))
          return self._from_context(ctx, key_string, GrammarStats(dispatch_type="json"))
  
@@ -151,7 +151,7 @@ index 1645eca471..9da800ed08 100644
              ctx = self.grammar_compiler.compile_grammar(key_string)
          except RuntimeError as e:
 -            logger.error(f"Hit invalid ebnf: {key_string=}, {e=}")
-+            logger.error(f"Hit invalid ebnf: key_string={fingerprint(key_string)}, e={type(e).__name__}{fingerprint(e)}")
++            logger.error(f"Hit invalid ebnf: key_string={redact_value(key_string)}, e={type(e).__name__}")
              return InvalidGrammarObject(str(e))
          return self._from_context(ctx, key_string, GrammarStats(dispatch_type="ebnf"))
  
@@ -160,7 +160,7 @@ index 1645eca471..9da800ed08 100644
              ctx = self.grammar_compiler.compile_regex(key_string)
          except RuntimeError as e:
 -            logger.error(f"Hit invalid regex: {key_string=}, {e=}")
-+            logger.error(f"Hit invalid regex: key_string={fingerprint(key_string)}, e={type(e).__name__}{fingerprint(e)}")
++            logger.error(f"Hit invalid regex: key_string={redact_value(key_string)}, e={type(e).__name__}")
              return InvalidGrammarObject(str(e))
          return self._from_context(ctx, key_string, GrammarStats(dispatch_type="regex"))
  
@@ -169,12 +169,12 @@ index 1645eca471..9da800ed08 100644
                  ctx = self.grammar_compiler.compile_structural_tag(key_string)
          except (RuntimeError, json.decoder.JSONDecodeError) as e:
 -            logger.error(f"Hit invalid structural_tag: {key_string=}, {e=}")
-+            logger.error(f"Hit invalid structural_tag: key_string={fingerprint(key_string)}, e={type(e).__name__}{fingerprint(e)}")
++            logger.error(f"Hit invalid structural_tag: key_string={redact_value(key_string)}, e={type(e).__name__}")
              return InvalidGrammarObject(str(e))
          return self._from_context(
              ctx, key_string, GrammarStats(dispatch_type="structural_tag")
 diff --git a/python/sglang/srt/disaggregation/encoder/preprocessor.py b/python/sglang/srt/disaggregation/encoder/preprocessor.py
-index 3af6791a3f..259ad5604e 100644
+index 3af6791a3f..6a22b53ebd 100644
 --- a/python/sglang/srt/disaggregation/encoder/preprocessor.py
 +++ b/python/sglang/srt/disaggregation/encoder/preprocessor.py
 @@ -55,6 +55,7 @@ from sglang.srt.utils import (
@@ -203,7 +203,7 @@ index 3af6791a3f..259ad5604e 100644
      def _submit_data_loading_tasks(self, items, modalities):
          futures = []
 diff --git a/python/sglang/srt/entrypoints/openai/serving_base.py b/python/sglang/srt/entrypoints/openai/serving_base.py
-index e601d6a2f2..f5795fdfe1 100644
+index d00b475ad5..f31f6f6e7d 100644
 --- a/python/sglang/srt/entrypoints/openai/serving_base.py
 +++ b/python/sglang/srt/entrypoints/openai/serving_base.py
 @@ -17,6 +17,11 @@ from sglang.srt.managers.io_struct import EmbeddingReqInput, GenerateReqInput
@@ -218,12 +218,12 @@ index e601d6a2f2..f5795fdfe1 100644
  
  if TYPE_CHECKING:
      from sglang.srt.managers.tokenizer_manager import TokenizerManager
-@@ -178,16 +183,18 @@ class OpenAIServingBase(ABC):
+@@ -127,16 +132,17 @@ class OpenAIServingBase(ABC):
                  status_code=400,
              )
          except DS32EncodingError as e:
 -            logger.info(f"DS32EncodingError: {e}")
-+            logger.info(f"DS32EncodingError: {redact_text(e)}")
++            logger.info("DS32EncodingError")
              return self.create_error_response(
                  message=str(e),
                  err_type="BadRequest",
@@ -231,8 +231,7 @@ index e601d6a2f2..f5795fdfe1 100644
              )
          except Exception as e:
 -            logger.exception(f"Error in request: {e}")
-+            # Not logger.exception: the traceback would print the raw message
-+            # (media URLs, payload fragments); log it through redact_text instead.
++            # Not logger.exception: redacted_traceback logs frames and exception types only.
 +            logger.error(f"Error in request: {redacted_traceback(e)}")
              return self.create_error_response(
 -                message=f"Internal server error: {str(e)}",
@@ -240,7 +239,7 @@ index e601d6a2f2..f5795fdfe1 100644
                  err_type="InternalServerError",
                  status_code=500,
              )
-@@ -303,7 +310,7 @@ class OpenAIServingBase(ABC):
+@@ -252,7 +258,7 @@ class OpenAIServingBase(ABC):
                  else None
              )
          except json.JSONDecodeError as e:
@@ -289,14 +288,14 @@ index d928c8423c..f30311af4f 100644
  
          return StreamingParseResult(normal_text=normal_text, calls=calls)
 diff --git a/python/sglang/srt/function_call/glm4_moe_detector.py b/python/sglang/srt/function_call/glm4_moe_detector.py
-index ee2efd4aae..6bd47c9352 100644
+index ee2efd4aae..13f2f0bd1d 100644
 --- a/python/sglang/srt/function_call/glm4_moe_detector.py
 +++ b/python/sglang/srt/function_call/glm4_moe_detector.py
 @@ -20,6 +20,7 @@ from sglang.srt.function_call.utils import (
      infer_type_from_json_schema,
      safe_literal_eval,
  )
-+from sglang.srt.utils.log_redaction import fingerprint, opaque_traceback
++from sglang.srt.utils.log_redaction import redact_value, opaque_traceback
  
  logger = logging.getLogger(__name__)
  
@@ -314,7 +313,7 @@ index ee2efd4aae..6bd47c9352 100644
                  # Fallback to string if not a valid number
                  logger.warning(
 -                    f"Failed to parse '{value}' as number, treating as string"
-+                    f"Failed to parse {fingerprint(value)} as number, treating as string"
++                    f"Failed to parse {redact_value(value)} as number, treating as string"
                  )
                  return json.dumps(str(value), ensure_ascii=False)
          else:
@@ -337,7 +336,7 @@ index ee2efd4aae..6bd47c9352 100644
  
      def _parse_argument_pairs(
 diff --git a/python/sglang/srt/multimodal/processors/base_processor.py b/python/sglang/srt/multimodal/processors/base_processor.py
-index 8fb42c0eb2..a41d925fcf 100644
+index 8fb42c0eb2..1a8086dced 100644
 --- a/python/sglang/srt/multimodal/processors/base_processor.py
 +++ b/python/sglang/srt/multimodal/processors/base_processor.py
 @@ -51,6 +51,11 @@ from sglang.srt.runtime_context import (
@@ -352,14 +351,12 @@ index 8fb42c0eb2..a41d925fcf 100644
  from sglang.srt.utils import (
      CLIENT_MEDIA_EXCEPTIONS,
      configure_media_url_security,
-@@ -1046,16 +1051,19 @@ class BaseMultimodalProcessor(ABC):
+@@ -1046,16 +1051,17 @@ class BaseMultimodalProcessor(ABC):
              elif modality == Modality.AUDIO:
                  return load_audio(data, audio_sample_rate)
  
-+        # The item and the loader's message are request content (URLs with user ids and
-+        # file names, base64 payloads): describe them. The cause chain is kept (callers
-+        # and tests inspect __cause__); the sites that log a traceback of it go
-+        # through redacted_traceback.
++        # The item and the loader's message are request content, so the error describes them.
++        # The cause chain stays; sites that log its traceback use redacted_traceback.
          except CLIENT_MEDIA_EXCEPTIONS as e:
 -            data_str = str(data)
 -            if len(data_str) > 100:
@@ -380,12 +377,12 @@ index 8fb42c0eb2..a41d925fcf 100644
  
      @staticmethod
      def _get_preprocessed_input_format(data):
-@@ -1416,20 +1424,22 @@ class BaseMultimodalProcessor(ABC):
+@@ -1416,20 +1422,22 @@ class BaseMultimodalProcessor(ABC):
                      "[load_mm_data(simple)] invalid %s data at index=%d: %s",
                      modality.name,
                      idx,
 -                    e,
-+                    redact_text(e),
++                    type(e).__name__,
                  )
                  raise ValueError(
                      f"An exception occurred while loading {modality.name} data "
@@ -395,7 +392,7 @@ index 8fb42c0eb2..a41d925fcf 100644
              except Exception as e:
 -                logger.exception(
 -                    "[load_mm_data(simple)] error loading %s data at index=%d",
-+                # Not logger.exception: the traceback prints the raw message.
++                # Not logger.exception: redacted_traceback logs frames and exception types only.
 +                logger.error(
 +                    "[load_mm_data(simple)] error loading %s data at index=%d\n%s",
                      modality.name,
@@ -408,7 +405,7 @@ index 8fb42c0eb2..a41d925fcf 100644
                  )
  
              if modality == Modality.IMAGE:
-@@ -1572,11 +1582,11 @@ class BaseMultimodalProcessor(ABC):
+@@ -1572,11 +1580,11 @@ class BaseMultimodalProcessor(ABC):
                  ) from None
              except ValueError as e:
                  raise ValueError(
@@ -449,7 +446,7 @@ index 7aaa8cf8f2..7e8bd49769 100644
  
  
 diff --git a/python/sglang/srt/utils/common.py b/python/sglang/srt/utils/common.py
-index 4fd0d2a39c..58abd866a2 100644
+index 4fd0d2a39c..da83f5957e 100644
 --- a/python/sglang/srt/utils/common.py
 +++ b/python/sglang/srt/utils/common.py
 @@ -110,6 +110,7 @@ from sglang.srt.runtime_context import (
@@ -483,7 +480,7 @@ index 4fd0d2a39c..58abd866a2 100644
 +    url: https://...`` or ``... Max retries exceeded with url: /path``. The
 +    status wording and the literal `` for url: `` stay, so inference-proxy's
 +    client-fetch-4xx mapping (``NNN Client Error: ... for url: ...``) still
-+    matches; only the URL becomes ``<url host=...>``.
++    matches; only the URL becomes ``<url len=N>``.
 +    """
 +    message = redact_text(" ".join(str(a) for a in e.args) if e.args else str(e))
 +    try:
@@ -507,7 +504,7 @@ index 4fd0d2a39c..58abd866a2 100644
      request deadline and the configured byte limit without first buffering an
      attacker-controlled body in memory.
 +
-+    Error texts carry the URL as ``<url host=...>`` only (request content).
++    Error texts carry the URL as ``<url len=N>`` only.
      """
 +    try:
 +        return _download_remote_media(url, timeout)
@@ -585,30 +582,29 @@ index 4fd0d2a39c..58abd866a2 100644
  def _normalize_video_input(
 diff --git a/python/sglang/srt/utils/log_redaction.py b/python/sglang/srt/utils/log_redaction.py
 new file mode 100644
-index 0000000000..baa0e2ad6d
+index 0000000000..1037763bbe
 --- /dev/null
 +++ b/python/sglang/srt/utils/log_redaction.py
-@@ -0,0 +1,178 @@
+@@ -0,0 +1,172 @@
 +"""Keep request content out of log lines and error texts.
 +
-+Media URLs a client sends (pre-signed links, user ids and file names in the path or
-+query), data: URIs, JSON schemas and tool-call argument values never reach the
-+engine log verbatim. The helpers here turn them into a shape that still
-+helps debugging but carries no content:
++Media URLs and data: URIs a client sends, JSON schemas, tool-call values and exception
++messages never reach the engine log. The helpers here describe a value by its kind and
++length only:
 +
-+  * http(s)/ws(s)/ftp/file URL  -> ``<url host=example.com>``   (scheme+host kept, no
-+    userinfo, port, path, query or fragment)
-+  * data: URI                   -> ``<base64 len=N>``          (N = characters)
++  * http(s)/ws(s)/ftp/file URL  -> ``<url len=N>``
++  * data: URI                   -> ``<data-url len=N>``
 +  * raw bytes                   -> ``<bytes len=N>``
-+  * any other value             -> ``<len=N sha256=0123abcd>``  (short digest, so two log
-+    lines about the same value can still be matched)
++  * any other value             -> ``<len=N>``
 +
-+`redact_text` rewrites free text (exception messages, tracebacks): every URL and data: URI
-+in it, urllib3's ``... with url: /path`` form, and long base64 runs.
++`redact_text` rewrites free text for an error response: every URL and data: URI in it,
++urllib3's ``... with url: /path`` form and long base64 runs.
++`redacted_exception`, `redacted_traceback` and `opaque_traceback` give a log line the
++exception type names and stack frames only, never an exception message.
 +
 +Contract kept for inference-proxy (src/proxy.rs `message_is_client_fetch_4xx`): requests'
 +``NNN Client Error: <reason> for url: <url>`` keeps its status wording and the literal
-+`` for url: ``; only the URL itself becomes ``<url host=...>``. The proxy matches
++`` for url: ``; only the URL itself becomes ``<url len=N>``. The proxy matches
 +``for url:`` + ``4xx client error:`` and maps such a backend 500 to 400.
 +
 +Stdlib only (imported by utils/common.py and the tool-call parsers).
@@ -616,14 +612,12 @@ index 0000000000..baa0e2ad6d
 +
 +from __future__ import annotations
 +
-+import hashlib
 +import re
 +import traceback
 +from typing import Any
-+from urllib.parse import urlsplit
 +
 +__all__ = [
-+    "fingerprint",
++    "redact_value",
 +    "redact_url",
 +    "redact_media_ref",
 +    "redact_text",
@@ -631,8 +625,6 @@ index 0000000000..baa0e2ad6d
 +    "redacted_traceback",
 +    "opaque_traceback",
 +]
-+
-+_DIGEST_CHARS = 8
 +
 +# A URL with a scheme we fetch or a client could send. Stops at whitespace, quotes and the
 +# closing brackets that usually wrap a URL in messages ("url='...'", "(...)", "<...>").
@@ -653,34 +645,26 @@ index 0000000000..baa0e2ad6d
 +    return upper >= 8 and lower >= 8 and digits >= 3
 +
 +
-+def fingerprint(value: Any) -> str:
-+    """``<len=N sha256=xxxxxxxx>`` for a string/bytes (or the ``str()`` of anything else)."""
-+    if isinstance(value, (bytes, bytearray, memoryview)):
-+        data = bytes(value)
-+    else:
-+        if not isinstance(value, str):
-+            try:
-+                value = str(value)
-+            except Exception:
-+                return f"<{type(value).__name__}>"
-+        data = value.encode("utf-8", "surrogatepass")
-+    digest = hashlib.sha256(data).hexdigest()[:_DIGEST_CHARS]
-+    return f"<len={len(value) if isinstance(value, str) else len(data)} sha256={digest}>"
++def redact_value(value: Any) -> str:
++    """``<len=N>`` for a string or bytes, ``<TypeName>`` for anything else."""
++    if isinstance(value, (bytes, bytearray)):
++        return f"<len={len(value)}>"
++    if isinstance(value, memoryview):
++        return f"<len={value.nbytes}>"
++    if isinstance(value, str):
++        return f"<len={len(value)}>"
++    return f"<{type(value).__name__}>"
 +
 +
-+def redact_url(url: str) -> str:
-+    """``<url host=example.com>`` (``<url host=?>`` when the URL has no parseable host)."""
-+    try:
-+        host = urlsplit(url).hostname
-+    except Exception:
-+        host = None
-+    if not host:
-+        return "<url host=?>"
-+    return f"<url host={host}>"
++def redact_url(url: Any) -> str:
++    """``<url len=N>``: no scheme, host, path or query."""
++    if not isinstance(url, str):
++        return "<url>"
++    return f"<url len={len(url)}>"
 +
 +
 +def _redact_data_uri(uri: str) -> str:
-+    return f"<base64 len={len(uri)}>"
++    return f"<data-url len={len(uri)}>"
 +
 +
 +def redact_media_ref(data: Any) -> str:
@@ -701,7 +685,7 @@ index 0000000000..baa0e2ad6d
 +            and _looks_base64(stripped)
 +        ):
 +            return f"<base64 len={len(stripped)}>"
-+        return fingerprint(stripped)
++        return redact_value(stripped)
 +    if isinstance(data, dict):
 +        for key in ("url", "image_url", "video_url", "audio_url", "data"):
 +            if key in data:
@@ -741,29 +725,36 @@ index 0000000000..baa0e2ad6d
 +
 +
 +def redacted_exception(e: BaseException) -> str:
-+    """``TypeName: <redacted message>``."""
-+    return f"{type(e).__name__}: {redact_text(e)}"
++    """The type name of ``e``; its message is left out."""
++    return type(e).__name__
 +
 +
-+def redacted_traceback(e: BaseException) -> str:
-+    """The full traceback of ``e`` (with its cause/context chain) passed through
-+    `redact_text`. Use instead of ``logger.exception`` / ``exc_info=True``, which print the
-+    raw exception messages."""
-+    try:
-+        return redact_text("".join(traceback.format_exception(type(e), e, e.__traceback__)))
-+    except Exception:
-+        return redacted_exception(e)
-+
-+
-+def opaque_traceback(e: BaseException) -> str:
-+    """The stack of ``e`` with its message replaced by `fingerprint` (for exceptions whose
-+    message may quote model output or tool-call argument values). Only frames and the type
-+    name are printed; the cause/context chain is left out."""
++def _frames_and_type(e: BaseException) -> str:
 +    try:
 +        frames = "".join(traceback.format_tb(e.__traceback__))
 +    except Exception:
 +        frames = ""
-+    return (
-+        f"Traceback (most recent call last):\n{frames}"
-+        f"{type(e).__name__}: {fingerprint(e)}"
++    return f"Traceback (most recent call last):\n{frames}{type(e).__name__}"
++
++
++def redacted_traceback(e: BaseException) -> str:
++    """The stack frames and type names of ``e`` and its cause/context chain, without any
++    exception message. Use instead of ``logger.exception`` / ``exc_info=True``."""
++    chain: list[BaseException] = []
++    current: BaseException | None = e
++    while current is not None and all(current is not seen for seen in chain):
++        chain.append(current)
++        if current.__cause__ is not None:
++            current = current.__cause__
++        elif current.__suppress_context__:
++            current = None
++        else:
++            current = current.__context__
++    return "\n\nThe above exception led to the following exception:\n\n".join(
++        _frames_and_type(exc) for exc in reversed(chain)
 +    )
++
++
++def opaque_traceback(e: BaseException) -> str:
++    """The stack frames and type name of ``e`` alone, without its message or cause chain."""
++    return _frames_and_type(e)

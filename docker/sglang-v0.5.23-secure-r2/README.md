@@ -12,8 +12,8 @@ pull requests and name where a patch comes from.
 |---|---|---|
 | 01-rid-abort-exact-match | an abort matches the exact rid; `<rid>_<n>` children are reached only for an rid the worker does not own | NEAR |
 | 02-credential-redaction | server info, scheduler state, dumps and `ServerArgs` output show credentials redacted | #48518 |
-| 03-request-content-log-redaction | logs and error texts show media URLs, base64, schemas and tool values as scheme, length and digest only | NEAR |
-| 04-log-redaction-more-sites | applies 03 to the grammar, tool-call parser, chat serving and diffusion download log lines | NEAR |
+| 03-request-content-log-redaction | logs and error texts show media URLs, data: URLs, base64, schemas and tool values by kind and length only; logged exceptions show their type and stack frames, no message | NEAR |
+| 04-log-redaction-more-sites | applies 03 to the grammar, tool-call parser, chat serving and diffusion download log lines; host names in fetch errors show as `<host>` | NEAR |
 | 05-sampling-param-bounds | 400 on out-of-range `n`, `logit_bias`, `temperature` and `top_logprobs`; out-of-vocab `stop_token_ids` are dropped | #44047 |
 | 06-top-logprobs-vocab-bound | 400 on `top_logprobs` / `logprobs` above the vocab size | #49414 |
 | 07-logprob-start-len-bound | 400 on `logprob_start_len < -1` on `/generate` | #49758 |
@@ -24,7 +24,7 @@ pull requests and name where a patch comes from.
 | 12-send-weights-group-validation | the weight-send calls return an error for an unknown or empty group name or a wrong port count | #42093, extended |
 | 13-caller-mm-hashes-opt-in | the server computes the multimodal cache identity; caller `mm_hashes` and the `hash` / `pad_value` of preprocessed items are used only with `SGLANG_TRUST_CALLER_MM_HASHES=1` | NEAR |
 | 14-transcription-upload-cap | `/v1/audio/transcriptions` reads uploads in chunks and answers 413 above `--audio-transcription-max-file-size-mb` (default 25, 0 turns the cap off) | #43915 |
-| 15-diffusion-media-public-urls-only | sglang-diffusion fetches client image and video URLs only over http(s) from public addresses: every resolved address is checked, the connection goes to the checked address, each redirect is checked and proxy settings are not read; the loaders read files the server saved itself (the input save dir, `sglang_*` temp dirs) and other local paths only with `SGLANG_ALLOW_LOCAL_MEDIA_PATHS=1`; `SGLANG_DIFFUSION_ALLOW_PRIVATE_MEDIA_URLS=1` drops the address check | NEAR |
+| 15-diffusion-media-public-urls-only | sglang-diffusion fetches client image and video URLs only over http(s) from public addresses: every resolved address is checked, connections go only to checked addresses (the next one when one is unreachable), each redirect is checked, one timeout covers resolution, connection attempts and response headers, and proxy settings are not read; the loaders read files the server saved itself (the input save dir, `sglang_*` temp dirs) and other local paths only with `SGLANG_ALLOW_LOCAL_MEDIA_PATHS=1`; `SGLANG_DIFFUSION_ALLOW_PRIVATE_MEDIA_URLS=1` drops the address check | NEAR |
 | 16-diffusion-operator-only-request-fields | sglang-diffusion answers 400 to `perf_dump_path`, `profile`, `profile_all_stages`, `upscaling_model_path` and `frame_interpolation_model_path` in requests unless `SGLANG_DIFFUSION_ALLOW_REQUEST_DEBUG_FIELDS=1` | NEAR |
 | 17-token-id-vocab-bound | 400 on caller token ids outside `[0, vocab_size)`, ids beyond 64 bits included, on every route that takes token ids (`/generate`, `/encode`, `/v1/completions`, `/v1/embeddings`, `/v1/classify`, `/v1/score`) | NEAR |
 
@@ -49,12 +49,7 @@ code.
    (`tests/test_diffusion_media_and_request_fields.py`) and the sglang-diffusion unit tests around them;
 6. the upstream mem_cache, managers, entrypoints, constrained, multimodal and function_call suites;
    a failure not in `tests/stock-v0523-known-failures.txt` fails the script. This step needs network
-   access (about 50 tests fetch Hugging Face configs) and runs with `SGLANG_ALLOW_LOCAL_MEDIA_PATHS=1`,
+   access (some tests fetch Hugging Face configs) and runs with `SGLANG_ALLOW_LOCAL_MEDIA_PATHS=1`,
    because some upstream tests read local files.
 
-```
-docker build --build-arg BUILD_SOURCE_REVISION=$(git rev-parse HEAD) -t sglang-v0.5.23-secure-r2 docker/sglang-v0.5.23-secure-r2
-docker run --rm --runtime runc --entrypoint bash sglang-v0.5.23-secure-r2 /usr/share/nearai/sglang-v0.5.23-secure-r2/test-cpu.sh
-```
-
-Publish with `.github/workflows/publish-sglang-v0.5.23-secure-r2.yaml` from a merged commit on main.
+The image carries `test-cpu.sh` and `tests/` under `/usr/share/nearai/sglang-v0.5.23-secure-r2/`.

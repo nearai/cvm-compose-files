@@ -55,13 +55,12 @@ index cbdd8aa..aa62415 100644
      presence_penalty: float = 0.0
      seed: Optional[int] = None
      stop: Optional[Union[str, List[str]]] = None
-@@ -922,27 +925,32 @@ class ChatCompletionRequest(PDRoutingFields):
+@@ -922,27 +925,31 @@ class ChatCompletionRequest(PDRoutingFields):
          description="Model name. Supports LoRA adapters via 'base-model:adapter-name' syntax.",
      )
      frequency_penalty: float = 0.0
-+    # NOTE: OpenAI limits (temperature <= 2, top_logprobs <= 20, logit_bias in
-+    # [-100, 100], top_logprobs requires logprobs) are deliberately not enforced:
-+    # SGLang applies these values correctly and existing clients rely on that.
++    # SGLang applies wider values correctly, so OpenAI's temperature <= 2, top_logprobs
++    # <= 20 or requiring logprobs, and logit_bias in [-100, 100] are not enforced.
      logit_bias: Optional[Dict[str, float]] = None
      logprobs: bool = False
 -    top_logprobs: Optional[int] = None
@@ -91,7 +90,7 @@ index cbdd8aa..aa62415 100644
      top_p: Optional[float] = None
      user: Optional[str] = None
      tools: Optional[List[Tool]] = Field(default=None, examples=[None])
-@@ -1091,6 +1099,14 @@ class ChatCompletionRequest(PDRoutingFields):
+@@ -1091,6 +1098,14 @@ class ChatCompletionRequest(PDRoutingFields):
              raise ValueError("reasoning_effort must not be a boolean")
          return value
  
@@ -106,7 +105,7 @@ index cbdd8aa..aa62415 100644
      @model_validator(mode="before")
      @classmethod
      def normalize_reasoning_inputs(cls, values: Dict):
-@@ -1182,6 +1198,15 @@ class ChatCompletionRequest(PDRoutingFields):
+@@ -1182,6 +1197,15 @@ class ChatCompletionRequest(PDRoutingFields):
  
          return values
  
@@ -122,7 +121,7 @@ index cbdd8aa..aa62415 100644
      def to_sampling_params(
          self,
          stop: List[str],
-@@ -1211,7 +1236,7 @@ class ChatCompletionRequest(PDRoutingFields):
+@@ -1211,7 +1235,7 @@ class ChatCompletionRequest(PDRoutingFields):
  
          sampling_params = {
              "temperature": get_param("temperature"),

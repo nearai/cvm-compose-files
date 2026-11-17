@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# CPU-only checks, run inside the built image (README has the command); stops at the first failure.
-# Step 6 needs network: about 50 upstream tests fetch Hugging Face configs.
+# CPU-only checks, run inside the built image; stops at the first failure.
+# Step 6 needs network: some upstream tests fetch Hugging Face configs.
 set -euo pipefail
 RECIPE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 T="$RECIPE_DIR/tests"
