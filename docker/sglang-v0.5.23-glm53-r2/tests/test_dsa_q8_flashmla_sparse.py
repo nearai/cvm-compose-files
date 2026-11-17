@@ -1,10 +1,9 @@
-"""CPU check for dsa-q8-flashmla-sparse.diff: the flashmla_sparse_q8 DSA prefill backend works with the v7
+"""CPU check for dsa-q8-flashmla-sparse.diff: the flashmla_sparse_q8 DSA prefill backend works with the
 FP8 KV layout (656-byte NoPE row, KPool index > 1).
 
 The kernels need a GPU, so the three changed pieces are checked by ast on the installed sources:
-1. dsa_backend.py forward_extend: under flashmla_sparse_q8 with KPool > 1, the page table's
-   2048 + (kpool - 1) top-k IDs are padded with -1 to the flashmla_kv width (the Q8 SM90 kernel needs a
-   multiple of 128). The block is extracted and run on CPU tensors.
+1. Under flashmla_sparse_q8 with KPool > 1, the page table's 2048 + (kpool - 1) top-k IDs are padded
+   with -1 to a multiple of 128 (the Q8 SM90 kernel needs it) by the upstream helper, run on CPU tensors.
 2. dsa_backend.py _forward_flashmla_sparse_q8kv8 is extracted and executed on CPU tensors with the SM90
    kernel replaced by a capturing stub. For Flash NoPE (512-wide Q/K, no model RoPE), the kernel gets
    576-wide Q and KV, with the first 512 dimensions preserved and the reserved RoPE dimensions, padded
@@ -12,7 +11,7 @@ The kernels need a GPU, so the three changed pieces are checked by ast on the in
    born-fp8 Q at 512 and 576 wide; bf16, kv_k and paged-prefix KV; stale persistent Q and KV buffers. Standard
    576-wide MLA keeps its width.
 3. dsa_backend_kpool.py: flashmla_sparse_q8 is on the KPool allowlist next to flashmla_kv.
-Fails on the unpatched source (no pad block, no kernel_head_dim, flashmla_sparse_q8 rejected by KPool).
+Fails on the unpatched source (no kernel_head_dim, flashmla_sparse_q8 rejected by KPool).
 """
 
 import argparse
@@ -40,9 +39,8 @@ def methods(path):
 
 backend = methods(args.dsa_backend)
 
-# 1. KPool top-k pad. v0.5.23 pads inside _forward_flashmla_sparse_q8kv8 via the upstream helper
-# _pad_topk_width_buffered(multiple=128) (so the NEAR forward_extend pad block was dropped). Run the
-# installed helper on CPU tensors: 2051 -> 2176 with -1 slots, aligned widths unchanged.
+# 1. KPool top-k pad: _forward_flashmla_sparse_q8kv8 pads with the upstream helper
+# _pad_topk_width_buffered(multiple=128); on CPU tensors 2051 -> 2176 with -1 slots, aligned widths unchanged.
 pad_fn = backend["_pad_topk_width_buffered"]
 pad_fn.decorator_list = []
 _pns = {"torch": torch}

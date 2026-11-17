@@ -1,5 +1,5 @@
 diff --git a/python/sglang/srt/layers/attention/dsa/dsa_indexer_kpool.py b/python/sglang/srt/layers/attention/dsa/dsa_indexer_kpool.py
-index 6b307cf9ad..a96d6606d8 100644
+index 6b307cf9ad..223eb14f05 100644
 --- a/python/sglang/srt/layers/attention/dsa/dsa_indexer_kpool.py
 +++ b/python/sglang/srt/layers/attention/dsa/dsa_indexer_kpool.py
 @@ -1,6 +1,7 @@
@@ -26,17 +26,12 @@ index 6b307cf9ad..a96d6606d8 100644
  
  if is_cuda():
      try:
-@@ -65,6 +73,26 @@ from sglang.srt.runtime_context import get_device, get_exec
+@@ -65,6 +73,21 @@ from sglang.srt.runtime_context import get_device, get_exec
  
  logger = logging.getLogger(__name__)
  
-+# Opt-in (SGLANG_DSA_INDEXER_QSPLIT=1): split the K-pool indexer's prefill query rows across the
-+# attention-TP ranks instead of computing fp8_mqa_logits + top-k for every row on every rank.
-+# Each rank scores rows [r*per, (r+1)*per) against the same gathered keys and the int32 top-k
-+# rows are all-gathered. Rows are independent (each carries its own key range), so the selected
-+# set matches the replicated path up to top-k tie order, and the logits scratch per rank shrinks
-+# by the TP size. Only used for at least SGLANG_DSA_INDEXER_QSPLIT_MIN_ROWS rows (default 1024).
-+# Each rank's slice still goes through the upstream free-memory row chunking (#40854).
++# Opt-in (SGLANG_DSA_INDEXER_QSPLIT=1, from SGLANG_DSA_INDEXER_QSPLIT_MIN_ROWS rows, default 1024):
++# each attention-TP rank scores a slice of the prefill query rows, then the top-k rows are all-gathered.
 +_QSPLIT = get_bool_env_var("SGLANG_DSA_INDEXER_QSPLIT", "false")
 +_QSPLIT_MIN_ROWS = int(os.environ.get("SGLANG_DSA_INDEXER_QSPLIT_MIN_ROWS", "1024"))
 +
@@ -53,7 +48,7 @@ index 6b307cf9ad..a96d6606d8 100644
  if TYPE_CHECKING:
      from sglang.srt.mem_cache.memory_pool import DSATokenToKVPool
  
-@@ -1236,6 +1264,25 @@ class IndexerKPool(MultiPlatformOp):
+@@ -1236,6 +1259,25 @@ class IndexerKPool(MultiPlatformOp):
          # The plan's table is req_to_token, indexed by request-pool ID.
          assert page_table_all is None or page_table_row_index_all is not None
  
@@ -79,7 +74,7 @@ index 6b307cf9ad..a96d6606d8 100644
          return self._kpool_topk_by_row_chunks(
              q_fp8=q_fp8,
              weights=weights,
-@@ -1254,6 +1301,65 @@ class IndexerKPool(MultiPlatformOp):
+@@ -1254,6 +1296,65 @@ class IndexerKPool(MultiPlatformOp):
              out_rows=total_q,
          )
  

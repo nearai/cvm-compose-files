@@ -1,10 +1,10 @@
-"""pytest plugin for test-cpu.sh step 9: run the upstream unified radix cache tests on CPU with the KV
-tier recorder forced on in strict mode (a hook error fails the test), then fail the session unless the
-recorder existed and its VRAM-eviction and load-back hooks fired.
+"""pytest plugin for the KV tier step of test-cpu.sh: run the upstream unified radix cache tests on CPU
+with the KV tier recorder forced on in strict mode (a hook error fails the test), then fail the session
+unless the recorder existed and its VRAM-eviction and load-back hooks fired.
 
-Most of that test file builds CUDA tensors. In a CPU-only container those tests stop at torch's lazy
-CUDA init ("Found no NVIDIA driver"); they are reported as skipped here, and any other failure still
-fails. MIN_PASSED guards against everything being skipped (about 490 pass on CPU).
+Tests that build CUDA tensors stop at torch's lazy CUDA init ("Found no NVIDIA driver") on CPU; they
+are reported as skipped here, and any other failure still fails. MIN_PASSED guards against everything
+being skipped.
 
 MOCK_ARENA_TESTS are deselected: they drive the tree with a Mock in place of its node arena, which the
 strict-mode gauge walk cannot iterate. Outside strict mode that error is logged and they pass."""

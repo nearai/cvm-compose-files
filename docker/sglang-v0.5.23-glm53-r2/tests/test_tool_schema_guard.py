@@ -98,8 +98,8 @@ props["properties"]["p8"] = {"type": "string"}  # 27 + 1 + 2 = 30
 reason = g.check_tool_schema_size(props)
 assert reason and "SGLANG_TOOL_SCHEMA_MAX_NODES" in reason, reason
 assert g.check_tool_schema_size(chain("anyOf", 100)) is not None
-# Scalar children are the bypass the first version had: properties mapped to `true` and a long
-# `type` list cost check_schema about as much per entry as a nested object.
+# Scalar children count too: properties mapped to `true` and a long `type` list cost
+# check_schema about as much per entry as a nested object.
 g = load({"SGLANG_TOOL_SCHEMA_MAX_NODES": "1000"})
 assert g.check_tool_schema_size({"properties": {f"k{i}": True for i in range(100_000)}}) is not None
 assert g.check_tool_schema_size({"type": ["string"] * 200_000}) is not None

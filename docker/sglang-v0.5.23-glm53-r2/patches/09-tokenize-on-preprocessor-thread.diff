@@ -1,5 +1,5 @@
 diff --git a/python/sglang/srt/entrypoints/openai/serving_base.py b/python/sglang/srt/entrypoints/openai/serving_base.py
-index d00b475ad5..4505a96622 100644
+index d00b475ad5..381bf61172 100644
 --- a/python/sglang/srt/entrypoints/openai/serving_base.py
 +++ b/python/sglang/srt/entrypoints/openai/serving_base.py
 @@ -77,6 +77,18 @@ class OpenAIServingBase(ABC):
@@ -11,7 +11,7 @@ index d00b475ad5..4505a96622 100644
 +
 +        Uses the tokenizer manager's dedicated preprocessor thread when it has one
 +        (TokenizerManager.run_in_request_preprocessor); otherwise (test doubles,
-+        other managers) the loop's default executor, as upstream #39771 does.
++        other managers) the loop's default executor.
 +        """
 +        tm = self.tokenizer_manager
 +        if hasattr(type(tm), "run_in_request_preprocessor"):
@@ -21,16 +21,15 @@ index d00b475ad5..4505a96622 100644
      async def handle_request(
          self, request: OpenAIServingRequest, raw_request: Request
      ) -> Union[Any, StreamingResponse, ErrorResponse]:
-@@ -98,9 +110,14 @@ class OpenAIServingBase(ABC):
+@@ -98,9 +110,13 @@ class OpenAIServingBase(ABC):
  
              # Convert off-loop: jinja render + full-prompt tokenization blocks
              # the loop on long prompts, and the rust tokenizer releases the GIL.
 -            loop = asyncio.get_running_loop()
 -            adapted_request, processed_request = await loop.run_in_executor(
 -                None, self._convert_to_internal_request, request, raw_request
-+            # NEAR: use the tokenizer manager's dedicated preprocessor thread (copies
-+            # contextvars; serialized with off-loop tokenization so the shared HF
-+            # backend is never mutated concurrently) instead of the default executor.
++            # Use the tokenizer manager's preprocessor thread: it copies contextvars and serializes
++            # with off-loop tokenization, so the shared HF tokenizer is never mutated concurrently.
 +            (
 +                adapted_request,
 +                processed_request,
@@ -40,7 +39,7 @@ index d00b475ad5..4505a96622 100644
  
              if isinstance(adapted_request, (GenerateReqInput, EmbeddingReqInput)):
 diff --git a/python/sglang/srt/managers/tokenizer_manager.py b/python/sglang/srt/managers/tokenizer_manager.py
-index 87538fd8b7..d9f2e6a411 100644
+index dde1f6aefe..162cbc84ed 100644
 --- a/python/sglang/srt/managers/tokenizer_manager.py
 +++ b/python/sglang/srt/managers/tokenizer_manager.py
 @@ -29,10 +29,12 @@ import threading
@@ -118,7 +117,7 @@ index 87538fd8b7..d9f2e6a411 100644
          # but, by its checkpoint default, omits EOS. Add EOS explicitly here
 diff --git a/test/registered/unit/entrypoints/openai/test_serving_base_event_loop.py b/test/registered/unit/entrypoints/openai/test_serving_base_event_loop.py
 new file mode 100644
-index 0000000000..dfab863d35
+index 0000000000..ea1fde73d5
 --- /dev/null
 +++ b/test/registered/unit/entrypoints/openai/test_serving_base_event_loop.py
 @@ -0,0 +1,100 @@
@@ -224,7 +223,7 @@ index 0000000000..dfab863d35
 +    unittest.main()
 diff --git a/test/registered/unit/entrypoints/test_http_server_liveness.py b/test/registered/unit/entrypoints/test_http_server_liveness.py
 new file mode 100644
-index 0000000000..109c2c7d33
+index 0000000000..2b824dbe04
 --- /dev/null
 +++ b/test/registered/unit/entrypoints/test_http_server_liveness.py
 @@ -0,0 +1,125 @@
@@ -355,7 +354,7 @@ index 0000000000..109c2c7d33
 +    unittest.main()
 diff --git a/test/registered/unit/managers/test_tokenizer_manager_event_loop.py b/test/registered/unit/managers/test_tokenizer_manager_event_loop.py
 new file mode 100644
-index 0000000000..ceeb8dd647
+index 0000000000..ffc3c2e795
 --- /dev/null
 +++ b/test/registered/unit/managers/test_tokenizer_manager_event_loop.py
 @@ -0,0 +1,153 @@

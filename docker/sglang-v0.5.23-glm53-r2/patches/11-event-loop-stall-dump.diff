@@ -1,5 +1,5 @@
 diff --git a/python/sglang/srt/entrypoints/http_server.py b/python/sglang/srt/entrypoints/http_server.py
-index 899a40f632..682582e97e 100644
+index 899a40f632..24e95b5490 100644
 --- a/python/sglang/srt/entrypoints/http_server.py
 +++ b/python/sglang/srt/entrypoints/http_server.py
 @@ -200,6 +200,7 @@ from sglang.srt.utils import (
@@ -10,13 +10,12 @@ index 899a40f632..682582e97e 100644
  from sglang.srt.utils.json_response import (
      SGLangORJSONResponse,
      dumps_json,
-@@ -424,6 +425,11 @@ async def lifespan(fast_api_app: FastAPI):
+@@ -424,6 +425,10 @@ async def lifespan(fast_api_app: FastAPI):
          )
          logger.info("Warmup ended")
  
 +    # If this event loop stops ticking, dump every thread's stack to stderr
-+    # (SGLANG_EVENT_LOOP_STALL_DUMP_SECS, default 30, 0 disables), so a stalled
-+    # process reports where it is stuck.
++    # (SGLANG_EVENT_LOOP_STALL_DUMP_SECS, default 30, 0 disables).
 +    install_stall_dump(asyncio.get_running_loop())
 +
      # Start the native gRPC server and warmup inside the try so a failure in
@@ -24,7 +23,7 @@ index 899a40f632..682582e97e 100644
      # --grpc-port / SGLANG_GRPC_PORT; only the single-tokenizer process is
 diff --git a/python/sglang/srt/utils/event_loop_stall_dump.py b/python/sglang/srt/utils/event_loop_stall_dump.py
 new file mode 100644
-index 0000000000..6f7bcd0cf6
+index 0000000000..03167fffec
 --- /dev/null
 +++ b/python/sglang/srt/utils/event_loop_stall_dump.py
 @@ -0,0 +1,126 @@
@@ -84,8 +83,8 @@ index 0000000000..6f7bcd0cf6
 +        self.stopped = threading.Event()
 +        self.task = loop.create_task(self._heartbeat())
 +        threading.Thread(target=self._watch, name="event-loop-stall-watch", daemon=True).start()
-+        # A fork()-ed child that exits through normal interpreter shutdown hangs forever if it
-+        # inherits an armed faulthandler timer, so disarm it around every fork() of this process.
++        # Disarm faulthandler's timer around every fork() of this process, so a forked child
++        # exits cleanly through normal interpreter shutdown.
 +        os.register_at_fork(
 +            before=faulthandler.cancel_dump_traceback_later,
 +            after_in_parent=lambda: self.stopped.is_set() or self._arm_backstop(self.stall),

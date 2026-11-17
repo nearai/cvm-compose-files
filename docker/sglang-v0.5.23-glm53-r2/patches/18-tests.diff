@@ -1,6 +1,6 @@
 diff --git a/test/manual/test_pooled_pages_gpu.py b/test/manual/test_pooled_pages_gpu.py
 new file mode 100644
-index 0000000000..4468cb880c
+index 0000000000..9508e00094
 --- /dev/null
 +++ b/test/manual/test_pooled_pages_gpu.py
 @@ -0,0 +1,158 @@
@@ -164,7 +164,7 @@ index 0000000000..4468cb880c
 +    dist.destroy_process_group()
 diff --git a/test/manual/test_startup_ram_budget_tp.py b/test/manual/test_startup_ram_budget_tp.py
 new file mode 100644
-index 0000000000..4f00385d3c
+index 0000000000..4a15803897
 --- /dev/null
 +++ b/test/manual/test_startup_ram_budget_tp.py
 @@ -0,0 +1,83 @@
@@ -187,8 +187,8 @@ index 0000000000..4f00385d3c
 +rank, size = dist.get_rank(), dist.get_world_size()
 +try:
 +    with ExitStack() as stack:
-+        # No allocation occurs here. Small CI guests cannot leave the default
-+        # 10 GiB reserve; unit tests separately enforce that policy.
++        # No allocation occurs here, so the reserve is zero; unit tests cover the
++        # default reserve.
 +        stack.enter_context(patch.object(ram, "RESERVE_BYTES", 0))
 +        stack.enter_context(
 +            patch(
@@ -446,7 +446,7 @@ index 0000000000..f5bab90745
 +    unittest.main()
 diff --git a/test/registered/unit/mem_cache/test_startup_ram_budget.py b/test/registered/unit/mem_cache/test_startup_ram_budget.py
 new file mode 100644
-index 0000000000..50645a7beb
+index 0000000000..9c26606d65
 --- /dev/null
 +++ b/test/registered/unit/mem_cache/test_startup_ram_budget.py
 @@ -0,0 +1,197 @@
@@ -534,7 +534,7 @@ index 0000000000..50645a7beb
 +            ram.reserve_startup_bytes(1)
 +
 +    def test_host_pool_budget_check_books_against_rank_budget(self):
-+        # v0.5.23 port: every host pool books through host_memory_budget_bytes.
++        # Every host pool books through host_memory_budget_bytes.
 +        from sglang.srt.mem_cache.pool_host import base
 +
 +        budget = ram.RankBudget(4000, 4)

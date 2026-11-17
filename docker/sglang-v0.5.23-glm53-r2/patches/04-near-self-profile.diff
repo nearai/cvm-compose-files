@@ -1,5 +1,5 @@
 diff --git a/python/sglang/srt/managers/scheduler.py b/python/sglang/srt/managers/scheduler.py
-index bd67990038..f01c260fdd 100644
+index f0a8b7357c..1699b8ba35 100644
 --- a/python/sglang/srt/managers/scheduler.py
 +++ b/python/sglang/srt/managers/scheduler.py
 @@ -278,6 +278,7 @@ from sglang.srt.managers.scheduler_components.profiler_manager import (
@@ -10,7 +10,7 @@ index bd67990038..f01c260fdd 100644
  from sglang.srt.managers.scheduler_components.request_receiver import (
      SchedulerRequestReceiver,
  )
-@@ -2428,6 +2429,7 @@ class Scheduler(
+@@ -2424,6 +2425,7 @@ class Scheduler(
          self.profiler_manager = SchedulerProfilerManager(
              get_forward_ct=lambda: self.forward_ct,
          )
@@ -18,7 +18,7 @@ index bd67990038..f01c260fdd 100644
  
      def init_weight_updater(self) -> None:
          self.weight_updater = SchedulerWeightUpdaterManager(
-@@ -4728,6 +4730,8 @@ class Scheduler(
+@@ -4723,6 +4725,8 @@ class Scheduler(
          if self.scripted_scheduler_hook is not None:
              self.scripted_scheduler_hook.on_run_batch(batch)
  
@@ -43,10 +43,10 @@ index debaa72fda..f5a1d68d47 100644
              self.rpd_profiler.rangePop()
 diff --git a/python/sglang/srt/utils/near_self_profile.py b/python/sglang/srt/utils/near_self_profile.py
 new file mode 100644
-index 0000000000..24b35a4409
+index 0000000000..1920dd25d3
 --- /dev/null
 +++ b/python/sglang/srt/utils/near_self_profile.py
-@@ -0,0 +1,211 @@
+@@ -0,0 +1,210 @@
 +"""One-shot self-profiling hook (env NEAR_SELF_PROFILE=1) plus its trace summariser.
 +
 +The hook drives the scheduler's existing profiler once per process on tp_rank 0 and runs this file as a
@@ -129,8 +129,7 @@ index 0000000000..24b35a4409
 +    try:
 +        if os.environ.get("NEAR_SELF_PROFILE") != "1":
 +            return None
-+        # v0.5.23: the Scheduler no longer carries a ParallelState (`sched.ps`); the
-+        # global TP rank lives in the published parallel config.
++        # The global TP rank lives in the published parallel config.
 +        from sglang.srt.runtime_context import get_parallel
 +        if get_parallel().tp_rank == 0:
 +            from sglang.srt.environ import envs

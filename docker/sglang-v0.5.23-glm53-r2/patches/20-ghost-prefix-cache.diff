@@ -191,10 +191,10 @@ index 0000000000..54809d0608
 +    main()
 diff --git a/python/sglang/srt/observability/ghost_cache.py b/python/sglang/srt/observability/ghost_cache.py
 new file mode 100644
-index 0000000000..5f8cdcc69f
+index 0000000000..3f6d68f891
 --- /dev/null
 +++ b/python/sglang/srt/observability/ghost_cache.py
-@@ -0,0 +1,458 @@
+@@ -0,0 +1,457 @@
 +"""Ghost prefix cache: measure how much KV reuse a bigger cache would capture, without storing KV or text.
 +
 +Every finished request's tokens are cut into 64-token pages and hashed as a chain (each page hash
@@ -204,12 +204,11 @@ index 0000000000..5f8cdcc69f
 +ids -- and each prompt page is classified as never seen before (a compulsory miss that no cache can
 +save) or seen before at an LRU stack distance d: the number of distinct tokens touched since that
 +page was last used. A page is a hit in an LRU cache of C tokens exactly when d < C, so the
-+cumulative distance counters give the hit rate at every cache size from one measurement (Mattson
-+stack distances). Chained page hashes keep the radix-tree prefix property: an ancestor page is
++cumulative distance counters give the hit rate at every cache size from one pass (LRU stack
++distances). Chained page hashes keep the radix-tree prefix property: an ancestor page is
 +touched whenever a descendant is, so its distance is never larger.
 +
-+To bound memory and CPU, pages are spatially sampled by hash value (SHARDS, Waldspurger et al.,
-+FAST'15): only pages whose hash falls in a 1/SAMPLE slice are tracked, and their distances and
++To bound memory and CPU, pages are spatially sampled by hash value (SHARDS sampling): only pages whose hash falls in a 1/SAMPLE slice are tracked, and their distances and
 +token counts are scaled by SAMPLE. Hashing still covers every page, because the chain needs it.
 +
 +Only aggregate Prometheus counters leave the process. Nothing per request is logged or exported.
@@ -556,8 +555,8 @@ index 0000000000..5f8cdcc69f
 +            prompt, output, prompt_len, cached = self.queue.get()
 +            try:
 +                tracked = g.observe(prompt, output)
-+            except Exception:  # never let accounting take the scheduler down
-+                logger.exception("ghost cache: failed to account a request")
++            except Exception as e:  # never let accounting take the scheduler down
++                logger.error("ghost cache: failed to account a request (%s)", type(e).__name__)
 +                continue
 +            if self.sock is not None and tracked:
 +                for message in encode_messages(self.replica, g.sample, tracked):
@@ -586,7 +585,7 @@ index 0000000000..5f8cdcc69f
 +
 +def _served_model_name() -> str:
 +    try:
-+        # v0.5.23 retired get_global_server_args(); read the resolved bag.
++        # Served model name from the resolved server args.
 +        from sglang.srt.runtime_context import get_server_args, get_serving
 +
 +        name = get_serving().served_model_name
@@ -651,5 +650,5 @@ index 0000000000..5f8cdcc69f
 +            return
 +        prompt = list(req.origin_input_ids)
 +        recorder.submit(prompt, list(req.output_ids), len(prompt), int(req.cached_tokens or 0))
-+    except Exception:
-+        logger.exception("ghost cache: hook failed")
++    except Exception as e:
++        logger.error("ghost cache: hook failed (%s)", type(e).__name__)

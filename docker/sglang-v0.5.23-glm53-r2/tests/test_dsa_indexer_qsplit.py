@@ -2,7 +2,7 @@
 
 IndexerKPool._get_topk_ragged_kpool_plan_qsplit splits the K-pool prefill query rows across the
 attention-TP ranks, scores each rank's slice through upstream's free-memory row chunking
-(_kpool_topk_by_row_chunks, #40854) and all-gathers the int32 top-k rows. The methods are extracted
+(_kpool_topk_by_row_chunks) and all-gathers the int32 top-k rows. The methods are extracted
 by ast and run on CPU tensors with a stub logits kernel and stub pooled top-k; the gathered result
 must equal the unsplit single-rank result, for world 2 and 3, chunked and unchunked, with and without
 padding rows (total_q > n_real), page-table row index and topk offsets. Also checks the gate

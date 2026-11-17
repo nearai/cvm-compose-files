@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# CPU-only checks, run inside the built image (README has the command); stops at the first failure.
+# CPU-only checks, run inside the built image; stops at the first failure.
 set -euo pipefail
 RECIPE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 T="$RECIPE_DIR/tests"
@@ -20,7 +20,7 @@ python3 "$T/test_ghost_cache.py" --module "$SRT/observability/ghost_cache.py" \
 
 step "3 KV tier metrics (kv-tier-metrics, opt-in), alone and under the upstream unified-cache tests in strict mode"
 python3 "$T/test_kv_tier_metrics.py" --module "$SRT/observability/kv_tier_metrics.py" \
-  --tree-core "$SRT/mem_cache/unified_cache/unified_tree_core.py"
+  --tree-core "$SRT/mem_cache/unified_cache/unified_tree_core.py" --scheduler "$SRT/managers/scheduler.py"
 SGLANG_KV_TIER_METRICS=1 SGLANG_KV_TIER_METRICS_FORCE=1 SGLANG_KV_TIER_METRICS_STRICT=1 \
 SGLANG_KV_TIER_METRICS_RESYNC_S=0 SGLANG_USE_CPU_ENGINE=1 PYTHONPATH="$T" \
   python3 -m pytest -q -p no:cacheprovider -p no:warnings -p near_stub_plugin -p kvtm_check_plugin \
@@ -44,7 +44,7 @@ step "7 tool-schema size cap (tool-schema-depth-cap, opt-in)"
 python3 "$T/test_tool_schema_guard.py" --module "$SRT/utils/tool_schema_guard.py" \
   --serving-chat "$SRT/entrypoints/openai/serving_chat.py"
 
-step "8 KDA host-side token count (upstream #39688)"
+step "8 KDA host-side token count (upstream)"
 python3 "$T/test_kda_zero_sync.py" "$SRT/layers/attention/linear/kda_backend.py" \
   "$SRT/layers/attention/hybrid_linear_attn_backend.py"
 

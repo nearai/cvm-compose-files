@@ -1,14 +1,13 @@
 diff --git a/python/sglang/srt/entrypoints/http_server.py b/python/sglang/srt/entrypoints/http_server.py
-index 682582e97e..fa07416940 100644
+index 24e95b5490..e0368195fe 100644
 --- a/python/sglang/srt/entrypoints/http_server.py
 +++ b/python/sglang/srt/entrypoints/http_server.py
-@@ -364,6 +364,13 @@ async def lifespan(fast_api_app: FastAPI):
+@@ -364,6 +364,12 @@ async def lifespan(fast_api_app: FastAPI):
          _global_state.tokenizer_manager
      )
  
-+    # Opt-in: with SGLANG_PREPROCESS_WORKERS=N > 0, chat preprocessing runs in N worker processes
-+    # with a per-request deadline (SGLANG_PREPROCESS_TIMEOUT_S, default 60 s). Unset or 0 does
-+    # nothing and keeps the single-thread preprocessor.
++    # Opt-in: SGLANG_PREPROCESS_WORKERS=N > 0 runs chat preprocessing in N worker processes with a
++    # per-request deadline (SGLANG_PREPROCESS_TIMEOUT_S, default 60 s); unset or 0 keeps the thread.
 +    from sglang.srt.managers.preprocess_pool import install as install_preprocess_pool
 +
 +    await install_preprocess_pool(fast_api_app.state.openai_serving_chat)
@@ -17,28 +16,25 @@ index 682582e97e..fa07416940 100644
      fast_api_app.state.ollama_serving = OllamaServing(_global_state.tokenizer_manager)
  
 diff --git a/python/sglang/srt/entrypoints/openai/serving_base.py b/python/sglang/srt/entrypoints/openai/serving_base.py
-index 4505a96622..e601d6a2f2 100644
+index 381bf61172..2e100cef04 100644
 --- a/python/sglang/srt/entrypoints/openai/serving_base.py
 +++ b/python/sglang/srt/entrypoints/openai/serving_base.py
-@@ -108,17 +108,51 @@ class OpenAIServingBase(ABC):
+@@ -108,16 +108,49 @@ class OpenAIServingBase(ABC):
              if request_logger.log_requests and request_logger.log_requests_level >= 2:
                  request_logger.log_openai_received_request(request, request=raw_request)
  
 -            # Convert off-loop: jinja render + full-prompt tokenization blocks
 -            # the loop on long prompts, and the rust tokenizer releases the GIL.
--            # NEAR: use the tokenizer manager's dedicated preprocessor thread (copies
--            # contextvars; serialized with off-loop tokenization so the shared HF
--            # backend is never mutated concurrently) instead of the default executor.
+-            # Use the tokenizer manager's preprocessor thread: it copies contextvars and serializes
+-            # with off-loop tokenization, so the shared HF tokenizer is never mutated concurrently.
 -            (
 -                adapted_request,
 -                processed_request,
 -            ) = await self._run_in_request_preprocessor(
 -                self._convert_to_internal_request, request, raw_request
 -            )
-+            # Chat template rendering and tokenization can block the event loop.
-+            # Chat requests go to the process pool when it is running: a request whose
-+            # preprocessing exceeds SGLANG_PREPROCESS_TIMEOUT_S fails alone instead of holding the
-+            # single preprocessor thread for every other request (see preprocess_pool.py).
++            # Chat requests go to the process pool when it is running, so a request over
++            # SGLANG_PREPROCESS_TIMEOUT_S fails alone (see preprocess_pool.py).
 +            pool = getattr(self, "_preprocess_pool", None)
 +            preprocessed = None
 +            if pool is not None and not pool.broken:
@@ -54,11 +50,11 @@ index 4505a96622..e601d6a2f2 100644
 +                    preprocessed = await pool.run(
 +                        request,
 +                        raw_request,
-+                        label=f"rid={getattr(request, 'rid', None)} {shape}",
++                        label=shape,
 +                    )
 +                except PreprocessTimeout as e:
-+                    # 422, not 5xx: the cause is the payload, retrying cannot help, and 5xx
-+                    # makes clients and gateways retry the same request.
++                    # 422: the cause is the payload, so clients and gateways do not retry
++                    # the same request.
 +                    return self.create_error_response(
 +                        message=str(e),
 +                        err_type="RequestPreprocessingTimeout",
@@ -72,7 +68,7 @@ index 4505a96622..e601d6a2f2 100644
 +                        status_code=422,
 +                    )
 +                except PreprocessPoolError as e:
-+                    logger.warning("preprocess pool unavailable (%s); using thread path", e)
++                    logger.warning("preprocess pool unavailable (%s); using thread path", type(e).__name__)
 +            if preprocessed is None:
 +                from sglang.srt.managers.preprocess_pool import maybe_hooked
 +
@@ -85,19 +81,15 @@ index 4505a96622..e601d6a2f2 100644
                  # Only set timing fields if adapted_request supports them
 diff --git a/python/sglang/srt/managers/preprocess_pool.py b/python/sglang/srt/managers/preprocess_pool.py
 new file mode 100644
-index 0000000000..6c68162b4c
+index 0000000000..651eba5788
 --- /dev/null
 +++ b/python/sglang/srt/managers/preprocess_pool.py
-@@ -0,0 +1,486 @@
+@@ -0,0 +1,481 @@
 +"""Process pool with a per-request deadline for chat-request preprocessing.
 +
-+Why: tokenize-on-preprocessor-thread (sglang#30771) moves chat-template rendering and tokenization off
-+the event loop into ThreadPoolExecutor(max_workers=1). One worker is shared by every request, so a
-+single request whose preprocessing is slow holds every other request of the engine. A thread
-+cannot be killed, so
-+a deadline is impossible there. This module runs the same function in forked worker processes:
-+a request that exceeds the deadline is failed alone, its process is killed and replaced, and the
-+other workers keep serving.
++Chat-template rendering and tokenization run in forked worker processes, each request under a
++deadline: a request that exceeds it fails alone, its process is killed and replaced, and the other
++workers keep serving. A thread cannot be killed, so the single preprocessor thread has no deadline.
 +
 +Opt-in: with SGLANG_PREPROCESS_WORKERS unset or 0 install() does nothing (no process is forked and
 +requests take the preprocessor thread path unchanged). SGLANG_PREPROCESS_WORKERS=N (N > 0) starts N workers.
@@ -190,10 +182,8 @@ index 0000000000..6c68162b4c
 +    return body
 +
 +
-+# ---------------------------------------------------------------------------------------------
-+# test hook (worker side): SGLANG_PREPROCESS_TEST_HOOK=1 and a marker in the request text
-+#   __PP_SLOW_<seconds>__   busy-spin that long before converting (CPU-bound slow request)
-+#   __PP_CRASH__            kill this worker
++# Test hook (SGLANG_PREPROCESS_TEST_HOOK=1): a request text with __PP_SLOW_<seconds>__
++# busy-spins that long before converting, and one with __PP_CRASH__ kills its worker.
 +def _test_hook(request) -> None:
 +    if os.environ.get("SGLANG_PREPROCESS_TEST_HOOK") != "1":
 +        return
@@ -475,7 +465,8 @@ index 0000000000..6c68162b4c
 +            raise PreprocessTimeout(elapsed, self.timeout_s)
 +        except (asyncio.IncompleteReadError, ConnectionError, OSError) as e:
 +            logger.error(
-+                "preprocess worker %d (pid %d) died: %r; replacing; %s", w.id, w.pid, e, label
++                "preprocess worker %d (pid %d) died: %s; replacing; %s",
++                w.id, w.pid, type(e).__name__, label,
 +            )
 +            await self._replace(w)
 +            raise PreprocessWorkerDied(f"preprocessing worker died: {e!r}") from e

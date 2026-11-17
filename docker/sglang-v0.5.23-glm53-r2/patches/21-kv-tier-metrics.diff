@@ -1,3 +1,25 @@
+diff --git a/python/sglang/srt/managers/scheduler.py b/python/sglang/srt/managers/scheduler.py
+index b64343db67..b5dc105d8d 100644
+--- a/python/sglang/srt/managers/scheduler.py
++++ b/python/sglang/srt/managers/scheduler.py
+@@ -308,6 +308,7 @@ from sglang.srt.model_executor.forward_batch_info import PPProxyTensors
+ from sglang.srt.model_executor.runner_utils.pool import prewarm_graph_pool_borrow
+ from sglang.srt.model_loader.utils import get_resolved_model_impl
+ from sglang.srt.multiplex.multiplexing_mixin import SchedulerMultiplexMixin
++from sglang.srt.observability import kv_tier_metrics
+ from sglang.srt.observability.metrics_collector import SchedulerMetricsCollector
+ from sglang.srt.observability.req_time_stats import (
+     flush_trace_batch,
+@@ -2232,6 +2233,9 @@ class Scheduler(
+         The one place a new per-iteration input source belongs; the return
+         value exists for the pipeline stages that relay requests onward.
+         """
++        # Every loop calls this each iteration, on the thread that owns the radix tree.
++        if kv_tier_metrics.ENABLED:
++            kv_tier_metrics.tick(getattr(self, "tree_cache", None))
+         local_reqs = []
+         # Avoid re-enqueuing timeout aborts while dispatch is stopped at a pause.
+         if (
 diff --git a/python/sglang/srt/mem_cache/unified_cache/unified_tree_core.py b/python/sglang/srt/mem_cache/unified_cache/unified_tree_core.py
 index 5d62a425f0..7bf8804449 100644
 --- a/python/sglang/srt/mem_cache/unified_cache/unified_tree_core.py
@@ -89,18 +111,15 @@ index 5d62a425f0..7bf8804449 100644
              node,
 diff --git a/python/sglang/srt/observability/kv_tier_metrics.py b/python/sglang/srt/observability/kv_tier_metrics.py
 new file mode 100644
-index 0000000000..6ff08df774
+index 0000000000..0d094ee12b
 --- /dev/null
 +++ b/python/sglang/srt/observability/kv_tier_metrics.py
-@@ -0,0 +1,187 @@
-+"""KV tier metrics: what VRAM and DRAM (HiCache host tier) actually hold, and how fast each evicts.
+@@ -0,0 +1,196 @@
++"""KV tier metrics: what VRAM and DRAM (HiCache host tier) hold, and how much each evicts.
 +
-+The stock cache counters (sglang:evicted_tokens_total, load_back_tokens_total, hicache_backup_tokens_total,
-+hicache_dropped_tokens_total) are created on every TP rank without a rank label, so Prometheus
-+multiprocess mode sums them and they read TP x the real volume. They also cannot tell a VRAM eviction
-+that demotes a prefix to DRAM from one that deletes it, or a DRAM eviction that frees a duplicate of
-+VRAM-resident data from one that throws away the only copy -- which is exactly what decides whether
-+DRAM is being used well. This module records those events from TP rank 0 only:
++Recorded on TP rank 0 only, so each value is counted once per engine. Evictions are split by what they
++free: a VRAM eviction demotes a prefix to DRAM or deletes it, and a DRAM eviction frees a duplicate of
++VRAM-resident data or the only copy.
 +
 +  sglang:kv_tier_vram_evicted_tokens_total{outcome=demoted|deleted}
 +  sglang:kv_tier_dram_evicted_tokens_total{kind=duplicate|dram_only}
@@ -116,11 +135,13 @@ index 0000000000..6ff08df774
 +                                                              DRAM-only KV without one cannot produce a hit.
 +
 +Idle time is wall-clock seconds since the node's last access (the tree's own last_access_time, stamped
-+with time.monotonic whenever it is set). For evictions it is how long a prefix survived unused; for
-+load-backs it is how long a DRAM hit had been idle, i.e. the reuse gap DRAM rescued.
++with time.monotonic whenever it is set). For evictions it is how long a prefix stayed unused; for
++load-backs it is how long a DRAM hit had been idle.
 +
-+Enable with SGLANG_KV_TIER_METRICS=1 (default off). SGLANG_KV_TIER_METRICS_RESYNC_S (default 30) bounds
-+how often rank 0 walks the tree to refresh the gauges. Test-only switches: SGLANG_KV_TIER_METRICS_FORCE=1
++Enable with SGLANG_KV_TIER_METRICS=1 (default off). The scheduler loop calls tick() every iteration, on
++the thread that owns the tree; it walks the tree at most once per SGLANG_KV_TIER_METRICS_RESYNC_S
++(default 30) seconds, so the gauges match the tree within that interval of its last change, also when
++the engine is idle. Test-only switches: SGLANG_KV_TIER_METRICS_FORCE=1
 +records without a TP group (unit tests), SGLANG_KV_TIER_METRICS_STRICT=1 re-raises hook errors instead of
 +logging them.
 +"""
@@ -135,7 +156,7 @@ index 0000000000..6ff08df774
 +logger = logging.getLogger(__name__)
 +
 +IDLE_BUCKETS_S = (10, 30, 60, 120, 300, 600, 900, 1200, 1800, 2700, 3600, 7200)
-+_ENABLED = os.environ.get("SGLANG_KV_TIER_METRICS", "0").strip() == "1"
++ENABLED = os.environ.get("SGLANG_KV_TIER_METRICS", "0").strip() == "1"
 +_FORCE = os.environ.get("SGLANG_KV_TIER_METRICS_FORCE", "0").strip() == "1"
 +_STRICT = os.environ.get("SGLANG_KV_TIER_METRICS_STRICT", "0").strip() == "1"
 +
@@ -234,7 +255,7 @@ index 0000000000..6ff08df774
 +
 +def _served_model_name() -> str:
 +    try:
-+        # v0.5.23 retired get_global_server_args(); read the resolved bag.
++        # Served model name from the resolved server args.
 +        from sglang.srt.runtime_context import get_server_args, get_serving
 +
 +        name = get_serving().served_model_name
@@ -259,7 +280,7 @@ index 0000000000..6ff08df774
 +def recorder() -> Optional[TierMetrics]:
 +    """The rank-0 recorder, or None when disabled or on any other rank. Cheap after the first call."""
 +    global _recorder, _checked
-+    if _checked or not _ENABLED:
++    if _checked or not ENABLED:
 +        return _recorder
 +    _checked = True
 +    try:
@@ -270,6 +291,16 @@ index 0000000000..6ff08df774
 +        logger.exception("KV tier metrics: disabled after setup failure")
 +        _recorder = None
 +    return _recorder
++
++
++def tick(tree_cache) -> None:
++    """Refresh the gauges from the scheduler loop; the walk runs at most once per resync interval."""
++    core = getattr(tree_cache, "tree_core", None)
++    if core is None or not hasattr(core, "_node_arena"):
++        return
++    rec = recorder()
++    if rec is not None:
++        safe(rec.maybe_resync, core)
 +
 +
 +def safe(fn, *args) -> None:

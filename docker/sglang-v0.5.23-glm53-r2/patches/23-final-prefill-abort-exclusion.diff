@@ -1,15 +1,14 @@
 diff --git a/python/sglang/srt/managers/scheduler.py b/python/sglang/srt/managers/scheduler.py
-index a8f997ebcc..d7db405118 100644
+index b5dc105d8d..0f272d8e23 100644
 --- a/python/sglang/srt/managers/scheduler.py
 +++ b/python/sglang/srt/managers/scheduler.py
-@@ -3982,6 +3982,20 @@ class Scheduler(
+@@ -3982,6 +3982,19 @@ class Scheduler(
              and last_batch
              and last_batch.forward_mode.is_extend()
          ):
 +            if getattr(self, "result_queue", None):
-+                # Abort can arrive while the final prefill result is still delayed.
-+                # Keep that request out of optimistic decode; the result processor
-+                # will consume the pending finish and release its resources.
++                # An abort can arrive while the final prefill result is still delayed: keep that request out
++                # of optimistic decode; the result processor consumes the pending finish and frees it.
 +                reqs_to_exclude.update(
 +                    req
 +                    for req in last_batch.reqs
@@ -24,16 +23,15 @@ index a8f997ebcc..d7db405118 100644
                  # In the context pipeline parallelism, after the last chunk, the current microbatch still track outdated chunked_req.
                  # We need to discard it.
 diff --git a/python/sglang/srt/managers/scheduler_components/batch_result_processor.py b/python/sglang/srt/managers/scheduler_components/batch_result_processor.py
-index c1bc4a00e2..c87602e420 100644
+index c1bc4a00e2..c0c4d37ed4 100644
 --- a/python/sglang/srt/managers/scheduler_components/batch_result_processor.py
 +++ b/python/sglang/srt/managers/scheduler_components/batch_result_processor.py
-@@ -315,6 +315,14 @@ class SchedulerBatchResultProcessor:
+@@ -315,6 +315,13 @@ class SchedulerBatchResultProcessor:
                  discard_finish_reason = (
                      req.discard_output_reason if should_commit_output else None
                  )
-+                # An abort won the race with this delayed final-prefill result:
-+                # finish without committing the sampled token or anything derived
-+                # from it. The KV is valid, so it is still checkpointed on release.
++                # An abort that arrives before this delayed final-prefill result finishes the request without
++                # the sampled token or anything derived from it; the valid KV is still checkpointed on release.
 +                drop_prefill_result = (
 +                    discard_finish_reason is None
 +                    and req.to_finish is not None
@@ -42,7 +40,7 @@ index c1bc4a00e2..c87602e420 100644
                  if (
                      should_commit_output
                      and discard_finish_reason is None
-@@ -337,7 +345,11 @@ class SchedulerBatchResultProcessor:
+@@ -337,7 +344,11 @@ class SchedulerBatchResultProcessor:
                          hidden_state_offset=hidden_state_offset,
                          capture_hidden_mode=prefill_hidden_capture_mode,
                          extend_input_len=extend_input_len_per_req[i],
@@ -55,7 +53,7 @@ index c1bc4a00e2..c87602e420 100644
                      )
  
                  if (
-@@ -360,6 +372,8 @@ class SchedulerBatchResultProcessor:
+@@ -360,6 +371,8 @@ class SchedulerBatchResultProcessor:
                          self.beam_coordinator.commit_prefill(
                              req, up_to_tick=batch.forward_iter
                          )
@@ -64,7 +62,7 @@ index c1bc4a00e2..c87602e420 100644
                      else:
                          # req output_ids are set here
                          req.output_ids.append(next_token_id)
-@@ -395,7 +409,7 @@ class SchedulerBatchResultProcessor:
+@@ -395,7 +408,7 @@ class SchedulerBatchResultProcessor:
                          if get_memory().enable_hisparse:
                              self.hisparse_coordinator.admit_request_into_staging(req)
  
@@ -73,7 +71,7 @@ index c1bc4a00e2..c87602e420 100644
                          self._maybe_collect_customized_info(i, req, logits_output)
  
                      if batch.return_logprob:
-@@ -407,10 +421,13 @@ class SchedulerBatchResultProcessor:
+@@ -407,10 +420,13 @@ class SchedulerBatchResultProcessor:
                              extend_logprob_start_len_per_req=extend_logprob_start_len_per_req,
                              next_token_ids=next_token_ids,
                              logprob_pt=logprob_pt,
@@ -89,7 +87,7 @@ index c1bc4a00e2..c87602e420 100644
                          continue
  
                      if req.return_sampling_mask:
-@@ -907,10 +924,14 @@ class SchedulerBatchResultProcessor:
+@@ -907,10 +923,14 @@ class SchedulerBatchResultProcessor:
              # Extend: advance over the single token each completed-prefill req emitted
              # (mirrors process_batch_result_prefill's per-req token indexing).
              for i, req in enumerate(batch.reqs):

@@ -18,16 +18,15 @@ index 6d32c5dd8d..e1936b89a6 100644
          )
  
 diff --git a/python/sglang/srt/layers/attention/dsa_backend.py b/python/sglang/srt/layers/attention/dsa_backend.py
-index d4d13c081a..4428c0fbcb 100644
+index d4d13c081a..f1d0eb912d 100644
 --- a/python/sglang/srt/layers/attention/dsa_backend.py
 +++ b/python/sglang/srt/layers/attention/dsa_backend.py
-@@ -552,8 +552,33 @@ class DeepseekSparseAttnBackend(
+@@ -552,8 +552,31 @@ class DeepseekSparseAttnBackend(
          self.qk_nope_head_dim = model_runner.model_config.qk_nope_head_dim
          self.kv_lora_rank = model_runner.model_config.kv_lora_rank
          self.qk_rope_head_dim = model_runner.model_config.qk_rope_head_dim
-+        # NoPE-MLA fp8 pool in the 656-byte FlashMLA row: q is zero-padded by
-+        # this many dims so the V3.2 kernel sees d_qk == 576 (see
-+        # calculate_mla_kv_cache_dim).
++        # NoPE-MLA fp8 pool in the 656-byte FlashMLA row: q is zero-padded by this many dims
++        # so the V3.2 kernel sees d_qk == 576 (see calculate_mla_kv_cache_dim).
 +        self.flashmla_kv_pad_rope_dim = (
 +            64
 +            if (
@@ -37,9 +36,8 @@ index d4d13c081a..4428c0fbcb 100644
 +            )
 +            else 0
 +        )
-+        # FlashMLA sparse decode needs topk % 128 == 0 (head64: 2 * B_TOPK).
-+        # With index_kpool > 1 the table is index_topk + kpool - 1 wide; the
-+        # extra columns are -1 (masked) padding.
++        # FlashMLA sparse decode needs topk % 128 == 0; with index_kpool > 1 the table is
++        # index_topk + kpool - 1 wide and the extra columns are -1 (masked) padding.
 +        if self.dsa_index_kpool > 1:
 +            _cols = self.dsa_index_topk + self.dsa_index_kpool - 1
 +            self.flashmla_kv_topk = -(-_cols // 128) * 128
@@ -56,7 +54,7 @@ index d4d13c081a..4428c0fbcb 100644
  
          assert model_runner.req_to_token_pool is not None
          self.req_to_token_pool = model_runner.req_to_token_pool
-@@ -3325,6 +3350,8 @@ class DeepseekSparseAttnBackend(
+@@ -3325,6 +3348,8 @@ class DeepseekSparseAttnBackend(
  
          # TODO the 2nd dim is seq_len_q, need to be >1 when MTP
          q_all = q_all.view(-1, 1, layer.tp_q_head_num, layer.head_dim)
@@ -65,7 +63,7 @@ index d4d13c081a..4428c0fbcb 100644
          num_q_heads = q_all.shape[2]
          target_q_heads = self.flashmla_kv_num_q_heads
          if target_q_heads != num_q_heads:
-@@ -3344,8 +3371,13 @@ class DeepseekSparseAttnBackend(
+@@ -3344,8 +3369,13 @@ class DeepseekSparseAttnBackend(
              kv_cache = quantize_k_cache(kv_cache)
  
          indices = page_table_1.unsqueeze(1)
@@ -80,7 +78,7 @@ index d4d13c081a..4428c0fbcb 100644
          )  # requirement of FlashMLA decode kernel
  
          o, _ = flash_mla_with_kvcache(
-@@ -4158,7 +4190,7 @@ class DeepseekSparseAttnBackend(
+@@ -4158,7 +4188,7 @@ class DeepseekSparseAttnBackend(
              num_heads_k=1,
              num_heads_q=num_heads_q,
              is_fp8_kvcache=True,
@@ -90,21 +88,15 @@ index d4d13c081a..4428c0fbcb 100644
  
          return DSAFlashMLAMetadata(
 diff --git a/python/sglang/srt/mem_cache/kv_cache_configurator.py b/python/sglang/srt/mem_cache/kv_cache_configurator.py
-index 84f52dbbf9..d1213156af 100644
+index 84f52dbbf9..eb2169d956 100644
 --- a/python/sglang/srt/mem_cache/kv_cache_configurator.py
 +++ b/python/sglang/srt/mem_cache/kv_cache_configurator.py
-@@ -3466,10 +3466,29 @@ def calculate_mla_kv_cache_dim(
+@@ -3466,10 +3466,23 @@ def calculate_mla_kv_cache_dim(
              f"kv_lora_rank {kv_lora_rank} must be multiple of quant_block_size {quant_block_size}"
          )
  
-+        # NoPE MLA (qk_rope_head_dim == 0, e.g. GLM-5.3) on the FlashMLA fp8
-+        # sparse-decode kernels. Those kernels hard-assert the DeepSeek-V3.2
-+        # packed row (d_qk == 576, stride_kv_row == 656 bytes: 512 fp8 nope +
-+        # 4 fp32 tile scales + 64 bf16 rope), so a rope-less 528-byte row
-+        # cannot be consumed. Reserve the 64 rope slots as a structurally
-+        # zero region (never written, the pool is zero-initialised; the
-+        # attention backend zero-pads q to match). Costs 656 B/token versus
-+        # 1024 B/token for bf16 (1.56x pool capacity).
++        # NoPE MLA on the FlashMLA fp8 sparse-decode kernels uses the V3.2 656-byte row (512 fp8 nope,
++        # 4 fp32 scales, 64 bf16 rope); the rope slots stay zero and the backend zero-pads q to match.
 +        rope_slots = qk_rope_head_dim
 +        if (
 +            qk_rope_head_dim == 0

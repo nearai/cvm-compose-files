@@ -12,7 +12,7 @@ index e1936b89a6..da1083e5e3 100644
              return
          raise NotImplementedError(
 diff --git a/python/sglang/srt/layers/attention/dsa_backend.py b/python/sglang/srt/layers/attention/dsa_backend.py
-index 4428c0fbcb..8e7b614200 100644
+index f1d0eb912d..ee443ff422 100644
 --- a/python/sglang/srt/layers/attention/dsa_backend.py
 +++ b/python/sglang/srt/layers/attention/dsa_backend.py
 @@ -428,6 +428,7 @@ def _validate_flashmla_sparse_q8_backend(
@@ -23,20 +23,18 @@ index 4428c0fbcb..8e7b614200 100644
  ) -> None:
      # flashmla_sparse_q8 casts q and KV to fp8 per call, so the KV cache may be
      # bfloat16 or fp8_e4m3.
-@@ -441,7 +442,11 @@ def _validate_flashmla_sparse_q8_backend(
+@@ -441,7 +442,9 @@ def _validate_flashmla_sparse_q8_backend(
          # Not supported yet: an fp8_e4m3 pool on a NoPE model has not been validated
          # through the q8 prefix gather, and the KPool tail guard stays closed for
          # fp8 pools.
 -        if kv_cache_store_fp8 and qk_rope_head_dim == 0:
-+        # NEAR: the 656 B NoPE row (512 fp8 + scales + 64 zero bf16 RoPE slots,
-+        # sized by calculate_mla_kv_cache_dim when flashmla_kv is selected) is
-+        # the V3.2 layout the q8 gather reads; _forward_flashmla_sparse_q8kv8
-+        # runs it at the 576-wide kernel width.
++        # The 656 B NoPE row (512 fp8 + scales + 64 zero bf16 RoPE slots) is the V3.2 layout the
++        # q8 gather reads; _forward_flashmla_sparse_q8kv8 runs it at the 576-wide kernel width.
 +        if kv_cache_store_fp8 and qk_rope_head_dim == 0 and not nope_fp8_v32_row:
              raise ValueError(
                  "--dsa-prefill-backend flashmla_sparse_q8 does not support an "
                  "fp8_e4m3 KV cache for NoPE MLA models (qk_rope_head_dim=0) yet; use "
-@@ -711,6 +716,7 @@ class DeepseekSparseAttnBackend(
+@@ -709,6 +712,7 @@ class DeepseekSparseAttnBackend(
              device_sm_major=self.device_sm_major,
              hisparse_enabled=self.hisparse_coordinator is not None,
              mixed_chunk_enabled=get_schedule().enable_mixed_chunk,
@@ -44,16 +42,15 @@ index 4428c0fbcb..8e7b614200 100644
          )
  
          if self.dsa_prefill_impl == "triton_sparse_mla":
-@@ -3077,7 +3083,16 @@ class DeepseekSparseAttnBackend(
+@@ -3075,7 +3079,15 @@ class DeepseekSparseAttnBackend(
          )
  
          num_tokens, num_heads, d_nope = q_nope.shape
 -        head_dim = d_nope + q_rope.shape[-1]
 +        input_head_dim = d_nope + q_rope.shape[-1]
 +        kernel_head_dim = input_head_dim
-+        # Flash NoPE uses the v7 656-byte cache row, whose final 64 dimensions
-+        # are reserved zero RoPE padding. Match that 576-wide Q8 gather/kernel
-+        # layout while keeping the model's actual query/value width unchanged.
++        # Flash NoPE uses the 656-byte cache row, whose last 64 dimensions are zero RoPE padding:
++        # match the 576-wide Q8 gather and kernel layout, keeping the model's query/value width.
 +        if (
 +            input_head_dim == self.kv_lora_rank
 +            and self.flashmla_kv_pad_rope_dim
@@ -62,7 +59,7 @@ index 4428c0fbcb..8e7b614200 100644
          dev = q_nope.device
  
          # The SM90 kernel requires num_heads % 64 == 0; smaller head counts
-@@ -3085,11 +3100,9 @@ class DeepseekSparseAttnBackend(
+@@ -3083,11 +3095,8 @@ class DeepseekSparseAttnBackend(
          required_padding = 64
          need_padding = num_heads % required_padding != 0
  
@@ -71,13 +68,12 @@ index 4428c0fbcb..8e7b614200 100644
 -        # cast); consume the stash instead of rebuilding it.  q_nope here is
 -        # the NaN sentinel (shape-only); q_rope's bf16 content is valid but
 -        # unused.
-+        # Build FP8 Q. Flash NoPE has no model RoPE but the cached 656-byte
-+        # row reserves 64 zero dimensions; explicitly retain that pad so the
-+        # existing 576-wide grouped-scale gather and Q8 kernel stay aligned.
++        # Build FP8 Q with the 64 zero dimensions the 656-byte row reserves, so the 576-wide
++        # grouped-scale gather and Q8 kernel stay aligned.
          born = self._q8kv8_born_q_stash
          if born is not None:
              self._q8kv8_born_q_stash = None
-@@ -3102,50 +3115,72 @@ class DeepseekSparseAttnBackend(
+@@ -3100,50 +3109,72 @@ class DeepseekSparseAttnBackend(
                      f"(num_tokens={born_tokens}, layer_id={born_layer_id}) but "
                      f"consuming (num_tokens={num_tokens}, layer_id={layer_id})."
                  )
@@ -175,7 +171,7 @@ index 4428c0fbcb..8e7b614200 100644
  
          # Identity per-tensor scale, cached: creating it per call is a
          # host->device copy that synchronizes the stream.
-@@ -3179,9 +3214,13 @@ class DeepseekSparseAttnBackend(
+@@ -3177,9 +3208,13 @@ class DeepseekSparseAttnBackend(
              num_kv_tokens = kv_bf16.shape[0]
          total_kv_rows = num_kv_tokens + topk
          kv_buf = self._q8kv8_kv_buf
@@ -191,7 +187,7 @@ index 4428c0fbcb..8e7b614200 100644
                  dtype=torch.float8_e4m3fn,
                  device=dev,
              )
-@@ -3192,30 +3231,45 @@ class DeepseekSparseAttnBackend(
+@@ -3190,30 +3225,45 @@ class DeepseekSparseAttnBackend(
                  page_table_1_flattened,
                  extra_rows=topk,
                  out=kv_buf[:total_kv_rows],
@@ -220,8 +216,8 @@ index 4428c0fbcb..8e7b614200 100644
 +                    kv_buf[:total_kv_rows], kv_k, kv_k_rope, num_kv_tokens
 +                ).view(-1, 1, kernel_head_dim)
 +            else:
-+                # Flash NoPE K is 512-wide; materialize it in the v7 576-wide
-+                # Q8 row and keep the reserved RoPE dimensions zero.
++                # Flash NoPE K is 512-wide; materialize it in the 576-wide Q8 row and keep the
++                # reserved RoPE dimensions zero.
 +                kv_padded = kv_buf[:total_kv_rows]
 +                kv_padded[:num_kv_tokens, :d_nope].copy_(
 +                    kv_k.view(num_kv_tokens, d_nope)

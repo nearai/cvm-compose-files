@@ -28,17 +28,15 @@ index 6476d52fa6..6c85c0e05c 100644
                  # to standard JSON Schema types before validation. RecursionError
 diff --git a/python/sglang/srt/utils/tool_schema_guard.py b/python/sglang/srt/utils/tool_schema_guard.py
 new file mode 100644
-index 0000000000..b9d13d5d22
+index 0000000000..477e13ec46
 --- /dev/null
 +++ b/python/sglang/srt/utils/tool_schema_guard.py
-@@ -0,0 +1,79 @@
+@@ -0,0 +1,77 @@
 +"""Size pre-check for tool parameter schemas, run before jsonschema's check_schema.
 +
-+Why: OpenAIServingChat._validate_request runs Draft202012Validator.check_schema on every tool's
-+`parameters` on the HTTP event loop. Its cost is linear in the number of schema nodes, and a
-+client controls the node count: a tree of
-+nested anyOf branches doubles in size with every level, so a few hundred KB of JSON freezes the
-+loop for seconds. The caps bound the work per request.
++OpenAIServingChat._validate_request runs Draft202012Validator.check_schema on every tool's
++`parameters` on the HTTP event loop, at a cost linear in the number of schema nodes the client
++sends. The caps bound that work per request.
 +
 +Opt-in, both limits default to 0 (off, the check is skipped entirely):
 +  SGLANG_TOOL_SCHEMA_MAX_DEPTH  maximum nesting of JSON objects/arrays inside one tool's schema

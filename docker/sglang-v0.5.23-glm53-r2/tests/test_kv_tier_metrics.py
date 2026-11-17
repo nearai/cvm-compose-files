@@ -5,8 +5,10 @@
    load-backs, and the idle-time buckets are exact (cumulative, within_s=inf = all).
 3. Gauges: the tree walk gives VRAM-cached, DRAM-duplicate and DRAM-only tokens exactly.
 4. Hooks: the patched unified_tree_core stamps last_access_wall on every last_access_time write
-   and calls the recorder at the six hook points.
+   and calls the recorder at the six hook points; the scheduler's ingest_requests calls tick().
 5. Safety: a failing hook is logged, not raised, unless SGLANG_KV_TIER_METRICS_STRICT=1.
+6. Refresh: after a demotion with no further transfer, tick() reports the new VRAM/DRAM split once
+   the resync interval has passed, and not before; tick() is a no-op without a Python tree core.
 """
 import argparse
 import importlib.util
@@ -19,6 +21,7 @@ import types
 ap = argparse.ArgumentParser()
 ap.add_argument("--module", required=True)
 ap.add_argument("--tree-core", required=False)
+ap.add_argument("--scheduler", required=False)
 args = ap.parse_args()
 failures = 0
 
@@ -135,6 +138,16 @@ if args.tree_core:
         fail(f"step4 hooks missing: {missing}")
     else:
         print("  ok hooks: wall-clock stamp + 5 recorder calls present in unified_tree_core")
+if args.scheduler:
+    import ast
+
+    sched = ast.parse(open(args.scheduler).read())
+    ingest = [n for n in ast.walk(sched) if isinstance(n, ast.FunctionDef) and n.name == "ingest_requests"]
+    calls = [ast.unparse(n.func) for f in ingest for n in ast.walk(f) if isinstance(n, ast.Call)]
+    if len(ingest) != 1 or "kv_tier_metrics.tick" not in calls:
+        fail("step4 scheduler ingest_requests does not call kv_tier_metrics.tick")
+    else:
+        print("  ok hooks: the scheduler loop calls kv_tier_metrics.tick in ingest_requests")
 
 # 5. safety
 m2 = load({})
@@ -151,6 +164,52 @@ try:
     fail("step5 safe() swallowed an error with STRICT on")
 except RuntimeError:
     print("  ok strict mode re-raises")
+
+# 6. refresh from the scheduler loop, with a fake clock
+m4 = load({})
+clock = [1000.0]
+m4.time = types.SimpleNamespace(monotonic=lambda: clock[0])
+reg4 = CollectorRegistry()
+rec4 = m4.TierMetrics(resync_s=30, registry=reg4, model_name="t")
+m4._recorder, m4._checked = rec4, True
+
+
+def val4(name):
+    v = reg4.get_sample_value(name, {"model_name": "t"})
+    return 0 if v is None else v
+
+
+def split():
+    return tuple(val4(f"sglang:kv_tier_{g}") for g in ("vram_cached_tokens", "dram_duplicate_tokens", "dram_only_tokens"))
+
+
+root4 = Node(0, 0, 0, parent=False)
+dup4, dev4 = Node(512, 512, 0), Node(256, 0, 0)
+root4.children = {"a": dup4, "b": dev4}
+core4 = types.SimpleNamespace(_node_arena={0: root4, 1: dup4, 2: dev4}, root_node=root4)
+cache4 = types.SimpleNamespace(tree_core=core4)
+m4.tick(cache4)
+before = split()
+# Demotion as the tree core does it: the hook runs, then the device copy is freed.
+clock[0] += 1
+rec4.vram_evict(core4, dup4, "demoted")
+dup4.component_data[0].value = None
+clock[0] += 1
+m4.tick(cache4)
+throttled = split()
+clock[0] += 30
+m4.tick(cache4)
+after = split()
+m4.tick(types.SimpleNamespace(tree_core=types.SimpleNamespace()))  # a core without the Python arena
+m4.tick(types.SimpleNamespace())
+if before != (768, 512, 0):
+    fail(f"step6 initial split {before} != (768, 512, 0)")
+elif throttled != before:
+    fail(f"step6 tick inside the resync interval walked the tree: {throttled}")
+elif after != (256, 0, 512):
+    fail(f"step6 split after the interval {after} != (256, 0, 512)")
+else:
+    print("  ok refresh: a demotion with no further transfer shows within one resync interval")
 
 if failures:
     print(f"kv tier metric checks FAILED ({failures})", file=sys.stderr)

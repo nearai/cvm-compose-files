@@ -1,5 +1,5 @@
 diff --git a/python/sglang/srt/entrypoints/openai/protocol.py b/python/sglang/srt/entrypoints/openai/protocol.py
-index cbdd8aa1d8..054b7d4b74 100644
+index cbdd8aa1d8..6ab0ba5e1c 100644
 --- a/python/sglang/srt/entrypoints/openai/protocol.py
 +++ b/python/sglang/srt/entrypoints/openai/protocol.py
 @@ -65,6 +65,7 @@ from pydantic import (
@@ -10,18 +10,17 @@ index cbdd8aa1d8..054b7d4b74 100644
      field_serializer,
      field_validator,
      model_serializer,
-@@ -1033,6 +1034,10 @@ class ChatCompletionRequest(PDRoutingFields):
+@@ -1033,6 +1034,9 @@ class ChatCompletionRequest(PDRoutingFields):
      # Custom logit processor for advanced sampling control
      custom_logit_processor: Optional[Union[List[Optional[str]], str]] = None
      custom_params: Optional[Dict] = None
-+    # NEAR AI: public thinking budget, mapped to custom_params.thinking_budget
-+    # (enforced by --enable-strict-thinking). Explicit null opts out of the
-+    # model default; an explicit custom_params.thinking_budget wins.
++    # Public thinking budget, mapped to custom_params.thinking_budget (enforced by
++    # --enable-strict-thinking). Explicit null opts out of the model default; a native budget wins.
 +    thinking_token_budget: Optional[StrictInt] = Field(default=None, ge=0)
      watermark: Optional[Dict[str, Any]] = Field(
          default=None,
          description=(
-@@ -1072,6 +1077,26 @@ class ChatCompletionRequest(PDRoutingFields):
+@@ -1072,6 +1076,26 @@ class ChatCompletionRequest(PDRoutingFields):
      def _handle_deprecated_dp_rank(cls, values):
          return _migrate_deprecated_dp_rank(values)
  
@@ -49,16 +48,15 @@ index cbdd8aa1d8..054b7d4b74 100644
      @classmethod
      def set_tool_choice_default(cls, values):
 diff --git a/python/sglang/srt/entrypoints/openai/serving_chat.py b/python/sglang/srt/entrypoints/openai/serving_chat.py
-index 6c85c0e05c..5aa9abd729 100644
+index 6c85c0e05c..ded82d27de 100644
 --- a/python/sglang/srt/entrypoints/openai/serving_chat.py
 +++ b/python/sglang/srt/entrypoints/openai/serving_chat.py
-@@ -1342,6 +1342,17 @@ class OpenAIServingChat(OpenAIServingBase):
+@@ -1342,6 +1342,16 @@ class OpenAIServingChat(OpenAIServingBase):
              tool_call_constraint=processed_messages.tool_call_constraint,
              renderer_handles_response_format=self.chat_encoding_spec == "kimi_k3",
          )
-+        # NEAR AI: GLM-5.3 default thinking budget (policy
-+        # "default8192-public-to-native") when the client omits
-+        # thinking_token_budget; explicit null or a native budget is kept.
++        # Default thinking budget for GLM-5.3 when the client omits thinking_token_budget;
++        # an explicit null or a native budget is kept.
 +        if (
 +            getattr(self.tokenizer_manager.model_config.hf_config, "model_type", None)
 +            in ("glm5_next", "glm5_next_text")

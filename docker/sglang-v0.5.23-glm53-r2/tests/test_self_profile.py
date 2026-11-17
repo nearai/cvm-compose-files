@@ -46,7 +46,7 @@ if os.path.exists(nsp.OUT_DIR):
     sys.exit(f"refusing to run: {nsp.OUT_DIR} already exists")
 
 
-# v0.5.23: the hook reads the global TP rank from sglang.srt.runtime_context.get_parallel().
+# The hook reads the global TP rank from sglang.srt.runtime_context.get_parallel().
 _RANK = {"tp_rank": 0}
 _rc = types.ModuleType("sglang.srt.runtime_context")
 _rc.get_parallel = lambda: types.SimpleNamespace(tp_rank=_RANK["tp_rank"])

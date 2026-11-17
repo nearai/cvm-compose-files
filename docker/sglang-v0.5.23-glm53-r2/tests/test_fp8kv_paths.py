@@ -6,7 +6,7 @@ The patched files are parsed, never imported: the real functions (calculate_mla_
 the DSA backend __init__ gate, _forward_flashmla_kv, _compute_flashmla_metadata,
 _check_kpool_tail_backend, _get_mla_kv_buffer_from_fp8_for_dsa) are extracted by ast and executed
 against stubs, once with the NoPE/FlashMLA gate enabled and once with it disabled, so a regression
-in a changed branch fails here. The FlashMLA kernel itself is covered by the GPU runs in the README.
+in a changed branch fails here. The FlashMLA kernel itself needs a GPU and is not run here.
 """
 
 import argparse

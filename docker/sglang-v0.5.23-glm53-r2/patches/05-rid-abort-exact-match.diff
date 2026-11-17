@@ -142,15 +142,12 @@ diff --git a/python/sglang/srt/managers/io_struct.py b/python/sglang/srt/manager
 index dcec0aa0f5..84e36194e2 100644
 --- a/python/sglang/srt/managers/io_struct.py
 +++ b/python/sglang/srt/managers/io_struct.py
-@@ -2289,6 +2289,12 @@ class AbortReq(BaseReq, kw_only=True):
+@@ -2289,6 +2289,9 @@ class AbortReq(BaseReq, kw_only=True):
      finished_reason: Optional[FinishReasonDict] = None
      abort_message: Optional[str] = None
      weight_versions: Optional[WeightVersionSpans] = None
-+    # Also abort `<rid>_<i>` batch children (GenerateReqInput._normalize_rid).
-+    # Last field: array_like wire layout, and the Rust tokenizer encodes a
-+    # shorter array that must still decode with this default.
-+    # Set only by TokenizerManager when it forwards an rid it does not own;
-+    # otherwise the match is exact (see abort_match.py).
++    # Also abort `<rid>_<i>` batch children; set only for an rid the sender does not own.
++    # Last field with a default, so a shorter array_like encoding still decodes.
 +    match_children: bool = False
  
      def __post_init__(self):
@@ -254,15 +251,13 @@ diff --git a/python/sglang/srt/managers/tokenizer_manager.py b/python/sglang/srt
 index ca3453f966..87538fd8b7 100644
 --- a/python/sglang/srt/managers/tokenizer_manager.py
 +++ b/python/sglang/srt/managers/tokenizer_manager.py
-@@ -2251,7 +2251,15 @@ class TokenizerManager(TokenizerControlMixin, TokenizerManagerScoreMixin):
+@@ -2251,7 +2251,13 @@ class TokenizerManager(TokenizerControlMixin, TokenizerManagerScoreMixin):
                  state.abort_sent = True
              elif get_serving().tokenizer_worker_num == 1:
                  return
 -        req = AbortReq(rid=rid, abort_all=abort_all)
-+        # Match exactly for an rid this worker owns, so a client-chosen short rid
-+        # reaches only the request with that rid. An rid it does
-+        # not own (operator abort forwarded in multi-tokenizer mode) may name a
-+        # batch parent, so also reach its `<rid>_<i>` children.
++        # An rid this worker owns matches exactly. Another rid may name a batch parent,
++        # so the abort also reaches its `<rid>_<i>` children.
 +        req = AbortReq(
 +            rid=rid,
 +            abort_all=abort_all,

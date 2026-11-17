@@ -85,7 +85,7 @@ index a1fbf8d42e..a1e6cbf43f 100644
          _apply_stack_result(cache, kvcache, params, result)
      except Exception:
 diff --git a/python/sglang/srt/mem_cache/l2_transfer.py b/python/sglang/srt/mem_cache/l2_transfer.py
-index 82f67bc86b..e28b2ce798 100644
+index 82f67bc86b..830e4be40a 100644
 --- a/python/sglang/srt/mem_cache/l2_transfer.py
 +++ b/python/sglang/srt/mem_cache/l2_transfer.py
 @@ -1,6 +1,7 @@
@@ -100,7 +100,7 @@ index 82f67bc86b..e28b2ce798 100644
  
  logger = logging.getLogger(__name__)
  device_module = get_device_module()
-+# NEAR opt-in: pooled page-first DMA for MLA/DSA KV with the direct backend.
++# Opt-in: pooled page-first DMA for MLA/DSA KV with the direct backend.
 +_POOLED_L2_ENABLED = os.environ.get("SGLANG_HICACHE_POOLED_TRANSFERS") == "1"
  
  
@@ -147,7 +147,7 @@ index 82f67bc86b..e28b2ce798 100644
                          transfer.layer_mapper(layer_id)
                          if transfer.layer_mapper is not None
 diff --git a/python/sglang/srt/mem_cache/pool_host/base.py b/python/sglang/srt/mem_cache/pool_host/base.py
-index 65c9297af5..9b0bfc27ce 100644
+index 65c9297af5..25e01c3986 100644
 --- a/python/sglang/srt/mem_cache/pool_host/base.py
 +++ b/python/sglang/srt/mem_cache/pool_host/base.py
 @@ -12,6 +12,7 @@ from typing import Optional, TypeGuard
@@ -162,7 +162,7 @@ index 65c9297af5..9b0bfc27ce 100644
      Inside host_memory_budget_scope, requested_bytes is booked against the
      snapshot when it fits; the allowance before booking is returned.
      """
-+    # NEAR opt-in SGLANG_HICACHE_RAM_BUDGET: one startup budget shared by all
++    # Opt-in SGLANG_HICACHE_RAM_BUDGET: one startup budget shared by all
 +    # pools of this rank. Book the request when it fits, like the scope below.
 +    budget = active_budget()
 +    if budget is not None:
@@ -207,10 +207,10 @@ index a54460a976..f3006e7c2b 100644
          if self.size <= device_capacity:
 diff --git a/python/sglang/srt/mem_cache/pooled_l2.py b/python/sglang/srt/mem_cache/pooled_l2.py
 new file mode 100644
-index 0000000000..80a28d8daf
+index 0000000000..433d139f8d
 --- /dev/null
 +++ b/python/sglang/srt/mem_cache/pooled_l2.py
-@@ -0,0 +1,156 @@
+@@ -0,0 +1,153 @@
 +"""Opt-in rank-local pooled transfers for the GLM TP HiCache.
 +
 +DSA KV (including compatible packed MTP) uses byte-preserving
@@ -219,12 +219,9 @@ index 0000000000..80a28d8daf
 +per-layer path. All ranks independently apply the same transfer plan; no
 +cross-rank ownership.
 +
-+Port to v0.5.23: the host pools are built from device buffer infos, so the
-+MLA host pool owns its device buffers (``device_kv_buffers``, host-layer
++The MLA host pool owns its device buffers (``device_kv_buffers``, host-layer
 +order, packed MTP draft layers last) and the engine hands over resolved
-+physical indices. A recurrent-state duplicate-read GPU clone and a
-+compressed-index pooled path are not needed (upstream state pools also
-+restore side-state buffers, and the indexer has its own host pool type).
++physical indices.
 +"""
 +
 +import logging
@@ -369,10 +366,10 @@ index 0000000000..80a28d8daf
 +        return preloaded
 diff --git a/python/sglang/srt/mem_cache/pooled_pages.py b/python/sglang/srt/mem_cache/pooled_pages.py
 new file mode 100644
-index 0000000000..ee3bed21c8
+index 0000000000..9668cd12ef
 --- /dev/null
 +++ b/python/sglang/srt/mem_cache/pooled_pages.py
-@@ -0,0 +1,156 @@
+@@ -0,0 +1,154 @@
 +"""Rank-local, byte-preserving staging for page-first HiCache DMA.
 +
 +A separate persistent allocation per direction belongs to the L2 engine's
@@ -513,10 +510,8 @@ index 0000000000..ee3bed21c8
 +                    dst_indices=selected_host,
 +                    page_size=1,
 +                )
-+            # GPU access to cudaMallocManaged memory can migrate dirtied/read
-+            # host pages into HBM even with a CPU preferred-location hint.
-+            # Enqueue the return migration after this chunk's final consumer
-+            # on the same stream, coalescing adjacent page ranges in common.py.
++            # GPU access to cudaMallocManaged memory can migrate host pages into HBM, so enqueue the
++            # return migration after this chunk's last consumer on the same stream (see common.py).
 +            _cuda_managed_prefetch_pages_to_host(
 +                self.host_allocation,
 +                selected_host,

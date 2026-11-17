@@ -23,18 +23,18 @@ Upstream numbers are sgl-project/sglang pull requests and name where a patch com
 | 12-preprocess-pool | process pool for request preprocessing; a result that does not pickle uses the thread path | `SGLANG_PREPROCESS_WORKERS` (opt-in) | NEAR |
 | 13-tool-schema-depth-cap | caps tool-schema depth and node count when a cap is set | `SGLANG_TOOL_SCHEMA_MAX_DEPTH`, `SGLANG_TOOL_SCHEMA_MAX_NODES` (default 0, off) | NEAR |
 | 14-credential-redaction | server info, scheduler state, dumps and `ServerArgs` output show credentials redacted | – | #48518 |
-| 15-request-content-log-redaction | logs and error texts show media URLs, base64, schemas and tool values as scheme, length and digest only | – | NEAR |
+| 15-request-content-log-redaction | logs and error texts show media URLs, data: URLs, base64, schemas and tool values by kind and length only; logged exceptions show their type and stack frames, no message | – | NEAR |
 | 16-hicache-runtime | HiCache host-memory budget and pooled transfers to the MLA host pool | `SGLANG_HICACHE_RAM_BUDGET`, `SGLANG_HICACHE_*` | NEAR |
 | 17-hcc-managed-memory | HiCache host buffers from `cudaMallocHost` | `SGLANG_HICACHE_CUDA_HOST_MEMORY=1` | NEAR |
 | 18-tests | unit tests for 16 | – | NEAR |
 | 19-hcc-tests | unit tests for 17 | – | NEAR |
 | 20-ghost-prefix-cache | ghost prefix-cache hit metrics through a separate aggregator | `SGLANG_GHOST_CACHE` (opt-in) | NEAR |
-| 21-kv-tier-metrics | KV cache tier metrics | `SGLANG_KV_TIER_METRICS` (opt-in) | NEAR |
+| 21-kv-tier-metrics | KV cache tier metrics; the scheduler loop refreshes the tier gauges at most once per `SGLANG_KV_TIER_METRICS_RESYNC_S` | `SGLANG_KV_TIER_METRICS` (opt-in) | NEAR |
 | 22-thinking-token-budget | request `thinking_token_budget` maps to `custom_params.thinking_budget`: 8192 by default for `glm5_next`, `null` turns it off, an explicit native budget wins | request field | NEAR |
 | 23-final-prefill-abort-exclusion | a request aborted during its final prefill chunk is excluded from the batch and returns its abort reason | – | #34153 |
 | 24-glm5-perception-gate-tests | unit tests for the GLM-5 perception gate | – | NEAR |
 | 25-glm53-epd-video-and-pd-draft-state | GLM video dispatch in the EPD encoder and hybrid-DSA draft state in P/D | – | NEAR |
-| 26-log-redaction-more-sites | applies 15 to the grammar, tool-call parser, chat serving and diffusion download log lines | – | NEAR |
+| 26-log-redaction-more-sites | applies 15 to the grammar, tool-call parser, chat serving and diffusion download log lines; host names in fetch errors show as `<host>` | – | NEAR |
 | 27-sampling-param-bounds | 400 on out-of-range `n`, `logit_bias`, `temperature` and `top_logprobs`; out-of-vocab `stop_token_ids` are dropped | – | #44047 |
 | 28-top-logprobs-vocab-bound | 400 on `top_logprobs` / `logprobs` above the vocab size | – | #49414 |
 | 29-logprob-start-len-bound | 400 on `logprob_start_len < -1` on `/generate` | – | #49758 |
@@ -53,12 +53,11 @@ tokenization to the preprocessor thread; 11 dumps stacks after a 30 s loop stall
 8192 thinking budget to `glm5_next`; 27-29 and 32-34 reject the out-of-range values above; 31
 refuses local media paths; 35 ignores caller cache hashes; 36 caps transcription uploads at 25 MB; 38 rejects token ids outside the vocabulary.
 
-Launch notes for this image:
-- `SGLANG_EXPERIMENTAL_DSA_KPOOL_METADATA_FUSION` defaults to true in v0.5.23; set it to 0 to turn it off.
-- Breakable prefill CUDA graphs are on by default for GLM-5.3 Flash and capture the KDA extend.
-  With `--mem-fraction-static 0.86` they do not fit in memory during warmup; launch with
-  `--cuda-graph-backend-prefill disabled`. `SGLANG_DISABLE_KDA_PREFILL_GRAPH_EXTEND=1` drops only
-  the KDA capture.
+Upstream v0.5.23 defaults that apply to this image:
+- `SGLANG_EXPERIMENTAL_DSA_KPOOL_METADATA_FUSION` is on; 0 turns it off.
+- Breakable prefill CUDA graphs are on for GLM-5.3 Flash and capture the KDA extend.
+  `--cuda-graph-backend-prefill disabled` turns them off; `SGLANG_DISABLE_KDA_PREFILL_GRAPH_EXTEND=1`
+  drops only the KDA capture.
 
 Packages: nltk 3.10.3 and defusedxml 0.7.1 from a hash-pinned `requirements.txt`, and
 `linux-libc-dev` 6.8.0-149.149 pinned by exact version. The image removes the two Nsight EFA
@@ -71,12 +70,5 @@ code.
 request validation (`tests/test_request_validation.py` and the upstream unit tests the validation
 patches add or edit), and the upstream mem_cache, managers, entrypoints, constrained, multimodal and
 function_call suites, where a failure not in `tests/stock-v0523-known-failures.txt` fails the script.
-The last step needs network access and runs with `SGLANG_ALLOW_LOCAL_MEDIA_PATHS=1`, because some
-upstream tests read local files.
-
-```
-docker build --build-arg BUILD_SOURCE_REVISION=$(git rev-parse HEAD) -t sglang-v0.5.23-glm53-r2 docker/sglang-v0.5.23-glm53-r2
-docker run --rm --runtime runc --entrypoint bash sglang-v0.5.23-glm53-r2 /usr/share/nearai/sglang-v0.5.23-glm53-r2/test-cpu.sh
-```
-
-Publish with `.github/workflows/publish-sglang-v0.5.23-glm53-r2.yaml` from a merged commit on main.
+The last step runs with `SGLANG_ALLOW_LOCAL_MEDIA_PATHS=1`, because some upstream tests read local
+files.

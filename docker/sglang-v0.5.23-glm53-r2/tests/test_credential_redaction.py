@@ -25,14 +25,19 @@ import argparse
 import ast
 import asyncio
 import dataclasses
+import hashlib
 import importlib.util
 import json
+import secrets
 import sys
 import types
 from pathlib import Path
 
-KEY = "test-admin-key-0123456789"  # a fixed dummy, never a real credential
-API_KEY = "test-api-key-0000000000"
+# Generated per run, so a value found in an output can only come from the test.
+KEY = secrets.token_hex(16)
+API_KEY = secrets.token_hex(16)
+WRONG_KEY = secrets.token_hex(16)
+SSL_PASSWORD = secrets.token_hex(16)
 ADMIN_PATHS = (
     "/set_trace_level",
     "/load_lora_adapter_from_tensors",
@@ -51,6 +56,15 @@ def check(cond: bool, what: str) -> None:
     print(("ok   " if cond else "FAIL ") + what)
     if not cond:
         failures.append(what)
+
+
+def no_digest(text: str) -> bool:
+    """No 6+ hex prefix of a credential's sha256 or md5 appears in ``text``."""
+    for value in (KEY, API_KEY, SSL_PASSWORD):
+        for digest in (hashlib.sha256(value.encode()).hexdigest(), hashlib.md5(value.encode()).hexdigest()):
+            if digest[:6] in text:
+                return False
+    return True
 
 
 def load_auth(root: Path):
@@ -175,7 +189,7 @@ def static(root: Path) -> None:
         lvl = levels.get(p, "MISSING")
         check(lvl in ("ADMIN_OPTIONAL", "ADMIN_FORCE"), f"{p} is admin-gated (level {lvl})")
         if lvl in ("ADMIN_OPTIONAL", "ADMIN_FORCE"):
-            no, wrong, ok = decide(p, None, lvl), decide(p, "Bearer nope", lvl), decide(p, f"Bearer {KEY}", lvl)
+            no, wrong, ok = decide(p, None, lvl), decide(p, f"Bearer {WRONG_KEY}", lvl), decide(p, f"Bearer {KEY}", lvl)
             check(not no.allowed and no.error_status_code == 401, f"{p} without the admin key -> 401")
             check(not wrong.allowed, f"{p} with a wrong key -> rejected")
             check(ok.allowed, f"{p} with the admin key -> allowed")
@@ -189,16 +203,22 @@ def static(root: Path) -> None:
     sa_tree = ast.parse((root / "server_args.py").read_text())
     try:
         h = redaction_helpers(sa_tree)
-        red = h["redact_server_args_secrets"]({"admin_api_key": KEY, "api_key": API_KEY, "ssl_keyfile_password": "pw", "model_path": "m", "port": 8000})
-        check(KEY not in json.dumps(red) and API_KEY not in json.dumps(red) and "pw" not in red.values(), "redact_server_args_secrets hides all three credentials")
+        red = h["redact_server_args_secrets"]({"admin_api_key": KEY, "api_key": API_KEY, "ssl_keyfile_password": SSL_PASSWORD, "model_path": "m", "port": 8000})
+        check(all(v not in json.dumps(red) for v in (KEY, API_KEY, SSL_PASSWORD)), "redact_server_args_secrets hides all three credentials")
         check(red["model_path"] == "m" and red["port"] == 8000, "redact_server_args_secrets keeps the other fields")
+        check(
+            all(red[k] == "<redacted>" for k in ("admin_api_key", "api_key", "ssl_keyfile_password"))
+            and no_digest(json.dumps(red)),
+            "redact_server_args_secrets renders <redacted> with no digest of the value",
+        )
         check(h["redact_server_args_secrets"]({"admin_api_key": None})["admin_api_key"] is None, "an unset credential stays None")
-        argv = ["sglang", "serve", "--admin-api-key", KEY, f"--api-key={API_KEY}", "--ssl-keyfile-pass", "pw", "--port", "8000"]
+        argv = ["sglang", "serve", "--admin-api-key", KEY, f"--api-key={API_KEY}", "--ssl-keyfile-pass", SSL_PASSWORD, "--port", "8000"]
         out = h["redact_secret_cli_args"](argv)
         check(
-            KEY not in out and all(API_KEY not in a for a in out) and "pw" not in out and out[-2:] == ["--port", "8000"],
+            all(v not in " ".join(out) for v in (KEY, API_KEY, SSL_PASSWORD)) and out[-2:] == ["--port", "8000"],
             "redact_secret_cli_args hides --flag value, --flag=value and an abbreviated flag",
         )
+        check(no_digest(" ".join(out)), "redact_secret_cli_args output carries no digest of a value")
     except (StopIteration, KeyError) as e:
         check(False, f"redaction helpers present in server_args.py ({e!r})")
         h = None
@@ -251,9 +271,8 @@ def static(root: Path) -> None:
         "scheduler internal_state readback is redacted at the source",
     )
 
-    # Every whole-record readback / log / dump goes through the redaction.
-    # engine / tokenizer_manager / build_server_info call resolved_dict() themselves; http_server and
-    # grpc_bridge go through build_server_info in v0.5.23 (0 direct calls is fine there).
+    # Every whole-record readback, log and dump goes through the redaction. http_server and
+    # grpc_bridge reach the record only through build_server_info, so 0 direct calls is fine there.
     for rel, need in (
         ("entrypoints/engine.py", True),
         ("managers/tokenizer_manager.py", True),

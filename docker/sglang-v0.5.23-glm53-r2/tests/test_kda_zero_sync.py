@@ -1,9 +1,9 @@
-"""CPU check that SGLang v0.5.23 counts KDA tokens on the host without a patch: upstream #39688
-(c8eb54c41d, "Fuse GLM-5.3-Flash KDA projections and prefill metadata") computes the logical token
+"""CPU check that SGLang v0.5.23 counts KDA tokens on the host without a patch: upstream
+commit c8eb54c41d ("Fuse GLM-5.3-Flash KDA projections and prefill metadata") computes the logical token
 count once per batch on the host in HybridLinearAttnBackend metadata (sum(extend_seq_lens_cpu)), and
 KDAAttnBackend.forward_extend reads forward_metadata.logical_num_tokens, falling back to the device
-read only when it is None. This checks both halves by ast so a regression back to a per-layer
-int(query_start_loc[-1]) sync is caught.
+read only when it is None. This checks both halves by ast: neither reads
+int(query_start_loc[-1]) per layer.
 
 Usage: python3 -I test_kda_zero_sync.py .../layers/attention/linear/kda_backend.py .../layers/attention/hybrid_linear_attn_backend.py
 """
