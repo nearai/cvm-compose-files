@@ -273,6 +273,7 @@ services:
     container_name: model-proxy-registrar
     entrypoint: ["sh", "/register.sh"]
     restart: unless-stopped
+    stop_grace_period: 90s
     healthcheck:
       test: ["CMD-SHELL", "[ $$(( $$(date +%s) - $$(cat /tmp/registrar_alive 2>/dev/null || echo 0) )) -lt 180 ]"]
       interval: 30s
@@ -1305,7 +1306,8 @@ configs:
           break
         fi
         echo "Model not ready yet (attempt $$ready_attempts/30), retrying in 30s..."
-        sleep 30
+        sleep 30 &
+        wait $$!
       done
       echo "Model ready, starting registration loop"
 
@@ -1341,7 +1343,8 @@ configs:
             fi
             ;;
         esac
-        sleep 60
+        sleep 60 &
+        wait $$!
       done
   nginx_conf:
     content: |

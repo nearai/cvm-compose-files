@@ -110,6 +110,7 @@ services:
     container_name: model-proxy-registrar
     entrypoint: ["sh", "/register.sh"]
     restart: unless-stopped
+    stop_grace_period: 90s
     healthcheck:
       test: ["CMD-SHELL", "[ $$(( $$(date +%s) - $$(cat /tmp/registrar_alive 2>/dev/null || echo 0) )) -lt 180 ]"]
       interval: 30s
@@ -1512,7 +1513,8 @@ configs:
         register_model "deepseek-ai/DeepSeek-V4.1-Flash-1017" "deepseek-v4-1-flash.completions.near.ai"
         register_model "deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated" "deepseek-v4-1-flash-abliterated.completions.near.ai"
         date +%s > /tmp/registrar_alive
-        sleep 60
+        sleep 60 &
+        wait $$!
       done
 
   nginx_conf:

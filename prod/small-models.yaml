@@ -795,6 +795,7 @@ services:
     container_name: model-proxy-registrar
     entrypoint: ["sh", "/register.sh"]
     restart: unless-stopped
+    stop_grace_period: 150s
     healthcheck:
       test: ["CMD-SHELL", "[ $$(( $$(date +%s) - $$(cat /tmp/registrar_alive 2>/dev/null || echo 0) )) -lt 180 ]"]
       interval: 30s
@@ -2977,7 +2978,8 @@ configs:
           break
         fi
         echo "First model not ready yet (attempt $$ready_attempts/30), retrying in 30s..."
-        sleep 30
+        sleep 30 &
+        wait $$!
       done
       echo "First model ready, starting registration loop"
 
@@ -3018,7 +3020,8 @@ configs:
         register_model "z-ai/glm-5.3-flash" "glm-5-3-flash.completions.near.ai"
         # Refresh liveness after the register_model calls, before the long sleep.
         date +%s > /tmp/registrar_alive
-        sleep 60
+        sleep 60 &
+        wait $$!
       done
   nginx_conf:
     content: |
@@ -3441,7 +3444,8 @@ configs:
           break
         fi
         echo "Replica not ready yet (attempt $$ready_attempts/30), retrying in 30s..."
-        sleep 30
+        sleep 30 &
+        wait $$!
       done
 
       while true; do
@@ -3464,7 +3468,8 @@ configs:
 
         register_model "$$MODEL" "$$DOMAIN"
         date +%s > /tmp/registrar_alive
-        sleep 60
+        sleep 60 &
+        wait $$!
       done
 
   qwen38_abliterated_registrar_script:
