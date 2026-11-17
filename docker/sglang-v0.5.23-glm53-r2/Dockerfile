@@ -15,7 +15,7 @@ LABEL nearai.sglang.upstream.build="https://github.com/sgl-project/sglang/action
 LABEL nearai.build.repository="https://github.com/nearai/cvm-compose-files"
 LABEL nearai.build.recipe="docker/sglang-v0.5.23-glm53-r2/Dockerfile"
 LABEL nearai.build.source_revision="${BUILD_SOURCE_REVISION}"
-LABEL nearai.sglang.patch_series="01-37"
+LABEL nearai.sglang.patch_series="01-38"
 LABEL nearai.python.packages="nltk=3.10.3 defusedxml=0.7.1"
 LABEL nearai.os.linux_libc_dev="6.8.0-149.149"
 

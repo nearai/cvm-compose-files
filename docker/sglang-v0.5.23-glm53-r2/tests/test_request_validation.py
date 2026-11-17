@@ -1,4 +1,5 @@
-"""CPU checks for media-local-paths-opt-in, session-params-validation and caller-mm-hashes-opt-in.
+"""CPU checks for media-local-paths-opt-in, session-params-validation, caller-mm-hashes-opt-in and
+token-id-vocab-bound.
 
 Run inside the image with pytest (see test-cpu.sh); it imports the installed, patched package.
 The other request-validation patches bring their own upstream unit tests, which test-cpu.sh runs.
@@ -226,3 +227,158 @@ def test_preprocessed_item_hashes_need_opt_in(monkeypatch, trusted):
     assert bp._trusted_caller_hash(1234) == (1234 if trusted else None)
     src = Path(bp.__file__).read_text()
     assert 'hash=_trusted_caller_hash(dict_item.pop("hash", None))' in src
+
+
+# --- token-id-vocab-bound ----------------------------------------------------------------------
+
+VOCAB = 100
+OUT_OF_VOCAB = [[VOCAB], [1, VOCAB + 900, 2], [-1], [3, -7]]
+NOT_INT64 = [[2**63], [1, 2**63 + 5], [-(2**63) - 1], [1, 2.5]]
+IN_VOCAB = [[0], [VOCAB - 1], [0, 50, VOCAB - 1]]
+
+
+@pytest.fixture
+def token_manager():
+    from sglang.srt.managers.tokenizer_manager import TokenizerManager
+    from sglang.srt.runtime_context import publish, reset_context
+    from sglang.srt.sampling.sampling_params import SamplingParams
+    from sglang.srt.server_args import ServerArgs
+
+    reset_context()
+    publish(ServerArgs(model_path="dummy"), role="tokenizer")
+    tm = TokenizerManager.__new__(TokenizerManager)
+    tm.context_len = 1 << 20
+    tm.num_reserved_tokens = 0
+    tm.allow_auto_truncate = False
+    tm.validate_total_tokens = False
+    tm.is_generation = True
+    tm.model_config = SimpleNamespace(
+        vocab_size=VOCAB,
+        joint_head_config=None,
+        pointer_head=None,
+        hf_config=SimpleNamespace(architectures=["LlamaForCausalLM"]),
+    )
+    tm.preferred_sampling_params = None
+    tm.sampling_params_class = SamplingParams
+    tm.tokenizer = None
+    tm.mm_processor = None
+    tm.fake_bootstrap_room_counter = 0
+    tm.rid_to_state = {}
+    yield tm
+    reset_context()
+
+
+async def _tokenize_items(tm, obj):
+    """What generate_request does per request: split a batch, tokenize each item."""
+    from sglang.srt.observability.req_time_stats import APIServerReqTimeStats
+
+    obj.normalize_batch_and_arguments()
+    items = [obj] if obj.is_single else [obj[i] for i in range(obj.batch_size)]
+    for item in items:
+        tm.rid_to_state[item.rid] = SimpleNamespace(time_stats=APIServerReqTimeStats())
+    return [await tm._tokenize_one_request(item) for item in items]
+
+
+def _tokenize_all(tm, obj):
+    import asyncio
+
+    return asyncio.run(_tokenize_items(tm, obj))
+
+
+def _generate(ids):
+    from sglang.srt.managers.io_struct import GenerateReqInput
+
+    return GenerateReqInput(input_ids=ids, sampling_params={"max_new_tokens": 1})
+
+
+def _embed(ids):
+    from sglang.srt.managers.io_struct import EmbeddingReqInput
+
+    return EmbeddingReqInput(input_ids=ids)
+
+
+@pytest.mark.parametrize("ids", OUT_OF_VOCAB)
+@pytest.mark.parametrize("batched", [False, True])
+def test_out_of_vocab_token_ids_rejected(token_manager, ids, batched):
+    obj = _generate([[1, 2], ids] if batched else ids)
+    with pytest.raises(ValueError, match=r"out-of-vocabulary token id; valid range is \[0, 100\)"):
+        _tokenize_all(token_manager, obj)
+
+
+@pytest.mark.parametrize("ids", NOT_INT64)
+@pytest.mark.parametrize("batched", [False, True])
+def test_token_ids_outside_int64_rejected(token_manager, ids, batched):
+    obj = _generate([[1, 2], ids] if batched else ids)
+    with pytest.raises(ValueError, match="64-bit integers"):
+        _tokenize_all(token_manager, obj)
+
+
+@pytest.mark.parametrize("ids", OUT_OF_VOCAB + NOT_INT64)
+def test_embedding_token_ids_rejected(token_manager, ids):
+    token_manager.is_generation = False
+    with pytest.raises(ValueError, match="out-of-vocabulary|64-bit integers"):
+        _tokenize_all(token_manager, _embed(ids))
+
+
+@pytest.mark.parametrize("ids", IN_VOCAB)
+def test_in_vocab_token_ids_accepted(token_manager, ids):
+    (gen,) = _tokenize_all(token_manager, _generate(list(ids)))
+    assert list(gen.input_ids) == ids
+    batch = _tokenize_all(token_manager, _generate([list(ids), [1, 2]]))
+    assert [list(t.input_ids) for t in batch] == [ids, [1, 2]]
+    token_manager.is_generation = False
+    (emb,) = _tokenize_all(token_manager, _embed(list(ids)))
+    assert list(emb.input_ids) == ids
+
+
+def test_long_prompt_checked_in_one_pass(token_manager):
+    ids = [i % VOCAB for i in range(200_000)]
+    (gen,) = _tokenize_all(token_manager, _generate(list(ids)))
+    assert len(gen.input_ids) == len(ids)
+    ids[123_456] = VOCAB
+    with pytest.raises(ValueError, match="out-of-vocabulary"):
+        _tokenize_all(token_manager, _generate(ids))
+
+
+def test_multimodal_caller_ids_checked_before_processor(token_manager):
+    token_manager.mm_processor = mock.Mock(
+        process_mm_data_async=mock.AsyncMock(side_effect=AssertionError("processor ran"))
+    )
+    obj = _generate([1, 2**63])
+    obj.image_data = "data:image/png;base64,"
+    with pytest.raises(ValueError, match="64-bit integers"):
+        _tokenize_all(token_manager, obj)
+
+
+@pytest.mark.parametrize("prompt", [[VOCAB], [-1], [2**63], [[1, 2], [3, VOCAB]]])
+@pytest.mark.parametrize("stream", [False, True])
+def test_completions_token_prompt_answers_400(token_manager, prompt, stream):
+    import asyncio
+
+    from fastapi import Request
+
+    from sglang.srt.entrypoints.openai.protocol import CompletionRequest, ErrorResponse
+    from sglang.srt.entrypoints.openai.serving_completions import OpenAIServingCompletion
+
+    async def generate_request(obj, request=None):
+        await _tokenize_items(token_manager, obj)
+        yield {"text": "", "meta_info": {}}
+
+    tm = mock.Mock()
+    tm.model_config = SimpleNamespace(is_multimodal=False, vocab_size=VOCAB)
+    tm.request_logger = SimpleNamespace(log_requests=False, log_requests_level=0)
+    tm.generate_request = generate_request
+    template = SimpleNamespace(
+        chat_template_name=None,
+        jinja_template_content_format=None,
+        completion_template_name=None,
+        jinja_template_may_reorder_tool_results=False,
+    )
+    serving = OpenAIServingCompletion(tm, template)
+    req = CompletionRequest(model="x", prompt=prompt, max_tokens=1, stream=stream)
+    raw = mock.Mock(spec=Request)
+    raw.headers = {}
+    resp = asyncio.run(serving.handle_request(req, raw))
+    assert resp.status_code == 400
+    body = resp.body.decode()
+    assert "out-of-vocabulary" in body or "64-bit integers" in body

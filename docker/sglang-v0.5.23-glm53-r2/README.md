@@ -46,11 +46,12 @@ Upstream numbers are sgl-project/sglang pull requests and name where a patch com
 | 35-caller-mm-hashes-opt-in | the server computes the multimodal cache identity; caller `mm_hashes` and the `hash` / `pad_value` of preprocessed items are ignored | `SGLANG_TRUST_CALLER_MM_HASHES=1` keeps them | NEAR |
 | 36-transcription-upload-cap | `/v1/audio/transcriptions` reads uploads in chunks and answers 413 above the cap | `--audio-transcription-max-file-size-mb` (default 25, 0 turns the cap off) | #43915 |
 | 37-ghost-aggregator-short-message | the ghost-cache aggregator counts a datagram shorter than the message header as a bad message, drops it and keeps reading | `SGLANG_GHOST_CACHE` (opt-in) | NEAR |
+| 38-token-id-vocab-bound | 400 on caller token ids outside `[0, vocab_size)`, ids beyond 64 bits included, on every route that takes token ids (`/generate`, `/encode`, `/v1/completions`, `/v1/embeddings`, `/v1/classify`, `/v1/score`) | – | NEAR |
 
 Defaults this image sets, which differ from stock v0.5.23: 02 clamps prefill chunks; 09 moves
 tokenization to the preprocessor thread; 11 dumps stacks after a 30 s loop stall; 22 applies an
 8192 thinking budget to `glm5_next`; 27-29 and 32-34 reject the out-of-range values above; 31
-refuses local media paths; 35 ignores caller cache hashes; 36 caps transcription uploads at 25 MB.
+refuses local media paths; 35 ignores caller cache hashes; 36 caps transcription uploads at 25 MB; 38 rejects token ids outside the vocabulary.
 
 Launch notes for this image:
 - `SGLANG_EXPERIMENTAL_DSA_KPOOL_METADATA_FUSION` defaults to true in v0.5.23; set it to 0 to turn it off.
