@@ -66,7 +66,7 @@ x-sglang-env:
 x-qwen3-6-common: &qwen3-6-common
   <<: *nvidia
   init: true
-  image: docker.io/nearaidev/sglang@sha256:6de632a5e9422be4b6e84e32cf475679c0f29c4bb6d58984d873ff9f7ba92a65
+  image: docker.io/nearaidev/sglang@sha256:2321e3c217f0757fe285187d28553183f051b8d1ceccb0deb6a7459c43ed3a45
   command: >
       sglang serve
       --model-path Qwen/Qwen3.6-35B-A3B-FP8
@@ -111,7 +111,7 @@ x-qwen3-8-27b-dedicated: &qwen3-8-27b-dedicated
   init: true
   cap_add:
     - SYS_NICE
-  image: docker.io/nearaidev/sglang@sha256:6de632a5e9422be4b6e84e32cf475679c0f29c4bb6d58984d873ff9f7ba92a65
+  image: docker.io/nearaidev/sglang@sha256:2321e3c217f0757fe285187d28553183f051b8d1ceccb0deb6a7459c43ed3a45
   command: >
       sglang serve
       --trust-remote-code
@@ -151,7 +151,7 @@ x-qwen3-8-27b-dedicated: &qwen3-8-27b-dedicated
 x-flux-common: &flux-common
   <<: *vllm-common
   # Offload and pinned host memory stay off, so the pipeline's placement never depends on free memory at startup.
-  image: docker.io/nearaidev/sglang@sha256:6de632a5e9422be4b6e84e32cf475679c0f29c4bb6d58984d873ff9f7ba92a65
+  image: docker.io/nearaidev/sglang@sha256:2321e3c217f0757fe285187d28553183f051b8d1ceccb0deb6a7459c43ed3a45
   command: >
       sglang serve
       --model-path /root/.cache/huggingface/hub/models--black-forest-labs--FLUX.2-klein-4B/snapshots/e7b7dc27f91deacad38e78976d1f2b499d76a294
