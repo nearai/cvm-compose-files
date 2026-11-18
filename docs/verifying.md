@@ -109,6 +109,7 @@ workflow's existing signatures stay valid for the images it published.
 | `publish-vllm-v0.33.0-dsv41-r3.yaml` | `.github/workflows/publish-vllm-v0.33.0-dsv41-r3.yaml@refs/heads/main` | `nearaidev/vllm` | active |
 | `publish-vllm-v0.34.0-dsv41-r1.yaml` | `.github/workflows/publish-vllm-v0.34.0-dsv41-r1.yaml@refs/heads/main` | `nearaidev/vllm` | active |
 | `publish-sglang-v0.5.23-secure-r2.yaml` | `.github/workflows/publish-sglang-v0.5.23-secure-r2.yaml@refs/heads/main` | `nearaidev/sglang` | active |
+| `publish-sglang-v0.5.23-glm53-r3.yaml` | `.github/workflows/publish-sglang-v0.5.23-glm53-r3.yaml@refs/heads/main` | `nearaidev/sglang` | active |
 | `publish-glm53-v0523.yaml` | `.github/workflows/publish-glm53-v0523.yaml@refs/heads/main` | `nearaidev/sglang` | retired |
 | `publish-sglang-v0523-secure.yaml` | `.github/workflows/publish-sglang-v0523-secure.yaml@refs/heads/main` | `nearaidev/sglang` | retired |
 | `publish-glm53-admission-reserve.yaml` | `.github/workflows/publish-glm53-admission-reserve.yaml@refs/heads/main` | `nearaidev/sglang` | retired |
@@ -138,6 +139,7 @@ can no longer be followed.
 | `050b1adf961c8621264d14696d24645f70d1a675509ad400a72ccfb1a3fddcb2` | `glm53-v0523-near-v1` | `sglang-glm53-v0523` | `2cf337c2c5fc3fa78570a5ae0e3dd432abaefde8` | upstream SGLang |
 | `6de632a5e9422be4b6e84e32cf475679c0f29c4bb6d58984d873ff9f7ba92a65` | `sglang-v0523-secure-near-v1` | `sglang-v0523-secure` | `a07dea8faf1523d85f20e328031977b7964be3e4` | upstream SGLang |
 | `2321e3c217f0757fe285187d28553183f051b8d1ceccb0deb6a7459c43ed3a45` | `v0.5.23-secure-r2` | `sglang-v0.5.23-secure-r2` | `9fd36fd3900655f0bbf411e6f3f08b4c2d037ab0` | upstream SGLang |
+| `0ca61f6ab34faafa41c220ff5eb64c7026b3ada16a87147a0d75680f91a14b50` | `v0.5.23-glm53-r3` | `sglang-v0.5.23-glm53-r3` | `38385ce62043915646e2d32dc70f314522e056d9` | upstream SGLang |
 | `a744ada2a362e2548a88527432da1662aa027012226d9e0ed4fce9cda1e6f0bd` | `dsv41-lora-v0.33.0-near-v1` | `vllm-dsv41-v033` | `7469ed1c47d216ceee4a5329515e6fa0901d90df` | upstream vLLM |
 | `2fe2385152c450c971ff1ac9262298d9f3ed1a09decd4c65b048a6465c1796ea` | `v0.33.0-dsv41-r3` | `vllm-v0.33.0-dsv41-r3` | `494e2854a811ae563c29058c811250b7cc756f8a` | upstream vLLM |
 | `0e1f95eddd2247bf1c8ab024876319c2f80aead5d0e4a28dfffc9563e370a253` | `v0.34.0-dsv41-r1` | `vllm-v0.34.0-dsv41-r1` | `cbe1dd569bd7ba31c569bd72b5c0142e2b9cbfcd` | upstream vLLM |
