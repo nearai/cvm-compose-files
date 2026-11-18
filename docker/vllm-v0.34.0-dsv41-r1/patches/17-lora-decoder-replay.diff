@@ -1,5 +1,5 @@
 diff --git a/vllm/models/deepseek_v41/decoder_replay_layers.py b/vllm/models/deepseek_v41/decoder_replay_layers.py
-index a08cd80..c88cbc9 100644
+index a08cd80..a7833a1 100644
 --- a/vllm/models/deepseek_v41/decoder_replay_layers.py
 +++ b/vllm/models/deepseek_v41/decoder_replay_layers.py
 @@ -26,6 +26,7 @@ from vllm.forward_context import (
@@ -36,12 +36,17 @@ index a08cd80..c88cbc9 100644
      def uses_replay_batch(self) -> bool:
          """Whether this forward uses the replay batch: in a PIECEWISE graph by its
          size, fixed at capture (no replay batch is set then); else if one is set."""
-@@ -120,22 +140,41 @@ class DecoderReplayLayers:
+@@ -120,22 +140,42 @@ class DecoderReplayLayers:
          assert isinstance(hidden_states, torch.Tensor)
          rows = replay_batch.rows
          inputs = (hidden_states, *states)
 -        with override_forward_context(replay_batch.forward_context):
--            if replay_batch.run_graph is not None:
++        punica = self._punica_wrapper()
++        full_lora = None
++        if punica is not None:
++            # LoRA kernels index tokens through this metadata: map it to the rows
++            # (and to the zero padding rows, which carry no adapter: -1).
+             if replay_batch.run_graph is not None:
 -                row_outputs = replay_batch.run_graph(rows, inputs)
 -            else:
 -                row_inputs = [
@@ -49,12 +54,7 @@ index a08cd80..c88cbc9 100644
 -                ]
 -                if replay_batch.num_padded is not None:
 -                    padding = replay_batch.num_padded - rows.numel()
-+        punica = self._punica_wrapper()
-+        full_lora = None
-+        if punica is not None:
-+            # LoRA kernels index tokens through this metadata: map it to the rows
-+            # (and to the zero padding rows, which carry no adapter: -1).
-+            assert replay_batch.run_graph is None, "replay graphs hold no LoRA mapping"
++                raise RuntimeError("replay graphs hold no LoRA mapping")
 +            full_lora = punica.token_lora_indices
 +            row_lora = full_lora.index_select(0, rows)
 +            if replay_batch.num_padded is not None:
