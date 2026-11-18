@@ -72,9 +72,9 @@ jobs:
           git merge-base --is-ancestor "$SOURCE_REVISION" origin/main
           test "$GITHUB_REF" = refs/heads/main
           test "$(sha256sum "$BUILD_CONTEXT/Dockerfile" | awk '{print $1}')" = \
-            5cbe80c2c3ee7b7e1830f148c3795b138ac1cd029bc6d012643294ee163def69
+            c3b80641dedd2b73bce195f50db22a139ecb78605fd6cc04eebea54101d3308d
           test "$(sha256sum "$BUILD_CONTEXT/SHA256SUMS" | awk '{print $1}')" = \
-            136ce8915f3d10c75181460c16acd5e01c1b76dfe7613762b55309f4a2b3bffc
+            1f95bbcbc81e921e6bdd94a3f5df26a987d07f22281ffcfc1c2684feaf969d6e
           (cd "$BUILD_CONTEXT" && sha256sum --check --strict SHA256SUMS)
           for line in \
             'base_image=vllm/vllm-openai@sha256:20fdb089454afbb324efa4110a2c025ff7b27cc1a086e07aa580b18df8ad1ce1' \
@@ -167,7 +167,7 @@ jobs:
             --arg patched_files "$(sha256sum "$BUILD_CONTEXT/PATCHED-FILES.sha256" | awk '{print $1}')" \
             '.config.Labels["nearai.vllm.base"] == "vllm/vllm-openai:v0.34.0" and
              .config.Labels["nearai.build.recipe"] == "docker/vllm-v0.34.0-dsv41-r1/Dockerfile" and
-             .config.Labels["nearai.vllm.patch_series"] == "01-16" and
+             .config.Labels["nearai.vllm.patch_series"] == "01-17" and
              .config.Labels["nearai.os.linux_libc_dev"] == "6.8.0-149.149" and
              .config.Labels["nearai.vllm.patched_files_sha256"] == $patched_files' \
             image-config.json
@@ -323,7 +323,7 @@ jobs:
             echo "- tag: \`$IMAGE_REF\`"
             echo "- immutable: \`$IMAGE_IMMUTABLE_REF\`"
             echo "- base: \`vllm/vllm-openai:v0.34.0\` (20fdb089)"
-            echo "- patches: 01-16 (docker/vllm-v0.34.0-dsv41-r1/patches): LoRA, confidential-compute, bounded request handling, and opt-in Engram prestage"
+            echo "- patches: 01-17 (docker/vllm-v0.34.0-dsv41-r1/patches): LoRA, confidential-compute, bounded request handling, opt-in Engram prestage, and opt-in LoRA decoder replay"
             echo "- embedded BuildKit provenance: verified"
             echo "- Trivy fixed HIGH findings: $TRIVY_HIGH"
             echo "- Trivy fixed CRITICAL findings: $TRIVY_CRITICAL"
