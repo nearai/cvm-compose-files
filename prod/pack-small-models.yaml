@@ -1564,7 +1564,7 @@ services:
   # utilization setting, which only gates the startup free-memory check, and must fit the GPU's free memory.
   model-vllm-qwen3vl-30b-a3b-fp8-tp1:
     <<: *vllm-common
-    image: vllm/vllm-openai@sha256:d825baf9ce4b1b6bfc5ecc7b79880c7e6748c65a72d697ce3d47607aafa84c6e
+    image: docker.io/nearaidev/vllm@sha256:2d0f065eff326629b3e8938e36b1b31b1541b8b9b9c0f2ae85da68c12be20f05
     container_name: model-vllm-qwen3vl-30b-a3b-fp8-tp1
     networks:
       - engine-qwen3vl
@@ -1609,7 +1609,7 @@ services:
       nearai.otel.model: "Qwen/Qwen3-VL-30B-A3B-Instruct"
       nearai.otel.served_model: "Qwen/Qwen3-VL-30B-A3B-Instruct"
       nearai.otel.model_path: "Qwen/Qwen3-VL-30B-A3B-Instruct-FP8"
-      nearai.otel.engine_image: "d825baf9ce4b"
+      nearai.otel.engine_image: "2d0f065eff32"
       nearai.otel.instance: "1"
       nearai.otel.config_variant: "qwen3vl-kv16g-v1runner-offline"
       nearai.otel.deployment: "pack-small-models"
@@ -1675,7 +1675,7 @@ services:
 
   model-vllm-qwen3-embedding-0.6b-tp1:
     <<: *vllm-common
-    image: vllm/vllm-openai@sha256:d825baf9ce4b1b6bfc5ecc7b79880c7e6748c65a72d697ce3d47607aafa84c6e
+    image: docker.io/nearaidev/vllm@sha256:2d0f065eff326629b3e8938e36b1b31b1541b8b9b9c0f2ae85da68c12be20f05
     container_name: model-vllm-qwen3-embedding-0.6b-tp1
     networks:
       - engine-qwen3-embedding
@@ -1714,7 +1714,7 @@ services:
       nearai.otel.model: "Qwen/Qwen3-Embedding-0.6B"
       nearai.otel.served_model: "Qwen/Qwen3-Embedding-0.6B"
       nearai.otel.model_path: "Qwen/Qwen3-Embedding-0.6B"
-      nearai.otel.engine_image: "d825baf9ce4b"
+      nearai.otel.engine_image: "2d0f065eff32"
       nearai.otel.instance: "1"
       nearai.otel.config_variant: "embedding-kv8g-v1runner-offline"
       nearai.otel.deployment: "pack-small-models"
@@ -1780,7 +1780,7 @@ services:
 
   model-vllm-qwen3-reranker-0.6b-tp1:
     <<: *vllm-common
-    image: vllm/vllm-openai@sha256:d825baf9ce4b1b6bfc5ecc7b79880c7e6748c65a72d697ce3d47607aafa84c6e
+    image: docker.io/nearaidev/vllm@sha256:2d0f065eff326629b3e8938e36b1b31b1541b8b9b9c0f2ae85da68c12be20f05
     container_name: model-vllm-qwen3-reranker-0.6b-tp1
     networks:
       - engine-qwen3-reranker
@@ -1821,7 +1821,7 @@ services:
       nearai.otel.model: "Qwen/Qwen3-Reranker-0.6B"
       nearai.otel.served_model: "Qwen/Qwen3-Reranker-0.6B"
       nearai.otel.model_path: "Qwen/Qwen3-Reranker-0.6B"
-      nearai.otel.engine_image: "d825baf9ce4b"
+      nearai.otel.engine_image: "2d0f065eff32"
       nearai.otel.instance: "1"
       nearai.otel.config_variant: "reranker-kv7g-v1runner-offline"
       nearai.otel.deployment: "pack-small-models"
