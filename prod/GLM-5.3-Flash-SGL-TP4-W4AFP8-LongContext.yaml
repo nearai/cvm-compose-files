@@ -430,7 +430,7 @@ services:
   model-sg-glm53-w4afp8-tp2-r2a:
     <<: *sg-glm53-flash-common
     container_name: model-sg-glm53-w4afp8-tp2-r2a
-    image: docker.io/nearaidev/sglang@sha256:050b1adf961c8621264d14696d24645f70d1a675509ad400a72ccfb1a3fddcb2
+    image: docker.io/nearaidev/sglang@sha256:0ca61f6ab34faafa41c220ff5eb64c7026b3ada16a87147a0d75680f91a14b50
     command: >
         sglang serve
         --model-path /root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/snapshots/99f1fa70408c52b007d4fd69e02e5a522422e755
@@ -512,7 +512,7 @@ services:
               device_ids: ["4","5"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-fp8-kv","deployment:glm53-flash-sgl-tp4","config_variant:sglang-v0523-long-context-w4afp8-c16384-qsplit-offloop-v3-hicacheoff-memopt-fp8kv-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-mr16q8-strict-budget8192-obs-v1-v0523-restricted-env","request_logging:disabled","engine_image:050b1adf961c","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:2a","gpu_pair:4-5"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-fp8-kv","deployment:glm53-flash-sgl-tp4","config_variant:sglang-v0523-long-context-w4afp8-c16384-qsplit-offloop-v3-hicacheoff-memopt-fp8kv-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-mr16q8-strict-budget8192-obs-v1-v0523-restricted-env","request_logging:disabled","engine_image:0ca61f6ab34f","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:2a","gpu_pair:4-5"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -527,7 +527,7 @@ services:
       nearai.otel.config_variant: "sglang-v0523-long-context-w4afp8-c16384-qsplit-offloop-v3-hicacheoff-memopt-fp8kv-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-mr16q8-strict-budget8192-obs-v1-v0523-restricted-env"
       nearai.otel.thinking_budget_policy: "default8192-public-to-native"
       nearai.otel.request_logging: "disabled"
-      nearai.otel.engine_image: "050b1adf961c"
+      nearai.otel.engine_image: "0ca61f6ab34f"
       nearai.otel.instance: "2a"
       nearai.otel.gpu_pair: "4-5"
       nearai.otel.env: "${ENV}"
@@ -539,7 +539,7 @@ services:
   model-sg-glm53-w4afp8-tp2-r2b:
     <<: *sg-glm53-flash-common
     container_name: model-sg-glm53-w4afp8-tp2-r2b
-    image: docker.io/nearaidev/sglang@sha256:050b1adf961c8621264d14696d24645f70d1a675509ad400a72ccfb1a3fddcb2
+    image: docker.io/nearaidev/sglang@sha256:0ca61f6ab34faafa41c220ff5eb64c7026b3ada16a87147a0d75680f91a14b50
     command: >
         sglang serve
         --model-path /root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/snapshots/99f1fa70408c52b007d4fd69e02e5a522422e755
@@ -621,7 +621,7 @@ services:
               device_ids: ["6","7"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-fp8-kv","deployment:glm53-flash-sgl-tp4","config_variant:sglang-v0523-long-context-w4afp8-c16384-qsplit-offloop-v3-hicacheoff-memopt-fp8kv-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-mr16q8-strict-budget8192-obs-v1-v0523-restricted-env","request_logging:disabled","engine_image:050b1adf961c","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:2b","gpu_pair:6-7"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-fp8-kv","deployment:glm53-flash-sgl-tp4","config_variant:sglang-v0523-long-context-w4afp8-c16384-qsplit-offloop-v3-hicacheoff-memopt-fp8kv-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-mr16q8-strict-budget8192-obs-v1-v0523-restricted-env","request_logging:disabled","engine_image:0ca61f6ab34f","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:2b","gpu_pair:6-7"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -636,7 +636,7 @@ services:
       nearai.otel.config_variant: "sglang-v0523-long-context-w4afp8-c16384-qsplit-offloop-v3-hicacheoff-memopt-fp8kv-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-mr16q8-strict-budget8192-obs-v1-v0523-restricted-env"
       nearai.otel.thinking_budget_policy: "default8192-public-to-native"
       nearai.otel.request_logging: "disabled"
-      nearai.otel.engine_image: "050b1adf961c"
+      nearai.otel.engine_image: "0ca61f6ab34f"
       nearai.otel.instance: "2b"
       nearai.otel.gpu_pair: "6-7"
       nearai.otel.env: "${ENV}"
@@ -648,7 +648,7 @@ services:
   model-sg-glm53-w4afp8-tp2-r1a:
     <<: *sg-glm53-flash-common
     container_name: model-sg-glm53-w4afp8-tp2-r1a
-    image: docker.io/nearaidev/sglang@sha256:050b1adf961c8621264d14696d24645f70d1a675509ad400a72ccfb1a3fddcb2
+    image: docker.io/nearaidev/sglang@sha256:0ca61f6ab34faafa41c220ff5eb64c7026b3ada16a87147a0d75680f91a14b50
     command: >
         sglang serve
         --model-path /root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/snapshots/99f1fa70408c52b007d4fd69e02e5a522422e755
@@ -730,7 +730,7 @@ services:
               device_ids: ["0","1"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-fp8-kv","deployment:glm53-flash-sgl-tp4","config_variant:sglang-v0523-long-context-w4afp8-c16384-qsplit-offloop-v3-hicacheoff-memopt-fp8kv-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-mr16q8-strict-budget8192-obs-v1-v0523-restricted-env","request_logging:disabled","engine_image:050b1adf961c","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:1a","gpu_pair:0-1"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-fp8-kv","deployment:glm53-flash-sgl-tp4","config_variant:sglang-v0523-long-context-w4afp8-c16384-qsplit-offloop-v3-hicacheoff-memopt-fp8kv-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-mr16q8-strict-budget8192-obs-v1-v0523-restricted-env","request_logging:disabled","engine_image:0ca61f6ab34f","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:1a","gpu_pair:0-1"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -745,7 +745,7 @@ services:
       nearai.otel.config_variant: "sglang-v0523-long-context-w4afp8-c16384-qsplit-offloop-v3-hicacheoff-memopt-fp8kv-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-mr16q8-strict-budget8192-obs-v1-v0523-restricted-env"
       nearai.otel.thinking_budget_policy: "default8192-public-to-native"
       nearai.otel.request_logging: "disabled"
-      nearai.otel.engine_image: "050b1adf961c"
+      nearai.otel.engine_image: "0ca61f6ab34f"
       nearai.otel.instance: "1a"
       nearai.otel.gpu_pair: "0-1"
       nearai.otel.env: "${ENV}"
@@ -757,7 +757,7 @@ services:
   model-sg-glm53-w4afp8-tp2-r1b:
     <<: *sg-glm53-flash-common
     container_name: model-sg-glm53-w4afp8-tp2-r1b
-    image: docker.io/nearaidev/sglang@sha256:050b1adf961c8621264d14696d24645f70d1a675509ad400a72ccfb1a3fddcb2
+    image: docker.io/nearaidev/sglang@sha256:0ca61f6ab34faafa41c220ff5eb64c7026b3ada16a87147a0d75680f91a14b50
     command: >
         sglang serve
         --model-path /root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/snapshots/99f1fa70408c52b007d4fd69e02e5a522422e755
@@ -839,7 +839,7 @@ services:
               device_ids: ["2","3"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-fp8-kv","deployment:glm53-flash-sgl-tp4","config_variant:sglang-v0523-long-context-w4afp8-c16384-qsplit-offloop-v3-hicacheoff-memopt-fp8kv-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-mr16q8-strict-budget8192-obs-v1-v0523-restricted-env","request_logging:disabled","engine_image:050b1adf961c","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:1b","gpu_pair:2-3"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-fp8-kv","deployment:glm53-flash-sgl-tp4","config_variant:sglang-v0523-long-context-w4afp8-c16384-qsplit-offloop-v3-hicacheoff-memopt-fp8kv-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-mr16q8-strict-budget8192-obs-v1-v0523-restricted-env","request_logging:disabled","engine_image:0ca61f6ab34f","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:1b","gpu_pair:2-3"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -854,7 +854,7 @@ services:
       nearai.otel.config_variant: "sglang-v0523-long-context-w4afp8-c16384-qsplit-offloop-v3-hicacheoff-memopt-fp8kv-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-mr16q8-strict-budget8192-obs-v1-v0523-restricted-env"
       nearai.otel.thinking_budget_policy: "default8192-public-to-native"
       nearai.otel.request_logging: "disabled"
-      nearai.otel.engine_image: "050b1adf961c"
+      nearai.otel.engine_image: "0ca61f6ab34f"
       nearai.otel.instance: "1b"
       nearai.otel.gpu_pair: "2-3"
       nearai.otel.env: "${ENV}"
@@ -1257,7 +1257,7 @@ configs:
                       config_variant: "sglang-v0523-long-context-w4afp8-c16384-qsplit-offloop-v3-hicacheoff-memopt-fp8kv-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-mr16q8-strict-budget8192-obs-v1-v0523-restricted-env"
                       thinking_budget_policy: "default8192-public-to-native"
                       request_logging: "disabled"
-                      engine_image: "050b1adf961c"
+                      engine_image: "0ca61f6ab34f"
               - job_name: sglang-model-sg-glm53-w4afp8-tp2-r2b
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -1283,7 +1283,7 @@ configs:
                       config_variant: "sglang-v0523-long-context-w4afp8-c16384-qsplit-offloop-v3-hicacheoff-memopt-fp8kv-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-mr16q8-strict-budget8192-obs-v1-v0523-restricted-env"
                       thinking_budget_policy: "default8192-public-to-native"
                       request_logging: "disabled"
-                      engine_image: "050b1adf961c"
+                      engine_image: "0ca61f6ab34f"
               - job_name: sglang-model-sg-glm53-w4afp8-tp2-r1a
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -1309,7 +1309,7 @@ configs:
                       config_variant: "sglang-v0523-long-context-w4afp8-c16384-qsplit-offloop-v3-hicacheoff-memopt-fp8kv-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-mr16q8-strict-budget8192-obs-v1-v0523-restricted-env"
                       thinking_budget_policy: "default8192-public-to-native"
                       request_logging: "disabled"
-                      engine_image: "050b1adf961c"
+                      engine_image: "0ca61f6ab34f"
               - job_name: sglang-model-sg-glm53-w4afp8-tp2-r1b
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -1335,7 +1335,7 @@ configs:
                       config_variant: "sglang-v0523-long-context-w4afp8-c16384-qsplit-offloop-v3-hicacheoff-memopt-fp8kv-mamba330-bf16state-admission-reserve-disabled-pool-clamp-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-mr16q8-strict-budget8192-obs-v1-v0523-restricted-env"
                       thinking_budget_policy: "default8192-public-to-native"
                       request_logging: "disabled"
-                      engine_image: "050b1adf961c"
+                      engine_image: "0ca61f6ab34f"
               - job_name: ghost-aggregator-glm53-ghost-aggregator
                 scrape_interval: 15s
                 metrics_path: /metrics
