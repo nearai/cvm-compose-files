@@ -21,7 +21,7 @@ RUN cd /usr/share/nearai/vllm-v0.34.0-dsv41-r1 \
     && python3 apply-patches.py \
     && test -z "$(find /usr/local/lib/python3.12/dist-packages/vllm \( -name '*.orig' -o -name '*.rej' \) -print -quit)" \
     && python3 -m compileall -q $(awk '{print "/usr/local/lib/python3.12/dist-packages/" $2}' PATCHED-FILES.sha256) \
-    && (cd / && CUDA_VISIBLE_DEVICES= python3 -c "import vllm.connections, vllm.sampling_params, vllm.v1.conf_compute_utils, vllm.v1.worker.gpu.buffer_utils, vllm.v1.worker.gpu.async_utils, vllm.v1.worker.gpu.spec_decode.utils")
+    && (cd / && CUDA_VISIBLE_DEVICES= python3 -c "import vllm.connections, vllm.sampling_params, vllm.v1.conf_compute_utils, vllm.v1.worker.gpu.buffer_utils, vllm.v1.worker.gpu.async_utils, vllm.v1.worker.gpu.spec_decode.utils, vllm.models.deepseek_v41.decoder_replay_layers, vllm.models.deepseek_v41.nvidia.model")
 
 # libssl and libc6 back the engine's media fetches (TLS, DNS); every version here is pinned exactly.
 RUN pkgs="openssl=3.0.13-0ubuntu3.16 libssl3t64=3.0.13-0ubuntu3.16 libc6=2.39-0ubuntu8.12 libc-bin=2.39-0ubuntu8.12 libc6-dev=2.39-0ubuntu8.12 libc-dev-bin=2.39-0ubuntu8.12 linux-libc-dev=6.8.0-149.149" \
