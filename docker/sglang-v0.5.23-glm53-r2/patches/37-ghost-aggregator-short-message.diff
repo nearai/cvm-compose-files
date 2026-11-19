@@ -1,0 +1,14 @@
+diff --git a/python/sglang/srt/observability/ghost_cache.py b/python/sglang/srt/observability/ghost_cache.py
+index 5f8cdcc..50e9844 100644
+--- a/python/sglang/srt/observability/ghost_cache.py
++++ b/python/sglang/srt/observability/ghost_cache.py
+@@ -128,6 +128,9 @@ def encode_messages(replica: str, sample: int, records: Sequence[Tuple[bool, byt
+ 
+ 
+ def decode_records(data: bytes) -> Tuple[str, int, List[Tuple[bool, bytes]]]:
++    # Every malformed message raises ValueError, which the aggregator counts and drops.
++    if len(data) < _WIRE_HEADER.size:
++        raise ValueError("truncated ghost cache message")
+     magic, sample, label_len, n = _WIRE_HEADER.unpack_from(data)
+     if magic != WIRE_MAGIC or sample < 1:
+         raise ValueError("not a ghost cache message")

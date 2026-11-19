@@ -1,0 +1,52 @@
+diff --git a/vllm/connections.py b/vllm/connections.py
+index 7c607f15f49745ebc6c9c2cc5c373ad44e98788e..fab1ec0b7332c9c9d6b1bacede57ec58eb84bd4b 100644
+--- a/vllm/connections.py
++++ b/vllm/connections.py
+@@ -10,6 +10,7 @@ import time
+ from collections import OrderedDict
+ from collections.abc import Callable, Collection, Coroutine, Mapping, MutableMapping
+ from concurrent.futures import ThreadPoolExecutor
++from http.cookiejar import DefaultCookiePolicy
+ from pathlib import Path
+ from typing import Any, ParamSpec, TypeVar
+ from urllib.parse import urljoin, urlsplit
+@@ -743,8 +744,18 @@ class _ValidatingTCPConnector(aiohttp.TCPConnector):
+         return results
+ 
+ 
++def _session_without_cookies() -> requests.Session:
++    session = requests.Session()
++    session.cookies.set_policy(DefaultCookiePolicy(allowed_domains=()))
++    return session
++
++
+ class HTTPConnection:
+-    """Helper class to send HTTP requests."""
++    """Helper class to send HTTP requests.
++
++    Reused clients do not persist cookies, so caller-supplied media fetches
++    cannot replay another request's `Set-Cookie` state.
++    """
+ 
+     def __init__(self, *, reuse_client: bool = True) -> None:
+         super().__init__()
+@@ -757,7 +768,7 @@ class HTTPConnection:
+ 
+     def get_sync_client(self) -> requests.Session:
+         if self._sync_client is None or not self.reuse_client:
+-            session = requests.Session()
++            session = _session_without_cookies()
+             # Proxy settings from the environment are ignored: the destination
+             # validation above applies to the address actually dialed.
+             session.trust_env = False
+@@ -780,7 +791,9 @@ class HTTPConnection:
+                 # Owned by the session below, so it is released together.
+                 connector = _ValidatingTCPConnector()
+             self._async_client = aiohttp.ClientSession(
+-                trust_env=False, connector=connector
++                trust_env=False,
++                connector=connector,
++                cookie_jar=aiohttp.DummyCookieJar(),
+             )
+ 
+         return self._async_client

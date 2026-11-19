@@ -1,0 +1,21 @@
+diff --git a/python/sglang/srt/mem_cache/prefill_budget.py b/python/sglang/srt/mem_cache/prefill_budget.py
+index 7737277c83..1bf69dbf76 100644
+--- a/python/sglang/srt/mem_cache/prefill_budget.py
++++ b/python/sglang/srt/mem_cache/prefill_budget.py
+@@ -141,8 +141,15 @@ class PrefillBudget:
+ 
+     def available_chunk_tokens(self, chunk_limit: int) -> int | None:
+         available = min(chunk_limit, int(self.remaining_total))
++        if available > 0:
++            return available
+         # Single-pool continuation must make progress to release its KV.
+-        return available if available > 0 else chunk_limit
++        # remaining_total also projects decode for the running batch, so clamp the chunk to what
++        # the allocator can serve minus one page, or park it (None) until a page is free.
++        servable = self._available_and_evictable() - self.page_size
++        clamped = max(min(chunk_limit, servable), 0)
++        clamped = clamped // self.page_size * self.page_size
++        return clamped if clamped > 0 else None
+ 
+     def fit_chunk(
+         self,

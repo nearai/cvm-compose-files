@@ -1,0 +1,599 @@
+diff --git a/vllm/connections.py b/vllm/connections.py
+index 2913a640e0cbff44cf38e12ab0e9497ac91cb8f2..7c607f15f49745ebc6c9c2cc5c373ad44e98788e 100644
+--- a/vllm/connections.py
++++ b/vllm/connections.py
+@@ -3,14 +3,26 @@
+ 
+ import asyncio
+ import functools
++import ipaddress
++import socket
+ import threading
+ import time
+-from collections.abc import Callable, Coroutine, Mapping, MutableMapping
++from collections import OrderedDict
++from collections.abc import Callable, Collection, Coroutine, Mapping, MutableMapping
++from concurrent.futures import ThreadPoolExecutor
+ from pathlib import Path
+ from typing import Any, ParamSpec, TypeVar
++from urllib.parse import urljoin, urlsplit
+ 
+ import aiohttp
+ import requests
++from requests.adapters import HTTPAdapter
++from requests.exceptions import ConnectTimeout, InvalidURL, TooManyRedirects
++from requests.utils import select_proxy
++from urllib3 import HTTPConnectionPool, HTTPSConnectionPool
++from urllib3.connection import HTTPConnection as Urllib3HTTPConnection
++from urllib3.connection import HTTPSConnection as Urllib3HTTPSConnection
++from urllib3.exceptions import ConnectTimeoutError
+ from urllib3.util import parse_url
+ 
+ import vllm.envs as envs
+@@ -127,6 +139,114 @@ def _check_content_length(
+         _raise_size_exceeded(max_bytes, parsed_length, media_download_limit)
+ 
+ 
++# Redirect hops the media fetch helpers follow themselves, re-validating each.
++_MEDIA_MAX_REDIRECTS = 10
++
++# Name lookups that run under a deadline; a lookup past its deadline is left
++# to finish here while the fetch fails.
++_RESOLVER_POOL = ThreadPoolExecutor(max_workers=16, thread_name_prefix="media-dns")
++
++
++def _resolve_host_ips(hostname: str) -> list[str]:
++    """Resolve a hostname once, returning every unique IP in answer order."""
++    try:
++        infos = socket.getaddrinfo(hostname, None, type=socket.SOCK_STREAM)
++    except socket.gaierror as e:
++        raise ValueError("Cannot resolve media URL host") from e
++    ips = list(dict.fromkeys(info[4][0] for info in infos))
++    if not ips:
++        raise ValueError("Cannot resolve media URL host: no addresses")
++    return ips
++
++
++# NAT64 well-known prefix: embeds an arbitrary IPv4 address in an IPv6 one.
++_NAT64_NETWORK = ipaddress.ip_network("64:ff9b::/96")
++
++
++def _is_public_ip(ip: str) -> bool:
++    """Whether `ip` is a globally reachable unicast address.
++
++    Multicast and the NAT64 prefix are rejected on top of `is_global`, which
++    is True for both.
++    """
++    try:
++        addr = ipaddress.ip_address(ip)
++    except ValueError:
++        return False
++    if addr.is_multicast:
++        return False
++    if addr.version == 6 and addr in _NAT64_NETWORK:
++        return False
++    return addr.is_global
++
++
++_NON_PUBLIC_IP_MESSAGE = (
++    "Refusing to fetch media URL with a non-public IP. Loopback, private, "
++    "link-local, multicast, NAT64, and reserved destinations are blocked by "
++    "default; set VLLM_MEDIA_URL_ALLOW_PRIVATE_IPS=1 to allow them."
++)
++
++
++def _validate_ips(ips: list[str]) -> tuple[str, ...]:
++    """Return `ips` if every one is a public unicast address, else refuse.
++
++    One non-public answer refuses the whole hostname.
++    `VLLM_MEDIA_URL_ALLOW_PRIVATE_IPS=1` accepts every answer.
++    """
++    if not envs.VLLM_MEDIA_URL_ALLOW_PRIVATE_IPS:
++        for ip in ips:
++            if not _is_public_ip(ip):
++                raise ValueError(_NON_PUBLIC_IP_MESSAGE)
++    return tuple(ips)
++
++
++def _resolve_validated_ips(
++    hostname: str, timeout: float | None = None
++) -> tuple[str, ...]:
++    """Resolve `hostname` once and return its validated addresses.
++
++    These are the only addresses _PinnedPublicIPAdapter connects to, in
++    answer order. With `timeout`, the lookup fails with ConnectTimeout once
++    it runs past it.
++    """
++    if not hostname:
++        raise ValueError("Cannot fetch media URL with a missing hostname")
++    if timeout is None:
++        return _validate_ips(_resolve_host_ips(hostname))
++    if timeout <= 0:
++        raise ConnectTimeout("Media URL host lookup exceeded the timeout")
++    future = _RESOLVER_POOL.submit(_resolve_host_ips, hostname)
++    try:
++        ips = future.result(timeout=timeout)
++    except TimeoutError as e:
++        future.cancel()
++        raise ConnectTimeout("Media URL host lookup exceeded the timeout") from e
++    return _validate_ips(ips)
++
++
++def _time_left(deadline: float | None) -> float | None:
++    """Seconds left before `deadline`; TimeoutError once it has passed."""
++    if deadline is None:
++        return None
++    left = deadline - time.monotonic()
++    if left <= 0:
++        raise TimeoutError("Media fetch exceeded the timeout")
++    return left
++
++
++def _check_allowed_domains(url: str, allowed_domains: Collection[str] | None) -> None:
++    """Check one redirect hop against the domain allowlist.
++
++    Applies MediaConnector._assert_url_in_allowed_media_domains to every hop.
++    An empty or missing allowlist allows every domain.
++    """
++    if not allowed_domains:
++        return
++    hostname = urlsplit(url).hostname
++    if hostname not in allowed_domains:
++        raise ValueError("The URL must be from one of the allowed domains.")
++
++
+ def _append_chunk(
+     chunks: list[bytes],
+     chunk: bytes,
+@@ -368,6 +488,261 @@ def _async_retry(
+     return wrapper  # type: ignore[return-value]
+ 
+ 
++def _connect_validated(conn: Any, new_conn: Callable[[], socket.socket]):
++    """Open the socket of a pinned connection to the first reachable address.
++
++    The addresses are tried in order. The connect timeout covers all of them:
++    each attempt gets the time left divided by the addresses left.
++    """
++    hosts = conn._dial_hosts
++    timeout = conn.timeout
++    deadline = time.monotonic() + timeout if isinstance(timeout, (int, float)) else None
++    error: ConnectTimeoutError | None = None
++    try:
++        for index, ip in enumerate(hosts):
++            if deadline is not None:
++                left = deadline - time.monotonic()
++                if left <= 0:
++                    break
++                conn.timeout = left / (len(hosts) - index)
++            conn._dns_host = ip
++            try:
++                sock = new_conn()
++            except ConnectTimeoutError as e:
++                error = e
++                continue
++            if deadline is not None:
++                left = deadline - time.monotonic()
++                if left <= 0:
++                    sock.close()
++                    break
++                sock.settimeout(left)
++            return sock
++    finally:
++        conn.timeout = timeout
++    raise error or ConnectTimeoutError(conn, "Connection timed out")
++
++
++class _PinnedHTTPConnection(Urllib3HTTPConnection):
++    """urllib3 connection that dials pre-validated IPs only.
++
++    Only `_dns_host` (the TCP destination) changes; the `host` property keeps
++    returning the original hostname, so the `Host` header, SNI, and
++    certificate checks are unchanged. Used proxy-free only.
++    """
++
++    _dial_hosts: tuple[str, ...] = ()
++
++    @property  # type: ignore[override]
++    def host(self) -> str:
++        return self._orig_host
++
++    @host.setter
++    def host(self, value: str) -> None:
++        self._orig_host = value
++        self._dns_host = value
++
++    def _new_conn(self) -> socket.socket:
++        return _connect_validated(self, super()._new_conn)
++
++
++class _PinnedHTTPSConnection(Urllib3HTTPSConnection):
++    """TLS sibling of _PinnedHTTPConnection (same split)."""
++
++    _dial_hosts: tuple[str, ...] = ()
++
++    @property  # type: ignore[override]
++    def host(self) -> str:
++        return self._orig_host
++
++    @host.setter
++    def host(self, value: str) -> None:
++        self._orig_host = value
++        self._dns_host = value
++
++    def _new_conn(self) -> socket.socket:
++        return _connect_validated(self, super()._new_conn)
++
++
++# Pool kwargs that plain-HTTP pools accept; the TLS keys requests attaches
++# would break HTTPConnection.__init__.
++_HTTP_POOL_KWARGS = frozenset({"timeout", "maxsize", "block", "headers", "retries"})
++
++# Upper bound on cached per-(host, port, addresses) pools in one adapter.
++_MAX_PINNED_POOLS = 64
++
++
++class _PinnedHTTPConnectionPool(HTTPConnectionPool):
++    ConnectionCls = _PinnedHTTPConnection
++
++    def __init__(self, *args: Any, dial_hosts: tuple[str, ...], **kwargs: Any) -> None:
++        self._dial_hosts = dial_hosts
++        super().__init__(*args, **kwargs)
++
++    def _new_conn(self) -> _PinnedHTTPConnection:
++        conn = super()._new_conn()
++        conn._dial_hosts = self._dial_hosts
++        return conn
++
++
++class _PinnedHTTPSConnectionPool(HTTPSConnectionPool):
++    ConnectionCls = _PinnedHTTPSConnection
++
++    def __init__(self, *args: Any, dial_hosts: tuple[str, ...], **kwargs: Any) -> None:
++        self._dial_hosts = dial_hosts
++        super().__init__(*args, **kwargs)
++
++    def _new_conn(self) -> _PinnedHTTPSConnection:
++        conn = super()._new_conn()
++        conn._dial_hosts = self._dial_hosts
++        return conn
++
++
++class _PinnedPublicIPAdapter(HTTPAdapter):
++    """requests adapter that resolves once, validates, and dials those IPs.
++
++    For every request the hostname is resolved a single time, within the
++    connect timeout, and every answer is IP-validated (_resolve_validated_ips)
++    before any connection opens. A proxy-free request uses a pool that dials
++    only those IPs and keeps the original hostname for the `Host` header,
++    SNI, and certificate checks; the connect and read timeouts are what is
++    left after the lookup. Proxied requests keep default behavior (the proxy
++    dials) after the same hostname validation.
++    """
++
++    def __init__(self, *args: Any, **kwargs: Any) -> None:
++        super().__init__(*args, **kwargs)
++        self._pinned_lock = threading.Lock()
++        self._pinned_pools: OrderedDict[
++            tuple[str, str, int, tuple[str, ...]],
++            HTTPConnectionPool | HTTPSConnectionPool,
++        ] = OrderedDict()
++
++    def close(self) -> None:
++        with self._pinned_lock:
++            pools = list(self._pinned_pools.values())
++            self._pinned_pools.clear()
++        for pool in pools:
++            pool.close()
++        super().close()
++
++    def send(  # type: ignore[override]
++        self,
++        request: requests.PreparedRequest,
++        stream: bool = False,
++        timeout: Any = None,
++        verify: bool | str = True,
++        cert: str | tuple[str, str] | None = None,
++        proxies: Mapping[str, str] | None = None,
++    ) -> requests.Response:
++        connect = timeout[0] if isinstance(timeout, tuple) else timeout
++        if not isinstance(connect, (int, float)):
++            connect = None
++        start = time.monotonic()
++        request._validated_ips = _resolve_validated_ips(  # type: ignore[attr-defined]
++            urlsplit(request.url).hostname or "", connect
++        )
++        if connect is not None:
++            left = connect - (time.monotonic() - start)
++            if left <= 0:
++                raise ConnectTimeout("Media URL host lookup exceeded the timeout")
++            timeout = (left, timeout[1]) if isinstance(timeout, tuple) else left
++        return super().send(request, stream, timeout, verify, cert, proxies)
++
++    def get_connection_with_tls_context(
++        self,
++        request: requests.PreparedRequest,
++        verify: bool | str,
++        proxies: dict[str, str] | None = None,
++        cert: str | tuple[str, str] | None = None,
++    ) -> HTTPConnectionPool | HTTPSConnectionPool:
++        ips = getattr(request, "_validated_ips", None)
++        if ips is None:
++            ips = _resolve_validated_ips(urlsplit(request.url).hostname or "")
++        if select_proxy(request.url, proxies):
++            return super().get_connection_with_tls_context(
++                request, verify, proxies, cert
++            )
++        try:
++            host_params, pool_kwargs = self.build_connection_pool_key_attributes(
++                request, verify, cert
++            )
++        except ValueError as e:
++            raise InvalidURL(e, request=request) from e
++        scheme = host_params["scheme"]
++        host = host_params["host"]
++        port = host_params["port"]
++        key = (scheme, host, port, ips)
++        with self._pinned_lock:
++            pool = self._pinned_pools.get(key)
++            if pool is not None:
++                self._pinned_pools.move_to_end(key)
++            else:
++                if scheme == "https":
++                    pool = _PinnedHTTPSConnectionPool(
++                        host, port, dial_hosts=ips, **pool_kwargs
++                    )
++                else:
++                    safe_kwargs = {
++                        k: v for k, v in pool_kwargs.items() if k in _HTTP_POOL_KWARGS
++                    }
++                    pool = _PinnedHTTPConnectionPool(
++                        host, port, dial_hosts=ips, **safe_kwargs
++                    )
++                self._pinned_pools[key] = pool
++                # Bound the cache; the least recently used pool is closed.
++                while len(self._pinned_pools) > _MAX_PINNED_POOLS:
++                    _, evicted = self._pinned_pools.popitem(last=False)
++                    evicted.close()
++            return pool
++
++
++class _ValidatingTCPConnector(aiohttp.TCPConnector):
++    """aiohttp connector that only dials validated IPs.
++
++    Hostname, SNI, and certificate verification keep using the original
++    URL host; DNS answers are restricted to the IPs validated here, so
++    every connection goes to an address that passed validation.
++    Every new connection resolves through this path.
++    """
++
++    async def _resolve_host(
++        self,
++        host: str,
++        port: int,
++        traces: Any = None,
++    ) -> list[dict[str, Any]]:
++        loop = asyncio.get_running_loop()
++        try:
++            infos = await loop.getaddrinfo(
++                host, port, family=socket.AF_UNSPEC, type=socket.SOCK_STREAM
++            )
++        except socket.gaierror as e:
++            raise ValueError("Cannot resolve media URL host") from e
++        results: list[dict[str, Any]] = []
++        seen: set[str] = set()
++        for family, _type, proto, _canon, sockaddr in infos:
++            ip = sockaddr[0]
++            if ip in seen:
++                continue
++            seen.add(ip)
++            if not envs.VLLM_MEDIA_URL_ALLOW_PRIVATE_IPS and not _is_public_ip(ip):
++                raise ValueError(_NON_PUBLIC_IP_MESSAGE)
++            results.append(
++                {
++                    "hostname": host,
++                    "host": ip,
++                    "port": port,
++                    "family": family,
++                    "proto": proto,
++                    "flags": 0,
++                }
++            )
++        if not results:
++            raise ValueError("Cannot resolve media URL host: no addresses")
++        return results
++
++
+ class HTTPConnection:
+     """Helper class to send HTTP requests."""
+ 
+@@ -378,10 +753,18 @@ class HTTPConnection:
+ 
+         self._sync_client: requests.Session | None = None
+         self._async_client: aiohttp.ClientSession | None = None
++        self._async_connector: _ValidatingTCPConnector | None = None
+ 
+     def get_sync_client(self) -> requests.Session:
+         if self._sync_client is None or not self.reuse_client:
+-            self._sync_client = requests.Session()
++            session = requests.Session()
++            # Proxy settings from the environment are ignored: the destination
++            # validation above applies to the address actually dialed.
++            session.trust_env = False
++            protective_adapter = _PinnedPublicIPAdapter()
++            session.mount("http://", protective_adapter)
++            session.mount("https://", protective_adapter)
++            self._sync_client = session
+ 
+         return self._sync_client
+ 
+@@ -389,7 +772,16 @@ class HTTPConnection:
+     # required, so that the client is only accessible inside async event loop
+     async def get_async_client(self) -> aiohttp.ClientSession:
+         if self._async_client is None or not self.reuse_client:
+-            self._async_client = aiohttp.ClientSession(trust_env=True)
++            if self.reuse_client:
++                if self._async_connector is None:
++                    self._async_connector = _ValidatingTCPConnector()
++                connector = self._async_connector
++            else:
++                # Owned by the session below, so it is released together.
++                connector = _ValidatingTCPConnector()
++            self._async_client = aiohttp.ClientSession(
++                trust_env=False, connector=connector
++            )
+ 
+         return self._async_client
+ 
+@@ -455,16 +847,36 @@ class HTTPConnection:
+         allow_redirects: bool = True,
+         max_bytes: int | None = None,
+         request_budget: MediaRequestDownloadBudget | None = None,
++        allowed_domains: Collection[str] | None = None,
+     ) -> bytes:
+-        with self.get_response(
+-            url,
+-            stream=True,
+-            timeout=timeout,
+-            allow_redirects=allow_redirects,
+-        ) as r:
+-            r.raise_for_status()
++        self._validate_http_url(url)
++
++        # One deadline covers every hop; each hop gets the time left.
++        deadline = None if timeout is None else time.monotonic() + timeout
++        current_url = url
++        for _ in range(_MEDIA_MAX_REDIRECTS + 1):
++            # The adapter resolves and validates each hop before it connects.
++            _check_allowed_domains(current_url, allowed_domains)
++            with self.get_response(
++                current_url,
++                stream=True,
++                timeout=_time_left(deadline),
++                allow_redirects=False,
++            ) as r:
++                if (
++                    allow_redirects
++                    and getattr(r, "is_redirect", False)
++                    and r.headers.get("location")
++                ):
++                    current_url = urljoin(current_url, r.headers["location"])
++                    continue
++                r.raise_for_status()
++
++                return _read_response_bytes(r, max_bytes, request_budget)
+ 
+-            return _read_response_bytes(r, max_bytes, request_budget)
++        raise TooManyRedirects(
++            f"Exceeded {_MEDIA_MAX_REDIRECTS} redirects when fetching media URL"
++        )
+ 
+     @_async_retry
+     async def async_get_bytes(
+@@ -475,15 +887,47 @@ class HTTPConnection:
+         allow_redirects: bool = True,
+         max_bytes: int | None = None,
+         request_budget: MediaRequestDownloadBudget | None = None,
++        allowed_domains: Collection[str] | None = None,
+     ) -> bytes:
+-        async with await self.get_async_response(
+-            url,
+-            timeout=timeout,
+-            allow_redirects=allow_redirects,
+-        ) as r:
+-            r.raise_for_status()
++        self._validate_http_url(url)
++
++        # One deadline covers every hop; each hop gets the time left.
++        deadline = None if timeout is None else time.monotonic() + timeout
++        current_url = url
++        for _ in range(_MEDIA_MAX_REDIRECTS + 1):
++            _check_allowed_domains(current_url, allowed_domains)
++            # Each hop is validated, also when a pooled connection serves it;
++            # getaddrinfo blocks, so it runs off the event loop.
++            await asyncio.wait_for(
++                asyncio.get_running_loop().run_in_executor(
++                    None, _resolve_validated_ips, urlsplit(current_url).hostname or ""
++                ),
++                _time_left(deadline),
++            )
++            async with await self.get_async_response(
++                current_url,
++                timeout=_time_left(deadline),
++                allow_redirects=False,
++            ) as r:
++                location = getattr(r, "headers", {}).get("Location")
++                if (
++                    allow_redirects
++                    and getattr(r, "status", None) in (301, 302, 303, 307, 308)
++                    and location
++                ):
++                    current_url = urljoin(current_url, location)
++                    continue
++                r.raise_for_status()
++
++                return await _async_read_response_bytes(r, max_bytes, request_budget)
+ 
+-            return await _async_read_response_bytes(r, max_bytes, request_budget)
++        raise aiohttp.TooManyRedirects(
++            None,
++            (),
++            message=(
++                f"Exceeded {_MEDIA_MAX_REDIRECTS} redirects when fetching media URL"
++            ),
++        )
+ 
+     def get_text(self, url: str, *, timeout: float | None = None) -> str:
+         with self.get_response(url, timeout=timeout) as r:
+diff --git a/vllm/envs.py b/vllm/envs.py
+index 7b4625f3d48465a6a10af5a2c1ebf0e03b645ecb..cdfbce7c55ead97121b8e977d3beba38f34c0e9f 100755
+--- a/vllm/envs.py
++++ b/vllm/envs.py
+@@ -77,6 +77,7 @@ if TYPE_CHECKING:
+     VLLM_MAX_MEDIA_DOWNLOAD_SIZE_MB: int = 256
+     VLLM_MAX_MEDIA_REQUEST_DOWNLOAD_SIZE_MB: int = 256
+     VLLM_MEDIA_URL_ALLOW_REDIRECTS: bool = True
++    VLLM_MEDIA_URL_ALLOW_PRIVATE_IPS: bool = False
+     VLLM_MEDIA_LOADING_THREAD_COUNT: int = 8
+     VLLM_MAX_AUDIO_CLIP_FILESIZE_MB: int = 25
+     VLLM_MAX_AUDIO_DECODE_DURATION_S: int = 600
+@@ -996,6 +997,11 @@ environment_variables: dict[str, Callable[[], Any]] = {
+     "VLLM_MEDIA_URL_ALLOW_REDIRECTS": lambda: bool(
+         int(os.getenv("VLLM_MEDIA_URL_ALLOW_REDIRECTS", "1"))
+     ),
++    # Whether media fetches and their redirect hops may resolve to non-public
++    # IPs (loopback, private, link-local, multicast, reserved). Default: no.
++    "VLLM_MEDIA_URL_ALLOW_PRIVATE_IPS": lambda: bool(
++        int(os.getenv("VLLM_MEDIA_URL_ALLOW_PRIVATE_IPS", "0"))
++    ),
+     # Max number of workers for the thread pool handling
+     # media bytes loading. Set to 1 to disable parallel processing.
+     # Default is 8
+@@ -2431,6 +2437,7 @@ def compile_factors() -> dict[str, object]:
+         "VLLM_MEDIA_CACHE_TTL_HOURS",
+         "VLLM_MEDIA_FETCH_MAX_RETRIES",
+         "VLLM_MEDIA_URL_ALLOW_REDIRECTS",
++        "VLLM_MEDIA_URL_ALLOW_PRIVATE_IPS",
+         "VLLM_MEDIA_LOADING_THREAD_COUNT",
+         "VLLM_MAX_AUDIO_CLIP_FILESIZE_MB",
+         "VLLM_MAX_AUDIO_DECODE_DURATION_S",
+diff --git a/vllm/multimodal/media/connector.py b/vllm/multimodal/media/connector.py
+index e5a52417fee3a2ac7d8c1957a7ea66faa9f8a9b6..a3183bd9c6214c536436333871b8bac6d9f022bb 100644
+--- a/vllm/multimodal/media/connector.py
++++ b/vllm/multimodal/media/connector.py
+@@ -410,6 +410,7 @@ class MediaConnector:
+                     timeout=fetch_timeout,
+                     allow_redirects=envs.VLLM_MEDIA_URL_ALLOW_REDIRECTS,
+                     max_bytes=max_bytes,
++                    allowed_domains=self.allowed_media_domains or None,
+                     **budget_kwargs,
+                 )
+             except Exception as e:
+@@ -469,6 +470,7 @@ class MediaConnector:
+                     timeout=fetch_timeout,
+                     allow_redirects=envs.VLLM_MEDIA_URL_ALLOW_REDIRECTS,
+                     max_bytes=max_bytes,
++                    allowed_domains=self.allowed_media_domains or None,
+                     **budget_kwargs,
+                 )
+             except Exception as e:

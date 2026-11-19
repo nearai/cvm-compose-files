@@ -1,0 +1,19 @@
+diff --git a/vllm/model_executor/models/whisper.py b/vllm/model_executor/models/whisper.py
+index 9e5d74cba29bbe19959554ba6b5e4b9593c015bb..44e7cae59e4ecc87229293bfd7b318368b0382d4 100644
+--- a/vllm/model_executor/models/whisper.py
++++ b/vllm/model_executor/models/whisper.py
+@@ -920,11 +920,9 @@ class WhisperForConditionalGeneration(
+             [token_ids[0]],
+             skip_special_tokens=False,
+         )
+-        # Whisper language tokens have the form <|xx|>
+-        assert decoded.startswith("<|") and decoded.endswith("|>")
+-        lang_code = decoded[2:-2]
+-        assert lang_code in cls.supported_languages
+-        return lang_code
++        # Whisper language tokens have the form <|xx|>; fall back to English instead of failing the request.
++        lang_code = decoded[2:-2] if decoded.startswith("<|") and decoded.endswith("|>") else ""
++        return lang_code if lang_code in cls.supported_languages else "en"
+ 
+     @classmethod
+     def get_placeholder_str(cls, modality: str, i: int) -> str | None:

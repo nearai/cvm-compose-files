@@ -1,0 +1,111 @@
+diff --git a/vllm/multimodal/media/audio.py b/vllm/multimodal/media/audio.py
+index b6deae7c1e99d25153f22977500e90e79bf93b78..025d2fe3f424c766ed18d676b6908724e6dab964 100644
+--- a/vllm/multimodal/media/audio.py
++++ b/vllm/multimodal/media/audio.py
+@@ -14,6 +14,7 @@ import vllm.envs as envs
+ from vllm.exceptions import VLLMValidationError
+ from vllm.logger import init_logger
+ from vllm.multimodal.audio import resample_audio_pyav
++from vllm.multimodal.media_utils import validate_media_source
+ from vllm.utils.import_utils import PlaceholderModule
+ from vllm.utils.math_utils import cdiv
+ from vllm.utils.mem_constants import MiB_bytes
+@@ -112,6 +113,7 @@ def load_audio_pyav(
+         NumPy array and *sample_rate* is the native sample rate in Hz.
+ 
+     """
++    validate_media_source(path)
+     try:
+         container = av.open(path)
+     except av.error.FFmpegError as e:
+@@ -287,6 +289,7 @@ def load_audio_torchcodec(
+         sample rate in Hz.
+ 
+     """
++    validate_media_source(path)
+     if AudioDecoder is None:
+         # Unify "torchcodec not installed" and "system ffmpeg missing" into
+         # ImportError so `load_audio(backend="auto")` falls back cleanly.
+@@ -446,6 +449,7 @@ def load_audio(
+             backend with no fallback.
+ 
+     """
++    validate_media_source(path)
+     backend = backend or "auto"
+     if backend not in AUDIO_BACKENDS:
+         raise ValueError(
+diff --git a/vllm/multimodal/media/video.py b/vllm/multimodal/media/video.py
+index 6e33016b1755f76ade3a0b6f6b345dc03d465542..e8be37b4496cdc3e3e92d4c8f13c43ce1cc35472 100644
+--- a/vllm/multimodal/media/video.py
++++ b/vllm/multimodal/media/video.py
+@@ -13,6 +13,7 @@ from PIL import Image
+ 
+ from vllm import envs
+ from vllm.logger import init_logger
++from vllm.multimodal.media_utils import validate_media_bytes
+ from vllm.utils.serial_utils import tensor2base64
+ from vllm.utils.sparse_utils import (
+     check_sparse_tensor_invariants_threadsafe,
+@@ -121,6 +122,7 @@ class VideoMediaIO(MediaIO[MediaWithBytes[tuple[DecodedFrames, dict[str, Any]]]]
+     def load_bytes(
+         self, data: bytes
+     ) -> MediaWithBytes[tuple[DecodedFrames, dict[str, Any]]]:
++        validate_media_bytes(data)
+         video = self.video_loader.load_bytes(
+             data, num_frames=self.num_frames, **self.kwargs
+         )
+diff --git a/vllm/multimodal/media_utils.py b/vllm/multimodal/media_utils.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..4fdc9a2030143623bf618b7bb4533230a142899f
+--- /dev/null
++++ b/vllm/multimodal/media_utils.py
+@@ -0,0 +1,28 @@
++# SPDX-License-Identifier: Apache-2.0
++# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
++from io import BytesIO
++from pathlib import Path
++
++import regex as re
++
++
++def validate_media_bytes(data: bytes) -> None:
++    """Reject media descriptors that can open additional files or sockets."""
++    nul = data.find(b"\x00")
++    header = data[:nul] if nul >= 0 else data
++    header = header.lstrip().removeprefix(b"\xef\xbb\xbf").lstrip()
++    if header.startswith(
++        (b"ffconcat version", b"#EXTM3U", b"v=0", b"<", b"\xff\xfe", b"\xfe\xff")
++    ) or re.search(rb"(?:^|[\r\n])c=IN IP[46](?:[ \t]|$)", header):
++        raise ValueError("Media playlists and stream descriptions are not supported.")
++
++
++def validate_media_source(source: BytesIO | Path | str) -> None:
++    if isinstance(source, BytesIO):
++        validate_media_bytes(source.getvalue())
++    else:
++        with open(source, "rb") as stream:
++            for line in stream:
++                validate_media_bytes(line)
++                if b"\x00" in line:
++                    break
+diff --git a/vllm/multimodal/video_decoders/__init__.py b/vllm/multimodal/video_decoders/__init__.py
+index f4302d9e4a88617a4f42c0873df60516f5234140..3553788e4809a855dbdb3cbf9b933a9ee2e04725 100644
+--- a/vllm/multimodal/video_decoders/__init__.py
++++ b/vllm/multimodal/video_decoders/__init__.py
+@@ -4,6 +4,8 @@
+ from importlib import import_module
+ from typing import Any, Literal
+ 
++from vllm.multimodal.media_utils import validate_media_bytes
++
+ from .base import (
+     PYNVVIDEOCODEC_DEFAULT_HW_DECODERS,
+     PYNVVIDEOCODEC_VIDEO_BACKEND,
+@@ -88,6 +90,7 @@ def decode_video(
+     frame_recovery: bool,
+ ):
+     """Decode a sampled video, importing only the selected backend."""
++    validate_media_bytes(data)
+     _get_backend_option_defaults(backend)
+     if frame_recovery and backend != "opencv":
+         error = (
