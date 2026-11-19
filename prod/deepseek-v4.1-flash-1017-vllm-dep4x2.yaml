@@ -79,7 +79,7 @@ services:
       - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
     logging: *logging-conf
     labels:
-      com.datadoghq.ad.logs: '[{"source":"model-downloader","service":"model-downloader","tags":["model:multi","deployment:deepseek-v4.1-flash-1017-vllm-dep4x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-lora3p-cc2-w4a8-2xdep4-c8192-dspark5pb-mr64-omp4-restricted-psi8-cc-engram-cpu-fg-prestage-fullgraph-lorareplay"]}]'
+      com.datadoghq.ad.logs: '[{"source":"model-downloader","service":"model-downloader","tags":["model:multi","deployment:deepseek-v4.1-flash-1017-vllm-dep4x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-lora3p-cc2-w4a8-2xdep4-c8192-dspark5pb-mr64-omp4-aff64-restricted-psi8-cc-engram-cpu-fg-prestage-fullgraph-lorareplay"]}]'
 
   nginx:
     image: nginx@sha256:9e596d26590907ed433eb53c83c4016038025d4e004b15922786ba85c8957264
@@ -104,7 +104,7 @@ services:
     restart: unless-stopped
     logging: *logging-conf
     labels:
-      com.datadoghq.ad.logs: '[{"source":"nginx","service":"nginx","tags":["model:multi","deployment:deepseek-v4.1-flash-1017-vllm-dep4x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-lora3p-cc2-w4a8-2xdep4-c8192-dspark5pb-mr64-omp4-restricted-psi8-cc-engram-cpu-fg-prestage-fullgraph-lorareplay"]}]'
+      com.datadoghq.ad.logs: '[{"source":"nginx","service":"nginx","tags":["model:multi","deployment:deepseek-v4.1-flash-1017-vllm-dep4x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-lora3p-cc2-w4a8-2xdep4-c8192-dspark5pb-mr64-omp4-aff64-restricted-psi8-cc-engram-cpu-fg-prestage-fullgraph-lorareplay"]}]'
 
   model-proxy-registrar:
     image: curlimages/curl@sha256:d94d07ba9e7d6de898b6d96c1a072f6f8266c687af78a74f380087a0addf5d17
@@ -129,7 +129,7 @@ services:
         mode: 0755
     logging: *logging-conf
     labels:
-      com.datadoghq.ad.logs: '[{"source":"model-proxy-registrar","service":"model-proxy-registrar","tags":["model:multi","deployment:deepseek-v4.1-flash-1017-vllm-dep4x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-lora3p-cc2-w4a8-2xdep4-c8192-dspark5pb-mr64-omp4-restricted-psi8-cc-engram-cpu-fg-prestage-fullgraph-lorareplay"]}]'
+      com.datadoghq.ad.logs: '[{"source":"model-proxy-registrar","service":"model-proxy-registrar","tags":["model:multi","deployment:deepseek-v4.1-flash-1017-vllm-dep4x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-lora3p-cc2-w4a8-2xdep4-c8192-dspark5pb-mr64-omp4-aff64-restricted-psi8-cc-engram-cpu-fg-prestage-fullgraph-lorareplay"]}]'
 
   proxy-dsv41:
     <<: *vllm-proxy-common
@@ -147,6 +147,7 @@ services:
       - TOKEN=${PROXY_TOKEN}${PROXY_TOKEN_NEXT:+,${PROXY_TOKEN_NEXT}}
       - VLLM_BACKEND_URLS=http://model-vllm-dsv41-dp0:9100,http://model-vllm-dsv41-dp1:9101,http://model-vllm-dsv41-dp2:9102,http://model-vllm-dsv41-dp3:9103,http://model-vllm-dsv41-dp4:9104,http://model-vllm-dsv41-dp5:9105,http://model-vllm-dsv41-dp6:9106,http://model-vllm-dsv41-dp7:9107
       - VLLM_BACKEND_CONVERSATION_AFFINITY=1
+      - VLLM_BACKEND_AFFINITY_MAX_IMBALANCE=64
       - VLLM_PROXY_MAX_REQUEST_SIZE=104857600
       - VLLM_PROXY_POOL_IDLE_TIMEOUT_SECS=3
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
@@ -156,7 +157,7 @@ services:
       - VLLM_PROXY_INLINE_MEDIA=${VLLM_PROXY_INLINE_MEDIA:-1}
       - VLLM_PROXY_REJECTED_CONTENT_PART_TYPES=${VLLM_PROXY_REJECTED_CONTENT_PART_TYPES:-video_url}
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:deepseek-ai/DeepSeek-V4.1-Flash-1017","port:8000","deployment:deepseek-v4.1-flash-1017-vllm-dep4x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-lora3p-cc2-w4a8-2xdep4-c8192-dspark5pb-mr64-omp4-restricted-psi8-cc-engram-cpu-fg-prestage-fullgraph-lorareplay"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:deepseek-ai/DeepSeek-V4.1-Flash-1017","port:8000","deployment:deepseek-v4.1-flash-1017-vllm-dep4x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-lora3p-cc2-w4a8-2xdep4-c8192-dspark5pb-mr64-omp4-aff64-restricted-psi8-cc-engram-cpu-fg-prestage-fullgraph-lorareplay"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "inference-proxy"
       nearai.otel.service: "vllm-proxy"
@@ -172,7 +173,7 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.ppcie: "true"
-      nearai.otel.config_variant: "vllm0340-lora3p-cc2-w4a8-2xdep4-c8192-dspark5pb-mr64-omp4-restricted-psi8-cc-engram-cpu-fg-prestage-fullgraph-lorareplay"
+      nearai.otel.config_variant: "vllm0340-lora3p-cc2-w4a8-2xdep4-c8192-dspark5pb-mr64-omp4-aff64-restricted-psi8-cc-engram-cpu-fg-prestage-fullgraph-lorareplay"
 
   proxy-dsv41-abliterated:
     <<: *vllm-proxy-common
@@ -191,6 +192,7 @@ services:
       - TOKEN=${PROXY_TOKEN}${PROXY_TOKEN_NEXT:+,${PROXY_TOKEN_NEXT}}
       - VLLM_BACKEND_URLS=http://model-vllm-dsv41-dp0:9100,http://model-vllm-dsv41-dp1:9101,http://model-vllm-dsv41-dp2:9102,http://model-vllm-dsv41-dp3:9103,http://model-vllm-dsv41-dp4:9104,http://model-vllm-dsv41-dp5:9105,http://model-vllm-dsv41-dp6:9106,http://model-vllm-dsv41-dp7:9107
       - VLLM_BACKEND_CONVERSATION_AFFINITY=1
+      - VLLM_BACKEND_AFFINITY_MAX_IMBALANCE=64
       - VLLM_PROXY_MAX_REQUEST_SIZE=104857600
       - VLLM_PROXY_POOL_IDLE_TIMEOUT_SECS=3
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
@@ -200,7 +202,7 @@ services:
       - VLLM_PROXY_INLINE_MEDIA=${VLLM_PROXY_INLINE_MEDIA:-1}
       - VLLM_PROXY_REJECTED_CONTENT_PART_TYPES=${VLLM_PROXY_REJECTED_CONTENT_PART_TYPES:-video_url}
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated","port:8002","deployment:deepseek-v4.1-flash-1017-vllm-dep4x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-lora3p-cc2-w4a8-2xdep4-c8192-dspark5pb-mr64-omp4-restricted-psi8-cc-engram-cpu-fg-prestage-fullgraph-lorareplay"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated","port:8002","deployment:deepseek-v4.1-flash-1017-vllm-dep4x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-lora3p-cc2-w4a8-2xdep4-c8192-dspark5pb-mr64-omp4-aff64-restricted-psi8-cc-engram-cpu-fg-prestage-fullgraph-lorareplay"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "inference-proxy"
       nearai.otel.service: "vllm-proxy"
@@ -216,7 +218,7 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.ppcie: "true"
-      nearai.otel.config_variant: "vllm0340-lora3p-cc2-w4a8-2xdep4-c8192-dspark5pb-mr64-omp4-restricted-psi8-cc-engram-cpu-fg-prestage-fullgraph-lorareplay"
+      nearai.otel.config_variant: "vllm0340-lora3p-cc2-w4a8-2xdep4-c8192-dspark5pb-mr64-omp4-aff64-restricted-psi8-cc-engram-cpu-fg-prestage-fullgraph-lorareplay"
 
   model-vllm-dsv41-dp0:
     <<: *dsv41-engine-common
@@ -274,7 +276,7 @@ services:
       --host 0.0.0.0
       --port 9100
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:deepseek-ai/DeepSeek-V4.1-Flash-1017","replica:r1","dp_rank:0","gpu:0","deployment:deepseek-v4.1-flash-1017-vllm-dep4x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-lora3p-cc2-w4a8-2xdep4-c8192-dspark5pb-mr64-omp4-restricted-psi8-cc-engram-cpu-fg-prestage-fullgraph-lorareplay"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:deepseek-ai/DeepSeek-V4.1-Flash-1017","replica:r1","dp_rank:0","gpu:0","deployment:deepseek-v4.1-flash-1017-vllm-dep4x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-lora3p-cc2-w4a8-2xdep4-c8192-dspark5pb-mr64-omp4-aff64-restricted-psi8-cc-engram-cpu-fg-prestage-fullgraph-lorareplay"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
@@ -290,7 +292,7 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.ppcie: "true"
-      nearai.otel.config_variant: "vllm0340-lora3p-cc2-w4a8-2xdep4-c8192-dspark5pb-mr64-omp4-restricted-psi8-cc-engram-cpu-fg-prestage-fullgraph-lorareplay"
+      nearai.otel.config_variant: "vllm0340-lora3p-cc2-w4a8-2xdep4-c8192-dspark5pb-mr64-omp4-aff64-restricted-psi8-cc-engram-cpu-fg-prestage-fullgraph-lorareplay"
 
   model-vllm-dsv41-dp1:
     <<: *dsv41-engine-common
@@ -350,7 +352,7 @@ services:
       --host 0.0.0.0
       --port 9101
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:deepseek-ai/DeepSeek-V4.1-Flash-1017","replica:r1","dp_rank:1","gpu:1","deployment:deepseek-v4.1-flash-1017-vllm-dep4x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-lora3p-cc2-w4a8-2xdep4-c8192-dspark5pb-mr64-omp4-restricted-psi8-cc-engram-cpu-fg-prestage-fullgraph-lorareplay"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:deepseek-ai/DeepSeek-V4.1-Flash-1017","replica:r1","dp_rank:1","gpu:1","deployment:deepseek-v4.1-flash-1017-vllm-dep4x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-lora3p-cc2-w4a8-2xdep4-c8192-dspark5pb-mr64-omp4-aff64-restricted-psi8-cc-engram-cpu-fg-prestage-fullgraph-lorareplay"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
@@ -366,7 +368,7 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.ppcie: "true"
-      nearai.otel.config_variant: "vllm0340-lora3p-cc2-w4a8-2xdep4-c8192-dspark5pb-mr64-omp4-restricted-psi8-cc-engram-cpu-fg-prestage-fullgraph-lorareplay"
+      nearai.otel.config_variant: "vllm0340-lora3p-cc2-w4a8-2xdep4-c8192-dspark5pb-mr64-omp4-aff64-restricted-psi8-cc-engram-cpu-fg-prestage-fullgraph-lorareplay"
 
   model-vllm-dsv41-dp2:
     <<: *dsv41-engine-common
@@ -426,7 +428,7 @@ services:
       --host 0.0.0.0
       --port 9102
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:deepseek-ai/DeepSeek-V4.1-Flash-1017","replica:r1","dp_rank:2","gpu:2","deployment:deepseek-v4.1-flash-1017-vllm-dep4x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-lora3p-cc2-w4a8-2xdep4-c8192-dspark5pb-mr64-omp4-restricted-psi8-cc-engram-cpu-fg-prestage-fullgraph-lorareplay"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:deepseek-ai/DeepSeek-V4.1-Flash-1017","replica:r1","dp_rank:2","gpu:2","deployment:deepseek-v4.1-flash-1017-vllm-dep4x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-lora3p-cc2-w4a8-2xdep4-c8192-dspark5pb-mr64-omp4-aff64-restricted-psi8-cc-engram-cpu-fg-prestage-fullgraph-lorareplay"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
@@ -442,7 +444,7 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.ppcie: "true"
-      nearai.otel.config_variant: "vllm0340-lora3p-cc2-w4a8-2xdep4-c8192-dspark5pb-mr64-omp4-restricted-psi8-cc-engram-cpu-fg-prestage-fullgraph-lorareplay"
+      nearai.otel.config_variant: "vllm0340-lora3p-cc2-w4a8-2xdep4-c8192-dspark5pb-mr64-omp4-aff64-restricted-psi8-cc-engram-cpu-fg-prestage-fullgraph-lorareplay"
 
   model-vllm-dsv41-dp3:
     <<: *dsv41-engine-common
@@ -502,7 +504,7 @@ services:
       --host 0.0.0.0
       --port 9103
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:deepseek-ai/DeepSeek-V4.1-Flash-1017","replica:r1","dp_rank:3","gpu:3","deployment:deepseek-v4.1-flash-1017-vllm-dep4x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-lora3p-cc2-w4a8-2xdep4-c8192-dspark5pb-mr64-omp4-restricted-psi8-cc-engram-cpu-fg-prestage-fullgraph-lorareplay"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:deepseek-ai/DeepSeek-V4.1-Flash-1017","replica:r1","dp_rank:3","gpu:3","deployment:deepseek-v4.1-flash-1017-vllm-dep4x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-lora3p-cc2-w4a8-2xdep4-c8192-dspark5pb-mr64-omp4-aff64-restricted-psi8-cc-engram-cpu-fg-prestage-fullgraph-lorareplay"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
@@ -518,7 +520,7 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.ppcie: "true"
-      nearai.otel.config_variant: "vllm0340-lora3p-cc2-w4a8-2xdep4-c8192-dspark5pb-mr64-omp4-restricted-psi8-cc-engram-cpu-fg-prestage-fullgraph-lorareplay"
+      nearai.otel.config_variant: "vllm0340-lora3p-cc2-w4a8-2xdep4-c8192-dspark5pb-mr64-omp4-aff64-restricted-psi8-cc-engram-cpu-fg-prestage-fullgraph-lorareplay"
 
   model-vllm-dsv41-dp4:
     <<: *dsv41-engine-common
@@ -576,7 +578,7 @@ services:
       --host 0.0.0.0
       --port 9104
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:deepseek-ai/DeepSeek-V4.1-Flash-1017","replica:r2","dp_rank:0","gpu:4","deployment:deepseek-v4.1-flash-1017-vllm-dep4x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-lora3p-cc2-w4a8-2xdep4-c8192-dspark5pb-mr64-omp4-restricted-psi8-cc-engram-cpu-fg-prestage-fullgraph-lorareplay"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:deepseek-ai/DeepSeek-V4.1-Flash-1017","replica:r2","dp_rank:0","gpu:4","deployment:deepseek-v4.1-flash-1017-vllm-dep4x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-lora3p-cc2-w4a8-2xdep4-c8192-dspark5pb-mr64-omp4-aff64-restricted-psi8-cc-engram-cpu-fg-prestage-fullgraph-lorareplay"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
@@ -592,7 +594,7 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.ppcie: "true"
-      nearai.otel.config_variant: "vllm0340-lora3p-cc2-w4a8-2xdep4-c8192-dspark5pb-mr64-omp4-restricted-psi8-cc-engram-cpu-fg-prestage-fullgraph-lorareplay"
+      nearai.otel.config_variant: "vllm0340-lora3p-cc2-w4a8-2xdep4-c8192-dspark5pb-mr64-omp4-aff64-restricted-psi8-cc-engram-cpu-fg-prestage-fullgraph-lorareplay"
 
   model-vllm-dsv41-dp5:
     <<: *dsv41-engine-common
@@ -652,7 +654,7 @@ services:
       --host 0.0.0.0
       --port 9105
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:deepseek-ai/DeepSeek-V4.1-Flash-1017","replica:r2","dp_rank:1","gpu:5","deployment:deepseek-v4.1-flash-1017-vllm-dep4x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-lora3p-cc2-w4a8-2xdep4-c8192-dspark5pb-mr64-omp4-restricted-psi8-cc-engram-cpu-fg-prestage-fullgraph-lorareplay"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:deepseek-ai/DeepSeek-V4.1-Flash-1017","replica:r2","dp_rank:1","gpu:5","deployment:deepseek-v4.1-flash-1017-vllm-dep4x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-lora3p-cc2-w4a8-2xdep4-c8192-dspark5pb-mr64-omp4-aff64-restricted-psi8-cc-engram-cpu-fg-prestage-fullgraph-lorareplay"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
@@ -668,7 +670,7 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.ppcie: "true"
-      nearai.otel.config_variant: "vllm0340-lora3p-cc2-w4a8-2xdep4-c8192-dspark5pb-mr64-omp4-restricted-psi8-cc-engram-cpu-fg-prestage-fullgraph-lorareplay"
+      nearai.otel.config_variant: "vllm0340-lora3p-cc2-w4a8-2xdep4-c8192-dspark5pb-mr64-omp4-aff64-restricted-psi8-cc-engram-cpu-fg-prestage-fullgraph-lorareplay"
 
   model-vllm-dsv41-dp6:
     <<: *dsv41-engine-common
@@ -728,7 +730,7 @@ services:
       --host 0.0.0.0
       --port 9106
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:deepseek-ai/DeepSeek-V4.1-Flash-1017","replica:r2","dp_rank:2","gpu:6","deployment:deepseek-v4.1-flash-1017-vllm-dep4x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-lora3p-cc2-w4a8-2xdep4-c8192-dspark5pb-mr64-omp4-restricted-psi8-cc-engram-cpu-fg-prestage-fullgraph-lorareplay"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:deepseek-ai/DeepSeek-V4.1-Flash-1017","replica:r2","dp_rank:2","gpu:6","deployment:deepseek-v4.1-flash-1017-vllm-dep4x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-lora3p-cc2-w4a8-2xdep4-c8192-dspark5pb-mr64-omp4-aff64-restricted-psi8-cc-engram-cpu-fg-prestage-fullgraph-lorareplay"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
@@ -744,7 +746,7 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.ppcie: "true"
-      nearai.otel.config_variant: "vllm0340-lora3p-cc2-w4a8-2xdep4-c8192-dspark5pb-mr64-omp4-restricted-psi8-cc-engram-cpu-fg-prestage-fullgraph-lorareplay"
+      nearai.otel.config_variant: "vllm0340-lora3p-cc2-w4a8-2xdep4-c8192-dspark5pb-mr64-omp4-aff64-restricted-psi8-cc-engram-cpu-fg-prestage-fullgraph-lorareplay"
 
   model-vllm-dsv41-dp7:
     <<: *dsv41-engine-common
@@ -804,7 +806,7 @@ services:
       --host 0.0.0.0
       --port 9107
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:deepseek-ai/DeepSeek-V4.1-Flash-1017","replica:r2","dp_rank:3","gpu:7","deployment:deepseek-v4.1-flash-1017-vllm-dep4x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-lora3p-cc2-w4a8-2xdep4-c8192-dspark5pb-mr64-omp4-restricted-psi8-cc-engram-cpu-fg-prestage-fullgraph-lorareplay"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:deepseek-ai/DeepSeek-V4.1-Flash-1017","replica:r2","dp_rank:3","gpu:7","deployment:deepseek-v4.1-flash-1017-vllm-dep4x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-lora3p-cc2-w4a8-2xdep4-c8192-dspark5pb-mr64-omp4-aff64-restricted-psi8-cc-engram-cpu-fg-prestage-fullgraph-lorareplay"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
@@ -820,7 +822,7 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.ppcie: "true"
-      nearai.otel.config_variant: "vllm0340-lora3p-cc2-w4a8-2xdep4-c8192-dspark5pb-mr64-omp4-restricted-psi8-cc-engram-cpu-fg-prestage-fullgraph-lorareplay"
+      nearai.otel.config_variant: "vllm0340-lora3p-cc2-w4a8-2xdep4-c8192-dspark5pb-mr64-omp4-aff64-restricted-psi8-cc-engram-cpu-fg-prestage-fullgraph-lorareplay"
 
   dcgm-dsv41:
     image: nvcr.io/nvidia/k8s/dcgm-exporter@sha256:ed594cf53fe6942e84b07b0740cdcbb249fa4b39cb21feeebf93881ae51f0b5e
@@ -838,7 +840,7 @@ services:
     restart: unless-stopped
     logging: *logging-conf
     labels:
-      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:deepseek-ai/DeepSeek-V4.1-Flash-1017","deployment:deepseek-v4.1-flash-1017-vllm-dep4x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-lora3p-cc2-w4a8-2xdep4-c8192-dspark5pb-mr64-omp4-restricted-psi8-cc-engram-cpu-fg-prestage-fullgraph-lorareplay"]}]'
+      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:deepseek-ai/DeepSeek-V4.1-Flash-1017","deployment:deepseek-v4.1-flash-1017-vllm-dep4x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-lora3p-cc2-w4a8-2xdep4-c8192-dspark5pb-mr64-omp4-aff64-restricted-psi8-cc-engram-cpu-fg-prestage-fullgraph-lorareplay"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "dcgm"
       nearai.otel.service: "dcgm-exporter"
@@ -854,7 +856,7 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.ppcie: "true"
-      nearai.otel.config_variant: "vllm0340-lora3p-cc2-w4a8-2xdep4-c8192-dspark5pb-mr64-omp4-restricted-psi8-cc-engram-cpu-fg-prestage-fullgraph-lorareplay"
+      nearai.otel.config_variant: "vllm0340-lora3p-cc2-w4a8-2xdep4-c8192-dspark5pb-mr64-omp4-aff64-restricted-psi8-cc-engram-cpu-fg-prestage-fullgraph-lorareplay"
 
   otelcol-contrib:
     image: otel/opentelemetry-collector-contrib@sha256:85ac41c2db88d0df9bd6145e608a3cb023f5d8443868adbfbbf66efb51087917
@@ -896,7 +898,7 @@ services:
         max-size: "20m"
         max-file: "3"
     labels:
-      com.datadoghq.ad.logs: '[{"source":"otelcol-contrib","service":"otelcol-contrib","tags":["model:multi","deployment:deepseek-v4.1-flash-1017-vllm-dep4x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-lora3p-cc2-w4a8-2xdep4-c8192-dspark5pb-mr64-omp4-restricted-psi8-cc-engram-cpu-fg-prestage-fullgraph-lorareplay"]}]'
+      com.datadoghq.ad.logs: '[{"source":"otelcol-contrib","service":"otelcol-contrib","tags":["model:multi","deployment:deepseek-v4.1-flash-1017-vllm-dep4x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-lora3p-cc2-w4a8-2xdep4-c8192-dspark5pb-mr64-omp4-aff64-restricted-psi8-cc-engram-cpu-fg-prestage-fullgraph-lorareplay"]}]'
 
 networks:
   default:
@@ -1046,7 +1048,7 @@ configs:
                       ip: "${HOST_IP}"
                       ppcie: "true"
                       deployment: "deepseek-v4.1-flash-1017-vllm-dep4x2"
-                      config_variant: "vllm0340-lora3p-cc2-w4a8-2xdep4-c8192-dspark5pb-mr64-omp4-restricted-psi8-cc-engram-cpu-fg-prestage-fullgraph-lorareplay"
+                      config_variant: "vllm0340-lora3p-cc2-w4a8-2xdep4-c8192-dspark5pb-mr64-omp4-aff64-restricted-psi8-cc-engram-cpu-fg-prestage-fullgraph-lorareplay"
               - job_name: vllm-model-vllm-dsv41-dp1
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -1070,7 +1072,7 @@ configs:
                       ip: "${HOST_IP}"
                       ppcie: "true"
                       deployment: "deepseek-v4.1-flash-1017-vllm-dep4x2"
-                      config_variant: "vllm0340-lora3p-cc2-w4a8-2xdep4-c8192-dspark5pb-mr64-omp4-restricted-psi8-cc-engram-cpu-fg-prestage-fullgraph-lorareplay"
+                      config_variant: "vllm0340-lora3p-cc2-w4a8-2xdep4-c8192-dspark5pb-mr64-omp4-aff64-restricted-psi8-cc-engram-cpu-fg-prestage-fullgraph-lorareplay"
               - job_name: vllm-model-vllm-dsv41-dp2
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -1094,7 +1096,7 @@ configs:
                       ip: "${HOST_IP}"
                       ppcie: "true"
                       deployment: "deepseek-v4.1-flash-1017-vllm-dep4x2"
-                      config_variant: "vllm0340-lora3p-cc2-w4a8-2xdep4-c8192-dspark5pb-mr64-omp4-restricted-psi8-cc-engram-cpu-fg-prestage-fullgraph-lorareplay"
+                      config_variant: "vllm0340-lora3p-cc2-w4a8-2xdep4-c8192-dspark5pb-mr64-omp4-aff64-restricted-psi8-cc-engram-cpu-fg-prestage-fullgraph-lorareplay"
               - job_name: vllm-model-vllm-dsv41-dp3
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -1118,7 +1120,7 @@ configs:
                       ip: "${HOST_IP}"
                       ppcie: "true"
                       deployment: "deepseek-v4.1-flash-1017-vllm-dep4x2"
-                      config_variant: "vllm0340-lora3p-cc2-w4a8-2xdep4-c8192-dspark5pb-mr64-omp4-restricted-psi8-cc-engram-cpu-fg-prestage-fullgraph-lorareplay"
+                      config_variant: "vllm0340-lora3p-cc2-w4a8-2xdep4-c8192-dspark5pb-mr64-omp4-aff64-restricted-psi8-cc-engram-cpu-fg-prestage-fullgraph-lorareplay"
               - job_name: vllm-model-vllm-dsv41-dp4
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -1142,7 +1144,7 @@ configs:
                       ip: "${HOST_IP}"
                       ppcie: "true"
                       deployment: "deepseek-v4.1-flash-1017-vllm-dep4x2"
-                      config_variant: "vllm0340-lora3p-cc2-w4a8-2xdep4-c8192-dspark5pb-mr64-omp4-restricted-psi8-cc-engram-cpu-fg-prestage-fullgraph-lorareplay"
+                      config_variant: "vllm0340-lora3p-cc2-w4a8-2xdep4-c8192-dspark5pb-mr64-omp4-aff64-restricted-psi8-cc-engram-cpu-fg-prestage-fullgraph-lorareplay"
               - job_name: vllm-model-vllm-dsv41-dp5
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -1166,7 +1168,7 @@ configs:
                       ip: "${HOST_IP}"
                       ppcie: "true"
                       deployment: "deepseek-v4.1-flash-1017-vllm-dep4x2"
-                      config_variant: "vllm0340-lora3p-cc2-w4a8-2xdep4-c8192-dspark5pb-mr64-omp4-restricted-psi8-cc-engram-cpu-fg-prestage-fullgraph-lorareplay"
+                      config_variant: "vllm0340-lora3p-cc2-w4a8-2xdep4-c8192-dspark5pb-mr64-omp4-aff64-restricted-psi8-cc-engram-cpu-fg-prestage-fullgraph-lorareplay"
               - job_name: vllm-model-vllm-dsv41-dp6
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -1190,7 +1192,7 @@ configs:
                       ip: "${HOST_IP}"
                       ppcie: "true"
                       deployment: "deepseek-v4.1-flash-1017-vllm-dep4x2"
-                      config_variant: "vllm0340-lora3p-cc2-w4a8-2xdep4-c8192-dspark5pb-mr64-omp4-restricted-psi8-cc-engram-cpu-fg-prestage-fullgraph-lorareplay"
+                      config_variant: "vllm0340-lora3p-cc2-w4a8-2xdep4-c8192-dspark5pb-mr64-omp4-aff64-restricted-psi8-cc-engram-cpu-fg-prestage-fullgraph-lorareplay"
               - job_name: vllm-model-vllm-dsv41-dp7
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -1214,7 +1216,7 @@ configs:
                       ip: "${HOST_IP}"
                       ppcie: "true"
                       deployment: "deepseek-v4.1-flash-1017-vllm-dep4x2"
-                      config_variant: "vllm0340-lora3p-cc2-w4a8-2xdep4-c8192-dspark5pb-mr64-omp4-restricted-psi8-cc-engram-cpu-fg-prestage-fullgraph-lorareplay"
+                      config_variant: "vllm0340-lora3p-cc2-w4a8-2xdep4-c8192-dspark5pb-mr64-omp4-aff64-restricted-psi8-cc-engram-cpu-fg-prestage-fullgraph-lorareplay"
               - job_name: dcgm-dcgm-dsv41
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -1233,7 +1235,7 @@ configs:
                       ip: "${HOST_IP}"
                       ppcie: "true"
                       deployment: "deepseek-v4.1-flash-1017-vllm-dep4x2"
-                      config_variant: "vllm0340-lora3p-cc2-w4a8-2xdep4-c8192-dspark5pb-mr64-omp4-restricted-psi8-cc-engram-cpu-fg-prestage-fullgraph-lorareplay"
+                      config_variant: "vllm0340-lora3p-cc2-w4a8-2xdep4-c8192-dspark5pb-mr64-omp4-aff64-restricted-psi8-cc-engram-cpu-fg-prestage-fullgraph-lorareplay"
               - job_name: inference-proxy-proxy-dsv41
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -1252,7 +1254,7 @@ configs:
                       ip: "${HOST_IP}"
                       ppcie: "true"
                       deployment: "deepseek-v4.1-flash-1017-vllm-dep4x2"
-                      config_variant: "vllm0340-lora3p-cc2-w4a8-2xdep4-c8192-dspark5pb-mr64-omp4-restricted-psi8-cc-engram-cpu-fg-prestage-fullgraph-lorareplay"
+                      config_variant: "vllm0340-lora3p-cc2-w4a8-2xdep4-c8192-dspark5pb-mr64-omp4-aff64-restricted-psi8-cc-engram-cpu-fg-prestage-fullgraph-lorareplay"
               - job_name: inference-proxy-proxy-dsv41-abliterated
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -1271,7 +1273,7 @@ configs:
                       ip: "${HOST_IP}"
                       ppcie: "true"
                       deployment: "deepseek-v4.1-flash-1017-vllm-dep4x2"
-                      config_variant: "vllm0340-lora3p-cc2-w4a8-2xdep4-c8192-dspark5pb-mr64-omp4-restricted-psi8-cc-engram-cpu-fg-prestage-fullgraph-lorareplay"
+                      config_variant: "vllm0340-lora3p-cc2-w4a8-2xdep4-c8192-dspark5pb-mr64-omp4-aff64-restricted-psi8-cc-engram-cpu-fg-prestage-fullgraph-lorareplay"
 
         prometheus/self:
           config:
