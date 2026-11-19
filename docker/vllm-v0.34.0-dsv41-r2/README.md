@@ -44,6 +44,7 @@ confidential-compute mode on only from `VLLM_CONFIDENTIAL_COMPUTE=1`.
 Patch 16 changes nothing unless `VLLM_NEAR_ENGRAM_PRESTAGE=1` is set.
 Patch 17 changes nothing unless `VLLM_NEAR_LORA_DECODER_REPLAY=1` is set.
 Patch 18 changes nothing unless `VLLM_NEAR_DP_GLOBAL_PREFILL_CADENCE=1` is set.
+Do not enable it with elastic expert parallelism or engine fault tolerance: a rank that restarts or joins starts from the base interval and its collectives would no longer match its peers.
 
 OS: openssl/libssl3t64 3.0.13-0ubuntu3.16, libc6/libc-bin/libc6-dev/libc-dev-bin 2.39-0ubuntu8.12
 and linux-libc-dev 6.8.0-149.149, pinned by exact version; the `nearai.os.packages` label lists
