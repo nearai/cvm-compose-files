@@ -32,7 +32,7 @@ downloaders and monitoring. Hosts run a file from a release tag `v0.0.N`.
 | `ci/data/` | allowlists, waivers, the legacy list and expected findings; they change with what they record |
 | `docs/` | docs for outside readers: how to verify a deployment |
 | `.github/` | `ci.yaml`, `auto-tag.yaml`, one `publish-*.yaml` per image, PR template, `SECURITY.md` |
-| `adapters/` | legacy: a LoRA adapter some deployables fetch at runtime |
+| `adapters/` | legacy: a LoRA adapter `prod/pack-small-models.yaml` fetches at runtime |
 
 Legacy paths are listed in `ci/data/legacy.txt` and only shrink.
 
@@ -78,18 +78,8 @@ file-name grammar in `.claude/rules/prod.md`. `privacy`: `flag set` (explicit no
 | `prod/pack-small-models.yaml` | black-forest-labs/FLUX.2-klein-4B | black-forest-labs/FLUX.2-klein-4B@e7b7dc27f91d | [docker/sglang-v0.5.23-secure-r2@9fd36fd](https://github.com/nearai/cvm-compose-files/tree/9fd36fd3900655f0bbf411e6f3f08b4c2d037ab0/docker/sglang-v0.5.23-secure-r2) | tp1 | flag set | candidate |
 | `prod/pack-small-models.yaml` | openai/whisper-large-v3 | openai/whisper-large-v3@06f233fe06e7 | built on host | tp1 | flag set | candidate |
 | `prod/pack-small-models.yaml` | z-ai/glm-5.3-flash | graphistry/GLM-5.3-Flash-W4AFP8@99f1fa70408c | [docker/sglang-v0.5.23-glm53-r3@38385ce](https://github.com/nearai/cvm-compose-files/tree/38385ce62043915646e2d32dc70f314522e056d9/docker/sglang-v0.5.23-glm53-r3) | tp2x2 | flag set | candidate |
-| `prod/qwen38-27b-abliterated-cc-1gpu.yaml` (legacy name) | Qwen/Qwen3.8-27B | Qwen/Qwen3.8-27B-FP8@017b9c7af6b5 | third-party lmsysorg/sglang | tp1 | flag set | live |
 | `prod/rotate-compose-manager-token.yaml` (legacy name) | - | - | - | - | n.a. | live |
 | `prod/sage-pull.yaml` (legacy name) | - | - | - | - | n.a. | live |
-| `prod/sage.yaml` (legacy name) | - | - | - | - | n.a. | live |
-| `prod/small-models.yaml` (legacy name) | Qwen/Qwen3-Embedding-0.6B | Qwen/Qwen3-Embedding-0.6B@97b0c614be4d | third-party vllm/vllm-openai | tp1 | waived | live |
-| `prod/small-models.yaml` (legacy name) | Qwen/Qwen3-Reranker-0.6B | Qwen/Qwen3-Reranker-0.6B@e61197ed4502 | third-party vllm/vllm-openai | tp1 | waived | live |
-| `prod/small-models.yaml` (legacy name) | Qwen/Qwen3-VL-30B-A3B-Instruct | Qwen/Qwen3-VL-30B-A3B-Instruct-FP8@d9748a51ae66 | third-party vllm/vllm-openai | tp1 | waived | live |
-| `prod/small-models.yaml` (legacy name) | Qwen/Qwen3.6-35B-A3B-FP8 | Qwen/Qwen3.6-35B-A3B-FP8@95a723d08a94 | [docker/sglang-v0523-secure@a07dea8](https://github.com/nearai/cvm-compose-files/tree/a07dea8faf1523d85f20e328031977b7964be3e4/docker/sglang-v0523-secure) | tp1 | flag set | live |
-| `prod/small-models.yaml` (legacy name) | Qwen/Qwen3.8-27B | Qwen/Qwen3.8-27B-FP8@017b9c7af6b5 | [docker/sglang-v0523-secure@a07dea8](https://github.com/nearai/cvm-compose-files/tree/a07dea8faf1523d85f20e328031977b7964be3e4/docker/sglang-v0523-secure) | tp1 | flag set | live |
-| `prod/small-models.yaml` (legacy name) | black-forest-labs/FLUX.2-klein-4B | black-forest-labs/FLUX.2-klein-4B@- | [docker/sglang-v0523-secure@a07dea8](https://github.com/nearai/cvm-compose-files/tree/a07dea8faf1523d85f20e328031977b7964be3e4/docker/sglang-v0523-secure) | tp1 | flag set | live |
-| `prod/small-models.yaml` (legacy name) | openai/whisper-large-v3 | openai/whisper-large-v3@06f233fe06e7 | built on host | tp1 | waived | live |
-| `prod/small-models.yaml` (legacy name) | z-ai/glm-5.3-flash | graphistry/GLM-5.3-Flash-W4AFP8@99f1fa70408c | [docker/sglang-glm53-v0523@2cf337c](https://github.com/nearai/cvm-compose-files/tree/2cf337c2c5fc3fa78570a5ae0e3dd432abaefde8/docker/sglang-glm53-v0523) | tp2x2 | flag set | live |
 <!-- status:end -->
 
 `live` runs in production. Files that run nowhere are deleted; older versions stay reachable through
@@ -99,11 +89,8 @@ Models served by more than one live file:
 
 - `z-ai/glm-5.3-flash`: `GLM-5.3-Flash-SGL-TP2x4-W4AFP8-V12Q8.yaml` runs four TP2 engines with an FP8 KV
   cache. `GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext.yaml` runs four TP2 engines with smaller batches and two
-  TP4 engines on the hicache image with a bfloat16 KV cache and hierarchical cache. `small-models.yaml`
+  TP4 engines on the hicache image with a bfloat16 KV cache and hierarchical cache. `pack-small-models.yaml`
   runs two TP2 engines with the V12Q8 settings next to other models.
-- `Qwen/Qwen3.8-27B`: `qwen38-27b-abliterated-cc-1gpu.yaml` runs it alone on one GPU on a third-party
-  SGLang image; `small-models.yaml` runs it on the `sglang-v0523-secure` image with half the GPU memory
-  and batch limits, next to other models. Both load the same checkpoint and LoRA adapter.
 
 ## Verify
 
