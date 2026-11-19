@@ -1,0 +1,112 @@
+diff --git a/vllm/v1/engine/core.py b/vllm/v1/engine/core.py
+index 0d68457..08fbb21 100644
+--- a/vllm/v1/engine/core.py
++++ b/vllm/v1/engine/core.py
+@@ -121,6 +121,17 @@ from vllm.version import __version__ as VLLM_VERSION
+ logger = init_logger(__name__)
+ 
+ 
++def dp_prefill_next_interval(interval, clear, any_bound, base, min_interval, restore):
++    """Next prefill release interval, computed identically on every DP rank from
++    all-reduced input: halve if any rank was capacity-bound, else double back to `base`."""
++    if any_bound:
++        return max(min_interval, interval // 2), 0
++    clear += 1
++    if clear >= restore and interval < base:
++        return min(base, interval * 2), 0
++    return interval, min(clear, restore)
++
++
+ HANDSHAKE_TIMEOUT_MINS = 5
+ 
+ _R = TypeVar("_R")  # Return type for collective_rpc
+@@ -2580,6 +2591,22 @@ class DPEngineCoreProc(EngineCoreProc):
+         # finished with DP peers every N steps.
+         self.step_counter = 0
+         self.current_wave = 0
++        # Off unless VLLM_NEAR_DP_GLOBAL_PREFILL_CADENCE=1; the flags must be equal on all DP ranks.
++        base = max(1, self.prefill_schedule_interval)
++        self._dpc_on = (
++            os.environ.get("VLLM_NEAR_DP_GLOBAL_PREFILL_CADENCE") == "1" and base > 1
++        )
++        self._dpc_base = base
++        self._dpc_min = min(
++            base,
++            max(1, int(os.environ.get("VLLM_NEAR_DP_GLOBAL_PREFILL_CADENCE_MIN", "2"))),
++        )
++        self._dpc_restore = max(
++            1, int(os.environ.get("VLLM_NEAR_DP_GLOBAL_PREFILL_CADENCE_RESTORE", "2"))
++        )
++        self._dpc_interval, self._dpc_clear, self._dpc_bound = base, 0, False
++        # Synced releases, bound releases, sum of intervals.
++        self._dpc_stats = [0, 0, 0]
+ 
+         # Two-phase pause protocol state. When pending_pause is True, the
+         # engine keeps stepping (dummy batches) while waiting for all DP
+@@ -2736,10 +2763,54 @@ class DPEngineCoreProc(EngineCoreProc):
+         # Throttle new prefills to cadence-aligned steps for DP balancing.
+         # step_counter is identical across DP ranks. On a fresh wave the
+         # counter is 0, so prefills are admitted immediately after idle.
+-        return (
+-            self.prefill_schedule_interval > 1
+-            and self.step_counter % self.prefill_schedule_interval != 0
++        interval = (
++            self._dpc_interval if self._dpc_on else self.prefill_schedule_interval
++        )
++        return interval > 1 and self.step_counter % interval != 0
++
++    def _dp_prefill_cadence_sync(self) -> None:
++        """Share the capacity-bound signal across DP ranks so all ranks admit prefills
++        on the same steps. The all-reduce runs only on release steps, which are
++        identical on every rank, so every rank issues the same collectives."""
++        sched = self.scheduler
++        if getattr(sched, "prefill_capacity_bound", False):
++            self._dpc_bound = True
++            # Clear the per-rank escape; the shared interval replaces it.
++            sched.prefill_capacity_bound = False
++        if self.step_counter % self._dpc_interval != 0:
++            return
++        import torch
++
++        from vllm.distributed.utils import cpu_all_reduce_
++
++        t = torch.tensor([int(self._dpc_bound)], dtype=torch.int32, device="cpu")
++        cpu_all_reduce_(
++            t,
++            self.dp_group,
++            timeout=self.vllm_config.parallel_config.cpu_distributed_timeout,
+         )
++        self._dpc_bound = False
++        any_bound = int(t.item()) > 0
++        st = self._dpc_stats
++        st[0] += 1
++        st[1] += int(any_bound)
++        st[2] += self._dpc_interval
++        self._dpc_interval, self._dpc_clear = dp_prefill_next_interval(
++            self._dpc_interval,
++            self._dpc_clear,
++            any_bound,
++            self._dpc_base,
++            self._dpc_min,
++            self._dpc_restore,
++        )
++        if self.dp_rank == 0 and st[0] % 2000 == 0:
++            logger.info(
++                "dp prefill cadence: releases=%d bound_frac=%.3f mean_interval=%.2f now=%d",
++                st[0],
++                st[1] / st[0],
++                st[2] / st[0],
++                self._dpc_interval,
++            )
+ 
+     @fault_tolerant_wrapper
+     def run_busy_loop(self):
+@@ -2832,6 +2903,8 @@ class DPEngineCoreProc(EngineCoreProc):
+         raise SystemExit
+ 
+     def _has_global_unfinished_reqs(self, local_unfinished: bool) -> bool:
++        if self._dpc_on:
++            self._dp_prefill_cadence_sync()
+         # Sync step 1 too: an idle pause needs one dummy batch, not a full interval.
+         self.step_counter += 1
+         if self.step_counter != 1 and self.step_counter % self.dp_sync_interval != 0:
