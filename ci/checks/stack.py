@@ -127,18 +127,55 @@ def proxy_backends(path, services, out):
     return found
 
 
-def engine_errors(svc, networks):
+def shared_netns(svc):
+    """The service whose network namespace `svc` joins with `network_mode: service:<name>`, else None."""
+    mode = _s(svc.get("network_mode"))
+    return mode[len("service:"):] if mode.startswith("service:") else None
+
+
+def netns_nets(svc, services):
+    """Networks of the namespace `svc` runs in: its own, or those of the service it joins."""
+    holder = shared_netns(svc)
+    return nets_of(services.get(holder) or {}) if holder else nets_of(svc)
+
+
+def holder_errors(name, services, networks):
+    """Engines may share one network namespace, held by a sidecar on internal networks only."""
+    holder = services.get(name)
+    if holder is None or not name.startswith("sidecar-"):
+        return ["may join only the network namespace of a sidecar-* service in this file"]
     out = []
-    nets = nets_of(svc)
-    if not nets:
-        out.append("must list its networks explicitly")
-    if "network_mode" in svc:
-        out.append("network_mode is not allowed")
+    image = image_of(holder)
+    if ENGINE_IMAGE.match(image) or PROXY_IMAGE.match(image) or COLLECTOR_IMAGE.match(image):
+        out.append(f"namespace holder {name} must not run an engine, proxy or collector image")
+    if not nets_of(holder):
+        out.append(f"namespace holder {name} must list its networks explicitly")
+    for key, msg in (("network_mode", "must not set network_mode"), ("ports", "must not publish ports"),
+                     ("privileged", "must not be privileged")):
+        if holder.get(key):
+            out.append(f"namespace holder {name} {msg}")
+    for net in nets_of(holder):
+        if (networks.get(net) or {}).get("internal") is not True:
+            out.append(f"namespace holder {name}: network {net} is not internal")
+    return out
+
+
+def engine_errors(svc, networks, services):
+    out = []
+    holder = shared_netns(svc)
+    if holder is not None:
+        out += holder_errors(holder, services, networks)
+    else:
+        nets = nets_of(svc)
+        if not nets:
+            out.append("must list its networks explicitly")
+        if "network_mode" in svc:
+            out.append("network_mode is not allowed")
+        for net in nets:
+            if (networks.get(net) or {}).get("internal") is not True:
+                out.append(f"network {net} is not internal")
     if "ports" in svc:
         out.append("must not publish ports")
-    for net in nets:
-        if (networks.get(net) or {}).get("internal") is not True:
-            out.append(f"network {net} is not internal")
     env = env_of(svc)
     for key in FORBIDDEN_ENV:
         if key in env:
@@ -174,9 +211,14 @@ def collector_configs(model, svc, out, path, name):
     return configs
 
 
-def check_members(path, model, services, engines, engine_nets, out):
+def check_members(path, model, services, detected, engines, holders, engine_nets, out):
     for name, svc in services.items():
-        if name in engines:
+        if name in engines or name in holders:
+            continue
+        if shared_netns(svc) in set(detected) | holders and name not in detected:
+            out.append(Finding(path, 0, "stack.engine-member",
+                               f"{path}: services.{name}: must not join an engine network namespace",
+                               key=f"{path}: services.{name}:netns"))
             continue
         shared = [n for n in nets_of(svc) if n in engine_nets]
         if not shared:
@@ -210,17 +252,18 @@ def check_isolation(path, model, pending, out):
         if name not in detected:
             out.append(Finding(path, 0, "stack.engine-pending",
                                f"{path}: pending service {name} is not an engine in this file", key=name))
-        elif not engine_errors(detected[name], networks):
+        elif not engine_errors(detected[name], networks, services):
             out.append(Finding(path, 0, "stack.engine-pending",
                                f"{path}: pending service {name} follows the contract now; remove its pending mark",
                                key=name))
     if not detected:
         out.append(Finding(path, 0, "stack.engine-network", f"{path}: no engine service found", key="none"))
     engines = {n: s for n, s in detected.items() if n not in pending}
-    engine_nets = {net for s in engines.values() for net in nets_of(s)}
-    check_members(path, model, services, engines, engine_nets, out)
+    holders = {shared_netns(s) for s in engines.values()} - {None}
+    engine_nets = {net for s in engines.values() for net in netns_nets(s, services)}
+    check_members(path, model, services, detected, engines, holders, engine_nets, out)
     for name, svc in sorted(engines.items()):
-        for msg in engine_errors(svc, networks):
+        for msg in engine_errors(svc, networks, services):
             out.append(Finding(path, 0, "stack.engine-network", f"{path}: services.{name}: {msg}",
                                key=f"{name}:{msg}"))
 
@@ -673,7 +716,7 @@ def _mut(*steps):
         if value is None:
             del node[path[-1]]
         else:
-            node[path[-1]] = value
+            node[path[-1]] = copy.deepcopy(value)
     return m
 
 
@@ -687,8 +730,24 @@ PENDING = dict(FILES, **{SERVICES: json.dumps({"isolated_files": [P], "services"
 PENDING_GONE = dict(FILES, **{SERVICES: json.dumps({"isolated_files": [P], "services": [
     {"file": P, "service": "gone", "isolation": "pending"}]})})
 NOT_ISOLATED = dict(FILES, **{SERVICES: json.dumps({"isolated_files": [], "services": [], "env": []})})
+HOLDER = {"image": "curlimages/curl@sha256:" + "0" * 64, "networks": ["eng"]}
+SHARED = ((("services", "e", "networks"), None), (("services", "e", "network_mode"), "service:sidecar-n"),
+          (("services", "sidecar-n"), HOLDER))
 CASES = [
     ("compliant model", None, FILES, None, None, None, {"raw": {P: GOOD}}),
+    ("engine in a sidecar's network namespace", None, FILES, None, None, None, {"raw": {P: _mut(*SHARED)}}),
+    _case("engine on the host network", "stack.engine-network",
+          _mut((("services", "e", "networks"), None), (("services", "e", "network_mode"), "host"))),
+    _case("engine joins a namespace that is not a sidecar's", "stack.engine-network",
+          _mut((("services", "e", "networks"), None), (("services", "e", "network_mode"), "service:helper"),
+               (("services", "helper"), HOLDER))),
+    _case("namespace sidecar on a routable network", "stack.engine-network",
+          _mut(*SHARED, (("networks", "eng", "internal"), False))),
+    _case("namespace sidecar publishes a port", "stack.engine-network",
+          _mut(*SHARED, (("services", "sidecar-n", "ports"), ["9000:9000"]))),
+    _case("proxy joins an engine network namespace", "stack.engine-member",
+          _mut(*SHARED, (("services", "proxy-x", "networks"), None),
+               (("services", "proxy-x", "network_mode"), "service:sidecar-n"))),
     ("engine outside isolated_files is not checked", None, NOT_ISOLATED, None, None, None,
      {"raw": {P: _mut((("networks", "eng", "internal"), False))}}),
     _case("engine network not internal", "stack.engine-network",
