@@ -1,0 +1,66 @@
+diff --git a/vllm/models/glm5next/common/kda.py b/vllm/models/glm5next/common/kda.py
+index bb0f479b7e..1d66fc6caa 100644
+--- a/vllm/models/glm5next/common/kda.py
++++ b/vllm/models/glm5next/common/kda.py
+@@ -133,6 +133,32 @@ class _Glm5NextMergedColumnParallelLinear(MergedColumnParallelLinear):
+     backend=current_platform.simple_compile_backend,
+     options=maybe_disable_graph_partition(current_platform.simple_compile_backend),
+ )
++# VLLM_NEAR_KDA_FP8=1 (read at layer construction) quantizes the KDA in_proj_qkvbfg_a and
++# o_proj linears online to fp8: per-output-channel weight scale, dynamic per-token
++# activation scale. Off by default.
++def _kda_fp8_enabled() -> bool:
++    import os
++
++    return os.environ.get("VLLM_NEAR_KDA_FP8", "0") == "1"
++
++
++def _kda_fp8_quant_config():
++    """Online fp8 config applied to individual KDA linears.
++
++    Same machinery as ``--quantization fp8_per_channel``:
++    ``OnlineQuantizationConfig`` (online/base.py) resolves a ``LinearBase`` layer
++    with weight key ``kFp8StaticChannelSym`` to ``Fp8PtpcOnlineLinearMethod``
++    (online/fp8.py): per-output-channel weight scale, dynamic per-token
++    activation scale, bf16 weights quantized layer-wise at load time.
++    """
++    from vllm.config.quantization import QuantizationConfigArgs
++    from vllm.model_executor.layers.quantization.online.base import (
++        OnlineQuantizationConfig,
++    )
++
++    return OnlineQuantizationConfig(QuantizationConfigArgs(linear="fp8_per_channel"))
++
++
+ def _cast_sigmoid(x: torch.Tensor) -> torch.Tensor:
+     """Fuse the fp32 cast + sigmoid into one Inductor kernel."""
+     return x.float().sigmoid()
+@@ -270,6 +296,10 @@ class Glm5NextLinearAttention(GatedDeltaNetAttention):
+         # Merge q, k, v, b, f_a, g_a projections into one GEMM (6→1 launches).
+         # Order matches checkpoint's fused_qkvbfg_a_proj convention.
+         # Shards 4 (f_a) and 5 (g_a) are replicated across TP ranks.
++        # With VLLM_NEAR_KDA_FP8=1, only the two big projections are quantized to fp8;
++        # everything else in the module (f_b/g_b, conv1d, A_log, dt_bias, norms) keeps
++        # its dtype.
++        kda_fp8_cfg = _kda_fp8_quant_config() if _kda_fp8_enabled() else None
+         self.in_proj_qkvbfg_a = _Glm5NextMergedColumnParallelLinear(
+             self.hidden_size,
+             [
+@@ -283,7 +313,7 @@ class Glm5NextLinearAttention(GatedDeltaNetAttention):
+             replicated_shard_ids=(4, 5),
+             tp_size=self.tp_size,
+             bias=False,
+-            quant_config=self.quant_config,
++            quant_config=kda_fp8_cfg if kda_fp8_cfg is not None else self.quant_config,
+             prefix=f"{prefix}.in_proj_qkvbfg_a",
+         )
+ 
+@@ -325,7 +355,7 @@ class Glm5NextLinearAttention(GatedDeltaNetAttention):
+             projection_size,
+             self.hidden_size,
+             bias=False,
+-            quant_config=self.quant_config,
++            quant_config=kda_fp8_cfg if kda_fp8_cfg is not None else self.quant_config,
+             prefix=f"{prefix}.o_proj",
+         )
+ 
