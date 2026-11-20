@@ -184,13 +184,13 @@ file and the matched value. Counts per rule:
 | rule | entries | what it waives |
 |---|---|---|
 | `layout.ext`, `layout.size` | 1 each | the adapter weights file in `adapters/` |
-| `pins.digest` | 16 | image references pinned by tag, or defined inline |
+| `pins.digest` | 17 | image references pinned by tag, or defined inline |
 | `pins.hf-revision` | 1 | a model referenced by name without a revision pin |
 | `pins.raw-key` | 8 | images defined inline in a deployable |
 | `pins.remote-code` | 1 | the remote-code setting on that model |
 | `privacy.no-log-flag` | 4 | vLLM engine without an explicit request-logging flag |
-| `privacy.secret` | 11 | secret variables without a required-value check |
-| `public.domain` | 10 | domain names outside the public allowlist |
+| `privacy.secret` | 12 | secret variables without a required-value check |
+| `public.domain` | 11 | domain names outside the public allowlist |
 | `public.host` | 20 | host names in config values, labels or service names |
 | `stack.engine-backend` | 2 | a proxy backend list set at deploy time |
 | `status.key-set` | 3 | candidates whose services differ from their live files |

@@ -415,6 +415,14 @@
       ]
     },
     {
+      "file": "prod/pack-glm-53-flash-pd2-long.yaml",
+      "service": "glm53-ghost-aggregator",
+      "role": "aux",
+      "items": [
+        "security_opt:no-new-privileges:true"
+      ]
+    },
+    {
       "file": "prod/GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext.yaml",
       "service": "glm53-perception-check",
       "role": "aux",
@@ -447,7 +455,23 @@
       ]
     },
     {
+      "file": "prod/pack-glm-53-flash-pd2-long.yaml",
+      "service": "model-sg-glm53-w4afp8-tp2-r2a",
+      "items": [
+        "ipc:host",
+        "security_opt:no-new-privileges:true"
+      ]
+    },
+    {
       "file": "prod/GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext.yaml",
+      "service": "model-sg-glm53-w4afp8-tp2-r2b",
+      "items": [
+        "ipc:host",
+        "security_opt:no-new-privileges:true"
+      ]
+    },
+    {
+      "file": "prod/pack-glm-53-flash-pd2-long.yaml",
       "service": "model-sg-glm53-w4afp8-tp2-r2b",
       "items": [
         "ipc:host",
@@ -489,6 +513,15 @@
     {
       "file": "prod/GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext.yaml",
       "service": "proxy-glm53",
+      "items": [
+        "ipc:host",
+        "privileged",
+        "sock:/var/run/dstack.sock"
+      ]
+    },
+    {
+      "file": "prod/pack-glm-53-flash-pd2-long.yaml",
+      "service": "proxy-glm53-long",
       "items": [
         "ipc:host",
         "privileged",
@@ -1172,6 +1205,14 @@
       ]
     },
     {
+      "file": "prod/pack-glm-53-flash-pd2-long.yaml",
+      "service": "dcgm-glm53",
+      "role": "aux",
+      "items": [
+        "cap_add:SYS_ADMIN"
+      ]
+    },
+    {
       "file": "prod/glm-5.3-flash-vllm-pd2.yaml",
       "service": "nginx",
       "items": [
@@ -1180,7 +1221,23 @@
       ]
     },
     {
+      "file": "prod/pack-glm-53-flash-pd2-long.yaml",
+      "service": "nginx",
+      "items": [
+        "port:8000/tcp",
+        "port:8001/tcp",
+        "port:8444/tcp"
+      ]
+    },
+    {
       "file": "prod/glm-5.3-flash-vllm-pd2.yaml",
+      "service": "otelcol-contrib",
+      "items": [
+        "bind:/var/lib/docker/containers"
+      ]
+    },
+    {
+      "file": "prod/pack-glm-53-flash-pd2-long.yaml",
       "service": "otelcol-contrib",
       "items": [
         "bind:/var/lib/docker/containers"
@@ -1196,7 +1253,23 @@
       ]
     },
     {
+      "file": "prod/pack-glm-53-flash-pd2-long.yaml",
+      "service": "proxy-glm53",
+      "items": [
+        "ipc:host",
+        "privileged",
+        "sock:/var/run/dstack.sock"
+      ]
+    },
+    {
       "file": "prod/glm-5.3-flash-vllm-pd2.yaml",
+      "service": "model-vllm-glm53-a-prefill0",
+      "items": [
+        "security_opt:no-new-privileges:true"
+      ]
+    },
+    {
+      "file": "prod/pack-glm-53-flash-pd2-long.yaml",
       "service": "model-vllm-glm53-a-prefill0",
       "items": [
         "security_opt:no-new-privileges:true"
@@ -1210,7 +1283,21 @@
       ]
     },
     {
+      "file": "prod/pack-glm-53-flash-pd2-long.yaml",
+      "service": "model-vllm-glm53-a-prefill1",
+      "items": [
+        "security_opt:no-new-privileges:true"
+      ]
+    },
+    {
       "file": "prod/glm-5.3-flash-vllm-pd2.yaml",
+      "service": "model-vllm-glm53-a-decode0",
+      "items": [
+        "security_opt:no-new-privileges:true"
+      ]
+    },
+    {
+      "file": "prod/pack-glm-53-flash-pd2-long.yaml",
       "service": "model-vllm-glm53-a-decode0",
       "items": [
         "security_opt:no-new-privileges:true"
@@ -1224,7 +1311,20 @@
       ]
     },
     {
+      "file": "prod/pack-glm-53-flash-pd2-long.yaml",
+      "service": "model-vllm-glm53-a-decode1",
+      "items": [
+        "security_opt:no-new-privileges:true"
+      ]
+    },
+    {
       "file": "prod/glm-5.3-flash-vllm-pd2.yaml",
+      "service": "pd-router-glm53-a",
+      "role": "aux",
+      "items": []
+    },
+    {
+      "file": "prod/pack-glm-53-flash-pd2-long.yaml",
       "service": "pd-router-glm53-a",
       "role": "aux",
       "items": []
@@ -1259,6 +1359,13 @@
     },
     {
       "file": "prod/glm-5.3-flash-vllm-pd2.yaml",
+      "service": "sidecar-glm53-netns-a",
+      "items": [
+        "security_opt:no-new-privileges:true"
+      ]
+    },
+    {
+      "file": "prod/pack-glm-53-flash-pd2-long.yaml",
       "service": "sidecar-glm53-netns-a",
       "items": [
         "security_opt:no-new-privileges:true"
@@ -1522,6 +1629,7 @@
     "prod/glm-5.3-flash-vllm-dep4x2.yaml",
     "prod/glm-5.3-flash-vllm-pd2.yaml",
     "prod/glm-5.3-flash-vllm-pd2x2.yaml",
+    "prod/pack-glm-53-flash-pd2-long.yaml",
     "prod/pack-small-models.yaml",
     "prod/qwen38-27b-abliterated-cc-1gpu.yaml",
     "prod/small-models.yaml"
