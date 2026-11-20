@@ -476,9 +476,65 @@
     "remove_when": "the value is a deploy-time variable"
   },
   {
+    "rule": "pins.digest",
+    "path": "prod/glm-5.3-flash-vllm-pd2x2.yaml",
+    "sha256": "9dcd945c608f77ac55d0026d57d2e617d98b911b4a54e7f9ad4cce9c83a87d43",
+    "reason": "image carries a tag next to its digest; the digest decides what runs",
+    "remove_when": "the image reference is a digest without a tag"
+  },
+  {
+    "rule": "privacy.secret",
+    "path": "prod/glm-5.3-flash-vllm-pd2x2.yaml",
+    "sha256": "e67bf1fe5f5dceecba68fe6a4e61026f5e5a6c1e503f1ef9cd5b54b5482d3480",
+    "reason": "secret variable without a required-value check",
+    "remove_when": "the secret has a required-value check"
+  },
+  {
+    "rule": "public.domain",
+    "path": "prod/glm-5.3-flash-vllm-pd2x2.yaml",
+    "sha256": "2857d6988af093f27ae2d89387c18ed6e11a009c52b2d96df637c2936a9b2918",
+    "reason": "domain outside the public allowlist inside an embedded config",
+    "remove_when": "the value is a deploy-time variable"
+  },
+  {
+    "rule": "pins.digest",
+    "path": "prod/glm-5.3-flash-vllm-pd2.yaml",
+    "sha256": "9dcd945c608f77ac55d0026d57d2e617d98b911b4a54e7f9ad4cce9c83a87d43",
+    "reason": "image carries a tag next to its digest; the digest decides what runs",
+    "remove_when": "the image reference is a digest without a tag"
+  },
+  {
+    "rule": "privacy.secret",
+    "path": "prod/glm-5.3-flash-vllm-pd2.yaml",
+    "sha256": "e67bf1fe5f5dceecba68fe6a4e61026f5e5a6c1e503f1ef9cd5b54b5482d3480",
+    "reason": "secret variable without a required-value check",
+    "remove_when": "the secret has a required-value check"
+  },
+  {
+    "rule": "public.domain",
+    "path": "prod/glm-5.3-flash-vllm-pd2.yaml",
+    "sha256": "2857d6988af093f27ae2d89387c18ed6e11a009c52b2d96df637c2936a9b2918",
+    "reason": "domain outside the public allowlist inside an embedded config",
+    "remove_when": "the value is a deploy-time variable"
+  },
+  {
+    "rule": "stack.engine-backend",
+    "path": "prod/GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext.yaml",
+    "sha256": "110829e842693b3a516d4b147dc4187162a19681a9133b31b3fc82bf894617e4",
+    "reason": "proxy backend list set at deploy time",
+    "remove_when": "the backend list names services in this file"
+  },
+  {
+    "rule": "stack.engine-backend",
+    "path": "prod/GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext.yaml",
+    "sha256": "533642a01fb2e007e792046f785a37495cfb65233b02bad2d2ba49237840905b",
+    "reason": "proxy backend list set at deploy time",
+    "remove_when": "the backend list names services in this file"
+  },
+  {
     "rule": "status.key-set",
-    "path": "prod/glm-5.3-flash-vllm-dep4x2.yaml",
-    "sha256": "8aade0e050615b50e0bcc187806322fe6e5cd6ba77db253a3a270f952af703c4",
+    "path": "prod/glm-5.3-flash-vllm-pd2.yaml",
+    "sha256": "117e3f08b52640461d4385ef391ac7110eb1268c8ddf2c2fb447631da225421e",
     "reason": "candidate whose service set differs from its live file",
     "remove_when": "the candidate replaces its live file"
   }
