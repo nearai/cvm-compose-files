@@ -52,6 +52,26 @@ Do not enable it with elastic expert parallelism or engine fault tolerance: a ra
 Patch 19 changes only how the GLM-5.3-Flash MTP draft loads its weights.
 Patches 20 and 21 change nothing unless `VLLM_NEAR_KDA_FP8=1` or `VLLM_NEAR_KDA_SLICE=1` is set.
 
+Limits of patches 20 and 21. Set the variables before the server starts: `VLLM_NEAR_KDA_SLICE` is read
+once at import and `VLLM_NEAR_KDA_FP8` when each KDA layer is built.
+
+- `VLLM_NEAR_KDA_FP8=1` (patch 20) is not checked for shapes at startup; test each tensor-parallel size you deploy.
+  The merged `in_proj_qkvbfg_a` projection has, per rank, an output width of
+  `3 * (num_heads * head_dim / tp) + num_heads / tp + 2 * head_dim` (the two `head_dim` shards are replicated, not split).
+  The fp8 kernels may need `num_heads / tp` to be a multiple of 16. If it is not, kernel selection can fail or fall
+  back to a slower path when the weights load. The patch adds no check for this.
+- The fp8 override replaces the layer's quantization config, whatever the checkpoint declares. It assumes the
+  checkpoint stores `in_proj_qkvbfg_a` and `o_proj` in bf16 (the KDA layers already ignore the checkpoint's
+  quantization config). A checkpoint that stores these projections already quantized is not supported and
+  would fail at load, possibly with an unclear error.
+- A separate online-quantization config is built for each layer, so the loader's per-layer quantization summary may not combine them.
+  This affects only that summary.
+- `VLLM_NEAR_KDA_SLICE=1` (patch 21) uses slices only when the spec-decode and non-spec tokens form one block each,
+  with all spec sequences first or all non-spec sequences first. Any other layout takes the original
+  `index_select` path for that step. One known case is a batch with zero-length padded sequences after a
+  non-speculative step is followed by a speculative one. The fallback is silent and costs only speed; it
+  does not mean the option is broken. `VLLM_NEAR_KDA_SLICE_VERIFY=1` checks the plan but does not report fallbacks.
+
 OS: openssl/libssl3t64 3.0.13-0ubuntu3.16, libc6/libc-bin/libc6-dev/libc-dev-bin 2.39-0ubuntu8.12
 and linux-libc-dev 6.8.0-149.149, pinned by exact version; the `nearai.os.packages` label lists
 all of them. The image needs no Python package upgrades.
