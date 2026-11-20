@@ -2,10 +2,10 @@ diff --git a/vllm/models/glm5next/common/kda.py b/vllm/models/glm5next/common/kd
 index bb0f479b7e..1d66fc6caa 100644
 --- a/vllm/models/glm5next/common/kda.py
 +++ b/vllm/models/glm5next/common/kda.py
-@@ -133,6 +133,32 @@ class _Glm5NextMergedColumnParallelLinear(MergedColumnParallelLinear):
-     backend=current_platform.simple_compile_backend,
-     options=maybe_disable_graph_partition(current_platform.simple_compile_backend),
- )
+@@ -128,6 +128,32 @@ class _Glm5NextMergedColumnParallelLinear(MergedColumnParallelLinear):
+                 param.tp_rank = param_tp_rank
+ 
+ 
 +# VLLM_NEAR_KDA_FP8=1 (read at layer construction) quantizes the KDA in_proj_qkvbfg_a and
 +# o_proj linears online to fp8: per-output-channel weight scale, dynamic per-token
 +# activation scale. Off by default.
@@ -32,9 +32,9 @@ index bb0f479b7e..1d66fc6caa 100644
 +    return OnlineQuantizationConfig(QuantizationConfigArgs(linear="fp8_per_channel"))
 +
 +
- def _cast_sigmoid(x: torch.Tensor) -> torch.Tensor:
-     """Fuse the fp32 cast + sigmoid into one Inductor kernel."""
-     return x.float().sigmoid()
+ @torch.compile(
+     dynamic=True,
+     backend=current_platform.simple_compile_backend,
 @@ -270,6 +296,10 @@ class Glm5NextLinearAttention(GatedDeltaNetAttention):
          # Merge q, k, v, b, f_a, g_a projections into one GEMM (6→1 launches).
          # Order matches checkpoint's fused_qkvbfg_a_proj convention.
