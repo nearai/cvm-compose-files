@@ -182,12 +182,9 @@ file and the matched value. Counts per rule:
 | rule | entries | what it waives |
 |---|---|---|
 | `layout.ext`, `layout.size` | 1 each | the adapter weights file in `adapters/` |
-| `pins.digest` | 14 | image references pinned by tag, or defined inline |
-| `pins.hf-revision` | 1 | a model referenced by name without a revision pin |
-| `pins.raw-key` | 8 | images defined inline in a deployable |
-| `pins.remote-code` | 1 | the remote-code setting on that model |
-| `privacy.no-log-flag` | 4 | vLLM engine without an explicit request-logging flag |
-| `privacy.secret` | 9 | secret variables without a required-value check |
-| `public.domain` | 8 | domain names outside the public allowlist |
-| `public.host` | 20 | host names in config values, labels or service names |
-| `status.key-set` | 2 | candidates whose services differ from their live files |
+| `pins.digest` | 9 | image references pinned by tag, or defined inline |
+| `pins.raw-key` | 4 | images defined inline in a deployable |
+| `privacy.secret` | 6 | secret variables without a required-value check |
+| `public.domain` | 6 | domain names outside the public allowlist |
+| `public.host` | 7 | host names in config values, labels or service names |
+| `status.key-set` | 1 | a candidate whose services differ from its live files |
