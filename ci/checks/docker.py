@@ -9,10 +9,10 @@ from common import Finding
 RULES = ["docker.files", "docker.provenance", "docker.from", "docker.copy", "docker.patches", "docker.fetch"]
 DIFF_RULES = list(RULES)
 
-DIR = re.compile(r"^(?P<engine>sglang|vllm)-(?P<version>v[0-9.]+)-[a-z0-9-]+-r[0-9]+$")
+DIR = re.compile(r"^(?P<engine>sglang|vllm|transformers)-(?P<version>v[0-9.]+)-[a-z0-9-]+-r[0-9]+$")
 # Every key exactly once, in this order. The tag is the dir name, patch hashes live in SHA256SUMS.
 PROVENANCE_KEYS = [
-    ("engine", re.compile(r"^(sglang|vllm)$")),
+    ("engine", re.compile(r"^(sglang|vllm|transformers)$")),
     ("upstream_version", re.compile(r"^v[0-9]+(\.[0-9]+)*$")),
     ("base_image", re.compile(r"^[a-z0-9./_-]+@sha256:[0-9a-f]{64}$")),
     ("base_image_linux_amd64", re.compile(r"^sha256:[0-9a-f]{64}$")),
@@ -229,8 +229,14 @@ def _dir(over=None):
 
 OLD = {"docker/sglang-old/Dockerfile": "FROM nearaidev/sglang@sha256:" + "b" * 64 + "\nCOPY . /x/\n"}
 GOOD = dict(OLD, **_dir())
+TR = "docker/transformers-v5.16.1-x-r1/"
+TR_GOOD = dict(OLD, **{k.replace(R, TR): v for k, v in _dir({"PROVENANCE": PROV.replace(
+    "engine=sglang", "engine=transformers").replace("v0.5.23", "v5.16.1")}).items()})
 CASES = [
     ("new dir follows the contract", None, GOOD, OLD),
+    ("new transformers dir follows the contract", None, TR_GOOD, OLD),
+    ("PROVENANCE engine not in the engine list", "docker.provenance",
+     dict(OLD, **_dir({"PROVENANCE": PROV.replace("engine=sglang", "engine=pytorch")})), OLD),
     ("old dir untouched by the contract", None, OLD, OLD),
     ("no base", None, GOOD, None),
     ("file outside SHA256SUMS", "docker.files", dict(GOOD, **{R + "extra.sh": "x\n"}), OLD),
