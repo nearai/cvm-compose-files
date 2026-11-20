@@ -240,7 +240,6 @@ x-sg-glm53-flash-common: &sg-glm53-flash-common
     - hugginface_cache:/root/.cache/huggingface
     - ghost:/ghost
   environment:
-    - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
     - HF_HUB_OFFLINE=1
     - TRANSFORMERS_OFFLINE=1
     - HF_HUB_DISABLE_TELEMETRY=1
@@ -1240,6 +1239,13 @@ services:
     <<: *vllm-proxy-common
     image: nearaidev/vllm-proxy-rs@sha256:e3a4fbcacdf83f83212d4c6c0ad4d766d602b88c004dc82a2dd4ae147dccde94
     container_name: proxy-glm53
+    networks:
+      - default
+      - engine-glm53-r1
+      - engine-glm53-r2
+    depends_on:
+      engine-egress-probe:
+        condition: service_completed_successfully
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - CLOUD_API_URL=https://cloud-api.near.ai
@@ -1283,6 +1289,8 @@ services:
   model-sg-glm53-w4afp8-tp2-r1:
     <<: *sg-glm53-flash-tp2
     container_name: model-sg-glm53-w4afp8-tp2-r1
+    networks:
+      - engine-glm53-r1
     depends_on:
       model-downloader:
         condition: service_completed_successfully
@@ -1294,7 +1302,7 @@ services:
               device_ids: ["4","5"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-fp8-kv","deployment:pack-small-models","config_variant:w4afp8-qsplit-hicacheoff-mamba380-fp8kv-memopt086-mr64-c8192-admission-reserve-v10-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192-obs-v1-v0523-glm53-r3","request_logging:disabled","engine_image:0ca61f6ab34f","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8009","instance:1"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-fp8-kv","deployment:pack-small-models","config_variant:w4afp8-qsplit-hicacheoff-mamba380-fp8kv-memopt086-mr64-c8192-admission-reserve-v10-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192-obs-v1-v0523-glm53-r3-offline","request_logging:disabled","engine_image:0ca61f6ab34f","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8009","instance:1"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -1306,7 +1314,7 @@ services:
       nearai.otel.model_path: "graphistry/GLM-5.3-Flash-W4AFP8"
       nearai.otel.served_model: "z-ai/glm-5.3-flash"
       nearai.otel.deployment: "pack-small-models"
-      nearai.otel.config_variant: "w4afp8-qsplit-hicacheoff-mamba380-fp8kv-memopt086-mr64-c8192-admission-reserve-v10-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192-obs-v1-v0523-glm53-r3"
+      nearai.otel.config_variant: "w4afp8-qsplit-hicacheoff-mamba380-fp8kv-memopt086-mr64-c8192-admission-reserve-v10-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192-obs-v1-v0523-glm53-r3-offline"
       nearai.otel.thinking_budget_policy: "default8192-public-to-native"
       nearai.otel.request_logging: "disabled"
       nearai.otel.engine_image: "0ca61f6ab34f"
@@ -1320,8 +1328,9 @@ services:
   model-sg-glm53-w4afp8-tp2-r2:
     <<: *sg-glm53-flash-tp2
     container_name: model-sg-glm53-w4afp8-tp2-r2
+    networks:
+      - engine-glm53-r2
     environment:
-      - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
       - HF_HUB_OFFLINE=1
       - TRANSFORMERS_OFFLINE=1
       - HF_HUB_DISABLE_TELEMETRY=1
@@ -1365,7 +1374,7 @@ services:
               device_ids: ["6","7"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-fp8-kv","deployment:pack-small-models","config_variant:w4afp8-qsplit-hicacheoff-mamba380-fp8kv-memopt086-mr64-c8192-admission-reserve-v10-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192-obs-v1-v0523-glm53-r3","request_logging:disabled","engine_image:0ca61f6ab34f","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8009","instance:2"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","precision:int4-weights-fp8-activations-fp8-kv","deployment:pack-small-models","config_variant:w4afp8-qsplit-hicacheoff-mamba380-fp8kv-memopt086-mr64-c8192-admission-reserve-v10-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192-obs-v1-v0523-glm53-r3-offline","request_logging:disabled","engine_image:0ca61f6ab34f","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8009","instance:2"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -1377,7 +1386,7 @@ services:
       nearai.otel.model_path: "graphistry/GLM-5.3-Flash-W4AFP8"
       nearai.otel.served_model: "z-ai/glm-5.3-flash"
       nearai.otel.deployment: "pack-small-models"
-      nearai.otel.config_variant: "w4afp8-qsplit-hicacheoff-mamba380-fp8kv-memopt086-mr64-c8192-admission-reserve-v10-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192-obs-v1-v0523-glm53-r3"
+      nearai.otel.config_variant: "w4afp8-qsplit-hicacheoff-mamba380-fp8kv-memopt086-mr64-c8192-admission-reserve-v10-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192-obs-v1-v0523-glm53-r3-offline"
       nearai.otel.thinking_budget_policy: "default8192-public-to-native"
       nearai.otel.request_logging: "disabled"
       nearai.otel.engine_image: "0ca61f6ab34f"
@@ -1391,6 +1400,8 @@ services:
   glm53-ghost-aggregator:
     image: docker.io/nearaidev/sglang@sha256:da8d4e4b5ec667499b58a21e56050aae9bcfc4df9669b3ac27e2e20af033d681
     container_name: glm53-ghost-aggregator
+    networks:
+      - engine-glm53-ghost
     runtime: runc
     init: true
     cap_drop: [ALL]
@@ -1400,6 +1411,7 @@ services:
     environment:
       - NVIDIA_VISIBLE_DEVICES=void
       - PYTHONDONTWRITEBYTECODE=1
+      - HF_HUB_OFFLINE=1
     entrypoint: ["python3", "-m", "sglang.srt.observability.ghost_aggregator"]
     command: ["--socket", "/ghost/aggregator.sock", "--port", "9464", "--sample", "16", "--model-name", "z-ai/glm-5.3-flash"]
     volumes:
@@ -2271,6 +2283,9 @@ services:
       - engine-qwen3-reranker
       - engine-whisper
       - engine-privacy-filter
+      - engine-glm53-r1
+      - engine-glm53-r2
+      - engine-glm53-ghost
     extra_hosts:
       - "compose-manager:host-gateway"
     entrypoint:
@@ -2317,6 +2332,9 @@ services:
       - engine-qwen3-embedding
       - engine-qwen3-reranker
       - engine-whisper
+      - engine-glm53-r1
+      - engine-glm53-r2
+      - engine-glm53-ghost
     image: otel/opentelemetry-collector-contrib@sha256:85ac41c2db88d0df9bd6145e608a3cb023f5d8443868adbfbbf66efb51087917
     container_name: otelcol-contrib
     command: ["--config=/etc/otelcol-contrib/config.yaml"]
@@ -2398,6 +2416,15 @@ networks:
     internal: true
   engine-privacy-filter:
     name: engine_privacy_filter
+    internal: true
+  engine-glm53-r1:
+    name: engine_glm53_r1
+    internal: true
+  engine-glm53-r2:
+    name: engine_glm53_r2
+    internal: true
+  engine-glm53-ghost:
+    name: engine_glm53_ghost
     internal: true
 
 configs:
@@ -2532,7 +2559,7 @@ configs:
                       port: "8009"
                       ppcie: "true"
                       instance: "1"
-                      config_variant: "w4afp8-qsplit-hicacheoff-mamba380-fp8kv-memopt086-mr64-c8192-admission-reserve-v10-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192-obs-v1-v0523-glm53-r3"
+                      config_variant: "w4afp8-qsplit-hicacheoff-mamba380-fp8kv-memopt086-mr64-c8192-admission-reserve-v10-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192-obs-v1-v0523-glm53-r3-offline"
                       thinking_budget_policy: "default8192-public-to-native"
                       request_logging: "disabled"
                       engine_image: "0ca61f6ab34f"
@@ -2558,7 +2585,7 @@ configs:
                       port: "8009"
                       ppcie: "true"
                       instance: "2"
-                      config_variant: "w4afp8-qsplit-hicacheoff-mamba380-fp8kv-memopt086-mr64-c8192-admission-reserve-v10-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192-obs-v1-v0523-glm53-r3"
+                      config_variant: "w4afp8-qsplit-hicacheoff-mamba380-fp8kv-memopt086-mr64-c8192-admission-reserve-v10-pdi2-h200-tp2-ep2-eagle-fixed-4-1-5-strict-budget8192-obs-v1-v0523-glm53-r3-offline"
                       thinking_budget_policy: "default8192-public-to-native"
                       request_logging: "disabled"
                       engine_image: "0ca61f6ab34f"

@@ -15,7 +15,7 @@ DIFF_RULES = ["layout.legacy", "layout.build-dir"]
 
 SERVING = re.compile(
     r"^prod/(?P<ckpt>[a-z0-9]+(?:[.-][a-z0-9]+)*?)-(?P<engine>sglang|vllm)-"
-    r"(?P<topo>(?:tp|dep|dp)\d+(?:x\d+)?(?:_(?:tp|dep|dp)\d+(?:x\d+)?)*)(?:-(?P<tier>[a-z]{2,12}))?\.yaml$"
+    r"(?P<topo>(?:tp|dep|dp|pd)\d+(?:x\d+)?(?:_(?:tp|dep|dp|pd)\d+(?:x\d+)?)*)(?:-(?P<tier>[a-z]{2,12}))?\.yaml$"
 )
 PACK = re.compile(r"^prod/pack-[a-z0-9]+(?:-[a-z0-9]+)*\.yaml$")
 UTIL = re.compile(r"^prod/util-[a-z0-9]+(?:-[a-z0-9]+)*\.yaml$")
@@ -322,6 +322,8 @@ CASES = [
     ("unlisted bad path", "layout.path", dict(BASE_FILES, **{"prod/My-Config.yaml": "services: {}\n"}), BASE_FILES),
     ("lifecycle token in a serving path", "layout.path",
      dict(BASE_FILES, **{"prod/glm-5.3-sglang-tp4-test.yaml": "services: {}\n"}), BASE_FILES),
+    ("prefill/decode topology path", None, dict(BASE_FILES, **{"prod/glm-5.3-vllm-pd2x2.yaml": "services: {}\n"}),
+     BASE_FILES),
     ("bytecode", "layout.ext", dict(BASE_FILES, **{"docker/sglang-v1-x-r1/a.pyc": "x"}), BASE_FILES),
     ("secret file", "layout.secret-file", dict(BASE_FILES, **{"docker/sglang-v1-x-r1/.env": "A=1\n"}), BASE_FILES),
     ("oversized file", "layout.size", dict(BASE_FILES, **{"docs/big.md": "x" * (MAX_SIZE + 1)}), BASE_FILES),

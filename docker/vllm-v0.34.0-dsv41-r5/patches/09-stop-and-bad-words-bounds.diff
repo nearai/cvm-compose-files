@@ -1,0 +1,341 @@
+diff --git a/vllm/entrypoints/generate/base/protocol.py b/vllm/entrypoints/generate/base/protocol.py
+index a0122ca..5d1adaf 100644
+--- a/vllm/entrypoints/generate/base/protocol.py
++++ b/vllm/entrypoints/generate/base/protocol.py
+@@ -27,6 +27,14 @@ StopParam: TypeAlias = (
+     str | Annotated[list[str], Field(max_length=envs.VLLM_MAX_STOP_STRINGS)] | None
+ )
+ 
++StopTokenIdsParam: TypeAlias = (
++    Annotated[list[int], Field(max_length=envs.VLLM_MAX_STOP_TOKEN_IDS)] | None
++)
++
++BadWordsParam: TypeAlias = (
++    Annotated[list[str], Field(max_length=envs.VLLM_MAX_NUM_BAD_WORDS)] | None
++)
++
+ # `top_logprobs` is nullable in the OpenAI spec; null means the same as omitted.
+ TopLogprobsParam: TypeAlias = Annotated[
+     int,
+diff --git a/vllm/entrypoints/openai/chat_completion/protocol.py b/vllm/entrypoints/openai/chat_completion/protocol.py
+index 4bb502b..19af60a 100644
+--- a/vllm/entrypoints/openai/chat_completion/protocol.py
++++ b/vllm/entrypoints/openai/chat_completion/protocol.py
+@@ -21,12 +21,14 @@ from pydantic import (
+ from vllm.config import ModelConfig
+ from vllm.entrypoints.generate.base.protocol import (
+     AnyResponseFormat,
++    BadWordsParam,
+     DeltaMessage,
+     FunctionCall,
+     FunctionDefinition,
+     MMPayload,
+     PerRequestMetrics,
+     StopParam,
++    StopTokenIdsParam,
+     StreamOptions,
+     ToolCall,
+     TopLogprobsParam,
+@@ -291,7 +293,7 @@ class ChatCompletionRequest(OpenAIBaseModel):
+     repetition_penalty: float | None = None
+     watermarking: bool | None = None
+     length_penalty: float = 1.0
+-    stop_token_ids: list[int] | None = []
++    stop_token_ids: StopTokenIdsParam = []
+     include_stop_str_in_output: bool = False
+     ignore_eos: bool = False
+     min_tokens: int = 0
+@@ -320,7 +322,7 @@ class ChatCompletionRequest(OpenAIBaseModel):
+         ),
+     )
+     allowed_token_ids: list[int] | None = None
+-    bad_words: list[str] = Field(default_factory=list)
++    bad_words: BadWordsParam = Field(default_factory=list)
+     # --8<-- [end:chat-completion-sampling-params]
+ 
+     # --8<-- [start:chat-completion-extra-params]
+diff --git a/vllm/entrypoints/openai/completion/protocol.py b/vllm/entrypoints/openai/completion/protocol.py
+index c2f6bb5..938d015 100644
+--- a/vllm/entrypoints/openai/completion/protocol.py
++++ b/vllm/entrypoints/openai/completion/protocol.py
+@@ -12,9 +12,11 @@ import vllm.envs as envs
+ from vllm.config import ModelConfig
+ from vllm.entrypoints.generate.base.protocol import (
+     AnyResponseFormat,
++    BadWordsParam,
+     MMPayload,
+     PerRequestMetrics,
+     StopParam,
++    StopTokenIdsParam,
+     StreamOptions,
+     resolve_return_mm_kwargs_alias,
+     structured_outputs_from_response_format,
+@@ -80,7 +82,7 @@ class CompletionRequest(OpenAIBaseModel):
+     repetition_penalty: float | None = None
+     watermarking: bool | None = None
+     length_penalty: float = 1.0
+-    stop_token_ids: list[int] | None = []
++    stop_token_ids: StopTokenIdsParam = []
+     include_stop_str_in_output: bool = False
+     ignore_eos: bool = False
+     min_tokens: int = 0
+@@ -110,7 +112,7 @@ class CompletionRequest(OpenAIBaseModel):
+             "set."
+         ),
+     )
+-    bad_words: list[str] = Field(default_factory=list)
++    bad_words: BadWordsParam = Field(default_factory=list)
+     # --8<-- [end:completion-sampling-params]
+ 
+     # --8<-- [start:completion-extra-params]
+diff --git a/vllm/entrypoints/openai/responses/protocol.py b/vllm/entrypoints/openai/responses/protocol.py
+index 0d0d571..a2ffe42 100644
+--- a/vllm/entrypoints/openai/responses/protocol.py
++++ b/vllm/entrypoints/openai/responses/protocol.py
+@@ -65,6 +65,7 @@ from vllm.entrypoints.generate.base.protocol import (
+     MMPayload,
+     PerRequestMetrics,
+     StopParam,
++    StopTokenIdsParam,
+     TopLogprobsParam,
+     resolve_return_mm_kwargs_alias,
+     validate_cache_salt,
+@@ -447,7 +448,7 @@ class ResponsesRequest(OpenAIBaseModel):
+     repetition_penalty: float | None = None
+     seed: int | None = Field(None, ge=_INT64_MIN, le=_INT64_MAX)
+     stop: StopParam = []
+-    stop_token_ids: list[int] | None = []
++    stop_token_ids: StopTokenIdsParam = []
+     ignore_eos: bool = False
+     thinking_token_budget: ThinkingTokenBudget = None
+     vllm_xargs: dict[str, str | int | float | list[str | int | float]] | None = Field(
+diff --git a/vllm/envs.py b/vllm/envs.py
+index ec32707..4d2e3f7 100644
+--- a/vllm/envs.py
++++ b/vllm/envs.py
+@@ -114,6 +114,7 @@ if TYPE_CHECKING:
+     VLLM_MAX_N_SEQUENCES: int = 16384
+     VLLM_MAX_COMPLETION_PROMPTS: int = 1024
+     VLLM_MAX_STOP_STRINGS: int = 4
++    VLLM_MAX_STOP_TOKEN_IDS: int = 128
+     VLLM_MAX_NUM_BAD_WORDS: int = 128
+     VLLM_MAX_BAD_WORDS_TOTAL_TOKENS: int = 1024
+     VLLM_PLUGINS: list[str] | None = None
+@@ -1218,6 +1219,10 @@ environment_variables: dict[str, Callable[[], Any]] = {
+     ),
+     # Maximum number of stop strings allowed in a single request.
+     "VLLM_MAX_STOP_STRINGS": lambda: int(os.environ.get("VLLM_MAX_STOP_STRINGS", "4")),
++    # Maximum number of stop token IDs allowed in a single request.
++    "VLLM_MAX_STOP_TOKEN_IDS": lambda: int(
++        os.environ.get("VLLM_MAX_STOP_TOKEN_IDS", "128")
++    ),
+     # Maximum number of bad-word token sequences generated per request.
+     "VLLM_MAX_NUM_BAD_WORDS": lambda: int(
+         os.environ.get("VLLM_MAX_NUM_BAD_WORDS", "128")
+diff --git a/vllm/sampling_params.py b/vllm/sampling_params.py
+index 58cedc8..a8abcde 100644
+--- a/vllm/sampling_params.py
++++ b/vllm/sampling_params.py
+@@ -406,6 +406,7 @@ class SamplingParams(
+     _eos_token_id: int | None = None
+     _all_stop_token_ids: set[int] = msgspec.field(default_factory=set)
+     _watermarking_skipped: bool = False
++    _stop_token_ids_set: frozenset[int] = msgspec.field(default_factory=frozenset)
+ 
+     # Fields used to construct logits processors
+     structured_outputs: StructuredOutputsParams | None = None
+@@ -582,16 +583,42 @@ class SamplingParams(
+             self.stop = []
+         elif isinstance(self.stop, str):
+             self.stop = [self.stop]
++        else:
++            self.stop = list(dict.fromkeys(self.stop))
++        max_stop_strings = envs.VLLM_MAX_STOP_STRINGS
++        if len(self.stop) > max_stop_strings:
++            raise VLLMValidationError(
++                f"Too many stop strings: {len(self.stop)}. "
++                f"The max number is {max_stop_strings}.",
++                parameter="stop",
++                value=self.stop,
++            )
+ 
+         if self.stop_token_ids is None:
+             self.stop_token_ids = []
+         else:
+             self.stop_token_ids = list(dict.fromkeys(self.stop_token_ids))
++        max_stop_token_ids = envs.VLLM_MAX_STOP_TOKEN_IDS
++        if len(self.stop_token_ids) > max_stop_token_ids:
++            raise VLLMValidationError(
++                f"Too many stop_token_ids: {len(self.stop_token_ids)}. "
++                f"The max number is {max_stop_token_ids}.",
++                parameter="stop_token_ids",
++                value=self.stop_token_ids,
++            )
+ 
+         if self.bad_words is None:
+             self.bad_words = []
+         else:
+             self.bad_words = list(dict.fromkeys(self.bad_words))
++        max_num_bad_words = envs.VLLM_MAX_NUM_BAD_WORDS
++        if len(self.bad_words) > max_num_bad_words:
++            raise VLLMValidationError(
++                f"Too many bad_words: {len(self.bad_words)}. "
++                f"The max number is {max_num_bad_words}.",
++                parameter="bad_words",
++                value=self.bad_words,
++            )
+ 
+         if self.logprobs is True:
+             self.logprobs = 1
+@@ -625,6 +652,7 @@ class SamplingParams(
+ 
+         # eos_token_id is added to this by the engine
+         self._all_stop_token_ids.update(self.stop_token_ids)
++        self._stop_token_ids_set = frozenset(self.stop_token_ids)
+ 
+         if self.skip_reading_prefix_cache is None:
+             # If prefix caching is enabled,
+@@ -820,6 +848,7 @@ class SamplingParams(
+                     assert self.stop_token_ids is not None
+                     eos_ids.update(self.stop_token_ids)
+                     self.stop_token_ids = list(eos_ids)
++                    self._stop_token_ids_set = frozenset(self.stop_token_ids)
+ 
+     def update_from_tokenizer(self, tokenizer: TokenizerLike) -> None:
+         if not self.bad_words:
+@@ -865,6 +894,16 @@ class SamplingParams(
+                             value=self.bad_words,
+                         )
+ 
++        total_tokens = sum(len(ids) for ids in self._bad_words_token_ids)
++        max_total_tokens = envs.VLLM_MAX_BAD_WORDS_TOTAL_TOKENS
++        if total_tokens > max_total_tokens:
++            raise VLLMValidationError(
++                f"Too many total bad word tokens: {total_tokens}. "
++                f"The max is {max_total_tokens}.",
++                parameter="bad_words",
++                value=self.bad_words,
++            )
++
+         invalid_token_ids = [
+             token_id
+             for bad_words_token_ids in self._bad_words_token_ids
+@@ -898,6 +937,10 @@ class SamplingParams(
+     def all_stop_token_ids(self) -> set[int]:
+         return self._all_stop_token_ids
+ 
++    @property
++    def stop_token_ids_set(self) -> frozenset[int]:
++        return self._stop_token_ids_set
++
+     @property
+     def bad_words_token_ids(self) -> list[list[int]] | None:
+         # For internal use only. Backward compatibility not guaranteed
+diff --git a/vllm/tokenizers/deepseek_v32_encoding.py b/vllm/tokenizers/deepseek_v32_encoding.py
+index 509890d..69d532e 100644
+--- a/vllm/tokenizers/deepseek_v32_encoding.py
++++ b/vllm/tokenizers/deepseek_v32_encoding.py
+@@ -122,7 +122,8 @@ def render_message(
+     index: int,
+     messages: list[dict[str, Any]],
+     thinking_mode: str,
+-    last_user_idx: int | None = None,
++    last_user_idx: int,
++    last_assistant_idx: int | None = None,
+ ) -> str:
+     if not (0 <= index < len(messages)):
+         raise ValueError(
+@@ -133,9 +134,6 @@ def render_message(
+ 
+     prompt = ""
+     msg = messages[index]
+-    last_user_idx = (
+-        find_last_user_index(messages) if last_user_idx is None else last_user_idx
+-    )
+ 
+     role = msg.get("role")
+     content = msg.get("content")
+@@ -189,11 +187,15 @@ def render_message(
+             prompt += thinking_end_token
+ 
+     elif role == "tool":
+-        prev_assistant_idx = index - 1
+-        assistant_msg = messages[prev_assistant_idx]
+-        while prev_assistant_idx >= 0 and assistant_msg.get("role") == "tool":
+-            prev_assistant_idx -= 1
++        if last_assistant_idx is not None:
++            prev_assistant_idx = last_assistant_idx
++            assistant_msg = messages[prev_assistant_idx]
++        else:
++            prev_assistant_idx = index - 1
+             assistant_msg = messages[prev_assistant_idx]
++            while prev_assistant_idx >= 0 and assistant_msg.get("role") == "tool":
++                prev_assistant_idx -= 1
++                assistant_msg = messages[prev_assistant_idx]
+ 
+         if not (
+             index == 0
+@@ -264,12 +266,9 @@ def render_message(
+ 
+ 
+ def drop_thinking_messages(
+-    messages: list[dict[str, Any]], last_user_idx: int | None = None
++    messages: list[dict[str, Any]], last_user_idx: int
+ ) -> list[dict[str, Any]]:
+     messages_wo_thinking: list[dict[str, Any]] = []
+-    last_user_idx = (
+-        find_last_user_index(messages) if last_user_idx is None else last_user_idx
+-    )
+     for idx, msg in enumerate(messages):
+         role = msg.get("role")
+         if role in ["user", "system", "tool"] or idx >= last_user_idx:
+@@ -297,16 +296,22 @@ def encode_messages(
+     prompt = bos_token if add_default_bos_token and len(context) == 0 else ""
+ 
+     if thinking_mode == "thinking" and drop_thinking:
+-        full_messages = drop_thinking_messages(full_messages)
++        last_user_idx = find_last_user_index(full_messages)
++        full_messages = drop_thinking_messages(full_messages, last_user_idx)
+ 
+     last_user_idx = find_last_user_index(full_messages)
+ 
++    last_assistant_idx: int | None = None
+     for idx in range(len(messages)):
++        abs_idx = idx + len(context)
++        if full_messages[abs_idx].get("role") == "assistant":
++            last_assistant_idx = abs_idx
+         prompt += render_message(
+-            idx + len(context),
++            abs_idx,
+             full_messages,
+             thinking_mode=thinking_mode,
+             last_user_idx=last_user_idx,
++            last_assistant_idx=last_assistant_idx,
+         )
+ 
+     return prompt
+diff --git a/vllm/v1/core/sched/utils.py b/vllm/v1/core/sched/utils.py
+index 045daca..7db0ee8 100644
+--- a/vllm/v1/core/sched/utils.py
++++ b/vllm/v1/core/sched/utils.py
+@@ -106,7 +106,7 @@ def check_stop(request: Request, max_model_len: int) -> bool:
+         request.status = RequestStatus.FINISHED_STOPPED
+         return True
+ 
+-    if last_token_id in (sampling_params.stop_token_ids or ()):
++    if last_token_id in sampling_params.stop_token_ids_set:
+         request.status = RequestStatus.FINISHED_STOPPED
+         request.stop_reason = last_token_id
+         return True
+diff --git a/vllm/v1/engine/input_processor.py b/vllm/v1/engine/input_processor.py
+index e33c3e1..39b8092 100644
+--- a/vllm/v1/engine/input_processor.py
++++ b/vllm/v1/engine/input_processor.py
+@@ -261,6 +261,7 @@ class InputProcessor:
+         sampling_params._eos_token_id = None
+         sampling_params.stop = []
+         sampling_params.stop_token_ids = []
++        sampling_params._stop_token_ids_set = frozenset()
+         sampling_params._all_stop_token_ids = set()
+ 
+     def _validate_lora(self, lora_request: LoRARequest | None) -> None:
