@@ -296,6 +296,15 @@ services:
   proxy-glm53:
     <<: *vllm-proxy-common
     container_name: proxy-glm53
+    networks:
+      - default
+      - engine-glm53-r1
+      - engine-glm53-r2
+      - engine-glm53-r3
+      - engine-glm53-r4
+    depends_on:
+      engine-egress-probe:
+        condition: service_completed_successfully
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - CLOUD_API_URL=https://cloud-api.near.ai
@@ -338,6 +347,8 @@ services:
   model-sg-glm53-w4afp8-tp2-r1:
     <<: *sg-glm53-flash-candidate
     container_name: model-sg-glm53-w4afp8-tp2-r1
+    networks:
+      - engine-glm53-r1
     depends_on:
       model-downloader:
         condition: service_completed_successfully
@@ -375,6 +386,8 @@ services:
   model-sg-glm53-w4afp8-tp2-r2:
     <<: *sg-glm53-flash-candidate
     container_name: model-sg-glm53-w4afp8-tp2-r2
+    networks:
+      - engine-glm53-r2
     environment:
       - HF_HUB_OFFLINE=1
       - TRANSFORMERS_OFFLINE=1
@@ -444,6 +457,8 @@ services:
   model-sg-glm53-w4afp8-tp2-r3:
     <<: *sg-glm53-flash-candidate
     container_name: model-sg-glm53-w4afp8-tp2-r3
+    networks:
+      - engine-glm53-r3
     environment:
       - HF_HUB_OFFLINE=1
       - TRANSFORMERS_OFFLINE=1
@@ -513,6 +528,8 @@ services:
   model-sg-glm53-w4afp8-tp2-r4:
     <<: *sg-glm53-flash-candidate
     container_name: model-sg-glm53-w4afp8-tp2-r4
+    networks:
+      - engine-glm53-r4
     environment:
       - HF_HUB_OFFLINE=1
       - TRANSFORMERS_OFFLINE=1
@@ -582,6 +599,11 @@ services:
   glm53-perception-check:
     image: docker.io/nearaidev/sglang@sha256:e9d29a1cb1cd65284392c4d62d5f2a36669628057e15c60fe93ea40cfe4fc7e7
     container_name: glm53-perception-check
+    networks:
+      - engine-glm53-r1
+      - engine-glm53-r2
+      - engine-glm53-r3
+      - engine-glm53-r4
     profiles: ["verification"]
     runtime: runc
     user: "65534:65534"
@@ -594,6 +616,7 @@ services:
     environment:
       - NVIDIA_VISIBLE_DEVICES=void
       - PYTHONDONTWRITEBYTECODE=1
+      - HF_HUB_OFFLINE=1
     entrypoint: ["/usr/bin/python3", "-u", "-c"]
     command:
       - |
@@ -622,6 +645,8 @@ services:
   glm53-ghost-aggregator:
     image: docker.io/nearaidev/sglang@sha256:da8d4e4b5ec667499b58a21e56050aae9bcfc4df9669b3ac27e2e20af033d681
     container_name: glm53-ghost-aggregator
+    networks:
+      - engine-glm53-ghost
     runtime: runc
     init: true
     cap_drop: [ALL]
@@ -631,6 +656,7 @@ services:
     environment:
       - NVIDIA_VISIBLE_DEVICES=void
       - PYTHONDONTWRITEBYTECODE=1
+      - HF_HUB_OFFLINE=1
     entrypoint: ["python3", "-m", "sglang.srt.observability.ghost_aggregator"]
     command: ["--socket", "/ghost/aggregator.sock", "--port", "9464", "--sample", "16", "--model-name", "z-ai/glm-5.3-flash"]
     volumes:
@@ -684,7 +710,60 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
 
+  engine-egress-probe:
+    image: curlimages/curl@sha256:d94d07ba9e7d6de898b6d96c1a072f6f8266c687af78a74f380087a0addf5d17
+    container_name: engine-egress-probe
+    restart: "no"
+    networks:
+      - engine-glm53-r1
+      - engine-glm53-r2
+      - engine-glm53-r3
+      - engine-glm53-r4
+      - engine-glm53-ghost
+    extra_hosts:
+      - "compose-manager:host-gateway"
+    entrypoint:
+      - sh
+      - -c
+      - |
+        fail=0
+        reached() { echo "engine-egress-probe reached $$1"; fail=1; }
+        if ip -4 route | grep -q '^default'; then echo "engine-egress-probe found a default route"; fail=1; fi
+        subnets=$$(ip -4 route | awk '$$1 ~ "/" {print $$1}')
+        if [ -z "$$subnets" ]; then echo "engine-egress-probe found no network to test"; fail=1; fi
+        hosts=compose-manager
+        for subnet in $$subnets; do
+          base=$${subnet%/*}
+          hosts="$$hosts $${base%.*}.$$(( $${base##*.} + 1 ))"
+        done
+        hits=$$(mktemp)
+        for host in $$hosts; do
+          ( for port in 22 80 8000 8001 8080 8444; do
+              if nc -z -w 2 "$$host" "$$port" 2>/dev/null; then echo "$$host:$$port" >> "$$hits"; fi
+            done ) &
+        done
+        wait
+        while read -r hit; do reached "$$hit"; done < "$$hits"
+        for target in "1.1.1.1 443" "1.1.1.1 53" "169.254.169.254 80"; do
+          if nc -z -w 3 $$target 2>/dev/null; then reached "$$target"; fi
+        done
+        if curl -s -o /dev/null -m 5 https://huggingface.co; then reached https://huggingface.co; fi
+        if nslookup huggingface.co >/dev/null 2>&1; then echo "engine-egress-probe resolved an outside name"; fail=1; fi
+        count=$$(echo "$$subnets" | wc -w)
+        if [ "$$fail" = 0 ]; then echo "engine-egress-probe PASS: no route out of $$count networks"; else echo "engine-egress-probe FAIL"; fi
+        exit "$$fail"
+    logging: *logging-conf
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"engine-egress-probe","service":"engine-egress-probe","tags":["model:z-ai/glm-5.3-flash","deployment:glm53-flash-sgl-tp2x4","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+
   otelcol-contrib:
+    networks:
+      - default
+      - engine-glm53-r1
+      - engine-glm53-r2
+      - engine-glm53-r3
+      - engine-glm53-r4
+      - engine-glm53-ghost
     image: otel/opentelemetry-collector-contrib@sha256:85ac41c2db88d0df9bd6145e608a3cb023f5d8443868adbfbbf66efb51087917
     container_name: otelcol-contrib
     command: ["--config=/etc/otelcol-contrib/config.yaml"]
@@ -697,9 +776,6 @@ services:
       - DD_HOSTNAME=${DD_HOSTNAME:-unknown}
       - ENV=${ENV:-unknown}
       - HOST_IP=${HOST_IP:-unknown}
-    expose:
-      - "4317"
-      - "4318"
     volumes:
       - /var/lib/docker/containers:/var/lib/docker/containers:ro
       - otelcol_app_storage:/var/lib/otelcol-contrib
@@ -720,6 +796,21 @@ networks:
   default:
     external: true
     name: dstack_default
+  engine-glm53-r1:
+    name: engine_glm53_r1
+    internal: true
+  engine-glm53-r2:
+    name: engine_glm53_r2
+    internal: true
+  engine-glm53-r3:
+    name: engine_glm53_r3
+    internal: true
+  engine-glm53-r4:
+    name: engine_glm53_r4
+    internal: true
+  engine-glm53-ghost:
+    name: engine_glm53_ghost
+    internal: true
 
 volumes:
   otelcol_app_storage:
@@ -814,9 +905,9 @@ configs:
         otlp:
           protocols:
             grpc:
-              endpoint: 0.0.0.0:4317
+              endpoint: 127.0.0.1:4317
             http:
-              endpoint: 0.0.0.0:4318
+              endpoint: 127.0.0.1:4318
 
         filelog/docker_containers:
           include: [/var/lib/docker/containers/*/*-json.log]
