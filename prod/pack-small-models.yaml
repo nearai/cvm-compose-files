@@ -338,12 +338,16 @@ x-privacy-filter-common: &privacy-filter-common
     dockerfile_inline: |
       # syntax=docker/dockerfile:1.4
       FROM pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime
-      # transformers 5.20+ needs PyTorch >=2.6; the 2.5.1 base needs the pinned 5.16.1.
+      # transformers 5.20+ needs PyTorch >=2.6, so this 2.5.1 base pins transformers 5.16.1. torch and
+      # torchvision stay at the base image's builds: an unpinned accelerate lets pip replace torch, which
+      # breaks the base torchvision and the pipeline import. The rest is pinned so rebuilds resolve the same set.
       RUN pip install --no-cache-dir \
+          "torch==2.5.1" \
+          "torchvision==0.20.1" \
           "transformers==5.16.1" \
-          accelerate \
-          fastapi \
-          "uvicorn[standard]"
+          "accelerate==1.15.0" \
+          "fastapi==0.165.0" \
+          "uvicorn[standard]==0.54.0"
       WORKDIR /app
       COPY <<'PYEOF' /app/server.py
       import copy
