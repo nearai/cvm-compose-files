@@ -48,7 +48,7 @@ Legacy paths are listed in `ci/data/legacy.txt` and only shrink.
 | served name | the model's Hugging Face `org/repo` ID | `z-ai/glm-5.3-flash` |
 
 `topology`: `tp4` one TP4 engine, `tp2x4` four TP2 engines, `dep8` one engine over 8 data-parallel
-ranks with expert parallelism. Files and dirs that predate these forms keep their names; files are
+ranks with expert parallelism, `pd2` one prefill/decode pair, `pd2x2` two pairs, 2 GPUs per side. Files and dirs that predate these forms keep their names; files are
 marked `(legacy name)` in the status table. A config revision is a release tag plus a file path.
 
 ## Status
@@ -70,7 +70,9 @@ file-name grammar in `.claude/rules/prod.md`. `privacy`: `flag set` (explicit no
 | `prod/GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext.yaml` (legacy name) | z-ai/glm-5.3-flash | graphistry/GLM-5.3-Flash-W4AFP8@99f1fa70408c | [docker/sglang-glm53-hicache-w4afp8@678a6b5](https://github.com/nearai/cvm-compose-files/tree/678a6b5ee3e4e7b83340f810c76530958eecc499/docker/sglang-glm53-hicache-w4afp8) | tp4x2 | flag set | live |
 | `prod/GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext.yaml` (legacy name) | z-ai/glm-5.3-flash | graphistry/GLM-5.3-Flash-W4AFP8@99f1fa70408c | [docker/sglang-v0.5.23-glm53-r3@38385ce](https://github.com/nearai/cvm-compose-files/tree/38385ce62043915646e2d32dc70f314522e056d9/docker/sglang-v0.5.23-glm53-r3) | tp2x4 | flag set | live |
 | `prod/deepseek-v4.1-flash-1017-vllm-dep4x2.yaml` | deepseek-ai/DeepSeek-V4.1-Flash-1017 | deepseek-ai/DeepSeek-V4.1-Flash-1017@1bae0e108899 | [docker/vllm-v0.34.0-dsv41-r2@7b1c0e1](https://github.com/nearai/cvm-compose-files/tree/7b1c0e1a3f0d4374a93646766770459dc5b4bffd/docker/vllm-v0.34.0-dsv41-r2) | dep4x2 | flag set | candidate |
-| `prod/glm-5.3-flash-vllm-dep4x2.yaml` | z-ai/glm-5.3-flash | graphistry/GLM-5.3-Flash-W4AFP8@99f1fa70408c | [docker/vllm-v0.34.0-dsv41-r3@33fe80a](https://github.com/nearai/cvm-compose-files/tree/33fe80a37fac5df3c66f8f82bc93ab7df109c498/docker/vllm-v0.34.0-dsv41-r3) | dep4x2 | flag set | candidate |
+| `prod/glm-5.3-flash-vllm-dep4x2.yaml` | z-ai/glm-5.3-flash | graphistry/GLM-5.3-Flash-W4AFP8@99f1fa70408c | [docker/vllm-v0.34.0-dsv41-r3@33fe80a](https://github.com/nearai/cvm-compose-files/tree/33fe80a37fac5df3c66f8f82bc93ab7df109c498/docker/vllm-v0.34.0-dsv41-r3) | dep4x2 | flag set | standby |
+| `prod/glm-5.3-flash-vllm-pd2.yaml` | z-ai/glm-5.3-flash | graphistry/GLM-5.3-Flash-W4AFP8@99f1fa70408c | [docker/vllm-v0.34.0-dsv41-r5@230a9d1](https://github.com/nearai/cvm-compose-files/tree/230a9d1aa5b072eb3463c7dfc5705fc82d4978f0/docker/vllm-v0.34.0-dsv41-r5) | pd2 | flag set | candidate |
+| `prod/glm-5.3-flash-vllm-pd2x2.yaml` | z-ai/glm-5.3-flash | graphistry/GLM-5.3-Flash-W4AFP8@99f1fa70408c | [docker/vllm-v0.34.0-dsv41-r5@230a9d1](https://github.com/nearai/cvm-compose-files/tree/230a9d1aa5b072eb3463c7dfc5705fc82d4978f0/docker/vllm-v0.34.0-dsv41-r5) | pd2x2 | flag set | standby |
 | `prod/pack-small-models.yaml` | Qwen/Qwen3-Embedding-0.6B | Qwen/Qwen3-Embedding-0.6B@97b0c614be4d | [docker/vllm-v0.33.0-request-bounds-r1@c8ad48b](https://github.com/nearai/cvm-compose-files/tree/c8ad48bbc65da1cc28dae72211356b1a51fac177/docker/vllm-v0.33.0-request-bounds-r1) | tp1 | flag set | candidate |
 | `prod/pack-small-models.yaml` | Qwen/Qwen3-Reranker-0.6B | Qwen/Qwen3-Reranker-0.6B@e61197ed4502 | [docker/vllm-v0.33.0-request-bounds-r1@c8ad48b](https://github.com/nearai/cvm-compose-files/tree/c8ad48bbc65da1cc28dae72211356b1a51fac177/docker/vllm-v0.33.0-request-bounds-r1) | tp1 | flag set | candidate |
 | `prod/pack-small-models.yaml` | Qwen/Qwen3-VL-30B-A3B-Instruct | Qwen/Qwen3-VL-30B-A3B-Instruct-FP8@d9748a51ae66 | [docker/vllm-v0.33.0-request-bounds-r1@c8ad48b](https://github.com/nearai/cvm-compose-files/tree/c8ad48bbc65da1cc28dae72211356b1a51fac177/docker/vllm-v0.33.0-request-bounds-r1) | tp1 | flag set | candidate |
@@ -93,7 +95,8 @@ file-name grammar in `.claude/rules/prod.md`. `privacy`: `flag set` (explicit no
 | `prod/small-models.yaml` (legacy name) | z-ai/glm-5.3-flash | graphistry/GLM-5.3-Flash-W4AFP8@99f1fa70408c | [docker/sglang-glm53-v0523@2cf337c](https://github.com/nearai/cvm-compose-files/tree/2cf337c2c5fc3fa78570a5ae0e3dd432abaefde8/docker/sglang-glm53-v0523) | tp2x2 | flag set | live |
 <!-- status:end -->
 
-`live` runs in production. Files that run nowhere are deleted; older versions stay reachable through
+`live` runs in production. `candidate` is being rolled out, at most one per serving group. `standby` is kept
+but not deployed, for example a fallback or a later rollout step. Other files that run nowhere are deleted; older versions stay reachable through
 release tags.
 
 Models served by more than one live file:

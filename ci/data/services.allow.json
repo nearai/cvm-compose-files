@@ -1081,6 +1081,184 @@
         "security_opt:no-new-privileges:true",
         "sock:/var/run/dstack.sock"
       ]
+    },
+    {
+      "file": "prod/glm-5.3-flash-vllm-pd2x2.yaml",
+      "service": "dcgm-glm53",
+      "role": "aux",
+      "items": [
+        "cap_add:SYS_ADMIN"
+      ]
+    },
+    {
+      "file": "prod/glm-5.3-flash-vllm-pd2x2.yaml",
+      "service": "nginx",
+      "items": [
+        "port:8000/tcp",
+        "port:8444/tcp"
+      ]
+    },
+    {
+      "file": "prod/glm-5.3-flash-vllm-pd2x2.yaml",
+      "service": "otelcol-contrib",
+      "items": [
+        "bind:/var/lib/docker/containers"
+      ]
+    },
+    {
+      "file": "prod/glm-5.3-flash-vllm-pd2x2.yaml",
+      "service": "proxy-glm53",
+      "items": [
+        "ipc:host",
+        "privileged",
+        "sock:/var/run/dstack.sock"
+      ]
+    },
+    {
+      "file": "prod/glm-5.3-flash-vllm-pd2x2.yaml",
+      "service": "model-vllm-glm53-a-prefill0",
+      "items": [
+        "network:host",
+        "security_opt:no-new-privileges:true"
+      ]
+    },
+    {
+      "file": "prod/glm-5.3-flash-vllm-pd2x2.yaml",
+      "service": "model-vllm-glm53-a-prefill1",
+      "items": [
+        "network:host",
+        "security_opt:no-new-privileges:true"
+      ]
+    },
+    {
+      "file": "prod/glm-5.3-flash-vllm-pd2x2.yaml",
+      "service": "model-vllm-glm53-a-decode0",
+      "items": [
+        "network:host",
+        "security_opt:no-new-privileges:true"
+      ]
+    },
+    {
+      "file": "prod/glm-5.3-flash-vllm-pd2x2.yaml",
+      "service": "model-vllm-glm53-a-decode1",
+      "items": [
+        "network:host",
+        "security_opt:no-new-privileges:true"
+      ]
+    },
+    {
+      "file": "prod/glm-5.3-flash-vllm-pd2x2.yaml",
+      "service": "model-vllm-glm53-b-prefill0",
+      "items": [
+        "network:host",
+        "security_opt:no-new-privileges:true"
+      ]
+    },
+    {
+      "file": "prod/glm-5.3-flash-vllm-pd2x2.yaml",
+      "service": "model-vllm-glm53-b-prefill1",
+      "items": [
+        "network:host",
+        "security_opt:no-new-privileges:true"
+      ]
+    },
+    {
+      "file": "prod/glm-5.3-flash-vllm-pd2x2.yaml",
+      "service": "model-vllm-glm53-b-decode0",
+      "items": [
+        "network:host",
+        "security_opt:no-new-privileges:true"
+      ]
+    },
+    {
+      "file": "prod/glm-5.3-flash-vllm-pd2x2.yaml",
+      "service": "model-vllm-glm53-b-decode1",
+      "items": [
+        "network:host",
+        "security_opt:no-new-privileges:true"
+      ]
+    },
+    {
+      "file": "prod/glm-5.3-flash-vllm-pd2x2.yaml",
+      "service": "pd-router-glm53-a",
+      "role": "aux",
+      "items": []
+    },
+    {
+      "file": "prod/glm-5.3-flash-vllm-pd2x2.yaml",
+      "service": "pd-router-glm53-b",
+      "role": "aux",
+      "items": []
+    },
+    {
+      "file": "prod/glm-5.3-flash-vllm-pd2.yaml",
+      "service": "dcgm-glm53",
+      "role": "aux",
+      "items": [
+        "cap_add:SYS_ADMIN"
+      ]
+    },
+    {
+      "file": "prod/glm-5.3-flash-vllm-pd2.yaml",
+      "service": "nginx",
+      "items": [
+        "port:8000/tcp",
+        "port:8444/tcp"
+      ]
+    },
+    {
+      "file": "prod/glm-5.3-flash-vllm-pd2.yaml",
+      "service": "otelcol-contrib",
+      "items": [
+        "bind:/var/lib/docker/containers"
+      ]
+    },
+    {
+      "file": "prod/glm-5.3-flash-vllm-pd2.yaml",
+      "service": "proxy-glm53",
+      "items": [
+        "ipc:host",
+        "privileged",
+        "sock:/var/run/dstack.sock"
+      ]
+    },
+    {
+      "file": "prod/glm-5.3-flash-vllm-pd2.yaml",
+      "service": "model-vllm-glm53-a-prefill0",
+      "items": [
+        "network:host",
+        "security_opt:no-new-privileges:true"
+      ]
+    },
+    {
+      "file": "prod/glm-5.3-flash-vllm-pd2.yaml",
+      "service": "model-vllm-glm53-a-prefill1",
+      "items": [
+        "network:host",
+        "security_opt:no-new-privileges:true"
+      ]
+    },
+    {
+      "file": "prod/glm-5.3-flash-vllm-pd2.yaml",
+      "service": "model-vllm-glm53-a-decode0",
+      "items": [
+        "network:host",
+        "security_opt:no-new-privileges:true"
+      ]
+    },
+    {
+      "file": "prod/glm-5.3-flash-vllm-pd2.yaml",
+      "service": "model-vllm-glm53-a-decode1",
+      "items": [
+        "network:host",
+        "security_opt:no-new-privileges:true"
+      ]
+    },
+    {
+      "file": "prod/glm-5.3-flash-vllm-pd2.yaml",
+      "service": "pd-router-glm53-a",
+      "role": "aux",
+      "items": []
     }
   ],
   "env": [
