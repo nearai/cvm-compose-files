@@ -1,4 +1,4 @@
-# z-ai/glm-5.3-flash | vLLM | P/D disaggregation, 2 pairs per host (draft, ratio not final)
+# z-ai/glm-5.3-flash | vLLM | P/D disaggregation, 2 pairs per host
 # Pair A prefill GPUs 0-1, decode 2-3. Pair B prefill 4-5, decode 6-7. Edit pairs together with router and scrape jobs.
 x-logging-conf: &logging-conf
   driver: "json-file"
@@ -42,6 +42,7 @@ x-glm53-engine-common: &glm53-engine-common
   init: true
   cap_drop: [ALL]
   security_opt: ["no-new-privileges:true"]
+  # r3 digest until the r4 image is published; the VLLM_NEAR_KDA_* switches take effect only on r4.
   image: docker.io/nearaidev/vllm@sha256:43edd86213d507c39757ac7d513c9848386d1f426554cdc6221fba92e444e33a
   network_mode: host
   restart: unless-stopped
@@ -70,7 +71,7 @@ services:
       - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
     logging: *logging-conf
     labels:
-      com.datadoghq.ad.logs: '[{"source":"model-downloader","service":"model-downloader","tags":["model:z-ai/glm-5.3-flash","deployment:glm-5.3-flash-vllm-pd2x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc-draft"]}]'
+      com.datadoghq.ad.logs: '[{"source":"model-downloader","service":"model-downloader","tags":["model:z-ai/glm-5.3-flash","deployment:glm-5.3-flash-vllm-pd2x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc"]}]'
 
   nginx:
     image: nginx@sha256:9e596d26590907ed433eb53c83c4016038025d4e004b15922786ba85c8957264
@@ -91,7 +92,7 @@ services:
     restart: unless-stopped
     logging: *logging-conf
     labels:
-      com.datadoghq.ad.logs: '[{"source":"nginx","service":"nginx","tags":["model:z-ai/glm-5.3-flash","deployment:glm-5.3-flash-vllm-pd2x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc-draft"]}]'
+      com.datadoghq.ad.logs: '[{"source":"nginx","service":"nginx","tags":["model:z-ai/glm-5.3-flash","deployment:glm-5.3-flash-vllm-pd2x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc"]}]'
 
   model-proxy-registrar:
     image: curlimages/curl@sha256:d94d07ba9e7d6de898b6d96c1a072f6f8266c687af78a74f380087a0addf5d17
@@ -116,7 +117,7 @@ services:
         mode: 0755
     logging: *logging-conf
     labels:
-      com.datadoghq.ad.logs: '[{"source":"model-proxy-registrar","service":"model-proxy-registrar","tags":["model:z-ai/glm-5.3-flash","deployment:glm-5.3-flash-vllm-pd2x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc-draft"]}]'
+      com.datadoghq.ad.logs: '[{"source":"model-proxy-registrar","service":"model-proxy-registrar","tags":["model:z-ai/glm-5.3-flash","deployment:glm-5.3-flash-vllm-pd2x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc"]}]'
 
   proxy-glm53:
     <<: *vllm-proxy-common
@@ -147,7 +148,7 @@ services:
       - REPLICA_STATE_REDIS_CA_CERT=${REPLICA_STATE_REDIS_CA_CERT:-}
       - REPLICA_STATE_HOST_ID=${CVM_HOST:-}
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:z-ai/glm-5.3-flash","port:8000","deployment:glm-5.3-flash-vllm-pd2x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc-draft"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:z-ai/glm-5.3-flash","port:8000","deployment:glm-5.3-flash-vllm-pd2x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "inference-proxy"
       nearai.otel.service: "vllm-proxy"
@@ -163,7 +164,7 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.ppcie: "true"
-      nearai.otel.config_variant: "vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc-draft"
+      nearai.otel.config_variant: "vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc"
 
   model-vllm-glm53-a-prefill0:
     <<: *glm53-engine-common
@@ -195,6 +196,9 @@ services:
       - VLLM_NEAR_DISABLE_UVA=1
       - VLLM_USE_V2_MODEL_RUNNER=1
       - VLLM_CONFIDENTIAL_COMPUTE=1
+      - VLLM_NEAR_KDA_FP8=1
+      - VLLM_NEAR_KDA_SLICE=1
+      - CUDA_DEVICE_ORDER=PCI_BUS_ID
       - OMP_NUM_THREADS=4
       - HUMMING_COMPILER=nvcc
       - HUMMING_CACHE_DIR=/root/.cache/humming/a-prefill0
@@ -222,7 +226,7 @@ services:
       --max-num-seqs 32
       --max-num-queued-reqs 96
       --scheduling-policy priority
-      --gpu-memory-utilization 0.85
+      --gpu-memory-utilization 0.92
       --enable-prompt-tokens-details
       --chat-template /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/3f1971b7b5f7a528c9c4ef6212c8785298a8c24a/chat_template.jinja
       --reasoning-parser glm45
@@ -242,7 +246,7 @@ services:
       --host 0.0.0.0
       --port 9100
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","replica:a","pd_role:prefill","dp_rank:0","gpu:0","deployment:glm-5.3-flash-vllm-pd2x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc-draft"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","replica:a","pd_role:prefill","dp_rank:0","gpu:0","deployment:glm-5.3-flash-vllm-pd2x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
@@ -260,7 +264,7 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.ppcie: "true"
-      nearai.otel.config_variant: "vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc-draft"
+      nearai.otel.config_variant: "vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc"
 
   model-vllm-glm53-a-prefill1:
     <<: *glm53-engine-common
@@ -293,6 +297,9 @@ services:
       - VLLM_NEAR_DISABLE_UVA=1
       - VLLM_USE_V2_MODEL_RUNNER=1
       - VLLM_CONFIDENTIAL_COMPUTE=1
+      - VLLM_NEAR_KDA_FP8=1
+      - VLLM_NEAR_KDA_SLICE=1
+      - CUDA_DEVICE_ORDER=PCI_BUS_ID
       - OMP_NUM_THREADS=4
       - HUMMING_COMPILER=nvcc
       - HUMMING_CACHE_DIR=/root/.cache/humming/a-prefill1
@@ -320,7 +327,7 @@ services:
       --max-num-seqs 32
       --max-num-queued-reqs 96
       --scheduling-policy priority
-      --gpu-memory-utilization 0.85
+      --gpu-memory-utilization 0.92
       --enable-prompt-tokens-details
       --chat-template /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/3f1971b7b5f7a528c9c4ef6212c8785298a8c24a/chat_template.jinja
       --reasoning-parser glm45
@@ -340,7 +347,7 @@ services:
       --host 0.0.0.0
       --port 9101
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","replica:a","pd_role:prefill","dp_rank:1","gpu:1","deployment:glm-5.3-flash-vllm-pd2x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc-draft"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","replica:a","pd_role:prefill","dp_rank:1","gpu:1","deployment:glm-5.3-flash-vllm-pd2x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
@@ -358,7 +365,7 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.ppcie: "true"
-      nearai.otel.config_variant: "vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc-draft"
+      nearai.otel.config_variant: "vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc"
 
   model-vllm-glm53-a-decode0:
     <<: *glm53-engine-common
@@ -391,9 +398,9 @@ services:
       - VLLM_NEAR_DISABLE_UVA=1
       - VLLM_USE_V2_MODEL_RUNNER=1
       - VLLM_CONFIDENTIAL_COMPUTE=1
-      - VLLM_NEAR_DP_GLOBAL_PREFILL_CADENCE=1
-      - VLLM_NEAR_DP_GLOBAL_PREFILL_CADENCE_MIN=2
-      - VLLM_NEAR_DP_GLOBAL_PREFILL_CADENCE_RESTORE=2
+      - VLLM_NEAR_KDA_FP8=1
+      - VLLM_NEAR_KDA_SLICE=1
+      - CUDA_DEVICE_ORDER=PCI_BUS_ID
       - OMP_NUM_THREADS=4
       - HUMMING_COMPILER=nvcc
       - HUMMING_CACHE_DIR=/root/.cache/humming/a-decode0
@@ -421,7 +428,7 @@ services:
       --max-num-seqs 128
       --max-num-queued-reqs 96
       --scheduling-policy priority
-      --gpu-memory-utilization 0.85
+      --gpu-memory-utilization 0.92
       --enable-prompt-tokens-details
       --chat-template /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/3f1971b7b5f7a528c9c4ef6212c8785298a8c24a/chat_template.jinja
       --reasoning-parser glm45
@@ -437,12 +444,11 @@ services:
       --enable-prefix-caching
       --limit-mm-per-prompt '{"image": 4}'
       --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_consumer"}'
-      --prefill-schedule-interval 8
       --no-enable-log-requests
       --host 0.0.0.0
       --port 9110
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","replica:a","pd_role:decode","dp_rank:0","gpu:2","deployment:glm-5.3-flash-vllm-pd2x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc-draft"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","replica:a","pd_role:decode","dp_rank:0","gpu:2","deployment:glm-5.3-flash-vllm-pd2x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
@@ -460,7 +466,7 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.ppcie: "true"
-      nearai.otel.config_variant: "vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc-draft"
+      nearai.otel.config_variant: "vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc"
 
   model-vllm-glm53-a-decode1:
     <<: *glm53-engine-common
@@ -493,9 +499,9 @@ services:
       - VLLM_NEAR_DISABLE_UVA=1
       - VLLM_USE_V2_MODEL_RUNNER=1
       - VLLM_CONFIDENTIAL_COMPUTE=1
-      - VLLM_NEAR_DP_GLOBAL_PREFILL_CADENCE=1
-      - VLLM_NEAR_DP_GLOBAL_PREFILL_CADENCE_MIN=2
-      - VLLM_NEAR_DP_GLOBAL_PREFILL_CADENCE_RESTORE=2
+      - VLLM_NEAR_KDA_FP8=1
+      - VLLM_NEAR_KDA_SLICE=1
+      - CUDA_DEVICE_ORDER=PCI_BUS_ID
       - OMP_NUM_THREADS=4
       - HUMMING_COMPILER=nvcc
       - HUMMING_CACHE_DIR=/root/.cache/humming/a-decode1
@@ -523,7 +529,7 @@ services:
       --max-num-seqs 128
       --max-num-queued-reqs 96
       --scheduling-policy priority
-      --gpu-memory-utilization 0.85
+      --gpu-memory-utilization 0.92
       --enable-prompt-tokens-details
       --chat-template /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/3f1971b7b5f7a528c9c4ef6212c8785298a8c24a/chat_template.jinja
       --reasoning-parser glm45
@@ -539,12 +545,11 @@ services:
       --enable-prefix-caching
       --limit-mm-per-prompt '{"image": 4}'
       --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_consumer"}'
-      --prefill-schedule-interval 8
       --no-enable-log-requests
       --host 0.0.0.0
       --port 9111
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","replica:a","pd_role:decode","dp_rank:1","gpu:3","deployment:glm-5.3-flash-vllm-pd2x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc-draft"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","replica:a","pd_role:decode","dp_rank:1","gpu:3","deployment:glm-5.3-flash-vllm-pd2x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
@@ -562,7 +567,7 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.ppcie: "true"
-      nearai.otel.config_variant: "vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc-draft"
+      nearai.otel.config_variant: "vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc"
 
   model-vllm-glm53-b-prefill0:
     <<: *glm53-engine-common
@@ -594,6 +599,9 @@ services:
       - VLLM_NEAR_DISABLE_UVA=1
       - VLLM_USE_V2_MODEL_RUNNER=1
       - VLLM_CONFIDENTIAL_COMPUTE=1
+      - VLLM_NEAR_KDA_FP8=1
+      - VLLM_NEAR_KDA_SLICE=1
+      - CUDA_DEVICE_ORDER=PCI_BUS_ID
       - OMP_NUM_THREADS=4
       - HUMMING_COMPILER=nvcc
       - HUMMING_CACHE_DIR=/root/.cache/humming/b-prefill0
@@ -621,7 +629,7 @@ services:
       --max-num-seqs 32
       --max-num-queued-reqs 96
       --scheduling-policy priority
-      --gpu-memory-utilization 0.85
+      --gpu-memory-utilization 0.92
       --enable-prompt-tokens-details
       --chat-template /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/3f1971b7b5f7a528c9c4ef6212c8785298a8c24a/chat_template.jinja
       --reasoning-parser glm45
@@ -641,7 +649,7 @@ services:
       --host 0.0.0.0
       --port 9120
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","replica:b","pd_role:prefill","dp_rank:0","gpu:4","deployment:glm-5.3-flash-vllm-pd2x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc-draft"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","replica:b","pd_role:prefill","dp_rank:0","gpu:4","deployment:glm-5.3-flash-vllm-pd2x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
@@ -659,7 +667,7 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.ppcie: "true"
-      nearai.otel.config_variant: "vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc-draft"
+      nearai.otel.config_variant: "vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc"
 
   model-vllm-glm53-b-prefill1:
     <<: *glm53-engine-common
@@ -692,6 +700,9 @@ services:
       - VLLM_NEAR_DISABLE_UVA=1
       - VLLM_USE_V2_MODEL_RUNNER=1
       - VLLM_CONFIDENTIAL_COMPUTE=1
+      - VLLM_NEAR_KDA_FP8=1
+      - VLLM_NEAR_KDA_SLICE=1
+      - CUDA_DEVICE_ORDER=PCI_BUS_ID
       - OMP_NUM_THREADS=4
       - HUMMING_COMPILER=nvcc
       - HUMMING_CACHE_DIR=/root/.cache/humming/b-prefill1
@@ -719,7 +730,7 @@ services:
       --max-num-seqs 32
       --max-num-queued-reqs 96
       --scheduling-policy priority
-      --gpu-memory-utilization 0.85
+      --gpu-memory-utilization 0.92
       --enable-prompt-tokens-details
       --chat-template /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/3f1971b7b5f7a528c9c4ef6212c8785298a8c24a/chat_template.jinja
       --reasoning-parser glm45
@@ -739,7 +750,7 @@ services:
       --host 0.0.0.0
       --port 9121
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","replica:b","pd_role:prefill","dp_rank:1","gpu:5","deployment:glm-5.3-flash-vllm-pd2x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc-draft"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","replica:b","pd_role:prefill","dp_rank:1","gpu:5","deployment:glm-5.3-flash-vllm-pd2x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
@@ -757,7 +768,7 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.ppcie: "true"
-      nearai.otel.config_variant: "vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc-draft"
+      nearai.otel.config_variant: "vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc"
 
   model-vllm-glm53-b-decode0:
     <<: *glm53-engine-common
@@ -790,9 +801,9 @@ services:
       - VLLM_NEAR_DISABLE_UVA=1
       - VLLM_USE_V2_MODEL_RUNNER=1
       - VLLM_CONFIDENTIAL_COMPUTE=1
-      - VLLM_NEAR_DP_GLOBAL_PREFILL_CADENCE=1
-      - VLLM_NEAR_DP_GLOBAL_PREFILL_CADENCE_MIN=2
-      - VLLM_NEAR_DP_GLOBAL_PREFILL_CADENCE_RESTORE=2
+      - VLLM_NEAR_KDA_FP8=1
+      - VLLM_NEAR_KDA_SLICE=1
+      - CUDA_DEVICE_ORDER=PCI_BUS_ID
       - OMP_NUM_THREADS=4
       - HUMMING_COMPILER=nvcc
       - HUMMING_CACHE_DIR=/root/.cache/humming/b-decode0
@@ -820,7 +831,7 @@ services:
       --max-num-seqs 128
       --max-num-queued-reqs 96
       --scheduling-policy priority
-      --gpu-memory-utilization 0.85
+      --gpu-memory-utilization 0.92
       --enable-prompt-tokens-details
       --chat-template /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/3f1971b7b5f7a528c9c4ef6212c8785298a8c24a/chat_template.jinja
       --reasoning-parser glm45
@@ -836,12 +847,11 @@ services:
       --enable-prefix-caching
       --limit-mm-per-prompt '{"image": 4}'
       --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_consumer"}'
-      --prefill-schedule-interval 8
       --no-enable-log-requests
       --host 0.0.0.0
       --port 9130
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","replica:b","pd_role:decode","dp_rank:0","gpu:6","deployment:glm-5.3-flash-vllm-pd2x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc-draft"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","replica:b","pd_role:decode","dp_rank:0","gpu:6","deployment:glm-5.3-flash-vllm-pd2x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
@@ -859,7 +869,7 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.ppcie: "true"
-      nearai.otel.config_variant: "vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc-draft"
+      nearai.otel.config_variant: "vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc"
 
   model-vllm-glm53-b-decode1:
     <<: *glm53-engine-common
@@ -892,9 +902,9 @@ services:
       - VLLM_NEAR_DISABLE_UVA=1
       - VLLM_USE_V2_MODEL_RUNNER=1
       - VLLM_CONFIDENTIAL_COMPUTE=1
-      - VLLM_NEAR_DP_GLOBAL_PREFILL_CADENCE=1
-      - VLLM_NEAR_DP_GLOBAL_PREFILL_CADENCE_MIN=2
-      - VLLM_NEAR_DP_GLOBAL_PREFILL_CADENCE_RESTORE=2
+      - VLLM_NEAR_KDA_FP8=1
+      - VLLM_NEAR_KDA_SLICE=1
+      - CUDA_DEVICE_ORDER=PCI_BUS_ID
       - OMP_NUM_THREADS=4
       - HUMMING_COMPILER=nvcc
       - HUMMING_CACHE_DIR=/root/.cache/humming/b-decode1
@@ -922,7 +932,7 @@ services:
       --max-num-seqs 128
       --max-num-queued-reqs 96
       --scheduling-policy priority
-      --gpu-memory-utilization 0.85
+      --gpu-memory-utilization 0.92
       --enable-prompt-tokens-details
       --chat-template /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/3f1971b7b5f7a528c9c4ef6212c8785298a8c24a/chat_template.jinja
       --reasoning-parser glm45
@@ -938,12 +948,11 @@ services:
       --enable-prefix-caching
       --limit-mm-per-prompt '{"image": 4}'
       --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_consumer"}'
-      --prefill-schedule-interval 8
       --no-enable-log-requests
       --host 0.0.0.0
       --port 9131
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","replica:b","pd_role:decode","dp_rank:1","gpu:7","deployment:glm-5.3-flash-vllm-pd2x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc-draft"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","replica:b","pd_role:decode","dp_rank:1","gpu:7","deployment:glm-5.3-flash-vllm-pd2x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
@@ -961,13 +970,23 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.ppcie: "true"
-      nearai.otel.config_variant: "vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc-draft"
+      nearai.otel.config_variant: "vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc"
 
   pd-router-glm53-a:
-    # PLACEHOLDER image, replace with a pinned two-leg P/D router before any deploy. The router must bound the
-    # KV transfer with a timeout and abort both legs on timeout or client disconnect.
-    image: pd-router-placeholder:TODO-pin-digest
+    # One router per prefill/decode pair. Image digest to be pinned once the router image is published.
+    image: docker.io/nearaidev/vllm@sha256:0000000000000000000000000000000000000000000000000000000000000000
     container_name: pd-router-glm53-a
+    command:
+      - --prefill
+      - model-vllm-glm53-a-prefill0:9100
+      - model-vllm-glm53-a-prefill1:9101
+      - --decode
+      - model-vllm-glm53-a-decode0:9110
+      - model-vllm-glm53-a-decode1:9111
+      - --host
+      - 0.0.0.0
+      - --port
+      - "9200"
     depends_on:
       model-vllm-glm53-a-prefill0:
         condition: service_started
@@ -979,20 +998,37 @@ services:
       - "model-vllm-glm53-a-decode0:host-gateway"
       - "model-vllm-glm53-a-decode1:host-gateway"
     environment:
-      - LOG_FORMAT=json
-      - PD_ROUTER_PORT=9200
-      - PD_PREFILL_URLS=http://model-vllm-glm53-a-prefill0:9100,http://model-vllm-glm53-a-prefill1:9101
-      - PD_DECODE_URLS=http://model-vllm-glm53-a-decode0:9110,http://model-vllm-glm53-a-decode1:9111
+      # Below the 30 s KV lease of the NixlConnector, so a stalled transfer fails before the prefill blocks expire.
+      - PD_KV_TIMEOUT_S=25
+      - PD_HEALTH_TIMEOUT_S=2
+      - PD_MAX_IMBALANCE=64
+      - PD_STATS_LOG_S=60
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9200/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 1800s
     restart: unless-stopped
     logging: *logging-conf
     labels:
-      com.datadoghq.ad.logs: '[{"source":"pd-router","service":"pd-router","tags":["model:z-ai/glm-5.3-flash","deployment:glm-5.3-flash-vllm-pd2x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc-draft"]}]'
+      com.datadoghq.ad.logs: '[{"source":"pd-router","service":"pd-router","tags":["model:z-ai/glm-5.3-flash","deployment:glm-5.3-flash-vllm-pd2x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc"]}]'
 
   pd-router-glm53-b:
-    # PLACEHOLDER image, replace with a pinned two-leg P/D router before any deploy. The router must bound the
-    # KV transfer with a timeout and abort both legs on timeout or client disconnect.
-    image: pd-router-placeholder:TODO-pin-digest
+    # One router per prefill/decode pair. Image digest to be pinned once the router image is published.
+    image: docker.io/nearaidev/vllm@sha256:0000000000000000000000000000000000000000000000000000000000000000
     container_name: pd-router-glm53-b
+    command:
+      - --prefill
+      - model-vllm-glm53-b-prefill0:9120
+      - model-vllm-glm53-b-prefill1:9121
+      - --decode
+      - model-vllm-glm53-b-decode0:9130
+      - model-vllm-glm53-b-decode1:9131
+      - --host
+      - 0.0.0.0
+      - --port
+      - "9201"
     depends_on:
       model-vllm-glm53-b-prefill0:
         condition: service_started
@@ -1004,14 +1040,21 @@ services:
       - "model-vllm-glm53-b-decode0:host-gateway"
       - "model-vllm-glm53-b-decode1:host-gateway"
     environment:
-      - LOG_FORMAT=json
-      - PD_ROUTER_PORT=9201
-      - PD_PREFILL_URLS=http://model-vllm-glm53-b-prefill0:9120,http://model-vllm-glm53-b-prefill1:9121
-      - PD_DECODE_URLS=http://model-vllm-glm53-b-decode0:9130,http://model-vllm-glm53-b-decode1:9131
+      # Below the 30 s KV lease of the NixlConnector, so a stalled transfer fails before the prefill blocks expire.
+      - PD_KV_TIMEOUT_S=25
+      - PD_HEALTH_TIMEOUT_S=2
+      - PD_MAX_IMBALANCE=64
+      - PD_STATS_LOG_S=60
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9201/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 1800s
     restart: unless-stopped
     logging: *logging-conf
     labels:
-      com.datadoghq.ad.logs: '[{"source":"pd-router","service":"pd-router","tags":["model:z-ai/glm-5.3-flash","deployment:glm-5.3-flash-vllm-pd2x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc-draft"]}]'
+      com.datadoghq.ad.logs: '[{"source":"pd-router","service":"pd-router","tags":["model:z-ai/glm-5.3-flash","deployment:glm-5.3-flash-vllm-pd2x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc"]}]'
 
   dcgm-glm53:
     image: nvcr.io/nvidia/k8s/dcgm-exporter@sha256:ed594cf53fe6942e84b07b0740cdcbb249fa4b39cb21feeebf93881ae51f0b5e
@@ -1029,7 +1072,7 @@ services:
     restart: unless-stopped
     logging: *logging-conf
     labels:
-      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:z-ai/glm-5.3-flash","deployment:glm-5.3-flash-vllm-pd2x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc-draft"]}]'
+      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:z-ai/glm-5.3-flash","deployment:glm-5.3-flash-vllm-pd2x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "dcgm"
       nearai.otel.service: "dcgm-exporter"
@@ -1045,7 +1088,7 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.ppcie: "true"
-      nearai.otel.config_variant: "vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc-draft"
+      nearai.otel.config_variant: "vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc"
 
   otelcol-contrib:
     image: otel/opentelemetry-collector-contrib@sha256:85ac41c2db88d0df9bd6145e608a3cb023f5d8443868adbfbbf66efb51087917
@@ -1087,7 +1130,7 @@ services:
         max-size: "20m"
         max-file: "3"
     labels:
-      com.datadoghq.ad.logs: '[{"source":"otelcol-contrib","service":"otelcol-contrib","tags":["model:z-ai/glm-5.3-flash","deployment:glm-5.3-flash-vllm-pd2x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc-draft"]}]'
+      com.datadoghq.ad.logs: '[{"source":"otelcol-contrib","service":"otelcol-contrib","tags":["model:z-ai/glm-5.3-flash","deployment:glm-5.3-flash-vllm-pd2x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc"]}]'
 
 networks:
   default:
@@ -1241,7 +1284,7 @@ configs:
                       ip: "${HOST_IP}"
                       ppcie: "true"
                       deployment: "glm-5.3-flash-vllm-pd2x2"
-                      config_variant: "vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc-draft"
+                      config_variant: "vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc"
               - job_name: vllm-model-vllm-glm53-a-prefill1
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -1267,7 +1310,7 @@ configs:
                       ip: "${HOST_IP}"
                       ppcie: "true"
                       deployment: "glm-5.3-flash-vllm-pd2x2"
-                      config_variant: "vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc-draft"
+                      config_variant: "vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc"
               - job_name: vllm-model-vllm-glm53-a-decode0
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -1293,7 +1336,7 @@ configs:
                       ip: "${HOST_IP}"
                       ppcie: "true"
                       deployment: "glm-5.3-flash-vllm-pd2x2"
-                      config_variant: "vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc-draft"
+                      config_variant: "vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc"
               - job_name: vllm-model-vllm-glm53-a-decode1
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -1319,7 +1362,7 @@ configs:
                       ip: "${HOST_IP}"
                       ppcie: "true"
                       deployment: "glm-5.3-flash-vllm-pd2x2"
-                      config_variant: "vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc-draft"
+                      config_variant: "vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc"
               - job_name: vllm-model-vllm-glm53-b-prefill0
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -1345,7 +1388,7 @@ configs:
                       ip: "${HOST_IP}"
                       ppcie: "true"
                       deployment: "glm-5.3-flash-vllm-pd2x2"
-                      config_variant: "vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc-draft"
+                      config_variant: "vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc"
               - job_name: vllm-model-vllm-glm53-b-prefill1
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -1371,7 +1414,7 @@ configs:
                       ip: "${HOST_IP}"
                       ppcie: "true"
                       deployment: "glm-5.3-flash-vllm-pd2x2"
-                      config_variant: "vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc-draft"
+                      config_variant: "vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc"
               - job_name: vllm-model-vllm-glm53-b-decode0
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -1397,7 +1440,7 @@ configs:
                       ip: "${HOST_IP}"
                       ppcie: "true"
                       deployment: "glm-5.3-flash-vllm-pd2x2"
-                      config_variant: "vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc-draft"
+                      config_variant: "vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc"
               - job_name: vllm-model-vllm-glm53-b-decode1
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -1423,7 +1466,7 @@ configs:
                       ip: "${HOST_IP}"
                       ppcie: "true"
                       deployment: "glm-5.3-flash-vllm-pd2x2"
-                      config_variant: "vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc-draft"
+                      config_variant: "vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc"
               - job_name: dcgm-dcgm-glm53
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -1442,7 +1485,7 @@ configs:
                       ip: "${HOST_IP}"
                       ppcie: "true"
                       deployment: "glm-5.3-flash-vllm-pd2x2"
-                      config_variant: "vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc-draft"
+                      config_variant: "vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc"
               - job_name: inference-proxy-proxy-glm53
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -1461,7 +1504,7 @@ configs:
                       ip: "${HOST_IP}"
                       ppcie: "true"
                       deployment: "glm-5.3-flash-vllm-pd2x2"
-                      config_variant: "vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc-draft"
+                      config_variant: "vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc"
         prometheus/self:
           config:
             scrape_configs:
@@ -1649,7 +1692,7 @@ configs:
           return 1
         fi
         if [ "$$REGISTERED" = false ]; then
-          echo "[glm-5.3-flash-vllm-pd2x2] Registered z-ai/glm-5.3-flash (2x DEP4) at $$ENDPOINT"
+          echo "[glm-5.3-flash-vllm-pd2x2] Registered z-ai/glm-5.3-flash (2 P/D pairs) at $$ENDPOINT"
         fi
         REGISTERED=true
       }
