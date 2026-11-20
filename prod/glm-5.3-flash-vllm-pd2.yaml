@@ -193,6 +193,8 @@ services:
       - PYTHONUNBUFFERED=1
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
       - NCCL_DEBUG=WARN
+      # Never set PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True here: VMM allocations stop UCX from
+      # using cuda_ipc for the KV handoff.
       - VLLM_NEAR_DISABLE_UVA=1
       - VLLM_USE_V2_MODEL_RUNNER=1
       - VLLM_CONFIDENTIAL_COMPUTE=1
@@ -295,6 +297,8 @@ services:
       - PYTHONUNBUFFERED=1
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
       - NCCL_DEBUG=WARN
+      # Never set PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True here: VMM allocations stop UCX from
+      # using cuda_ipc for the KV handoff.
       - VLLM_NEAR_DISABLE_UVA=1
       - VLLM_USE_V2_MODEL_RUNNER=1
       - VLLM_CONFIDENTIAL_COMPUTE=1
@@ -397,6 +401,8 @@ services:
       - PYTHONUNBUFFERED=1
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
       - NCCL_DEBUG=WARN
+      # Never set PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True here: VMM allocations stop UCX from
+      # using cuda_ipc for the KV handoff.
       - VLLM_NEAR_DISABLE_UVA=1
       - VLLM_USE_V2_MODEL_RUNNER=1
       - VLLM_CONFIDENTIAL_COMPUTE=1
@@ -499,6 +505,8 @@ services:
       - PYTHONUNBUFFERED=1
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
       - NCCL_DEBUG=WARN
+      # Never set PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True here: VMM allocations stop UCX from
+      # using cuda_ipc for the KV handoff.
       - VLLM_NEAR_DISABLE_UVA=1
       - VLLM_USE_V2_MODEL_RUNNER=1
       - VLLM_CONFIDENTIAL_COMPUTE=1
