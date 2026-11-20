@@ -206,9 +206,10 @@ services:
       - VLLM_ENGINE_READY_TIMEOUT_S=1800
       - VLLM_SSM_CONV_STATE_LAYOUT=DS
       - VLLM_TRUST_REMOTE_PREFILL_CACHED_TOKENS=1
-      # KV moves over UCX cuda_ipc (zero-copy); confirm the selected transport at first boot with UCX_PROTO_INFO=y.
+      # KV moves over UCX cuda_ipc (zero-copy); protocol info at boot logs the selected transport.
       - UCX_TLS=cuda_ipc,cuda_copy,tcp
-      - UCX_LOG_LEVEL=warn
+      - UCX_LOG_LEVEL=info
+      - UCX_PROTO_INFO=y
       - VLLM_DP_MASTER_PORT=29700
       - VLLM_NIXL_SIDE_CHANNEL_PORT=5600
     command: >
@@ -307,9 +308,10 @@ services:
       - VLLM_ENGINE_READY_TIMEOUT_S=1800
       - VLLM_SSM_CONV_STATE_LAYOUT=DS
       - VLLM_TRUST_REMOTE_PREFILL_CACHED_TOKENS=1
-      # KV moves over UCX cuda_ipc (zero-copy); confirm the selected transport at first boot with UCX_PROTO_INFO=y.
+      # KV moves over UCX cuda_ipc (zero-copy); protocol info at boot logs the selected transport.
       - UCX_TLS=cuda_ipc,cuda_copy,tcp
-      - UCX_LOG_LEVEL=warn
+      - UCX_LOG_LEVEL=info
+      - UCX_PROTO_INFO=y
       - VLLM_DP_MASTER_PORT=29700
       - VLLM_NIXL_SIDE_CHANNEL_PORT=5600
     command: >
@@ -408,9 +410,10 @@ services:
       - VLLM_ENGINE_READY_TIMEOUT_S=1800
       - VLLM_SSM_CONV_STATE_LAYOUT=DS
       - VLLM_TRUST_REMOTE_PREFILL_CACHED_TOKENS=1
-      # KV moves over UCX cuda_ipc (zero-copy); confirm the selected transport at first boot with UCX_PROTO_INFO=y.
+      # KV moves over UCX cuda_ipc (zero-copy); protocol info at boot logs the selected transport.
       - UCX_TLS=cuda_ipc,cuda_copy,tcp
-      - UCX_LOG_LEVEL=warn
+      - UCX_LOG_LEVEL=info
+      - UCX_PROTO_INFO=y
       - VLLM_DP_MASTER_PORT=29710
       - VLLM_NIXL_SIDE_CHANNEL_PORT=5700
     command: >
@@ -509,9 +512,10 @@ services:
       - VLLM_ENGINE_READY_TIMEOUT_S=1800
       - VLLM_SSM_CONV_STATE_LAYOUT=DS
       - VLLM_TRUST_REMOTE_PREFILL_CACHED_TOKENS=1
-      # KV moves over UCX cuda_ipc (zero-copy); confirm the selected transport at first boot with UCX_PROTO_INFO=y.
+      # KV moves over UCX cuda_ipc (zero-copy); protocol info at boot logs the selected transport.
       - UCX_TLS=cuda_ipc,cuda_copy,tcp
-      - UCX_LOG_LEVEL=warn
+      - UCX_LOG_LEVEL=info
+      - UCX_PROTO_INFO=y
       - VLLM_DP_MASTER_PORT=29710
       - VLLM_NIXL_SIDE_CHANNEL_PORT=5700
     command: >
@@ -609,9 +613,10 @@ services:
       - VLLM_ENGINE_READY_TIMEOUT_S=1800
       - VLLM_SSM_CONV_STATE_LAYOUT=DS
       - VLLM_TRUST_REMOTE_PREFILL_CACHED_TOKENS=1
-      # KV moves over UCX cuda_ipc (zero-copy); confirm the selected transport at first boot with UCX_PROTO_INFO=y.
+      # KV moves over UCX cuda_ipc (zero-copy); protocol info at boot logs the selected transport.
       - UCX_TLS=cuda_ipc,cuda_copy,tcp
-      - UCX_LOG_LEVEL=warn
+      - UCX_LOG_LEVEL=info
+      - UCX_PROTO_INFO=y
       - VLLM_DP_MASTER_PORT=29720
       - VLLM_NIXL_SIDE_CHANNEL_PORT=5800
     command: >
@@ -710,9 +715,10 @@ services:
       - VLLM_ENGINE_READY_TIMEOUT_S=1800
       - VLLM_SSM_CONV_STATE_LAYOUT=DS
       - VLLM_TRUST_REMOTE_PREFILL_CACHED_TOKENS=1
-      # KV moves over UCX cuda_ipc (zero-copy); confirm the selected transport at first boot with UCX_PROTO_INFO=y.
+      # KV moves over UCX cuda_ipc (zero-copy); protocol info at boot logs the selected transport.
       - UCX_TLS=cuda_ipc,cuda_copy,tcp
-      - UCX_LOG_LEVEL=warn
+      - UCX_LOG_LEVEL=info
+      - UCX_PROTO_INFO=y
       - VLLM_DP_MASTER_PORT=29720
       - VLLM_NIXL_SIDE_CHANNEL_PORT=5800
     command: >
@@ -811,9 +817,10 @@ services:
       - VLLM_ENGINE_READY_TIMEOUT_S=1800
       - VLLM_SSM_CONV_STATE_LAYOUT=DS
       - VLLM_TRUST_REMOTE_PREFILL_CACHED_TOKENS=1
-      # KV moves over UCX cuda_ipc (zero-copy); confirm the selected transport at first boot with UCX_PROTO_INFO=y.
+      # KV moves over UCX cuda_ipc (zero-copy); protocol info at boot logs the selected transport.
       - UCX_TLS=cuda_ipc,cuda_copy,tcp
-      - UCX_LOG_LEVEL=warn
+      - UCX_LOG_LEVEL=info
+      - UCX_PROTO_INFO=y
       - VLLM_DP_MASTER_PORT=29730
       - VLLM_NIXL_SIDE_CHANNEL_PORT=5900
     command: >
@@ -912,9 +919,10 @@ services:
       - VLLM_ENGINE_READY_TIMEOUT_S=1800
       - VLLM_SSM_CONV_STATE_LAYOUT=DS
       - VLLM_TRUST_REMOTE_PREFILL_CACHED_TOKENS=1
-      # KV moves over UCX cuda_ipc (zero-copy); confirm the selected transport at first boot with UCX_PROTO_INFO=y.
+      # KV moves over UCX cuda_ipc (zero-copy); protocol info at boot logs the selected transport.
       - UCX_TLS=cuda_ipc,cuda_copy,tcp
-      - UCX_LOG_LEVEL=warn
+      - UCX_LOG_LEVEL=info
+      - UCX_PROTO_INFO=y
       - VLLM_DP_MASTER_PORT=29730
       - VLLM_NIXL_SIDE_CHANNEL_PORT=5900
     command: >
@@ -1014,6 +1022,22 @@ services:
     logging: *logging-conf
     labels:
       com.datadoghq.ad.logs: '[{"source":"pd-router","service":"pd-router","tags":["model:z-ai/glm-5.3-flash","deployment:glm-5.3-flash-vllm-pd2x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "pd-router"
+      nearai.otel.service: "pd-router"
+      nearai.otel.source: "pd-router"
+      nearai.otel.container_name: "pd-router-glm53-a"
+      nearai.otel.port: "9200"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "z-ai/glm-5.3-flash"
+      nearai.otel.deployment: "glm-5.3-flash-vllm-pd2x2"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
+      nearai.otel.ppcie: "true"
+      nearai.otel.config_variant: "vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc"
 
   pd-router-glm53-b:
     # One router per prefill/decode pair. Image digest to be pinned once the router image is published.
@@ -1057,6 +1081,22 @@ services:
     logging: *logging-conf
     labels:
       com.datadoghq.ad.logs: '[{"source":"pd-router","service":"pd-router","tags":["model:z-ai/glm-5.3-flash","deployment:glm-5.3-flash-vllm-pd2x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "pd-router"
+      nearai.otel.service: "pd-router"
+      nearai.otel.source: "pd-router"
+      nearai.otel.container_name: "pd-router-glm53-b"
+      nearai.otel.port: "9201"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "z-ai/glm-5.3-flash"
+      nearai.otel.deployment: "glm-5.3-flash-vllm-pd2x2"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
+      nearai.otel.ppcie: "true"
+      nearai.otel.config_variant: "vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc"
 
   dcgm-glm53:
     image: nvcr.io/nvidia/k8s/dcgm-exporter@sha256:ed594cf53fe6942e84b07b0740cdcbb249fa4b39cb21feeebf93881ae51f0b5e
@@ -1461,6 +1501,60 @@ configs:
                       dp_rank: "1"
                       gpu: "7"
                       port: "9131"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      ppcie: "true"
+                      deployment: "glm-5.3-flash-vllm-pd2x2"
+                      config_variant: "vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc"
+              # A router answers 503 while any engine rank is down, so a missed scrape is expected then.
+              # Only the router's own series are kept; its aggregated engine series are scraped directly.
+              - job_name: pd-router-pd-router-glm53-a
+                scrape_interval: 15s
+                metrics_path: /metrics
+                metric_relabel_configs:
+                  - source_labels: [__name__]
+                    regex: 'pd_router_.*'
+                    action: keep
+                static_configs:
+                  - targets: ['pd-router-glm53-a:9200']
+                    labels:
+                      service: "pd-router"
+                      source: "pd-router"
+                      container_name: "pd-router-glm53-a"
+                      model: "z-ai/glm-5.3-flash"
+                      served_model: "z-ai/glm-5.3-flash"
+                      replica: "a"
+                      port: "8000"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      ppcie: "true"
+                      deployment: "glm-5.3-flash-vllm-pd2x2"
+                      config_variant: "vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc"
+              # A router answers 503 while any engine rank is down, so a missed scrape is expected then.
+              # Only the router's own series are kept; its aggregated engine series are scraped directly.
+              - job_name: pd-router-pd-router-glm53-b
+                scrape_interval: 15s
+                metrics_path: /metrics
+                metric_relabel_configs:
+                  - source_labels: [__name__]
+                    regex: 'pd_router_.*'
+                    action: keep
+                static_configs:
+                  - targets: ['pd-router-glm53-b:9201']
+                    labels:
+                      service: "pd-router"
+                      source: "pd-router"
+                      container_name: "pd-router-glm53-b"
+                      model: "z-ai/glm-5.3-flash"
+                      served_model: "z-ai/glm-5.3-flash"
+                      replica: "b"
+                      port: "8000"
                       env: "${ENV}"
                       host: "${CVM_HOST}"
                       host_machine: "${CVM_HOST}"
