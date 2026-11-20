@@ -122,6 +122,11 @@ services:
   proxy-glm53:
     <<: *vllm-proxy-common
     container_name: proxy-glm53
+    depends_on:
+      pd-router-glm53-a:
+        condition: service_started
+      pd-router-glm53-b:
+        condition: service_started
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - CLOUD_API_URL=https://cloud-api.near.ai
@@ -168,6 +173,7 @@ services:
 
   model-vllm-glm53-a-prefill0:
     <<: *glm53-engine-common
+    # One /dev/shm per pair, shared by its four engines through the leader IPC namespace.
     shm_size: 64g
     volumes:
       - huggingface_cache:/root/.cache/huggingface:ro
@@ -242,7 +248,7 @@ services:
       --no-disable-hybrid-kv-cache-manager
       --enable-prefix-caching
       --limit-mm-per-prompt '{"image": 4}'
-      --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_producer"}'
+      --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_producer","kv_connector_extra_config":{"kv_lease_duration":30}}'
       --no-enable-log-requests
       --host 0.0.0.0
       --port 9100
@@ -344,7 +350,7 @@ services:
       --no-disable-hybrid-kv-cache-manager
       --enable-prefix-caching
       --limit-mm-per-prompt '{"image": 4}'
-      --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_producer"}'
+      --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_producer","kv_connector_extra_config":{"kv_lease_duration":30}}'
       --no-enable-log-requests
       --host 0.0.0.0
       --port 9101
@@ -446,7 +452,7 @@ services:
       --no-disable-hybrid-kv-cache-manager
       --enable-prefix-caching
       --limit-mm-per-prompt '{"image": 4}'
-      --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_consumer"}'
+      --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_consumer","kv_connector_extra_config":{"kv_lease_duration":30}}'
       --no-enable-log-requests
       --host 0.0.0.0
       --port 9110
@@ -548,7 +554,7 @@ services:
       --no-disable-hybrid-kv-cache-manager
       --enable-prefix-caching
       --limit-mm-per-prompt '{"image": 4}'
-      --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_consumer"}'
+      --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_consumer","kv_connector_extra_config":{"kv_lease_duration":30}}'
       --no-enable-log-requests
       --host 0.0.0.0
       --port 9111
@@ -575,6 +581,7 @@ services:
 
   model-vllm-glm53-b-prefill0:
     <<: *glm53-engine-common
+    # One /dev/shm per pair, shared by its four engines through the leader IPC namespace.
     shm_size: 64g
     volumes:
       - huggingface_cache:/root/.cache/huggingface:ro
@@ -649,7 +656,7 @@ services:
       --no-disable-hybrid-kv-cache-manager
       --enable-prefix-caching
       --limit-mm-per-prompt '{"image": 4}'
-      --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_producer"}'
+      --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_producer","kv_connector_extra_config":{"kv_lease_duration":30}}'
       --no-enable-log-requests
       --host 0.0.0.0
       --port 9120
@@ -751,7 +758,7 @@ services:
       --no-disable-hybrid-kv-cache-manager
       --enable-prefix-caching
       --limit-mm-per-prompt '{"image": 4}'
-      --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_producer"}'
+      --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_producer","kv_connector_extra_config":{"kv_lease_duration":30}}'
       --no-enable-log-requests
       --host 0.0.0.0
       --port 9121
@@ -853,7 +860,7 @@ services:
       --no-disable-hybrid-kv-cache-manager
       --enable-prefix-caching
       --limit-mm-per-prompt '{"image": 4}'
-      --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_consumer"}'
+      --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_consumer","kv_connector_extra_config":{"kv_lease_duration":30}}'
       --no-enable-log-requests
       --host 0.0.0.0
       --port 9130
@@ -955,7 +962,7 @@ services:
       --no-disable-hybrid-kv-cache-manager
       --enable-prefix-caching
       --limit-mm-per-prompt '{"image": 4}'
-      --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_consumer"}'
+      --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_consumer","kv_connector_extra_config":{"kv_lease_duration":30}}'
       --no-enable-log-requests
       --host 0.0.0.0
       --port 9131
@@ -1006,7 +1013,8 @@ services:
       - "model-vllm-glm53-a-decode0:host-gateway"
       - "model-vllm-glm53-a-decode1:host-gateway"
     environment:
-      # Must match the engines' kv_lease_duration (stock 30 s); the router refuses a timeout >= lease - 5.
+      # Must equal kv_lease_duration in every engine's --kv-transfer-config; the router
+      # refuses a timeout >= lease - 5.
       - PD_KV_LEASE_S=30
       - PD_KV_TIMEOUT_S=20
       - PD_HEALTH_TIMEOUT_S=2
@@ -1065,7 +1073,8 @@ services:
       - "model-vllm-glm53-b-decode0:host-gateway"
       - "model-vllm-glm53-b-decode1:host-gateway"
     environment:
-      # Must match the engines' kv_lease_duration (stock 30 s); the router refuses a timeout >= lease - 5.
+      # Must equal kv_lease_duration in every engine's --kv-transfer-config; the router
+      # refuses a timeout >= lease - 5.
       - PD_KV_LEASE_S=30
       - PD_KV_TIMEOUT_S=20
       - PD_HEALTH_TIMEOUT_S=2
