@@ -24,7 +24,7 @@ environment names as the earlier prototype router. The image sets that as its en
 | `PD_KV_TIMEOUT_S` | `20` | decode request sent to first byte, streaming requests. Must be above `0` and below `PD_KV_LEASE_S - 5`, or the router refuses to start |
 | `PD_KV_LEASE_S` | `30` | the prefill engine's `kv_lease_duration` in seconds; must be set to the same value (see "KV lease coupling") |
 | `PD_PREFILL_TIMEOUT_S` | `600` | whole prefill leg; `0` disables |
-| `PD_NONSTREAM_TIMEOUT_S` | `0` (off) | decode first byte for non-streaming requests, which answer only after the full generation |
+| `PD_NONSTREAM_TIMEOUT_S` | `0` (off) | decode first byte for non-streaming requests, which answer only after the full generation; see "Timeout" for the accepted limit and the recommended setting |
 | `PD_HEALTH_TIMEOUT_S` | `2` | per-probe timeout for `/health`; a timeout counts as down |
 | `PD_METRICS_TIMEOUT_S` | `5` | per-rank timeout for the `/metrics` scrape |
 | `PD_P_DROP_STRUCT` | `1` | drop structured-output fields from the prefill leg |
@@ -44,9 +44,13 @@ environment names as the earlier prototype router. The image sets that as its en
   transfer, compare it with the decode ranks' own `vllm:num_requests_waiting`. For non-streaming requests the first byte is the
   whole answer, so `PD_NONSTREAM_TIMEOUT_S` is not bounded by the lease; keep the decode queue short enough that a request
   starts pulling within the lease.
+  Accepted limit: with the default `PD_NONSTREAM_TIMEOUT_S=0` a non-streaming request has no first-byte bound, so a stalled KV
+  pull can outlive the prefill lease and the request then waits for the engine instead of failing fast. Recommended: set
+  `PD_NONSTREAM_TIMEOUT_S` above the longest generation you expect to serve, so a stuck request is cancelled with a 504 while
+  normal ones are not cut short. The default is left off because no single value is safe for every deployment.
 * **Mid-stream failure**: if the decode connection breaks after the response has started, the router aborts the client
   connection instead of ending the stream cleanly, so a truncated response is a transport error for the caller.
-* **Request shaping**: `n` greater than 1 is rejected with 400. `prompt_logprobs`, `logprobs`, `top_logprobs`, `stream_options`
+* **Request shaping**: `n` must be absent or the integer 1; any other value (greater than 1, a float, a string, a boolean, null) is rejected with 400. `prompt_logprobs`, `logprobs`, `top_logprobs`, `stream_options`
   and `best_of` are not sent to the prefill leg. A client-supplied `kv_transfer_params` (also under `vllm_xargs`) is dropped on
   every path; the decode leg gets only what the prefill engine returned, so `remote_prefill_cached_tokens` can come only from it.
 * **Usage** in the decode response (including `stream_options.include_usage`) is forwarded byte for byte; the router never
@@ -79,6 +83,7 @@ pull blocks the prefill engine has already freed. The key is read by both sides 
 "kv_connector_extra_config": {"kv_lease_duration": 150}
 ```
 
+`PD_KV_LEASE_S` must equal the engines' `kv_lease_duration`; the router cannot read the engine's value, so it cannot verify this.
 Set the same number as `PD_KV_LEASE_S` on the router, and keep `PD_KV_TIMEOUT_S` below `PD_KV_LEASE_S - 5`; the router checks this
 at startup and exits with an error otherwise. The lease starts when the prefill leg finishes, and the 5 s margin covers the
 hand-over between the legs. With the stock lease of 30 s the largest allowed timeout is just under 25 s (default 20 s); a

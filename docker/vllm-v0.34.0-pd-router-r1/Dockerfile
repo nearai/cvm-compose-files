@@ -17,13 +17,13 @@ LABEL nearai.build.recipe="docker/vllm-v0.34.0-pd-router-r1/Dockerfile"
 LABEL nearai.build.source_revision="${BUILD_SOURCE_REVISION}"
 LABEL nearai.os.packages="openssl=3.0.13-0ubuntu3.16 libssl3t64=3.0.13-0ubuntu3.16 libc6=2.39-0ubuntu8.12 libc-bin=2.39-0ubuntu8.12 libc6-dev=2.39-0ubuntu8.12 libc-dev-bin=2.39-0ubuntu8.12 linux-libc-dev=6.8.0-149.149"
 
+# Tests stay in the repository (hashed in SHA256SUMS) and are not copied into the image.
 # The router uses only fastapi, aiohttp and uvicorn, all of which the vLLM image already ships; orjson is used when present.
 COPY PROVENANCE SHA256SUMS router.py /opt/pd-router/
-COPY tests/ /opt/pd-router/tests/
 
 RUN test -n "$BUILD_SOURCE_REVISION" \
     && cd /opt/pd-router \
-    && sha256sum --check --strict SHA256SUMS \
+    && grep -v ' tests/' SHA256SUMS | sha256sum --check --strict - \
     && python3 -m py_compile router.py \
     && python3 -c "import fastapi, aiohttp, uvicorn" \
     && useradd --system --uid 10001 --no-create-home --shell /usr/sbin/nologin pdrouter

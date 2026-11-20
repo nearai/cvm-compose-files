@@ -72,9 +72,9 @@ jobs:
           git merge-base --is-ancestor "$SOURCE_REVISION" origin/main
           test "$GITHUB_REF" = refs/heads/main
           test "$(sha256sum "$BUILD_CONTEXT/Dockerfile" | awk '{print $1}')" = \
-            4902374a6f11789d655d3e2caae4a339e8433e55445fd49310af5611b37800e2
+            fc1c8dfb3c84c8be9c3301105903397df0005bd8e6f8e56b72448d6bb0763912
           test "$(sha256sum "$BUILD_CONTEXT/SHA256SUMS" | awk '{print $1}')" = \
-            644047eebb2a1faf781b8f72083aaf082413e41752f4a48c7c37300de2ff67b9
+            91a0a75f508beb761a8d08745ab1b8f6e90709577bfbdae42e02eff55689bd56
           (cd "$BUILD_CONTEXT" && sha256sum --check --strict SHA256SUMS)
           for line in \
             'base_image=vllm/vllm-openai@sha256:20fdb089454afbb324efa4110a2c025ff7b27cc1a086e07aa580b18df8ad1ce1' \
@@ -119,7 +119,6 @@ jobs:
           docker buildx build \
             --pull \
             --platform linux/amd64 \
-            --build-arg "BUILD_SOURCE_REVISION=$SOURCE_REVISION" \
             --build-arg "BUILD_SOURCE_REVISION=$SOURCE_REVISION" \
             --provenance=mode=max,version=v0.2 \
             --sbom=true \

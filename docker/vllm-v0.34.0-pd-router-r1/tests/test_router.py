@@ -651,6 +651,11 @@ def test_n_greater_than_one_is_rejected_and_n_one_passes():
             assert c.p[0].bodies == [] and c.d[0].bodies == []
             st, _, _ = await post(c, chat_body(n=1))
             assert st == 200
+            for bad in (2.0, 1.0, "2", "1", True, False, 0, -1, None, [1]):
+                st, data, _ = await post(c, chat_body(n=bad))
+                assert st == 400, bad
+                assert json.loads(data)["error"]["type"] == "BadRequestError"
+            assert len(c.p[0].bodies) == 1 and len(c.d[0].bodies) == 1
     run(t())
 
 

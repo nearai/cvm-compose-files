@@ -17,7 +17,7 @@ Behaviour contract:
     request is cancelled and the client gets a 504 in the engine's error shape. The prefill engine frees its blocks when
     its KV lease ends (kv_lease_duration in kv_connector_extra_config, default 30 s), so the router refuses to start
     unless PD_KV_TIMEOUT_S < PD_KV_LEASE_S - 5; PD_KV_LEASE_S must equal the engine's value (see README).
-  * A body with n > 1 is rejected with 400. kv_transfer_params from the client is dropped on every path; the decode leg
+  * A body whose n is present and not the integer 1 is rejected with 400. kv_transfer_params from the client is dropped on every path; the decode leg
     gets only what the prefill engine returned.
   * Errors keep the upstream status and are engine-shaped JSON. Nothing reaches the client before leg 2 has produced its
     first byte, so a leg 1 failure is always a clean error response.
@@ -339,10 +339,9 @@ class Router:
             return engine_error(400, "request body must be a JSON object", "BadRequestError")
         headers = {k: v for k, v in req.headers.items() if k.lower() in FWD_HEADERS}
         headers["content-type"] = "application/json"
-        n = body.get("n")
-        if isinstance(n, int) and not isinstance(n, bool) and n > 1:
+        if "n" in body and (type(body["n"]) is not int or body["n"] != 1):
             c["bad_request"] += 1
-            return engine_error(400, "n > 1 is not supported", "BadRequestError")
+            return engine_error(400, "only n = 1 is supported", "BadRequestError")
         h = self.affinity(body)
         # Never accept transfer parameters from a client, on any path: leg 2 gets only what the prefill engine returned.
         body.pop("kv_transfer_params", None)
