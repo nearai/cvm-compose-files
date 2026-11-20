@@ -50,7 +50,7 @@ environment names as the earlier prototype router. The image sets that as its en
   normal ones are not cut short. The default is left off because no single value is safe for every deployment.
 * **Mid-stream failure**: if the decode connection breaks after the response has started, the router aborts the client
   connection instead of ending the stream cleanly, so a truncated response is a transport error for the caller.
-* **Request shaping**: `n` must be absent or the integer 1; any other value (greater than 1, a float, a string, a boolean, null) is rejected with 400. `prompt_logprobs`, `logprobs`, `top_logprobs`, `stream_options`
+* **Request shaping**: on `/v1/completions`, `prompt` must be a string or one list of token ids; a batch of prompts (a list of strings or of lists) is rejected with 400. `n` must be absent or the integer 1; any other value (greater than 1, a float, a string, a boolean, null) is rejected with 400. `prompt_logprobs`, `logprobs`, `top_logprobs`, `stream_options`
   and `best_of` are not sent to the prefill leg. A client-supplied `kv_transfer_params` (also under `vllm_xargs`) is dropped on
   every path; the decode leg gets only what the prefill engine returned, so `remote_prefill_cached_tokens` can come only from it.
 * **Usage** in the decode response (including `stream_options.include_usage`) is forwarded byte for byte; the router never

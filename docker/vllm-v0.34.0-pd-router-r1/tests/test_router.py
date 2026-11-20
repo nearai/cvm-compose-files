@@ -35,6 +35,7 @@ class Fake:
         self.bodies, self.cancelled, self.active = [], 0, 0
         self.mode = "ok"
         self.status, self.error_body, self.headers = 500, None, {}
+        self.error_segments = 0  # >0: send the error body in this many separate writes
         self.health = 200
         self.health_delay = 0
         self.metrics = ""
@@ -52,6 +53,15 @@ class Fake:
             if self.mode == "error":
                 data = self.error_body if self.error_body is not None else json.dumps(
                     {"error": {"message": "engine says no", "type": "X", "code": self.status}})
+                if self.error_segments:
+                    raw = data.encode() if isinstance(data, str) else data
+                    size = -(-len(raw) // self.error_segments)
+                    resp = web.StreamResponse(status=self.status, headers={**self.headers, "content-type": "application/json"})
+                    await resp.prepare(request)
+                    for i in range(0, len(raw), size):
+                        await resp.write(raw[i:i + size])
+                        await asyncio.sleep(0.05)
+                    return resp
                 return web.Response(body=data, status=self.status, headers=self.headers,
                                     content_type="application/json")
             if self.mode == "hang":
@@ -410,6 +420,81 @@ def test_queue_full_body_forwarded_verbatim():
             c.p[0].mode, c.p[0].status, c.p[0].error_body = "error", 503, body
             st, data, _ = await post(c, chat_body())
             assert st == 503 and data.decode() == body
+    run(t())
+
+
+def test_multi_segment_error_body_is_read_whole():
+    async def t():
+        async with stack() as c:
+            body = json.dumps({"object": "error", "message": "queue is full " + "x" * 3000, "type": "ServiceUnavailable",
+                               "code": 503})
+            c.p[0].mode, c.p[0].status, c.p[0].error_body, c.p[0].error_segments = "error", 503, body, 5
+            st, data, _ = await post(c, chat_body())
+            assert st == 503 and data.decode() == body
+    run(t())
+
+
+def test_multi_segment_decode_error_body_is_read_whole():
+    async def t():
+        async with stack() as c:
+            body = json.dumps({"error": {"message": "bad " + "y" * 3000, "type": "X", "code": 400}})
+            c.d[0].mode, c.d[0].status, c.d[0].error_body, c.d[0].error_segments = "error", 400, body, 5
+            st, data, _ = await post(c, chat_body())
+            assert st == 400 and data.decode() == body
+    run(t())
+
+
+def test_read_capped_stops_at_the_cap():
+    class S:
+        def __init__(self):
+            self.parts = [b"ab", b"cd", b"ef"]
+
+        async def read(self, n):
+            return self.parts.pop(0)[:n] if self.parts else b""
+    assert asyncio.run(R.read_capped(S(), 5)) == b"abcde"
+    assert asyncio.run(R.read_capped(S(), 100)) == b"abcdef"
+
+
+def test_serialization_failure_does_not_leak_inflight(monkeypatch):
+    async def t():
+        async with stack() as c:
+            monkeypatch.setattr(R, "jdumps", lambda o: (_ for _ in ()).throw(ValueError("x")))
+            await post(c, chat_body())
+            assert c.router.inflight["prefill"] == [0] and c.router.inflight["decode"] == [0]
+            assert not c.p[0].bodies
+    run(t())
+
+
+def test_serialization_failure_on_decode_leg_does_not_leak_inflight(monkeypatch):
+    async def t():
+        async with stack() as c:
+            real, calls = R.jdumps, []
+
+            def flaky(o):
+                calls.append(1)
+                if len(calls) == 2:
+                    raise ValueError("x")
+                return real(o)
+            monkeypatch.setattr(R, "jdumps", flaky)
+            await post(c, chat_body())
+            assert c.router.inflight["prefill"] == [0] and c.router.inflight["decode"] == [0]
+            assert not c.d[0].bodies
+    run(t())
+
+
+def test_batched_completions_prompt_is_rejected():
+    async def t():
+        async with stack() as c:
+            async def comp(prompt):
+                async with c.sess.post(c.url + "/v1/completions", json={"model": "m", "prompt": prompt}) as r:
+                    return r.status, await r.read()
+            for bad in (["a", "b"], ["a"], [[1, 2], [3]], [[1, 2]]):
+                st, data = await comp(bad)
+                assert st == 400 and json.loads(data)["error"]["type"] == "BadRequestError", bad
+            assert not c.p[0].bodies and not c.d[0].bodies
+            for ok in ("hello", [1, 2, 3]):
+                st, _ = await comp(ok)
+                assert st == 200, ok
     run(t())
 
 

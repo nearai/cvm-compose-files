@@ -77,6 +77,16 @@ jobs:
         # An empty BASE (first commit) runs the guards without diff rules.
         run: python3 ci/run.py --base "$BASE"
 
+      # The P/D router tests run on every change, so a publish can only be dispatched from a commit whose tests passed.
+      - name: P/D router tests
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/pd-router-venv"
+          "$RUNNER_TEMP/pd-router-venv/bin/pip" install --quiet fastapi==0.165.0 aiohttp==3.14.5 uvicorn==0.54.0 \
+            orjson==3.13.0 httpx==0.28.1 pytest==9.2.0
+          cd docker/vllm-v0.34.0-pd-router-r1
+          "$RUNNER_TEMP/pd-router-venv/bin/python" -m pytest -q
+
       # Reviewers read what each changed deployable renders to; the guards above decide pass or fail.
       - name: Rendered diff summary
         if: needs.base.outputs.sha != ''

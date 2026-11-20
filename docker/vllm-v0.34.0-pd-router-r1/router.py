@@ -80,6 +80,17 @@ def env_float(name: str, default: float) -> float:
         return float(default)
 
 
+async def read_capped(content, cap: int) -> bytes:
+    """Read a response body until EOF or `cap` bytes; a single StreamReader.read() returns only what is buffered."""
+    buf = bytearray()
+    while len(buf) < cap:
+        chunk = await content.read(cap - len(buf))
+        if not chunk:
+            break
+        buf += chunk
+    return bytes(buf)
+
+
 class Gone(Exception):
     """The client hung up."""
 
@@ -313,7 +324,7 @@ class Router:
     # -- legs
     async def _prefill_leg(self, idx: int, path: str, data: bytes, headers: dict):
         async with self.session().post(f"http://{self.prefill[idx]}{path}", data=data, headers=headers) as r:
-            raw = await r.content.read(ERR_CAP) if r.status != 200 else await r.read()
+            raw = await read_capped(r.content, ERR_CAP) if r.status != 200 else await r.read()
             return r.status, raw, r.headers.get("retry-after")
 
     async def _decode_start(self, idx: int, path: str, data: bytes, headers: dict):
@@ -321,7 +332,7 @@ class Router:
         r = await self.session().post(f"http://{self.decode[idx]}{path}", data=data, headers=headers)
         try:
             if r.status != 200:
-                return r, await r.content.read(ERR_CAP)
+                return r, await read_capped(r.content, ERR_CAP)
             return r, await r.content.readany()
         except BaseException:
             r.close()
@@ -342,6 +353,12 @@ class Router:
         if "n" in body and (type(body["n"]) is not int or body["n"] != 1):
             c["bad_request"] += 1
             return engine_error(400, "only n = 1 is supported", "BadRequestError")
+        prompt = body.get("prompt")
+        if path == "/v1/completions" and isinstance(prompt, list) and not all(
+                type(t) is int for t in prompt):
+            c["bad_request"] += 1
+            return engine_error(400, "batched prompts are not supported; send one prompt per request",
+                                "BadRequestError")
         h = self.affinity(body)
         # Never accept transfer parameters from a client, on any path: leg 2 gets only what the prefill engine returned.
         body.pop("kv_transfer_params", None)
@@ -355,10 +372,11 @@ class Router:
                 pre.pop(k, None)
 
         # ---- leg 1
+        pre_data = jdumps(pre)
         p = self.pick("prefill", h)
         self.inflight["prefill"][p] += 1
         t0 = time.perf_counter()
-        task = asyncio.ensure_future(self._prefill_leg(p, path, jdumps(pre), headers))
+        task = asyncio.ensure_future(self._prefill_leg(p, path, pre_data, headers))
         try:
             status, raw, retry_after = await self.guarded(req, task, self.prefill_timeout)
         except Gone:
@@ -399,6 +417,7 @@ class Router:
 
         # ---- leg 2
         body["kv_transfer_params"] = kvp
+        dec_data = jdumps(body)
         d = self.pick("decode", h)
         self.inflight["decode"][d] += 1
         released = False
@@ -410,7 +429,7 @@ class Router:
                 self.inflight["decode"][d] -= 1
 
         timeout = self.kv_timeout if body.get("stream") else self.nonstream_timeout
-        task = asyncio.ensure_future(self._decode_start(d, path, jdumps(body), headers))
+        task = asyncio.ensure_future(self._decode_start(d, path, dec_data, headers))
         t2 = time.perf_counter()
         self.decode_waiting += 1
         try:
