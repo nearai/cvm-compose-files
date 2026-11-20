@@ -453,5 +453,33 @@
     "sha256": "fcd1551dfa9984cca41fe57171fd323dc6571c5cc6bca22d33544337b0c7ff5d",
     "reason": "candidate whose service set differs from its live file",
     "remove_when": "the candidate replaces its live file"
+  },
+  {
+    "rule": "pins.digest",
+    "path": "prod/glm-5.3-flash-vllm-dep4x2.yaml",
+    "sha256": "9dcd945c608f77ac55d0026d57d2e617d98b911b4a54e7f9ad4cce9c83a87d43",
+    "reason": "image carries a tag next to its digest; the digest decides what runs",
+    "remove_when": "the image reference is a digest without a tag"
+  },
+  {
+    "rule": "privacy.secret",
+    "path": "prod/glm-5.3-flash-vllm-dep4x2.yaml",
+    "sha256": "e67bf1fe5f5dceecba68fe6a4e61026f5e5a6c1e503f1ef9cd5b54b5482d3480",
+    "reason": "secret variable without a required-value check",
+    "remove_when": "the secret has a required-value check"
+  },
+  {
+    "rule": "public.domain",
+    "path": "prod/glm-5.3-flash-vllm-dep4x2.yaml",
+    "sha256": "2857d6988af093f27ae2d89387c18ed6e11a009c52b2d96df637c2936a9b2918",
+    "reason": "domain outside the public allowlist inside an embedded config",
+    "remove_when": "the value is a deploy-time variable"
+  },
+  {
+    "rule": "status.key-set",
+    "path": "prod/glm-5.3-flash-vllm-dep4x2.yaml",
+    "sha256": "8aade0e050615b50e0bcc187806322fe6e5cd6ba77db253a3a270f952af703c4",
+    "reason": "candidate whose service set differs from its live file",
+    "remove_when": "the candidate replaces its live file"
   }
 ]
