@@ -43,7 +43,7 @@ x-glm53-engine-common: &glm53-engine-common
   cap_drop: [ALL]
   security_opt: ["no-new-privileges:true"]
   # r3 digest until the r4 image is published; the VLLM_NEAR_KDA_* switches take effect only on r4.
-  image: docker.io/nearaidev/vllm@sha256:43edd86213d507c39757ac7d513c9848386d1f426554cdc6221fba92e444e33a
+  image: docker.io/nearaidev/vllm@sha256:31c5187a659f929a213c1cbbd58618a05b9a2af33498e21360818a986c67a162
   network_mode: host
   restart: unless-stopped
   stop_grace_period: 10m
@@ -1019,7 +1019,7 @@ services:
 
   pd-router-glm53-a:
     # One router per prefill/decode pair. Image digest to be pinned once the router image is published.
-    image: docker.io/nearaidev/vllm@sha256:0000000000000000000000000000000000000000000000000000000000000000
+    image: docker.io/nearaidev/vllm@sha256:cc0066b599ab2d2c75a4b06ed7df4711cb181d110d5448dde894e17661e4c405
     container_name: pd-router-glm53-a
     command:
       - --prefill
@@ -1079,7 +1079,7 @@ services:
 
   pd-router-glm53-b:
     # One router per prefill/decode pair. Image digest to be pinned once the router image is published.
-    image: docker.io/nearaidev/vllm@sha256:0000000000000000000000000000000000000000000000000000000000000000
+    image: docker.io/nearaidev/vllm@sha256:cc0066b599ab2d2c75a4b06ed7df4711cb181d110d5448dde894e17661e4c405
     container_name: pd-router-glm53-b
     command:
       - --prefill
