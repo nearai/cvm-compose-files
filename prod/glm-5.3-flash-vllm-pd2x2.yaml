@@ -215,7 +215,8 @@ services:
       - VLLM_SSM_CONV_STATE_LAYOUT=DS
       - VLLM_TRUST_REMOTE_PREFILL_CACHED_TOKENS=1
       # KV moves over UCX cuda_ipc (zero-copy); protocol info at boot logs the selected transport.
-      - UCX_TLS=cuda_ipc,cuda_copy
+      # tcp carries only UCX wireup (NIXL's peer error handling needs it); KV data uses cuda_ipc.
+      - UCX_TLS=cuda_ipc,cuda_copy,tcp
       - UCX_LOG_LEVEL=info
       - UCX_PROTO_INFO=y
       - VLLM_DP_MASTER_PORT=29700
@@ -319,7 +320,8 @@ services:
       - VLLM_SSM_CONV_STATE_LAYOUT=DS
       - VLLM_TRUST_REMOTE_PREFILL_CACHED_TOKENS=1
       # KV moves over UCX cuda_ipc (zero-copy); protocol info at boot logs the selected transport.
-      - UCX_TLS=cuda_ipc,cuda_copy
+      # tcp carries only UCX wireup (NIXL's peer error handling needs it); KV data uses cuda_ipc.
+      - UCX_TLS=cuda_ipc,cuda_copy,tcp
       - UCX_LOG_LEVEL=info
       - UCX_PROTO_INFO=y
       - VLLM_DP_MASTER_PORT=29700
@@ -423,7 +425,8 @@ services:
       - VLLM_SSM_CONV_STATE_LAYOUT=DS
       - VLLM_TRUST_REMOTE_PREFILL_CACHED_TOKENS=1
       # KV moves over UCX cuda_ipc (zero-copy); protocol info at boot logs the selected transport.
-      - UCX_TLS=cuda_ipc,cuda_copy
+      # tcp carries only UCX wireup (NIXL's peer error handling needs it); KV data uses cuda_ipc.
+      - UCX_TLS=cuda_ipc,cuda_copy,tcp
       - UCX_LOG_LEVEL=info
       - UCX_PROTO_INFO=y
       - VLLM_DP_MASTER_PORT=29710
@@ -527,7 +530,8 @@ services:
       - VLLM_SSM_CONV_STATE_LAYOUT=DS
       - VLLM_TRUST_REMOTE_PREFILL_CACHED_TOKENS=1
       # KV moves over UCX cuda_ipc (zero-copy); protocol info at boot logs the selected transport.
-      - UCX_TLS=cuda_ipc,cuda_copy
+      # tcp carries only UCX wireup (NIXL's peer error handling needs it); KV data uses cuda_ipc.
+      - UCX_TLS=cuda_ipc,cuda_copy,tcp
       - UCX_LOG_LEVEL=info
       - UCX_PROTO_INFO=y
       - VLLM_DP_MASTER_PORT=29710
@@ -631,7 +635,8 @@ services:
       - VLLM_SSM_CONV_STATE_LAYOUT=DS
       - VLLM_TRUST_REMOTE_PREFILL_CACHED_TOKENS=1
       # KV moves over UCX cuda_ipc (zero-copy); protocol info at boot logs the selected transport.
-      - UCX_TLS=cuda_ipc,cuda_copy
+      # tcp carries only UCX wireup (NIXL's peer error handling needs it); KV data uses cuda_ipc.
+      - UCX_TLS=cuda_ipc,cuda_copy,tcp
       - UCX_LOG_LEVEL=info
       - UCX_PROTO_INFO=y
       - VLLM_DP_MASTER_PORT=29720
@@ -735,7 +740,8 @@ services:
       - VLLM_SSM_CONV_STATE_LAYOUT=DS
       - VLLM_TRUST_REMOTE_PREFILL_CACHED_TOKENS=1
       # KV moves over UCX cuda_ipc (zero-copy); protocol info at boot logs the selected transport.
-      - UCX_TLS=cuda_ipc,cuda_copy
+      # tcp carries only UCX wireup (NIXL's peer error handling needs it); KV data uses cuda_ipc.
+      - UCX_TLS=cuda_ipc,cuda_copy,tcp
       - UCX_LOG_LEVEL=info
       - UCX_PROTO_INFO=y
       - VLLM_DP_MASTER_PORT=29720
@@ -839,7 +845,8 @@ services:
       - VLLM_SSM_CONV_STATE_LAYOUT=DS
       - VLLM_TRUST_REMOTE_PREFILL_CACHED_TOKENS=1
       # KV moves over UCX cuda_ipc (zero-copy); protocol info at boot logs the selected transport.
-      - UCX_TLS=cuda_ipc,cuda_copy
+      # tcp carries only UCX wireup (NIXL's peer error handling needs it); KV data uses cuda_ipc.
+      - UCX_TLS=cuda_ipc,cuda_copy,tcp
       - UCX_LOG_LEVEL=info
       - UCX_PROTO_INFO=y
       - VLLM_DP_MASTER_PORT=29730
@@ -943,7 +950,8 @@ services:
       - VLLM_SSM_CONV_STATE_LAYOUT=DS
       - VLLM_TRUST_REMOTE_PREFILL_CACHED_TOKENS=1
       # KV moves over UCX cuda_ipc (zero-copy); protocol info at boot logs the selected transport.
-      - UCX_TLS=cuda_ipc,cuda_copy
+      # tcp carries only UCX wireup (NIXL's peer error handling needs it); KV data uses cuda_ipc.
+      - UCX_TLS=cuda_ipc,cuda_copy,tcp
       - UCX_LOG_LEVEL=info
       - UCX_PROTO_INFO=y
       - VLLM_DP_MASTER_PORT=29730
