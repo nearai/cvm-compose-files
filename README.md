@@ -48,7 +48,7 @@ Legacy paths are listed in `ci/data/legacy.txt` and only shrink.
 | served name | the model's Hugging Face `org/repo` ID | `z-ai/glm-5.3-flash` |
 
 `topology`: `tp4` one TP4 engine, `tp2x4` four TP2 engines, `dep8` one engine over 8 data-parallel
-ranks with expert parallelism. Files and dirs that predate these forms keep their names; files are
+ranks with expert parallelism, `pd2x2` two prefill/decode pairs of 2 GPUs per side. Files and dirs that predate these forms keep their names; files are
 marked `(legacy name)` in the status table. A config revision is a release tag plus a file path.
 
 ## Status

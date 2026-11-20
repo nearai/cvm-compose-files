@@ -7,8 +7,8 @@ import re
 from collections import OrderedDict
 
 from common import (
-    EXCEPTIONS, Finding, engine_kind, engines, find_line, flag_values, image_rows, legacy_lines, load_json, model_ref,
-    served_names, service_tokens, sha256, under_legacy,
+    EXCEPTIONS, Finding, engine_kind, engine_unit, engines, find_line, flag_values, image_rows, legacy_lines, load_json,
+    model_ref, replicas, served_names, service_tokens, sha256, under_legacy,
 )
 from pins import SNAPSHOT
 from privacy import check_engine
@@ -33,14 +33,6 @@ def served_set(path, rendered, services_allow, out=None):
             out.append(Finding(path, 0, "status.served-name", f"engine {key} has no served model name", key=key))
         names.update(found)
     return names
-
-
-def _int(toks, flags):
-    for f in flags:
-        v = flag_values(toks, f)
-        if v and v[0].isdigit():
-            return int(v[0])
-    return 1
 
 
 def _model(kind, toks):
@@ -80,12 +72,7 @@ def file_rows(path, rendered, services_allow, rows, waived, legacy):
     for key in engines(path, rendered, services_allow):
         svc = rendered["services"][key]
         kind, toks = engine_kind(key, svc), service_tokens(svc)
-        tp = _int(toks, ("--tp-size", "--tp", "--tensor-parallel-size", "-tp"))
-        dp = _int(toks, ("--dp-size", "--dp", "--data-parallel-size", "-dp"))
-        ep = "--enable-expert-parallel" in toks or "--enable-dp-attention" in toks
-        unit = (f"dep{dp}" if ep else f"dp{dp}") if dp > 1 else f"tp{tp}"
-        # One engine spans dp services when each service is a single data-parallel rank.
-        span = dp if flag_values(toks, "--data-parallel-rank") else 1
+        unit, span = engine_unit(toks)
         g = (tuple(sorted(served_names(kind, toks))) or ("-",), _model(kind, toks), _image(svc, rows), unit,
              _privacy(path, key, svc, waived))
         groups.setdefault(g, [0, span])[0] += 1
@@ -93,7 +80,7 @@ def file_rows(path, rendered, services_allow, rows, waived, legacy):
         return [(name, "-", "-", "-", "-", "n.a.")]
     out = []
     for (served, model, image, unit, priv), (n, span) in sorted(groups.items()):
-        reps = max(n // span, 1)
+        reps = replicas(unit, n, span)
         topo = unit + (f"x{reps}" if reps > 1 else "")
         out += [(name, s, model, image, topo, priv) for s in served]
     return out

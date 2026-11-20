@@ -14,9 +14,10 @@ CI derives the name from the rendered file (`ci/checks/names.py`); paths in `ci/
 - One served model on one engine kind: `prod/<served>-<engine>-<topology>[-<tier>].yaml`.
   - `served` = the repo part of the served name, lowercased (`z-ai/glm-5.3-flash` -> `glm-5.3-flash`).
   - `engine` = `sglang` | `vllm`.
-  - `topology` = one token per engine group, `tp<N>` | `dep<N>` | `dp<N>`, `x<R>` for R replicas,
+  - `topology` = one token per engine group, `tp<N>` | `dep<N>` | `dp<N>` | `pd<N>`, `x<R>` for R replicas,
     joined by `_` in ascending size (`tp2x4_tp4x2`). `tp4` one TP4 engine; `tp2x4` four TP2 engines;
-    `dep8` one engine over 8 data-parallel ranks with expert parallelism.
+    `dep8` one engine over 8 data-parallel ranks with expert parallelism; `pd2x2` two prefill/decode
+    pairs (KV connector producer and consumer engines), each side spanning 2 GPUs.
   - `tier` only when two files would otherwise share a name; then every such file has a distinct one.
 - Several served models or engine kinds: `prod/pack-<purpose>.yaml`. No engine: `prod/util-<verb>-<object>.yaml`.
 - Every `deployment` label and `deployment:` log tag equals the file stem.
