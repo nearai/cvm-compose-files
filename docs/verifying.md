@@ -193,4 +193,4 @@ file and the matched value. Counts per rule:
 | `public.domain` | 10 | domain names outside the public allowlist |
 | `public.host` | 20 | host names in config values, labels or service names |
 | `stack.engine-backend` | 2 | a proxy backend list set at deploy time |
-| `status.key-set` | 2 | candidates whose services differ from their live files |
+| `status.key-set` | 3 | candidates whose services differ from their live files |
