@@ -9,6 +9,7 @@ import socket
 import sys
 
 import aiohttp
+import pytest
 import uvicorn
 from aiohttp import web
 
@@ -37,6 +38,9 @@ class Fake:
         self.health = 200
         self.health_delay = 0
         self.metrics = ""
+        self.metrics_delay = 0.0
+        self.break_after = None  # decode stream: abort the connection after this many chunks
+        self.prefill_extra = {}
         self.stream_delay = 0.0
         self.port = free_port()
 
@@ -56,12 +60,16 @@ class Fake:
                 return web.json_response({"choices": [], "usage": PREFILL_USAGE})
             if self.role == "prefill":
                 return web.json_response({"choices": [], "usage": PREFILL_USAGE, "kv_transfer_params": {
-                    "do_remote_prefill": True, "remote_block_ids": [[1, 2]], "remote_host": "h"}})
+                    "do_remote_prefill": True, "remote_block_ids": [[1, 2]], "remote_host": "h",
+                    **self.prefill_extra}})
             if body.get("stream"):
                 resp = web.StreamResponse(headers={"content-type": "text/event-stream"})
                 await resp.prepare(request)
                 for i in range(3):
                     await resp.write(f'data: {{"i": {i}}}\n\n'.encode())
+                    if self.break_after is not None and i + 1 >= self.break_after:
+                        request.transport.abort()
+                        return resp
                     await asyncio.sleep(self.stream_delay)
                 await resp.write(f'data: {{"usage": {json.dumps(DECODE_USAGE)}}}\n\ndata: [DONE]\n\n'.encode())
                 return resp
@@ -78,6 +86,8 @@ class Fake:
         return web.Response(status=self.health)
 
     async def metrics_h(self, request):
+        if self.metrics_delay:
+            await asyncio.sleep(self.metrics_delay)
         return web.Response(text=self.metrics)
 
     async def models(self, request):
@@ -202,16 +212,33 @@ def test_kv_timeout_returns_engine_shaped_504_and_cancels_decode():
             err = json.loads(data)["error"]
             assert err["code"] == 504 and err["type"] == "GatewayTimeoutError" and err["message"]
             assert await wait_for(lambda: c.d[0].cancelled == 1)
-            assert c.router.counts["kv_timeout"] == 1
+            assert c.router.counts["decode_first_byte_timeout"] == 1
             assert c.router.decode_waiting == 0
     run(t())
 
 
-def test_default_kv_timeout_is_120s(monkeypatch):
-    monkeypatch.delenv("PD_KV_TIMEOUT_S", raising=False)
-    assert R.Router(["a:1"], ["b:2"]).kv_timeout == 120
+def test_default_timeouts_fit_the_default_lease(monkeypatch):
+    for k in ("PD_KV_TIMEOUT_S", "PD_KV_LEASE_S", "PD_PREFILL_TIMEOUT_S"):
+        monkeypatch.delenv(k, raising=False)
+    r = R.Router(["a:1"], ["b:2"])
+    assert r.kv_timeout == 20 and r.kv_lease == 30 and r.prefill_timeout == 600
     monkeypatch.setenv("PD_KV_TIMEOUT_S", "7")
     assert R.Router(["a:1"], ["b:2"]).kv_timeout == 7
+
+
+def test_router_refuses_a_kv_timeout_that_outlives_the_lease(monkeypatch):
+    monkeypatch.delenv("PD_KV_TIMEOUT_S", raising=False)
+    monkeypatch.delenv("PD_KV_LEASE_S", raising=False)
+    for timeout, lease in ((25, 30), (30, 30), (120, 30), (0, 30), (120, 125)):
+        with pytest.raises(ValueError, match="PD_KV_LEASE_S"):
+            R.Router(["a:1"], ["b:2"], kv_timeout=timeout, kv_lease=lease)
+    assert R.Router(["a:1"], ["b:2"], kv_timeout=24.9, kv_lease=30).kv_timeout == 24.9
+    assert R.Router(["a:1"], ["b:2"], kv_timeout=120, kv_lease=150).kv_lease == 150
+    monkeypatch.setenv("PD_KV_TIMEOUT_S", "120")  # the old default against the stock lease
+    with pytest.raises(ValueError):
+        R.Router(["a:1"], ["b:2"])
+    monkeypatch.setenv("PD_KV_LEASE_S", "150")
+    assert R.Router(["a:1"], ["b:2"]).kv_timeout == 120
 
 
 def test_metrics_expose_kv_timeouts_and_waiting_requests():
@@ -222,14 +249,14 @@ def test_metrics_expose_kv_timeouts_and_waiting_requests():
             assert await wait_for(lambda: c.d[0].active == 1)
             async with c.sess.get(c.url + "/metrics") as r:
                 text = await r.text()
-            assert "pd_router_decode_waiting_kv 1\n" in text
+            assert "pd_router_decode_waiting_first_byte 1\n" in text
             st, _, _ = await task
             assert st == 504
             async with c.sess.get(c.url + "/v1/metrics") as r:
                 text = await r.text()
-            assert "pd_router_decode_waiting_kv 0\n" in text
-            assert "pd_router_kv_timeouts_total 1\n" in text
-            assert "# TYPE pd_router_kv_timeouts_total counter" in text
+            assert "pd_router_decode_waiting_first_byte 0\n" in text
+            assert "pd_router_decode_first_byte_timeouts_total 1\n" in text
+            assert "# TYPE pd_router_decode_first_byte_timeouts_total counter" in text
     run(t())
 
 
@@ -329,15 +356,25 @@ def test_metrics_per_rank_keeps_series_with_labels():
     run(t())
 
 
-def test_metrics_skips_dead_backend_and_reports_it():
+def test_metrics_fail_when_any_rank_is_missing_or_slow():
     async def t():
-        async with stack(n_p=1, n_d=2) as c:
-            c.p[0].metrics, c.d[0].metrics = P_METRICS, P_METRICS
+        async with stack(n_p=1, n_d=2, metrics_timeout=0.3) as c:
+            for f in c.p + c.d:
+                f.metrics = P_METRICS
+            async with c.sess.get(c.url + "/metrics") as r:
+                assert r.status == 200 and "pd_router_backends_up 3\n" in await r.text()
             await c.d[1].stop()
             async with c.sess.get(c.url + "/metrics") as r:
-                text = await r.text()
-            assert "pd_router_backends_up 2\n" in text and "pd_router_backends_total 3\n" in text
+                assert r.status == 503
+                assert "2 of 3" in (await r.json())["error"]["message"]
             await c.d[1].start()
+            c.d[1].metrics_delay = 1.0  # slower than the scrape timeout
+            async with c.sess.get(c.url + "/metrics") as r:
+                assert r.status == 503
+            c.d[1].metrics_delay = 0.0
+            c.d[1].health_delay = 1.0  # a slow /health probe does not limit the scrape
+            async with c.sess.get(c.url + "/metrics") as r:
+                assert r.status == 200
     run(t())
 
 
@@ -412,7 +449,7 @@ def test_unreachable_engines_are_502_and_bad_body_is_400():
 def test_only_decode_usage_reaches_client_and_bodies_are_shaped():
     async def t():
         async with stack() as c:
-            body = chat_body(logprobs=True, n=2, kv_transfer_params={"do_remote_decode": False, "evil": 1},
+            body = chat_body(logprobs=True, n=1, kv_transfer_params={"do_remote_decode": False, "evil": 1},
                              response_format={"type": "json_object"}, temperature=0.3)
             st, data, h = await post(c, body)
             text = data.decode()
@@ -513,3 +550,170 @@ def test_logs_never_contain_request_content(caplog):
     assert len(recs) >= 4
     text = "\n".join(r.getMessage() for r in recs)
     assert SECRET not in text and "127.0.0.1" not in text and "echo" not in text
+
+
+# ---- 7. review fixes
+
+class FakeReq:
+    def __init__(self, body, disconnected):
+        self._body, self._disc = json.dumps(body).encode(), disconnected
+        self.headers = {}
+
+    async def body(self):
+        return self._body
+
+    async def is_disconnected(self):
+        return await self._disc()
+
+
+def test_guarded_closes_a_result_that_completed_at_the_disconnect_check():
+    async def t():
+        router = R.Router(["a:1"], ["b:2"], kv_timeout=10)
+        gate, closed = asyncio.Event(), []
+
+        class Resp:
+            def close(self):
+                closed.append(1)
+
+        async def work():
+            await gate.wait()
+            return Resp(), b"first"
+
+        async def disconnected():  # the engine answers exactly while the client-gone check runs
+            gate.set()
+            for _ in range(5):
+                await asyncio.sleep(0)
+            return True
+
+        task = asyncio.ensure_future(work())
+        with pytest.raises(R.Gone):
+            await router.guarded(FakeReq({}, disconnected), task, 0)
+        assert closed == [1]
+
+        # same race at the deadline
+        gate.clear()
+        closed.clear()
+        task = asyncio.ensure_future(work())
+
+        async def not_gone():
+            gate.set()
+            for _ in range(5):
+                await asyncio.sleep(0)
+            return False
+
+        with pytest.raises(R.Timeout):
+            await router.guarded(FakeReq({}, not_gone), task, 0.001)
+        assert closed == [1]
+    run(t())
+
+
+def test_unstarted_stream_still_releases_connection_and_inflight():
+    async def t():
+        async with stack() as c:
+            async def never_gone():
+                return False
+            resp = await c.router.handle(FakeReq(chat_body(), never_gone), "/v1/chat/completions")
+            assert isinstance(resp, R.GuardedStream) and c.router.inflight["decode"] == [1]
+
+            async def send(msg):
+                raise OSError("client went away before the first write")
+
+            async def receive():
+                return {"type": "http.disconnect"}
+
+            with contextlib.suppress(BaseException):
+                await resp({"type": "http", "asgi": {"version": "3.0"}, "method": "POST", "headers": []},
+                           receive, send)
+            assert c.router.inflight["decode"] == [0]
+            assert await wait_for(lambda: c.d[0].active == 0)
+    run(t())
+
+
+def test_mid_stream_upstream_break_aborts_the_client_stream():
+    async def t():
+        async with stack() as c:
+            c.d[0].break_after = 1
+            async with c.sess.post(c.url + "/v1/chat/completions", json=chat_body()) as r:
+                assert r.status == 200
+                with pytest.raises(aiohttp.ClientError):
+                    await r.read()
+            assert await wait_for(lambda: c.router.counts["decode_fail"] == 1)
+            assert await wait_for(lambda: c.router.inflight["decode"] == [0])
+    run(t())
+
+
+def test_n_greater_than_one_is_rejected_and_n_one_passes():
+    async def t():
+        async with stack() as c:
+            st, data, _ = await post(c, chat_body(n=2))
+            err = json.loads(data)["error"]
+            assert st == 400 and err["type"] == "BadRequestError" and err["code"] == 400
+            assert c.p[0].bodies == [] and c.d[0].bodies == []
+            st, _, _ = await post(c, chat_body(n=1))
+            assert st == 200
+    run(t())
+
+
+def test_prompt_logprobs_is_not_sent_to_prefill():
+    async def t():
+        async with stack() as c:
+            await post(c, chat_body(prompt_logprobs=1, logprobs=True, top_logprobs=2))
+            assert "prompt_logprobs" not in c.p[0].bodies[0]
+    run(t())
+
+
+EVIL = {"do_remote_prefill": True, "do_remote_decode": False, "remote_prefill_cached_tokens": 999999,
+        "remote_block_ids": [[666]], "remote_host": "evil"}
+
+
+def test_client_transfer_params_never_reach_decode_on_any_path():
+    async def t():
+        async with stack() as c:
+            c.p[0].prefill_extra = {"remote_prefill_cached_tokens": 2432}
+            variants = [chat_body(), chat_body(stream=False), chat_body(stream=False, stream_options=None),
+                        chat_body(vllm_xargs={"kv_transfer_params": "x"}), chat_body(stream_options={"include_usage": False})]
+            for v in variants:
+                v["kv_transfer_params"] = dict(EVIL)
+                st, _, _ = await post(c, v)
+                assert st == 200
+            for pre in c.p[0].bodies:
+                assert pre["kv_transfer_params"] == {"do_remote_decode": True}
+            assert len(c.d[0].bodies) == len(variants)
+            for dec in c.d[0].bodies:
+                assert dec["kv_transfer_params"] == {"do_remote_prefill": True, "remote_block_ids": [[1, 2]],
+                                                     "remote_host": "h", "remote_prefill_cached_tokens": 2432}
+                assert "evil" not in json.dumps(dec) and "999999" not in json.dumps(dec)
+    run(t())
+
+
+def test_remote_prefill_cached_tokens_comes_only_from_the_prefill_engine():
+    async def t():
+        async with stack() as c:  # the prefill engine reports none: the client's value must not appear
+            body = chat_body(stream=False)
+            body["kv_transfer_params"] = {"remote_prefill_cached_tokens": 5}
+            await post(c, body)
+            assert "remote_prefill_cached_tokens" not in c.d[0].bodies[0]["kv_transfer_params"]
+    run(t())
+
+
+def test_usage_is_forwarded_unchanged_stream_and_non_stream():
+    async def t():
+        async with stack() as c:
+            st, data, _ = await post(c, chat_body())
+            events = [e for e in data.decode().split("\n\n") if e]
+            assert json.loads(events[-2][len("data: "):]) == {"usage": DECODE_USAGE} and events[-1] == "data: [DONE]"
+            assert c.d[0].bodies[0]["stream_options"] == {"include_usage": True}
+            st, data, _ = await post(c, chat_body(stream=False, stream_options={"include_usage": True}))
+            assert json.loads(data) == {"choices": [], "usage": DECODE_USAGE}
+            assert c.d[0].bodies[1]["stream_options"] == {"include_usage": True}
+    run(t())
+
+
+def test_prefill_failure_forwards_no_usage_and_never_starts_decode():
+    async def t():
+        async with stack() as c:
+            c.p[0].mode = "error"
+            c.p[0].status = 500
+            st, data, _ = await post(c, chat_body())
+            assert st == 500 and b"usage" not in data and c.d[0].bodies == []
+    run(t())

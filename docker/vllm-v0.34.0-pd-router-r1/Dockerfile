@@ -28,7 +28,7 @@ RUN test -n "$BUILD_SOURCE_REVISION" \
     && python3 -c "import fastapi, aiohttp, uvicorn" \
     && useradd --system --uid 10001 --no-create-home --shell /usr/sbin/nologin pdrouter
 
-# Same pinned system packages as the vLLM images built here, so the vulnerability scan sees no stale libssl or libc.
+# Pin the system packages to the same versions as the other vLLM images built from this repository.
 RUN pkgs="openssl=3.0.13-0ubuntu3.16 libssl3t64=3.0.13-0ubuntu3.16 libc6=2.39-0ubuntu8.12 libc-bin=2.39-0ubuntu8.12 libc6-dev=2.39-0ubuntu8.12 libc-dev-bin=2.39-0ubuntu8.12 linux-libc-dev=6.8.0-149.149" \
     && apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
