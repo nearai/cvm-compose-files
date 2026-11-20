@@ -14,8 +14,9 @@ from common import (
 )
 
 RULES = [
-    "public.ip", "public.domain", "public.runner", "public.repo", "public.host", "public.lifecycle", "public.ignore",
-    "public.title", "public.comment", "public.disclosure", "public.disclosure-added", "public.branch",
+    "public.ip", "public.domain", "public.runner", "public.runner-config", "public.repo", "public.host",
+    "public.lifecycle", "public.ignore", "public.title", "public.comment", "public.disclosure",
+    "public.disclosure-added", "public.branch",
 ]
 DIFF_RULES = ["public.disclosure-added"]
 
@@ -166,6 +167,42 @@ def workflow_findings(path, text):
     for n, line in enumerate(text.split("\n"), 1):
         if "self-hosted" in line and not line.strip().startswith("runs-on:"):
             out.append(Finding(path, n, "public.runner", "self-hosted runner reference", key="self-hosted"))
+    return out
+
+
+ACTIONLINT_CONFIG = "ci/config/actionlint.yaml"
+
+
+ONLY_LABELS = "the file carries only self-hosted-runner.labels"
+
+
+def runner_config_findings(head):
+    """The labels actionlint is told about cannot outrun the allowlist that decides what may be used,
+    and the file carries that list alone: any other key here changes which findings actionlint reports."""
+    if not head.has(ACTIONLINT_CONFIG):
+        return []
+    text = head.text(ACTIONLINT_CONFIG)
+    try:
+        doc = parse_yaml(text)
+    except YamlError as e:
+        return [Finding(ACTIONLINT_CONFIG, 1, "public.runner-config", f"cannot be read: {e}")]
+    doc = doc or {}
+    out = [Finding(ACTIONLINT_CONFIG, line_of(text, str(k)), "public.runner-config", ONLY_LABELS, key=str(k))
+           for k in doc if str(k) != "self-hosted-runner"]
+    section = doc.get("self-hosted-runner") or {}
+    if not isinstance(section, dict):
+        return out + [Finding(ACTIONLINT_CONFIG, line_of(text, "self-hosted-runner"), "public.runner-config",
+                              "self-hosted-runner is not a mapping", key="self-hosted-runner")]
+    out += [Finding(ACTIONLINT_CONFIG, line_of(text, str(k), after="self-hosted-runner"), "public.runner-config",
+                    ONLY_LABELS, key=str(k))
+            for k in section if str(k) != "labels"]
+    labels = section.get("labels") or []
+    if not isinstance(labels, list):
+        return out + [Finding(ACTIONLINT_CONFIG, line_of(text, "labels", after="self-hosted-runner"),
+                              "public.runner-config", "labels is not a list", key="labels")]
+    out += [Finding(ACTIONLINT_CONFIG, line_of(text, str(l)), "public.runner-config",
+                    "label is not in the runners list in ci/data/public.json", key=str(l))
+            for l in labels if str(l) not in RUNNERS]
     return out
 
 
@@ -357,6 +394,7 @@ def branch_findings(branch):
 
 def check(ctx):
     out, head = [], ctx.head
+    out += runner_config_findings(head)
     base_build = None
     if ctx.base is not None:
         base_build = {p.split("/")[1] for p in ctx.base.paths if p.startswith("docker/") and p.count("/") >= 2}
@@ -453,6 +491,21 @@ CASES = [
      {"docker/sglang-x-r1/Dockerfile": "FROM a\n"}, None, None, {}),
     ("history in a comment", "public.comment", dict(FILES, **{P: FILES[P] + "# We previously used x.\n"}), None, None,
      None, {}),
+    ("runner label the allowlist does not have", "public.runner-config",
+     dict(FILES, **{"ci/config/actionlint.yaml": "self-hosted-runner:\n  labels:\n    - ubuntu_other_x64\n"}),
+     None, None, None, {}),
+    ("actionlint config that silences paths", "public.runner-config",
+     dict(FILES, **{"ci/config/actionlint.yaml":
+                    "self-hosted-runner:\n  labels:\n    - ubuntu_large_x64\npaths:\n  .github/workflows/x.yaml:\n"
+                    "    ignore:\n      - shellcheck\n"}),
+     None, None, None, {}),
+    ("actionlint config with another runner key", "public.runner-config",
+     dict(FILES, **{"ci/config/actionlint.yaml":
+                    "self-hosted-runner:\n  labels:\n    - ubuntu_large_x64\n  config-variables:\n    - X\n"}),
+     None, None, None, {}),
+    ("actionlint config that is only the label list", None,
+     dict(FILES, **{"ci/config/actionlint.yaml": "self-hosted-runner:\n  labels:\n    - ubuntu_large_x64\n"}),
+     None, None, None, {}),
 ]
 
 
