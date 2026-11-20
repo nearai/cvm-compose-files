@@ -43,19 +43,7 @@ x-glm53-engine-common: &glm53-engine-common
   cap_drop: [ALL]
   security_opt: ["no-new-privileges:true"]
   image: docker.io/nearaidev/vllm@sha256:43edd86213d507c39757ac7d513c9848386d1f426554cdc6221fba92e444e33a
-  shm_size: 64g
   network_mode: host
-  volumes:
-    - huggingface_cache:/root/.cache/huggingface
-    - glm53_kernel_cache:/root/.cache/vllm
-    - humming_cache:/root/.cache/humming
-  deploy:
-    resources:
-      reservations:
-        devices:
-          - driver: nvidia
-            count: all
-            capabilities: [gpu]
   restart: unless-stopped
   stop_grace_period: 10m
   logging: *logging-conf
@@ -179,7 +167,20 @@ services:
 
   model-vllm-glm53-a-prefill0:
     <<: *glm53-engine-common
-    # Pair leader: the other engines of this pair join its ipc and pid namespaces (CUDA IPC for KV transfer).
+    shm_size: 64g
+    volumes:
+      - huggingface_cache:/root/.cache/huggingface:ro
+      - glm53_kernel_cache_a:/root/.cache/vllm
+      - humming_cache_a:/root/.cache/humming
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["0","1","2","3"]
+              capabilities: [gpu]
+    # Pair leader, no host namespaces: the pair's four engines share this pair-private ipc/pid namespace for
+    # CUDA IPC and NCCL; the other pair, proxy and host daemons stay invisible. The pair restarts as a unit.
     ipc: shareable
     container_name: model-vllm-glm53-a-prefill0
     depends_on:
@@ -263,6 +264,17 @@ services:
 
   model-vllm-glm53-a-prefill1:
     <<: *glm53-engine-common
+    volumes:
+      - huggingface_cache:/root/.cache/huggingface:ro
+      - glm53_kernel_cache_a:/root/.cache/vllm
+      - humming_cache_a:/root/.cache/humming
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["0","1","2","3"]
+              capabilities: [gpu]
     # Shares the pair leader's ipc and pid namespaces (CUDA IPC for KV transfer); not the host's.
     ipc: "service:model-vllm-glm53-a-prefill0"
     pid: "service:model-vllm-glm53-a-prefill0"
@@ -350,6 +362,17 @@ services:
 
   model-vllm-glm53-a-decode0:
     <<: *glm53-engine-common
+    volumes:
+      - huggingface_cache:/root/.cache/huggingface:ro
+      - glm53_kernel_cache_a:/root/.cache/vllm
+      - humming_cache_a:/root/.cache/humming
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["0","1","2","3"]
+              capabilities: [gpu]
     # Shares the pair leader's ipc and pid namespaces (CUDA IPC for KV transfer); not the host's.
     ipc: "service:model-vllm-glm53-a-prefill0"
     pid: "service:model-vllm-glm53-a-prefill0"
@@ -441,6 +464,17 @@ services:
 
   model-vllm-glm53-a-decode1:
     <<: *glm53-engine-common
+    volumes:
+      - huggingface_cache:/root/.cache/huggingface:ro
+      - glm53_kernel_cache_a:/root/.cache/vllm
+      - humming_cache_a:/root/.cache/humming
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["0","1","2","3"]
+              capabilities: [gpu]
     # Shares the pair leader's ipc and pid namespaces (CUDA IPC for KV transfer); not the host's.
     ipc: "service:model-vllm-glm53-a-prefill0"
     pid: "service:model-vllm-glm53-a-prefill0"
@@ -532,16 +566,27 @@ services:
 
   model-vllm-glm53-b-prefill0:
     <<: *glm53-engine-common
-    # Pair leader: the other engines of this pair join its ipc and pid namespaces (CUDA IPC for KV transfer).
+    shm_size: 64g
+    volumes:
+      - huggingface_cache:/root/.cache/huggingface:ro
+      - glm53_kernel_cache_b:/root/.cache/vllm
+      - humming_cache_b:/root/.cache/humming
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["4","5","6","7"]
+              capabilities: [gpu]
+    # Pair leader, no host namespaces: the pair's four engines share this pair-private ipc/pid namespace for
+    # CUDA IPC and NCCL; the other pair, proxy and host daemons stay invisible. The pair restarts as a unit.
     ipc: shareable
     container_name: model-vllm-glm53-b-prefill0
     depends_on:
       model-downloader:
         condition: service_completed_successfully
-      model-vllm-glm53-a-prefill0:
-        condition: service_started
     environment:
-      - CUDA_VISIBLE_DEVICES=4
+      - CUDA_VISIBLE_DEVICES=0
       - HF_HUB_OFFLINE=1
       - PYTHONUNBUFFERED=1
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
@@ -618,6 +663,17 @@ services:
 
   model-vllm-glm53-b-prefill1:
     <<: *glm53-engine-common
+    volumes:
+      - huggingface_cache:/root/.cache/huggingface:ro
+      - glm53_kernel_cache_b:/root/.cache/vllm
+      - humming_cache_b:/root/.cache/humming
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["4","5","6","7"]
+              capabilities: [gpu]
     # Shares the pair leader's ipc and pid namespaces (CUDA IPC for KV transfer); not the host's.
     ipc: "service:model-vllm-glm53-b-prefill0"
     pid: "service:model-vllm-glm53-b-prefill0"
@@ -625,10 +681,10 @@ services:
     depends_on:
       model-downloader:
         condition: service_completed_successfully
-      model-vllm-glm53-a-prefill0:
+      model-vllm-glm53-b-prefill0:
         condition: service_started
     environment:
-      - CUDA_VISIBLE_DEVICES=5
+      - CUDA_VISIBLE_DEVICES=1
       - HF_HUB_OFFLINE=1
       - PYTHONUNBUFFERED=1
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
@@ -705,6 +761,17 @@ services:
 
   model-vllm-glm53-b-decode0:
     <<: *glm53-engine-common
+    volumes:
+      - huggingface_cache:/root/.cache/huggingface:ro
+      - glm53_kernel_cache_b:/root/.cache/vllm
+      - humming_cache_b:/root/.cache/humming
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["4","5","6","7"]
+              capabilities: [gpu]
     # Shares the pair leader's ipc and pid namespaces (CUDA IPC for KV transfer); not the host's.
     ipc: "service:model-vllm-glm53-b-prefill0"
     pid: "service:model-vllm-glm53-b-prefill0"
@@ -712,10 +779,10 @@ services:
     depends_on:
       model-downloader:
         condition: service_completed_successfully
-      model-vllm-glm53-a-prefill0:
+      model-vllm-glm53-b-prefill0:
         condition: service_started
     environment:
-      - CUDA_VISIBLE_DEVICES=6
+      - CUDA_VISIBLE_DEVICES=2
       - HF_HUB_OFFLINE=1
       - PYTHONUNBUFFERED=1
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
@@ -796,6 +863,17 @@ services:
 
   model-vllm-glm53-b-decode1:
     <<: *glm53-engine-common
+    volumes:
+      - huggingface_cache:/root/.cache/huggingface:ro
+      - glm53_kernel_cache_b:/root/.cache/vllm
+      - humming_cache_b:/root/.cache/humming
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["4","5","6","7"]
+              capabilities: [gpu]
     # Shares the pair leader's ipc and pid namespaces (CUDA IPC for KV transfer); not the host's.
     ipc: "service:model-vllm-glm53-b-prefill0"
     pid: "service:model-vllm-glm53-b-prefill0"
@@ -803,10 +881,10 @@ services:
     depends_on:
       model-downloader:
         condition: service_completed_successfully
-      model-vllm-glm53-a-prefill0:
+      model-vllm-glm53-b-prefill0:
         condition: service_started
     environment:
-      - CUDA_VISIBLE_DEVICES=7
+      - CUDA_VISIBLE_DEVICES=3
       - HF_HUB_OFFLINE=1
       - PYTHONUNBUFFERED=1
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
@@ -1019,8 +1097,10 @@ networks:
 volumes:
   otelcol_app_storage:
   huggingface_cache:
-  glm53_kernel_cache:
-  humming_cache:
+  glm53_kernel_cache_a:
+  glm53_kernel_cache_b:
+  humming_cache_a:
+  humming_cache_b:
   certs:
     external: true
     name: certs
