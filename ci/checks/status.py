@@ -21,6 +21,7 @@ DIFF_RULES = ["status.stability"]
 BEGIN, END = "<!-- status:begin -->", "<!-- status:end -->"
 REPO_URL = "https://github.com/nearai/cvm-compose-files"
 HEADER = ["file", "serves", "model@revision", "engine image", "topology", "privacy", "status"]
+STATUSES = ("live", "candidate", "standby")  # standby: kept, not deployed; outside the candidate rules
 NOTE = re.compile(r"^- `([^`]+)`: \S")
 
 
@@ -164,8 +165,8 @@ def check(ctx):
         if f not in head.deployables():
             out.append(Finding("README.md", line, "status.table", "row for a file that is not a deployable"))
             continue
-        if cells[-1] not in ("live", "candidate"):
-            out.append(Finding("README.md", line, "status.table", "status must be live or candidate"))
+        if cells[-1] not in STATUSES:
+            out.append(Finding("README.md", line, "status.table", "status must be live, candidate or standby"))
         if status.setdefault(f, cells[-1]) != cells[-1]:
             out.append(Finding("README.md", line, "status.table", "rows of one file must have one status"))
     for p in head.deployables():
@@ -236,6 +237,10 @@ REND = {A: _compose(["model-sg-a", "proxy-a"])}
 TWO = dict(FILES, **{B: "services:\n", "README.md": _readme([(A, "glm-5.3", "live"), (B, "glm-5.3", "candidate")])})
 LIVE2 = dict(TWO, **{"README.md": _readme([(A, "glm-5.3", "live"), (B, "glm-5.3", "live")])})
 REND2 = dict(REND, **{B: _compose(["model-sg-a", "proxy-a"])})
+C = "prod/glm-5.3-sglang-tp2.yaml"
+TWO3 = dict(TWO, **{C: "services:\n", "README.md": _readme([(C, "glm-5.3", "standby"), (A, "glm-5.3", "live"),
+                                                         (B, "glm-5.3", "candidate")])})
+REND3 = dict(REND2, **{C: _compose(["model-sg-other", "proxy-a"])})
 CASES = [
     ("one live file", None, FILES, FILES, REND, REND),
     ("candidate with the same keys", None, TWO, FILES, REND2, REND),
@@ -247,6 +252,9 @@ CASES = [
                     "README.md": _readme([(f"`{A}` (legacy name)", "glm-5.3", "live"),
                                           ("prod/util-x.yaml", "-", ("-", "-", "-", "n.a."), "live")])}), FILES,
      dict(REND, **{"prod/util-x.yaml": {"services": {"x": {"container_name": "x"}}}}), REND),
+    ("standby next to a candidate", None, TWO3, FILES, REND3, REND),
+    ("unknown status", "status.table",
+     dict(TWO, **{"README.md": _readme([(A, "glm-5.3", "live"), (B, "glm-5.3", "retired")])}), FILES, REND2, REND),
     ("missing row", "status.table", dict(FILES, **{"README.md": _readme([])}), FILES, REND, REND),
     ("wrong serves", "status.table", dict(FILES, **{"README.md": _readme([(A, "glm-5.2", "live")])}), FILES, REND,
      REND),

@@ -190,4 +190,4 @@ file and the matched value. Counts per rule:
 | `privacy.secret` | 10 | secret variables without a required-value check |
 | `public.domain` | 9 | domain names outside the public allowlist |
 | `public.host` | 20 | host names in config values, labels or service names |
-| `status.key-set` | 3 | candidates whose services differ from their live files |
+| `status.key-set` | 2 | candidates whose services differ from their live files |

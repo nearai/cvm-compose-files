@@ -31,9 +31,11 @@ CI derives the name from the rendered file (`ci/checks/names.py`); paths in `ci/
 - Comment wording follows [docs.md](docs.md).
 
 ## Lifecycle
-- Status is `live` or `candidate`, only in the README table, never in a compose file.
+- Status is `live`, `candidate` or `standby`, only in the README table, never in a compose file.
 - `live` runs in production. A `candidate` is being rolled out now. It has the same service keys as
   the live file it replaces (same served-name set), or an announced change with an exception entry.
+- `standby` is kept and not deployed (a fallback or a later rollout step). It is outside the one-candidate-per-
+  serving-group and key-set rules; promote it to `candidate` when it is rolled out.
 - Everything else not in production is deleted. Rollback = redeploy an older tag.
 - Never rename a deployed file in place: its labels and project name would change. A functional change
   (the rendered config differs) to a legacy file ships as a new standard-named candidate, except a fix
