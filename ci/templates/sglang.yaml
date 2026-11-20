@@ -15,7 +15,7 @@ services:
     restart: "no"
 
   model-sg-qwen36-35b-a3b-tp1:
-    image: docker.io/nearaidev/sglang@sha256:6de632a5e9422be4b6e84e32cf475679c0f29c4bb6d58984d873ff9f7ba92a65
+    image: docker.io/nearaidev/sglang@sha256:2321e3c217f0757fe285187d28553183f051b8d1ceccb0deb6a7459c43ed3a45
     container_name: model-sg-qwen36-35b-a3b-tp1
     depends_on:
       model-downloader:
@@ -44,7 +44,7 @@ services:
       deployment: template-sglang
       engine_image: nearaidev/sglang
       instance: ${INSTANCE_LABEL:-default}
-      config_variant: r1
+      config_variant: r2
     shm_size: 16g
     volumes:
       - hf-cache:/root/.cache/huggingface:ro
