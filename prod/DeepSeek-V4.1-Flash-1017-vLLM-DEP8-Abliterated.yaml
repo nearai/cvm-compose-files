@@ -776,11 +776,16 @@ services:
       nearai.otel.config_variant: "vllm0330-lora3p-cc2-w4a8-dep8-c8192-dspark5pb-mr64-engram-hbm-omp8-restricted-psi8-cc"
 
   dcgm-dsv41:
-    image: nvcr.io/nvidia/k8s/dcgm-exporter@sha256:ed594cf53fe6942e84b07b0740cdcbb249fa4b39cb21feeebf93881ae51f0b5e
+    image: nvcr.io/nvidia/k8s/dcgm-exporter@sha256:613ab03c11d442fd960ff515f547e9921537454a712d08160bc8f677f89f1c35
+    command: ["-f", "/etc/dcgm-exporter/nearai-h200.csv"]
     container_name: dcgm-dsv41
     runtime: nvidia
     cap_add:
       - SYS_ADMIN
+    configs:
+      - source: dcgm_h200_metrics
+        target: /etc/dcgm-exporter/nearai-h200.csv
+        mode: 0444
     deploy:
       resources:
         reservations:
@@ -808,6 +813,40 @@ services:
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.ppcie: "true"
       nearai.otel.config_variant: "vllm0330-lora3p-cc2-w4a8-dep8-c8192-dspark5pb-mr64-engram-hbm-omp8-restricted-psi8-cc"
+
+  gpu-diag:
+    image: nvcr.io/nvidia/k8s/dcgm-exporter@sha256:613ab03c11d442fd960ff515f547e9921537454a712d08160bc8f677f89f1c35
+    container_name: gpu-diag
+    runtime: nvidia
+    environment:
+      NVIDIA_DRIVER_CAPABILITIES: utility
+      NVIDIA_VISIBLE_DEVICES: all
+      NVSMI_INTERVAL_S: "600"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["0","1","2","3","4","5","6","7"]
+              capabilities: [gpu]
+    restart: unless-stopped
+    logging: *logging-conf
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        nvidia-smi -q -d POWER,PERFORMANCE,CLOCK || true
+        nvidia-smi topo -m || true
+        q=index,pstate,power.draw,power.limit,enforced.power.limit,power.default_limit,clocks.sm,clocks.max.sm,clocks_event_reasons.active,temperature.gpu
+        nvidia-smi --query-gpu=$$q --format=csv || true
+        n=0
+        while true; do
+          sleep $${NVSMI_INTERVAL_S}
+          n=$$((n + 1))
+          nvidia-smi --query-gpu=$$q --format=csv,noheader || true
+          if [ $$((n % 36)) -eq 0 ]; then nvidia-smi -q -d POWER,PERFORMANCE,CLOCK || true; fi
+        done
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"gpu-diag","service":"gpu-diag","tags":["model:deepseek-ai/DeepSeek-V4.1-Flash-1017","deployment:dsv41-flash-1017-vllm-dep8-abliterated","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0330-lora3p-cc2-w4a8-dep8-c8192-dspark5pb-mr64-engram-hbm-omp8-restricted-psi8-cc"]}]'
 
   otelcol-contrib:
     image: otel/opentelemetry-collector-contrib@sha256:85ac41c2db88d0df9bd6145e608a3cb023f5d8443868adbfbbf66efb51087917
@@ -866,6 +905,87 @@ volumes:
     name: certs
 
 configs:
+  dcgm_h200_metrics:
+    content: |
+      # NEAR AI H200 operational collector for DCGM 4.6.0 / exporter 4.8.3.
+      # Format: DCGM field, Prometheus type, help message.
+
+      # Clocks, temperature, power and cumulative GPU-board energy.
+      DCGM_FI_DEV_SM_CLOCK, gauge, SM clock frequency in MHz.
+      DCGM_FI_DEV_MEM_CLOCK, gauge, Memory clock frequency in MHz.
+      DCGM_FI_DEV_MEMORY_TEMP, gauge, Memory temperature in C.
+      DCGM_FI_DEV_GPU_TEMP, gauge, GPU temperature in C.
+      DCGM_FI_DEV_POWER_USAGE, gauge, GPU board power draw in W.
+      DCGM_FI_DEV_TOTAL_ENERGY_CONSUMPTION, counter, GPU board energy consumed since boot in mJ.
+
+      # Utilization, framebuffer and PCIe.
+      DCGM_FI_DEV_GPU_UTIL, gauge, GPU utilization in percent.
+      DCGM_FI_DEV_MEM_COPY_UTIL, gauge, Memory copy utilization in percent.
+      DCGM_FI_DEV_FB_FREE, gauge, Framebuffer memory free in MiB.
+      DCGM_FI_DEV_FB_USED, gauge, Framebuffer memory used in MiB.
+      DCGM_FI_DEV_FB_RESERVED, gauge, Framebuffer memory reserved in MiB.
+      DCGM_FI_PROF_PCIE_TX_BYTES, gauge, PCIe transmit throughput in bytes per second.
+      DCGM_FI_PROF_PCIE_RX_BYTES, gauge, PCIe receive throughput in bytes per second.
+      DCGM_FI_DEV_PCIE_REPLAY_COUNTER, counter, Total PCIe replay events.
+
+      # Raw and exporter-owned error signals. Windowed counts provide a
+      # stable zero series; cumulative totals preserve event labels.
+      DCGM_FI_DEV_XID_ERRORS, gauge, Last XID error encountered.
+      DCGM_EXP_XID_ERRORS_COUNT, gauge, XID records observed in the configured window.
+      DCGM_EXP_XID_ERRORS_TOTAL, counter, XID records observed since exporter start.
+      DCGM_EXP_CLOCK_EVENTS_COUNT, gauge, Clock events observed in the configured window.
+      DCGM_EXP_CLOCK_EVENTS_TOTAL, counter, Clock event transitions observed since exporter start.
+      DCGM_EXP_GPU_HEALTH_STATUS, gauge, Current DCGM GPU health status by health watch.
+      DCGM_EXP_P2P_STATUS, gauge, Current NVLink P2P status for each ordered GPU pair.
+
+      # Throttling and reliability constraints.
+      DCGM_FI_DEV_POWER_VIOLATION, counter, Throttling duration due to power constraints in ns.
+      DCGM_FI_DEV_THERMAL_VIOLATION, counter, Throttling duration due to thermal constraints in ns.
+      DCGM_FI_DEV_SYNC_BOOST_VIOLATION, counter, Throttling duration due to sync boost constraints in ns.
+      DCGM_FI_DEV_BOARD_LIMIT_VIOLATION, counter, Throttling duration due to board constraints in ns.
+      DCGM_FI_DEV_LOW_UTIL_VIOLATION, counter, Throttling duration due to low utilization in ns.
+      DCGM_FI_DEV_RELIABILITY_VIOLATION, counter, Throttling duration due to reliability constraints in ns.
+
+      # ECC, retired pages and row remapping.
+      DCGM_FI_DEV_ECC_SBE_VOL_TOTAL, counter, Total volatile single-bit ECC errors.
+      DCGM_FI_DEV_ECC_DBE_VOL_TOTAL, counter, Total volatile double-bit ECC errors.
+      DCGM_FI_DEV_ECC_SBE_AGG_TOTAL, counter, Total aggregate single-bit ECC errors.
+      DCGM_FI_DEV_ECC_DBE_AGG_TOTAL, counter, Total aggregate double-bit ECC errors.
+      DCGM_FI_DEV_RETIRED_SBE, counter, Total pages retired due to single-bit errors.
+      DCGM_FI_DEV_RETIRED_DBE, counter, Total pages retired due to double-bit errors.
+      DCGM_FI_DEV_RETIRED_PENDING, counter, Pages pending retirement.
+      DCGM_FI_DEV_UNCORRECTABLE_REMAPPED_ROWS, counter, Total uncorrectable remapped rows.
+      DCGM_FI_DEV_CORRECTABLE_REMAPPED_ROWS, counter, Total correctable remapped rows.
+      DCGM_FI_DEV_ROW_REMAP_FAILURE, gauge, Whether row remapping has failed.
+
+      # NVLink traffic and integrity.
+      DCGM_FI_DEV_NVLINK_BANDWIDTH_TOTAL, gauge, Aggregate NVLink traffic rate across all lanes.
+      DCGM_FI_DEV_NVLINK_CRC_FLIT_ERROR_COUNT_TOTAL, counter, Total NVLink flow-control CRC errors.
+      DCGM_FI_DEV_NVLINK_CRC_DATA_ERROR_COUNT_TOTAL, counter, Total NVLink data CRC errors.
+      DCGM_FI_DEV_NVLINK_REPLAY_ERROR_COUNT_TOTAL, counter, Total NVLink replay errors.
+      DCGM_FI_DEV_NVLINK_RECOVERY_ERROR_COUNT_TOTAL, counter, Total NVLink recovery errors.
+
+      # Workload profiling. Unsupported fields are skipped by DCGM and must be
+      # represented as unsupported in Grafana rather than coerced to zero.
+      DCGM_FI_PROF_GR_ENGINE_ACTIVE, gauge, Ratio of time the graphics engine is active.
+      DCGM_FI_PROF_PIPE_TENSOR_ACTIVE, gauge, Ratio of cycles the tensor pipe is active.
+      DCGM_FI_PROF_DRAM_ACTIVE, gauge, Ratio of time the device memory interface is active.
+
+      # Power limits, power state and clock event reasons.
+      DCGM_FI_DEV_POWER_MGMT_LIMIT, gauge, Requested board power limit in W.
+      DCGM_FI_DEV_POWER_MGMT_LIMIT_DEF, gauge, Default board power limit in W.
+      DCGM_FI_DEV_ENFORCED_POWER_LIMIT, gauge, Enforced board power limit in W.
+      DCGM_FI_DEV_PSTATE, gauge, GPU performance state.
+      DCGM_FI_DEV_CLOCKS_EVENT_REASONS, gauge, Bitmask of active clock event reasons.
+      DCGM_FI_DEV_CLOCKS_EVENT_REASON_SW_POWER_CAP_NS, counter, Time clocks were reduced by the software power cap in ns.
+      DCGM_FI_DEV_CLOCKS_EVENT_REASON_HW_THERM_SLOWDOWN_NS, counter, Time clocks were reduced by hardware thermal slowdown in ns.
+
+      # Stable software identity labels attached to emitted GPU metrics.
+      DCGM_FI_DRIVER_VERSION, label, NVIDIA driver version.
+      DCGM_FI_NVML_VERSION, label, NVML version.
+      DCGM_FI_DEV_BRAND, label, GPU product brand.
+      DCGM_FI_DEV_VBIOS_VERSION, label, GPU VBIOS version.
+
   otelcol_app_config:
     content: |
       receivers:
