@@ -998,8 +998,9 @@ services:
       - "model-vllm-glm53-a-decode0:host-gateway"
       - "model-vllm-glm53-a-decode1:host-gateway"
     environment:
-      # Below the 30 s KV lease of the NixlConnector, so a stalled transfer fails before the prefill blocks expire.
-      - PD_KV_TIMEOUT_S=25
+      # Must match the engines' kv_lease_duration (stock 30 s); the router refuses a timeout >= lease - 5.
+      - PD_KV_LEASE_S=30
+      - PD_KV_TIMEOUT_S=20
       - PD_HEALTH_TIMEOUT_S=2
       - PD_MAX_IMBALANCE=64
       - PD_STATS_LOG_S=60
@@ -1040,8 +1041,9 @@ services:
       - "model-vllm-glm53-b-decode0:host-gateway"
       - "model-vllm-glm53-b-decode1:host-gateway"
     environment:
-      # Below the 30 s KV lease of the NixlConnector, so a stalled transfer fails before the prefill blocks expire.
-      - PD_KV_TIMEOUT_S=25
+      # Must match the engines' kv_lease_duration (stock 30 s); the router refuses a timeout >= lease - 5.
+      - PD_KV_LEASE_S=30
+      - PD_KV_TIMEOUT_S=20
       - PD_HEALTH_TIMEOUT_S=2
       - PD_MAX_IMBALANCE=64
       - PD_STATS_LOG_S=60
