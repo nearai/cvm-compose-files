@@ -139,6 +139,14 @@ def netns_nets(svc, services):
     return nets_of(services.get(holder) or {}) if holder else nets_of(svc)
 
 
+def holder_aliases(svc):
+    """Network aliases a service carries; engines in its namespace are reached by these names."""
+    nets = svc.get("networks")
+    if not isinstance(nets, dict):
+        return set()
+    return {_s(a) for cfg in nets.values() for a in as_list((cfg or {}).get("aliases"))}
+
+
 def holder_errors(name, services, networks):
     """Engines may share one network namespace, held by a sidecar on internal networks only."""
     holder = services.get(name)
@@ -160,11 +168,13 @@ def holder_errors(name, services, networks):
     return out
 
 
-def engine_errors(svc, networks, services):
+def engine_errors(name, svc, networks, services):
     out = []
     holder = shared_netns(svc)
     if holder is not None:
         out += holder_errors(holder, services, networks)
+        if name not in holder_aliases(services.get(holder) or {}):
+            out.append(f"namespace holder {holder} must carry {name} as a network alias")
     else:
         nets = nets_of(svc)
         if not nets:
@@ -252,7 +262,7 @@ def check_isolation(path, model, pending, out):
         if name not in detected:
             out.append(Finding(path, 0, "stack.engine-pending",
                                f"{path}: pending service {name} is not an engine in this file", key=name))
-        elif not engine_errors(detected[name], networks, services):
+        elif not engine_errors(name, detected[name], networks, services):
             out.append(Finding(path, 0, "stack.engine-pending",
                                f"{path}: pending service {name} follows the contract now; remove its pending mark",
                                key=name))
@@ -263,7 +273,7 @@ def check_isolation(path, model, pending, out):
     engine_nets = {net for s in engines.values() for net in netns_nets(s, services)}
     check_members(path, model, services, detected, engines, holders, engine_nets, out)
     for name, svc in sorted(engines.items()):
-        for msg in engine_errors(svc, networks, services):
+        for msg in engine_errors(name, svc, networks, services):
             out.append(Finding(path, 0, "stack.engine-network", f"{path}: services.{name}: {msg}",
                                key=f"{name}:{msg}"))
 
@@ -730,7 +740,7 @@ PENDING = dict(FILES, **{SERVICES: json.dumps({"isolated_files": [P], "services"
 PENDING_GONE = dict(FILES, **{SERVICES: json.dumps({"isolated_files": [P], "services": [
     {"file": P, "service": "gone", "isolation": "pending"}]})})
 NOT_ISOLATED = dict(FILES, **{SERVICES: json.dumps({"isolated_files": [], "services": [], "env": []})})
-HOLDER = {"image": "curlimages/curl@sha256:" + "0" * 64, "networks": ["eng"]}
+HOLDER = {"image": "curlimages/curl@sha256:" + "0" * 64, "networks": {"eng": {"aliases": ["e"]}}}
 SHARED = ((("services", "e", "networks"), None), (("services", "e", "network_mode"), "service:sidecar-n"),
           (("services", "sidecar-n"), HOLDER))
 CASES = [
@@ -743,6 +753,8 @@ CASES = [
                (("services", "helper"), HOLDER))),
     _case("namespace sidecar on a routable network", "stack.engine-network",
           _mut(*SHARED, (("networks", "eng", "internal"), False))),
+    _case("namespace sidecar without the engine's alias", "stack.engine-network",
+          _mut(*SHARED, (("services", "sidecar-n", "networks"), ["eng"]))),
     _case("namespace sidecar publishes a port", "stack.engine-network",
           _mut(*SHARED, (("services", "sidecar-n", "ports"), ["9000:9000"]))),
     _case("proxy joins an engine network namespace", "stack.engine-member",
