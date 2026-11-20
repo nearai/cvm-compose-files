@@ -109,6 +109,7 @@ workflow's existing signatures stay valid for the images it published.
 | `publish-vllm-v0.33.0-dsv41-r3.yaml` | `.github/workflows/publish-vllm-v0.33.0-dsv41-r3.yaml@refs/heads/main` | `nearaidev/vllm` | active |
 | `publish-vllm-v0.33.0-request-bounds-r1.yaml` | `.github/workflows/publish-vllm-v0.33.0-request-bounds-r1.yaml@refs/heads/main` | `nearaidev/vllm` | active |
 | `publish-vllm-v0.34.0-dsv41-r1.yaml` | `.github/workflows/publish-vllm-v0.34.0-dsv41-r1.yaml@refs/heads/main` | `nearaidev/vllm` | active |
+| `publish-vllm-v0.34.0-dsv41-r2.yaml` | `.github/workflows/publish-vllm-v0.34.0-dsv41-r2.yaml@refs/heads/main` | `nearaidev/vllm` | active |
 | `publish-vllm-v0.34.0-dsv41-r3.yaml` | `.github/workflows/publish-vllm-v0.34.0-dsv41-r3.yaml@refs/heads/main` | `nearaidev/vllm` | active |
 | `publish-sglang-v0.5.23-secure-r2.yaml` | `.github/workflows/publish-sglang-v0.5.23-secure-r2.yaml@refs/heads/main` | `nearaidev/sglang` | active |
 | `publish-sglang-v0.5.23-glm53-r3.yaml` | `.github/workflows/publish-sglang-v0.5.23-glm53-r3.yaml@refs/heads/main` | `nearaidev/sglang` | active |
@@ -145,6 +146,7 @@ can no longer be followed.
 | `a744ada2a362e2548a88527432da1662aa027012226d9e0ed4fce9cda1e6f0bd` | `dsv41-lora-v0.33.0-near-v1` | `vllm-dsv41-v033` | `7469ed1c47d216ceee4a5329515e6fa0901d90df` | upstream vLLM |
 | `2fe2385152c450c971ff1ac9262298d9f3ed1a09decd4c65b048a6465c1796ea` | `v0.33.0-dsv41-r3` | `vllm-v0.33.0-dsv41-r3` | `494e2854a811ae563c29058c811250b7cc756f8a` | upstream vLLM |
 | `0e1f95eddd2247bf1c8ab024876319c2f80aead5d0e4a28dfffc9563e370a253` | `v0.34.0-dsv41-r1` | `vllm-v0.34.0-dsv41-r1` | `cbe1dd569bd7ba31c569bd72b5c0142e2b9cbfcd` | upstream vLLM |
+| `79625e1f04c1bbdfdc98dca41e20de6e2a5f446c6b3ee7595956ec54ab64c0f4` | `v0.34.0-dsv41-r2` | `vllm-v0.34.0-dsv41-r2` | `7b1c0e1a3f0d4374a93646766770459dc5b4bffd` | upstream vLLM |
 | `43edd86213d507c39757ac7d513c9848386d1f426554cdc6221fba92e444e33a` | `v0.34.0-dsv41-r3` | `vllm-v0.34.0-dsv41-r3` | `33fe80a37fac5df3c66f8f82bc93ab7df109c498` | upstream vLLM |
 | `2d0f065eff326629b3e8938e36b1b31b1541b8b9b9c0f2ae85da68c12be20f05` | `v0.33.0-request-bounds-r1` | `vllm-v0.33.0-request-bounds-r1` | `c8ad48bbc65da1cc28dae72211356b1a51fac177` | upstream vLLM |
 | `5eaa0d4637080c10958b6cd8a371ae2ebb749b7a1e19c85bcb1abb89ee2540e4` | - | `vllm-dsv41-lora` | `c87715224cc5712f5f302ac0e486f533c99ce5c5` | upstream vLLM |
