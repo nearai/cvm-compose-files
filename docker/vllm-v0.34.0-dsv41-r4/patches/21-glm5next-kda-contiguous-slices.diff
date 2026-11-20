@@ -1,0 +1,172 @@
+diff --git a/vllm/models/glm5next/common/kda.py b/vllm/models/glm5next/common/kda.py
+index bb0f479b7e..2cd389fa72 100644
+--- a/vllm/models/glm5next/common/kda.py
++++ b/vllm/models/glm5next/common/kda.py
+@@ -2,6 +2,7 @@
+ # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+ """GLM-5.3-Flash KDA layer with separate convolutions and a bounded safe gate."""
+ 
++import os
+ from dataclasses import replace
+ 
+ import torch
+@@ -65,6 +66,65 @@ else:
+     )
+ 
+ 
++# VLLM_NEAR_KDA_SLICE=1 (read once at import) uses slices instead of index_select and
++# index_copy_ in the mixed spec / non-spec path when the token groups are two contiguous
++# ranges. Off by default.
++# VLLM_NEAR_KDA_SLICE_VERIFY=1 (debug) compares the slice plan against the index tensors
++# once per step; this adds one GPU->CPU sync.
++_KDA_SLICE = os.environ.get("VLLM_NEAR_KDA_SLICE", "0") == "1"
++_KDA_SLICE_VERIFY = os.environ.get("VLLM_NEAR_KDA_SLICE_VERIFY", "0") == "1"
++_SLICE_PLAN_ATTR = "_kda_slice_plan"
++
++
++def _kda_slice_plan(md: GDNAttentionMetadata):
++    """Return ``((spec_start, spec_len), (ns_start, ns_len))`` when the spec and
++    non-spec token groups are two adjacent contiguous ranges, else ``None``.
++
++    Computed from host-side metadata only (``spec_sequence_masks_cpu`` and the
++    Python ints ``num_spec_decode_tokens`` / ``num_prefill_tokens`` /
++    ``num_decode_tokens``), so there is no GPU->CPU sync. The result is cached
++    on the metadata object, which all KDA layers of a step share, so the check
++    runs once per step instead of once per layer.
++    """
++    plan = md.__dict__.get(_SLICE_PLAN_ATTR, False)
++    if plan is not False:
++        return plan
++    plan = None
++    masks_cpu = md.spec_sequence_masks_cpu
++    spec_idx = md.spec_token_indx
++    ns_idx = md.non_spec_token_indx
++    if masks_cpu is not None and spec_idx is not None and ns_idx is not None:
++        n_spec = int(md.num_spec_decode_tokens)
++        n_ns = int(md.num_prefill_tokens) + int(md.num_decode_tokens)
++        if (
++            n_spec > 0
++            and n_ns > 0
++            and spec_idx.shape[0] == n_spec
++            and ns_idx.shape[0] == n_ns
++        ):
++            m = masks_cpu.tolist()  # CPU tensor: no device sync
++            k = sum(m)
++            if m == [True] * k + [False] * (len(m) - k):
++                plan = ((0, n_spec), (n_spec, n_ns))  # spec sequences first
++            elif m == [False] * (len(m) - k) + [True] * k:
++                plan = ((n_ns, n_spec), (0, n_ns))  # non-spec sequences first
++            if plan is not None and _KDA_SLICE_VERIFY:
++                # Debug only (one sync per step): the plan must reproduce the
++                # index tensors exactly.
++                (s0, sl), (n0, nl) = plan
++                ok = torch.equal(
++                    spec_idx.to(torch.int64),
++                    torch.arange(s0, s0 + sl, device=spec_idx.device),
++                ) and torch.equal(
++                    ns_idx.to(torch.int64),
++                    torch.arange(n0, n0 + nl, device=ns_idx.device),
++                )
++                if not ok:
++                    raise RuntimeError("KDA slice plan disagrees with token indices")
++    md.__dict__[_SLICE_PLAN_ATTR] = plan
++    return plan
++
++
+ class _Glm5NextMergedColumnParallelLinear(MergedColumnParallelLinear):
+     """Merged projection with multiple replicated output shards.
+ 
+@@ -580,6 +640,10 @@ class Glm5NextLinearAttention(GatedDeltaNetAttention):
+         # num_accepted_tokens for rejection-sampling rollback; non-spec tokens
+         # are one-per-request. Mirrors olmo_gdn_linear_attn.py. Projections are
+         # [n, *] (token dim 0); g1/beta are [1, n, h, d] (token dim 1).
++        slice_plan = None
++        if use_spec and _KDA_SLICE:
++            if non_spec_token_indx is not None and non_spec_token_indx.numel() > 0:
++                slice_plan = _kda_slice_plan(attn_metadata_narrowed)
+         if use_spec:
+             # In a pure spec-verify step (no non-spec tokens) the metadata
+             # builder sets spec_token_indx = arange(num_actual_tokens), making
+@@ -591,14 +655,28 @@ class Glm5NextLinearAttention(GatedDeltaNetAttention):
+                 qkv_spec = qkv_proj_states
+                 g1_spec = g1
+                 beta_spec = beta
++            elif slice_plan is not None:
++                # Contiguous token range: a view instead of a gather copy. The
++                # two ranges are disjoint, so in-place conv updates on one view
++                # cannot touch the other.
++                (s0, sl), _ = slice_plan
++                qkv_spec = qkv_proj_states[s0 : s0 + sl]
++                g1_spec = g1[:, s0 : s0 + sl]
++                beta_spec = beta[:, s0 : s0 + sl]
+             else:
+                 qkv_spec = qkv_proj_states.index_select(0, spec_token_indx)
+                 g1_spec = g1.index_select(1, spec_token_indx)
+                 beta_spec = beta.index_select(1, spec_token_indx)
+             if non_spec_token_indx is not None and non_spec_token_indx.numel() > 0:
+-                qkv_ns = qkv_proj_states.index_select(0, non_spec_token_indx)
+-                g1_ns = g1.index_select(1, non_spec_token_indx)
+-                beta_ns = beta.index_select(1, non_spec_token_indx)
++                if slice_plan is not None:
++                    _, (n0, nl) = slice_plan
++                    qkv_ns = qkv_proj_states[n0 : n0 + nl]
++                    g1_ns = g1[:, n0 : n0 + nl]
++                    beta_ns = beta[:, n0 : n0 + nl]
++                else:
++                    qkv_ns = qkv_proj_states.index_select(0, non_spec_token_indx)
++                    g1_ns = g1.index_select(1, non_spec_token_indx)
++                    beta_ns = beta.index_select(1, non_spec_token_indx)
+             else:
+                 qkv_ns = g1_ns = beta_ns = None
+         else:
+@@ -670,6 +748,11 @@ class Glm5NextLinearAttention(GatedDeltaNetAttention):
+             if non_spec_token_indx is None or non_spec_token_indx.numel() == 0
+             else None
+         )
++        if spec_out is None and slice_plan is not None:
++            # Mixed step with contiguous groups: write the spec output straight
++            # into its range of the layer output (no merge copy).
++            (s0, sl), _ = slice_plan
++            spec_out = core_attn_out[:, s0 : s0 + sl]
+         if use_spec:
+             assert spec_state_indices_tensor is not None
+             assert num_accepted_tokens is not None
+@@ -713,7 +796,13 @@ class Glm5NextLinearAttention(GatedDeltaNetAttention):
+                 # Non-spec step: write straight into the layer output buffer
+                 # (dense token order, no merge copy). Step with spec-decode
+                 # tokens: write to the workspace buffer and scatter below.
+-                ns_out = None if use_spec else core_attn_out[:, :num_actual_tokens]
++                if not use_spec:
++                    ns_out = core_attn_out[:, :num_actual_tokens]
++                elif slice_plan is not None:
++                    _, (n0, nl) = slice_plan
++                    ns_out = core_attn_out[:, n0 : n0 + nl]
++                else:
++                    ns_out = None
+                 core_attn_out_non_spec, last_recurrent_state = self._flashkda_prefill(
+                     q=_rearr(q_ns),
+                     k=_rearr(k_ns),
+@@ -787,8 +876,21 @@ class Glm5NextLinearAttention(GatedDeltaNetAttention):
+         # --- merge spec / non-spec outputs back into token order ---
+         if use_spec and core_attn_out_non_spec is not None:
+             assert core_attn_out_spec is not None
+-            core_attn_out.index_copy_(1, spec_token_indx, core_attn_out_spec)
+-            core_attn_out.index_copy_(1, non_spec_token_indx, core_attn_out_non_spec)
++            if slice_plan is not None:
++                (s0, sl), (n0, nl) = slice_plan
++                for src, a, n in (
++                    (core_attn_out_spec, s0, sl),
++                    (core_attn_out_non_spec, n0, nl),
++                ):
++                    dst = core_attn_out[:, a : a + n]
++                    # Skip when the kernel already wrote into the view.
++                    if src.data_ptr() != dst.data_ptr():
++                        dst.copy_(src)
++            else:
++                core_attn_out.index_copy_(1, spec_token_indx, core_attn_out_spec)
++                core_attn_out.index_copy_(
++                    1, non_spec_token_indx, core_attn_out_non_spec
++                )
+         elif use_spec:
+             assert core_attn_out_spec is not None
+             if spec_out is None:
