@@ -30,7 +30,6 @@
       "service": "model-vllm-dsv41-dp0",
       "items": [
         "ipc:host",
-        "network:host",
         "security_opt:no-new-privileges:true"
       ]
     },
@@ -48,7 +47,6 @@
       "service": "model-vllm-dsv41-dp1",
       "items": [
         "ipc:host",
-        "network:host",
         "security_opt:no-new-privileges:true"
       ]
     },
@@ -66,7 +64,6 @@
       "service": "model-vllm-dsv41-dp2",
       "items": [
         "ipc:host",
-        "network:host",
         "security_opt:no-new-privileges:true"
       ]
     },
@@ -84,7 +81,6 @@
       "service": "model-vllm-dsv41-dp3",
       "items": [
         "ipc:host",
-        "network:host",
         "security_opt:no-new-privileges:true"
       ]
     },
@@ -102,7 +98,6 @@
       "service": "model-vllm-dsv41-dp4",
       "items": [
         "ipc:host",
-        "network:host",
         "security_opt:no-new-privileges:true"
       ]
     },
@@ -120,7 +115,6 @@
       "service": "model-vllm-dsv41-dp5",
       "items": [
         "ipc:host",
-        "network:host",
         "security_opt:no-new-privileges:true"
       ]
     },
@@ -138,7 +132,6 @@
       "service": "model-vllm-dsv41-dp6",
       "items": [
         "ipc:host",
-        "network:host",
         "security_opt:no-new-privileges:true"
       ]
     },
@@ -156,7 +149,6 @@
       "service": "model-vllm-dsv41-dp7",
       "items": [
         "ipc:host",
-        "network:host",
         "security_opt:no-new-privileges:true"
       ]
     },
@@ -243,7 +235,6 @@
       "service": "model-vllm-glm53-dp0",
       "items": [
         "ipc:host",
-        "network:host",
         "security_opt:no-new-privileges:true"
       ]
     },
@@ -252,7 +243,6 @@
       "service": "model-vllm-glm53-dp1",
       "items": [
         "ipc:host",
-        "network:host",
         "security_opt:no-new-privileges:true"
       ]
     },
@@ -261,7 +251,6 @@
       "service": "model-vllm-glm53-dp2",
       "items": [
         "ipc:host",
-        "network:host",
         "security_opt:no-new-privileges:true"
       ]
     },
@@ -270,7 +259,6 @@
       "service": "model-vllm-glm53-dp3",
       "items": [
         "ipc:host",
-        "network:host",
         "security_opt:no-new-privileges:true"
       ]
     },
@@ -279,7 +267,6 @@
       "service": "model-vllm-glm53-dp4",
       "items": [
         "ipc:host",
-        "network:host",
         "security_opt:no-new-privileges:true"
       ]
     },
@@ -288,7 +275,6 @@
       "service": "model-vllm-glm53-dp5",
       "items": [
         "ipc:host",
-        "network:host",
         "security_opt:no-new-privileges:true"
       ]
     },
@@ -297,7 +283,6 @@
       "service": "model-vllm-glm53-dp6",
       "items": [
         "ipc:host",
-        "network:host",
         "security_opt:no-new-privileges:true"
       ]
     },
@@ -306,7 +291,6 @@
       "service": "model-vllm-glm53-dp7",
       "items": [
         "ipc:host",
-        "network:host",
         "security_opt:no-new-privileges:true"
       ]
     },
@@ -1081,6 +1065,34 @@
         "security_opt:no-new-privileges:true",
         "sock:/var/run/dstack.sock"
       ]
+    },
+    {
+      "file": "prod/deepseek-v4.1-flash-1017-vllm-dep4x2.yaml",
+      "service": "sidecar-dsv41-netns-a",
+      "items": [
+        "security_opt:no-new-privileges:true"
+      ]
+    },
+    {
+      "file": "prod/deepseek-v4.1-flash-1017-vllm-dep4x2.yaml",
+      "service": "sidecar-dsv41-netns-b",
+      "items": [
+        "security_opt:no-new-privileges:true"
+      ]
+    },
+    {
+      "file": "prod/glm-5.3-flash-vllm-dep4x2.yaml",
+      "service": "sidecar-glm53-netns-a",
+      "items": [
+        "security_opt:no-new-privileges:true"
+      ]
+    },
+    {
+      "file": "prod/glm-5.3-flash-vllm-dep4x2.yaml",
+      "service": "sidecar-glm53-netns-b",
+      "items": [
+        "security_opt:no-new-privileges:true"
+      ]
     }
   ],
   "env": [
@@ -1320,6 +1332,8 @@
     }
   ],
   "isolated_files": [
+    "prod/deepseek-v4.1-flash-1017-vllm-dep4x2.yaml",
+    "prod/glm-5.3-flash-vllm-dep4x2.yaml",
     "prod/pack-small-models.yaml",
     "prod/qwen38-27b-abliterated-cc-1gpu.yaml",
     "prod/small-models.yaml"

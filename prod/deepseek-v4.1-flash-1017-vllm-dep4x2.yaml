@@ -22,14 +22,6 @@ x-vllm-proxy-common: &vllm-proxy-common
   <<: *nvidia
   extra_hosts:
     - "compose-manager:host-gateway"
-    - "model-vllm-dsv41-dp0:host-gateway"
-    - "model-vllm-dsv41-dp1:host-gateway"
-    - "model-vllm-dsv41-dp2:host-gateway"
-    - "model-vllm-dsv41-dp3:host-gateway"
-    - "model-vllm-dsv41-dp4:host-gateway"
-    - "model-vllm-dsv41-dp5:host-gateway"
-    - "model-vllm-dsv41-dp6:host-gateway"
-    - "model-vllm-dsv41-dp7:host-gateway"
   volumes:
     - /var/run/dstack.sock:/var/run/dstack.sock
     - certs:/etc/letsencrypt:ro
@@ -43,7 +35,6 @@ x-dsv41-engine-common: &dsv41-engine-common
   security_opt: ["no-new-privileges:true"]
   image: docker.io/nearaidev/vllm@sha256:79625e1f04c1bbdfdc98dca41e20de6e2a5f446c6b3ee7595956ec54ab64c0f4
   shm_size: 64g
-  network_mode: host
   volumes:
     - huggingface_cache:/root/.cache/huggingface
     - dsv41_kernel_cache:/root/.cache/vllm
@@ -134,6 +125,13 @@ services:
   proxy-dsv41:
     <<: *vllm-proxy-common
     container_name: proxy-dsv41
+    networks:
+      - default
+      - engine-dsv41-a
+      - engine-dsv41-b
+    depends_on:
+      engine-egress-probe:
+        condition: service_completed_successfully
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - CLOUD_API_URL=https://cloud-api.near.ai
@@ -178,6 +176,13 @@ services:
   proxy-dsv41-abliterated:
     <<: *vllm-proxy-common
     container_name: proxy-dsv41-abliterated
+    networks:
+      - default
+      - engine-dsv41-a
+      - engine-dsv41-b
+    depends_on:
+      engine-egress-probe:
+        condition: service_completed_successfully
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - CLOUD_API_URL=https://cloud-api.near.ai
@@ -220,9 +225,56 @@ services:
       nearai.otel.ppcie: "true"
       nearai.otel.config_variant: "vllm0340r2-lora3p-cc2-w4a8-2xdep4-c8192-dspark5pb-mr64-omp4-aff64-restricted-psi8-cc-engram-cpu-fg-prestage-fullgraph-lorareplay-dpcadence"
 
+  # Network namespace of dsv41-dp0 to dsv41-dp3: the ranks reach each other on loopback,
+  # and the proxies and the collector reach them by name on one internal network.
+  sidecar-dsv41-netns-a:
+    image: curlimages/curl@sha256:d94d07ba9e7d6de898b6d96c1a072f6f8266c687af78a74f380087a0addf5d17
+    container_name: sidecar-dsv41-netns-a
+    entrypoint: ["sleep", "infinity"]
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: "64m"
+    networks:
+      engine-dsv41-a:
+        aliases:
+          - model-vllm-dsv41-dp0
+          - model-vllm-dsv41-dp1
+          - model-vllm-dsv41-dp2
+          - model-vllm-dsv41-dp3
+    restart: unless-stopped
+    logging: *logging-conf
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"sidecar-dsv41-netns-a","service":"sidecar-dsv41-netns-a","tags":["model:deepseek-ai/DeepSeek-V4.1-Flash-1017","deployment:deepseek-v4.1-flash-1017-vllm-dep4x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+
+  # Network namespace of dsv41-dp4 to dsv41-dp7: the ranks reach each other on loopback,
+  # and the proxies and the collector reach them by name on one internal network.
+  sidecar-dsv41-netns-b:
+    image: curlimages/curl@sha256:d94d07ba9e7d6de898b6d96c1a072f6f8266c687af78a74f380087a0addf5d17
+    container_name: sidecar-dsv41-netns-b
+    entrypoint: ["sleep", "infinity"]
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: "64m"
+    networks:
+      engine-dsv41-b:
+        aliases:
+          - model-vllm-dsv41-dp4
+          - model-vllm-dsv41-dp5
+          - model-vllm-dsv41-dp6
+          - model-vllm-dsv41-dp7
+    restart: unless-stopped
+    logging: *logging-conf
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"sidecar-dsv41-netns-b","service":"sidecar-dsv41-netns-b","tags":["model:deepseek-ai/DeepSeek-V4.1-Flash-1017","deployment:deepseek-v4.1-flash-1017-vllm-dep4x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+
   model-vllm-dsv41-dp0:
     <<: *dsv41-engine-common
     container_name: model-vllm-dsv41-dp0
+    network_mode: "service:sidecar-dsv41-netns-a"
     depends_on:
       model-downloader:
         condition: service_completed_successfully
@@ -298,6 +350,7 @@ services:
   model-vllm-dsv41-dp1:
     <<: *dsv41-engine-common
     container_name: model-vllm-dsv41-dp1
+    network_mode: "service:sidecar-dsv41-netns-a"
     depends_on:
       model-downloader:
         condition: service_completed_successfully
@@ -375,6 +428,7 @@ services:
   model-vllm-dsv41-dp2:
     <<: *dsv41-engine-common
     container_name: model-vllm-dsv41-dp2
+    network_mode: "service:sidecar-dsv41-netns-a"
     depends_on:
       model-downloader:
         condition: service_completed_successfully
@@ -452,6 +506,7 @@ services:
   model-vllm-dsv41-dp3:
     <<: *dsv41-engine-common
     container_name: model-vllm-dsv41-dp3
+    network_mode: "service:sidecar-dsv41-netns-a"
     depends_on:
       model-downloader:
         condition: service_completed_successfully
@@ -529,6 +584,7 @@ services:
   model-vllm-dsv41-dp4:
     <<: *dsv41-engine-common
     container_name: model-vllm-dsv41-dp4
+    network_mode: "service:sidecar-dsv41-netns-b"
     depends_on:
       model-downloader:
         condition: service_completed_successfully
@@ -604,6 +660,7 @@ services:
   model-vllm-dsv41-dp5:
     <<: *dsv41-engine-common
     container_name: model-vllm-dsv41-dp5
+    network_mode: "service:sidecar-dsv41-netns-b"
     depends_on:
       model-downloader:
         condition: service_completed_successfully
@@ -681,6 +738,7 @@ services:
   model-vllm-dsv41-dp6:
     <<: *dsv41-engine-common
     container_name: model-vllm-dsv41-dp6
+    network_mode: "service:sidecar-dsv41-netns-b"
     depends_on:
       model-downloader:
         condition: service_completed_successfully
@@ -758,6 +816,7 @@ services:
   model-vllm-dsv41-dp7:
     <<: *dsv41-engine-common
     container_name: model-vllm-dsv41-dp7
+    network_mode: "service:sidecar-dsv41-netns-b"
     depends_on:
       model-downloader:
         condition: service_completed_successfully
@@ -866,21 +925,58 @@ services:
       nearai.otel.ppcie: "true"
       nearai.otel.config_variant: "vllm0340r2-lora3p-cc2-w4a8-2xdep4-c8192-dspark5pb-mr64-omp4-aff64-restricted-psi8-cc-engram-cpu-fg-prestage-fullgraph-lorareplay-dpcadence"
 
+  engine-egress-probe:
+    image: curlimages/curl@sha256:d94d07ba9e7d6de898b6d96c1a072f6f8266c687af78a74f380087a0addf5d17
+    container_name: engine-egress-probe
+    restart: "no"
+    networks:
+      - engine-dsv41-a
+      - engine-dsv41-b
+    extra_hosts:
+      - "compose-manager:host-gateway"
+    entrypoint:
+      - sh
+      - -c
+      - |
+        fail=0
+        reached() { echo "engine-egress-probe reached $$1"; fail=1; }
+        if ip -4 route | grep -q '^default'; then echo "engine-egress-probe found a default route"; fail=1; fi
+        subnets=$$(ip -4 route | awk '$$1 ~ "/" {print $$1}')
+        if [ -z "$$subnets" ]; then echo "engine-egress-probe found no network to test"; fail=1; fi
+        hosts=compose-manager
+        for subnet in $$subnets; do
+          base=$${subnet%/*}
+          hosts="$$hosts $${base%.*}.$$(( $${base##*.} + 1 ))"
+        done
+        hits=$$(mktemp)
+        for host in $$hosts; do
+          ( for port in 22 80 8000 8001 8080 8444; do
+              if nc -z -w 2 "$$host" "$$port" 2>/dev/null; then echo "$$host:$$port" >> "$$hits"; fi
+            done ) &
+        done
+        wait
+        while read -r hit; do reached "$$hit"; done < "$$hits"
+        for target in "1.1.1.1 443" "1.1.1.1 53" "169.254.169.254 80"; do
+          if nc -z -w 3 $$target 2>/dev/null; then reached "$$target"; fi
+        done
+        if curl -s -o /dev/null -m 5 https://huggingface.co; then reached https://huggingface.co; fi
+        if nslookup huggingface.co >/dev/null 2>&1; then echo "engine-egress-probe resolved an outside name"; fail=1; fi
+        count=$$(echo "$$subnets" | wc -w)
+        if [ "$$fail" = 0 ]; then echo "engine-egress-probe PASS: no route out of $$count networks"; else echo "engine-egress-probe FAIL"; fi
+        exit "$$fail"
+    logging: *logging-conf
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"engine-egress-probe","service":"engine-egress-probe","tags":["model:deepseek-ai/DeepSeek-V4.1-Flash-1017","deployment:deepseek-v4.1-flash-1017-vllm-dep4x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+
   otelcol-contrib:
     image: otel/opentelemetry-collector-contrib@sha256:85ac41c2db88d0df9bd6145e608a3cb023f5d8443868adbfbbf66efb51087917
     container_name: otelcol-contrib
     command: ["--config=/etc/otelcol-contrib/config.yaml"]
     user: "0:0"
-    extra_hosts:
-      - "model-vllm-dsv41-dp0:host-gateway"
-      - "model-vllm-dsv41-dp1:host-gateway"
-      - "model-vllm-dsv41-dp2:host-gateway"
-      - "model-vllm-dsv41-dp3:host-gateway"
-      - "model-vllm-dsv41-dp4:host-gateway"
-      - "model-vllm-dsv41-dp5:host-gateway"
-      - "model-vllm-dsv41-dp6:host-gateway"
-      - "model-vllm-dsv41-dp7:host-gateway"
-
+    networks:
+      - default
+      - engine-dsv41-a
+      - engine-dsv41-b
     mem_limit: "768m"
     environment:
       - MONITORING_INGEST_TOKEN=${MONITORING_INGEST_TOKEN:-}
@@ -889,9 +985,6 @@ services:
       - DD_HOSTNAME=${DD_HOSTNAME:-unknown}
       - ENV=${ENV:-unknown}
       - HOST_IP=${HOST_IP:-unknown}
-    expose:
-      - "4317"
-      - "4318"
     volumes:
       - /var/lib/docker/containers:/var/lib/docker/containers:ro
       - otelcol_app_storage:/var/lib/otelcol-contrib
@@ -912,6 +1005,12 @@ networks:
   default:
     external: true
     name: dstack_default
+  engine-dsv41-a:
+    name: engine_dsv41_a
+    internal: true
+  engine-dsv41-b:
+    name: engine_dsv41_b
+    internal: true
 
 volumes:
   otelcol_app_storage:
@@ -928,10 +1027,11 @@ configs:
       receivers:
         otlp:
           protocols:
+            # Loopback only: nothing in this stack sends OTLP to the collector.
             grpc:
-              endpoint: 0.0.0.0:4317
+              endpoint: 127.0.0.1:4317
             http:
-              endpoint: 0.0.0.0:4318
+              endpoint: 127.0.0.1:4318
 
         filelog/docker_containers:
           include: [/var/lib/docker/containers/*/*-json.log]

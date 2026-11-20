@@ -22,14 +22,6 @@ x-vllm-proxy-common: &vllm-proxy-common
   <<: *nvidia
   extra_hosts:
     - "compose-manager:host-gateway"
-    - "model-vllm-glm53-dp0:host-gateway"
-    - "model-vllm-glm53-dp1:host-gateway"
-    - "model-vllm-glm53-dp2:host-gateway"
-    - "model-vllm-glm53-dp3:host-gateway"
-    - "model-vllm-glm53-dp4:host-gateway"
-    - "model-vllm-glm53-dp5:host-gateway"
-    - "model-vllm-glm53-dp6:host-gateway"
-    - "model-vllm-glm53-dp7:host-gateway"
   volumes:
     - /var/run/dstack.sock:/var/run/dstack.sock
     - certs:/etc/letsencrypt:ro
@@ -43,7 +35,6 @@ x-glm53-engine-common: &glm53-engine-common
   security_opt: ["no-new-privileges:true"]
   image: docker.io/nearaidev/vllm@sha256:43edd86213d507c39757ac7d513c9848386d1f426554cdc6221fba92e444e33a
   shm_size: 64g
-  network_mode: host
   volumes:
     - huggingface_cache:/root/.cache/huggingface
     - glm53_kernel_cache:/root/.cache/vllm
@@ -132,6 +123,13 @@ services:
   proxy-glm53:
     <<: *vllm-proxy-common
     container_name: proxy-glm53
+    networks:
+      - default
+      - engine-glm53-a
+      - engine-glm53-b
+    depends_on:
+      engine-egress-probe:
+        condition: service_completed_successfully
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - CLOUD_API_URL=https://cloud-api.near.ai
@@ -176,9 +174,56 @@ services:
       nearai.otel.ppcie: "true"
       nearai.otel.config_variant: "vllm0340-w4afp8-2xdep4-c8192-mtp3-mr128-q96-omp4-aff64-psiglobal8-bf16kv-prefix-cc-v2runner"
 
+  # Network namespace of glm53-dp0 to glm53-dp3: the ranks reach each other on loopback,
+  # and the proxies and the collector reach them by name on one internal network.
+  sidecar-glm53-netns-a:
+    image: curlimages/curl@sha256:d94d07ba9e7d6de898b6d96c1a072f6f8266c687af78a74f380087a0addf5d17
+    container_name: sidecar-glm53-netns-a
+    entrypoint: ["sleep", "infinity"]
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: "64m"
+    networks:
+      engine-glm53-a:
+        aliases:
+          - model-vllm-glm53-dp0
+          - model-vllm-glm53-dp1
+          - model-vllm-glm53-dp2
+          - model-vllm-glm53-dp3
+    restart: unless-stopped
+    logging: *logging-conf
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"sidecar-glm53-netns-a","service":"sidecar-glm53-netns-a","tags":["model:z-ai/glm-5.3-flash","deployment:glm-5.3-flash-vllm-dep4x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+
+  # Network namespace of glm53-dp4 to glm53-dp7: the ranks reach each other on loopback,
+  # and the proxies and the collector reach them by name on one internal network.
+  sidecar-glm53-netns-b:
+    image: curlimages/curl@sha256:d94d07ba9e7d6de898b6d96c1a072f6f8266c687af78a74f380087a0addf5d17
+    container_name: sidecar-glm53-netns-b
+    entrypoint: ["sleep", "infinity"]
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: "64m"
+    networks:
+      engine-glm53-b:
+        aliases:
+          - model-vllm-glm53-dp4
+          - model-vllm-glm53-dp5
+          - model-vllm-glm53-dp6
+          - model-vllm-glm53-dp7
+    restart: unless-stopped
+    logging: *logging-conf
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"sidecar-glm53-netns-b","service":"sidecar-glm53-netns-b","tags":["model:z-ai/glm-5.3-flash","deployment:glm-5.3-flash-vllm-dep4x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+
   model-vllm-glm53-dp0:
     <<: *glm53-engine-common
     container_name: model-vllm-glm53-dp0
+    network_mode: "service:sidecar-glm53-netns-a"
     depends_on:
       model-downloader:
         condition: service_completed_successfully
@@ -254,6 +299,7 @@ services:
   model-vllm-glm53-dp1:
     <<: *glm53-engine-common
     container_name: model-vllm-glm53-dp1
+    network_mode: "service:sidecar-glm53-netns-a"
     depends_on:
       model-downloader:
         condition: service_completed_successfully
@@ -331,6 +377,7 @@ services:
   model-vllm-glm53-dp2:
     <<: *glm53-engine-common
     container_name: model-vllm-glm53-dp2
+    network_mode: "service:sidecar-glm53-netns-a"
     depends_on:
       model-downloader:
         condition: service_completed_successfully
@@ -408,6 +455,7 @@ services:
   model-vllm-glm53-dp3:
     <<: *glm53-engine-common
     container_name: model-vllm-glm53-dp3
+    network_mode: "service:sidecar-glm53-netns-a"
     depends_on:
       model-downloader:
         condition: service_completed_successfully
@@ -485,6 +533,7 @@ services:
   model-vllm-glm53-dp4:
     <<: *glm53-engine-common
     container_name: model-vllm-glm53-dp4
+    network_mode: "service:sidecar-glm53-netns-b"
     depends_on:
       model-downloader:
         condition: service_completed_successfully
@@ -560,6 +609,7 @@ services:
   model-vllm-glm53-dp5:
     <<: *glm53-engine-common
     container_name: model-vllm-glm53-dp5
+    network_mode: "service:sidecar-glm53-netns-b"
     depends_on:
       model-downloader:
         condition: service_completed_successfully
@@ -637,6 +687,7 @@ services:
   model-vllm-glm53-dp6:
     <<: *glm53-engine-common
     container_name: model-vllm-glm53-dp6
+    network_mode: "service:sidecar-glm53-netns-b"
     depends_on:
       model-downloader:
         condition: service_completed_successfully
@@ -714,6 +765,7 @@ services:
   model-vllm-glm53-dp7:
     <<: *glm53-engine-common
     container_name: model-vllm-glm53-dp7
+    network_mode: "service:sidecar-glm53-netns-b"
     depends_on:
       model-downloader:
         condition: service_completed_successfully
@@ -822,21 +874,58 @@ services:
       nearai.otel.ppcie: "true"
       nearai.otel.config_variant: "vllm0340-w4afp8-2xdep4-c8192-mtp3-mr128-q96-omp4-aff64-psiglobal8-bf16kv-prefix-cc-v2runner"
 
+  engine-egress-probe:
+    image: curlimages/curl@sha256:d94d07ba9e7d6de898b6d96c1a072f6f8266c687af78a74f380087a0addf5d17
+    container_name: engine-egress-probe
+    restart: "no"
+    networks:
+      - engine-glm53-a
+      - engine-glm53-b
+    extra_hosts:
+      - "compose-manager:host-gateway"
+    entrypoint:
+      - sh
+      - -c
+      - |
+        fail=0
+        reached() { echo "engine-egress-probe reached $$1"; fail=1; }
+        if ip -4 route | grep -q '^default'; then echo "engine-egress-probe found a default route"; fail=1; fi
+        subnets=$$(ip -4 route | awk '$$1 ~ "/" {print $$1}')
+        if [ -z "$$subnets" ]; then echo "engine-egress-probe found no network to test"; fail=1; fi
+        hosts=compose-manager
+        for subnet in $$subnets; do
+          base=$${subnet%/*}
+          hosts="$$hosts $${base%.*}.$$(( $${base##*.} + 1 ))"
+        done
+        hits=$$(mktemp)
+        for host in $$hosts; do
+          ( for port in 22 80 8000 8001 8080 8444; do
+              if nc -z -w 2 "$$host" "$$port" 2>/dev/null; then echo "$$host:$$port" >> "$$hits"; fi
+            done ) &
+        done
+        wait
+        while read -r hit; do reached "$$hit"; done < "$$hits"
+        for target in "1.1.1.1 443" "1.1.1.1 53" "169.254.169.254 80"; do
+          if nc -z -w 3 $$target 2>/dev/null; then reached "$$target"; fi
+        done
+        if curl -s -o /dev/null -m 5 https://huggingface.co; then reached https://huggingface.co; fi
+        if nslookup huggingface.co >/dev/null 2>&1; then echo "engine-egress-probe resolved an outside name"; fail=1; fi
+        count=$$(echo "$$subnets" | wc -w)
+        if [ "$$fail" = 0 ]; then echo "engine-egress-probe PASS: no route out of $$count networks"; else echo "engine-egress-probe FAIL"; fi
+        exit "$$fail"
+    logging: *logging-conf
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"engine-egress-probe","service":"engine-egress-probe","tags":["model:z-ai/glm-5.3-flash","deployment:glm-5.3-flash-vllm-dep4x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+
   otelcol-contrib:
     image: otel/opentelemetry-collector-contrib@sha256:85ac41c2db88d0df9bd6145e608a3cb023f5d8443868adbfbbf66efb51087917
     container_name: otelcol-contrib
     command: ["--config=/etc/otelcol-contrib/config.yaml"]
     user: "0:0"
-    extra_hosts:
-      - "model-vllm-glm53-dp0:host-gateway"
-      - "model-vllm-glm53-dp1:host-gateway"
-      - "model-vllm-glm53-dp2:host-gateway"
-      - "model-vllm-glm53-dp3:host-gateway"
-      - "model-vllm-glm53-dp4:host-gateway"
-      - "model-vllm-glm53-dp5:host-gateway"
-      - "model-vllm-glm53-dp6:host-gateway"
-      - "model-vllm-glm53-dp7:host-gateway"
-
+    networks:
+      - default
+      - engine-glm53-a
+      - engine-glm53-b
     mem_limit: "768m"
     environment:
       - MONITORING_INGEST_TOKEN=${MONITORING_INGEST_TOKEN:-}
@@ -845,9 +934,6 @@ services:
       - DD_HOSTNAME=${DD_HOSTNAME:-unknown}
       - ENV=${ENV:-unknown}
       - HOST_IP=${HOST_IP:-unknown}
-    expose:
-      - "4317"
-      - "4318"
     volumes:
       - /var/lib/docker/containers:/var/lib/docker/containers:ro
       - otelcol_app_storage:/var/lib/otelcol-contrib
@@ -868,6 +954,12 @@ networks:
   default:
     external: true
     name: dstack_default
+  engine-glm53-a:
+    name: engine_glm53_a
+    internal: true
+  engine-glm53-b:
+    name: engine_glm53_b
+    internal: true
 
 volumes:
   otelcol_app_storage:
@@ -884,10 +976,11 @@ configs:
       receivers:
         otlp:
           protocols:
+            # Loopback only: nothing in this stack sends OTLP to the collector.
             grpc:
-              endpoint: 0.0.0.0:4317
+              endpoint: 127.0.0.1:4317
             http:
-              endpoint: 0.0.0.0:4318
+              endpoint: 127.0.0.1:4318
 
         filelog/docker_containers:
           include: [/var/lib/docker/containers/*/*-json.log]
