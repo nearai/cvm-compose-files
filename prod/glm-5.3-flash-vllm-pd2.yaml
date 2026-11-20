@@ -135,6 +135,8 @@ services:
       - VLLM_BACKEND_URLS=http://pd-router-glm53-a:9200
       - VLLM_BACKEND_CONVERSATION_AFFINITY=1
       - VLLM_BACKEND_AFFINITY_MAX_IMBALANCE=64
+      # Per pair (one pd-router = one backend); keep at or below the engines' --max-num-seqs.
+      - VLLM_BACKEND_MAX_INFLIGHT=64
       - VLLM_PROXY_MAX_REQUEST_SIZE=104857600
       - VLLM_PROXY_POOL_IDLE_TIMEOUT_SECS=3
       - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
