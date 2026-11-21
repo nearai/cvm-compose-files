@@ -8,7 +8,7 @@ LABEL nearai.vllm.base.linux_amd64.digest="sha256:cf5b2fdd087eb4f6d261736967cc5c
 LABEL nearai.vllm.upstream.revision="62d4bc3c7e33b1b6c906e233e6af2d3506c482ca"
 LABEL nearai.build.recipe="docker/vllm-v0.34.0-dsv41-r6/Dockerfile"
 LABEL nearai.vllm.patch_series="01-22"
-LABEL nearai.vllm.patched_files_sha256="31daef28a27479bf9715ddbf883d05a940434d32ddbf3447ef5d23d18ce563b0"
+LABEL nearai.vllm.patched_files_sha256="aba8ce807337a432145a3a7e355670a2e706582883d7eebb6dd799c7e37baa58"
 LABEL nearai.os.linux_libc_dev="6.8.0-151.151"
 LABEL nearai.os.packages="openssl=3.0.13-0ubuntu3.16 libssl3t64=3.0.13-0ubuntu3.16 libc6=2.39-0ubuntu8.12 libc-bin=2.39-0ubuntu8.12 libc6-dev=2.39-0ubuntu8.12 libc-dev-bin=2.39-0ubuntu8.12 linux-libc-dev=6.8.0-151.151"
 
@@ -22,7 +22,7 @@ RUN cd /usr/share/nearai/vllm-v0.34.0-dsv41-r6 \
     && test -z "$(find /usr/local/lib/python3.12/dist-packages/vllm \( -name '*.orig' -o -name '*.rej' \) -print -quit)" \
     && python3 -m compileall -q $(awk '{print "/usr/local/lib/python3.12/dist-packages/" $2}' PATCHED-FILES.sha256) \
     && (cd / && CUDA_VISIBLE_DEVICES= python3 -c "import vllm.connections, vllm.v1.engine.core, vllm.sampling_params, vllm.v1.conf_compute_utils, vllm.v1.worker.gpu.buffer_utils, vllm.v1.worker.gpu.async_utils, vllm.v1.worker.gpu.spec_decode.utils, vllm.models.deepseek_v41.decoder_replay_layers, vllm.models.deepseek_v41.nvidia.model, vllm.models.glm5next.common.mtp, vllm.models.glm5next.common.kda") \
-    && (cd / && CUDA_VISIBLE_DEVICES= python3 -c "from vllm.distributed.nixl_utils import nixl_thread_sync_t; assert nixl_thread_sync_t is not None")
+    && (cd / && CUDA_VISIBLE_DEVICES= python3 -c "import inspect; from vllm.distributed.nixl_utils import nixl_agent_config, nixl_thread_sync_t; assert nixl_thread_sync_t is not None; assert 'sync_mode' in inspect.signature(nixl_agent_config).parameters")
 
 # libssl and libc6 back the engine's media fetches (TLS, DNS); every version here is pinned exactly.
 RUN pkgs="openssl=3.0.13-0ubuntu3.16 libssl3t64=3.0.13-0ubuntu3.16 libc6=2.39-0ubuntu8.12 libc-bin=2.39-0ubuntu8.12 libc6-dev=2.39-0ubuntu8.12 libc-dev-bin=2.39-0ubuntu8.12 linux-libc-dev=6.8.0-151.151" \

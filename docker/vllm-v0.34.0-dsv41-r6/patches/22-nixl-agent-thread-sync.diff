@@ -9,7 +9,7 @@ diff --git a/vllm/distributed/kv_transfer/kv_connector/v1/nixl/base_worker.py b/
  )
  from vllm.distributed.parallel_state import (
      get_pcp_group,
-@@ -789,14 +790,25 @@
+@@ -789,14 +790,29 @@
          num_threads = vllm_config.kv_transfer_config.get_from_extra_config(
              "num_threads", 4
          )
@@ -19,6 +19,10 @@ diff --git a/vllm/distributed/kv_transfer/kv_connector/v1/nixl/base_worker.py b/
 +            {}
 +            if nixl_thread_sync_t is None
 +            else {"sync_mode": nixl_thread_sync_t.NIXL_THREAD_SYNC_STRICT}
++        )
++        logger.info(
++            "NIXL agent thread sync mode: %s",
++            "STRICT" if sync_kwargs else "not set (NIXL has no nixl_thread_sync_t)",
 +        )
          if nixl_agent_config is None:
              config = None
@@ -37,7 +41,7 @@ diff --git a/vllm/distributed/kv_transfer/kv_connector/v1/nixl/base_worker.py b/
              )
  
          # Extra UCX backend init params, e.g. {"ucx_error_handling_mode": "none"}.
-@@ -808,7 +820,9 @@
+@@ -808,7 +824,9 @@
              bool(ucx_backend_params) and "UCX" in self.nixl_backends
          )
          if sleep_mode or explicit_backends:
