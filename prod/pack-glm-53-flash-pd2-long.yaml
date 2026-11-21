@@ -407,6 +407,9 @@ services:
       # KV moves over UCX cuda_ipc (zero-copy); protocol info at boot logs the selected transport.
       # tcp carries only UCX wireup (NIXL's peer error handling needs it); KV data uses cuda_ipc.
       - UCX_TLS=cuda_ipc,cuda_copy,tcp
+      # NIXL notifications by copy: zero-copy pins host buffers (cuMemHostRegister), unsupported in CC.
+      # KV reads stay cuda_ipc zero-copy.
+      - UCX_ZCOPY_THRESH=inf
       - UCX_LOG_LEVEL=info
       - UCX_PROTO_INFO=y
       - VLLM_DP_MASTER_PORT=29700
@@ -514,6 +517,9 @@ services:
       # KV moves over UCX cuda_ipc (zero-copy); protocol info at boot logs the selected transport.
       # tcp carries only UCX wireup (NIXL's peer error handling needs it); KV data uses cuda_ipc.
       - UCX_TLS=cuda_ipc,cuda_copy,tcp
+      # NIXL notifications by copy: zero-copy pins host buffers (cuMemHostRegister), unsupported in CC.
+      # KV reads stay cuda_ipc zero-copy.
+      - UCX_ZCOPY_THRESH=inf
       - UCX_LOG_LEVEL=info
       - UCX_PROTO_INFO=y
       - VLLM_DP_MASTER_PORT=29700
@@ -621,6 +627,9 @@ services:
       # KV moves over UCX cuda_ipc (zero-copy); protocol info at boot logs the selected transport.
       # tcp carries only UCX wireup (NIXL's peer error handling needs it); KV data uses cuda_ipc.
       - UCX_TLS=cuda_ipc,cuda_copy,tcp
+      # NIXL notifications by copy: zero-copy pins host buffers (cuMemHostRegister), unsupported in CC.
+      # KV reads stay cuda_ipc zero-copy.
+      - UCX_ZCOPY_THRESH=inf
       - UCX_LOG_LEVEL=info
       - UCX_PROTO_INFO=y
       - VLLM_DP_MASTER_PORT=29710
@@ -727,6 +736,9 @@ services:
       # KV moves over UCX cuda_ipc (zero-copy); protocol info at boot logs the selected transport.
       # tcp carries only UCX wireup (NIXL's peer error handling needs it); KV data uses cuda_ipc.
       - UCX_TLS=cuda_ipc,cuda_copy,tcp
+      # NIXL notifications by copy: zero-copy pins host buffers (cuMemHostRegister), unsupported in CC.
+      # KV reads stay cuda_ipc zero-copy.
+      - UCX_ZCOPY_THRESH=inf
       - UCX_LOG_LEVEL=info
       - UCX_PROTO_INFO=y
       - VLLM_DP_MASTER_PORT=29710
