@@ -47,7 +47,7 @@ x-glm53-engine-common: &glm53-engine-common
   init: true
   cap_drop: [ALL]
   security_opt: ["no-new-privileges:true"]
-  image: docker.io/nearaidev/vllm@sha256:561613e0f1bc3e291e68ee08b4e6fad1d6532bda49ddb8296399d159e509a892
+  image: docker.io/nearaidev/vllm@sha256:8a3762eaca5d5454b73614c2fa4f306cbf364c408aeeb7829fde134773ed77df
   restart: unless-stopped
   stop_grace_period: 10m
   logging: *logging-conf
@@ -445,7 +445,7 @@ services:
       --no-disable-hybrid-kv-cache-manager
       --enable-prefix-caching
       --limit-mm-per-prompt '{"image": 4}'
-      --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_producer","kv_connector_extra_config":{"kv_lease_duration":30}}'
+      --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_producer","kv_connector_extra_config":{"kv_lease_duration":30,"enable_prog_thread":false}}'
       --no-enable-log-requests
       --host 0.0.0.0
       --port 9100
@@ -555,7 +555,7 @@ services:
       --no-disable-hybrid-kv-cache-manager
       --enable-prefix-caching
       --limit-mm-per-prompt '{"image": 4}'
-      --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_producer","kv_connector_extra_config":{"kv_lease_duration":30}}'
+      --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_producer","kv_connector_extra_config":{"kv_lease_duration":30,"enable_prog_thread":false}}'
       --no-enable-log-requests
       --host 0.0.0.0
       --port 9101
@@ -664,7 +664,7 @@ services:
       --no-disable-hybrid-kv-cache-manager
       --enable-prefix-caching
       --limit-mm-per-prompt '{"image": 4}'
-      --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_consumer","kv_connector_extra_config":{"kv_lease_duration":30}}'
+      --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_consumer","kv_connector_extra_config":{"kv_lease_duration":30,"enable_prog_thread":false}}'
       --no-enable-log-requests
       --host 0.0.0.0
       --port 9110
@@ -773,7 +773,7 @@ services:
       --no-disable-hybrid-kv-cache-manager
       --enable-prefix-caching
       --limit-mm-per-prompt '{"image": 4}'
-      --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_consumer","kv_connector_extra_config":{"kv_lease_duration":30}}'
+      --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_consumer","kv_connector_extra_config":{"kv_lease_duration":30,"enable_prog_thread":false}}'
       --no-enable-log-requests
       --host 0.0.0.0
       --port 9111
