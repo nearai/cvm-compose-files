@@ -72,9 +72,9 @@ jobs:
           git merge-base --is-ancestor "$SOURCE_REVISION" origin/main
           test "$GITHUB_REF" = refs/heads/main
           test "$(sha256sum "$BUILD_CONTEXT/Dockerfile" | awk '{print $1}')" = \
-            0a602f60932cbcc1036d843de9772f0eff4d84a888e1c2c006e899f52d43cf95
+            2eec002e72a1570b195c89dd29c901638f5cf80f0dfa2e3dcab0547994dccc24
           test "$(sha256sum "$BUILD_CONTEXT/SHA256SUMS" | awk '{print $1}')" = \
-            4c74c2f694cee298a07e495460c5f3cde6f5dd22372a45f81595fd128e2ed9f9
+            ab4e78c5cd900b297776216614855d7261cd87c6a041013c62ee7764e0df1f5b
           (cd "$BUILD_CONTEXT" && sha256sum --check --strict SHA256SUMS)
           for line in \
             'base_image=vllm/vllm-openai@sha256:20fdb089454afbb324efa4110a2c025ff7b27cc1a086e07aa580b18df8ad1ce1' \
