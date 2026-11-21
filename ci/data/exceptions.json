@@ -565,5 +565,26 @@
     "sha256": "defc7c19b574f1e532eb4de675561e4a26374873d9503146aec696140349eaa2",
     "reason": "candidate whose service set differs from its live file",
     "remove_when": "the candidate replaces its live file"
+  },
+  {
+    "rule": "pins.digest",
+    "path": "prod/deepseek-v4.1-flash-1017-vllm-pd4.yaml",
+    "sha256": "9dcd945c608f77ac55d0026d57d2e617d98b911b4a54e7f9ad4cce9c83a87d43",
+    "reason": "image carries a tag next to its digest; the digest decides what runs",
+    "remove_when": "the image reference is a digest without a tag"
+  },
+  {
+    "rule": "privacy.secret",
+    "path": "prod/deepseek-v4.1-flash-1017-vllm-pd4.yaml",
+    "sha256": "e67bf1fe5f5dceecba68fe6a4e61026f5e5a6c1e503f1ef9cd5b54b5482d3480",
+    "reason": "secret variable without a required-value check",
+    "remove_when": "the secret has a required-value check"
+  },
+  {
+    "rule": "public.domain",
+    "path": "prod/deepseek-v4.1-flash-1017-vllm-pd4.yaml",
+    "sha256": "2857d6988af093f27ae2d89387c18ed6e11a009c52b2d96df637c2936a9b2918",
+    "reason": "domain outside the public allowlist inside an embedded config",
+    "remove_when": "the value is a deploy-time variable"
   }
 ]
