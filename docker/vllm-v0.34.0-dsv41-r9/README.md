@@ -94,8 +94,13 @@ read these variables, so set them on the same container.
 | `VLLM_ADMIT_LONG_CUTOFF_TOKENS` | 65536 | uncached prompt tokens at or below this make a request short |
 | `VLLM_ADMIT_RETRY_AFTER_SHORT_S` | 1 | `Retry-After` seconds for a refused short request |
 | `VLLM_ADMIT_RETRY_AFTER_LONG_S` | 10 | `Retry-After` seconds for a refused long request |
-| `VLLM_ADMIT_ROLE` | unset | `prefill` enables admission on an engine whose KV role is `kv_both`; `kv_producer` is enabled without it |
+| `VLLM_ADMIT_ROLE` | unset | forces the role for any engine, including one with no KV connector; set it to `prefill` only on prefill engines (a `kv_producer` engine is enabled without it) |
 
+- A lone short request is always admitted: a short request is refused only if the short backlog is above zero and
+  the backlog plus its own uncached tokens exceed `VLLM_ADMIT_SHORT_MAX_TOKENS`. Size the limit with this in mind;
+  one short request larger than the limit still gets through when nothing is queued.
+- Naming: the module (`admission_p26`), its class, the `_p26_*` request attributes and the test variables use
+  "p26"/"P26", a historic name; the patch file is number 25 in this series.
 - Class is by uncached tokens: the prompt length minus the prefix-cache hit, read with the existing side-effect-free
   probe at the moment of the decision. A long conversation with a warm cache counts as short.
 - A refused request gets an `overloaded_short`, `overloaded_long_count` or `overloaded_long_yield` error from the engine
@@ -108,9 +113,19 @@ read these variables, so set them on the same container.
 - A streaming request refused by the engine core gets a 200 with an in-stream error, as in stock vLLM; use it with
   non-streaming prefill legs.
 
-`tests/` holds 46 CPU-only tests (`test_admission.py`, `test_real_scheduler.py`). Run them in the built image with
-`PYTHONPATH` pointing at the patched tree, `P26_UTILS` set to vLLM's `tests/v1/core/utils.py` and `P26_MODEL` set to a
-local model directory read only for its config: `python3 -m pytest -q -p no:cacheprovider tests/`.
+`tests/` holds 46 CPU-only tests (`test_admission.py`, `test_real_scheduler.py`). It is hashed in `SHA256SUMS` for
+review and, deliberately, is not copied into the image. Run the tests against a patched vLLM tree with `PYTHONPATH`
+pointing at it and three variables set: `P26_ADMISSION` (path to the patched tree's
+`vllm/v1/core/sched/admission_p26.py`), `P26_UTILS` (vLLM's `tests/v1/core/utils.py`) and `P26_MODEL` (a local model
+directory read only for its config): `python3 -m pytest -q -p no:cacheprovider tests/`.
+
+Known limits of patch 25:
+
+- The backlog is recomputed on every add by re-probing the prefix cache for each request that has not started. The cost
+  of one add therefore grows with the queue depth (waiting requests times prompt blocks) and runs on the engine-core
+  loop, only when a limit is set. It has not been measured under a deep queue.
+- The serving layer's `Retry-After` header is derived from the error code and message mapping in the patch. Rewording
+  those messages without updating the mapping drops the header; the 429 status is unaffected.
 
 OS: openssl/libssl3t64 3.0.13-0ubuntu3.16, libc6/libc-bin/libc6-dev/libc-dev-bin 2.39-0ubuntu8.12
 and linux-libc-dev 6.8.0-151.151, pinned by exact version; the `nearai.os.packages` label lists
