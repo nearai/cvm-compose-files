@@ -1,0 +1,151 @@
+diff --git a/vllm/platforms/cuda.py b/vllm/platforms/cuda.py
+index a3ef3de..bff3782 100644
+--- a/vllm/platforms/cuda.py
++++ b/vllm/platforms/cuda.py
+@@ -218,6 +218,10 @@ def _detect_confidential_compute() -> bool:
+ 
+     Overridable via `VLLM_CONFIDENTIAL_COMPUTE=1/0`; detected once via NVML
+     and cached. Returns False if CUDA is unavailable or NVML fails.
++
++    NEAR: no NVML auto-detection. Only `VLLM_CONFIDENTIAL_COMPUTE=1` turns the
++    copy paths on; unset (or any other value) is off, so the image keeps its
++    previous behaviour on hosts where they were not canaried.
+     """
+     forced = envs.VLLM_CONFIDENTIAL_COMPUTE
+     if forced is not None:
+@@ -229,18 +233,7 @@ def _detect_confidential_compute() -> bool:
+             "enabled" if enabled else "disabled",
+         )
+         return enabled
+-    if not torch.cuda.is_available():
+-        return False
+-    try:
+-        enabled = _nvml_confidential_compute_enabled()
+-    except Exception as e:
+-        logger.info("NVIDIA Confidential Computing not detected: NVML failed: %r", e)
+-        return False
+-    logger.info(
+-        "NVIDIA Confidential Computing %s via NVML",
+-        "detected" if enabled else "not detected",
+-    )
+-    return enabled
++    return False
+ 
+ 
+ @cache
+diff --git a/vllm/v1/conf_compute_utils.py b/vllm/v1/conf_compute_utils.py
+index 9e4a8e8..22288b4 100644
+--- a/vllm/v1/conf_compute_utils.py
++++ b/vllm/v1/conf_compute_utils.py
+@@ -33,8 +33,17 @@ so that:
+ Copies made while torch.compile is tracing or a CUDA graph is being captured
+ are left alone, as are H2D copies into an existing tensor that would need a
+ staging buffer larger than `_MAX_STAGED_BYTES` (e.g. KV cache swaps).
++
++NEAR differences from upstream v0.34.0:
++
++- A D2H copy that failed raises at the next event / stream / device synchronize
++  or query, even if it finished before that call took its snapshot.
++- `cc_keeps_uva()`: `VLLM_CONFIDENTIAL_COMPUTE_KEEP_UVA=1` keeps the V2 runner's
++  UVA buffers with the copy paths on, for bare-metal overhead attribution only.
++- Detection is `VLLM_CONFIDENTIAL_COMPUTE=1` only (vllm/platforms/cuda.py).
+ """
+ 
++import os
+ import threading
+ import weakref
+ from concurrent.futures import Future, ThreadPoolExecutor
+@@ -116,6 +125,29 @@ def new_external_d2h_stream(
+     return stream
+ 
+ 
++@cache
++def cc_keeps_uva() -> bool:
++    """NEAR: whether `VLLM_CONFIDENTIAL_COMPUTE_KEEP_UVA=1` keeps the V2 runner's
++    UVA buffers although Confidential Computing is on. Under CC the device view
++    of pinned host memory is not coherent (the GPU reads a stale snapshot), so
++    this is only valid on bare metal. `VLLM_NEAR_DISABLE_UVA=1` still wins."""
++    from vllm.platforms import current_platform
++    from vllm.utils.platform_utils import is_pin_memory_available
++
++    if (
++        not current_platform.is_confidential_compute()
++        or os.getenv("VLLM_CONFIDENTIAL_COMPUTE_KEEP_UVA") != "1"
++        or os.getenv("VLLM_NEAR_DISABLE_UVA") == "1"
++        or not is_pin_memory_available()
++    ):
++        return False
++    logger.warning(
++        "VLLM_CONFIDENTIAL_COMPUTE_KEEP_UVA=1: keeping UVA buffers with "
++        "Confidential Computing copy paths on. Only valid on bare metal."
++    )
++    return True
++
++
+ def register_inplace_h2d_target(tensor: torch.Tensor) -> None:
+     """Let non_blocking H2D copies into `tensor` (or a view of it) land in
+     place on the staging stream once `install()` has run: no staging tensor
+@@ -212,9 +244,14 @@ def _d2h(src: torch.Tensor, out: torch.Tensor | None = None) -> torch.Tensor | N
+ 
+ 
+ def _pending_snapshot() -> list[Future]:
++    """Return the unfinished copies; re-raise the error of a finished one."""
+     with _pending_lock:
++        finished = [f for f in _pending if f.done()]
+         _pending[:] = [f for f in _pending if not f.done()]
+-        return list(_pending)
++        snapshot = list(_pending)
++    for f in finished:
++        f.result()
++    return snapshot
+ 
+ 
+ def _wait_pending() -> None:
+diff --git a/vllm/v1/worker/gpu/buffer_utils.py b/vllm/v1/worker/gpu/buffer_utils.py
+index 8ebbc8b..790de4c 100644
+--- a/vllm/v1/worker/gpu/buffer_utils.py
++++ b/vllm/v1/worker/gpu/buffer_utils.py
+@@ -15,7 +15,7 @@ from vllm.utils.torch_utils import (
+     TORCH_DTYPE_TO_ARRAY_TYPECODE,
+     get_accelerator_view_from_cpu_tensor,
+ )
+-from vllm.v1.conf_compute_utils import register_inplace_h2d_target
++from vllm.v1.conf_compute_utils import cc_keeps_uva, register_inplace_h2d_target
+ 
+ logger = init_logger(__name__)
+ 
+@@ -36,9 +36,15 @@ def set_default_max_concurrency(n: int) -> None:
+     _DEFAULT_MAX_CONCURRENCY = max(2, n)
+ 
+ 
++def _use_uva() -> bool:
++    # NEAR: is_uva_available() is False under Confidential Computing;
++    # VLLM_CONFIDENTIAL_COMPUTE_KEEP_UVA=1 keeps these runner buffers on UVA.
++    return is_uva_available() or cc_keeps_uva()
++
++
+ class UvaBuffer:
+     def __init__(self, size: int | Sequence[int], dtype: torch.dtype):
+-        if not is_uva_available():
++        if not _use_uva():
+             raise RuntimeError("UVA is not available")
+         self.cpu = torch.zeros(size, dtype=dtype, device="cpu", pin_memory=True)
+         self.np = self.cpu.numpy()
+@@ -105,7 +111,7 @@ class UvaBufferPool:
+         self.max_concurrency = max_concurrency
+ 
+         # UVA buffers for concurrency
+-        self._buffer_cls = UvaBuffer if is_uva_available() else NonUvaBuffer
++        self._buffer_cls = UvaBuffer if _use_uva() else NonUvaBuffer
+         self._uva_bufs = [self._buffer_cls(size, dtype) for _ in range(max_concurrency)]
+         # Current buffer index
+         self._curr = 0
+@@ -188,7 +194,7 @@ class StagedWriteTensor:
+         self.max_concurrency = max_concurrency
+ 
+         # Without UVA, large-but-cold tensors live on the GPU directly.
+-        uva_instead_of_gpu = uva_instead_of_gpu and is_uva_available()
++        uva_instead_of_gpu = uva_instead_of_gpu and _use_uva()
+ 
+         if not uva_instead_of_gpu:
+             # Create a GPU tensor (default)
