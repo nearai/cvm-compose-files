@@ -883,6 +883,28 @@
     },
     {
       "file": "prod/pack-small-models.yaml",
+      "service": "glm53-ghost-aggregator",
+      "role": "aux",
+      "items": [
+        "security_opt:no-new-privileges:true"
+      ]
+    },
+    {
+      "file": "prod/pack-small-models.yaml",
+      "service": "model-sg-glm53-w4afp8-tp2-r1",
+      "items": [
+        "ipc:host"
+      ]
+    },
+    {
+      "file": "prod/pack-small-models.yaml",
+      "service": "model-sg-glm53-w4afp8-tp2-r2",
+      "items": [
+        "ipc:host"
+      ]
+    },
+    {
+      "file": "prod/pack-small-models.yaml",
       "service": "dcgm-glm53",
       "role": "aux",
       "items": [
@@ -923,31 +945,9 @@
     },
     {
       "file": "prod/pack-small-models.yaml",
-      "service": "glm53-ghost-aggregator",
-      "role": "aux",
-      "items": [
-        "security_opt:no-new-privileges:true"
-      ]
-    },
-    {
-      "file": "prod/pack-small-models.yaml",
       "service": "model-privacy-filter",
       "role": "aux",
       "items": []
-    },
-    {
-      "file": "prod/pack-small-models.yaml",
-      "service": "model-sg-glm53-w4afp8-tp2-r1",
-      "items": [
-        "ipc:host"
-      ]
-    },
-    {
-      "file": "prod/pack-small-models.yaml",
-      "service": "model-sg-glm53-w4afp8-tp2-r2",
-      "items": [
-        "ipc:host"
-      ]
     },
     {
       "file": "prod/pack-small-models.yaml",
@@ -1094,6 +1094,47 @@
         "bind:/sock",
         "security_opt:no-new-privileges:true",
         "sock:/var/run/dstack.sock"
+      ]
+    },
+    {
+      "file": "prod/pack-small-models.yaml",
+      "service": "model-vllm-glm53-a-prefill0",
+      "items": [
+        "security_opt:no-new-privileges:true"
+      ]
+    },
+    {
+      "file": "prod/pack-small-models.yaml",
+      "service": "model-vllm-glm53-a-prefill1",
+      "items": [
+        "security_opt:no-new-privileges:true"
+      ]
+    },
+    {
+      "file": "prod/pack-small-models.yaml",
+      "service": "model-vllm-glm53-a-decode0",
+      "items": [
+        "security_opt:no-new-privileges:true"
+      ]
+    },
+    {
+      "file": "prod/pack-small-models.yaml",
+      "service": "model-vllm-glm53-a-decode1",
+      "items": [
+        "security_opt:no-new-privileges:true"
+      ]
+    },
+    {
+      "file": "prod/pack-small-models.yaml",
+      "service": "pd-router-glm53-a",
+      "role": "aux",
+      "items": []
+    },
+    {
+      "file": "prod/pack-small-models.yaml",
+      "service": "sidecar-glm53-netns-a",
+      "items": [
+        "security_opt:no-new-privileges:true"
       ]
     },
     {
