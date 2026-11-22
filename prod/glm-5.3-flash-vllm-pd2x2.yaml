@@ -34,8 +34,7 @@ x-glm53-engine-common: &glm53-engine-common
   init: true
   cap_drop: [ALL]
   security_opt: ["no-new-privileges:true"]
-  # r3 digest until the r4 image is published; the VLLM_NEAR_KDA_* switches take effect only on r4.
-  image: docker.io/nearaidev/vllm@sha256:31c5187a659f929a213c1cbbd58618a05b9a2af33498e21360818a986c67a162
+  image: docker.io/nearaidev/vllm@sha256:8a3762eaca5d5454b73614c2fa4f306cbf364c408aeeb7829fde134773ed77df
   restart: unless-stopped
   stop_grace_period: 10m
   logging: *logging-conf
@@ -240,6 +239,9 @@ services:
       # KV moves over UCX cuda_ipc (zero-copy); protocol info at boot logs the selected transport.
       # tcp carries only UCX wireup (NIXL's peer error handling needs it); KV data uses cuda_ipc.
       - UCX_TLS=cuda_ipc,cuda_copy,tcp
+      # NIXL notifications by copy: zero-copy pins host buffers (cuMemHostRegister), unsupported in CC.
+      # KV reads stay cuda_ipc zero-copy.
+      - UCX_ZCOPY_THRESH=inf
       - UCX_LOG_LEVEL=info
       - UCX_PROTO_INFO=y
       - VLLM_DP_MASTER_PORT=29700
@@ -275,7 +277,7 @@ services:
       --no-disable-hybrid-kv-cache-manager
       --enable-prefix-caching
       --limit-mm-per-prompt '{"image": 4}'
-      --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_producer","kv_connector_extra_config":{"kv_lease_duration":30}}'
+      --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_producer","kv_connector_extra_config":{"kv_lease_duration":30,"enable_prog_thread":false}}'
       --no-enable-log-requests
       --host 0.0.0.0
       --port 9100
@@ -347,6 +349,9 @@ services:
       # KV moves over UCX cuda_ipc (zero-copy); protocol info at boot logs the selected transport.
       # tcp carries only UCX wireup (NIXL's peer error handling needs it); KV data uses cuda_ipc.
       - UCX_TLS=cuda_ipc,cuda_copy,tcp
+      # NIXL notifications by copy: zero-copy pins host buffers (cuMemHostRegister), unsupported in CC.
+      # KV reads stay cuda_ipc zero-copy.
+      - UCX_ZCOPY_THRESH=inf
       - UCX_LOG_LEVEL=info
       - UCX_PROTO_INFO=y
       - VLLM_DP_MASTER_PORT=29700
@@ -382,7 +387,7 @@ services:
       --no-disable-hybrid-kv-cache-manager
       --enable-prefix-caching
       --limit-mm-per-prompt '{"image": 4}'
-      --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_producer","kv_connector_extra_config":{"kv_lease_duration":30}}'
+      --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_producer","kv_connector_extra_config":{"kv_lease_duration":30,"enable_prog_thread":false}}'
       --no-enable-log-requests
       --host 0.0.0.0
       --port 9101
@@ -454,6 +459,9 @@ services:
       # KV moves over UCX cuda_ipc (zero-copy); protocol info at boot logs the selected transport.
       # tcp carries only UCX wireup (NIXL's peer error handling needs it); KV data uses cuda_ipc.
       - UCX_TLS=cuda_ipc,cuda_copy,tcp
+      # NIXL notifications by copy: zero-copy pins host buffers (cuMemHostRegister), unsupported in CC.
+      # KV reads stay cuda_ipc zero-copy.
+      - UCX_ZCOPY_THRESH=inf
       - UCX_LOG_LEVEL=info
       - UCX_PROTO_INFO=y
       - VLLM_DP_MASTER_PORT=29710
@@ -488,7 +496,7 @@ services:
       --no-disable-hybrid-kv-cache-manager
       --enable-prefix-caching
       --limit-mm-per-prompt '{"image": 4}'
-      --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_consumer","kv_connector_extra_config":{"kv_lease_duration":30}}'
+      --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_consumer","kv_connector_extra_config":{"kv_lease_duration":30,"enable_prog_thread":false}}'
       --no-enable-log-requests
       --host 0.0.0.0
       --port 9110
@@ -560,6 +568,9 @@ services:
       # KV moves over UCX cuda_ipc (zero-copy); protocol info at boot logs the selected transport.
       # tcp carries only UCX wireup (NIXL's peer error handling needs it); KV data uses cuda_ipc.
       - UCX_TLS=cuda_ipc,cuda_copy,tcp
+      # NIXL notifications by copy: zero-copy pins host buffers (cuMemHostRegister), unsupported in CC.
+      # KV reads stay cuda_ipc zero-copy.
+      - UCX_ZCOPY_THRESH=inf
       - UCX_LOG_LEVEL=info
       - UCX_PROTO_INFO=y
       - VLLM_DP_MASTER_PORT=29710
@@ -594,7 +605,7 @@ services:
       --no-disable-hybrid-kv-cache-manager
       --enable-prefix-caching
       --limit-mm-per-prompt '{"image": 4}'
-      --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_consumer","kv_connector_extra_config":{"kv_lease_duration":30}}'
+      --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_consumer","kv_connector_extra_config":{"kv_lease_duration":30,"enable_prog_thread":false}}'
       --no-enable-log-requests
       --host 0.0.0.0
       --port 9111
@@ -689,6 +700,9 @@ services:
       # KV moves over UCX cuda_ipc (zero-copy); protocol info at boot logs the selected transport.
       # tcp carries only UCX wireup (NIXL's peer error handling needs it); KV data uses cuda_ipc.
       - UCX_TLS=cuda_ipc,cuda_copy,tcp
+      # NIXL notifications by copy: zero-copy pins host buffers (cuMemHostRegister), unsupported in CC.
+      # KV reads stay cuda_ipc zero-copy.
+      - UCX_ZCOPY_THRESH=inf
       - UCX_LOG_LEVEL=info
       - UCX_PROTO_INFO=y
       - VLLM_DP_MASTER_PORT=29720
@@ -724,7 +738,7 @@ services:
       --no-disable-hybrid-kv-cache-manager
       --enable-prefix-caching
       --limit-mm-per-prompt '{"image": 4}'
-      --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_producer","kv_connector_extra_config":{"kv_lease_duration":30}}'
+      --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_producer","kv_connector_extra_config":{"kv_lease_duration":30,"enable_prog_thread":false}}'
       --no-enable-log-requests
       --host 0.0.0.0
       --port 9120
@@ -796,6 +810,9 @@ services:
       # KV moves over UCX cuda_ipc (zero-copy); protocol info at boot logs the selected transport.
       # tcp carries only UCX wireup (NIXL's peer error handling needs it); KV data uses cuda_ipc.
       - UCX_TLS=cuda_ipc,cuda_copy,tcp
+      # NIXL notifications by copy: zero-copy pins host buffers (cuMemHostRegister), unsupported in CC.
+      # KV reads stay cuda_ipc zero-copy.
+      - UCX_ZCOPY_THRESH=inf
       - UCX_LOG_LEVEL=info
       - UCX_PROTO_INFO=y
       - VLLM_DP_MASTER_PORT=29720
@@ -831,7 +848,7 @@ services:
       --no-disable-hybrid-kv-cache-manager
       --enable-prefix-caching
       --limit-mm-per-prompt '{"image": 4}'
-      --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_producer","kv_connector_extra_config":{"kv_lease_duration":30}}'
+      --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_producer","kv_connector_extra_config":{"kv_lease_duration":30,"enable_prog_thread":false}}'
       --no-enable-log-requests
       --host 0.0.0.0
       --port 9121
@@ -903,6 +920,9 @@ services:
       # KV moves over UCX cuda_ipc (zero-copy); protocol info at boot logs the selected transport.
       # tcp carries only UCX wireup (NIXL's peer error handling needs it); KV data uses cuda_ipc.
       - UCX_TLS=cuda_ipc,cuda_copy,tcp
+      # NIXL notifications by copy: zero-copy pins host buffers (cuMemHostRegister), unsupported in CC.
+      # KV reads stay cuda_ipc zero-copy.
+      - UCX_ZCOPY_THRESH=inf
       - UCX_LOG_LEVEL=info
       - UCX_PROTO_INFO=y
       - VLLM_DP_MASTER_PORT=29730
@@ -937,7 +957,7 @@ services:
       --no-disable-hybrid-kv-cache-manager
       --enable-prefix-caching
       --limit-mm-per-prompt '{"image": 4}'
-      --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_consumer","kv_connector_extra_config":{"kv_lease_duration":30}}'
+      --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_consumer","kv_connector_extra_config":{"kv_lease_duration":30,"enable_prog_thread":false}}'
       --no-enable-log-requests
       --host 0.0.0.0
       --port 9130
@@ -1009,6 +1029,9 @@ services:
       # KV moves over UCX cuda_ipc (zero-copy); protocol info at boot logs the selected transport.
       # tcp carries only UCX wireup (NIXL's peer error handling needs it); KV data uses cuda_ipc.
       - UCX_TLS=cuda_ipc,cuda_copy,tcp
+      # NIXL notifications by copy: zero-copy pins host buffers (cuMemHostRegister), unsupported in CC.
+      # KV reads stay cuda_ipc zero-copy.
+      - UCX_ZCOPY_THRESH=inf
       - UCX_LOG_LEVEL=info
       - UCX_PROTO_INFO=y
       - VLLM_DP_MASTER_PORT=29730
@@ -1043,7 +1066,7 @@ services:
       --no-disable-hybrid-kv-cache-manager
       --enable-prefix-caching
       --limit-mm-per-prompt '{"image": 4}'
-      --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_consumer","kv_connector_extra_config":{"kv_lease_duration":30}}'
+      --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_consumer","kv_connector_extra_config":{"kv_lease_duration":30,"enable_prog_thread":false}}'
       --no-enable-log-requests
       --host 0.0.0.0
       --port 9131
@@ -1069,7 +1092,7 @@ services:
       nearai.otel.config_variant: "vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc"
 
   pd-router-glm53-a:
-    # One router per prefill/decode pair. Image digest to be pinned once the router image is published.
+    # One router per prefill/decode pair.
     image: docker.io/nearaidev/vllm@sha256:cc0066b599ab2d2c75a4b06ed7df4711cb181d110d5448dde894e17661e4c405
     container_name: pd-router-glm53-a
     command:
@@ -1127,7 +1150,7 @@ services:
       nearai.otel.config_variant: "vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc"
 
   pd-router-glm53-b:
-    # One router per prefill/decode pair. Image digest to be pinned once the router image is published.
+    # One router per prefill/decode pair.
     image: docker.io/nearaidev/vllm@sha256:cc0066b599ab2d2c75a4b06ed7df4711cb181d110d5448dde894e17661e4c405
     container_name: pd-router-glm53-b
     command:
