@@ -1376,6 +1376,13 @@ services:
       - UCX_ZCOPY_THRESH=inf
       - UCX_LOG_LEVEL=info
       - UCX_PROTO_INFO=y
+      - VLLM_ADMIT_ROLE=prefill
+      - VLLM_ADMIT_LONG_CUTOFF_TOKENS=65536
+      - VLLM_ADMIT_SHORT_MAX_TOKENS=81920
+      - VLLM_ADMIT_LONG_MAX_INFLIGHT=2
+      - VLLM_ADMIT_LONG_YIELD_SHORT_TOKENS=20480
+      - VLLM_ADMIT_RETRY_AFTER_SHORT_S=1
+      - VLLM_ADMIT_RETRY_AFTER_LONG_S=10
       - VLLM_DP_MASTER_PORT=29700
       - VLLM_NIXL_SIDE_CHANNEL_PORT=5600
     command: >
@@ -1388,10 +1395,10 @@ services:
       --enable-expert-parallel
       --data-parallel-address 127.0.0.1
       --data-parallel-rpc-port 13445
-      --max-model-len 262144
-      --max-num-batched-tokens 8192
+      --max-model-len 1048576
+      --max-num-batched-tokens 16384
       --max-num-seqs 128
-      --long-prefill-token-threshold 4864
+      --long-prefill-token-threshold 2048
       --max-num-queued-reqs 96
       --scheduling-policy priority
       --gpu-memory-utilization 0.92
@@ -1403,8 +1410,8 @@ services:
       --speculative-config '{"method":"mtp","num_speculative_tokens":3}'
       --compilation-config '{"cudagraph_mode":"FULL_DECODE_ONLY"}'
       --moe-backend humming
-      --attention-backend FLASH_ATTN_MLA_SPARSE
-      --kv-cache-dtype auto
+      --attention-backend FLASHINFER_MLA_SPARSE_SM90
+      --kv-cache-dtype fp8_e4m3
       --mamba-ssm-cache-dtype bfloat16
       --no-disable-hybrid-kv-cache-manager
       --enable-prefix-caching
@@ -1486,6 +1493,13 @@ services:
       - UCX_ZCOPY_THRESH=inf
       - UCX_LOG_LEVEL=info
       - UCX_PROTO_INFO=y
+      - VLLM_ADMIT_ROLE=prefill
+      - VLLM_ADMIT_LONG_CUTOFF_TOKENS=65536
+      - VLLM_ADMIT_SHORT_MAX_TOKENS=81920
+      - VLLM_ADMIT_LONG_MAX_INFLIGHT=2
+      - VLLM_ADMIT_LONG_YIELD_SHORT_TOKENS=20480
+      - VLLM_ADMIT_RETRY_AFTER_SHORT_S=1
+      - VLLM_ADMIT_RETRY_AFTER_LONG_S=10
       - VLLM_DP_MASTER_PORT=29700
       - VLLM_NIXL_SIDE_CHANNEL_PORT=5600
     command: >
@@ -1498,10 +1512,10 @@ services:
       --enable-expert-parallel
       --data-parallel-address 127.0.0.1
       --data-parallel-rpc-port 13445
-      --max-model-len 262144
-      --max-num-batched-tokens 8192
+      --max-model-len 1048576
+      --max-num-batched-tokens 16384
       --max-num-seqs 128
-      --long-prefill-token-threshold 4864
+      --long-prefill-token-threshold 2048
       --max-num-queued-reqs 96
       --scheduling-policy priority
       --gpu-memory-utilization 0.92
@@ -1513,8 +1527,8 @@ services:
       --speculative-config '{"method":"mtp","num_speculative_tokens":3}'
       --compilation-config '{"cudagraph_mode":"FULL_DECODE_ONLY"}'
       --moe-backend humming
-      --attention-backend FLASH_ATTN_MLA_SPARSE
-      --kv-cache-dtype auto
+      --attention-backend FLASHINFER_MLA_SPARSE_SM90
+      --kv-cache-dtype fp8_e4m3
       --mamba-ssm-cache-dtype bfloat16
       --no-disable-hybrid-kv-cache-manager
       --enable-prefix-caching
@@ -1608,7 +1622,7 @@ services:
       --enable-expert-parallel
       --data-parallel-address 127.0.0.1
       --data-parallel-rpc-port 13455
-      --max-model-len 262144
+      --max-model-len 1048576
       --max-num-batched-tokens 8192
       --max-num-seqs 128
       --max-num-queued-reqs 96
@@ -1622,8 +1636,8 @@ services:
       --speculative-config '{"method":"mtp","num_speculative_tokens":3}'
       --compilation-config '{"cudagraph_mode":"FULL_DECODE_ONLY"}'
       --moe-backend humming
-      --attention-backend FLASH_ATTN_MLA_SPARSE
-      --kv-cache-dtype auto
+      --attention-backend FLASHINFER_MLA_SPARSE_SM90
+      --kv-cache-dtype fp8_e4m3
       --mamba-ssm-cache-dtype bfloat16
       --no-disable-hybrid-kv-cache-manager
       --enable-prefix-caching
@@ -1717,7 +1731,7 @@ services:
       --enable-expert-parallel
       --data-parallel-address 127.0.0.1
       --data-parallel-rpc-port 13455
-      --max-model-len 262144
+      --max-model-len 1048576
       --max-num-batched-tokens 8192
       --max-num-seqs 128
       --max-num-queued-reqs 96
@@ -1731,8 +1745,8 @@ services:
       --speculative-config '{"method":"mtp","num_speculative_tokens":3}'
       --compilation-config '{"cudagraph_mode":"FULL_DECODE_ONLY"}'
       --moe-backend humming
-      --attention-backend FLASH_ATTN_MLA_SPARSE
-      --kv-cache-dtype auto
+      --attention-backend FLASHINFER_MLA_SPARSE_SM90
+      --kv-cache-dtype fp8_e4m3
       --mamba-ssm-cache-dtype bfloat16
       --no-disable-hybrid-kv-cache-manager
       --enable-prefix-caching
