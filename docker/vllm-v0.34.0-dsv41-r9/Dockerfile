@@ -8,7 +8,7 @@ LABEL nearai.vllm.base.linux_amd64.digest="sha256:cf5b2fdd087eb4f6d261736967cc5c
 LABEL nearai.vllm.upstream.revision="62d4bc3c7e33b1b6c906e233e6af2d3506c482ca"
 LABEL nearai.build.recipe="docker/vllm-v0.34.0-dsv41-r9/Dockerfile"
 LABEL nearai.vllm.patch_series="01-25"
-LABEL nearai.vllm.patched_files_sha256="a295c0545fdc4148fe41d74fbbf9b767566254cfc30a574a5649c00364aa3e42"
+LABEL nearai.vllm.patched_files_sha256="b1c618cdbb5964198a411c0dfa350f71448d16c55d24aa6a8c95f6bdd16a6b3a"
 LABEL nearai.os.linux_libc_dev="6.8.0-151.151"
 LABEL nearai.os.packages="openssl=3.0.13-0ubuntu3.16 libssl3t64=3.0.13-0ubuntu3.16 libc6=2.39-0ubuntu8.12 libc-bin=2.39-0ubuntu8.12 libc6-dev=2.39-0ubuntu8.12 libc-dev-bin=2.39-0ubuntu8.12 linux-libc-dev=6.8.0-151.151"
 
@@ -16,7 +16,7 @@ COPY PROVENANCE SHA256SUMS PATCHED-FILES.sha256 apply-patches.py /usr/share/near
 COPY patches/ /usr/share/nearai/vllm-v0.34.0-dsv41-r9/patches/
 
 RUN cd /usr/share/nearai/vllm-v0.34.0-dsv41-r9 \
-    && sha256sum --check --strict SHA256SUMS \
+    && grep -v '  tests/' SHA256SUMS | sha256sum --check --strict - \
     && test -e /usr/local/lib/python3.12/dist-packages/vllm/v1/conf_compute_utils.py \
     && python3 apply-patches.py \
     && test -z "$(find /usr/local/lib/python3.12/dist-packages/vllm /usr/local/lib/python3.12/dist-packages/flashinfer \( -name '*.orig' -o -name '*.rej' \) -print -quit)" \
