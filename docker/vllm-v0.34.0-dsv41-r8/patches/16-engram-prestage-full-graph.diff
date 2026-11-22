@@ -1,0 +1,354 @@
+diff --git a/vllm/models/deepseek_v41/common/engram.py b/vllm/models/deepseek_v41/common/engram.py
+index 56dde3b..2b4e19b 100644
+--- a/vllm/models/deepseek_v41/common/engram.py
++++ b/vllm/models/deepseek_v41/common/engram.py
+@@ -32,7 +32,10 @@ import numpy as np
+ import torch
+ from torch import nn
+ 
+-from vllm.compilation.breakable_cudagraph import eager_break_during_capture
++from vllm.compilation.breakable_cudagraph import (
++    BreakableCUDAGraphCapture,
++    eager_break_during_capture,
++)
+ from vllm.config import VllmConfig, get_current_vllm_config
+ from vllm.distributed import (
+     get_dp_group,
+@@ -76,6 +79,27 @@ _NEAR_PEER_READS = os.environ.get("VLLM_NEAR_ENGRAM_PEER_READS", "1") != "0"
+ # buffers, async H2D. Copies only: the GPU still never reads host memory.
+ _NEAR_FAST_GATHER = _NEAR_CPU_GATHER and os.environ.get("VLLM_NEAR_ENGRAM_FAST_GATHER") == "1"
+ _NEAR_READY = ("w", "s")
++# NEAR: stage FULL-graph steps' Engram rows before the forward, from the
++# runner's model state (DeepseekV41ModelState.prepare_inputs), so FULL decode graphs
++# read only the fixed staging buffers. Host sync, gather and H2D stay outside every
++# graph; the GPU still never reads host memory. Requires FAST_GATHER.
++_NEAR_PRESTAGE = _NEAR_FAST_GATHER and os.environ.get("VLLM_NEAR_ENGRAM_PRESTAGE") == "1"
++# NEAR: compare the first N prestaged FULL steps (after 300 s) with the rows
++# the in-forward path derives from the graph's own hashes; logs counts only.
++_NEAR_PRESTAGE_CHECK = (
++    int(os.environ.get("VLLM_NEAR_ENGRAM_PRESTAGE_CHECK", "0") or 0)
++    if _NEAR_PRESTAGE
++    else 0
++)
++
++
++def near_in_full_graph_capture() -> bool:
++    """True while a plain (FULL) CUDA graph is being captured on this stream; False
++    eagerly and under breakable (PIECEWISE) capture, whose eager breaks replay."""
++    return (
++        torch.cuda.is_current_stream_capturing()
++        and not BreakableCUDAGraphCapture.is_active()
++    )
+ 
+ # Per-rank token slot from which the Engram DP exchange switches from peer
+ # reads to all-to-all.
+@@ -1837,6 +1861,9 @@ class Engram(nn.Module):
+             head_dim,
+             dtype=torch.bfloat16,
+         )
++        if _NEAR_PRESTAGE and self.embed_tokens.cpu_offload:
++            # A FULL replay with no prestage this step (DP dummy) reads these rows.
++            self.staged_rows.zero_()
+         if not self.embed_tokens.cpu_offload:
+             self._prefetch_stream = None
+             return
+@@ -1892,7 +1919,13 @@ class Engram(nn.Module):
+         torch.cuda.current_stream().wait_event(event)
+ 
+     def _ready_rows(self, num_tokens: int) -> torch.Tensor:
+-        if self._prefetch_done is not None:
++        if self._prefetch_done is not None and not (
++            # Prestaged FAST rows were copied on the replay stream before the graph:
++            # nothing to wait for, and an outside event cannot join a FULL capture.
++            _NEAR_PRESTAGE
++            and self.embed_tokens.cpu_offload
++            and near_in_full_graph_capture()
++        ):
+             self._finish_prefetch(self._prefetch_done)
+         if self.embed_tokens.dp_size > 1:
+             slot = engram_gathered_num_tokens()
+diff --git a/vllm/models/deepseek_v41/nvidia/model.py b/vllm/models/deepseek_v41/nvidia/model.py
+index ca44f1c..c354d63 100644
+--- a/vllm/models/deepseek_v41/nvidia/model.py
++++ b/vllm/models/deepseek_v41/nvidia/model.py
+@@ -1,5 +1,6 @@
+ # SPDX-License-Identifier: Apache-2.0
+ # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
++import time
+ import typing
+ from collections.abc import Callable, Iterable
+ from functools import partial
+@@ -949,6 +950,24 @@ class DeepseekV4Model(nn.Module, EagleModelMixin):
+                 )
+                 self.engram_swa_prefix = swa_cache_module.prefix
+ 
++        # NEAR prestage (VLLM_NEAR_ENGRAM_PRESTAGE=1): see near_prestage_engram.
++        self._near_check_hashes: torch.Tensor | None = None
++        self._near_check_prev: tuple[int, torch.Tensor] | None = None
++        self._near_prestage_t0: float | None = None
++        self._near_prestage_steps = 0
++        self._near_check_steps = 0
++        if (
++            _near_engram_mod._NEAR_PRESTAGE_CHECK > 0
++            and self.engram_hash is not None
++            and self.engram_layout is not None
++        ):
++            self._near_check_hashes = torch.zeros(
++                vllm_config.scheduler_config.max_num_batched_tokens,
++                len(self.engram_layout.layer_ids),
++                self.engram_layout.n_hash_cols,
++                dtype=torch.int32,
++            )
++
+         if get_pp_group().is_last_rank:
+             self.norm = RMSNorm(config.hidden_size, self.rms_norm_eps)
+         else:
+@@ -994,6 +1013,129 @@ class DeepseekV4Model(nn.Module, EagleModelMixin):
+             }
+         )
+ 
++    def _near_prestage_engrams(self) -> list[Engram]:
++        """Engram layers whose rows the FAST host gather stages."""
++        if (
++            self.engram_hash is None
++            or self.engram_batch is not None
++            or not self.engram_dp_shared_memory
++        ):
++            return []
++        engrams = []
++        for layer in islice(self.layers, self.start_layer, self.end_layer):
++            engram = getattr(layer, "engram", None)
++            if engram is not None and engram.embed_tokens.cpu_offload:
++                engrams.append(engram)
++        return engrams
++
++    def near_prestage_engram(
++        self,
++        input_ids: torch.Tensor,
++        positions: torch.Tensor,
++        attn_metadata: typing.Any,
++        lookback_token_ids: torch.Tensor | None,
++        num_real_tokens: int,
++    ) -> bool:
++        """NEAR prestage for a step that replays a FULL graph (called by the model
++        state before the replay, outside any capture). Hashes this step's tokens with
++        the forward's own kernel and inputs, then does what near_stage_engram_rows
++        does inside the forward: one host sync, CPU gather into pinned buffers, H2D
++        into each layer's fixed staging rows. The graph then reads only those rows.
++
++        Under async scheduling the step's sampled and DSpark draft tokens exist only
++        on the GPU (combine_sampled_and_draft_tokens), so the host needs one sync
++        either way; this moves it from inside the forward to before the replay."""
++        engrams = self._near_prestage_engrams()
++        if (
++            not engrams
++            or input_ids is None
++            or lookback_token_ids is None
++            or not isinstance(attn_metadata, dict)
++            or self.engram_swa_prefix not in attn_metadata
++            or not self.engram_hash.ensure_cache()
++        ):
++            return False
++        if self.use_native_mega_moe:
++            input_ids = input_ids.to(torch.int64)
++        swa_metadata = typing.cast(
++            "DeepseekSparseSWAMetadata", attn_metadata[self.engram_swa_prefix]
++        )
++        image_mask = image_sentinel_mask(input_ids)
++        hashes = self.engram_hash(
++            input_ids,
++            positions,
++            swa_metadata.query_start_loc,
++            image_mask,
++            lookback_token_ids,
++            image_sentinel_mask(lookback_token_ids),
++        )
++        if hashes.shape[0] == 0:
++            return False
++        hashes_cpu = hashes.cpu()
++        for engram in engrams:
++            engram.near_prepare_embeddings_cpu(hashes_cpu[:, engram.layer_hash_index])
++
++        now = time.monotonic()
++        if self._near_prestage_t0 is None:
++            self._near_prestage_t0 = now
++            logger.info("NEAR Engram prestage active for FULL graph steps")
++        self._near_prestage_steps += 1
++        if self._near_prestage_steps % 10000 == 0:
++            logger.info(
++                "NEAR Engram prestage: %d FULL steps staged", self._near_prestage_steps
++            )
++        if (
++            self._near_check_hashes is not None
++            and self._near_check_steps < _near_engram_mod._NEAR_PRESTAGE_CHECK
++            and now - self._near_prestage_t0 >= 300.0
++            and num_real_tokens > 0
++        ):
++            self._near_check_prev = (min(num_real_tokens, hashes.shape[0]), hashes_cpu)
++        return True
++
++    def near_prestage_check(self) -> None:
++        """Check the last prestaged FULL step, which has finished replaying: rows the
++        graph read (staging buffers) against rows the in-forward path derives from the
++        hashes the graph computed itself. Logs counts only."""
++        pending, self._near_check_prev = self._near_check_prev, None
++        if pending is None or self._near_check_hashes is None:
++            return
++        num_tokens, staged_hashes = pending
++        self._near_check_steps += 1
++        graph_hashes = self._near_check_hashes[: staged_hashes.shape[0]].cpu()
++        hash_mismatch = int(
++            (graph_hashes[:num_tokens] != staged_hashes[:num_tokens])
++            .flatten(1)
++            .any(dim=1)
++            .sum()
++        )
++        rows = mismatch = 0
++        max_diff = 0.0
++        for engram in self._near_prestage_engrams():
++            staged = engram.staged_rows[:num_tokens]
++            reference = torch.empty_like(staged)
++            engram.embed_tokens.near_lookup_cpu_ids(
++                graph_hashes[:num_tokens, engram.layer_hash_index].contiguous(),
++                reference,
++            )
++            rows += staged.shape[0] * staged.shape[1]
++            differs = (staged.view(torch.int16) != reference.view(torch.int16)).any(-1)
++            mismatch += int(differs.sum())
++            diff = (staged.float() - reference.float()).abs().nan_to_num(nan=float("inf"))
++            if diff.numel():
++                max_diff = max(max_diff, float(diff.max()))
++        logger.info(
++            "NEAR Engram prestage check %d/%d: tokens=%d rows=%d row_mismatch=%d "
++            "hash_mismatch_tokens=%d max_abs_diff=%g",
++            self._near_check_steps,
++            _near_engram_mod._NEAR_PRESTAGE_CHECK,
++            num_tokens,
++            rows,
++            mismatch,
++            hash_mismatch,
++            max_diff,
++        )
++
+     def forward(
+         self,
+         input_ids: torch.Tensor,
+@@ -1087,7 +1229,21 @@ class DeepseekV4Model(nn.Module, EagleModelMixin):
+                             )
+                     if near_engrams:
+                         _near_engram_mod._NEAR_STAGE_ENGRAMS[:] = near_engrams
+-                        near_stage_engram_rows(gathered_hashes)
++                        # Skip in-forward staging only when the runner really
++                        # prestages for this model; otherwise stage inline so a
++                        # FULL capture fails loudly instead of reading stale rows.
++                        if not (
++                            _near_engram_mod._NEAR_PRESTAGE
++                            and getattr(self, "_near_prestage_enabled", False)
++                            and _near_engram_mod.near_in_full_graph_capture()
++                        ):
++                            near_stage_engram_rows(gathered_hashes)
++                        elif self._near_check_hashes is not None:
++                            # FULL graph: rows come from the runner's prestage;
++                            # keep the graph's own hashes for the check.
++                            self._near_check_hashes[
++                                : gathered_hashes.shape[0]
++                            ].copy_(gathered_hashes)
+ 
+         full_num_tokens = positions.shape[0]
+         if self.use_sequence_parallel:
+diff --git a/vllm/models/deepseek_v41/nvidia/model_state.py b/vllm/models/deepseek_v41/nvidia/model_state.py
+index f524938..3a776e4 100644
+--- a/vllm/models/deepseek_v41/nvidia/model_state.py
++++ b/vllm/models/deepseek_v41/nvidia/model_state.py
+@@ -12,6 +12,8 @@ from vllm.compilation.breakable_cudagraph import is_breakable_cudagraph_enabled
+ from vllm.config import CUDAGraphMode, VllmConfig
+ from vllm.distributed.parallel_state import get_dp_group, get_pcp_group, get_pp_group
+ from vllm.forward_context import BatchDescriptor, DPMetadata, create_forward_context
++from vllm.logger import init_logger
++from vllm.models.deepseek_v41.common import engram as _near_engram_mod
+ from vllm.models.deepseek_v41.decoder_replay_layers import (
+     DecoderReplayLayers,
+     ReplayBatch,
+@@ -36,6 +38,8 @@ from vllm.v1.worker.gpu.model_states.interface import ModelSpecificAttnMetadata
+ from vllm.v1.worker.gpu.states import RequestState
+ from vllm.v1.worker.utils import AttentionGroup
+ 
++logger = init_logger(__name__)
++
+ 
+ @triton.jit
+ def _gather_lookback_kernel(
+@@ -210,6 +214,43 @@ class DeepseekV41ModelState(DefaultModelState):
+                 (max_local_reqs, depth), -1, dtype=torch.int32, device=device
+             )
+ 
++        # NEAR prestage: the step's attention mode and metadata, recorded by
++        # prepare_attn for prepare_inputs; None when the step must not prestage.
++        self._near_prestage_model = None
++        self._near_prestage_step: tuple[CUDAGraphMode, bool, Any] | None = None
++        if _near_engram_mod._NEAR_PRESTAGE:
++            reason = None
++            if vllm_config.parallel_config.prefill_context_parallel_size > 1:
++                reason = "PCP > 1"
++            elif vllm_config.parallel_config.use_ubatching:
++                reason = "DBO ubatching"
++            elif (
++                getattr(model, "specialized_decode_config", None) is not None
++                or getattr(
++                    getattr(model, "language_model", None),
++                    "specialized_decode_config",
++                    None,
++                )
++                is not None
++            ):
++                # The latency-specialized decode state refills lookback per step and runs Engram
++                # WKV ahead (EngramPrefetch); not covered by this prestage.
++                reason = "latency_specialized decode"
++            # The served model may be the VL wrapper (language_model.model).
++            inner = getattr(model, "model", None)
++            if not hasattr(inner, "near_prestage_engram"):
++                lm = getattr(model, "language_model", None)
++                inner = getattr(lm, "model", None)
++            if reason is None and (
++                depth <= 0 or not hasattr(inner, "near_prestage_engram")
++            ):
++                reason = "no Engram hash on this rank"
++            if reason is None:
++                self._near_prestage_model = inner
++                inner._near_prestage_enabled = True
++            else:
++                logger.warning("NEAR Engram prestage disabled: %s", reason)
++
+         # Per request state index; batches gather from it (see prepare_attn).
+         self._replay_start_np = np.zeros(self.max_num_reqs, dtype=np.int32)
+         self._replay_start = torch.zeros(
+@@ -302,6 +343,20 @@ class DeepseekV41ModelState(DefaultModelState):
+             return model_inputs
+         self._fill_lookback(input_batch, req_states)
+         model_inputs["lookback_token_ids"] = self.lookback_token_ids
++        inner = self._near_prestage_model
++        if inner is not None:
++            # Last FULL step's check first: it reads the staging rows this step
++            # overwrites, and that graph has finished once the check syncs.
++            inner.near_prestage_check()
++            step, self._near_prestage_step = self._near_prestage_step, None
++            if step is not None and step[0] == CUDAGraphMode.FULL and not step[1]:
++                inner.near_prestage_engram(
++                    input_batch.input_ids,
++                    model_inputs.get("positions", input_batch.positions),
++                    step[2],
++                    self.lookback_token_ids,
++                    input_batch.num_tokens,
++                )
+         return model_inputs
+ 
+     def _fill_lookback(self, input_batch: InputBatch, req_states: RequestState) -> None:
+@@ -433,6 +488,8 @@ class DeepseekV41ModelState(DefaultModelState):
+                 kv_cache_config,
+                 replay_start,
+             )
++        if self._near_prestage_model is not None and ubatch_idx == 0:
++            self._near_prestage_step = (cudagraph_mode, for_capture, attn_metadata)
+         return attn_metadata
+ 
+     def _upload_replay_start(self, values: np.ndarray, num_reqs: int) -> torch.Tensor:
