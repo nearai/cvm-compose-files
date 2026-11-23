@@ -1,0 +1,55 @@
+diff --git a/vllm/v1/core/block_pool.py b/vllm/v1/core/block_pool.py
+--- a/vllm/v1/core/block_pool.py
++++ b/vllm/v1/core/block_pool.py
+@@ -171,6 +171,12 @@ class BlockPool:
+         # Callbacks for blocks released with ``unpin_blocks`` whose contents
+         # are still being read until the pool reuses them.
+         self._reuse_watchers: dict[int, Callable[[KVCacheBlock], None]] = {}
++        # Blocks keyed in the current step; their KV is not written until after
++        # this step's copy-on-write copies run.
++        self.hashed_this_step: set[int] = set()
++
++    def new_step_starts(self) -> None:
++        self.hashed_this_step.clear()
+ 
+     def get_cached_block(
+         self, block_hash: BlockHash, kv_cache_group_ids: list[int]
+@@ -659,6 +665,7 @@ class BlockPool:
+                 block_hash_with_group_id
+             )
+         self.cached_block_hash_to_block.insert(block_hash_with_group_id, block)
++        self.hashed_this_step.add(block.block_id)
+ 
+     def move_block_hashes(
+         self,
+@@ -881,6 +888,7 @@ class BlockPool:
+         # new map created after the startup gc.freeze() would not be frozen.
+         self.cached_block_hash_to_block.clear()
+         self.cached_block_hashes_by_block.clear()
++        self.hashed_this_step.clear()
+         if self._reuse_watchers:
+             self._notify_reuse(
+                 [self.blocks[block_id] for block_id in list(self._reuse_watchers)]
+diff --git a/vllm/v1/core/kv_cache_manager.py b/vllm/v1/core/kv_cache_manager.py
+--- a/vllm/v1/core/kv_cache_manager.py
++++ b/vllm/v1/core/kv_cache_manager.py
+@@ -944,4 +944,5 @@ class KVCacheManager:
+ 
+     def new_step_starts(self) -> None:
+         """Notify the coordinator that a new step is starting."""
++        self.block_pool.new_step_starts()
+         self.coordinator.new_step_starts()
+diff --git a/vllm/v1/core/single_type_kv_cache_manager.py b/vllm/v1/core/single_type_kv_cache_manager.py
+--- a/vllm/v1/core/single_type_kv_cache_manager.py
++++ b/vllm/v1/core/single_type_kv_cache_manager.py
+@@ -265,6 +265,10 @@ class SingleTypeKVCacheManager(ABC):
+             new_computed_blocks[num_skipped_new_computed_blocks:]
+         )
+         if self._has_partial_local_hit(new_computed_blocks, num_local_computed_tokens):
++            if new_computed_blocks[-1].block_id in self.block_pool.hashed_this_step:
++                # The CoW source is written by this step's forward, after the
++                # copy runs: defer to the next step.
++                return self.block_pool.num_gpu_blocks + 1
+             # Reserve the extra block that allocate_new_blocks pulls for the
+             # partial-hit CoW redirect.
+             num_new_blocks += 1

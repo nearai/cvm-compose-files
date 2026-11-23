@@ -1,0 +1,81 @@
+diff --git a/vllm/distributed/kv_transfer/kv_connector/v1/nixl/base_worker.py b/vllm/distributed/kv_transfer/kv_connector/v1/nixl/base_worker.py
+--- a/vllm/distributed/kv_transfer/kv_connector/v1/nixl/base_worker.py
++++ b/vllm/distributed/kv_transfer/kv_connector/v1/nixl/base_worker.py
+@@ -72,6 +72,7 @@
+     NixlWrapper,
+     check_nixl_version,
+     nixl_agent_config,
++    nixl_thread_sync_t,
+ )
+ from vllm.distributed.parallel_state import (
+     get_pcp_group,
+@@ -789,14 +790,29 @@
+         num_threads = vllm_config.kv_transfer_config.get_from_extra_config(
+             "num_threads", 4
+         )
++        # The handshake thread and the engine thread call this agent
++        # concurrently, and NIXL guards its state only under a sync mode.
++        sync_kwargs = (
++            {}
++            if nixl_thread_sync_t is None
++            else {"sync_mode": nixl_thread_sync_t.NIXL_THREAD_SYNC_STRICT}
++        )
++        logger.info(
++            "NIXL agent thread sync mode: %s",
++            "STRICT" if sync_kwargs else "not set (NIXL has no nixl_thread_sync_t)",
++        )
+         if nixl_agent_config is None:
+             config = None
+         else:
+             # Enable telemetry by default for NIXL 0.7.1 and above.
+             config = (
+-                nixl_agent_config(backends=self.nixl_backends, capture_telemetry=True)
++                nixl_agent_config(
++                    backends=self.nixl_backends, capture_telemetry=True, **sync_kwargs
++                )
+                 if len(non_ucx_backends) > 0
+-                else nixl_agent_config(num_threads=num_threads, capture_telemetry=True)
++                else nixl_agent_config(
++                    num_threads=num_threads, capture_telemetry=True, **sync_kwargs
++                )
+             )
+ 
+         # Extra UCX backend init params, e.g. {"ucx_error_handling_mode": "none"}.
+@@ -808,7 +824,9 @@
+             bool(ucx_backend_params) and "UCX" in self.nixl_backends
+         )
+         if sleep_mode or explicit_backends:
+-            config = nixl_agent_config(backends=[], capture_telemetry=True)
++            config = nixl_agent_config(
++                backends=[], capture_telemetry=True, **sync_kwargs
++            )
+         self.nixl_wrapper = nixl_wrapper_cls(str(uuid.uuid4()), config)
+         if sleep_mode:
+             # Keep slept pages unpinned, for this agent only; UCX_* env vars win.
+diff --git a/vllm/distributed/nixl_utils.py b/vllm/distributed/nixl_utils.py
+--- a/vllm/distributed/nixl_utils.py
++++ b/vllm/distributed/nixl_utils.py
+@@ -15,6 +15,7 @@
+ # declaration for static analyzers
+ NixlWrapper: Any
+ nixl_agent_config: Any
++nixl_thread_sync_t: Any
+ nixlXferTelemetry: Any
+ 
+ 
+@@ -52,6 +53,7 @@
+     attr_name = {
+         "NixlWrapper": "nixl_agent",
+         "nixl_agent_config": "nixl_agent_config",
++        "nixl_thread_sync_t": "nixl_thread_sync_t",
+         "nixlXferTelemetry": "nixlXferTelemetry",
+     }[name]
+ 
+@@ -129,6 +131,7 @@
+ __all__ = [
+     "NixlWrapper",
+     "nixl_agent_config",
++    "nixl_thread_sync_t",
+     "nixlXferTelemetry",
+     "is_nixl_available",
+     "check_nixl_version",
