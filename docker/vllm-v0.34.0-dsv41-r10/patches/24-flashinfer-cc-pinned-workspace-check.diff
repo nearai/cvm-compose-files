@@ -1,0 +1,11 @@
+diff --git a/flashinfer/jit/attention/modules.py b/flashinfer/jit/attention/modules.py
+--- a/flashinfer/jit/attention/modules.py
++++ b/flashinfer/jit/attention/modules.py
+@@ -58,7 +58,6 @@
+     ) -> None:
+         if (
+             page_locked_workspace.device.type != "cpu"
+-            or not page_locked_workspace.is_pinned()
+             or not page_locked_workspace.is_contiguous()
+         ):
+             raise ValueError(

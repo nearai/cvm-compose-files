@@ -1,0 +1,1659 @@
+# z-ai/glm-5.3-flash | vLLM | dep4x2
+x-logging-conf: &logging-conf
+  driver: "json-file"
+  options:
+    max-size: "100m"
+    max-file: "10"
+    labels: "com.datadoghq.ad.logs,com.docker.compose.service"
+
+x-nvidia: &nvidia
+  runtime: nvidia
+  ipc: host
+  ulimits:
+    memlock: -1
+    nofile:
+      soft: 65535
+      hard: 65535
+
+x-vllm-proxy-common: &vllm-proxy-common
+  image: nearaidev/vllm-proxy-rs@sha256:e3a4fbcacdf83f83212d4c6c0ad4d766d602b88c004dc82a2dd4ae147dccde94
+  user: root
+  privileged: true
+  <<: *nvidia
+  extra_hosts:
+    - "compose-manager:host-gateway"
+  volumes:
+    - /var/run/dstack.sock:/var/run/dstack.sock
+    - certs:/etc/letsencrypt:ro
+  restart: unless-stopped
+  logging: *logging-conf
+
+x-glm53-engine-common: &glm53-engine-common
+  <<: *nvidia
+  init: true
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  image: docker.io/nearaidev/vllm@sha256:43edd86213d507c39757ac7d513c9848386d1f426554cdc6221fba92e444e33a
+  shm_size: 64g
+  volumes:
+    - huggingface_cache:/root/.cache/huggingface
+    - glm53_kernel_cache:/root/.cache/vllm
+    - humming_cache:/root/.cache/humming
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            count: all
+            capabilities: [gpu]
+  restart: unless-stopped
+  stop_grace_period: 10m
+  logging: *logging-conf
+
+services:
+  model-downloader:
+    image: ghcr.io/astral-sh/uv:python3.11-bookworm-slim@sha256:4f5d923c9dcea037f57bda425dd209f3ec643da2f0b74227f68d09dab0b3bb36
+    container_name: model-downloader
+    restart: "no"
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        set -e
+        echo "Downloading zai-org/GLM-5.3-Flash..."
+        uvx --from 'huggingface_hub[hf_xet]' hf download zai-org/GLM-5.3-Flash --revision 84c6a6aa9497188e15a635ba793b0f95a79b1033
+        echo "Downloading the GLM-5.3-Flash chat template..."
+        uvx --from 'huggingface_hub[hf_xet]' hf download zai-org/GLM-5.3-Flash chat_template.jinja --revision 3f1971b7b5f7a528c9c4ef6212c8785298a8c24a
+        echo "Downloading graphistry/GLM-5.3-Flash-W4AFP8..."
+        uvx --from 'huggingface_hub[hf_xet]' hf download graphistry/GLM-5.3-Flash-W4AFP8 --revision 99f1fa70408c52b007d4fd69e02e5a522422e755
+        echo "Download complete."
+    volumes:
+      - huggingface_cache:/root/.cache/huggingface
+    environment:
+      - HF_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+    logging: *logging-conf
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"model-downloader","service":"model-downloader","tags":["model:z-ai/glm-5.3-flash","deployment:glm-5.3-flash-vllm-dep4x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-w4afp8-2xdep4-c8192-mtp3-mr128-q96-omp4-aff64-psiglobal8-bf16kv-prefix-cc-v2runner"]}]'
+
+  nginx:
+    image: nginx@sha256:9e596d26590907ed433eb53c83c4016038025d4e004b15922786ba85c8957264
+    container_name: nginx
+    depends_on:
+      proxy-glm53:
+        condition: service_started
+    command: /bin/sh -c 'certs="/etc/letsencrypt/live/completions.near.ai/fullchain.pem"; last=$$(stat -L -c %Y $$certs 2>/dev/null); while :; do sleep 60; cur=$$(stat -L -c %Y $$certs 2>/dev/null); if [ -n "$$cur" ] && [ "$$cur" != "$$last" ]; then last=$$cur; echo "certs changed, reloading nginx"; nginx -s reload; fi; done & while :; do sleep 6h; nginx -s reload; done & nginx -g "daemon off;"'
+    ports:
+      - "8000:8000"
+      - "8444:443"
+    volumes:
+      - certs:/etc/letsencrypt:ro
+    configs:
+      - source: nginx_conf
+        target: /etc/nginx/conf.d/default.conf
+        mode: 0644
+    restart: unless-stopped
+    logging: *logging-conf
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"nginx","service":"nginx","tags":["model:z-ai/glm-5.3-flash","deployment:glm-5.3-flash-vllm-dep4x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-w4afp8-2xdep4-c8192-mtp3-mr128-q96-omp4-aff64-psiglobal8-bf16kv-prefix-cc-v2runner"]}]'
+
+  model-proxy-registrar:
+    image: curlimages/curl@sha256:d94d07ba9e7d6de898b6d96c1a072f6f8266c687af78a74f380087a0addf5d17
+    container_name: model-proxy-registrar
+    entrypoint: ["sh", "/register.sh"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "[ $$(( $$(date +%s) - $$(cat /tmp/registrar_alive 2>/dev/null || echo 0) )) -lt 180 ]"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 1800s
+    environment:
+      - HOST_IP=${HOST_IP}
+      - HTTP_PORT=${HTTP_PORT:-8000}
+      - TLS_PORT=${TLS_PORT:-8444}
+      - MODEL_PROXY_TOKEN=${MODEL_PROXY_TOKEN}
+      - PROXY_TOKEN=${PROXY_TOKEN}
+    configs:
+      - source: registrar_script
+        target: /register.sh
+        mode: 0755
+    logging: *logging-conf
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"model-proxy-registrar","service":"model-proxy-registrar","tags":["model:z-ai/glm-5.3-flash","deployment:glm-5.3-flash-vllm-dep4x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-w4afp8-2xdep4-c8192-mtp3-mr128-q96-omp4-aff64-psiglobal8-bf16kv-prefix-cc-v2runner"]}]'
+
+  proxy-glm53:
+    <<: *vllm-proxy-common
+    container_name: proxy-glm53
+    networks:
+      - default
+      - engine-glm53-a
+      - engine-glm53-b
+    depends_on:
+      engine-egress-probe:
+        condition: service_completed_successfully
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - CLOUD_API_URL=https://cloud-api.near.ai
+      - CLOUD_API_USAGE_TOKEN=${CLOUD_API_USAGE_TOKEN}
+      - COMPOSE_MANAGER_URL=http://compose-manager:8080
+      - LOG_FORMAT=json
+      - MODEL_NAME=z-ai/glm-5.3-flash
+      - VLLM_PROXY_STRICT_REQUEST_MODEL=1
+      - VLLM_PROXY_PRIORITY_LOWER_FIRST=1
+      - OHTTP_ENABLED=true
+      - TOKEN=${PROXY_TOKEN}${PROXY_TOKEN_NEXT:+,${PROXY_TOKEN_NEXT}}
+      - VLLM_BACKEND_URLS=http://model-vllm-glm53-dp0:9100,http://model-vllm-glm53-dp1:9101,http://model-vllm-glm53-dp2:9102,http://model-vllm-glm53-dp3:9103,http://model-vllm-glm53-dp4:9104,http://model-vllm-glm53-dp5:9105,http://model-vllm-glm53-dp6:9106,http://model-vllm-glm53-dp7:9107
+      - VLLM_BACKEND_CONVERSATION_AFFINITY=1
+      - VLLM_BACKEND_AFFINITY_MAX_IMBALANCE=64
+      - VLLM_PROXY_MAX_REQUEST_SIZE=104857600
+      - VLLM_PROXY_POOL_IDLE_TIMEOUT_SECS=3
+      - TLS_CERT_PATH=/etc/letsencrypt/live/completions.near.ai/fullchain.pem
+      - USE_NV_ATTESTATION_SDK=true
+      - WEB_CONTEXT_SEARCH_URL=${WEB_CONTEXT_SEARCH_URL}
+      - WEB_CONTEXT_SEARCH_API_KEY=${WEB_CONTEXT_SEARCH_API_KEY}
+      - VLLM_PROXY_INLINE_MEDIA=${VLLM_PROXY_INLINE_MEDIA:-1}
+      - VLLM_PROXY_REJECTED_CONTENT_PART_TYPES=${VLLM_PROXY_REJECTED_CONTENT_PART_TYPES:-video_url}
+      - REPLICA_STATE_REDIS_URL=${REPLICA_STATE_REDIS_URL:-}
+      - REPLICA_STATE_REDIS_CA_CERT=${REPLICA_STATE_REDIS_CA_CERT:-}
+      - REPLICA_STATE_HOST_ID=${CVM_HOST:-}
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"vllm-proxy","service":"vllm-proxy","tags":["model:z-ai/glm-5.3-flash","port:8000","deployment:glm-5.3-flash-vllm-dep4x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-w4afp8-2xdep4-c8192-mtp3-mr128-q96-omp4-aff64-psiglobal8-bf16kv-prefix-cc-v2runner"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "inference-proxy"
+      nearai.otel.service: "vllm-proxy"
+      nearai.otel.source: "vllm-proxy"
+      nearai.otel.container_name: "proxy-glm53"
+      nearai.otel.port: "8000"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "z-ai/glm-5.3-flash"
+      nearai.otel.deployment: "glm-5.3-flash-vllm-dep4x2"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
+      nearai.otel.ppcie: "true"
+      nearai.otel.config_variant: "vllm0340-w4afp8-2xdep4-c8192-mtp3-mr128-q96-omp4-aff64-psiglobal8-bf16kv-prefix-cc-v2runner"
+
+  # Network namespace of glm53-dp0 to glm53-dp3: the ranks reach each other on loopback,
+  # and the proxies and the collector reach them by name on one internal network.
+  sidecar-glm53-netns-a:
+    image: curlimages/curl@sha256:d94d07ba9e7d6de898b6d96c1a072f6f8266c687af78a74f380087a0addf5d17
+    container_name: sidecar-glm53-netns-a
+    entrypoint: ["sleep", "infinity"]
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: "64m"
+    networks:
+      engine-glm53-a:
+        aliases:
+          - model-vllm-glm53-dp0
+          - model-vllm-glm53-dp1
+          - model-vllm-glm53-dp2
+          - model-vllm-glm53-dp3
+    restart: unless-stopped
+    logging: *logging-conf
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"sidecar-glm53-netns-a","service":"sidecar-glm53-netns-a","tags":["model:z-ai/glm-5.3-flash","deployment:glm-5.3-flash-vllm-dep4x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+
+  # Network namespace of glm53-dp4 to glm53-dp7: the ranks reach each other on loopback,
+  # and the proxies and the collector reach them by name on one internal network.
+  sidecar-glm53-netns-b:
+    image: curlimages/curl@sha256:d94d07ba9e7d6de898b6d96c1a072f6f8266c687af78a74f380087a0addf5d17
+    container_name: sidecar-glm53-netns-b
+    entrypoint: ["sleep", "infinity"]
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: "64m"
+    networks:
+      engine-glm53-b:
+        aliases:
+          - model-vllm-glm53-dp4
+          - model-vllm-glm53-dp5
+          - model-vllm-glm53-dp6
+          - model-vllm-glm53-dp7
+    restart: unless-stopped
+    logging: *logging-conf
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"sidecar-glm53-netns-b","service":"sidecar-glm53-netns-b","tags":["model:z-ai/glm-5.3-flash","deployment:glm-5.3-flash-vllm-dep4x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+
+  model-vllm-glm53-dp0:
+    <<: *glm53-engine-common
+    container_name: model-vllm-glm53-dp0
+    network_mode: "service:sidecar-glm53-netns-a"
+    depends_on:
+      model-downloader:
+        condition: service_completed_successfully
+    environment:
+      - CUDA_VISIBLE_DEVICES=0
+      - HF_HUB_OFFLINE=1
+      - PYTHONUNBUFFERED=1
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - NCCL_DEBUG=WARN
+      - VLLM_NEAR_DISABLE_UVA=1
+      - VLLM_USE_V2_MODEL_RUNNER=1
+      - VLLM_CONFIDENTIAL_COMPUTE=1
+      - VLLM_NEAR_DP_GLOBAL_PREFILL_CADENCE=1
+      - VLLM_NEAR_DP_GLOBAL_PREFILL_CADENCE_MIN=2
+      - VLLM_NEAR_DP_GLOBAL_PREFILL_CADENCE_RESTORE=2
+      - OMP_NUM_THREADS=4
+      - HUMMING_COMPILER=nvcc
+      - HUMMING_CACHE_DIR=/root/.cache/humming/dp0
+      - HUMMING_MAX_PARALLEL_BUILD_WORKERS=8
+    command: >
+      /root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/snapshots/99f1fa70408c52b007d4fd69e02e5a522422e755
+      --served-model-name z-ai/glm-5.3-flash
+      --trust-remote-code
+      --tensor-parallel-size 1
+      --data-parallel-size 4
+      --data-parallel-rank 0
+      --enable-expert-parallel
+      --data-parallel-address 127.0.0.1
+      --data-parallel-rpc-port 13345
+      --max-model-len 262144
+      --max-num-batched-tokens 8192
+      --max-num-seqs 128
+      --max-num-queued-reqs 96
+      --scheduling-policy priority
+      --gpu-memory-utilization 0.85
+      --enable-prompt-tokens-details
+      --chat-template /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/3f1971b7b5f7a528c9c4ef6212c8785298a8c24a/chat_template.jinja
+      --reasoning-parser glm45
+      --tool-call-parser glm47
+      --enable-auto-tool-choice
+      --speculative-config '{"method":"mtp","num_speculative_tokens":3}'
+      --compilation-config '{"cudagraph_mode":"FULL_DECODE_ONLY"}'
+      --moe-backend humming
+      --attention-backend FLASH_ATTN_MLA_SPARSE
+      --kv-cache-dtype auto
+      --enable-prefix-caching
+      --limit-mm-per-prompt '{"image": 4}'
+      --prefill-schedule-interval 8
+      --no-enable-log-requests
+      --host 0.0.0.0
+      --port 9100
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","replica:r1","dp_rank:0","gpu:0","deployment:glm-5.3-flash-vllm-dep4x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-w4afp8-2xdep4-c8192-mtp3-mr128-q96-omp4-aff64-psiglobal8-bf16kv-prefix-cc-v2runner"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "vllm"
+      nearai.otel.service: "vllm"
+      nearai.otel.source: "vllm"
+      nearai.otel.container_name: "model-vllm-glm53-dp0"
+      nearai.otel.port: "9100"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "z-ai/glm-5.3-flash"
+      nearai.otel.model_path: "graphistry/GLM-5.3-Flash-W4AFP8"
+      nearai.otel.served_model: "z-ai/glm-5.3-flash"
+      nearai.otel.deployment: "glm-5.3-flash-vllm-dep4x2"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
+      nearai.otel.ppcie: "true"
+      nearai.otel.config_variant: "vllm0340-w4afp8-2xdep4-c8192-mtp3-mr128-q96-omp4-aff64-psiglobal8-bf16kv-prefix-cc-v2runner"
+
+  model-vllm-glm53-dp1:
+    <<: *glm53-engine-common
+    container_name: model-vllm-glm53-dp1
+    network_mode: "service:sidecar-glm53-netns-a"
+    depends_on:
+      model-downloader:
+        condition: service_completed_successfully
+      model-vllm-glm53-dp0:
+        condition: service_started
+    environment:
+      - CUDA_VISIBLE_DEVICES=1
+      - HF_HUB_OFFLINE=1
+      - PYTHONUNBUFFERED=1
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - NCCL_DEBUG=WARN
+      - VLLM_NEAR_DISABLE_UVA=1
+      - VLLM_USE_V2_MODEL_RUNNER=1
+      - VLLM_CONFIDENTIAL_COMPUTE=1
+      - VLLM_NEAR_DP_GLOBAL_PREFILL_CADENCE=1
+      - VLLM_NEAR_DP_GLOBAL_PREFILL_CADENCE_MIN=2
+      - VLLM_NEAR_DP_GLOBAL_PREFILL_CADENCE_RESTORE=2
+      - OMP_NUM_THREADS=4
+      - HUMMING_COMPILER=nvcc
+      - HUMMING_CACHE_DIR=/root/.cache/humming/dp1
+      - HUMMING_MAX_PARALLEL_BUILD_WORKERS=8
+    command: >
+      /root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/snapshots/99f1fa70408c52b007d4fd69e02e5a522422e755
+      --served-model-name z-ai/glm-5.3-flash
+      --trust-remote-code
+      --tensor-parallel-size 1
+      --data-parallel-size 4
+      --data-parallel-rank 1
+      --enable-expert-parallel
+      --data-parallel-address 127.0.0.1
+      --data-parallel-rpc-port 13345
+      --max-model-len 262144
+      --max-num-batched-tokens 8192
+      --max-num-seqs 128
+      --max-num-queued-reqs 96
+      --scheduling-policy priority
+      --gpu-memory-utilization 0.85
+      --enable-prompt-tokens-details
+      --chat-template /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/3f1971b7b5f7a528c9c4ef6212c8785298a8c24a/chat_template.jinja
+      --reasoning-parser glm45
+      --tool-call-parser glm47
+      --enable-auto-tool-choice
+      --speculative-config '{"method":"mtp","num_speculative_tokens":3}'
+      --compilation-config '{"cudagraph_mode":"FULL_DECODE_ONLY"}'
+      --moe-backend humming
+      --attention-backend FLASH_ATTN_MLA_SPARSE
+      --kv-cache-dtype auto
+      --enable-prefix-caching
+      --limit-mm-per-prompt '{"image": 4}'
+      --prefill-schedule-interval 8
+      --no-enable-log-requests
+      --host 0.0.0.0
+      --port 9101
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","replica:r1","dp_rank:1","gpu:1","deployment:glm-5.3-flash-vllm-dep4x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-w4afp8-2xdep4-c8192-mtp3-mr128-q96-omp4-aff64-psiglobal8-bf16kv-prefix-cc-v2runner"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "vllm"
+      nearai.otel.service: "vllm"
+      nearai.otel.source: "vllm"
+      nearai.otel.container_name: "model-vllm-glm53-dp1"
+      nearai.otel.port: "9101"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "z-ai/glm-5.3-flash"
+      nearai.otel.model_path: "graphistry/GLM-5.3-Flash-W4AFP8"
+      nearai.otel.served_model: "z-ai/glm-5.3-flash"
+      nearai.otel.deployment: "glm-5.3-flash-vllm-dep4x2"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
+      nearai.otel.ppcie: "true"
+      nearai.otel.config_variant: "vllm0340-w4afp8-2xdep4-c8192-mtp3-mr128-q96-omp4-aff64-psiglobal8-bf16kv-prefix-cc-v2runner"
+
+  model-vllm-glm53-dp2:
+    <<: *glm53-engine-common
+    container_name: model-vllm-glm53-dp2
+    network_mode: "service:sidecar-glm53-netns-a"
+    depends_on:
+      model-downloader:
+        condition: service_completed_successfully
+      model-vllm-glm53-dp0:
+        condition: service_started
+    environment:
+      - CUDA_VISIBLE_DEVICES=2
+      - HF_HUB_OFFLINE=1
+      - PYTHONUNBUFFERED=1
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - NCCL_DEBUG=WARN
+      - VLLM_NEAR_DISABLE_UVA=1
+      - VLLM_USE_V2_MODEL_RUNNER=1
+      - VLLM_CONFIDENTIAL_COMPUTE=1
+      - VLLM_NEAR_DP_GLOBAL_PREFILL_CADENCE=1
+      - VLLM_NEAR_DP_GLOBAL_PREFILL_CADENCE_MIN=2
+      - VLLM_NEAR_DP_GLOBAL_PREFILL_CADENCE_RESTORE=2
+      - OMP_NUM_THREADS=4
+      - HUMMING_COMPILER=nvcc
+      - HUMMING_CACHE_DIR=/root/.cache/humming/dp2
+      - HUMMING_MAX_PARALLEL_BUILD_WORKERS=8
+    command: >
+      /root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/snapshots/99f1fa70408c52b007d4fd69e02e5a522422e755
+      --served-model-name z-ai/glm-5.3-flash
+      --trust-remote-code
+      --tensor-parallel-size 1
+      --data-parallel-size 4
+      --data-parallel-rank 2
+      --enable-expert-parallel
+      --data-parallel-address 127.0.0.1
+      --data-parallel-rpc-port 13345
+      --max-model-len 262144
+      --max-num-batched-tokens 8192
+      --max-num-seqs 128
+      --max-num-queued-reqs 96
+      --scheduling-policy priority
+      --gpu-memory-utilization 0.85
+      --enable-prompt-tokens-details
+      --chat-template /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/3f1971b7b5f7a528c9c4ef6212c8785298a8c24a/chat_template.jinja
+      --reasoning-parser glm45
+      --tool-call-parser glm47
+      --enable-auto-tool-choice
+      --speculative-config '{"method":"mtp","num_speculative_tokens":3}'
+      --compilation-config '{"cudagraph_mode":"FULL_DECODE_ONLY"}'
+      --moe-backend humming
+      --attention-backend FLASH_ATTN_MLA_SPARSE
+      --kv-cache-dtype auto
+      --enable-prefix-caching
+      --limit-mm-per-prompt '{"image": 4}'
+      --prefill-schedule-interval 8
+      --no-enable-log-requests
+      --host 0.0.0.0
+      --port 9102
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","replica:r1","dp_rank:2","gpu:2","deployment:glm-5.3-flash-vllm-dep4x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-w4afp8-2xdep4-c8192-mtp3-mr128-q96-omp4-aff64-psiglobal8-bf16kv-prefix-cc-v2runner"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "vllm"
+      nearai.otel.service: "vllm"
+      nearai.otel.source: "vllm"
+      nearai.otel.container_name: "model-vllm-glm53-dp2"
+      nearai.otel.port: "9102"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "z-ai/glm-5.3-flash"
+      nearai.otel.model_path: "graphistry/GLM-5.3-Flash-W4AFP8"
+      nearai.otel.served_model: "z-ai/glm-5.3-flash"
+      nearai.otel.deployment: "glm-5.3-flash-vllm-dep4x2"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
+      nearai.otel.ppcie: "true"
+      nearai.otel.config_variant: "vllm0340-w4afp8-2xdep4-c8192-mtp3-mr128-q96-omp4-aff64-psiglobal8-bf16kv-prefix-cc-v2runner"
+
+  model-vllm-glm53-dp3:
+    <<: *glm53-engine-common
+    container_name: model-vllm-glm53-dp3
+    network_mode: "service:sidecar-glm53-netns-a"
+    depends_on:
+      model-downloader:
+        condition: service_completed_successfully
+      model-vllm-glm53-dp0:
+        condition: service_started
+    environment:
+      - CUDA_VISIBLE_DEVICES=3
+      - HF_HUB_OFFLINE=1
+      - PYTHONUNBUFFERED=1
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - NCCL_DEBUG=WARN
+      - VLLM_NEAR_DISABLE_UVA=1
+      - VLLM_USE_V2_MODEL_RUNNER=1
+      - VLLM_CONFIDENTIAL_COMPUTE=1
+      - VLLM_NEAR_DP_GLOBAL_PREFILL_CADENCE=1
+      - VLLM_NEAR_DP_GLOBAL_PREFILL_CADENCE_MIN=2
+      - VLLM_NEAR_DP_GLOBAL_PREFILL_CADENCE_RESTORE=2
+      - OMP_NUM_THREADS=4
+      - HUMMING_COMPILER=nvcc
+      - HUMMING_CACHE_DIR=/root/.cache/humming/dp3
+      - HUMMING_MAX_PARALLEL_BUILD_WORKERS=8
+    command: >
+      /root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/snapshots/99f1fa70408c52b007d4fd69e02e5a522422e755
+      --served-model-name z-ai/glm-5.3-flash
+      --trust-remote-code
+      --tensor-parallel-size 1
+      --data-parallel-size 4
+      --data-parallel-rank 3
+      --enable-expert-parallel
+      --data-parallel-address 127.0.0.1
+      --data-parallel-rpc-port 13345
+      --max-model-len 262144
+      --max-num-batched-tokens 8192
+      --max-num-seqs 128
+      --max-num-queued-reqs 96
+      --scheduling-policy priority
+      --gpu-memory-utilization 0.85
+      --enable-prompt-tokens-details
+      --chat-template /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/3f1971b7b5f7a528c9c4ef6212c8785298a8c24a/chat_template.jinja
+      --reasoning-parser glm45
+      --tool-call-parser glm47
+      --enable-auto-tool-choice
+      --speculative-config '{"method":"mtp","num_speculative_tokens":3}'
+      --compilation-config '{"cudagraph_mode":"FULL_DECODE_ONLY"}'
+      --moe-backend humming
+      --attention-backend FLASH_ATTN_MLA_SPARSE
+      --kv-cache-dtype auto
+      --enable-prefix-caching
+      --limit-mm-per-prompt '{"image": 4}'
+      --prefill-schedule-interval 8
+      --no-enable-log-requests
+      --host 0.0.0.0
+      --port 9103
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","replica:r1","dp_rank:3","gpu:3","deployment:glm-5.3-flash-vllm-dep4x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-w4afp8-2xdep4-c8192-mtp3-mr128-q96-omp4-aff64-psiglobal8-bf16kv-prefix-cc-v2runner"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "vllm"
+      nearai.otel.service: "vllm"
+      nearai.otel.source: "vllm"
+      nearai.otel.container_name: "model-vllm-glm53-dp3"
+      nearai.otel.port: "9103"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "z-ai/glm-5.3-flash"
+      nearai.otel.model_path: "graphistry/GLM-5.3-Flash-W4AFP8"
+      nearai.otel.served_model: "z-ai/glm-5.3-flash"
+      nearai.otel.deployment: "glm-5.3-flash-vllm-dep4x2"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
+      nearai.otel.ppcie: "true"
+      nearai.otel.config_variant: "vllm0340-w4afp8-2xdep4-c8192-mtp3-mr128-q96-omp4-aff64-psiglobal8-bf16kv-prefix-cc-v2runner"
+
+  model-vllm-glm53-dp4:
+    <<: *glm53-engine-common
+    container_name: model-vllm-glm53-dp4
+    network_mode: "service:sidecar-glm53-netns-b"
+    depends_on:
+      model-downloader:
+        condition: service_completed_successfully
+    environment:
+      - CUDA_VISIBLE_DEVICES=4
+      - HF_HUB_OFFLINE=1
+      - PYTHONUNBUFFERED=1
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - NCCL_DEBUG=WARN
+      - VLLM_NEAR_DISABLE_UVA=1
+      - VLLM_USE_V2_MODEL_RUNNER=1
+      - VLLM_CONFIDENTIAL_COMPUTE=1
+      - VLLM_NEAR_DP_GLOBAL_PREFILL_CADENCE=1
+      - VLLM_NEAR_DP_GLOBAL_PREFILL_CADENCE_MIN=2
+      - VLLM_NEAR_DP_GLOBAL_PREFILL_CADENCE_RESTORE=2
+      - OMP_NUM_THREADS=4
+      - HUMMING_COMPILER=nvcc
+      - HUMMING_CACHE_DIR=/root/.cache/humming/dp4
+      - HUMMING_MAX_PARALLEL_BUILD_WORKERS=8
+    command: >
+      /root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/snapshots/99f1fa70408c52b007d4fd69e02e5a522422e755
+      --served-model-name z-ai/glm-5.3-flash
+      --trust-remote-code
+      --tensor-parallel-size 1
+      --data-parallel-size 4
+      --data-parallel-rank 0
+      --enable-expert-parallel
+      --data-parallel-address 127.0.0.1
+      --data-parallel-rpc-port 13346
+      --max-model-len 262144
+      --max-num-batched-tokens 8192
+      --max-num-seqs 128
+      --max-num-queued-reqs 96
+      --scheduling-policy priority
+      --gpu-memory-utilization 0.85
+      --enable-prompt-tokens-details
+      --chat-template /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/3f1971b7b5f7a528c9c4ef6212c8785298a8c24a/chat_template.jinja
+      --reasoning-parser glm45
+      --tool-call-parser glm47
+      --enable-auto-tool-choice
+      --speculative-config '{"method":"mtp","num_speculative_tokens":3}'
+      --compilation-config '{"cudagraph_mode":"FULL_DECODE_ONLY"}'
+      --moe-backend humming
+      --attention-backend FLASH_ATTN_MLA_SPARSE
+      --kv-cache-dtype auto
+      --enable-prefix-caching
+      --limit-mm-per-prompt '{"image": 4}'
+      --prefill-schedule-interval 8
+      --no-enable-log-requests
+      --host 0.0.0.0
+      --port 9104
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","replica:r2","dp_rank:0","gpu:4","deployment:glm-5.3-flash-vllm-dep4x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-w4afp8-2xdep4-c8192-mtp3-mr128-q96-omp4-aff64-psiglobal8-bf16kv-prefix-cc-v2runner"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "vllm"
+      nearai.otel.service: "vllm"
+      nearai.otel.source: "vllm"
+      nearai.otel.container_name: "model-vllm-glm53-dp4"
+      nearai.otel.port: "9104"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "z-ai/glm-5.3-flash"
+      nearai.otel.model_path: "graphistry/GLM-5.3-Flash-W4AFP8"
+      nearai.otel.served_model: "z-ai/glm-5.3-flash"
+      nearai.otel.deployment: "glm-5.3-flash-vllm-dep4x2"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
+      nearai.otel.ppcie: "true"
+      nearai.otel.config_variant: "vllm0340-w4afp8-2xdep4-c8192-mtp3-mr128-q96-omp4-aff64-psiglobal8-bf16kv-prefix-cc-v2runner"
+
+  model-vllm-glm53-dp5:
+    <<: *glm53-engine-common
+    container_name: model-vllm-glm53-dp5
+    network_mode: "service:sidecar-glm53-netns-b"
+    depends_on:
+      model-downloader:
+        condition: service_completed_successfully
+      model-vllm-glm53-dp4:
+        condition: service_started
+    environment:
+      - CUDA_VISIBLE_DEVICES=5
+      - HF_HUB_OFFLINE=1
+      - PYTHONUNBUFFERED=1
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - NCCL_DEBUG=WARN
+      - VLLM_NEAR_DISABLE_UVA=1
+      - VLLM_USE_V2_MODEL_RUNNER=1
+      - VLLM_CONFIDENTIAL_COMPUTE=1
+      - VLLM_NEAR_DP_GLOBAL_PREFILL_CADENCE=1
+      - VLLM_NEAR_DP_GLOBAL_PREFILL_CADENCE_MIN=2
+      - VLLM_NEAR_DP_GLOBAL_PREFILL_CADENCE_RESTORE=2
+      - OMP_NUM_THREADS=4
+      - HUMMING_COMPILER=nvcc
+      - HUMMING_CACHE_DIR=/root/.cache/humming/dp5
+      - HUMMING_MAX_PARALLEL_BUILD_WORKERS=8
+    command: >
+      /root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/snapshots/99f1fa70408c52b007d4fd69e02e5a522422e755
+      --served-model-name z-ai/glm-5.3-flash
+      --trust-remote-code
+      --tensor-parallel-size 1
+      --data-parallel-size 4
+      --data-parallel-rank 1
+      --enable-expert-parallel
+      --data-parallel-address 127.0.0.1
+      --data-parallel-rpc-port 13346
+      --max-model-len 262144
+      --max-num-batched-tokens 8192
+      --max-num-seqs 128
+      --max-num-queued-reqs 96
+      --scheduling-policy priority
+      --gpu-memory-utilization 0.85
+      --enable-prompt-tokens-details
+      --chat-template /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/3f1971b7b5f7a528c9c4ef6212c8785298a8c24a/chat_template.jinja
+      --reasoning-parser glm45
+      --tool-call-parser glm47
+      --enable-auto-tool-choice
+      --speculative-config '{"method":"mtp","num_speculative_tokens":3}'
+      --compilation-config '{"cudagraph_mode":"FULL_DECODE_ONLY"}'
+      --moe-backend humming
+      --attention-backend FLASH_ATTN_MLA_SPARSE
+      --kv-cache-dtype auto
+      --enable-prefix-caching
+      --limit-mm-per-prompt '{"image": 4}'
+      --prefill-schedule-interval 8
+      --no-enable-log-requests
+      --host 0.0.0.0
+      --port 9105
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","replica:r2","dp_rank:1","gpu:5","deployment:glm-5.3-flash-vllm-dep4x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-w4afp8-2xdep4-c8192-mtp3-mr128-q96-omp4-aff64-psiglobal8-bf16kv-prefix-cc-v2runner"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "vllm"
+      nearai.otel.service: "vllm"
+      nearai.otel.source: "vllm"
+      nearai.otel.container_name: "model-vllm-glm53-dp5"
+      nearai.otel.port: "9105"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "z-ai/glm-5.3-flash"
+      nearai.otel.model_path: "graphistry/GLM-5.3-Flash-W4AFP8"
+      nearai.otel.served_model: "z-ai/glm-5.3-flash"
+      nearai.otel.deployment: "glm-5.3-flash-vllm-dep4x2"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
+      nearai.otel.ppcie: "true"
+      nearai.otel.config_variant: "vllm0340-w4afp8-2xdep4-c8192-mtp3-mr128-q96-omp4-aff64-psiglobal8-bf16kv-prefix-cc-v2runner"
+
+  model-vllm-glm53-dp6:
+    <<: *glm53-engine-common
+    container_name: model-vllm-glm53-dp6
+    network_mode: "service:sidecar-glm53-netns-b"
+    depends_on:
+      model-downloader:
+        condition: service_completed_successfully
+      model-vllm-glm53-dp4:
+        condition: service_started
+    environment:
+      - CUDA_VISIBLE_DEVICES=6
+      - HF_HUB_OFFLINE=1
+      - PYTHONUNBUFFERED=1
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - NCCL_DEBUG=WARN
+      - VLLM_NEAR_DISABLE_UVA=1
+      - VLLM_USE_V2_MODEL_RUNNER=1
+      - VLLM_CONFIDENTIAL_COMPUTE=1
+      - VLLM_NEAR_DP_GLOBAL_PREFILL_CADENCE=1
+      - VLLM_NEAR_DP_GLOBAL_PREFILL_CADENCE_MIN=2
+      - VLLM_NEAR_DP_GLOBAL_PREFILL_CADENCE_RESTORE=2
+      - OMP_NUM_THREADS=4
+      - HUMMING_COMPILER=nvcc
+      - HUMMING_CACHE_DIR=/root/.cache/humming/dp6
+      - HUMMING_MAX_PARALLEL_BUILD_WORKERS=8
+    command: >
+      /root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/snapshots/99f1fa70408c52b007d4fd69e02e5a522422e755
+      --served-model-name z-ai/glm-5.3-flash
+      --trust-remote-code
+      --tensor-parallel-size 1
+      --data-parallel-size 4
+      --data-parallel-rank 2
+      --enable-expert-parallel
+      --data-parallel-address 127.0.0.1
+      --data-parallel-rpc-port 13346
+      --max-model-len 262144
+      --max-num-batched-tokens 8192
+      --max-num-seqs 128
+      --max-num-queued-reqs 96
+      --scheduling-policy priority
+      --gpu-memory-utilization 0.85
+      --enable-prompt-tokens-details
+      --chat-template /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/3f1971b7b5f7a528c9c4ef6212c8785298a8c24a/chat_template.jinja
+      --reasoning-parser glm45
+      --tool-call-parser glm47
+      --enable-auto-tool-choice
+      --speculative-config '{"method":"mtp","num_speculative_tokens":3}'
+      --compilation-config '{"cudagraph_mode":"FULL_DECODE_ONLY"}'
+      --moe-backend humming
+      --attention-backend FLASH_ATTN_MLA_SPARSE
+      --kv-cache-dtype auto
+      --enable-prefix-caching
+      --limit-mm-per-prompt '{"image": 4}'
+      --prefill-schedule-interval 8
+      --no-enable-log-requests
+      --host 0.0.0.0
+      --port 9106
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","replica:r2","dp_rank:2","gpu:6","deployment:glm-5.3-flash-vllm-dep4x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-w4afp8-2xdep4-c8192-mtp3-mr128-q96-omp4-aff64-psiglobal8-bf16kv-prefix-cc-v2runner"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "vllm"
+      nearai.otel.service: "vllm"
+      nearai.otel.source: "vllm"
+      nearai.otel.container_name: "model-vllm-glm53-dp6"
+      nearai.otel.port: "9106"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "z-ai/glm-5.3-flash"
+      nearai.otel.model_path: "graphistry/GLM-5.3-Flash-W4AFP8"
+      nearai.otel.served_model: "z-ai/glm-5.3-flash"
+      nearai.otel.deployment: "glm-5.3-flash-vllm-dep4x2"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
+      nearai.otel.ppcie: "true"
+      nearai.otel.config_variant: "vllm0340-w4afp8-2xdep4-c8192-mtp3-mr128-q96-omp4-aff64-psiglobal8-bf16kv-prefix-cc-v2runner"
+
+  model-vllm-glm53-dp7:
+    <<: *glm53-engine-common
+    container_name: model-vllm-glm53-dp7
+    network_mode: "service:sidecar-glm53-netns-b"
+    depends_on:
+      model-downloader:
+        condition: service_completed_successfully
+      model-vllm-glm53-dp4:
+        condition: service_started
+    environment:
+      - CUDA_VISIBLE_DEVICES=7
+      - HF_HUB_OFFLINE=1
+      - PYTHONUNBUFFERED=1
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - NCCL_DEBUG=WARN
+      - VLLM_NEAR_DISABLE_UVA=1
+      - VLLM_USE_V2_MODEL_RUNNER=1
+      - VLLM_CONFIDENTIAL_COMPUTE=1
+      - VLLM_NEAR_DP_GLOBAL_PREFILL_CADENCE=1
+      - VLLM_NEAR_DP_GLOBAL_PREFILL_CADENCE_MIN=2
+      - VLLM_NEAR_DP_GLOBAL_PREFILL_CADENCE_RESTORE=2
+      - OMP_NUM_THREADS=4
+      - HUMMING_COMPILER=nvcc
+      - HUMMING_CACHE_DIR=/root/.cache/humming/dp7
+      - HUMMING_MAX_PARALLEL_BUILD_WORKERS=8
+    command: >
+      /root/.cache/huggingface/hub/models--graphistry--GLM-5.3-Flash-W4AFP8/snapshots/99f1fa70408c52b007d4fd69e02e5a522422e755
+      --served-model-name z-ai/glm-5.3-flash
+      --trust-remote-code
+      --tensor-parallel-size 1
+      --data-parallel-size 4
+      --data-parallel-rank 3
+      --enable-expert-parallel
+      --data-parallel-address 127.0.0.1
+      --data-parallel-rpc-port 13346
+      --max-model-len 262144
+      --max-num-batched-tokens 8192
+      --max-num-seqs 128
+      --max-num-queued-reqs 96
+      --scheduling-policy priority
+      --gpu-memory-utilization 0.85
+      --enable-prompt-tokens-details
+      --chat-template /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/3f1971b7b5f7a528c9c4ef6212c8785298a8c24a/chat_template.jinja
+      --reasoning-parser glm45
+      --tool-call-parser glm47
+      --enable-auto-tool-choice
+      --speculative-config '{"method":"mtp","num_speculative_tokens":3}'
+      --compilation-config '{"cudagraph_mode":"FULL_DECODE_ONLY"}'
+      --moe-backend humming
+      --attention-backend FLASH_ATTN_MLA_SPARSE
+      --kv-cache-dtype auto
+      --enable-prefix-caching
+      --limit-mm-per-prompt '{"image": 4}'
+      --prefill-schedule-interval 8
+      --no-enable-log-requests
+      --host 0.0.0.0
+      --port 9107
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","replica:r2","dp_rank:3","gpu:7","deployment:glm-5.3-flash-vllm-dep4x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-w4afp8-2xdep4-c8192-mtp3-mr128-q96-omp4-aff64-psiglobal8-bf16kv-prefix-cc-v2runner"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "vllm"
+      nearai.otel.service: "vllm"
+      nearai.otel.source: "vllm"
+      nearai.otel.container_name: "model-vllm-glm53-dp7"
+      nearai.otel.port: "9107"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "z-ai/glm-5.3-flash"
+      nearai.otel.model_path: "graphistry/GLM-5.3-Flash-W4AFP8"
+      nearai.otel.served_model: "z-ai/glm-5.3-flash"
+      nearai.otel.deployment: "glm-5.3-flash-vllm-dep4x2"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
+      nearai.otel.ppcie: "true"
+      nearai.otel.config_variant: "vllm0340-w4afp8-2xdep4-c8192-mtp3-mr128-q96-omp4-aff64-psiglobal8-bf16kv-prefix-cc-v2runner"
+
+  dcgm-glm53:
+    image: nvcr.io/nvidia/k8s/dcgm-exporter@sha256:ed594cf53fe6942e84b07b0740cdcbb249fa4b39cb21feeebf93881ae51f0b5e
+    container_name: dcgm-glm53
+    runtime: nvidia
+    cap_add:
+      - SYS_ADMIN
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["0","1","2","3","4","5","6","7"]
+              capabilities: [gpu]
+    restart: unless-stopped
+    logging: *logging-conf
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"dcgm-exporter","service":"dcgm-exporter","tags":["model:z-ai/glm-5.3-flash","deployment:glm-5.3-flash-vllm-dep4x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-w4afp8-2xdep4-c8192-mtp3-mr128-q96-omp4-aff64-psiglobal8-bf16kv-prefix-cc-v2runner"]}]'
+      nearai.otel.scrape: "true"
+      nearai.otel.job: "dcgm"
+      nearai.otel.service: "dcgm-exporter"
+      nearai.otel.source: "dcgm-exporter"
+      nearai.otel.container_name: "dcgm-glm53"
+      nearai.otel.port: "9400"
+      nearai.otel.path: "/metrics"
+      nearai.otel.model: "z-ai/glm-5.3-flash"
+      nearai.otel.deployment: "glm-5.3-flash-vllm-dep4x2"
+      nearai.otel.env: "${ENV}"
+      nearai.otel.host: "${CVM_HOST}"
+      nearai.otel.host_machine: "${CVM_HOST}"
+      nearai.otel.cvm_name: "${CVM_NAME}"
+      nearai.otel.ip: "${HOST_IP}"
+      nearai.otel.ppcie: "true"
+      nearai.otel.config_variant: "vllm0340-w4afp8-2xdep4-c8192-mtp3-mr128-q96-omp4-aff64-psiglobal8-bf16kv-prefix-cc-v2runner"
+
+  engine-egress-probe:
+    image: curlimages/curl@sha256:d94d07ba9e7d6de898b6d96c1a072f6f8266c687af78a74f380087a0addf5d17
+    container_name: engine-egress-probe
+    restart: "no"
+    networks:
+      - engine-glm53-a
+      - engine-glm53-b
+    extra_hosts:
+      - "compose-manager:host-gateway"
+    entrypoint:
+      - sh
+      - -c
+      - |
+        fail=0
+        reached() { echo "engine-egress-probe reached $$1"; fail=1; }
+        if ip -4 route | grep -q '^default'; then echo "engine-egress-probe found a default route"; fail=1; fi
+        subnets=$$(ip -4 route | awk '$$1 ~ "/" {print $$1}')
+        if [ -z "$$subnets" ]; then echo "engine-egress-probe found no network to test"; fail=1; fi
+        hosts=compose-manager
+        for subnet in $$subnets; do
+          base=$${subnet%/*}
+          hosts="$$hosts $${base%.*}.$$(( $${base##*.} + 1 ))"
+        done
+        hits=$$(mktemp)
+        for host in $$hosts; do
+          ( for port in 22 80 8000 8001 8080 8444; do
+              if nc -z -w 2 "$$host" "$$port" 2>/dev/null; then echo "$$host:$$port" >> "$$hits"; fi
+            done ) &
+        done
+        wait
+        while read -r hit; do reached "$$hit"; done < "$$hits"
+        for target in "1.1.1.1 443" "1.1.1.1 53" "169.254.169.254 80"; do
+          if nc -z -w 3 $$target 2>/dev/null; then reached "$$target"; fi
+        done
+        if curl -s -o /dev/null -m 5 https://huggingface.co; then reached https://huggingface.co; fi
+        if nslookup huggingface.co >/dev/null 2>&1; then echo "engine-egress-probe resolved an outside name"; fail=1; fi
+        count=$$(echo "$$subnets" | wc -w)
+        if [ "$$fail" = 0 ]; then echo "engine-egress-probe PASS: no route out of $$count networks"; else echo "engine-egress-probe FAIL"; fi
+        exit "$$fail"
+    logging: *logging-conf
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"engine-egress-probe","service":"engine-egress-probe","tags":["model:z-ai/glm-5.3-flash","deployment:glm-5.3-flash-vllm-dep4x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}"]}]'
+
+  otelcol-contrib:
+    image: otel/opentelemetry-collector-contrib@sha256:85ac41c2db88d0df9bd6145e608a3cb023f5d8443868adbfbbf66efb51087917
+    container_name: otelcol-contrib
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    user: "0:0"
+    networks:
+      - default
+      - engine-glm53-a
+      - engine-glm53-b
+    mem_limit: "768m"
+    environment:
+      - MONITORING_INGEST_TOKEN=${MONITORING_INGEST_TOKEN:-}
+      - CVM_NAME=${CVM_NAME:-unknown}
+      - CVM_HOST=${CVM_HOST:-unknown}
+      - DD_HOSTNAME=${DD_HOSTNAME:-unknown}
+      - ENV=${ENV:-unknown}
+      - HOST_IP=${HOST_IP:-unknown}
+    volumes:
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - otelcol_app_storage:/var/lib/otelcol-contrib
+    configs:
+      - source: otelcol_app_config
+        target: /etc/otelcol-contrib/config.yaml
+        mode: 0444
+    restart: unless-stopped
+    logging:
+      driver: "local"
+      options:
+        max-size: "20m"
+        max-file: "3"
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"otelcol-contrib","service":"otelcol-contrib","tags":["model:z-ai/glm-5.3-flash","deployment:glm-5.3-flash-vllm-dep4x2","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-w4afp8-2xdep4-c8192-mtp3-mr128-q96-omp4-aff64-psiglobal8-bf16kv-prefix-cc-v2runner"]}]'
+
+networks:
+  default:
+    external: true
+    name: dstack_default
+  engine-glm53-a:
+    name: engine_glm53_a
+    internal: true
+  engine-glm53-b:
+    name: engine_glm53_b
+    internal: true
+
+volumes:
+  otelcol_app_storage:
+  huggingface_cache:
+  glm53_kernel_cache:
+  humming_cache:
+  certs:
+    external: true
+    name: certs
+
+configs:
+  otelcol_app_config:
+    content: |
+      receivers:
+        otlp:
+          protocols:
+            grpc:
+              endpoint: 127.0.0.1:4317
+            http:
+              endpoint: 127.0.0.1:4318
+
+        filelog/docker_containers:
+          include: [/var/lib/docker/containers/*/*-json.log]
+          start_at: end
+          storage: file_storage
+          include_file_path: true
+          operators:
+            - type: json_parser
+              parse_from: body
+              parse_to: attributes
+              timestamp:
+                parse_from: attributes.time
+                layout_type: gotime
+                layout: '2006-01-02T15:04:05.999999999Z07:00'
+              on_error: send_quiet
+            - type: move
+              from: attributes.log
+              to: body
+              if: 'attributes.log != nil'
+            - type: move
+              from: attributes.stream
+              to: attributes["log.iostream"]
+              if: 'attributes.stream != nil'
+            - type: remove
+              field: attributes.time
+              if: 'attributes.time != nil'
+            - type: regex_parser
+              parse_from: attributes["log.file.path"]
+              regex: '/var/lib/docker/containers/(?P<container_id>[a-f0-9]{12})[a-f0-9]*/'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'model:(?P<model>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'served_model:(?P<served_model>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'deployment:(?P<deployment>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'ip:(?P<ip>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'port:(?P<port>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'env:(?P<env>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'host:(?P<host>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'instance:(?P<instance>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'gpu_pair:(?P<gpu_pair>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'ppcie:(?P<ppcie>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'config_variant:(?P<config_variant>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'quantization:(?P<quantization>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'eagle:(?P<eagle>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'eagle_prefill_fairness:(?P<eagle_prefill_fairness>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'sglang_revision:(?P<sglang_revision>[^",\]]+)'
+              on_error: send_quiet
+            - type: regex_parser
+              parse_from: attributes["attrs"]["com.datadoghq.ad.logs"]
+              regex: 'engine_image:(?P<engine_image>[^",\]]+)'
+              on_error: send_quiet
+            - type: add
+              field: attributes["service.name"]
+              value: cvm-docker
+
+        prometheus/apps:
+          config:
+            scrape_configs:
+              - job_name: vllm-model-vllm-glm53-dp0
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['model-vllm-glm53-dp0:9100']
+                    labels:
+                      service: "vllm"
+                      source: "vllm"
+                      container_name: "model-vllm-glm53-dp0"
+                      model: "z-ai/glm-5.3-flash"
+                      served_model: "z-ai/glm-5.3-flash"
+                      model_path: "graphistry/GLM-5.3-Flash-W4AFP8"
+                      model_revision: "99f1fa70408c52b007d4fd69e02e5a522422e755"
+                      replica: "r1"
+                      dp_rank: "0"
+                      gpu: "0"
+                      port: "8000"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      ppcie: "true"
+                      deployment: "glm-5.3-flash-vllm-dep4x2"
+                      config_variant: "vllm0340-w4afp8-2xdep4-c8192-mtp3-mr128-q96-omp4-aff64-psiglobal8-bf16kv-prefix-cc-v2runner"
+              - job_name: vllm-model-vllm-glm53-dp1
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['model-vllm-glm53-dp1:9101']
+                    labels:
+                      service: "vllm"
+                      source: "vllm"
+                      container_name: "model-vllm-glm53-dp1"
+                      model: "z-ai/glm-5.3-flash"
+                      served_model: "z-ai/glm-5.3-flash"
+                      model_path: "graphistry/GLM-5.3-Flash-W4AFP8"
+                      model_revision: "99f1fa70408c52b007d4fd69e02e5a522422e755"
+                      replica: "r1"
+                      dp_rank: "1"
+                      gpu: "1"
+                      port: "8000"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      ppcie: "true"
+                      deployment: "glm-5.3-flash-vllm-dep4x2"
+                      config_variant: "vllm0340-w4afp8-2xdep4-c8192-mtp3-mr128-q96-omp4-aff64-psiglobal8-bf16kv-prefix-cc-v2runner"
+              - job_name: vllm-model-vllm-glm53-dp2
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['model-vllm-glm53-dp2:9102']
+                    labels:
+                      service: "vllm"
+                      source: "vllm"
+                      container_name: "model-vllm-glm53-dp2"
+                      model: "z-ai/glm-5.3-flash"
+                      served_model: "z-ai/glm-5.3-flash"
+                      model_path: "graphistry/GLM-5.3-Flash-W4AFP8"
+                      model_revision: "99f1fa70408c52b007d4fd69e02e5a522422e755"
+                      replica: "r1"
+                      dp_rank: "2"
+                      gpu: "2"
+                      port: "8000"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      ppcie: "true"
+                      deployment: "glm-5.3-flash-vllm-dep4x2"
+                      config_variant: "vllm0340-w4afp8-2xdep4-c8192-mtp3-mr128-q96-omp4-aff64-psiglobal8-bf16kv-prefix-cc-v2runner"
+              - job_name: vllm-model-vllm-glm53-dp3
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['model-vllm-glm53-dp3:9103']
+                    labels:
+                      service: "vllm"
+                      source: "vllm"
+                      container_name: "model-vllm-glm53-dp3"
+                      model: "z-ai/glm-5.3-flash"
+                      served_model: "z-ai/glm-5.3-flash"
+                      model_path: "graphistry/GLM-5.3-Flash-W4AFP8"
+                      model_revision: "99f1fa70408c52b007d4fd69e02e5a522422e755"
+                      replica: "r1"
+                      dp_rank: "3"
+                      gpu: "3"
+                      port: "8000"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      ppcie: "true"
+                      deployment: "glm-5.3-flash-vllm-dep4x2"
+                      config_variant: "vllm0340-w4afp8-2xdep4-c8192-mtp3-mr128-q96-omp4-aff64-psiglobal8-bf16kv-prefix-cc-v2runner"
+              - job_name: vllm-model-vllm-glm53-dp4
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['model-vllm-glm53-dp4:9104']
+                    labels:
+                      service: "vllm"
+                      source: "vllm"
+                      container_name: "model-vllm-glm53-dp4"
+                      model: "z-ai/glm-5.3-flash"
+                      served_model: "z-ai/glm-5.3-flash"
+                      model_path: "graphistry/GLM-5.3-Flash-W4AFP8"
+                      model_revision: "99f1fa70408c52b007d4fd69e02e5a522422e755"
+                      replica: "r2"
+                      dp_rank: "0"
+                      gpu: "4"
+                      port: "8000"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      ppcie: "true"
+                      deployment: "glm-5.3-flash-vllm-dep4x2"
+                      config_variant: "vllm0340-w4afp8-2xdep4-c8192-mtp3-mr128-q96-omp4-aff64-psiglobal8-bf16kv-prefix-cc-v2runner"
+              - job_name: vllm-model-vllm-glm53-dp5
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['model-vllm-glm53-dp5:9105']
+                    labels:
+                      service: "vllm"
+                      source: "vllm"
+                      container_name: "model-vllm-glm53-dp5"
+                      model: "z-ai/glm-5.3-flash"
+                      served_model: "z-ai/glm-5.3-flash"
+                      model_path: "graphistry/GLM-5.3-Flash-W4AFP8"
+                      model_revision: "99f1fa70408c52b007d4fd69e02e5a522422e755"
+                      replica: "r2"
+                      dp_rank: "1"
+                      gpu: "5"
+                      port: "8000"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      ppcie: "true"
+                      deployment: "glm-5.3-flash-vllm-dep4x2"
+                      config_variant: "vllm0340-w4afp8-2xdep4-c8192-mtp3-mr128-q96-omp4-aff64-psiglobal8-bf16kv-prefix-cc-v2runner"
+              - job_name: vllm-model-vllm-glm53-dp6
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['model-vllm-glm53-dp6:9106']
+                    labels:
+                      service: "vllm"
+                      source: "vllm"
+                      container_name: "model-vllm-glm53-dp6"
+                      model: "z-ai/glm-5.3-flash"
+                      served_model: "z-ai/glm-5.3-flash"
+                      model_path: "graphistry/GLM-5.3-Flash-W4AFP8"
+                      model_revision: "99f1fa70408c52b007d4fd69e02e5a522422e755"
+                      replica: "r2"
+                      dp_rank: "2"
+                      gpu: "6"
+                      port: "8000"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      ppcie: "true"
+                      deployment: "glm-5.3-flash-vllm-dep4x2"
+                      config_variant: "vllm0340-w4afp8-2xdep4-c8192-mtp3-mr128-q96-omp4-aff64-psiglobal8-bf16kv-prefix-cc-v2runner"
+              - job_name: vllm-model-vllm-glm53-dp7
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['model-vllm-glm53-dp7:9107']
+                    labels:
+                      service: "vllm"
+                      source: "vllm"
+                      container_name: "model-vllm-glm53-dp7"
+                      model: "z-ai/glm-5.3-flash"
+                      served_model: "z-ai/glm-5.3-flash"
+                      model_path: "graphistry/GLM-5.3-Flash-W4AFP8"
+                      model_revision: "99f1fa70408c52b007d4fd69e02e5a522422e755"
+                      replica: "r2"
+                      dp_rank: "3"
+                      gpu: "7"
+                      port: "8000"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      ppcie: "true"
+                      deployment: "glm-5.3-flash-vllm-dep4x2"
+                      config_variant: "vllm0340-w4afp8-2xdep4-c8192-mtp3-mr128-q96-omp4-aff64-psiglobal8-bf16kv-prefix-cc-v2runner"
+              - job_name: dcgm-dcgm-glm53
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['dcgm-glm53:9400']
+                    labels:
+                      service: "dcgm-exporter"
+                      source: "dcgm-exporter"
+                      container_name: "dcgm-glm53"
+                      model: "z-ai/glm-5.3-flash"
+                      port: "9400"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      ppcie: "true"
+                      deployment: "glm-5.3-flash-vllm-dep4x2"
+                      config_variant: "vllm0340-w4afp8-2xdep4-c8192-mtp3-mr128-q96-omp4-aff64-psiglobal8-bf16kv-prefix-cc-v2runner"
+              - job_name: inference-proxy-proxy-glm53
+                scrape_interval: 15s
+                metrics_path: /metrics
+                static_configs:
+                  - targets: ['proxy-glm53:8000']
+                    labels:
+                      service: "vllm-proxy"
+                      source: "vllm-proxy"
+                      container_name: "proxy-glm53"
+                      model: "z-ai/glm-5.3-flash"
+                      port: "8000"
+                      env: "${ENV}"
+                      host: "${CVM_HOST}"
+                      host_machine: "${CVM_HOST}"
+                      cvm_name: "${CVM_NAME}"
+                      ip: "${HOST_IP}"
+                      ppcie: "true"
+                      deployment: "glm-5.3-flash-vllm-dep4x2"
+                      config_variant: "vllm0340-w4afp8-2xdep4-c8192-mtp3-mr128-q96-omp4-aff64-psiglobal8-bf16kv-prefix-cc-v2runner"
+        prometheus/self:
+          config:
+            scrape_configs:
+              - job_name: otelcol-app
+                scrape_interval: 30s
+                static_configs:
+                  - targets: ['localhost:8888']
+
+      processors:
+        memory_limiter:
+          check_interval: 1s
+          limit_mib: 512
+          spike_limit_mib: 128
+
+        resource:
+          attributes:
+            - key: host.name
+              value: $${env:DD_HOSTNAME}
+              action: upsert
+            - key: cvm.name
+              value: $${env:CVM_NAME}
+              action: upsert
+            - key: host.machine
+              value: $${env:CVM_HOST}
+              action: insert
+            - key: deployment.environment
+              value: $${env:ENV}
+              action: upsert
+            - key: service.namespace
+              value: near-ai
+              action: insert
+
+        transform/docker_metadata:
+          error_mode: ignore
+          log_statements:
+            - context: log
+              statements:
+                - set(attributes["service.name"], attributes["attrs"]["com.docker.compose.service"]) where attributes["attrs"] != nil and attributes["attrs"]["com.docker.compose.service"] != nil
+                - set(attributes["service.name"], ParseJSON(attributes["attrs"]["com.datadoghq.ad.logs"])[0]["service"]) where attributes["attrs"] != nil and attributes["attrs"]["com.datadoghq.ad.logs"] != nil
+                - set(attributes["log.source"], ParseJSON(attributes["attrs"]["com.datadoghq.ad.logs"])[0]["source"]) where attributes["attrs"] != nil and attributes["attrs"]["com.datadoghq.ad.logs"] != nil
+                - set(attributes["service"], attributes["service.name"]) where attributes["attrs"] != nil and attributes["attrs"]["com.datadoghq.ad.logs"] != nil and attributes["service.name"] != nil
+                - set(attributes["source"], attributes["log.source"]) where attributes["attrs"] != nil and attributes["attrs"]["com.datadoghq.ad.logs"] != nil and attributes["log.source"] != nil
+                - set(attributes["container.name"], attributes["attrs"]["com.docker.compose.service"]) where attributes["attrs"] != nil and attributes["attrs"]["com.docker.compose.service"] != nil
+
+        filter/app_logs:
+          error_mode: ignore
+          logs:
+            log_record:
+              - 'attributes["model"] == nil and attributes["deployment"] == nil'
+              - 'attributes["service.name"] == "compose-manager"'
+              - 'attributes["service.name"] == "compose-manager-launcher"'
+              - 'attributes["service.name"] == "otelcol-management"'
+              - 'attributes["service.name"] == "otelcol-contrib"'
+              - 'attributes["service.name"] == "datadog-agent"'
+
+        groupbyattrs/docker_service:
+          keys:
+            - service.name
+            - service
+            - container.name
+            - log.source
+            - source
+            - log.iostream
+            - model
+            - served_model
+            - deployment
+            - env
+            - host
+            - ip
+            - port
+            - instance
+            - gpu_pair
+            - ppcie
+            - config_variant
+            - quantization
+            - eagle
+            - eagle_prefill_fairness
+            - sglang_revision
+            - engine_image
+
+        batch:
+          send_batch_size: 1024
+          send_batch_max_size: 2048
+          timeout: 5s
+
+      exporters:
+        otlphttp/gateway:
+          endpoint: https://telemetry.infra.near.ai
+          headers:
+            Authorization: "Bearer $${env:MONITORING_INGEST_TOKEN}"
+          sending_queue:
+            num_consumers: 1
+            queue_size: 128
+            storage: file_storage
+
+      extensions:
+        file_storage:
+          directory: /var/lib/otelcol-contrib/storage
+          create_directory: true
+
+      service:
+        extensions: [file_storage]
+        pipelines:
+          logs/app:
+            receivers: [filelog/docker_containers]
+            processors: [memory_limiter, resource, transform/docker_metadata, filter/app_logs, groupbyattrs/docker_service, batch]
+            exporters: [otlphttp/gateway]
+          metrics/app:
+            receivers: [prometheus/apps]
+            processors: [memory_limiter, resource, batch]
+            exporters: [otlphttp/gateway]
+          metrics/otlp:
+            receivers: [otlp]
+            processors: [memory_limiter, resource, batch]
+            exporters: [otlphttp/gateway]
+          metrics/self:
+            receivers: [prometheus/self]
+            processors: [memory_limiter, resource, batch]
+            exporters: [otlphttp/gateway]
+          traces:
+            receivers: [otlp]
+            processors: [memory_limiter, resource, batch]
+            exporters: [otlphttp/gateway]
+        telemetry:
+          metrics:
+            address: localhost:8888
+          logs:
+            level: info
+
+  registrar_script:
+    content: |
+      #!/bin/sh
+      PROXY_URL="https://completions.near.ai"
+      TOKEN="$${MODEL_PROXY_TOKEN}"
+      INFERENCE_TOKEN="$${PROXY_TOKEN}"
+
+      if [ -z "$$TOKEN" ] || [ -z "$$INFERENCE_TOKEN" ]; then
+        echo "ERROR: MODEL_PROXY_TOKEN and PROXY_TOKEN are required for model-proxy registration"
+        exit 1
+      fi
+
+      ENDPOINT="$${HOST_IP}:$${HTTP_PORT}"
+      REGISTERED=false
+      FAILURE_COUNT=0
+      MAX_RETRIES=3
+
+      register_endpoint() {
+        echo "Registering endpoint $$1 with routing port $$2"
+        curl -fsS --max-time 10 -X POST "$$PROXY_URL/register/endpoint" \
+          -H "Authorization: Bearer $$TOKEN" \
+          -H "Content-Type: application/json" \
+          -d "{\"endpoint\":\"$$1\",\"routing_port\":$$2}"
+      }
+
+      unregister_endpoint() {
+        echo "Unregistering endpoint $$1"
+        curl -fsS --max-time 10 -X POST "$$PROXY_URL/unregister/endpoint" \
+          -H "Authorization: Bearer $$TOKEN" \
+          -H "Content-Type: application/json" \
+          -d "{\"endpoint\":\"$$1\"}"
+      }
+
+      register_model() {
+        curl -fsS --max-time 10 -X POST "$$PROXY_URL/register/model" \
+          -H "Authorization: Bearer $$TOKEN" \
+          -H "Content-Type: application/json" \
+          -d "{\"model\":\"$$1\",\"domain\":\"$$2\"}"
+      }
+
+      cleanup() {
+        echo "SIGTERM received, unregistering $$ENDPOINT"
+        unregister_endpoint "$$ENDPOINT"
+        REGISTERED=false
+        exit 0
+      }
+      trap cleanup TERM INT
+
+      mark_registered() {
+        if ! register_endpoint "$$ENDPOINT" "$${TLS_PORT}"; then
+          echo "[glm-5.3-flash-vllm-dep4x2] Endpoint registration failed; retrying on the next loop"
+          return 1
+        fi
+        if ! register_model "z-ai/glm-5.3-flash" "glm-5-3-flash.completions.near.ai"; then
+          echo "[glm-5.3-flash-vllm-dep4x2] Model registration failed; retrying on the next loop"
+          return 1
+        fi
+        if [ "$$REGISTERED" = false ]; then
+          echo "[glm-5.3-flash-vllm-dep4x2] Registered z-ai/glm-5.3-flash (2x DEP4) at $$ENDPOINT"
+        fi
+        REGISTERED=true
+      }
+
+
+      # Probe the host-published nginx port. The inference-proxy health-manages
+      # both internal replicas, so registration represents the pooled endpoint.
+      check_inference() {
+        status=$$(curl -sS --connect-timeout 10 --max-time 45 -o /dev/null -w "%{http_code}" \
+          -X POST "http://$${HOST_IP}:$${HTTP_PORT}/v1/chat/completions" \
+          -H "Authorization: Bearer $$INFERENCE_TOKEN" \
+          -H "Content-Type: application/json" \
+          -d '{"model":"z-ai/glm-5.3-flash","messages":[{"role":"user","content":"hi"}],"max_tokens":1}')
+        curl_status=$$?
+
+        if [ "$$curl_status" -ne 0 ]; then
+          case "$$curl_status" in
+            52|56)
+              echo "[glm-5.3-flash-vllm-dep4x2] Health probe hit connection-level backpressure (curl $$curl_status); treating as alive but saturated"
+              return 2
+              ;;
+            28)
+              # /v1/models answers from the HTTP layer, so a 2xx means busy, not down.
+              if curl -sf --connect-timeout 5 --max-time 10 \
+                -H "Authorization: Bearer $$INFERENCE_TOKEN" \
+                "http://$${HOST_IP}:$${HTTP_PORT}/v1/models" > /dev/null 2>&1; then
+                echo "[glm-5.3-flash-vllm-dep4x2] Health probe timed out but /v1/models is live; treating as alive but saturated"
+                return 2
+              fi
+              echo "[glm-5.3-flash-vllm-dep4x2] Health probe timed out and /v1/models is unreachable"
+              return 1
+              ;;
+          esac
+          echo "[glm-5.3-flash-vllm-dep4x2] Health probe curl failed with status $$curl_status"
+          return 1
+        fi
+
+        case "$$status" in
+          2*)
+            return 0
+            ;;
+          503)
+            echo "[glm-5.3-flash-vllm-dep4x2] Backend returned 503; treating as alive but saturated"
+            return 2
+            ;;
+          *)
+            echo "[glm-5.3-flash-vllm-dep4x2] Backend returned HTTP $$status"
+            return 1
+            ;;
+        esac
+      }
+
+      READY_URL="http://$${HOST_IP}:$${HTTP_PORT}/v1/models"
+      echo "Waiting for model to be ready (probing $$READY_URL)..."
+      ready_attempts=0
+      until curl --connect-timeout 5 --max-time 10 -sf \
+        -H "Authorization: Bearer $$INFERENCE_TOKEN" \
+        "$$READY_URL" > /dev/null 2>&1; do
+        ready_attempts=$$((ready_attempts + 1))
+        if [ "$$ready_attempts" -ge 30 ]; then
+          echo "WARN: model not reachable at $$READY_URL after $$ready_attempts attempts (~20m); entering registration loop anyway"
+          break
+        fi
+        echo "Model not ready yet (attempt $$ready_attempts/30), retrying in 30s..."
+        sleep 30
+      done
+      echo "Model ready, starting registration loop"
+
+      while true; do
+        date +%s > /tmp/registrar_alive
+        check_inference
+        health_status=$$?
+        case "$$health_status" in
+          0)
+            if mark_registered; then
+              FAILURE_COUNT=0
+            else
+              FAILURE_COUNT=$$((FAILURE_COUNT + 1))
+            fi
+            ;;
+          2)
+            echo "[glm-5.3-flash-vllm-dep4x2] Keeping $$ENDPOINT registered while backend is saturated"
+            if mark_registered; then
+              FAILURE_COUNT=0
+            else
+              FAILURE_COUNT=$$((FAILURE_COUNT + 1))
+            fi
+            ;;
+          *)
+            FAILURE_COUNT=$$((FAILURE_COUNT + 1))
+            echo "[glm-5.3-flash-vllm-dep4x2] Health check failed ($$FAILURE_COUNT/$$MAX_RETRIES)"
+            if [ "$$REGISTERED" = true ] && [ "$$FAILURE_COUNT" -ge "$$MAX_RETRIES" ]; then
+              echo "[glm-5.3-flash-vllm-dep4x2] Retry limit reached, unregistering $$ENDPOINT"
+              unregister_endpoint "$$ENDPOINT"
+              REGISTERED=false
+              echo "[glm-5.3-flash-vllm-dep4x2] Exiting to refresh DNS (container will auto-restart)"
+              exit 1
+            fi
+            ;;
+        esac
+        sleep 60
+      done
+  nginx_conf:
+    content: |
+      log_format json_combined escape=json
+        '{'  '"time":"$$time_iso8601"'
+        ',"request_id":"$$request_id"'
+        ',"method":"$$request_method"'
+        ',"status":$$status'
+        ',"request_length":$$request_length'
+        ',"bytes_sent":$$bytes_sent'
+        ',"request_time":$$request_time'
+        ',"upstream_addr":"$$upstream_addr"'
+        '}';
+
+      access_log /var/log/nginx/access.log json_combined;
+
+      proxy_http_version 1.1;
+      proxy_set_header Host $$host;
+      proxy_set_header X-Real-IP $$remote_addr;
+      proxy_set_header X-Forwarded-For $$proxy_add_x_forwarded_for;
+      proxy_set_header X-Forwarded-Proto $$scheme;
+      proxy_set_header Connection '';
+      proxy_buffering off;
+      proxy_cache off;
+      proxy_read_timeout 3600s;
+      client_max_body_size 100m;
+      client_body_buffer_size 1m;
+
+      server {
+        listen 8000;
+        location / { proxy_pass http://proxy-glm53:8000; }
+      }
+
+      server_names_hash_bucket_size 128;
+      ssl_certificate /etc/letsencrypt/live/completions.near.ai/fullchain.pem;
+      ssl_certificate_key /etc/letsencrypt/live/completions.near.ai/privkey.pem;
+      ssl_protocols TLSv1.2 TLSv1.3;
+
+      server {
+        listen 443 ssl http2;
+        server_name glm-5-3-flash.completions.near.ai
+                    glm-5-3-flash.completions-stg.near.ai
+                    ~^glm-5-3-flash-i\d+\.completions(-stg)?\.near\.ai$$;
+        keepalive_timeout 1h;
+        keepalive_requests 1000000;
+        location ^~ /metrics { return 404; }
+        location ^~ /v1/metrics { return 404; }
+        location / { proxy_pass http://proxy-glm53:8000; }
+      }

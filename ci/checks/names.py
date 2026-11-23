@@ -1,6 +1,7 @@
 """names: a deployable's path follows from what it runs.
 
 Serving file  prod/<served repo>-<engine>-<topology>[-<tier>].yaml   one served model, one engine kind
+              topology tokens: tp<N> dp<N> dep<N> pd<N> (pd<N>x<R>: R prefill/decode pairs, N GPUs per side)
 Pack          prod/pack-<purpose>.yaml                               several served models or engine kinds
 Utility       prod/util-<verb>-<object>.yaml                         no engine
 Paths in ci/data/legacy.txt keep their names and labels until a standard-named file replaces them.
@@ -9,21 +10,15 @@ Paths in ci/data/legacy.txt keep their names and labels until a standard-named f
 import json
 import re
 
-from common import Finding, engine_kind, engines, flag_values, legacy_lines, served_names, service_tokens, under_legacy
+from common import (
+    Finding, engine_kind, engine_unit, engines, legacy_lines, replicas, served_names, service_tokens, under_legacy,
+)
 
 RULES = ["names.kind", "names.serving", "names.tier", "names.labels"]
 DIFF_RULES = []
 
-TOPO_ORDER = re.compile(r"^(dep|dp|tp)(\d+)(?:x(\d+))?$")
+TOPO_ORDER = re.compile(r"^(dep|dp|pd|tp)(\d+)(?:x(\d+))?$")
 TAG = re.compile(r'"deployment:([^"]*)"')
-
-
-def _int(toks, flags):
-    for f in flags:
-        v = flag_values(toks, f)
-        if v and v[0].isdigit():
-            return int(v[0])
-    return 1
 
 
 def shape(path, rendered, services_allow):
@@ -32,16 +27,12 @@ def shape(path, rendered, services_allow):
     for key in engines(path, rendered, services_allow):
         svc = rendered["services"][key]
         kind, toks = engine_kind(key, svc), service_tokens(svc)
-        tp = _int(toks, ("--tp-size", "--tp", "--tensor-parallel-size", "-tp"))
-        dp = _int(toks, ("--dp-size", "--dp", "--data-parallel-size", "-dp"))
-        ep = "--enable-expert-parallel" in toks or "--enable-dp-attention" in toks
-        unit = (f"dep{dp}" if ep else f"dp{dp}") if dp > 1 else f"tp{tp}"
-        span = dp if flag_values(toks, "--data-parallel-rank") else 1
+        unit, span = engine_unit(toks)
         g = groups.setdefault((kind, unit, tuple(sorted(served_names(kind, toks)))), [0, span])
         g[0] += 1
     repos, kinds, topos = set(), set(), set()
     for (kind, unit, served), (n, span) in groups.items():
-        reps = max(n // span, 1)
+        reps = replicas(unit, n, span)
         topos.add(unit + (f"x{reps}" if reps > 1 else ""))
         kinds.add(kind)
         repos.update(s.split("/")[-1].lower() for s in served)
@@ -125,6 +116,18 @@ def _r(**svcs):
     return {"services": svcs}
 
 
+def _pd(role, rank, dep="glm-5.3-flash-vllm-pd2x2"):
+    cmd = ["vllm", "serve", "--served-model-name", "z-ai/glm-5.3-flash", "--tensor-parallel-size", "1",
+           "--data-parallel-size", "2", "--data-parallel-rank", str(rank), "--enable-expert-parallel",
+           "--kv-transfer-config", '{"kv_connector":"NixlConnector","kv_role":"kv_%s"}' % ("producer" if role == "prefill" else "consumer")]
+    return {"command": cmd, "labels": {"deployment": dep}}
+
+
+def _pd_pairs(n, dep="glm-5.3-flash-vllm-pd2x2"):
+    return _r(**{f"model-vllm-{p}-{role}{r}": _pd(role, r, dep) for p in "abcd"[:n]
+                 for role in ("prefill", "decode") for r in (0, 1)})
+
+
 S = "prod/glm-5.3-flash-sglang-tp2x2.yaml"
 GOOD = {S: "services:\n"}
 REND = {S: _r(**{"model-sg-a": _svc(), "model-sg-b": _svc()})}
@@ -141,6 +144,12 @@ CASES = [
                                                                "model-sg-b": _svc(dep="glm-5.3-flash-sglang-tp2x2-base")}),
             "prod/glm-5.3-flash-sglang-tp2x2-long.yaml": _r(**{"model-sg-a": _svc(dep="glm-5.3-flash-sglang-tp2x2-long"),
                                                                "model-sg-b": _svc(dep="glm-5.3-flash-sglang-tp2x2-long")})}),
+    ("prefill/decode pairs", None, {"prod/glm-5.3-flash-vllm-pd2x2.yaml": "s\n"}, None,
+     {"prod/glm-5.3-flash-vllm-pd2x2.yaml": _pd_pairs(2)}),
+    ("one prefill/decode pair", None, {"prod/glm-5.3-flash-vllm-pd2.yaml": "s\n"}, None,
+     {"prod/glm-5.3-flash-vllm-pd2.yaml": _pd_pairs(1, "glm-5.3-flash-vllm-pd2")}),
+    ("pairs counted as engine groups", "names.serving", {"prod/glm-5.3-flash-vllm-dep2x4.yaml": "s\n"}, None,
+     {"prod/glm-5.3-flash-vllm-dep2x4.yaml": _pd_pairs(2, "glm-5.3-flash-vllm-dep2x4")}),
     ("wrong topology in name", "names.serving", {"prod/glm-5.3-flash-sglang-tp4.yaml": "s\n"}, None,
      {"prod/glm-5.3-flash-sglang-tp4.yaml": _r(**{"model-sg-a": _svc(dep="glm-5.3-flash-sglang-tp4"),
                                                   "model-sg-b": _svc(dep="glm-5.3-flash-sglang-tp4")})}),

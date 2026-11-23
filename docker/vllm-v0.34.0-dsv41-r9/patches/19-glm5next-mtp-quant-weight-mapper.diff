@@ -1,0 +1,30 @@
+--- a/vllm/models/glm5next/common/mtp.py
++++ b/vllm/models/glm5next/common/mtp.py
+@@ -328,7 +328,26 @@
+         kv_a_pad_size = 0
+         if self.config.mla_use_nope and self.config.qk_rope_head_dim > 0:
+             kv_a_pad_size = self.config.qk_rope_head_dim
+-        for name, loaded_weight in weights:
++
++        # The draft loads without AutoWeightsLoader, so apply the quantization checkpoint
++        # mappers here; filter to the MTP layer first, as the mapper repacks every expert.
++        def _mtp_checkpoint_weights():
++            for ckpt_name, ckpt_weight in weights:
++                if "rotary_emb.inv_freq" in ckpt_name:
++                    continue
++                if ckpt_name.startswith("model.language_model."):
++                    ckpt_name = ckpt_name.replace("model.language_model.", "model.", 1)
++                if get_spec_layer_idx_from_weight_name(self.config, ckpt_name) is None:
++                    continue
++                yield ckpt_name, ckpt_weight
++
++        mtp_weights = _mtp_checkpoint_weights()
++        if self.quant_config is not None:
++            mtp_weights = (
++                self.quant_config.get_cache_scale_mapper()
++                | self.quant_config.get_checkpoint_weight_mapper()
++            ).apply(mtp_weights)
++        for name, loaded_weight in mtp_weights:
+             if "rotary_emb.inv_freq" in name:
+                 continue
+             # Multimodal (Glm5NextForConditionalGeneration) checkpoints prefix

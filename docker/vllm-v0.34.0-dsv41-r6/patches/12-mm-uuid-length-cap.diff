@@ -1,0 +1,81 @@
+diff --git a/vllm/entrypoints/scale_out/token_in_token_out/protocol.py b/vllm/entrypoints/scale_out/token_in_token_out/protocol.py
+index 519a029..4347bf9 100644
+--- a/vllm/entrypoints/scale_out/token_in_token_out/protocol.py
++++ b/vllm/entrypoints/scale_out/token_in_token_out/protocol.py
+@@ -177,6 +177,12 @@ class MultiModalFeatures(BaseModel):
+ 
+         flattened_ranges: list[tuple[int, int]] = []
+         for modality in modalities:
++            # Hashes feed the engine's block-hash path like uuids do; cap them
++            # at the same length.
++            if any(len(h) > 128 for h in self.mm_hashes[modality]):
++                raise ValueError(
++                    f"{modality} mm_hashes must be at most 128 characters each"
++                )
+             num_hashes = len(self.mm_hashes[modality])
+             num_placeholders = len(self.mm_placeholders[modality])
+             if num_hashes != num_placeholders:
+diff --git a/vllm/renderers/base.py b/vllm/renderers/base.py
+index bb305ec..7702800 100644
+--- a/vllm/renderers/base.py
++++ b/vllm/renderers/base.py
+@@ -74,6 +74,9 @@ if TYPE_CHECKING:
+ 
+ logger = init_logger(__name__)
+ 
++_MAX_MM_UUID_LENGTH = 128
++"""Maximum length of a multimodal item `uuid` (see chat_message.py)."""
++
+ 
+ _T = TypeVar("_T", bound=TokenizerLike, default=TokenizerLike)
+ 
+@@ -882,6 +885,18 @@ class BaseRenderer(ABC, Generic[_T]):
+         # `mm_data_items`
+         modalities = mm_data.keys() | mm_uuid_items.keys()
+ 
++        # Every entry point (chat parts, the token-in-token-out generate parts,
++        # scoring, direct `multi_modal_uuids`) ends up here before the uuid
++        # reaches the engine's block-hash path.
++        for modality, uuids in mm_uuid_items.items():
++            for uuid in uuids:
++                if isinstance(uuid, str) and len(uuid) > _MAX_MM_UUID_LENGTH:
++                    raise VLLMValidationError(
++                        f"Multimodal 'uuid' must be at most "
++                        f"{_MAX_MM_UUID_LENGTH} characters.",
++                        parameter="multi_modal_uuids",
++                    )
++
+         for modality in modalities:
+             data_items = mm_data_items.get(modality)
+             uuid_items = mm_uuid_items.get(modality)
+diff --git a/vllm/renderers/chat_utils/chat_message.py b/vllm/renderers/chat_utils/chat_message.py
+index aad31fc..a329765 100644
+--- a/vllm/renderers/chat_utils/chat_message.py
++++ b/vllm/renderers/chat_utils/chat_message.py
+@@ -59,6 +59,14 @@ from .types import (
+ 
+ logger = init_logger(__name__)
+ 
++_MAX_MM_UUID_LENGTH: Final[int] = 128
++"""Maximum length of a multimodal content-part `uuid`.
++
++The uuid flows into the EngineCore block-hash pickle+SHA-256 path on the
++scheduler thread; bounding it matches the `cache_salt` cap applied by
++validate_cache_salt.
++"""
++
+ 
+ _PROMPT_EMBEDS_MISSING_DATA_ERROR: Final[str] = (
+     "prompt_embeds content part requires a non-empty `data` field "
+@@ -488,6 +496,11 @@ def parse_chat_message_content_part(
+     uuid = part.get("uuid", None)
+     if uuid is not None:
+         uuid = str(uuid)
++        if len(uuid) > _MAX_MM_UUID_LENGTH:
++            raise VLLMValidationError(
++                f"Multimodal content-part 'uuid' must be at most "
++                f"{_MAX_MM_UUID_LENGTH} characters."
++            )
+ 
+     modality = None
+     prompt_embeds_placeholder = None

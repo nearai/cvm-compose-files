@@ -1,0 +1,467 @@
+--- a/vllm/exceptions.py
++++ b/vllm/exceptions.py
+@@ -189,6 +189,41 @@
+         )
+ 
+ 
++def admit_retry_after(reason: str) -> int:
++    """Retry-After seconds for an admission rejection (patch 26)."""
++    import os
++
++    is_long = reason.startswith("overloaded_long")  # count and yield
++    name = (
++        "VLLM_ADMIT_RETRY_AFTER_LONG_S"
++        if is_long
++        else "VLLM_ADMIT_RETRY_AFTER_SHORT_S"
++    )
++    default = 10 if is_long else 1
++    try:
++        return max(1, int(os.environ.get(name, default)))
++    except ValueError:
++        return default
++
++
++class EngineOverloadedError(GracefulHTTPError):
++    """Engine-core class-aware admission rejection (patch 26).
++
++    HTTP 429 with a Retry-After header. ``reason`` is the
++    ``vllm:admission_rejections`` label (overloaded_short / overloaded_long).
++    """
++
++    def __init__(self, reason: str):
++        super().__init__(
++            "The engine has reached its prefill token backlog limit "
++            f"for this request class ({reason}). Please try again "
++            "later or on a different instance.",
++            HTTPStatus.TOO_MANY_REQUESTS,
++        )
++        self.reason = reason
++        self.retry_after = admit_retry_after(reason)
++
++
+ class ProfilerAlreadyActiveError(GracefulHTTPError):
+     """Raised when a profiling session is already active."""
+ 
+--- a/vllm/outputs.py
++++ b/vllm/outputs.py
+@@ -10,7 +10,12 @@
+ import torch
+ from typing_extensions import TypeVar
+ 
+-from vllm.exceptions import GenerationError, RetryableRequestError, VLLMValidationError
++from vllm.exceptions import (
++    EngineOverloadedError,
++    GenerationError,
++    RetryableRequestError,
++    VLLMValidationError,
++)
+ from vllm.logger import init_logger
+ from vllm.logprobs import PromptLogprobs, SampleLogprobs
+ from vllm.lora.request import LoRARequest
+@@ -27,9 +32,15 @@
+     message: str
+     retryable: bool = False
+ 
+-    def to_exception(self) -> GenerationError | VLLMValidationError:
++    def to_exception(self) -> Exception:
+         if self.code == "validation_error":
+             return VLLMValidationError(self.message)
++        if self.code in (
++            "overloaded_short",
++            "overloaded_long_count",
++            "overloaded_long_yield",
++        ):
++            return EngineOverloadedError(self.code)
+         if self.retryable:
+             return RetryableRequestError(self.message)
+         return GenerationError(self.message)
+--- a/vllm/entrypoints/serve/exception_handling/handlers/exception.py
++++ b/vllm/entrypoints/serve/exception_handling/handlers/exception.py
+@@ -21,4 +21,18 @@
+         )
+ 
+     err = create_error_response(exc)
+-    return JSONResponse(err.model_dump(), status_code=err.error.code)
++    retry_after = getattr(exc, "retry_after", None)
++    headers = {"Retry-After": str(retry_after)} if retry_after else None
++    return JSONResponse(
++        err.model_dump(), status_code=err.error.code, headers=headers
++    )
++
++
++def error_response_headers(err) -> dict[str, str] | None:
++    """Retry-After for a 429 ErrorResponse already built by a serving layer."""
++    from vllm.exceptions import admit_retry_after
++
++    for reason in ("overloaded_long_count", "overloaded_long_yield", "overloaded_short"):
++        if err.error.code == 429 and f"({reason})" in err.error.message:
++            return {"Retry-After": str(admit_retry_after(reason))}
++    return None
+--- a/vllm/entrypoints/openai/chat_completion/api_router.py
++++ b/vllm/entrypoints/openai/chat_completion/api_router.py
+@@ -24,6 +24,7 @@
+ )
+ from vllm.entrypoints.serve.utils.orca_metrics import metrics_header
+ from vllm.entrypoints.serve.utils.sse_keep_alive import with_sse_keep_alive
++from vllm.entrypoints.serve.exception_handling.handlers.exception import error_response_headers
+ from vllm.logger import init_logger
+ 
+ logger = init_logger(__name__)
+@@ -68,7 +69,9 @@
+ 
+     if isinstance(generator, ErrorResponse):
+         return JSONResponse(
+-            content=generator.model_dump(), status_code=generator.error.code
++            content=generator.model_dump(),
++            status_code=generator.error.code,
++            headers=error_response_headers(generator),
+         )
+ 
+     elif isinstance(generator, ChatCompletionResponse):
+--- a/vllm/entrypoints/openai/completion/api_router.py
++++ b/vllm/entrypoints/openai/completion/api_router.py
+@@ -22,6 +22,7 @@
+ )
+ from vllm.entrypoints.serve.utils.orca_metrics import metrics_header
+ from vllm.entrypoints.serve.utils.sse_keep_alive import with_sse_keep_alive
++from vllm.entrypoints.serve.exception_handling.handlers.exception import error_response_headers
+ from vllm.logger import init_logger
+ 
+ logger = init_logger(__name__)
+@@ -61,7 +62,9 @@
+ 
+     if isinstance(generator, ErrorResponse):
+         return JSONResponse(
+-            content=generator.model_dump(), status_code=generator.error.code
++            content=generator.model_dump(),
++            status_code=generator.error.code,
++            headers=error_response_headers(generator),
+         )
+     elif isinstance(generator, CompletionResponse):
+         return JSONResponse(
+--- a/vllm/v1/metrics/loggers.py
++++ b/vllm/v1/metrics/loggers.py
+@@ -44,7 +44,13 @@
+ WAITING_REASON_DEFERRED = "deferred"
+ 
+ # User-facing reason labels for frontend admission rejections.
+-ADMISSION_REASONS = ("max_num_queued_reqs", "max_num_queued_tokens")
++ADMISSION_REASONS = (
++    "max_num_queued_reqs",
++    "max_num_queued_tokens",
++    "overloaded_short",
++    "overloaded_long_count",
++    "overloaded_long_yield",
++)
+ 
+ PerEngineStatLoggerFactory = Callable[[VllmConfig, int], "StatLoggerBase"]
+ AggregateStatLoggerFactory = type["AggregateStatLoggerBase"]
+--- a/vllm/v1/engine/async_llm.py
++++ b/vllm/v1/engine/async_llm.py
+@@ -29,6 +29,7 @@
+ )
+ from vllm.exceptions import (
+     EngineFaultedError,
++    EngineOverloadedError,
+     GenerationError,
+     GracefulHTTPError,
+     MaxQueuedTokensError,
+@@ -837,6 +838,8 @@
+ 
+         # Request validation error or admission control rejection.
+         except (VLLMClientError, GracefulHTTPError, GenerationError) as e:
++            if isinstance(e, EngineOverloadedError):
++                self._record_admission_rejection(e.reason)
+             if q is not None:
+                 # E.g. a paused engine rejected one child: reclaim its n>1 siblings.
+                 await self.abort(q.request_id, internal=True)
+--- a/vllm/v1/engine/core.py
++++ b/vllm/v1/engine/core.py
+@@ -72,6 +72,7 @@
+     resolve_kv_cache_block_sizes,
+     update_kv_cache_capacity,
+ )
++from vllm.v1.core.sched.admission_p26 import AdmissionP26
+ from vllm.v1.core.sched.interface import PauseState, SchedulerInterface
+ from vllm.v1.core.sched.output import SchedulerOutput
+ from vllm.v1.core.single_type_kv_cache_manager import register_all_kvcache_specs
+@@ -1973,7 +1974,11 @@
+             return
+         elif request_type == EngineCoreRequestType.ADD:
+             req, request_wave = request
+-            if self._reject_add_in_shutdown(req) or self._reject_add_while_paused(req):
++            if (
++                self._reject_add_in_shutdown(req)
++                or self._reject_add_while_paused(req)
++                or self._reject_add_overloaded(req)
++            ):
+                 return
+             self.add_request(req, request_wave)
+         elif request_type == EngineCoreRequestType.ABORT:
+@@ -2032,6 +2037,33 @@
+             self.add_request(request)
+         return True
+ 
++    def _reject_add_overloaded(self, request: Request) -> bool:
++        """Patch 26: class-aware load shedding (429), off unless VLLM_ADMIT_* set.
++
++        Runs before add_request, so a rejected request holds no KV, no
++        connector state and starts no DP wave.
++        """
++        admission = self.__dict__.get("_p26_admission")
++        if admission is None:
++            admission = self._p26_admission = AdmissionP26.from_env(self.scheduler)
++        if not admission.enabled:
++            return False
++        reason = admission.verdict(self.scheduler, request)
++        if reason is None:
++            return False
++        logger.debug(
++            "[admission] rejecting request_id=%s reason=%s", request.request_id, reason
++        )
++        error = RequestError(
++            code=reason,
++            message="Engine at capacity for this request class; retry later.",
++            retryable=True,
++        )
++        self._send_finish_outputs_to_client(
++            [request.request_id], request.client_index, FinishReason.ERROR, error
++        )
++        return True
++
+     def _reject_utility_in_shutdown(
+         self, client_idx: int, call_id: int, method_name: str
+     ) -> bool:
+--- /dev/null
++++ b/vllm/v1/core/sched/admission_p26.py
+@@ -0,0 +1,230 @@
++# SPDX-License-Identifier: Apache-2.0
++# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
++"""Patch 26: class- and cache-aware engine-core admission (HTTP 429 shedding).
++
++Called from ``EngineCoreProc._handle_client_request`` (ADD), after the paused
++check and before ``add_request``. It measures work in UNCACHED prompt tokens
++(the prefix-cache hit is subtracted with a side-effect-free probe), per engine
++rank, and needs no collective.
++
++Classes (by uncached tokens of the new request, ``VLLM_ADMIT_LONG_CUTOFF_TOKENS``):
++  short: reject when other shorts are queued and
++         queued_short_uncached + own > VLLM_ADMIT_SHORT_MAX_TOKENS.
++         A lone short always fits (nothing queued -> admit).
++  long:  reject (overloaded_long_count) when in-flight longs >=
++         VLLM_ADMIT_LONG_MAX_INFLIGHT, or (overloaded_long_yield) when the
++         short backlog (uncached tokens of shorts only, never longs) exceeds
++         VLLM_ADMIT_LONG_YIELD_SHORT_TOKENS (0 = off). Cold large prefills are
++         shed first; shorts keep being accepted up to their own hard limit.
++
++Class is ALWAYS by uncached tokens (prompt minus prefix-cache hit), never by
++full prompt length: a warm 172k conversation with a small tail is short. This
++holds for the new request, waiting requests (re-probed), and preempted ones.
++
++All counts are recomputed from ``scheduler.requests`` on every ADD, so there
++is no counter to leak: finish, abort, client disconnect and KV-transfer failure
++all drop the request from that dict. Requests that are finished but still wait
++for a P/D lease are skipped via ``is_finished()``.
++
++Long-class state (``req.p26_long``) is set at admission, refreshed for requests
++that have not started (cache re-probed at each decision), cleared when prefill
++completes, and re-derived after preemption. Abort/finish drop the request from
++``scheduler.requests``, so they leave the count. Standalone: no patch-25 state.
++
++Role gate: runs only on a prefill engine (``resolve_role``: kv_role=kv_producer
++or VLLM_ADMIT_ROLE=prefill). Per request, ``do_remote_prefill`` is never shed.
++Units: every knob is per engine core = per prefill DP rank, not per P/D pair.
++Every knob is 0/unset = off, and the whole module is then inert.
++"""
++
++import os
++
++from vllm.logger import init_logger
++
++logger = init_logger(__name__)
++
++REASON_SHORT = "overloaded_short"
++REASON_LONG = "overloaded_long_count"
++REASON_LONG_YIELD = "overloaded_long_yield"
++REASONS = (REASON_SHORT, REASON_LONG, REASON_LONG_YIELD)
++
++DEFAULT_LONG_CUTOFF_TOKENS = 65536
++
++
++def _env_int(name: str, default: int = 0) -> int:
++    raw = os.environ.get(name)
++    if raw is None or not raw.strip():
++        return default
++    try:
++        return max(0, int(raw))
++    except ValueError:
++        logger.warning("Ignoring non-integer %s=%r (using %d)", name, raw, default)
++        return default
++
++
++def _is_decode_side(req) -> bool:
++    kvp = getattr(req, "kv_transfer_params", None)
++    return bool(kvp) and bool(kvp.get("do_remote_prefill"))
++
++
++def _not_started(req) -> bool:
++    """Nothing computed on this rank (never started, or preempted and reset)."""
++    return req.num_computed_tokens == 0
++
++
++def _remaining_uncached(req) -> int:
++    """Prompt tokens this request still has to compute on this rank.
++
++    For a request with nothing computed, this is the uncached estimate;
++    ``AdmissionP26.backlog`` refreshes it from the cache before use.
++    """
++    if _not_started(req):
++        est = getattr(req, "p26_uncached", None)
++        if est is not None:
++            return est
++    return max(0, req.num_prompt_tokens - req.num_computed_tokens)
++
++
++def resolve_role(scheduler) -> str:
++    """'prefill' or 'off'. Explicit: shedding runs only on a prefill engine.
++
++    VLLM_ADMIT_ROLE=prefill|off overrides. Otherwise kv_role=kv_producer is a
++    prefill engine; kv_consumer is off; kv_both / no connector is ambiguous
++    (could be the decode half or a mixed engine) and stays off until the
++    operator sets VLLM_ADMIT_ROLE=prefill.
++    """
++    forced = os.environ.get("VLLM_ADMIT_ROLE", "").strip().lower()
++    if forced in ("prefill", "off"):
++        return forced
++    kv_cfg = getattr(getattr(scheduler, "vllm_config", None), "kv_transfer_config", None)
++    return "prefill" if getattr(kv_cfg, "kv_role", None) == "kv_producer" else "off"
++
++
++class AdmissionP26:
++    def __init__(
++        self,
++        short_max_tokens: int = 0,
++        long_max_inflight: int = 0,
++        cutoff: int = DEFAULT_LONG_CUTOFF_TOKENS,
++        long_yield_short_tokens: int = 0,
++    ) -> None:
++        self.long_yield_short_tokens = long_yield_short_tokens
++        self.short_max_tokens = short_max_tokens
++        self.long_max_inflight = long_max_inflight
++        self.cutoff = cutoff
++        self.rejected: dict[str, int] = {r: 0 for r in REASONS}
++
++    @classmethod
++    def from_env(cls, scheduler=None) -> "AdmissionP26":
++        ctl = cls(
++            short_max_tokens=_env_int("VLLM_ADMIT_SHORT_MAX_TOKENS"),
++            long_max_inflight=_env_int("VLLM_ADMIT_LONG_MAX_INFLIGHT"),
++            cutoff=_env_int(
++                "VLLM_ADMIT_LONG_CUTOFF_TOKENS", DEFAULT_LONG_CUTOFF_TOKENS
++            ),
++            long_yield_short_tokens=_env_int("VLLM_ADMIT_LONG_YIELD_SHORT_TOKENS"),
++        )
++        if ctl.enabled and scheduler is not None and resolve_role(scheduler) != "prefill":
++            logger.warning(
++                "VLLM_ADMIT_* is set but this engine is not identified as a "
++                "prefill engine (kv_role=kv_producer or VLLM_ADMIT_ROLE=prefill); "
++                "admission shedding is disabled."
++            )
++            ctl.short_max_tokens = ctl.long_max_inflight = 0
++            ctl.long_yield_short_tokens = 0
++        if ctl.enabled:
++            logger.info(
++                "Patch 26 admission: short_max_tokens=%d long_max_inflight=%d "
++                "long_yield_short_tokens=%d cutoff=%d",
++                ctl.short_max_tokens,
++                ctl.long_max_inflight,
++                ctl.long_yield_short_tokens,
++                ctl.cutoff,
++            )
++        return ctl
++
++    @property
++    def enabled(self) -> bool:
++        return (
++            self.short_max_tokens > 0
++            or self.long_max_inflight > 0
++            or self.long_yield_short_tokens > 0
++        )
++
++    def _exempt(self, sched, req) -> bool:
++        return (
++            _is_decode_side(req)
++            or req.abort_immediately
++            or req.resumable
++            or req.sampling_params is None
++            or sched.has_request(req.request_id)
++        )
++
++    def backlog(self, sched) -> tuple[int, int]:
++        """(uncached tokens queued in short requests, number of in-flight longs).
++
++        In flight = admitted to the scheduler (any queue) and not yet done with
++        prefill on this rank.
++        """
++        short_q = longs = 0
++        for r in sched.requests.values():
++            if r.is_finished() or _is_decode_side(r):
++                continue
++            if _not_started(r):
++                # Cache may have grown (or shrunk) since admission: re-probe at
++                # the decision point and re-class (nothing computed yet).
++                try:
++                    hit = sched.kv_cache_manager.get_num_cached_tokens(r)
++                    r.p26_uncached = max(0, r.num_prompt_tokens - hit)
++                    r.p26_long = r.p26_uncached > self.cutoff
++                except Exception:
++                    pass  # keep the admission-time estimate
++            rem = _remaining_uncached(r)
++            if rem <= 0:
++                # Prefill done: clear the long mark (a later preemption re-derives it).
++                r.p26_long = None
++                continue
++            is_long = getattr(r, "p26_long", None)
++            if is_long is None:
++                is_long = rem > self.cutoff
++                r.p26_long = is_long
++            if is_long:
++                longs += 1
++            else:
++                short_q += rem
++        return short_q, longs
++
++    def verdict(self, sched, req) -> str | None:
++        """None to admit, else the rejection reason. Never mutates the cache."""
++        if not self.enabled or self._exempt(sched, req):
++            return None
++        try:
++            hit = sched.kv_cache_manager.get_num_cached_tokens(req)
++        except Exception:
++            logger.exception("Patch 26 cache probe failed; admitting request")
++            return None
++        own = max(0, req.num_prompt_tokens - hit)
++        is_long = own > self.cutoff
++        short_q, longs = self.backlog(sched)
++        reason = None
++        if is_long:
++            if self.long_max_inflight > 0 and longs >= self.long_max_inflight:
++                reason = REASON_LONG
++            elif (
++                self.long_yield_short_tokens > 0
++                and short_q > self.long_yield_short_tokens
++            ):
++                reason = REASON_LONG_YIELD
++        elif (
++            self.short_max_tokens > 0
++            and short_q > 0
++            and short_q + own > self.short_max_tokens
++        ):
++            reason = REASON_SHORT
++        if reason is not None:
++            self.rejected[reason] += 1
++            return reason
++        # Sticky class and uncached estimate, used by later backlog() scans.
++        req.p26_long = is_long
++        req.p26_uncached = own
++        return None

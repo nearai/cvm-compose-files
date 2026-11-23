@@ -580,6 +580,36 @@ def engine_kind(key, svc):
     return "unknown"
 
 
+def _int(toks, flags):
+    for f in flags:
+        v = flag_values(toks, f)
+        if v and v[0].isdigit():
+            return int(v[0])
+    return 1
+
+
+def engine_unit(toks):
+    """(topology unit, services per engine) of one engine service.
+
+    tp<N> one TP engine; dp<N> and dep<N> N data-parallel ranks, dep with expert parallelism; pd<N> a
+    prefill or decode engine (KV connector role producer or consumer) spanning N GPUs. A pd unit counts
+    prefill and decode engines alike; replicas() turns the service count into prefill/decode pairs.
+    """
+    tp = _int(toks, ("--tp-size", "--tp", "--tensor-parallel-size", "-tp"))
+    dp = _int(toks, ("--dp-size", "--dp", "--data-parallel-size", "-dp"))
+    ep = "--enable-expert-parallel" in toks or "--enable-dp-attention" in toks
+    # One engine spans dp services when each service is a single data-parallel rank.
+    span = dp if flag_values(toks, "--data-parallel-rank") else 1
+    if any(re.search(r"kv_(producer|consumer)", v) for v in flag_values(toks, "--kv-transfer-config")):
+        return f"pd{tp * dp}", span
+    return (f"dep{dp}" if ep else f"dp{dp}") if dp > 1 else f"tp{tp}", span
+
+
+def replicas(unit, n, span):
+    """Engines (or, for pd, prefill/decode pairs) among n services of one unit."""
+    return max(n // (span * (2 if unit.startswith("pd") else 1)), 1)
+
+
 def has_gpu(svc):
     for d in (((svc.get("deploy") or {}).get("resources") or {}).get("reservations") or {}).get("devices") or []:
         if "gpu" in (d.get("capabilities") or []) or d.get("driver") == "nvidia":

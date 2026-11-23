@@ -30,7 +30,6 @@
       "service": "model-vllm-dsv41-dp0",
       "items": [
         "ipc:host",
-        "network:host",
         "security_opt:no-new-privileges:true"
       ]
     },
@@ -48,7 +47,6 @@
       "service": "model-vllm-dsv41-dp1",
       "items": [
         "ipc:host",
-        "network:host",
         "security_opt:no-new-privileges:true"
       ]
     },
@@ -66,7 +64,6 @@
       "service": "model-vllm-dsv41-dp2",
       "items": [
         "ipc:host",
-        "network:host",
         "security_opt:no-new-privileges:true"
       ]
     },
@@ -84,7 +81,6 @@
       "service": "model-vllm-dsv41-dp3",
       "items": [
         "ipc:host",
-        "network:host",
         "security_opt:no-new-privileges:true"
       ]
     },
@@ -102,7 +98,6 @@
       "service": "model-vllm-dsv41-dp4",
       "items": [
         "ipc:host",
-        "network:host",
         "security_opt:no-new-privileges:true"
       ]
     },
@@ -120,7 +115,6 @@
       "service": "model-vllm-dsv41-dp5",
       "items": [
         "ipc:host",
-        "network:host",
         "security_opt:no-new-privileges:true"
       ]
     },
@@ -138,7 +132,6 @@
       "service": "model-vllm-dsv41-dp6",
       "items": [
         "ipc:host",
-        "network:host",
         "security_opt:no-new-privileges:true"
       ]
     },
@@ -156,7 +149,6 @@
       "service": "model-vllm-dsv41-dp7",
       "items": [
         "ipc:host",
-        "network:host",
         "security_opt:no-new-privileges:true"
       ]
     },
@@ -224,6 +216,102 @@
     {
       "file": "prod/deepseek-v4.1-flash-1017-vllm-dep4x2.yaml",
       "service": "proxy-dsv41-abliterated",
+      "items": [
+        "ipc:host",
+        "privileged",
+        "sock:/var/run/dstack.sock"
+      ]
+    },
+    {
+      "file": "prod/glm-5.3-flash-vllm-dep4x2.yaml",
+      "service": "dcgm-glm53",
+      "role": "aux",
+      "items": [
+        "cap_add:SYS_ADMIN"
+      ]
+    },
+    {
+      "file": "prod/glm-5.3-flash-vllm-dep4x2.yaml",
+      "service": "model-vllm-glm53-dp0",
+      "items": [
+        "ipc:host",
+        "security_opt:no-new-privileges:true"
+      ]
+    },
+    {
+      "file": "prod/glm-5.3-flash-vllm-dep4x2.yaml",
+      "service": "model-vllm-glm53-dp1",
+      "items": [
+        "ipc:host",
+        "security_opt:no-new-privileges:true"
+      ]
+    },
+    {
+      "file": "prod/glm-5.3-flash-vllm-dep4x2.yaml",
+      "service": "model-vllm-glm53-dp2",
+      "items": [
+        "ipc:host",
+        "security_opt:no-new-privileges:true"
+      ]
+    },
+    {
+      "file": "prod/glm-5.3-flash-vllm-dep4x2.yaml",
+      "service": "model-vllm-glm53-dp3",
+      "items": [
+        "ipc:host",
+        "security_opt:no-new-privileges:true"
+      ]
+    },
+    {
+      "file": "prod/glm-5.3-flash-vllm-dep4x2.yaml",
+      "service": "model-vllm-glm53-dp4",
+      "items": [
+        "ipc:host",
+        "security_opt:no-new-privileges:true"
+      ]
+    },
+    {
+      "file": "prod/glm-5.3-flash-vllm-dep4x2.yaml",
+      "service": "model-vllm-glm53-dp5",
+      "items": [
+        "ipc:host",
+        "security_opt:no-new-privileges:true"
+      ]
+    },
+    {
+      "file": "prod/glm-5.3-flash-vllm-dep4x2.yaml",
+      "service": "model-vllm-glm53-dp6",
+      "items": [
+        "ipc:host",
+        "security_opt:no-new-privileges:true"
+      ]
+    },
+    {
+      "file": "prod/glm-5.3-flash-vllm-dep4x2.yaml",
+      "service": "model-vllm-glm53-dp7",
+      "items": [
+        "ipc:host",
+        "security_opt:no-new-privileges:true"
+      ]
+    },
+    {
+      "file": "prod/glm-5.3-flash-vllm-dep4x2.yaml",
+      "service": "nginx",
+      "items": [
+        "port:8000/tcp",
+        "port:8444/tcp"
+      ]
+    },
+    {
+      "file": "prod/glm-5.3-flash-vllm-dep4x2.yaml",
+      "service": "otelcol-contrib",
+      "items": [
+        "bind:/var/lib/docker/containers"
+      ]
+    },
+    {
+      "file": "prod/glm-5.3-flash-vllm-dep4x2.yaml",
+      "service": "proxy-glm53",
       "items": [
         "ipc:host",
         "privileged",
@@ -327,6 +415,14 @@
       ]
     },
     {
+      "file": "prod/pack-glm-53-flash-pd2-long.yaml",
+      "service": "glm53-ghost-aggregator",
+      "role": "aux",
+      "items": [
+        "security_opt:no-new-privileges:true"
+      ]
+    },
+    {
       "file": "prod/GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext.yaml",
       "service": "glm53-perception-check",
       "role": "aux",
@@ -359,7 +455,23 @@
       ]
     },
     {
+      "file": "prod/pack-glm-53-flash-pd2-long.yaml",
+      "service": "model-sg-glm53-w4afp8-tp2-r2a",
+      "items": [
+        "ipc:host",
+        "security_opt:no-new-privileges:true"
+      ]
+    },
+    {
       "file": "prod/GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext.yaml",
+      "service": "model-sg-glm53-w4afp8-tp2-r2b",
+      "items": [
+        "ipc:host",
+        "security_opt:no-new-privileges:true"
+      ]
+    },
+    {
+      "file": "prod/pack-glm-53-flash-pd2-long.yaml",
       "service": "model-sg-glm53-w4afp8-tp2-r2b",
       "items": [
         "ipc:host",
@@ -408,6 +520,15 @@
       ]
     },
     {
+      "file": "prod/pack-glm-53-flash-pd2-long.yaml",
+      "service": "proxy-glm53-long",
+      "items": [
+        "ipc:host",
+        "privileged",
+        "sock:/var/run/dstack.sock"
+      ]
+    },
+    {
       "file": "prod/rotate-compose-manager-token.yaml",
       "service": "rotate-token",
       "items": [
@@ -421,6 +542,28 @@
       "items": [
         "security_opt:no-new-privileges:true",
         "sock:/var/run/docker.sock"
+      ]
+    },
+    {
+      "file": "prod/pack-small-models.yaml",
+      "service": "glm53-ghost-aggregator",
+      "role": "aux",
+      "items": [
+        "security_opt:no-new-privileges:true"
+      ]
+    },
+    {
+      "file": "prod/pack-small-models.yaml",
+      "service": "model-sg-glm53-w4afp8-tp2-r1",
+      "items": [
+        "ipc:host"
+      ]
+    },
+    {
+      "file": "prod/pack-small-models.yaml",
+      "service": "model-sg-glm53-w4afp8-tp2-r2",
+      "items": [
+        "ipc:host"
       ]
     },
     {
@@ -465,34 +608,9 @@
     },
     {
       "file": "prod/pack-small-models.yaml",
-      "service": "glm53-ghost-aggregator",
-      "role": "aux",
-      "items": [
-        "security_opt:no-new-privileges:true"
-      ],
-      "isolation": "pending"
-    },
-    {
-      "file": "prod/pack-small-models.yaml",
       "service": "model-privacy-filter",
       "role": "aux",
       "items": []
-    },
-    {
-      "file": "prod/pack-small-models.yaml",
-      "service": "model-sg-glm53-w4afp8-tp2-r1",
-      "items": [
-        "ipc:host"
-      ],
-      "isolation": "pending"
-    },
-    {
-      "file": "prod/pack-small-models.yaml",
-      "service": "model-sg-glm53-w4afp8-tp2-r2",
-      "items": [
-        "ipc:host"
-      ],
-      "isolation": "pending"
     },
     {
       "file": "prod/pack-small-models.yaml",
@@ -640,6 +758,336 @@
         "security_opt:no-new-privileges:true",
         "sock:/var/run/dstack.sock"
       ]
+    },
+    {
+      "file": "prod/pack-small-models.yaml",
+      "service": "model-vllm-glm53-a-prefill0",
+      "items": [
+        "security_opt:no-new-privileges:true"
+      ]
+    },
+    {
+      "file": "prod/pack-small-models.yaml",
+      "service": "model-vllm-glm53-a-prefill1",
+      "items": [
+        "security_opt:no-new-privileges:true"
+      ]
+    },
+    {
+      "file": "prod/pack-small-models.yaml",
+      "service": "model-vllm-glm53-a-decode0",
+      "items": [
+        "security_opt:no-new-privileges:true"
+      ]
+    },
+    {
+      "file": "prod/pack-small-models.yaml",
+      "service": "model-vllm-glm53-a-decode1",
+      "items": [
+        "security_opt:no-new-privileges:true"
+      ]
+    },
+    {
+      "file": "prod/pack-small-models.yaml",
+      "service": "pd-router-glm53-a",
+      "role": "aux",
+      "items": []
+    },
+    {
+      "file": "prod/pack-small-models.yaml",
+      "service": "sidecar-glm53-netns-a",
+      "items": [
+        "security_opt:no-new-privileges:true"
+      ]
+    },
+    {
+      "file": "prod/glm-5.3-flash-vllm-pd2x2.yaml",
+      "service": "dcgm-glm53",
+      "role": "aux",
+      "items": [
+        "cap_add:SYS_ADMIN"
+      ]
+    },
+    {
+      "file": "prod/glm-5.3-flash-vllm-pd2x2.yaml",
+      "service": "nginx",
+      "items": [
+        "port:8000/tcp",
+        "port:8444/tcp"
+      ]
+    },
+    {
+      "file": "prod/glm-5.3-flash-vllm-pd2x2.yaml",
+      "service": "otelcol-contrib",
+      "items": [
+        "bind:/var/lib/docker/containers"
+      ]
+    },
+    {
+      "file": "prod/glm-5.3-flash-vllm-pd2x2.yaml",
+      "service": "proxy-glm53",
+      "items": [
+        "ipc:host",
+        "privileged",
+        "sock:/var/run/dstack.sock"
+      ]
+    },
+    {
+      "file": "prod/glm-5.3-flash-vllm-pd2x2.yaml",
+      "service": "model-vllm-glm53-a-prefill0",
+      "items": [
+        "security_opt:no-new-privileges:true"
+      ]
+    },
+    {
+      "file": "prod/glm-5.3-flash-vllm-pd2x2.yaml",
+      "service": "model-vllm-glm53-a-prefill1",
+      "items": [
+        "security_opt:no-new-privileges:true"
+      ]
+    },
+    {
+      "file": "prod/glm-5.3-flash-vllm-pd2x2.yaml",
+      "service": "model-vllm-glm53-a-decode0",
+      "items": [
+        "security_opt:no-new-privileges:true"
+      ]
+    },
+    {
+      "file": "prod/glm-5.3-flash-vllm-pd2x2.yaml",
+      "service": "model-vllm-glm53-a-decode1",
+      "items": [
+        "security_opt:no-new-privileges:true"
+      ]
+    },
+    {
+      "file": "prod/glm-5.3-flash-vllm-pd2x2.yaml",
+      "service": "model-vllm-glm53-b-prefill0",
+      "items": [
+        "security_opt:no-new-privileges:true"
+      ]
+    },
+    {
+      "file": "prod/glm-5.3-flash-vllm-pd2x2.yaml",
+      "service": "model-vllm-glm53-b-prefill1",
+      "items": [
+        "security_opt:no-new-privileges:true"
+      ]
+    },
+    {
+      "file": "prod/glm-5.3-flash-vllm-pd2x2.yaml",
+      "service": "model-vllm-glm53-b-decode0",
+      "items": [
+        "security_opt:no-new-privileges:true"
+      ]
+    },
+    {
+      "file": "prod/glm-5.3-flash-vllm-pd2x2.yaml",
+      "service": "model-vllm-glm53-b-decode1",
+      "items": [
+        "security_opt:no-new-privileges:true"
+      ]
+    },
+    {
+      "file": "prod/glm-5.3-flash-vllm-pd2x2.yaml",
+      "service": "pd-router-glm53-a",
+      "role": "aux",
+      "items": []
+    },
+    {
+      "file": "prod/glm-5.3-flash-vllm-pd2x2.yaml",
+      "service": "pd-router-glm53-b",
+      "role": "aux",
+      "items": []
+    },
+    {
+      "file": "prod/glm-5.3-flash-vllm-pd2.yaml",
+      "service": "dcgm-glm53",
+      "role": "aux",
+      "items": [
+        "cap_add:SYS_ADMIN"
+      ]
+    },
+    {
+      "file": "prod/pack-glm-53-flash-pd2-long.yaml",
+      "service": "dcgm-glm53",
+      "role": "aux",
+      "items": [
+        "cap_add:SYS_ADMIN"
+      ]
+    },
+    {
+      "file": "prod/glm-5.3-flash-vllm-pd2.yaml",
+      "service": "nginx",
+      "items": [
+        "port:8000/tcp",
+        "port:8444/tcp"
+      ]
+    },
+    {
+      "file": "prod/pack-glm-53-flash-pd2-long.yaml",
+      "service": "nginx",
+      "items": [
+        "port:8000/tcp",
+        "port:8001/tcp",
+        "port:8444/tcp"
+      ]
+    },
+    {
+      "file": "prod/glm-5.3-flash-vllm-pd2.yaml",
+      "service": "otelcol-contrib",
+      "items": [
+        "bind:/var/lib/docker/containers"
+      ]
+    },
+    {
+      "file": "prod/pack-glm-53-flash-pd2-long.yaml",
+      "service": "otelcol-contrib",
+      "items": [
+        "bind:/var/lib/docker/containers"
+      ]
+    },
+    {
+      "file": "prod/glm-5.3-flash-vllm-pd2.yaml",
+      "service": "proxy-glm53",
+      "items": [
+        "ipc:host",
+        "privileged",
+        "sock:/var/run/dstack.sock"
+      ]
+    },
+    {
+      "file": "prod/pack-glm-53-flash-pd2-long.yaml",
+      "service": "proxy-glm53",
+      "items": [
+        "ipc:host",
+        "privileged",
+        "sock:/var/run/dstack.sock"
+      ]
+    },
+    {
+      "file": "prod/glm-5.3-flash-vllm-pd2.yaml",
+      "service": "model-vllm-glm53-a-prefill0",
+      "items": [
+        "security_opt:no-new-privileges:true"
+      ]
+    },
+    {
+      "file": "prod/pack-glm-53-flash-pd2-long.yaml",
+      "service": "model-vllm-glm53-a-prefill0",
+      "items": [
+        "security_opt:no-new-privileges:true"
+      ]
+    },
+    {
+      "file": "prod/glm-5.3-flash-vllm-pd2.yaml",
+      "service": "model-vllm-glm53-a-prefill1",
+      "items": [
+        "security_opt:no-new-privileges:true"
+      ]
+    },
+    {
+      "file": "prod/pack-glm-53-flash-pd2-long.yaml",
+      "service": "model-vllm-glm53-a-prefill1",
+      "items": [
+        "security_opt:no-new-privileges:true"
+      ]
+    },
+    {
+      "file": "prod/glm-5.3-flash-vllm-pd2.yaml",
+      "service": "model-vllm-glm53-a-decode0",
+      "items": [
+        "security_opt:no-new-privileges:true"
+      ]
+    },
+    {
+      "file": "prod/pack-glm-53-flash-pd2-long.yaml",
+      "service": "model-vllm-glm53-a-decode0",
+      "items": [
+        "security_opt:no-new-privileges:true"
+      ]
+    },
+    {
+      "file": "prod/glm-5.3-flash-vllm-pd2.yaml",
+      "service": "model-vllm-glm53-a-decode1",
+      "items": [
+        "security_opt:no-new-privileges:true"
+      ]
+    },
+    {
+      "file": "prod/pack-glm-53-flash-pd2-long.yaml",
+      "service": "model-vllm-glm53-a-decode1",
+      "items": [
+        "security_opt:no-new-privileges:true"
+      ]
+    },
+    {
+      "file": "prod/glm-5.3-flash-vllm-pd2.yaml",
+      "service": "pd-router-glm53-a",
+      "role": "aux",
+      "items": []
+    },
+    {
+      "file": "prod/pack-glm-53-flash-pd2-long.yaml",
+      "service": "pd-router-glm53-a",
+      "role": "aux",
+      "items": []
+    },
+    {
+      "file": "prod/deepseek-v4.1-flash-1017-vllm-dep4x2.yaml",
+      "service": "sidecar-dsv41-netns-a",
+      "items": [
+        "security_opt:no-new-privileges:true"
+      ]
+    },
+    {
+      "file": "prod/deepseek-v4.1-flash-1017-vllm-dep4x2.yaml",
+      "service": "sidecar-dsv41-netns-b",
+      "items": [
+        "security_opt:no-new-privileges:true"
+      ]
+    },
+    {
+      "file": "prod/glm-5.3-flash-vllm-dep4x2.yaml",
+      "service": "sidecar-glm53-netns-a",
+      "items": [
+        "security_opt:no-new-privileges:true"
+      ]
+    },
+    {
+      "file": "prod/glm-5.3-flash-vllm-dep4x2.yaml",
+      "service": "sidecar-glm53-netns-b",
+      "items": [
+        "security_opt:no-new-privileges:true"
+      ]
+    },
+    {
+      "file": "prod/glm-5.3-flash-vllm-pd2.yaml",
+      "service": "sidecar-glm53-netns-a",
+      "items": [
+        "security_opt:no-new-privileges:true"
+      ]
+    },
+    {
+      "file": "prod/pack-glm-53-flash-pd2-long.yaml",
+      "service": "sidecar-glm53-netns-a",
+      "items": [
+        "security_opt:no-new-privileges:true"
+      ]
+    },
+    {
+      "file": "prod/glm-5.3-flash-vllm-pd2x2.yaml",
+      "service": "sidecar-glm53-netns-a",
+      "items": [
+        "security_opt:no-new-privileges:true"
+      ]
+    },
+    {
+      "file": "prod/glm-5.3-flash-vllm-pd2x2.yaml",
+      "service": "sidecar-glm53-netns-b",
+      "items": [
+        "security_opt:no-new-privileges:true"
+      ]
     }
   ],
   "env": [
@@ -698,8 +1146,23 @@
       "default_ok": true
     },
     {
+      "name": "HOST_HTTP_PORT",
+      "egress": false,
+      "default_ok": true
+    },
+    {
       "name": "HOST_IP",
       "egress": true,
+      "default_ok": true
+    },
+    {
+      "name": "HOST_PORT_BASE",
+      "egress": false,
+      "default_ok": true
+    },
+    {
+      "name": "HOST_TLS_PORT",
+      "egress": false,
       "default_ok": true
     },
     {
@@ -728,6 +1191,11 @@
     },
     {
       "name": "MODEL_NAME",
+      "egress": false,
+      "default_ok": true
+    },
+    {
+      "name": "MODEL_PROXY_REGISTRATION",
       "egress": false,
       "default_ok": true
     },
@@ -859,6 +1327,13 @@
     }
   ],
   "isolated_files": [
+    "prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8-V12Q8.yaml",
+    "prod/GLM-5.3-Flash-SGL-TP4-W4AFP8-LongContext.yaml",
+    "prod/deepseek-v4.1-flash-1017-vllm-dep4x2.yaml",
+    "prod/glm-5.3-flash-vllm-dep4x2.yaml",
+    "prod/glm-5.3-flash-vllm-pd2.yaml",
+    "prod/glm-5.3-flash-vllm-pd2x2.yaml",
+    "prod/pack-glm-53-flash-pd2-long.yaml",
     "prod/pack-small-models.yaml"
   ]
 }

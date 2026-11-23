@@ -109,6 +109,11 @@ workflow's existing signatures stay valid for the images it published.
 | `publish-vllm-v0.33.0-dsv41-r3.yaml` | `.github/workflows/publish-vllm-v0.33.0-dsv41-r3.yaml@refs/heads/main` | `nearaidev/vllm` | active |
 | `publish-vllm-v0.33.0-request-bounds-r1.yaml` | `.github/workflows/publish-vllm-v0.33.0-request-bounds-r1.yaml@refs/heads/main` | `nearaidev/vllm` | active |
 | `publish-vllm-v0.34.0-dsv41-r1.yaml` | `.github/workflows/publish-vllm-v0.34.0-dsv41-r1.yaml@refs/heads/main` | `nearaidev/vllm` | active |
+| `publish-vllm-v0.34.0-dsv41-r2.yaml` | `.github/workflows/publish-vllm-v0.34.0-dsv41-r2.yaml@refs/heads/main` | `nearaidev/vllm` | active |
+| `publish-vllm-v0.34.0-dsv41-r3.yaml` | `.github/workflows/publish-vllm-v0.34.0-dsv41-r3.yaml@refs/heads/main` | `nearaidev/vllm` | active |
+| `publish-vllm-v0.34.0-dsv41-r7.yaml` | `.github/workflows/publish-vllm-v0.34.0-dsv41-r7.yaml@refs/heads/main` | `nearaidev/vllm` | active |
+| `publish-vllm-v0.34.0-dsv41-r9.yaml` | `.github/workflows/publish-vllm-v0.34.0-dsv41-r9.yaml@refs/heads/main` | `nearaidev/vllm` | active |
+| `publish-vllm-v0.34.0-dsv41-r10.yaml` | `.github/workflows/publish-vllm-v0.34.0-dsv41-r10.yaml@refs/heads/main` | `nearaidev/vllm` | active |
 | `publish-sglang-v0.5.23-secure-r2.yaml` | `.github/workflows/publish-sglang-v0.5.23-secure-r2.yaml@refs/heads/main` | `nearaidev/sglang` | active |
 | `publish-sglang-v0.5.23-glm53-r3.yaml` | `.github/workflows/publish-sglang-v0.5.23-glm53-r3.yaml@refs/heads/main` | `nearaidev/sglang` | active |
 | `publish-glm53-v0523.yaml` | `.github/workflows/publish-glm53-v0523.yaml@refs/heads/main` | `nearaidev/sglang` | retired |
@@ -144,6 +149,14 @@ can no longer be followed.
 | `a744ada2a362e2548a88527432da1662aa027012226d9e0ed4fce9cda1e6f0bd` | `dsv41-lora-v0.33.0-near-v1` | `vllm-dsv41-v033` | `7469ed1c47d216ceee4a5329515e6fa0901d90df` | upstream vLLM |
 | `2fe2385152c450c971ff1ac9262298d9f3ed1a09decd4c65b048a6465c1796ea` | `v0.33.0-dsv41-r3` | `vllm-v0.33.0-dsv41-r3` | `494e2854a811ae563c29058c811250b7cc756f8a` | upstream vLLM |
 | `0e1f95eddd2247bf1c8ab024876319c2f80aead5d0e4a28dfffc9563e370a253` | `v0.34.0-dsv41-r1` | `vllm-v0.34.0-dsv41-r1` | `cbe1dd569bd7ba31c569bd72b5c0142e2b9cbfcd` | upstream vLLM |
+| `79625e1f04c1bbdfdc98dca41e20de6e2a5f446c6b3ee7595956ec54ab64c0f4` | `v0.34.0-dsv41-r2` | `vllm-v0.34.0-dsv41-r2` | `7b1c0e1a3f0d4374a93646766770459dc5b4bffd` | upstream vLLM |
+| `43edd86213d507c39757ac7d513c9848386d1f426554cdc6221fba92e444e33a` | `v0.34.0-dsv41-r3` | `vllm-v0.34.0-dsv41-r3` | `33fe80a37fac5df3c66f8f82bc93ab7df109c498` | upstream vLLM |
+| `31c5187a659f929a213c1cbbd58618a05b9a2af33498e21360818a986c67a162` | `v0.34.0-dsv41-r5` | `vllm-v0.34.0-dsv41-r5` | `230a9d1aa5b072eb3463c7dfc5705fc82d4978f0` | upstream vLLM |
+| `561613e0f1bc3e291e68ee08b4e6fad1d6532bda49ddb8296399d159e509a892` | `v0.34.0-dsv41-r6` | `vllm-v0.34.0-dsv41-r6` | `0bc5c6fba270cec941e37db2c1e3591c7572b767` | upstream vLLM |
+| `8a3762eaca5d5454b73614c2fa4f306cbf364c408aeeb7829fde134773ed77df` | `v0.34.0-dsv41-r7` | `vllm-v0.34.0-dsv41-r7` | `3573018aecf28802c3cc2018786576fd7d485ef5` | upstream vLLM |
+| `80176ef5d525acdc9262492759c98719ec3057382091000fe336121e03222a64` | `v0.34.0-dsv41-r9` | `vllm-v0.34.0-dsv41-r9` | `3e86ab8fe00083fc090612f666166e9dd54bf5ef` | upstream vLLM |
+| `1ed179af333e0bb2c5724858c7e68a6e268e0edd02ddb67f6105157287cd5c9a` | `v0.34.0-dsv41-r10` | `vllm-v0.34.0-dsv41-r10` | `678739637875637ce49c89f177c673498e2ca6ac` | upstream vLLM |
+| `cc0066b599ab2d2c75a4b06ed7df4711cb181d110d5448dde894e17661e4c405` | `v0.34.0-pd-router-r2` | `vllm-v0.34.0-pd-router-r2` | `230a9d1aa5b072eb3463c7dfc5705fc82d4978f0` | upstream vLLM |
 | `2d0f065eff326629b3e8938e36b1b31b1541b8b9b9c0f2ae85da68c12be20f05` | `v0.33.0-request-bounds-r1` | `vllm-v0.33.0-request-bounds-r1` | `c8ad48bbc65da1cc28dae72211356b1a51fac177` | upstream vLLM |
 | `5eaa0d4637080c10958b6cd8a371ae2ebb749b7a1e19c85bcb1abb89ee2540e4` | - | `vllm-dsv41-lora` | `c87715224cc5712f5f302ac0e486f533c99ce5c5` | upstream vLLM |
 | `9c6ddd4319c4ab00e351d8650459e68b8830e36ffcc029d67fa5e19d0ac3ed17` | `glm53-hicache-w4afp8-v6` | `sglang-glm53-hicache-w4afp8` | `678a6b5ee3e4e7b83340f810c76530958eecc499` | `3eccc307…` |
@@ -178,8 +191,10 @@ file and the matched value. Counts per rule:
 | rule | entries | what it waives |
 |---|---|---|
 | `layout.ext`, `layout.size` | 1 each | the adapter weights file in `adapters/` |
-| `pins.digest` | 8 | image references pinned by tag, or defined inline |
+| `pins.digest` | 12 | image references pinned by tag, or defined inline |
 | `pins.raw-key` | 4 | images defined inline in a deployable |
-| `privacy.secret` | 5 | secret variables without a required-value check |
-| `public.domain` | 5 | domain names outside the public allowlist |
+| `privacy.secret` | 9 | secret variables without a required-value check |
+| `public.domain` | 9 | domain names outside the public allowlist |
 | `public.host` | 7 | host names in config values, labels or service names |
+| `stack.engine-backend` | 2 | a proxy backend list set at deploy time |
+| `status.key-set` | 2 | candidates whose services differ from their live files |
