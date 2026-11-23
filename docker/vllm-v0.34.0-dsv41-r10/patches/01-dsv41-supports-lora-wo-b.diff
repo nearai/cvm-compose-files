@@ -1,0 +1,18 @@
+diff --git a/vllm/models/deepseek_v41/nvidia/vl_model.py b/vllm/models/deepseek_v41/nvidia/vl_model.py
+index d587cd07a..ee2ffcab7 100644
+--- a/vllm/models/deepseek_v41/nvidia/vl_model.py
++++ b/vllm/models/deepseek_v41/nvidia/vl_model.py
+@@ -159,6 +159,13 @@ class DeepseekV41ForCausalLM(
+ 
+     def __init__(self, *, vllm_config, prefix: str = "") -> None:
+         super().__init__()
++        # Fail closed: only wo_b adapters are supported on this model.
++        lora_config = vllm_config.lora_config
++        if lora_config is not None:
++            if set(lora_config.target_modules or []) != {"wo_b"}:
++                raise ValueError("DeepSeek V4.1 LoRA requires target_modules=['wo_b']")
++            if getattr(lora_config, "enable_tower_connector_lora", False):
++                raise ValueError("DeepSeek V4.1 LoRA does not adapt vision/aligner")
+         model_config = vllm_config.model_config
+         config = model_config.hf_config
+         self.config = config
