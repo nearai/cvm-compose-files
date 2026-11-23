@@ -34,7 +34,7 @@ x-glm53-engine-common: &glm53-engine-common
   init: true
   cap_drop: [ALL]
   security_opt: ["no-new-privileges:true"]
-  image: docker.io/nearaidev/vllm@sha256:80176ef5d525acdc9262492759c98719ec3057382091000fe336121e03222a64
+  image: docker.io/nearaidev/vllm@sha256:1ed179af333e0bb2c5724858c7e68a6e268e0edd02ddb67f6105157287cd5c9a
   restart: unless-stopped
   stop_grace_period: 10m
   logging: *logging-conf
@@ -247,7 +247,7 @@ services:
       - VLLM_ADMIT_ROLE=prefill
       - VLLM_ADMIT_LONG_CUTOFF_TOKENS=65536
       - VLLM_ADMIT_SHORT_MAX_TOKENS=81920
-      - VLLM_ADMIT_LONG_MAX_INFLIGHT=2
+      - VLLM_ADMIT_LONG_MAX_INFLIGHT=1
       - VLLM_ADMIT_LONG_YIELD_SHORT_TOKENS=20480
       - VLLM_ADMIT_RETRY_AFTER_SHORT_S=1
       - VLLM_ADMIT_RETRY_AFTER_LONG_S=10
@@ -264,9 +264,9 @@ services:
       --data-parallel-address 127.0.0.1
       --data-parallel-rpc-port 13445
       --max-model-len 1048576
-      --max-num-batched-tokens 16384
+      --max-num-batched-tokens 8192
       --max-num-seqs 128
-      --long-prefill-token-threshold 2048
+      --long-prefill-token-threshold 4736
       --max-num-queued-reqs 96
       --scheduling-policy priority
       --gpu-memory-utilization 0.92
@@ -283,6 +283,7 @@ services:
       --mamba-ssm-cache-dtype bfloat16
       --no-disable-hybrid-kv-cache-manager
       --enable-prefix-caching
+      --prefix-match-unit 64
       --limit-mm-per-prompt '{"image": 4}'
       --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_producer","kv_connector_extra_config":{"kv_lease_duration":30,"enable_prog_thread":false}}'
       --no-enable-log-requests
@@ -364,7 +365,7 @@ services:
       - VLLM_ADMIT_ROLE=prefill
       - VLLM_ADMIT_LONG_CUTOFF_TOKENS=65536
       - VLLM_ADMIT_SHORT_MAX_TOKENS=81920
-      - VLLM_ADMIT_LONG_MAX_INFLIGHT=2
+      - VLLM_ADMIT_LONG_MAX_INFLIGHT=1
       - VLLM_ADMIT_LONG_YIELD_SHORT_TOKENS=20480
       - VLLM_ADMIT_RETRY_AFTER_SHORT_S=1
       - VLLM_ADMIT_RETRY_AFTER_LONG_S=10
@@ -381,9 +382,9 @@ services:
       --data-parallel-address 127.0.0.1
       --data-parallel-rpc-port 13445
       --max-model-len 1048576
-      --max-num-batched-tokens 16384
+      --max-num-batched-tokens 8192
       --max-num-seqs 128
-      --long-prefill-token-threshold 2048
+      --long-prefill-token-threshold 4736
       --max-num-queued-reqs 96
       --scheduling-policy priority
       --gpu-memory-utilization 0.92
@@ -400,6 +401,7 @@ services:
       --mamba-ssm-cache-dtype bfloat16
       --no-disable-hybrid-kv-cache-manager
       --enable-prefix-caching
+      --prefix-match-unit 64
       --limit-mm-per-prompt '{"image": 4}'
       --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_producer","kv_connector_extra_config":{"kv_lease_duration":30,"enable_prog_thread":false}}'
       --no-enable-log-requests
@@ -509,6 +511,7 @@ services:
       --mamba-ssm-cache-dtype bfloat16
       --no-disable-hybrid-kv-cache-manager
       --enable-prefix-caching
+      --prefix-match-unit 64
       --limit-mm-per-prompt '{"image": 4}'
       --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_consumer","kv_connector_extra_config":{"kv_lease_duration":30,"enable_prog_thread":false}}'
       --no-enable-log-requests
@@ -618,6 +621,7 @@ services:
       --mamba-ssm-cache-dtype bfloat16
       --no-disable-hybrid-kv-cache-manager
       --enable-prefix-caching
+      --prefix-match-unit 64
       --limit-mm-per-prompt '{"image": 4}'
       --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_consumer","kv_connector_extra_config":{"kv_lease_duration":30,"enable_prog_thread":false}}'
       --no-enable-log-requests
@@ -722,7 +726,7 @@ services:
       - VLLM_ADMIT_ROLE=prefill
       - VLLM_ADMIT_LONG_CUTOFF_TOKENS=65536
       - VLLM_ADMIT_SHORT_MAX_TOKENS=81920
-      - VLLM_ADMIT_LONG_MAX_INFLIGHT=2
+      - VLLM_ADMIT_LONG_MAX_INFLIGHT=1
       - VLLM_ADMIT_LONG_YIELD_SHORT_TOKENS=20480
       - VLLM_ADMIT_RETRY_AFTER_SHORT_S=1
       - VLLM_ADMIT_RETRY_AFTER_LONG_S=10
@@ -739,9 +743,9 @@ services:
       --data-parallel-address 127.0.0.1
       --data-parallel-rpc-port 13465
       --max-model-len 1048576
-      --max-num-batched-tokens 16384
+      --max-num-batched-tokens 8192
       --max-num-seqs 128
-      --long-prefill-token-threshold 2048
+      --long-prefill-token-threshold 4736
       --max-num-queued-reqs 96
       --scheduling-policy priority
       --gpu-memory-utilization 0.92
@@ -758,6 +762,7 @@ services:
       --mamba-ssm-cache-dtype bfloat16
       --no-disable-hybrid-kv-cache-manager
       --enable-prefix-caching
+      --prefix-match-unit 64
       --limit-mm-per-prompt '{"image": 4}'
       --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_producer","kv_connector_extra_config":{"kv_lease_duration":30,"enable_prog_thread":false}}'
       --no-enable-log-requests
@@ -839,7 +844,7 @@ services:
       - VLLM_ADMIT_ROLE=prefill
       - VLLM_ADMIT_LONG_CUTOFF_TOKENS=65536
       - VLLM_ADMIT_SHORT_MAX_TOKENS=81920
-      - VLLM_ADMIT_LONG_MAX_INFLIGHT=2
+      - VLLM_ADMIT_LONG_MAX_INFLIGHT=1
       - VLLM_ADMIT_LONG_YIELD_SHORT_TOKENS=20480
       - VLLM_ADMIT_RETRY_AFTER_SHORT_S=1
       - VLLM_ADMIT_RETRY_AFTER_LONG_S=10
@@ -856,9 +861,9 @@ services:
       --data-parallel-address 127.0.0.1
       --data-parallel-rpc-port 13465
       --max-model-len 1048576
-      --max-num-batched-tokens 16384
+      --max-num-batched-tokens 8192
       --max-num-seqs 128
-      --long-prefill-token-threshold 2048
+      --long-prefill-token-threshold 4736
       --max-num-queued-reqs 96
       --scheduling-policy priority
       --gpu-memory-utilization 0.92
@@ -875,6 +880,7 @@ services:
       --mamba-ssm-cache-dtype bfloat16
       --no-disable-hybrid-kv-cache-manager
       --enable-prefix-caching
+      --prefix-match-unit 64
       --limit-mm-per-prompt '{"image": 4}'
       --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_producer","kv_connector_extra_config":{"kv_lease_duration":30,"enable_prog_thread":false}}'
       --no-enable-log-requests
@@ -984,6 +990,7 @@ services:
       --mamba-ssm-cache-dtype bfloat16
       --no-disable-hybrid-kv-cache-manager
       --enable-prefix-caching
+      --prefix-match-unit 64
       --limit-mm-per-prompt '{"image": 4}'
       --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_consumer","kv_connector_extra_config":{"kv_lease_duration":30,"enable_prog_thread":false}}'
       --no-enable-log-requests
@@ -1093,6 +1100,7 @@ services:
       --mamba-ssm-cache-dtype bfloat16
       --no-disable-hybrid-kv-cache-manager
       --enable-prefix-caching
+      --prefix-match-unit 64
       --limit-mm-per-prompt '{"image": 4}'
       --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_consumer","kv_connector_extra_config":{"kv_lease_duration":30,"enable_prog_thread":false}}'
       --no-enable-log-requests
