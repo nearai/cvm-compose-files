@@ -266,10 +266,10 @@ services:
       --max-model-len 1048576
       --max-num-batched-tokens 8192
       --max-num-seqs 128
-      --long-prefill-token-threshold 4736
+      --long-prefill-token-threshold 4864
       --max-num-queued-reqs 96
       --scheduling-policy priority
-      --gpu-memory-utilization 0.92
+      --gpu-memory-utilization 0.90
       --enable-prompt-tokens-details
       --chat-template /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/3f1971b7b5f7a528c9c4ef6212c8785298a8c24a/chat_template.jinja
       --reasoning-parser glm45
@@ -278,12 +278,11 @@ services:
       --speculative-config '{"method":"mtp","num_speculative_tokens":3}'
       --compilation-config '{"cudagraph_mode":"FULL_DECODE_ONLY"}'
       --moe-backend humming
-      --attention-backend FLASHINFER_MLA_SPARSE_SM90
-      --kv-cache-dtype fp8_e4m3
+      --attention-backend FLASH_ATTN_MLA_SPARSE
+      --kv-cache-dtype auto
       --mamba-ssm-cache-dtype bfloat16
       --no-disable-hybrid-kv-cache-manager
       --enable-prefix-caching
-      --prefix-match-unit 64
       --limit-mm-per-prompt '{"image": 4}'
       --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_producer","kv_connector_extra_config":{"kv_lease_duration":30,"enable_prog_thread":false}}'
       --no-enable-log-requests
@@ -384,10 +383,10 @@ services:
       --max-model-len 1048576
       --max-num-batched-tokens 8192
       --max-num-seqs 128
-      --long-prefill-token-threshold 4736
+      --long-prefill-token-threshold 4864
       --max-num-queued-reqs 96
       --scheduling-policy priority
-      --gpu-memory-utilization 0.92
+      --gpu-memory-utilization 0.90
       --enable-prompt-tokens-details
       --chat-template /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/3f1971b7b5f7a528c9c4ef6212c8785298a8c24a/chat_template.jinja
       --reasoning-parser glm45
@@ -396,12 +395,11 @@ services:
       --speculative-config '{"method":"mtp","num_speculative_tokens":3}'
       --compilation-config '{"cudagraph_mode":"FULL_DECODE_ONLY"}'
       --moe-backend humming
-      --attention-backend FLASHINFER_MLA_SPARSE_SM90
-      --kv-cache-dtype fp8_e4m3
+      --attention-backend FLASH_ATTN_MLA_SPARSE
+      --kv-cache-dtype auto
       --mamba-ssm-cache-dtype bfloat16
       --no-disable-hybrid-kv-cache-manager
       --enable-prefix-caching
-      --prefix-match-unit 64
       --limit-mm-per-prompt '{"image": 4}'
       --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_producer","kv_connector_extra_config":{"kv_lease_duration":30,"enable_prog_thread":false}}'
       --no-enable-log-requests
@@ -497,7 +495,7 @@ services:
       --max-num-seqs 128
       --max-num-queued-reqs 96
       --scheduling-policy priority
-      --gpu-memory-utilization 0.92
+      --gpu-memory-utilization 0.90
       --enable-prompt-tokens-details
       --chat-template /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/3f1971b7b5f7a528c9c4ef6212c8785298a8c24a/chat_template.jinja
       --reasoning-parser glm45
@@ -506,12 +504,11 @@ services:
       --speculative-config '{"method":"mtp","num_speculative_tokens":3}'
       --compilation-config '{"cudagraph_mode":"FULL_DECODE_ONLY"}'
       --moe-backend humming
-      --attention-backend FLASHINFER_MLA_SPARSE_SM90
-      --kv-cache-dtype fp8_e4m3
+      --attention-backend FLASH_ATTN_MLA_SPARSE
+      --kv-cache-dtype auto
       --mamba-ssm-cache-dtype bfloat16
       --no-disable-hybrid-kv-cache-manager
       --enable-prefix-caching
-      --prefix-match-unit 64
       --limit-mm-per-prompt '{"image": 4}'
       --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_consumer","kv_connector_extra_config":{"kv_lease_duration":30,"enable_prog_thread":false}}'
       --no-enable-log-requests
@@ -607,7 +604,7 @@ services:
       --max-num-seqs 128
       --max-num-queued-reqs 96
       --scheduling-policy priority
-      --gpu-memory-utilization 0.92
+      --gpu-memory-utilization 0.90
       --enable-prompt-tokens-details
       --chat-template /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/3f1971b7b5f7a528c9c4ef6212c8785298a8c24a/chat_template.jinja
       --reasoning-parser glm45
@@ -616,12 +613,11 @@ services:
       --speculative-config '{"method":"mtp","num_speculative_tokens":3}'
       --compilation-config '{"cudagraph_mode":"FULL_DECODE_ONLY"}'
       --moe-backend humming
-      --attention-backend FLASHINFER_MLA_SPARSE_SM90
-      --kv-cache-dtype fp8_e4m3
+      --attention-backend FLASH_ATTN_MLA_SPARSE
+      --kv-cache-dtype auto
       --mamba-ssm-cache-dtype bfloat16
       --no-disable-hybrid-kv-cache-manager
       --enable-prefix-caching
-      --prefix-match-unit 64
       --limit-mm-per-prompt '{"image": 4}'
       --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_consumer","kv_connector_extra_config":{"kv_lease_duration":30,"enable_prog_thread":false}}'
       --no-enable-log-requests
@@ -745,10 +741,10 @@ services:
       --max-model-len 1048576
       --max-num-batched-tokens 8192
       --max-num-seqs 128
-      --long-prefill-token-threshold 4736
+      --long-prefill-token-threshold 4864
       --max-num-queued-reqs 96
       --scheduling-policy priority
-      --gpu-memory-utilization 0.92
+      --gpu-memory-utilization 0.90
       --enable-prompt-tokens-details
       --chat-template /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/3f1971b7b5f7a528c9c4ef6212c8785298a8c24a/chat_template.jinja
       --reasoning-parser glm45
@@ -757,12 +753,11 @@ services:
       --speculative-config '{"method":"mtp","num_speculative_tokens":3}'
       --compilation-config '{"cudagraph_mode":"FULL_DECODE_ONLY"}'
       --moe-backend humming
-      --attention-backend FLASHINFER_MLA_SPARSE_SM90
-      --kv-cache-dtype fp8_e4m3
+      --attention-backend FLASH_ATTN_MLA_SPARSE
+      --kv-cache-dtype auto
       --mamba-ssm-cache-dtype bfloat16
       --no-disable-hybrid-kv-cache-manager
       --enable-prefix-caching
-      --prefix-match-unit 64
       --limit-mm-per-prompt '{"image": 4}'
       --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_producer","kv_connector_extra_config":{"kv_lease_duration":30,"enable_prog_thread":false}}'
       --no-enable-log-requests
@@ -863,10 +858,10 @@ services:
       --max-model-len 1048576
       --max-num-batched-tokens 8192
       --max-num-seqs 128
-      --long-prefill-token-threshold 4736
+      --long-prefill-token-threshold 4864
       --max-num-queued-reqs 96
       --scheduling-policy priority
-      --gpu-memory-utilization 0.92
+      --gpu-memory-utilization 0.90
       --enable-prompt-tokens-details
       --chat-template /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/3f1971b7b5f7a528c9c4ef6212c8785298a8c24a/chat_template.jinja
       --reasoning-parser glm45
@@ -875,12 +870,11 @@ services:
       --speculative-config '{"method":"mtp","num_speculative_tokens":3}'
       --compilation-config '{"cudagraph_mode":"FULL_DECODE_ONLY"}'
       --moe-backend humming
-      --attention-backend FLASHINFER_MLA_SPARSE_SM90
-      --kv-cache-dtype fp8_e4m3
+      --attention-backend FLASH_ATTN_MLA_SPARSE
+      --kv-cache-dtype auto
       --mamba-ssm-cache-dtype bfloat16
       --no-disable-hybrid-kv-cache-manager
       --enable-prefix-caching
-      --prefix-match-unit 64
       --limit-mm-per-prompt '{"image": 4}'
       --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_producer","kv_connector_extra_config":{"kv_lease_duration":30,"enable_prog_thread":false}}'
       --no-enable-log-requests
@@ -976,7 +970,7 @@ services:
       --max-num-seqs 128
       --max-num-queued-reqs 96
       --scheduling-policy priority
-      --gpu-memory-utilization 0.92
+      --gpu-memory-utilization 0.90
       --enable-prompt-tokens-details
       --chat-template /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/3f1971b7b5f7a528c9c4ef6212c8785298a8c24a/chat_template.jinja
       --reasoning-parser glm45
@@ -985,12 +979,11 @@ services:
       --speculative-config '{"method":"mtp","num_speculative_tokens":3}'
       --compilation-config '{"cudagraph_mode":"FULL_DECODE_ONLY"}'
       --moe-backend humming
-      --attention-backend FLASHINFER_MLA_SPARSE_SM90
-      --kv-cache-dtype fp8_e4m3
+      --attention-backend FLASH_ATTN_MLA_SPARSE
+      --kv-cache-dtype auto
       --mamba-ssm-cache-dtype bfloat16
       --no-disable-hybrid-kv-cache-manager
       --enable-prefix-caching
-      --prefix-match-unit 64
       --limit-mm-per-prompt '{"image": 4}'
       --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_consumer","kv_connector_extra_config":{"kv_lease_duration":30,"enable_prog_thread":false}}'
       --no-enable-log-requests
@@ -1086,7 +1079,7 @@ services:
       --max-num-seqs 128
       --max-num-queued-reqs 96
       --scheduling-policy priority
-      --gpu-memory-utilization 0.92
+      --gpu-memory-utilization 0.90
       --enable-prompt-tokens-details
       --chat-template /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/3f1971b7b5f7a528c9c4ef6212c8785298a8c24a/chat_template.jinja
       --reasoning-parser glm45
@@ -1095,12 +1088,11 @@ services:
       --speculative-config '{"method":"mtp","num_speculative_tokens":3}'
       --compilation-config '{"cudagraph_mode":"FULL_DECODE_ONLY"}'
       --moe-backend humming
-      --attention-backend FLASHINFER_MLA_SPARSE_SM90
-      --kv-cache-dtype fp8_e4m3
+      --attention-backend FLASH_ATTN_MLA_SPARSE
+      --kv-cache-dtype auto
       --mamba-ssm-cache-dtype bfloat16
       --no-disable-hybrid-kv-cache-manager
       --enable-prefix-caching
-      --prefix-match-unit 64
       --limit-mm-per-prompt '{"image": 4}'
       --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_consumer","kv_connector_extra_config":{"kv_lease_duration":30,"enable_prog_thread":false}}'
       --no-enable-log-requests
