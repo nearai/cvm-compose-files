@@ -1,0 +1,345 @@
+diff -ruN a/vllm/model_executor/layers/mamba/checkpoint.py b/vllm/model_executor/layers/mamba/checkpoint.py
+--- a/vllm/model_executor/layers/mamba/checkpoint.py	2026-11-23 17:48:52
++++ b/vllm/model_executor/layers/mamba/checkpoint.py	2026-11-23 17:48:52
+@@ -15,6 +15,7 @@
+     MambaSpec,
+     get_mamba_prefill_checkpoint_position,
+     is_mamba_prefill_checkpoint_valid,
++    mamba_relax_boundary_checkpoint,
+ )
+ 
+ 
+@@ -44,6 +45,16 @@
+     cols: list[int] = []
+     for seq_len, query_len in zip(seq_lens, query_lens):
+         query_start = seq_len - query_len
++        # VLLM_MAMBA_RELAX_ALIGN: a row resuming at a relaxed chunk end exports
++        # the block boundary it crosses (0 when off or not such a row).
++        boundary = mamba_relax_boundary_checkpoint(
++            query_start, seq_len, mamba_block_size, hash_block_size,
++            checkpoint_alignment,
++        )
++        if boundary:
++            offsets.append(boundary - query_start)
++            cols.append(boundary // mamba_block_size - 1)
++            continue
+         position = get_mamba_prefill_checkpoint_position(
+             seq_len,
+             cache_hit_alignment_tokens,
+diff -ruN a/vllm/v1/core/sched/scheduler.py b/vllm/v1/core/sched/scheduler.py
+--- a/vllm/v1/core/sched/scheduler.py	2026-11-23 17:48:52
++++ b/vllm/v1/core/sched/scheduler.py	2026-11-23 17:48:52
+@@ -505,6 +505,39 @@
+                     "long_prefill_token_threshold)."
+                 )
+             logger.info("Mamba one-pass prefill checkpoints (#66938/#60888) on.")
++        # Relaxed chunk ends (opt-in, VLLM_MAMBA_RELAX_ALIGN=1 on top of the
++        # one-pass flag): see `_mamba_relax_end`.
++        self.mamba_relax_align = False
++        if _kvi.MAMBA_RELAX_ALIGN and self.need_mamba_block_aligned_split:
++            relax_residue = _kvi.mamba_relax_residue(
++                self.hash_block_size, self.mamba_prefill_checkpoint_alignment
++            )
++            relax_alignments = {
++                group.kv_cache_spec.prefill_checkpoint_alignment
++                for group in kv_cache_config.kv_cache_groups
++                if isinstance(group.kv_cache_spec, MambaSpec)
++            }
++            if (
++                not self.mamba_has_prefill_checkpoint_blocks
++                or relax_residue is None
++                or len(relax_alignments) != 1
++                or self.block_size % self.hash_block_size
++                # A spec-decode row could otherwise cross a boundary from a
++                # relaxed-residue start; relaxed rows cross from >= this far.
++                or self.num_spec_tokens >= self.hash_block_size - relax_residue
++            ):
++                raise ValueError(
++                    "VLLM_MAMBA_RELAX_ALIGN=1 requires in-forward prefill "
++                    "checkpoints in every Mamba group with one alignment that "
++                    "is below and divides the hash block size, and fewer "
++                    "speculative tokens than hash_block_size - alignment."
++                )
++            self.mamba_relax_align = True
++            logger.info(
++                "Mamba relaxed prefill chunk ends on (residue %d mod %d).",
++                relax_residue,
++                self.hash_block_size,
++            )
+         if self.mamba_onepass_tail_skip_tokens:
+             logger.info(
+                 "Mamba one-pass tail: skipping the partial-tail stop when it "
+@@ -670,6 +703,24 @@
+         )
+         if use_internal_checkpoint:
+             last_cache_position = 0
++        next_block_boundary = (start // block_size + 1) * block_size
++        # getattr: tests drive this method with stand-in scheduler objects.
++        relax = getattr(self, "mamba_relax_align", False)
++        # A row resuming at a relaxed end (see `_mamba_relax_end`) may cross
++        # one block boundary: the backend exports that boundary's state.
++        relax_running = relax and bool(
++            _kvi.mamba_relax_boundary_checkpoint(
++                start,
++                start + 2 * block_size,
++                block_size,
++                self.hash_block_size,
++                self.mamba_prefill_checkpoint_alignment,
++            )
++        )
++        if relax_running:
++            # The only block boundary such a chunk can hold strictly inside is
++            # the next one, and its state is exported in-forward.
++            last_cache_position = 0
+         # Invariant: slot p holds the state after exactly (p + 1) * block_size
+         # tokens. State is written at chunk ends, so chunk ends must be block
+         # aligned. Exempt: the prompt's last chunk, whose slot decode advances
+@@ -680,11 +731,15 @@
+             long_prefill_threshold = self.scheduler_config.long_prefill_token_threshold
+             if long_prefill_threshold > 0:
+                 max_prefill_tokens = min(max_prefill_tokens, long_prefill_threshold)
+-            aligned_end = end // block_size * block_size
+-            if aligned_end > start or block_size <= max_prefill_tokens:
+-                end = aligned_end
++            if relax:
++                end = self._mamba_relax_end(
++                    request, start, end, next_block_boundary, relax_running
++                )
++            else:
++                aligned_end = end // block_size * block_size
++                if aligned_end > start or block_size <= max_prefill_tokens:
++                    end = aligned_end
+ 
+-        next_block_boundary = (start // block_size + 1) * block_size
+         tail_boundary = (
+             get_mamba_prefill_checkpoint_position(
+                 request.num_prompt_tokens,
+@@ -721,7 +776,8 @@
+         stops = (
+             # Same invariant: a chunk starting mid-block stops at the boundary
+             # rather than running past it.
+-            next_block_boundary
++            # A relaxed-start row may cross one boundary (exported in-forward).
++            next_block_boundary + (block_size if relax_running else 0)
+             if start % block_size != 0 and not use_internal_checkpoint
+             else 0,
+             # Never run past the last cacheable block boundary mid-chunk.
+@@ -738,6 +794,48 @@
+         end = min((s for s in stops if start < s < end), default=end)
+         return max(end - start, 0)
+ 
++    def _mamba_relax_end(
++        self,
++        request: Request,
++        start: int,
++        end: int,
++        next_block_boundary: int,
++        relax_running: bool,
++    ) -> int:
++        """End of a non-final chunk under VLLM_MAMBA_RELAX_ALIGN.
++
++        Stock ends a non-final chunk on a block boundary and schedules nothing
++        (the waiting loop then stops) when the budget does not reach one. This
++        may also end it at a relaxed position: ``alignment`` past a hash unit
++        (``mamba_relax_residue``), whose state is the request's private running
++        state, never keyed. The chunk resuming there is identifiable to every
++        worker by its start alone; it may cross one block boundary because the
++        backend exports that boundary's state in the same forward
++        (``mamba_relax_boundary_checkpoint``), which the full-block hash keys
++        exactly as an aligned chunk end. Any other start (a prefix hit, a block
++        boundary, the tail stop) keeps the stock rules and never crosses a
++        boundary with a relaxed end, so the prompt-tail rule cannot fire on a
++        running row. Stops applied after this (tail, last cacheable boundary)
++        are unchanged.
++        """
++        block_size = self.cache_config.block_size
++        if relax_running:
++            # At most one boundary inside: the backend exports one state.
++            end = min(end, next_block_boundary + block_size)
++            aligned_end = end // block_size * block_size
++        else:
++            aligned_end = end // block_size * block_size
++            # Stock rule; a relaxed end stays inside the current block.
++            end = min(end, next_block_boundary)
++        limit = end
++        if self.num_prefill_lookahead > 1:
++            # Keep `_reserve_prefill_lookahead` from moving a relaxed end.
++            limit = min(limit, request.num_tokens - self.num_prefill_lookahead)
++        relaxed_end = _kvi.mamba_relax_floor(
++            limit, self.hash_block_size, self.mamba_prefill_checkpoint_alignment
++        )
++        return max(aligned_end, relaxed_end, start)
++
+     def _get_local_prefix_cache_hit(
+         self, request: Request, max_cache_hit_length: int | None = None
+     ) -> tuple[KVCacheBlocks, int, int, bool]:
+@@ -1465,6 +1563,11 @@
+                             num_external_computed_tokens,
+                         )
+                         if num_new_tokens == 0:
++                            if self.mamba_relax_align:
++                                # Too little budget for this one; a shorter
++                                # request behind it may still fit.
++                                skip_request(request_queue)
++                                continue
+                             break
+                         if (
+                             pad_spec_decode
+diff -ruN a/vllm/v1/core/single_type_kv_cache_manager.py b/vllm/v1/core/single_type_kv_cache_manager.py
+--- a/vllm/v1/core/single_type_kv_cache_manager.py	2026-11-23 17:48:52
++++ b/vllm/v1/core/single_type_kv_cache_manager.py	2026-11-23 17:48:52
+@@ -40,6 +40,7 @@
+     get_mamba_prefill_checkpoint_position,
+     is_mamba_prefill_checkpoint_valid,
+     mamba_prefill_checkpoint_needs_fresh_row,
++    mamba_relax_boundary_checkpoint,
+ )
+ import vllm.v1.kv_cache_interface as _kvi
+ from vllm.v1.kv_cache_spec_registry import KVCacheSpecRegistry
+@@ -1486,6 +1487,10 @@
+             # checkpoint position and reserved block index for the current
+             # allocation.
+             self._checkpoints: dict[str, tuple[int, int]] = {}
++            # Requests whose `_checkpoints` entry is a relaxed-chunk block
++            # boundary (VLLM_MAMBA_RELAX_ALIGN): the full-block hash keys it,
++            # as if the chunk had ended there.
++            self._relax_boundary_reqs: set[str] = set()
+             # Token range [start, end) of each request's scheduled chunk,
+             # read by `cache_blocks` to record the chunk's mid-block states.
+             self._req_chunk_ranges: dict[str, tuple[int, int]] = {}
+@@ -1817,7 +1822,26 @@
+                 self.drop_eagle_checkpoint_block,
+                 num_hash_lookahead_tokens=self.block_pool.num_hash_lookahead_tokens,
+             )
+-            if not self._needs_internal_checkpoint(
++            # VLLM_MAMBA_RELAX_ALIGN: a row resuming at a relaxed chunk end
++            # exports the block boundary it crosses, like the worker's
++            # `compute_mamba_prefill_checkpoints` (0 when off).
++            relax_boundary = (
++                mamba_relax_boundary_checkpoint(
++                    total_computed_tokens,
++                    num_tokens,
++                    self.block_size,
++                    self.block_pool.hash_block_size,
++                    self.kv_cache_spec.prefill_checkpoint_alignment,
++                )
++                if self.has_prefill_checkpoint_blocks
++                else 0
++            )
++            if relax_boundary:
++                checkpoint_position = relax_boundary
++                assert relax_boundary // self.block_size - 1 == (
++                    cdiv(num_tokens, self.block_size) - 2
++                )
++            elif not self._needs_internal_checkpoint(
+                 request_id,
+                 total_computed_tokens,
+                 num_tokens,
+@@ -1846,6 +1870,10 @@
+                     )
+                 else:
+                     self._checkpoints.pop(request_id, None)
++                if relax_boundary:
++                    self._relax_boundary_reqs.add(request_id)
++                else:
++                    self._relax_boundary_reqs.discard(request_id)
+             if num_new_blocks > 0:
+                 blocks_allocated = request_id in self._allocated_block_reqs
+                 physical_block_cap = 1 + int(has_partial_hit) + checkpoint_block
+@@ -2039,6 +2067,7 @@
+             self.last_state_block_idx.pop(request_id, None)
+             self._num_retired_blocks.pop(request_id, None)
+             self._checkpoints.pop(request_id, None)
++            self._relax_boundary_reqs.discard(request_id)
+             self._req_chunk_ranges.pop(request_id, None)
+             self._mid_block_states.pop(request_id, None)
+             self._producer_partial_tail_reqs.pop(request_id, None)
+@@ -2125,6 +2154,12 @@
+         hash_block_size = self.block_pool.hash_block_size
+         # Re-key the reserved block at its exported checkpoint boundary.
+         checkpoint = self._checkpoints.get(request.request_id)
++        if request.request_id in self._relax_boundary_reqs:
++            # A relaxed block-boundary checkpoint is keyed by the full-block
++            # hash (`cache_blocks`, `_record_mid_block_states` unmasks it), as
++            # an aligned chunk end would be. This chunk's own end may still be
++            # the prompt's tail boundary, cached below as without a checkpoint.
++            checkpoint = None
+         if checkpoint is not None:
+             checkpoint_position, checkpoint_idx = checkpoint
+             blocks = self.req_to_blocks[request.request_id]
+diff -ruN a/vllm/v1/kv_cache_interface.py b/vllm/v1/kv_cache_interface.py
+--- a/vllm/v1/kv_cache_interface.py	2026-11-23 17:48:52
++++ b/vllm/v1/kv_cache_interface.py	2026-11-23 17:48:52
+@@ -1205,6 +1205,72 @@
+ # (backport of vllm#66938 + vllm#60888). Read once at import so the scheduler,
+ # MambaManager and the workers (same container env) decide in lockstep.
+ MAMBA_ONEPASS_CKPT = os.environ.get("VLLM_MAMBA_ONEPASS_CKPT", "0") == "1"
++# Opt-in (default off, needs MAMBA_ONEPASS_CKPT): relaxed align-mode chunk ends.
++# A non-final prefill chunk may end mid-block at a "relaxed" position, and a
++# chunk starting at one may cross one block boundary, whose state the backend
++# exports in the same forward. Read once at import like the flag above, so the
++# scheduler, MambaManager and the workers decide in lockstep.
++MAMBA_RELAX_ALIGN = (
++    MAMBA_ONEPASS_CKPT and os.environ.get("VLLM_MAMBA_RELAX_ALIGN", "0") == "1"
++)
++
++
++def mamba_relax_residue(
++    hash_block_size: int, checkpoint_alignment: int | None
++) -> int | None:
++    """Residue (mod ``hash_block_size``) of every relaxed chunk end.
++
++    Relaxed ends are ``checkpoint_alignment`` past a hash unit, never on one.
++    Prefix hits and block boundaries are unit-aligned, so a chunk start with
++    this residue identifies a running row that resumed at a relaxed end. The
++    prompt-tail checkpoint rule needs a unit-aligned start, so it never fires
++    for such a row (its worker block table is append-only), and the boundary
++    rule below never fires for any other row.
++    """
++    if (
++        not MAMBA_RELAX_ALIGN
++        or checkpoint_alignment is None
++        or not 0 < checkpoint_alignment < hash_block_size
++        or hash_block_size % checkpoint_alignment
++    ):
++        return None
++    return checkpoint_alignment
++
++
++def mamba_relax_floor(
++    position: int, hash_block_size: int, checkpoint_alignment: int | None
++) -> int:
++    """The largest relaxed chunk end at or below ``position`` (or -1)."""
++    residue = mamba_relax_residue(hash_block_size, checkpoint_alignment)
++    if residue is None or position < residue:
++        return -1
++    return (position - residue) // hash_block_size * hash_block_size + residue
++
++
++def mamba_relax_boundary_checkpoint(
++    query_start: int,
++    query_end: int,
++    mamba_block_size: int,
++    hash_block_size: int,
++    checkpoint_alignment: int | None,
++) -> int:
++    """Block boundary whose state a relaxed-start row exports in-forward, or 0.
++
++    Applies only to a row starting at a relaxed end (see
++    ``mamba_relax_residue``). The boundary is the last block boundary strictly
++    inside the query; the scheduler never lets such a row cross two. The state
++    goes to column ``boundary // mamba_block_size - 1``, which equals the tail
++    rule's ``cdiv(query_end, mamba_block_size) - 2``: the request's own running
++    block (pre-copied into the next column before the forward overwrites it).
++    """
++    residue = mamba_relax_residue(hash_block_size, checkpoint_alignment)
++    if residue is None or query_start % hash_block_size != residue:
++        return 0
++    assert checkpoint_alignment is not None
++    boundary = (query_end - 1) // mamba_block_size * mamba_block_size
++    if boundary <= query_start or (boundary - query_start) % checkpoint_alignment:
++        return 0
++    return boundary
+ 
+ 
+ def get_mamba_prefill_checkpoint_position(
