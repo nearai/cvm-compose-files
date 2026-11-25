@@ -834,7 +834,7 @@ services:
 
   pd-router-glm53-a:
     # One router per prefill/decode pair.
-    image: docker.io/nearaidev/vllm@sha256:fd89659367411f80c7f632084dc0e6052ff509237292cd43a905bffcb8a514b4
+    image: docker.io/nearaidev/vllm@sha256:661dc76f5c0484f009596fce643a5d032412aec46275dfe88d98aefe11608db9
     container_name: pd-router-glm53-a
     command:
       - --prefill
@@ -880,7 +880,7 @@ services:
     restart: unless-stopped
     logging: *logging-conf
     labels:
-      com.datadoghq.ad.logs: '[{"source":"pd-router","service":"pd-router","tags":["model:z-ai/glm-5.3-flash","deployment:pack-glm-53-flash-pd2-long","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-r12-w4afp8-bf16kv-flashmla-2xpd-dp2ep2-nixl-mtp4-prefix-cc-dpiece-dgate-router-r4-ddirect"]}]'
+      com.datadoghq.ad.logs: '[{"source":"pd-router","service":"pd-router","tags":["model:z-ai/glm-5.3-flash","deployment:pack-glm-53-flash-pd2-long","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-r12-w4afp8-bf16kv-flashmla-2xpd-dp2ep2-nixl-mtp4-prefix-cc-dpiece-dgate-router-r6-ddirect"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "pd-router"
       nearai.otel.service: "pd-router"
@@ -896,7 +896,7 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.ppcie: "true"
-      nearai.otel.config_variant: "vllm0340-r12-w4afp8-bf16kv-flashmla-2xpd-dp2ep2-nixl-mtp4-prefix-cc-dpiece-dgate-router-r4-ddirect"
+      nearai.otel.config_variant: "vllm0340-r12-w4afp8-bf16kv-flashmla-2xpd-dp2ep2-nixl-mtp4-prefix-cc-dpiece-dgate-router-r6-ddirect"
 
   model-sg-glm53-w4afp8-tp2-r2a:
     <<: *sg-glm53-flash-common
@@ -1547,7 +1547,7 @@ configs:
                       ip: "${HOST_IP}"
                       ppcie: "true"
                       deployment: "pack-glm-53-flash-pd2-long"
-                      config_variant: "vllm0340-r12-w4afp8-bf16kv-flashmla-2xpd-dp2ep2-nixl-mtp4-prefix-cc-dpiece-dgate-router-r4-ddirect"
+                      config_variant: "vllm0340-r12-w4afp8-bf16kv-flashmla-2xpd-dp2ep2-nixl-mtp4-prefix-cc-dpiece-dgate-router-r6-ddirect"
               - job_name: sglang-model-sg-glm53-w4afp8-tp2-r2a
                 scrape_interval: 15s
                 metrics_path: /metrics
