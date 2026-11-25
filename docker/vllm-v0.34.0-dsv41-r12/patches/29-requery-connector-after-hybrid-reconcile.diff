@@ -1,0 +1,52 @@
+diff --git a/vllm/v1/core/sched/scheduler.py b/vllm/v1/core/sched/scheduler.py
+--- a/vllm/v1/core/sched/scheduler.py
++++ b/vllm/v1/core/sched/scheduler.py
+@@ -692,6 +692,36 @@ class Scheduler(SchedulerInterface):
+         )
+         return blocks, num_local, shared_prefix_boundary, False
+ 
++    def _requery_connector_after_reconcile(
++        self, request: Request, num_local_computed_tokens: int
++    ) -> tuple[int, bool]:
++        """Ask the connector again from a reconciled hybrid local hit.
++
++        A connector load can stop short of the prompt (NIXL stops at the
++        Mamba checkpoint, vllm#67064), so a divergent full-attention hit may
++        already reach it and the first query finds nothing new. Reconciling
++        then drops to the boundary every group agrees on; querying from there
++        lets the load restore the lagging groups' state instead of
++        recomputing from it. Returns the external tokens and async flag,
++        (0, False) when there is nothing to load or the query is skipped."""
++        assert self.connector is not None
++        if (
++            request.skip_reading_external_kv
++            # These post-process the first query's count; keep their
++            # reconcile-only behaviour rather than re-deriving it here.
++            or self.prefix_replay_tokens
++            or self.aux_output_connector is not None
++            or num_local_computed_tokens % self.block_size
++        ):
++            return 0, False
++        ext_tokens, load_kv_async = self.connector.get_num_new_matched_tokens(
++            request, num_local_computed_tokens
++        )
++        if not ext_tokens:
++            # 0, or None (lookup still pending): recompute past the local hit.
++            return 0, False
++        return ext_tokens, load_kv_async
++
+     def _reserve_prefill_lookahead(
+         self,
+         request: Request,
+@@ -1246,6 +1276,11 @@ class Scheduler(SchedulerInterface):
+                             ) = self.kv_cache_manager.get_computed_blocks(
+                                 request, max_cache_hit_length
+                             )
++                            num_external_computed_tokens, load_kv_async = (
++                                self._requery_connector_after_reconcile(
++                                    request, num_new_local_computed_tokens
++                                )
++                            )
+ 
+                         connector_prefix_cache_queries = (
+                             request.num_tokens - num_new_local_computed_tokens

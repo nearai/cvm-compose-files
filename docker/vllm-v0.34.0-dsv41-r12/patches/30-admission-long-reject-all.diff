@@ -1,0 +1,91 @@
+diff --git a/vllm/v1/core/sched/admission_p26.py b/vllm/v1/core/sched/admission_p26.py
+--- a/vllm/v1/core/sched/admission_p26.py
++++ b/vllm/v1/core/sched/admission_p26.py
+@@ -35,6 +35,12 @@ Role gate: runs only on a prefill engine (``resolve_role``: kv_role=kv_producer
+ or VLLM_ADMIT_ROLE=prefill). Per request, ``do_remote_prefill`` is never shed.
+ Units: every knob is per engine core = per prefill DP rank, not per P/D pair.
+ Every knob is 0/unset = off, and the whole module is then inert.
++
++VLLM_ADMIT_LONG_REJECT_ALL=1 (or true/yes/on) rejects every long request
++(uncached > cutoff) with reason overloaded_long_count, whatever the in-flight
++counts. On a decode engine with VLLM_ADMIT_ROLE=prefill this refuses a direct
++(non-P/D) request that misses the decoder's prefix cache before add_request;
++P/D requests (do_remote_prefill) stay exempt. Off by default.
+ """
+ 
+ import os
+@@ -62,6 +68,19 @@ def _env_int(name: str, default: int = 0) -> int:
+         return default
+ 
+ 
++def _env_bool(name: str, default: bool = False) -> bool:
++    raw = os.environ.get(name)
++    if raw is None or not raw.strip():
++        return default
++    v = raw.strip().lower()
++    if v in ("1", "true", "yes", "on"):
++        return True
++    if v in ("0", "false", "no", "off"):
++        return False
++    logger.warning("Ignoring non-boolean %s=%r (using %s)", name, raw, default)
++    return default
++
++
+ def _is_decode_side(req) -> bool:
+     kvp = getattr(req, "kv_transfer_params", None)
+     return bool(kvp) and bool(kvp.get("do_remote_prefill"))
+@@ -107,7 +126,9 @@ class AdmissionP26:
+         long_max_inflight: int = 0,
+         cutoff: int = DEFAULT_LONG_CUTOFF_TOKENS,
+         long_yield_short_tokens: int = 0,
++        long_reject_all: bool = False,
+     ) -> None:
++        self.long_reject_all = long_reject_all
+         self.long_yield_short_tokens = long_yield_short_tokens
+         self.short_max_tokens = short_max_tokens
+         self.long_max_inflight = long_max_inflight
+@@ -123,6 +144,7 @@ class AdmissionP26:
+                 "VLLM_ADMIT_LONG_CUTOFF_TOKENS", DEFAULT_LONG_CUTOFF_TOKENS
+             ),
+             long_yield_short_tokens=_env_int("VLLM_ADMIT_LONG_YIELD_SHORT_TOKENS"),
++            long_reject_all=_env_bool("VLLM_ADMIT_LONG_REJECT_ALL"),
+         )
+         if ctl.enabled and scheduler is not None and resolve_role(scheduler) != "prefill":
+             logger.warning(
+@@ -132,14 +154,16 @@ class AdmissionP26:
+             )
+             ctl.short_max_tokens = ctl.long_max_inflight = 0
+             ctl.long_yield_short_tokens = 0
++            ctl.long_reject_all = False
+         if ctl.enabled:
+             logger.info(
+                 "Patch 26 admission: short_max_tokens=%d long_max_inflight=%d "
+-                "long_yield_short_tokens=%d cutoff=%d",
++                "long_yield_short_tokens=%d cutoff=%d long_reject_all=%s",
+                 ctl.short_max_tokens,
+                 ctl.long_max_inflight,
+                 ctl.long_yield_short_tokens,
+                 ctl.cutoff,
++                ctl.long_reject_all,
+             )
+         return ctl
+ 
+@@ -149,6 +173,7 @@ class AdmissionP26:
+             self.short_max_tokens > 0
+             or self.long_max_inflight > 0
+             or self.long_yield_short_tokens > 0
++            or self.long_reject_all
+         )
+ 
+     def _exempt(self, sched, req) -> bool:
+@@ -208,7 +233,9 @@ class AdmissionP26:
+         short_q, longs = self.backlog(sched)
+         reason = None
+         if is_long:
+-            if self.long_max_inflight > 0 and longs >= self.long_max_inflight:
++            if self.long_reject_all:
++                reason = REASON_LONG
++            elif self.long_max_inflight > 0 and longs >= self.long_max_inflight:
+                 reason = REASON_LONG
+             elif (
+                 self.long_yield_short_tokens > 0
