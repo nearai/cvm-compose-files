@@ -147,5 +147,5 @@ timeout 120 s) rather than lower the timeout and fail queued but healthy request
 ## Tests
 
 ```
-uvx --with fastapi --with aiohttp --with uvicorn --with orjson --with httpx pytest -q docker/vllm-v0.34.0-pd-router-r3/tests
+uvx --with fastapi --with aiohttp --with uvicorn --with orjson --with httpx pytest -q docker/vllm-v0.34.0-pd-router-r4/tests
 ```
