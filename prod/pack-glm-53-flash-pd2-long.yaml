@@ -47,7 +47,7 @@ x-glm53-engine-common: &glm53-engine-common
   init: true
   cap_drop: [ALL]
   security_opt: ["no-new-privileges:true"]
-  image: docker.io/nearaidev/vllm@sha256:1ed179af333e0bb2c5724858c7e68a6e268e0edd02ddb67f6105157287cd5c9a
+  image: docker.io/nearaidev/vllm@sha256:022bf3a6bc734861a51b3eb4a207b214338e5ab7c04b318da65944659a1019c2
   restart: unless-stopped
   stop_grace_period: 10m
   logging: *logging-conf
@@ -458,7 +458,7 @@ services:
       --host 0.0.0.0
       --port 9100
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","replica:a","pd_role:prefill","dp_rank:0","gpu:0","deployment:pack-glm-53-flash-pd2-long","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","replica:a","pd_role:prefill","dp_rank:0","gpu:0","deployment:pack-glm-53-flash-pd2-long","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-r12-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc-router-r3"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
@@ -476,7 +476,7 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.ppcie: "true"
-      nearai.otel.config_variant: "vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc"
+      nearai.otel.config_variant: "vllm0340-r12-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc-router-r3"
 
   model-vllm-glm53-a-prefill1:
     <<: *glm53-engine-common
@@ -576,7 +576,7 @@ services:
       --host 0.0.0.0
       --port 9101
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","replica:a","pd_role:prefill","dp_rank:1","gpu:1","deployment:pack-glm-53-flash-pd2-long","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","replica:a","pd_role:prefill","dp_rank:1","gpu:1","deployment:pack-glm-53-flash-pd2-long","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-r12-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc-router-r3"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
@@ -594,7 +594,7 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.ppcie: "true"
-      nearai.otel.config_variant: "vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc"
+      nearai.otel.config_variant: "vllm0340-r12-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc-router-r3"
 
   model-vllm-glm53-a-decode0:
     <<: *glm53-engine-common
@@ -686,7 +686,7 @@ services:
       --host 0.0.0.0
       --port 9110
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","replica:a","pd_role:decode","dp_rank:0","gpu:2","deployment:pack-glm-53-flash-pd2-long","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","replica:a","pd_role:decode","dp_rank:0","gpu:2","deployment:pack-glm-53-flash-pd2-long","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-r12-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc-router-r3"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
@@ -704,7 +704,7 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.ppcie: "true"
-      nearai.otel.config_variant: "vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc"
+      nearai.otel.config_variant: "vllm0340-r12-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc-router-r3"
 
   model-vllm-glm53-a-decode1:
     <<: *glm53-engine-common
@@ -796,7 +796,7 @@ services:
       --host 0.0.0.0
       --port 9111
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","replica:a","pd_role:decode","dp_rank:1","gpu:3","deployment:pack-glm-53-flash-pd2-long","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","replica:a","pd_role:decode","dp_rank:1","gpu:3","deployment:pack-glm-53-flash-pd2-long","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-r12-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc-router-r3"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
@@ -814,11 +814,11 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.ppcie: "true"
-      nearai.otel.config_variant: "vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc"
+      nearai.otel.config_variant: "vllm0340-r12-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc-router-r3"
 
   pd-router-glm53-a:
     # One router per prefill/decode pair.
-    image: docker.io/nearaidev/vllm@sha256:cc0066b599ab2d2c75a4b06ed7df4711cb181d110d5448dde894e17661e4c405
+    image: docker.io/nearaidev/vllm@sha256:361df8a963d4d83cbb117ad52ac6b01f6a85fa4840ef2a8424de1ed335196131
     container_name: pd-router-glm53-a
     command:
       - --prefill
@@ -856,7 +856,7 @@ services:
     restart: unless-stopped
     logging: *logging-conf
     labels:
-      com.datadoghq.ad.logs: '[{"source":"pd-router","service":"pd-router","tags":["model:z-ai/glm-5.3-flash","deployment:pack-glm-53-flash-pd2-long","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc"]}]'
+      com.datadoghq.ad.logs: '[{"source":"pd-router","service":"pd-router","tags":["model:z-ai/glm-5.3-flash","deployment:pack-glm-53-flash-pd2-long","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-r12-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc-router-r3"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "pd-router"
       nearai.otel.service: "pd-router"
@@ -872,7 +872,7 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.ppcie: "true"
-      nearai.otel.config_variant: "vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc"
+      nearai.otel.config_variant: "vllm0340-r12-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc-router-r3"
 
   model-sg-glm53-w4afp8-tp2-r2a:
     <<: *sg-glm53-flash-common
@@ -1418,7 +1418,7 @@ configs:
                       ip: "${HOST_IP}"
                       ppcie: "true"
                       deployment: "pack-glm-53-flash-pd2-long"
-                      config_variant: "vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc"
+                      config_variant: "vllm0340-r12-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc-router-r3"
               - job_name: vllm-model-vllm-glm53-a-prefill1
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -1444,7 +1444,7 @@ configs:
                       ip: "${HOST_IP}"
                       ppcie: "true"
                       deployment: "pack-glm-53-flash-pd2-long"
-                      config_variant: "vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc"
+                      config_variant: "vllm0340-r12-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc-router-r3"
               - job_name: vllm-model-vllm-glm53-a-decode0
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -1470,7 +1470,7 @@ configs:
                       ip: "${HOST_IP}"
                       ppcie: "true"
                       deployment: "pack-glm-53-flash-pd2-long"
-                      config_variant: "vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc"
+                      config_variant: "vllm0340-r12-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc-router-r3"
               - job_name: vllm-model-vllm-glm53-a-decode1
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -1496,7 +1496,7 @@ configs:
                       ip: "${HOST_IP}"
                       ppcie: "true"
                       deployment: "pack-glm-53-flash-pd2-long"
-                      config_variant: "vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc"
+                      config_variant: "vllm0340-r12-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc-router-r3"
               # A router answers 503 while any engine rank is down, so a missed scrape is expected then.
               # Only the router's own series are kept; its aggregated engine series are scraped directly.
               - job_name: pd-router-pd-router-glm53-a
@@ -1523,7 +1523,7 @@ configs:
                       ip: "${HOST_IP}"
                       ppcie: "true"
                       deployment: "pack-glm-53-flash-pd2-long"
-                      config_variant: "vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc"
+                      config_variant: "vllm0340-r12-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc-router-r3"
               - job_name: sglang-model-sg-glm53-w4afp8-tp2-r2a
                 scrape_interval: 15s
                 metrics_path: /metrics
