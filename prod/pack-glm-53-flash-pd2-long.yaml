@@ -834,7 +834,7 @@ services:
 
   pd-router-glm53-a:
     # One router per prefill/decode pair.
-    image: docker.io/nearaidev/vllm@sha256:361df8a963d4d83cbb117ad52ac6b01f6a85fa4840ef2a8424de1ed335196131
+    image: docker.io/nearaidev/vllm@sha256:fd89659367411f80c7f632084dc0e6052ff509237292cd43a905bffcb8a514b4
     container_name: pd-router-glm53-a
     command:
       - --prefill
@@ -863,8 +863,9 @@ services:
       - PD_HEALTH_TIMEOUT_S=2
       - PD_MAX_IMBALANCE=64
       - PD_STATS_LOG_S=60
-      # Decode-direct stays off on this router image; the knobs below take effect when it is enabled.
-      - ROUTER_DDIRECT=0
+      # Decode-direct: a chat follow-up with a short new tail goes straight to the decode rank that served the
+      # conversation; the decoders' admission gate refuses one that is too long and the router falls back to P/D.
+      - ROUTER_DDIRECT=1
       - ROUTER_DDIRECT_BLOCK_TOKENS=64
       - ROUTER_DDIRECT_MAX_TAIL_TOKENS=2048
       - ROUTER_DDIRECT_MAX_CHUNK_TOKENS=2048
@@ -879,7 +880,7 @@ services:
     restart: unless-stopped
     logging: *logging-conf
     labels:
-      com.datadoghq.ad.logs: '[{"source":"pd-router","service":"pd-router","tags":["model:z-ai/glm-5.3-flash","deployment:pack-glm-53-flash-pd2-long","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-r12-w4afp8-2xpd-dp2ep2-nixl-mtp4-prefix-cc-dpiece-dgate-router-r3"]}]'
+      com.datadoghq.ad.logs: '[{"source":"pd-router","service":"pd-router","tags":["model:z-ai/glm-5.3-flash","deployment:pack-glm-53-flash-pd2-long","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-r12-w4afp8-2xpd-dp2ep2-nixl-mtp4-prefix-cc-dpiece-dgate-router-r4-ddirect"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "pd-router"
       nearai.otel.service: "pd-router"
@@ -895,7 +896,7 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.ppcie: "true"
-      nearai.otel.config_variant: "vllm0340-r12-w4afp8-2xpd-dp2ep2-nixl-mtp4-prefix-cc-dpiece-dgate-router-r3"
+      nearai.otel.config_variant: "vllm0340-r12-w4afp8-2xpd-dp2ep2-nixl-mtp4-prefix-cc-dpiece-dgate-router-r4-ddirect"
 
   model-sg-glm53-w4afp8-tp2-r2a:
     <<: *sg-glm53-flash-common
@@ -1546,7 +1547,7 @@ configs:
                       ip: "${HOST_IP}"
                       ppcie: "true"
                       deployment: "pack-glm-53-flash-pd2-long"
-                      config_variant: "vllm0340-r12-w4afp8-2xpd-dp2ep2-nixl-mtp4-prefix-cc-dpiece-dgate-router-r3"
+                      config_variant: "vllm0340-r12-w4afp8-2xpd-dp2ep2-nixl-mtp4-prefix-cc-dpiece-dgate-router-r4-ddirect"
               - job_name: sglang-model-sg-glm53-w4afp8-tp2-r2a
                 scrape_interval: 15s
                 metrics_path: /metrics
