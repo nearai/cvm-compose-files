@@ -67,6 +67,7 @@ Patch 25 changes nothing unless a `VLLM_ADMIT_*` limit is set.
 Patches 26 and 27 matter only on hybrid models with prefix caching when the server runs with `--prefix-match-unit`; without it they change nothing.
 Patch 28 is on by default for NIXL P/D on a hybrid model with prefix caching and a Mamba or KDA group in `align` mode, and it changes the NIXL connector version for every model; both sides of a P/D pair must run it, or the handshake fails with a compatibility hash mismatch.
 Patch 29 runs only on a decoder whose full-attention and Mamba prefix hits diverge on a connector that allows it (NIXL).
+With patch 28 every decoder recomputes a short prompt tail, so its steps mix prefill and decode tokens. Run decoders with `--compilation-config` `cudagraph_mode` `FULL_AND_PIECEWISE` and capture sizes up to 2048; with `FULL_DECODE_ONLY` those mixed steps run without CUDA graphs and decode slows.
 Patch 30 changes nothing unless `VLLM_ADMIT_LONG_REJECT_ALL` is set.
 Patches 20 and 21 change nothing unless `VLLM_NEAR_KDA_FP8=1` or `VLLM_NEAR_KDA_SLICE=1` is set.
 
