@@ -118,6 +118,8 @@ workflow's existing signatures stay valid for the images it published.
 | `publish-vllm-v0.34.0-pd-router-r3.yaml` | `.github/workflows/publish-vllm-v0.34.0-pd-router-r3.yaml@refs/heads/main` | `nearaidev/vllm` | active |
 | `publish-vllm-v0.34.0-pd-router-r4.yaml` | `.github/workflows/publish-vllm-v0.34.0-pd-router-r4.yaml@refs/heads/main` | `nearaidev/vllm` | active |
 | `publish-vllm-v0.34.0-pd-router-r6.yaml` | `.github/workflows/publish-vllm-v0.34.0-pd-router-r6.yaml@refs/heads/main` | `nearaidev/vllm` | active |
+| `publish-vllm-v0.34.0-dsv41-r13.yaml` | `.github/workflows/publish-vllm-v0.34.0-dsv41-r13.yaml@refs/heads/main` | `nearaidev/vllm` | active |
+| `publish-vllm-v0.34.0-pd-router-r8.yaml` | `.github/workflows/publish-vllm-v0.34.0-pd-router-r8.yaml@refs/heads/main` | `nearaidev/vllm` | active |
 | `publish-sglang-v0.5.23-secure-r2.yaml` | `.github/workflows/publish-sglang-v0.5.23-secure-r2.yaml@refs/heads/main` | `nearaidev/sglang` | active |
 | `publish-sglang-v0.5.23-glm53-r3.yaml` | `.github/workflows/publish-sglang-v0.5.23-glm53-r3.yaml@refs/heads/main` | `nearaidev/sglang` | active |
 | `publish-glm53-v0523.yaml` | `.github/workflows/publish-glm53-v0523.yaml@refs/heads/main` | `nearaidev/sglang` | retired |
@@ -165,6 +167,8 @@ can no longer be followed.
 | `361df8a963d4d83cbb117ad52ac6b01f6a85fa4840ef2a8424de1ed335196131` | `v0.34.0-pd-router-r3` | `vllm-v0.34.0-pd-router-r3` | `e1088c1bba9b0a991049830bb3ec66d6f486484a` | upstream vLLM |
 | `fd89659367411f80c7f632084dc0e6052ff509237292cd43a905bffcb8a514b4` | `v0.34.0-pd-router-r4` | `vllm-v0.34.0-pd-router-r4` | `0b2d569c9ddbc7808fffeeb4c5f984c25cc359f7` | upstream vLLM |
 | `661dc76f5c0484f009596fce643a5d032412aec46275dfe88d98aefe11608db9` | `v0.34.0-pd-router-r6` | `vllm-v0.34.0-pd-router-r6` | `390f9b478a0b0640292821e8d59e3d02949dd492` | upstream vLLM |
+| `50d68ba008bc45ee43a76f8d066554c875f67e0a4d229d4b77d24da5e13f9d19` | `v0.34.0-dsv41-r13` | `vllm-v0.34.0-dsv41-r13` | `8360a07d1d03a12e851d12301e74747ee7464639` | upstream vLLM |
+| `f8e5480cd41f1ef4806ef232dbf49c777e422d12eb1eacd57b27ee20c3e7e9e8` | `v0.34.0-pd-router-r8` | `vllm-v0.34.0-pd-router-r8` | `484ef073cff04bac01773ab20eb4641dd049b5b6` | upstream vLLM |
 | `2d0f065eff326629b3e8938e36b1b31b1541b8b9b9c0f2ae85da68c12be20f05` | `v0.33.0-request-bounds-r1` | `vllm-v0.33.0-request-bounds-r1` | `c8ad48bbc65da1cc28dae72211356b1a51fac177` | upstream vLLM |
 | `5eaa0d4637080c10958b6cd8a371ae2ebb749b7a1e19c85bcb1abb89ee2540e4` | - | `vllm-dsv41-lora` | `c87715224cc5712f5f302ac0e486f533c99ce5c5` | upstream vLLM |
 | `9c6ddd4319c4ab00e351d8650459e68b8830e36ffcc029d67fa5e19d0ac3ed17` | `glm53-hicache-w4afp8-v6` | `sglang-glm53-hicache-w4afp8` | `678a6b5ee3e4e7b83340f810c76530958eecc499` | `3eccc307…` |
