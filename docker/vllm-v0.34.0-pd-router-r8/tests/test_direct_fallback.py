@@ -212,6 +212,70 @@ def test_direct_unreachable_decode_falls_back_to_pd_error():
     assert rt.inflight == {"prefill": [0], "decode": [0]}
 
 
+def test_nonstream_direct_timeout_keeps_504_and_is_not_rerun():
+    async def reqs(cl, be, router):
+        r = await cl.post("/v1/chat/completions", json={**FOLLOW, "stream": False})
+        assert r.status_code == 504 and router.inflight == {"prefill": [0], "decode": [0]}
+    be, router, stats, _ = run_case("silent", reqs, nonstream_timeout=0.3)
+    assert roles(be) == ["D"]
+    assert stats["direct_rejected_fallback"] == 0 and sum(stats["fallback_reason"].values()) == 0
+
+
+def test_nonstream_direct_5xx_still_falls_back():
+    async def reqs(cl, be, router):
+        r = await cl.post("/v1/chat/completions", json={**FOLLOW, "stream": False})
+        assert r.status_code == 200 and r.headers["x-pd-path"] == "pd-fb"
+    be, _, stats, _ = run_case("http502", reqs)
+    assert roles(be) == ["D", "P", "D"] and stats["fallback_reason"]["5xx"] == 1
+
+
+def test_first_event_budget_env_and_cap(monkeypatch):
+    monkeypatch.setenv("ROUTER_DDIRECT_FIRST_EVENT_S", "7")
+    assert rd.Router(["p:1"], ["d:1"], ddirect=True).first_event_s == 7
+    monkeypatch.setenv("ROUTER_DDIRECT_FIRST_EVENT_S", "0")
+    with pytest.raises(ValueError):
+        rd.Router(["p:1"], ["d:1"], ddirect=True)
+    monkeypatch.setenv("ROUTER_DDIRECT_FIRST_EVENT_S", "30")
+    # D sends a role-only event, then output after 1 s: the 30 s budget is cut to the 0.4 s kv_timeout
+    fell_back("role_stall", "timeout", kv_timeout=0.4)
+
+
+def test_client_disconnect_while_holding_role_event_no_retry():
+    class R:
+        status = 200
+        headers = {"content-type": "text/event-stream"}
+        closed = False
+
+        class content:
+            @staticmethod
+            async def readany():
+                await asyncio.sleep(30)
+
+        def close(self):
+            R.closed = True
+
+    class Req:
+        async def is_disconnected(self):
+            return True
+
+    async def go():
+        router = rd.Router(["p:1"], ["d:1"], ddirect=True)
+
+        async def start(*a, **k):
+            return R(), ROLE
+        router._decode_start = start
+        try:
+            out = await asyncio.wait_for(
+                router._decode_leg(Req(), "/v1/chat/completions", {"stream": True}, {}, 0, {}, direct=True), 3)
+        finally:
+            await router.close()
+        return router, out
+    router, out = asyncio.run(go())
+    assert out is not rd.DD_REJECTED and out.status_code == 499 and R.closed
+    assert router.inflight["decode"] == [0] and router.counts["client_gone_in_decode"] == 1
+    assert sum(router.dd["fallback_reason"].values()) == 0 and router.counts["decode_fail"] == 0
+
+
 @pytest.mark.parametrize("mode", ["empty", "empty_done_only", "empty_body"])
 def test_direct_empty_stream_falls_back(mode):
     fell_back(mode, "empty")

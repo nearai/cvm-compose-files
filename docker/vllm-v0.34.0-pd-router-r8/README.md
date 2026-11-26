@@ -45,6 +45,7 @@ environment names as the r2 router. The image sets that as its entrypoint and ru
 | `ROUTER_DDIRECT_COUNT_PREV_REPLY` | `0` | `1` counts the previous assistant reply as part of the new tail in the estimates, because the decode engine recomputes it when it is not cached |
 | `ROUTER_DDIRECT_CACHE_BLOCK_TOKENS` | `0` (off) | the engines' prefix-cache block size in tokens; when above `0`, the part of a remembered prefix past its last full block counts as uncached in the first-turn and overflow estimates |
 | `ROUTER_DDIRECT_HISTORY_STATS` | `0` | `1` hashes each message of a request's history and keeps the hashes per conversation to fill `pd_router_history_change_total` and `pd_router_history_diverged_tokens_est`; with `0` nothing is computed or stored and those series stay at zero. Routing is the same either way |
+| `ROUTER_DDIRECT_FIRST_EVENT_S` | `5` | longest a streaming direct attempt waits, after its first byte, for the first event with output before it falls back to P/D (`reason="timeout"`); the wait is also cut so that first byte plus wait never exceed `PD_KV_TIMEOUT_S`. Non-streaming direct requests are not affected |
 | `ROUTER_DDIRECT_FIRST_TURN` | `0` | `1` sends a first turn direct when its stable prefix was recently served by a decode rank (see "First-turn decode-direct"); with `0` the prefix memory and its measurement series still run |
 | `ROUTER_DDIRECT_FIRST_TURN_MIN_PREFIX_TOKENS` | `1024` | smallest remembered prefix (estimated tokens) for a first-turn direct request |
 | `ROUTER_DDIRECT_FIRST_TURN_MAX_TOKENS` | the value of `ROUTER_DDIRECT_MAX_TAIL_TOKENS` | largest estimated part of a first turn past its remembered prefix |
@@ -144,9 +145,11 @@ path as leg 2 (timeouts, disconnects, error shapes). If the decode engine refuse
 error event with that code), a connection error, no first byte or no first output event within the time budget, or a
 stream that ends without any content, reasoning or tool-call delta (`pd_router_ddirect_fallback_reason_total{reason}`,
 `reason` = `5xx`, `conn`, `timeout` or `empty`). For a streaming direct attempt the router holds back the leading
-role-only or empty events until the first event with output arrives (at most 64 KiB or 5 s), then sends them together;
+role-only or empty events until the first event with output arrives (at most 64 KiB or `ROUTER_DDIRECT_FIRST_EVENT_S`), then sends them together;
 a usage chunk that reports generated tokens also counts as output. After the first byte went to the client nothing is
-retried. The P/D decode leg is unchanged. Responses carry `x-pd-path: direct`, `pd` or `pd-fb` only with decode-direct on. The memory holds only the
+retried. A non-streaming direct request that hits the non-stream timeout keeps the 504 and is not rerun. All of these
+count in `pd_router_ddirect_rejected_fallback_total` and as the `rejected` outcome of the attempt series, broken out by
+`pd_router_ddirect_fallback_reason_total`. The P/D decode leg is unchanged. Responses carry `x-pd-path: direct`, `pd` or `pd-fb` only with decode-direct on. The memory holds only the
 hash, a rank, a time, a token estimate and a flag per conversation; it is per router process and empty after a restart,
 so each conversation's next turn after a restart takes the two-leg path.
 

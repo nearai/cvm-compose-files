@@ -465,7 +465,7 @@ def ddirect_classify(path: str, body: dict, chars_per_token: float, max_tail_tok
 
 _SSE_TERM = re.compile(rb"\r\n\r\n|\n\n")
 FIRST_EVENT_CAP = 64 * 1024  # bytes buffered while looking for the first SSE event of a direct attempt
-FIRST_EVENT_S = 5.0  # time budget for that read
+FIRST_EVENT_S = 5.0  # default time budget for that read (ROUTER_DDIRECT_FIRST_EVENT_S)
 
 
 def _sse_scan(buf: bytes, eof: bool = False):
@@ -627,6 +627,9 @@ class Router:
         # Per-message history hashes feed only the history_change counters. Off: nothing is computed or stored.
         self.hist_stats = (env_bool("ROUTER_DDIRECT_HISTORY_STATS") if ddirect_history_stats is None
                            else ddirect_history_stats)
+        self.first_event_s = env_float("ROUTER_DDIRECT_FIRST_EVENT_S", FIRST_EVENT_S)
+        if self.first_event_s <= 0:
+            raise ValueError("ROUTER_DDIRECT_FIRST_EVENT_S must be > 0")
         self.ft = env_bool("ROUTER_DDIRECT_FIRST_TURN") if ddirect_first_turn is None else ddirect_first_turn
         self.ft_min_prefix = (env_float("ROUTER_DDIRECT_FIRST_TURN_MIN_PREFIX_TOKENS", 1024)
                               if ddirect_first_turn_min_prefix_tokens is None else ddirect_first_turn_min_prefix_tokens)
@@ -1285,7 +1288,7 @@ class Router:
             self.dd["direct_errors"] += direct
             log.warning("decode first byte timeout backend=%d after_ms=%d", d, int((time.perf_counter() - t2) * 1000))
             release()
-            if direct:
+            if direct and body.get("stream"):  # a non-stream direct request keeps the 504: a rerun would double a long wait
                 self.dd["fallback_reason"]["timeout"] += 1
                 return DD_REJECTED
             return engine_error(504, "KV transfer or decode did not produce a first byte in time",
@@ -1318,11 +1321,11 @@ class Router:
                 verdict, code = _sse_judge(first, eof=not first)
                 if verdict == "more":
                     # buffer only until the first output chunk (a role-only first event is held back), bounded by
-                    # FIRST_EVENT_CAP bytes and FIRST_EVENT_S seconds
+                    # FIRST_EVENT_CAP bytes and first_event_s seconds, and never past the kv_timeout budget of this request
                     eof = False
                     try:
                         eof = await self.guarded(req, asyncio.ensure_future(self._fill_first_event(r, buf)),
-                                                 FIRST_EVENT_S)
+                                                 min(self.first_event_s, max(0.001, self.kv_timeout - (time.perf_counter() - t2))))
                     except Timeout:
                         fb = "timeout"  # nothing meaningful yet: the stall is D's, so try P/D
                     except Gone:
