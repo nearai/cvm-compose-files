@@ -46,6 +46,7 @@ import argparse
 import asyncio
 import contextlib
 import hashlib
+import itertools
 import json
 import logging
 import math
@@ -270,6 +271,7 @@ OV_RESULTS = ("attempted", "p_not_busy", "too_large", "guard", "accepted", "reje
 DD_REASONS = ("first_turn", "tail_too_long", "chunk_too_large", "images", "completions")
 # How a follow-up's message history relates to the previous request of the same conversation (see history_kind).
 HIST_KINDS = ("append_only", "reasoning_dropped", "edited", "truncated", "unknown")
+PURGE_PER_INSERT = 8  # least recently used entries checked for expiry on each memory insert
 HIST_MAX_MSGS = 256  # per-conversation memory keeps hashes of at most this many messages; more counts as unknown
 _REASONING_KEYS = ("reasoning", "reasoning_content", "reasoning_details")
 _MEDIA_PART_MARKERS = ("image", "video", "audio")
@@ -508,7 +510,8 @@ class Router:
                  ddirect_mem_ttl_s=None, strict_affinity=None, ddirect_count_prev_reply=None,
                  ddirect_first_turn=None, ddirect_first_turn_min_prefix_tokens=None, ddirect_prefix_mem_cap=None,
                  ddirect_prefix_ttl_s=None, ddirect_overflow=None, ddirect_overflow_p_inflight=None,
-                 ddirect_overflow_max_tokens=None, ddirect_cache_block_tokens=None, ddirect_first_turn_max_tokens=None):
+                 ddirect_overflow_max_tokens=None, ddirect_cache_block_tokens=None, ddirect_first_turn_max_tokens=None,
+                 ddirect_history_stats=None):
         self.prefill, self.decode = list(prefill), list(decode)
         self.max_imbalance = max_imbalance
         self.kv_timeout = env_float("PD_KV_TIMEOUT_S", 20) if kv_timeout is None else kv_timeout
@@ -555,6 +558,9 @@ class Router:
             raise ValueError("ROUTER_DDIRECT_MEM_CAP must be >= 1")
         self.dd_count_reply = (env_bool("ROUTER_DDIRECT_COUNT_PREV_REPLY") if ddirect_count_prev_reply is None
                                else ddirect_count_prev_reply)
+        # Per-message history hashes feed only the history_change counters. Off: nothing is computed or stored.
+        self.hist_stats = (env_bool("ROUTER_DDIRECT_HISTORY_STATS") if ddirect_history_stats is None
+                           else ddirect_history_stats)
         self.ft = env_bool("ROUTER_DDIRECT_FIRST_TURN") if ddirect_first_turn is None else ddirect_first_turn
         self.ft_min_prefix = (env_float("ROUTER_DDIRECT_FIRST_TURN_MIN_PREFIX_TOKENS", 1024)
                               if ddirect_first_turn_min_prefix_tokens is None else ddirect_first_turn_min_prefix_tokens)
@@ -821,12 +827,23 @@ class Router:
         while len(self.dd_mem) > self.dd_mem_cap:
             self.dd_mem.popitem(last=False)
             self.dd["mem_evicted"] += 1
+        self.dd["mem_evicted"] += self._purge_expired(self.dd_mem, self.dd_mem_ttl)
 
     def _prefix_served(self, key: int, d: int, tokens: float):
         self.dd_pfx[key] = [d, self._now(), tokens]
         self.dd_pfx.move_to_end(key)
         while len(self.dd_pfx) > self.ft_cap:
             self.dd_pfx.popitem(last=False)
+        self._purge_expired(self.dd_pfx, self.ft_ttl)
+
+    def _purge_expired(self, mem: OrderedDict, ttl: float) -> int:
+        """Drop expired entries among the PURGE_PER_INSERT least recently used, so a TTL bounds how long an entry stays
+        in memory without a lookup, at constant cost per insert. Returns the number dropped."""
+        now = self._now()
+        dead = [k for k, e in itertools.islice(mem.items(), PURGE_PER_INSERT) if now - e[1] > ttl]
+        for k in dead:
+            del mem[k]
+        return len(dead)
 
     def _block_residual(self, ptok: float, new: float) -> float | None:
         """Estimated uncached tokens on D for a remembered prefix: its hit ends at the last full cache block inside the
@@ -994,7 +1011,7 @@ class Router:
         ctx = ctx_hash(body, ctx_text) if self.ddirect else 0
         pfx = prefix_info(body, ctx_text, self.dd_cpt) if self.ddirect and path == "/v1/chat/completions" else None
         hist = None
-        if self.ddirect and isinstance(body.get("messages"), list):
+        if self.ddirect and self.hist_stats and isinstance(body.get("messages"), list):
             self._hist_observe(h, body["messages"])
             hist = history_pack(body["messages"])
         if self.ddirect:

@@ -44,6 +44,7 @@ environment names as the r2 router. The image sets that as its entrypoint and ru
 | `ROUTER_DDIRECT_MEM_TTL_S` | `600` | a remembered conversation older than this is dropped on lookup |
 | `ROUTER_DDIRECT_COUNT_PREV_REPLY` | `0` | `1` counts the previous assistant reply as part of the new tail in the estimates, because the decode engine recomputes it when it is not cached |
 | `ROUTER_DDIRECT_CACHE_BLOCK_TOKENS` | `0` (off) | the engines' prefix-cache block size in tokens; when above `0`, the part of a remembered prefix past its last full block counts as uncached in the first-turn and overflow estimates |
+| `ROUTER_DDIRECT_HISTORY_STATS` | `0` | `1` hashes each message of a request's history and keeps the hashes per conversation to fill `pd_router_history_change_total` and `pd_router_history_diverged_tokens_est`; with `0` nothing is computed or stored and those series stay at zero. Routing is the same either way |
 | `ROUTER_DDIRECT_FIRST_TURN` | `0` | `1` sends a first turn direct when its stable prefix was recently served by a decode rank (see "First-turn decode-direct"); with `0` the prefix memory and its measurement series still run |
 | `ROUTER_DDIRECT_FIRST_TURN_MIN_PREFIX_TOKENS` | `1024` | smallest remembered prefix (estimated tokens) for a first-turn direct request |
 | `ROUTER_DDIRECT_FIRST_TURN_MAX_TOKENS` | the value of `ROUTER_DDIRECT_MAX_TAIL_TOKENS` | largest estimated part of a first turn past its remembered prefix |
@@ -174,7 +175,11 @@ A direct attempt is skipped (`context_changed`) when the fields outside the mess
 (`tools`, `tool_choice`, `chat_template_kwargs` and similar) differ from the last served request of the conversation.
 `pd_router_first_turn_prefix_tokens_est`, `pd_router_first_turn_block_residual_tokens_est`,
 `pd_router_history_change_total{kind}`, `pd_router_history_diverged_tokens_est` and `pd_router_prefill_inflight` are
-measurement series; they do not change routing.
+measurement series; they do not change routing. The two history series need `ROUTER_DDIRECT_HISTORY_STATS=1`.
+
+The conversation memory and the prefix memory also drop expired entries on insert: each insert checks the 8 least
+recently used entries against `ROUTER_DDIRECT_MEM_TTL_S` or `ROUTER_DDIRECT_PREFIX_TTL_S`, so a TTL bounds how long an
+entry stays in memory even without a lookup. The size caps are unchanged.
 
 ## KV lease coupling
 
