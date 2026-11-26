@@ -90,6 +90,11 @@ LEASE_MARGIN_S = 5.0
 # A direct attempt refused before the first client byte (HTTP 429/503, or an SSE stream whose first event is an error
 # with that code, as vLLM reports an admission rejection on a streaming request) is retried on the P/D path.
 DD_FALLBACK_STATUS = (429, 503)
+# So is one that fails before the first client byte with a server error (HTTP 500/502/504 or an SSE error event with
+# that code), a connection error, a stall or read failure before the first meaningful event, or a stream that ends
+# without any content (see DD_FB_REASONS). Once a byte has gone to the client nothing is retried.
+DD_FALLBACK_5XX = (500, 502, 504)
+DD_FB_REASONS = ("5xx", "conn", "timeout", "empty")
 # Reasons the per-conversation memory gives for not attempting a direct request (see Router._mem_skip_reason).
 DD_SKIP_REASONS = ("no_entry", "stale", "rank_changed", "rejected_prev", "context_changed")
 DD_REJECTED = object()  # sentinel returned by _decode_leg(direct=True) when D rejected the request pre-stream
@@ -497,6 +502,67 @@ def _sse_scan(buf: bytes, eof: bool = False):
             return (True, None)
 
 
+def _chunk_meaningful(obj: dict) -> bool:
+    """True when a stream chunk carries model output: a content, reasoning, tool-call or refusal delta (or completion
+    text), or usage that reports generated tokens. A role-only or empty delta is not output."""
+    for ch in obj.get("choices") or ():
+        if not isinstance(ch, dict):
+            continue
+        delta = ch.get("delta")
+        if isinstance(delta, dict) and any(delta.get(k) for k in (
+                "content", "reasoning", "reasoning_content", "tool_calls", "function_call", "refusal")):
+            return True
+        if ch.get("text"):
+            return True
+    usage = obj.get("usage")
+    n = usage.get("completion_tokens") if isinstance(usage, dict) else None
+    return isinstance(n, (int, float)) and n > 0
+
+
+def _sse_judge(buf: bytes, eof: bool = False):
+    """Judge the start of a direct attempt's SSE stream. Returns (verdict, code). verdict is "more" (read on),
+    "ok" (serve it) or "empty" (the stream is complete, or reached [DONE], with no output chunk before it). code is
+    the error code when the first non-comment event is an error object. Events that are role-only or empty chat
+    chunks are skipped to the next one; an event of any other shape counts as "ok" so unknown formats pass through."""
+    s = buf.lstrip(b"\r\n")
+    while True:
+        if not s:
+            return ("empty" if eof else "more", None)
+        m = _SSE_TERM.search(s)
+        if m is None:
+            if not eof:
+                head = s[:5]
+                if s.startswith(b":") or s.startswith(b"data:") or b"data:".startswith(head):
+                    return ("more", None)
+                return ("ok", None)
+            ev, s = s, b""
+        else:
+            ev, s = s[:m.start()], s[m.end():]
+        lines = [ln for ln in ev.splitlines() if ln and not ln.startswith(b":")]
+        if not lines:
+            s = s.lstrip(b"\r\n")
+            continue
+        data = [ln[5:][1:] if ln[5:6] == b" " else ln[5:] for ln in lines if ln.startswith(b"data:")]
+        if not data:
+            return ("ok", None)
+        payload = b"\n".join(data).strip()
+        if payload == b"[DONE]":
+            return ("empty", None)
+        try:
+            obj = jloads(payload)
+            if not isinstance(obj, dict):
+                return ("ok", None)
+            err = obj.get("error")
+            if isinstance(err, dict):
+                code = err.get("code")
+                return ("ok", int(code) if code is not None else None)
+            if not isinstance(obj.get("choices"), list) or _chunk_meaningful(obj):
+                return ("ok", None)
+        except Exception:
+            return ("ok", None)
+        s = s.lstrip(b"\r\n")  # a role-only or empty chunk: judge the next event
+
+
 def _sse_error_code(buf: bytes):
     """Error code of the first SSE event if it is an engine error object, else None."""
     return _sse_scan(buf, eof=True)[1]
@@ -596,6 +662,7 @@ class Router:
             return {**{f"le_{b}": 0 for b in DD_BUCKETS}, "gt_%d" % DD_BUCKETS[-1]: 0}
 
         self.dd = {"eligible": 0, "sent_direct": 0, "guard_fallback": 0, "direct_errors": 0, "direct_rejected_fallback": 0,
+                   "fallback_reason": {k: 0 for k in DD_FB_REASONS},
                    "skip_reason": {k: 0 for k in DD_SKIP_REASONS}, "mem_evicted": 0,
                    "ineligible_reason": {k: 0 for k in DD_REASONS},
                    "tail_est": hist(), "chunk_est": hist()}
@@ -676,6 +743,8 @@ class Router:
                 ("pd_router_ddirect_guard_fallback_total", "counter", dd["guard_fallback"]),
                 ("pd_router_ddirect_errors_total", "counter", dd["direct_errors"])):
             series(name, typ, [("", v)])
+        series("pd_router_ddirect_fallback_reason_total", "counter",
+               [(f'{{reason="{k}"}}', dd["fallback_reason"][k]) for k in DD_FB_REASONS])
         series("pd_router_ddirect_skipped_total", "counter",
                [(f'{{reason="{k}"}}', dd["skip_reason"][k]) for k in DD_SKIP_REASONS])
         series("pd_router_ddirect_ineligible_total", "counter",
@@ -845,17 +914,21 @@ class Router:
             del mem[k]
         return len(dead)
 
-    def _block_residual(self, ptok: float, new: float) -> float | None:
+    def _block_residual(self, ptok: float, new: float, seen: list | None = None) -> float | None:
         """Estimated uncached tokens on D for a remembered prefix: its hit ends at the last full cache block inside the
-        prefix, so the part past that boundary is recomputed. None when ROUTER_DDIRECT_CACHE_BLOCK_TOKENS is off."""
+        prefix, so the part past that boundary is recomputed. None when ROUTER_DDIRECT_CACHE_BLOCK_TOKENS is off.
+        The histogram takes one observation per request: `seen` is the request's one-element flag list."""
         if self.cache_block <= 0:
             return None
         est = ptok % self.cache_block + new
-        self.ft_residual_hist["buckets"][self._bucket(DD_BUCKETS, est)] += 1
-        self.ft_residual_hist["sum"] += est
+        if seen is None or not seen[0]:
+            self.ft_residual_hist["buckets"][self._bucket(DD_BUCKETS, est)] += 1
+            self.ft_residual_hist["sum"] += est
+            if seen is not None:
+                seen[0] = True
         return est
 
-    def _first_turn(self, pfx):
+    def _first_turn(self, pfx, seen: list | None = None):
         """Decide a first turn from the prefix memory. Counts the result and returns the remembered decode rank when the
         request should go direct (only with the feature on), else None."""
         key, _, whole = pfx
@@ -875,7 +948,7 @@ class Router:
             self.ft_result["prefix_too_small"] += 1
         elif whole - ptok > self.ft_max:
             self.ft_result["tail_too_long"] += 1
-        elif (est := self._block_residual(ptok, whole - ptok)) is not None and est > self.ft_max:
+        elif (est := self._block_residual(ptok, whole - ptok, seen)) is not None and est > self.ft_max:
             self.ft_result["block_residual_too_large"] += 1
         elif self.inflight["decode"][e[0]] >= self.dd_max_inflight:
             self.ft_result["guard"] += 1
@@ -1011,6 +1084,7 @@ class Router:
         ctx = ctx_hash(body, ctx_text) if self.ddirect else 0
         pfx = prefix_info(body, ctx_text, self.dd_cpt) if self.ddirect and path == "/v1/chat/completions" else None
         hist = None
+        resid_seen = [False]  # the block-residual histogram takes at most one observation per request
         if self.ddirect and self.hist_stats and isinstance(body.get("messages"), list):
             self._hist_observe(h, body["messages"])
             hist = history_pack(body["messages"])
@@ -1023,7 +1097,7 @@ class Router:
             if reason is not None:
                 self.dd["ineligible_reason"][reason] += 1
                 if reason == "first_turn" and pfx is not None and not _has_media(body["messages"]):
-                    rank = self._first_turn(pfx)
+                    rank = self._first_turn(pfx, resid_seen)
                     if rank is not None:
                         resp = await self._decode_leg(req, path, dict(body), headers, h, self._path_header("direct"),
                                                       direct=True, tokens=tokens, t_in=t_in, path_label="direct", ctx=ctx,
@@ -1060,7 +1134,7 @@ class Router:
 
         if (self.ov and self.ddirect and pd_label == "pd"
                 and reason not in ("images", "completions", "chunk_too_large")):
-            resp = await self._overflow(req, path, body, headers, h, t_in, tokens, ctx, hist, pfx, reason)
+            resp = await self._overflow(req, path, body, headers, h, t_in, tokens, ctx, hist, pfx, reason, resid_seen)
             if resp is not None and resp is not DD_REJECTED:
                 return resp
             if resp is DD_REJECTED:
@@ -1123,7 +1197,7 @@ class Router:
                                       path_label=pd_label, ctx=ctx, hist=hist, pfx=pfx)
 
     async def _overflow(self, req: Request, path: str, body: dict, headers: dict, h: int, t_in: float, tokens: float,
-                        ctx: int, hist, pfx, reason):
+                        ctx: int, hist, pfx, reason, seen: list | None = None):
         """Overflow to decode: a request that is not otherwise sent direct goes straight to a decode rank when the prefill
         tier is busy and the uncached part of the prompt is small. Returns the response, DD_REJECTED when the decode
         engine refused it (the caller runs the two legs), or None when it was not attempted. Counts only."""
@@ -1140,7 +1214,7 @@ class Router:
                 e = self.dd_pfx.get(pfx[0])
                 if e is not None and self._now() - e[1] <= self.ft_ttl:
                     rank, uncached = e[0], max(0.0, pfx[2] - e[2])
-                    res = self._block_residual(e[2], uncached)
+                    res = self._block_residual(e[2], uncached, seen)
                     if res is not None and uncached <= self.ov_max_tokens < res:
                         r["block_residual_too_large"] += 1
                         return None
@@ -1211,6 +1285,9 @@ class Router:
             self.dd["direct_errors"] += direct
             log.warning("decode first byte timeout backend=%d after_ms=%d", d, int((time.perf_counter() - t2) * 1000))
             release()
+            if direct:
+                self.dd["fallback_reason"]["timeout"] += 1
+                return DD_REJECTED
             return engine_error(504, "KV transfer or decode did not produce a first byte in time",
                                 "GatewayTimeoutError")
         except asyncio.CancelledError:
@@ -1221,21 +1298,33 @@ class Router:
             self.dd["direct_errors"] += direct
             log.warning("decode leg failed backend=%d kind=%s", d, type(e).__name__)
             release()
+            if direct:
+                self.dd["fallback_reason"]["conn"] += 1
+                return DD_REJECTED
             return engine_error(502, "decode engine unreachable", "BadGatewayError")
         if not direct:
             self.t_dfirst.append(time.perf_counter() - t2)
         ctype = r.headers.get("content-type", "application/json")
         if direct:
-            rejected = r.status in DD_FALLBACK_STATUS
-            if r.status == 200 and first:
-                done, code = _sse_scan(first)
-                if not done:
-                    buf = bytearray(first)
-                    eof = True
+            # Hand the request back to the P/D path when D refused it or failed before the first meaningful event.
+            # fb: None, "admission" (429/503: not counted as an error), or one of DD_FB_REASONS.
+            fb = None
+            if r.status in DD_FALLBACK_STATUS:
+                fb = "admission"
+            elif r.status in DD_FALLBACK_5XX:
+                fb = "5xx"
+            elif r.status == 200 and body.get("stream"):
+                buf = bytearray(first)
+                verdict, code = _sse_judge(first, eof=not first)
+                if verdict == "more":
+                    # buffer only until the first output chunk (a role-only first event is held back), bounded by
+                    # FIRST_EVENT_CAP bytes and FIRST_EVENT_S seconds
+                    eof = False
                     try:
-                        await self.guarded(req, asyncio.ensure_future(self._fill_first_event(r, buf)), FIRST_EVENT_S)
+                        eof = await self.guarded(req, asyncio.ensure_future(self._fill_first_event(r, buf)),
+                                                 FIRST_EVENT_S)
                     except Timeout:
-                        eof = False  # stalled: pass on what was read, as is
+                        fb = "timeout"  # nothing meaningful yet: the stall is D's, so try P/D
                     except Gone:
                         c["client_gone_in_decode"] += 1
                         r.close()
@@ -1246,16 +1335,25 @@ class Router:
                         release()
                         raise
                     except Exception as e:
-                        c["decode_fail"] += 1
-                        self.dd["direct_errors"] += 1
+                        fb = "conn"
                         log.warning("direct first event read failed backend=%d kind=%s", d, type(e).__name__)
-                        r.close()
-                        release()
-                        return engine_error(502, "decode engine stream broke", "BadGatewayError")
                     first = bytes(buf)
-                    code = _sse_scan(first, eof=eof)[1]
-                rejected = rejected or code in DD_FALLBACK_STATUS
-            if rejected:
+                    if fb is None:
+                        verdict, code = _sse_judge(first, eof=eof)  # still "more" only when the byte cap was hit
+                if fb is None:
+                    if verdict == "empty":
+                        fb = "empty"
+                    elif code in DD_FALLBACK_STATUS:
+                        fb = "admission"
+                    elif code in DD_FALLBACK_5XX:
+                        fb = "5xx"
+            if fb is not None:
+                if fb != "admission":
+                    self.dd["fallback_reason"][fb] += 1
+                    self.dd["direct_errors"] += 1
+                    if fb != "empty":
+                        c["decode_fail"] += 1
+                    log.warning("direct attempt falls back backend=%d reason=%s", d, fb)
                 r.close()
                 release()
                 return DD_REJECTED
@@ -1297,14 +1395,16 @@ class Router:
                              headers=resp_headers)
 
     @staticmethod
-    async def _fill_first_event(r, buf: bytearray) -> None:
-        """Read on into buf until the first real SSE event is complete, EOF, or FIRST_EVENT_CAP bytes. buf keeps what
-        was read even if this task is cancelled (stall timeout), so the caller can pass it through unchanged."""
-        while len(buf) < FIRST_EVENT_CAP and not _sse_scan(bytes(buf))[0]:
+    async def _fill_first_event(r, buf: bytearray) -> bool:
+        """Read on into buf until _sse_judge can decide (first output chunk, error event or [DONE]), EOF, or
+        FIRST_EVENT_CAP bytes. Returns True at EOF. buf keeps what was read even if this task is cancelled (stall
+        timeout), so the caller can still see it."""
+        while len(buf) < FIRST_EVENT_CAP and _sse_judge(bytes(buf))[0] == "more":
             more = await r.content.readany()
             if not more:
-                break
+                return True
             buf += more
+        return False
 
     # -- health / metrics
     async def _get(self, addr: str, path: str, timeout: float | None = None):

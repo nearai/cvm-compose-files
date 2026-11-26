@@ -535,17 +535,17 @@ def test_sse_scan_unit():
     assert rd._sse_error_code(b'data:{"error":{"code":429}}\n\n') == 429
 
 
-def test_first_event_stall_passes_through_not_502(monkeypatch):
+def test_first_event_stall_falls_back_to_pd(monkeypatch):
     monkeypatch.setattr(rd, "FIRST_EVENT_S", 0.1)
 
     async def reqs(cl, be, router):
         r = await post(cl, FOLLOW)
-        assert r.status_code == 200 and r.headers["x-pd-path"] == "direct"
-        assert r.content == b'data: {"x": 1}\n\ndata: [DONE]\n\n'  # buffered bytes then the rest, exactly
+        assert r.status_code == 200 and r.headers["x-pd-path"] == "pd-fb"
+        assert r.content == b'data: {"x": 1}\n\ndata: [DONE]\n\n'  # leg 2 of the fallback
         assert router.inflight["decode"] == [0]
     be, router, stats = run_case(True, reqs, d_reject="stall")
-    assert [c[0] for c in be.calls] == ["D"]
-    assert stats["direct_rejected_fallback"] == 0 and stats["direct_errors"] == 0 and router.counts["decode_fail"] == 0
+    assert [c[0] for c in be.calls] == ["D", "P", "D"]
+    assert stats["direct_rejected_fallback"] == 1 and stats["fallback_reason"]["timeout"] == 1
 
 
 def test_client_disconnect_during_first_event_read():
@@ -659,7 +659,7 @@ def test_metrics_label_values_are_fixed():
     allowed = (set(rd.DD_SKIP_REASONS) | set(rd.DD_REASONS) | set(rd.PATHS) | {rd.fmt(b) for b in rd.FB_BUCKETS}
                | {"+Inf"} | set(rd.DD_OUTCOMES) | {"same", "changed"} | {rd.fmt(b) for b in rd.DD_BUCKETS}
                | {rd.fmt(b) for b in rd.DD_GAP_BUCKETS} | set(rd.REASONING_FIELDS)
-               | set(rd.FT_RESULTS) | set(rd.OV_RESULTS) | set(rd.HIST_KINDS))
+               | set(rd.FT_RESULTS) | set(rd.OV_RESULTS) | set(rd.HIST_KINDS) | set(rd.DD_FB_REASONS))
     own = [ln for ln in text.splitlines() if ln.startswith("pd_router_")]
     assert own
     for ln in own:

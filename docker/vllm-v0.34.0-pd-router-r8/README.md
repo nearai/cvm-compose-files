@@ -110,7 +110,7 @@ environment names as the r2 router. The image sets that as its entrypoint and ru
   `pd_router_decode_requests_total{path}` (decode-leg requests, `path` = `direct`, `pd` or `pd-fb`),
   `pd_router_first_byte_seconds{path}` (histogram, router arrival to the first byte ready for the client, successful
   responses only), `pd_router_ddirect_eligible_total`, `pd_router_ddirect_attempts_total`,
-  `pd_router_ddirect_rejected_fallback_total`, `pd_router_ddirect_guard_fallback_total`, `pd_router_ddirect_errors_total`,
+  `pd_router_ddirect_rejected_fallback_total`, `pd_router_ddirect_fallback_reason_total{reason}`, `pd_router_ddirect_guard_fallback_total`, `pd_router_ddirect_errors_total`,
   `pd_router_ddirect_skipped_total{reason}` (`no_entry`, `stale`, `rank_changed`, `rejected_prev`, `context_changed`) and
   `pd_router_ddirect_ineligible_total{reason}` (`first_turn`, `tail_too_long`, `chunk_too_large`, `images`, `completions`).
   `pd_router_ddirect_attempt_context_total{outcome,context}` (`accepted`/`rejected`/`error`, `same`/`changed`), and the histograms
@@ -140,7 +140,13 @@ so a later turn of the same conversation can resume on the decode rank. A reques
 A direct request is the client's body as received, minus any `kv_transfer_params`, and goes through the same decode
 path as leg 2 (timeouts, disconnects, error shapes). If the decode engine refuses it before the first byte (HTTP 429 or
 503, or a streaming response whose first event is an error with that code), the router runs the normal two legs instead
-(`pd-fb`). Responses carry `x-pd-path: direct`, `pd` or `pd-fb` only with decode-direct on. The memory holds only the
+(`pd-fb`). The same happens when a direct attempt fails before any byte went to the client: HTTP 500, 502 or 504 (or an
+error event with that code), a connection error, no first byte or no first output event within the time budget, or a
+stream that ends without any content, reasoning or tool-call delta (`pd_router_ddirect_fallback_reason_total{reason}`,
+`reason` = `5xx`, `conn`, `timeout` or `empty`). For a streaming direct attempt the router holds back the leading
+role-only or empty events until the first event with output arrives (at most 64 KiB or 5 s), then sends them together;
+a usage chunk that reports generated tokens also counts as output. After the first byte went to the client nothing is
+retried. The P/D decode leg is unchanged. Responses carry `x-pd-path: direct`, `pd` or `pd-fb` only with decode-direct on. The memory holds only the
 hash, a rank, a time, a token estimate and a flag per conversation; it is per router process and empty after a restart,
 so each conversation's next turn after a restart takes the two-leg path.
 
