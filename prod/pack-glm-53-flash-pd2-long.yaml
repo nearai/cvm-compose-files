@@ -641,7 +641,7 @@ services:
       # Decode admission gate for decode-direct follow-ups: refuses any request with more than
       # 1024 uncached tokens; requests carrying P/D transfer parameters are exempt.
       - VLLM_ADMIT_ROLE=prefill
-      - VLLM_ADMIT_LONG_CUTOFF_TOKENS=1024
+      - VLLM_ADMIT_LONG_CUTOFF_TOKENS=2048
       - VLLM_ADMIT_LONG_REJECT_ALL=1
       - VLLM_ADMIT_SHORT_MAX_TOKENS=4096
       - VLLM_ADMIT_RETRY_AFTER_SHORT_S=1
@@ -694,7 +694,7 @@ services:
       --host 0.0.0.0
       --port 9110
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","replica:a","pd_role:decode","dp_rank:0","gpu:2","deployment:pack-glm-53-flash-pd2-long","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-r12-w4afp8-bf16kv-flashmla-2xpd-dp2ep2-nixl-mtp4-prefix-cc-dpiece-dgate-router-r4-ddirect"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","replica:a","pd_role:decode","dp_rank:0","gpu:2","deployment:pack-glm-53-flash-pd2-long","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-r12-w4afp8-bf16kv-flashmla-2xpd-dp2ep2-nixl-mtp4-prefix-cc-dpiece-dgate2k-router-r4-ddirect"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
@@ -712,7 +712,7 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.ppcie: "true"
-      nearai.otel.config_variant: "vllm0340-r12-w4afp8-bf16kv-flashmla-2xpd-dp2ep2-nixl-mtp4-prefix-cc-dpiece-dgate-router-r4-ddirect"
+      nearai.otel.config_variant: "vllm0340-r12-w4afp8-bf16kv-flashmla-2xpd-dp2ep2-nixl-mtp4-prefix-cc-dpiece-dgate2k-router-r4-ddirect"
 
   model-vllm-glm53-a-decode1:
     <<: *glm53-engine-common
@@ -759,7 +759,7 @@ services:
       # Decode admission gate for decode-direct follow-ups: refuses any request with more than
       # 1024 uncached tokens; requests carrying P/D transfer parameters are exempt.
       - VLLM_ADMIT_ROLE=prefill
-      - VLLM_ADMIT_LONG_CUTOFF_TOKENS=1024
+      - VLLM_ADMIT_LONG_CUTOFF_TOKENS=2048
       - VLLM_ADMIT_LONG_REJECT_ALL=1
       - VLLM_ADMIT_SHORT_MAX_TOKENS=4096
       - VLLM_ADMIT_RETRY_AFTER_SHORT_S=1
@@ -812,7 +812,7 @@ services:
       --host 0.0.0.0
       --port 9111
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","replica:a","pd_role:decode","dp_rank:1","gpu:3","deployment:pack-glm-53-flash-pd2-long","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-r12-w4afp8-bf16kv-flashmla-2xpd-dp2ep2-nixl-mtp4-prefix-cc-dpiece-dgate-router-r4-ddirect"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","replica:a","pd_role:decode","dp_rank:1","gpu:3","deployment:pack-glm-53-flash-pd2-long","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-r12-w4afp8-bf16kv-flashmla-2xpd-dp2ep2-nixl-mtp4-prefix-cc-dpiece-dgate2k-router-r4-ddirect"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
@@ -830,7 +830,7 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.ppcie: "true"
-      nearai.otel.config_variant: "vllm0340-r12-w4afp8-bf16kv-flashmla-2xpd-dp2ep2-nixl-mtp4-prefix-cc-dpiece-dgate-router-r4-ddirect"
+      nearai.otel.config_variant: "vllm0340-r12-w4afp8-bf16kv-flashmla-2xpd-dp2ep2-nixl-mtp4-prefix-cc-dpiece-dgate2k-router-r4-ddirect"
 
   pd-router-glm53-a:
     # One router per prefill/decode pair.
@@ -1494,7 +1494,7 @@ configs:
                       ip: "${HOST_IP}"
                       ppcie: "true"
                       deployment: "pack-glm-53-flash-pd2-long"
-                      config_variant: "vllm0340-r12-w4afp8-bf16kv-flashmla-2xpd-dp2ep2-nixl-mtp4-prefix-cc-dpiece-dgate-router-r4-ddirect"
+                      config_variant: "vllm0340-r12-w4afp8-bf16kv-flashmla-2xpd-dp2ep2-nixl-mtp4-prefix-cc-dpiece-dgate2k-router-r4-ddirect"
               - job_name: vllm-model-vllm-glm53-a-decode1
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -1520,7 +1520,7 @@ configs:
                       ip: "${HOST_IP}"
                       ppcie: "true"
                       deployment: "pack-glm-53-flash-pd2-long"
-                      config_variant: "vllm0340-r12-w4afp8-bf16kv-flashmla-2xpd-dp2ep2-nixl-mtp4-prefix-cc-dpiece-dgate-router-r4-ddirect"
+                      config_variant: "vllm0340-r12-w4afp8-bf16kv-flashmla-2xpd-dp2ep2-nixl-mtp4-prefix-cc-dpiece-dgate2k-router-r4-ddirect"
               # A router answers 503 while any engine rank is down, so a missed scrape is expected then.
               # Only the router's own series are kept; its aggregated engine series are scraped directly.
               - job_name: pd-router-pd-router-glm53-a
