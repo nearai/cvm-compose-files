@@ -109,6 +109,15 @@ environment names as the r2 router. The image sets that as its entrypoint and ru
   field of the last one (`reasoning`, `reasoning_content`, `reasoning_details`, `inline_think` for a `<think>` tag in
   the content, `none`); it counts with decode-direct on or off.
   The decode-direct series stay at zero while it is off.
+  `pd_router_history_change_total{kind}` counts chat requests by how their messages relate to the previous request of the
+  same conversation, when decode-direct is on: `append_only` (earlier messages identical, new ones appended),
+  `reasoning_dropped` (the first differing message is an assistant message identical except that its reasoning field is
+  now absent or empty), `edited` (the first differing message differs otherwise), `truncated` (fewer messages than
+  before) and `unknown` (no memory entry, an expired one, or more than 256 messages). The histogram
+  `pd_router_history_diverged_tokens_est{kind}` estimates the tokens from the first differing message to the end, with
+  the same estimator and buckets as the other estimate histograms. The comparison uses 32-bit per-message hashes kept
+  in the conversation's memory entry, at most 256 messages (2 KiB) per entry, evicted with the entry; hashes and content
+  are never logged or exported, only counts and bucket totals.
 * `GET /v1/models` and `/version` pass through to the first decode rank; `GET /pd_stats` has leg timings and counters, and
   `GET /ddirect_stats` the decode-direct counters, settings and estimate histograms.
 * **Logging**: durations, counts, status codes and backend indexes only. No request or response content, no URLs.

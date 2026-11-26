@@ -469,7 +469,7 @@ def test_mem_updated_by_direct_and_stores_no_content():
         await post(cl, FOLLOW)
         e = router.dd_mem[h]
         assert router._now() - e[1] < 5 and e[2] > 0
-        assert all(type(x) in (int, float, bool) for x in e)
+        assert all(type(x) in (int, float, bool, bytes, type(None)) for x in e)
     be, router, stats = run_case(True, reqs)
     assert all(type(k) is int for k in router.dd_mem)
     assert "aaaa" not in json.dumps(stats)
@@ -659,7 +659,7 @@ def test_metrics_label_values_are_fixed():
     _, text, _ = run_with_metrics(True, [FOLLOW, FIRST])
     allowed = (set(rd.DD_SKIP_REASONS) | set(rd.DD_REASONS) | set(rd.PATHS) | {rd.fmt(b) for b in rd.FB_BUCKETS}
                | {"+Inf"} | set(rd.DD_OUTCOMES) | {"same", "changed"} | {rd.fmt(b) for b in rd.DD_BUCKETS}
-               | {rd.fmt(b) for b in rd.DD_GAP_BUCKETS} | set(rd.REASONING_FIELDS))
+               | {rd.fmt(b) for b in rd.DD_GAP_BUCKETS} | set(rd.REASONING_FIELDS) | set(rd.HIST_KINDS))
     own = [ln for ln in text.splitlines() if ln.startswith("pd_router_")]
     assert own
     for ln in own:
@@ -973,3 +973,93 @@ def test_count_prev_reply_env(monkeypatch):
     assert rd.Router(["p:1"], ["d:1"], ddirect_count_prev_reply=False).dd_count_reply is False
     monkeypatch.setenv("ROUTER_DDIRECT_COUNT_PREV_REPLY", "0")
     assert rd.Router(["p:1"], ["d:1"]).dd_count_reply is False
+
+
+# ---- history divergence
+def AR(text="b", reasoning="r" * 70):
+    return {"role": "assistant", "content": text * 35, "reasoning": reasoning}
+
+
+def _kind(prev_msgs, new_msgs):
+    return rd.history_kind(rd.history_pack(prev_msgs), new_msgs, 3.5)
+
+
+def test_history_append_only():
+    prev = [U(), AS(), U(70)]
+    kind, est = _kind(prev, prev + [AS(), U(35)])
+    assert kind == "append_only" and est == 20
+
+
+def test_history_reasoning_dropped_on_older_assistant_turn():
+    prev = [U(), AR(), U(), AR("c"), U()]
+    new = [U(), AR(), U(), {"role": "assistant", "content": "c" * 35}, U(), AS(), U()]
+    kind, est = _kind(prev, new)
+    assert kind == "reasoning_dropped" and est == (35 * 4) / 3.5
+    new[3]["reasoning"] = ""  # an empty field counts as absent
+    assert _kind(prev, new)[0] == "reasoning_dropped"
+
+
+def test_history_reasoning_changed_is_edited():
+    prev = [U(), AR()]
+    assert _kind(prev, [U(), AR(reasoning="x" * 70), U()])[0] == "edited"
+
+
+def test_history_edited():
+    prev = [U(), AS(), U()]
+    assert _kind(prev, [U(), {"role": "assistant", "content": "z" * 35}, U(), AS()])[0] == "edited"
+    assert _kind(prev, [{"role": "user", "content": "q"}, AS(), U(), AS()])[0] == "edited"
+
+
+def test_history_truncated():
+    prev = [U(), AS(), U(), AS(), U()]
+    assert _kind(prev, [U(), AS(), U()])[0] == "truncated"
+
+
+def test_history_unknown():
+    assert rd.history_kind(None, [U(), AS()], 3.5) == ("unknown", 0.0)
+    long = [U()] * (rd.HIST_MAX_MSGS + 1)
+    assert rd.history_pack(long) is None
+    assert rd.history_pack(long[:rd.HIST_MAX_MSGS]) is not None
+    assert rd.history_kind(rd.history_pack(long[:3]), long, 3.5)[0] == "unknown"
+
+
+def test_history_entry_size_bounded():
+    full = rd.history_pack([U()] * rd.HIST_MAX_MSGS)
+    assert len(full) == 8 * rd.HIST_MAX_MSGS
+
+
+def test_history_counters_bounded_memory_and_no_leak(caplog):
+    secret = "SECRET-TEXT-" + "q" * 20
+    first = {"model": "m", "stream": True, "messages": [U(), {"role": "assistant", "content": secret, "reasoning": "R" * 40}, U()]}
+    second = {"model": "m", "stream": True,
+              "messages": first["messages"] + [AS(), U()]}
+    dropped = {"model": "m", "stream": True,
+               "messages": [first["messages"][0], {"role": "assistant", "content": secret}, U(), AS(), U(), AS(), U()]}
+
+    async def reqs(cl, be, router):
+        await post(cl, first)
+        await post(cl, second)
+        await post(cl, dropped)
+        assert (await cl.get("/metrics")).status_code == 200
+        reqs.text = router.own_metrics()
+        reqs.entries = list(router.dd_mem.values())
+
+    with caplog.at_level("DEBUG"):
+        _, router, stats = run_case(True, reqs, seed=False, ddirect_mem_cap=2)
+    t = reqs.text
+    assert 'pd_router_history_change_total{kind="unknown"} 1' in t
+    assert 'pd_router_history_change_total{kind="append_only"} 1' in t
+    assert 'pd_router_history_change_total{kind="reasoning_dropped"} 1' in t
+    assert re.search(r'pd_router_history_diverged_tokens_est_count\{kind="append_only"\} 1', t)
+    assert 'pd_router_history_diverged_tokens_est_bucket{kind="edited",le="+Inf"} 0' in t
+    assert stats["history_change"]["append_only"] == 1
+    assert len(router.dd_mem) <= 2
+    assert all(len(e[5]) <= 8 * rd.HIST_MAX_MSGS for e in reqs.entries)
+    blob = t + json.dumps(stats) + caplog.text
+    assert "SECRET" not in blob
+    allowed = set(rd.HIST_KINDS) | {rd.fmt(b) for b in rd.DD_BUCKETS} | {"+Inf"}
+    for ln in t.splitlines():
+        if "history" in ln and "{" in ln:
+            assert set(re.findall(r'="([^"]*)"', ln)) <= allowed
+    for e in reqs.entries:
+        assert e[5].hex() not in blob

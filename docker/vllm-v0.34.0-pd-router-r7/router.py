@@ -43,6 +43,7 @@ import logging
 import math
 import os
 import re
+import struct
 import time
 from collections import OrderedDict, deque
 
@@ -252,6 +253,10 @@ DD_GAP_BUCKETS = (1.0, 2.0, 5.0, 10.0, 20.0, 30.0, 60.0)
 CTX_FIELDS = ("tools", "functions", "tool_choice", "chat_template_kwargs", "documents", "chat_template")
 FB_BUCKETS = (0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 30.0, 60.0, 120.0)
 DD_REASONS = ("first_turn", "tail_too_long", "chunk_too_large", "images", "completions")
+# How a follow-up's message history relates to the previous request of the same conversation (see history_kind).
+HIST_KINDS = ("append_only", "reasoning_dropped", "edited", "truncated", "unknown")
+HIST_MAX_MSGS = 256  # per-conversation memory keeps hashes of at most this many messages; more counts as unknown
+_REASONING_KEYS = ("reasoning", "reasoning_content", "reasoning_details")
 _MEDIA_PART_MARKERS = ("image", "video", "audio")
 
 
@@ -305,6 +310,49 @@ def ctx_hash(body: dict) -> int:
     """Hash of the template-rendered body fields outside the messages (kept in memory only, never logged)."""
     key = json.dumps({k: body.get(k) for k in CTX_FIELDS if body.get(k) is not None}, sort_keys=True, default=str)
     return int(hashlib.sha1(key.encode()).hexdigest()[:15], 16)
+
+
+def _h32(obj) -> int:
+    return int(hashlib.sha1(json.dumps(obj, sort_keys=True, default=str).encode()).hexdigest()[:8], 16)
+
+
+def msg_hashes(m) -> tuple:
+    """(full, base) 32-bit hashes of one message. base covers role, content, tool calls and ids; full adds the
+    reasoning fields (an empty one counts as absent). Memory only, never logged or exported."""
+    if not isinstance(m, dict):
+        return _h32(None), _h32(None)
+    base = _h32([m.get(k) for k in ("role", "content", "tool_calls", "tool_call_id", "name")])
+    rs = [m.get(k) for k in _REASONING_KEYS if m.get(k)]
+    return (_h32([base, rs]) if rs else base), base
+
+
+def history_pack(msgs) -> bytes | None:
+    """Compact per-message hashes (full, base) of a request's messages, or None past HIST_MAX_MSGS (kept as unknown)."""
+    if not isinstance(msgs, list) or len(msgs) > HIST_MAX_MSGS:
+        return None
+    return b"".join(struct.pack("<II", *msg_hashes(m)) for m in msgs)
+
+
+def history_kind(prev: bytes | None, msgs: list, chars_per_token: float) -> tuple:
+    """Compare the stored hashes of the previous request with the new messages: (kind in HIST_KINDS, estimated tokens
+    from the first differing message to the end). The previous request carried reasoning where full != base."""
+    if prev is None or len(msgs) > HIST_MAX_MSGS:
+        return "unknown", 0.0
+    old = [struct.unpack_from("<II", prev, o) for o in range(0, len(prev), 8)]
+    new = [msg_hashes(m) for m in msgs]
+    i = 0
+    while i < min(len(old), len(new)) and old[i][0] == new[i][0]:
+        i += 1
+    est = sum(msg_chars(m) for m in msgs[i:]) / chars_per_token
+    if len(new) < len(old):
+        return "truncated", est
+    if i == len(old):
+        return "append_only", est
+    m = msgs[i]
+    if (isinstance(m, dict) and m.get("role") == "assistant" and old[i][0] != old[i][1]
+            and new[i][0] == new[i][1] and old[i][1] == new[i][1]):
+        return "reasoning_dropped", est
+    return "edited", est
 
 
 def reasoning_field(msgs: list):
@@ -467,7 +515,7 @@ class Router:
         self.dd_count_reply = (env_bool("ROUTER_DDIRECT_COUNT_PREV_REPLY") if ddirect_count_prev_reply is None
                                else ddirect_count_prev_reply)
         self.strict_affinity = env_bool("ROUTER_STRICT_AFFINITY") if strict_affinity is None else strict_affinity
-        # h -> [D rank, served time, prompt tokens (estimate), rejected since served, hash of the context fields]: numbers
+        # h -> [D rank, served time, prompt tokens (estimate), rejected since served, hash of the context fields, packed message hashes]: numbers
         # and hashes only, never request content. LRU order, bounded by dd_mem_cap and TTL.
         self.dd_mem = OrderedDict()
         def hist():
@@ -484,6 +532,9 @@ class Router:
                            "ctx_changed": 0, "ctx_same": 0, "sum": {"new": 0.0, "tail": 0.0, "reply": 0.0, "gap": 0.0}}
                        for o in DD_OUTCOMES}
         self.reasoning_field = {k: 0 for k in REASONING_FIELDS}
+        # Follow-up history vs the previous request of the conversation, by kind: a counter and an estimate histogram.
+        self.hist_kind = {k: 0 for k in HIST_KINDS}
+        self.hist_diverged = {k: {"buckets": [0] * (len(DD_BUCKETS) + 1), "sum": 0.0} for k in HIST_KINDS}
         self.decode_waiting = 0  # requests between decode POST and first byte (decode queueing plus the remote KV pull)
         # Decode-leg requests by path, and router arrival to first client byte by path (cumulative bucket counts).
         self.path_requests = {k: 0 for k in PATHS}
@@ -515,7 +566,7 @@ class Router:
                 "mem_cap": self.dd_mem_cap, "mem_ttl_s": self.dd_mem_ttl, "mem_size": len(self.dd_mem),
                 "strict_affinity": self.strict_affinity, "count_prev_reply": self.dd_count_reply, **json.loads(json.dumps(self.dd)),
                 "attempt_context": json.loads(json.dumps(self.dd_ctx)),
-                "assistant_reasoning_field": dict(self.reasoning_field)}
+                "assistant_reasoning_field": dict(self.reasoning_field), "history_change": dict(self.hist_kind)}
 
     def _fb_observe(self, path: str, seconds: float):
         h = self.fb_hist[path]
@@ -577,6 +628,19 @@ class Router:
                        (f'_count{{outcome="{o}"}}', n)]
             out.append(f"# TYPE {name} histogram")
             out.extend(f"{name}{lab} {fmt(v)}" for lab, v in hs)
+        series("pd_router_history_change_total", "counter",
+               [(f'{{kind="{k}"}}', self.hist_kind[k]) for k in HIST_KINDS])
+        name = "pd_router_history_diverged_tokens_est"
+        out.append(f"# TYPE {name} histogram")
+        for k in HIST_KINDS:
+            h, cum = self.hist_diverged[k], 0
+            for b, c in zip(DD_BUCKETS, h["buckets"]):
+                cum += c
+                out.append(f'{name}_bucket{{kind="{k}",le="{fmt(b)}"}} {fmt(cum)}')
+            n = sum(h["buckets"])
+            out.append(f'{name}_bucket{{kind="{k}",le="+Inf"}} {fmt(n)}')
+            out.append(f'{name}_sum{{kind="{k}"}} {fmt(h["sum"])}')
+            out.append(f'{name}_count{{kind="{k}"}} {fmt(n)}')
         out.append("# TYPE pd_router_first_byte_seconds histogram")
         out.extend(f"pd_router_first_byte_seconds{lab} {fmt(v)}" for lab, v in samples)
         return "\n".join(out) + "\n"
@@ -649,8 +713,18 @@ class Router:
             self.dd_mem.move_to_end(h)
         return e
 
-    def _mem_served(self, h: int, d: int, tokens: float, ctx: int = 0):
-        self.dd_mem[h] = [d, self._now(), tokens, False, ctx]
+    def _hist_observe(self, h: int, msgs: list):
+        """Record how this request's history relates to the entry left by the previous request (counts only)."""
+        e = self.dd_mem.get(h)
+        live = e is not None and self._now() - e[1] <= self.dd_mem_ttl
+        kind, est = history_kind(e[5] if live and len(e) > 5 else None, msgs, self.dd_cpt)
+        self.hist_kind[kind] += 1
+        st = self.hist_diverged[kind]
+        st["buckets"][self._bucket(DD_BUCKETS, est)] += 1
+        st["sum"] += est
+
+    def _mem_served(self, h: int, d: int, tokens: float, ctx: int = 0, hist: bytes | None = None):
+        self.dd_mem[h] = [d, self._now(), tokens, False, ctx, hist]
         self.dd_mem.move_to_end(h)
         while len(self.dd_mem) > self.dd_mem_cap:
             self.dd_mem.popitem(last=False)
@@ -777,6 +851,10 @@ class Router:
         pd_label = "pd"
         tokens = self._est_tokens(path, body, self.dd_cpt) if self.ddirect else 0.0
         ctx = ctx_hash(body) if self.ddirect else 0
+        hist = None
+        if self.ddirect and isinstance(body.get("messages"), list):
+            self._hist_observe(h, body["messages"])
+            hist = history_pack(body["messages"])
         if self.ddirect:
             reason, tail_est, chunk_est = ddirect_classify(path, body, self.dd_cpt, self.dd_max_tail, self.dd_block,
                                                            self.dd_max_chunk, self.dd_count_reply)
@@ -797,7 +875,7 @@ class Router:
                     # client body as received (transfer params already dropped): no max_tokens override, no leg 1
                     attempt = self._dd_attempt_ctx(h, body, tokens, tail_est, ctx)
                     resp = await self._decode_leg(req, path, dict(body), headers, h, self._path_header("direct"),
-                                                  direct=True, tokens=tokens, t_in=t_in, path_label="direct", ctx=ctx)
+                                                  direct=True, tokens=tokens, t_in=t_in, path_label="direct", ctx=ctx, hist=hist)
                     self._dd_record(attempt, "rejected" if resp is DD_REJECTED else
                                     "accepted" if getattr(resp, "status_code", 0) == 200 else "error")
                     if resp is not DD_REJECTED:
@@ -861,11 +939,11 @@ class Router:
         body["kv_transfer_params"] = kvp
         resp_headers = {**self._path_header(pd_label), "x-pd-prefill-ms": str(round((t1 - t0) * 1000, 1))}
         return await self._decode_leg(req, path, body, headers, h, resp_headers, tokens=tokens, t_in=t_in,
-                                      path_label=pd_label, ctx=ctx)
+                                      path_label=pd_label, ctx=ctx, hist=hist)
 
     async def _decode_leg(self, req: Request, path: str, body: dict, headers: dict, h: int, resp_headers: dict,
                           direct: bool = False, tokens: float = 0.0, t_in: float | None = None,
-                          path_label: str = "pd", ctx: int = 0):
+                          path_label: str = "pd", ctx: int = 0, hist: bytes | None = None):
         """Send `body` to the decode rank for hash h and stream the reply back. Used by leg 2 and by decode-direct."""
         c = self.counts
         self.path_requests[path_label] += 1
@@ -966,7 +1044,7 @@ class Router:
                 async for chunk in r.content.iter_any():
                     yield chunk
                 if self.ddirect:
-                    self._mem_served(h, d, tokens, ctx)  # completed response: remember the rank that holds the cache
+                    self._mem_served(h, d, tokens, ctx, hist)  # completed response: remember the rank that holds the cache
             except (aiohttp.ClientError, asyncio.TimeoutError) as e:
                 c["decode_fail"] += 1
                 self.dd["direct_errors"] += direct
