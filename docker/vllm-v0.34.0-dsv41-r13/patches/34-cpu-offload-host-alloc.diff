@@ -1,0 +1,146 @@
+--- a/vllm/v1/simple_kv_offload/worker.py
++++ b/vllm/v1/simple_kv_offload/worker.py
+@@ -2,7 +2,10 @@
+ # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+ """Worker-side handler for SimpleCPUOffloadConnector."""
+ 
++import atexit
++import ctypes
+ import mmap
++import os
+ from typing import TYPE_CHECKING
+ 
+ import torch
+@@ -14,6 +17,7 @@ from vllm.utils.host_memory import (
+     pin_tensor,
+     unpin_tensor,
+ )
++from vllm.utils.system_utils import find_loaded_library
+ from vllm.utils.torch_utils import PIN_MEMORY
+ from vllm.v1.simple_kv_offload.copy_backend import DmaCopyBackend
+ from vllm.v1.simple_kv_offload.disk_backend import DiskBackend
+@@ -24,6 +28,57 @@ from vllm.v1.simple_kv_offload.metadata import (
+ )
+ from vllm.v1.simple_kv_offload.sizing import sync_num_offload_blocks_across_workers
+ 
++
++# --- CC-safe host pool: cudaHostAlloc instead of mmap + cudaHostRegister ---
++_HOSTALLOC_ENV = "VLLM_NEAR_CPU_OFFLOAD_HOSTALLOC"
++_cudart_lib = None
++
++
++def _hostalloc_enabled() -> bool:
++    return os.environ.get(_HOSTALLOC_ENV, "0") == "1"
++
++
++def _get_cudart():
++    """Load libcudart through ctypes (torch.cuda.cudart() has no cudaHostAlloc)."""
++    global _cudart_lib
++    if _cudart_lib is None:
++        path = find_loaded_library("libcudart")
++        lib = None
++        for cand in (path, "libcudart.so.13", "libcudart.so.12", "libcudart.so"):
++            if not cand:
++                continue
++            try:
++                lib = ctypes.CDLL(cand)
++                break
++            except OSError:
++                continue
++        if lib is None:
++            raise RuntimeError("cannot load libcudart for cudaHostAlloc")
++        lib.cudaHostAlloc.argtypes = [
++            ctypes.POINTER(ctypes.c_void_p),
++            ctypes.c_size_t,
++            ctypes.c_uint,
++        ]
++        lib.cudaHostAlloc.restype = ctypes.c_int
++        lib.cudaFreeHost.argtypes = [ctypes.c_void_p]
++        lib.cudaFreeHost.restype = ctypes.c_int
++        _cudart_lib = lib
++    return _cudart_lib
++
++
++def _cuda_host_alloc(nbytes: int) -> int:
++    """One cudaHostAlloc(nbytes, cudaHostAllocDefault); returns the address."""
++    ptr = ctypes.c_void_p()
++    err = _get_cudart().cudaHostAlloc(ctypes.byref(ptr), nbytes, 0)
++    if err != 0 or not ptr.value:
++        raise RuntimeError(f"cudaHostAlloc failed (code={err}, bytes={nbytes})")
++    return ptr.value
++
++
++def _cuda_free_host(ptr: int) -> int:
++    return _get_cudart().cudaFreeHost(ctypes.c_void_p(ptr))
++
++
+ if TYPE_CHECKING:
+     from vllm.v1.kv_cache_interface import KVCacheConfig
+ 
+@@ -61,6 +116,8 @@ class SimpleCPUOffloadWorker:
+         self.cpu_kv_caches: dict[str, torch.Tensor] | None = None
+         self.device: torch.device | None = None
+         self.num_cpu_blocks: int = 0
++        self._hostalloc_ptr: int | None = None
++        self._hostalloc_nbytes: int = 0
+ 
+         # CUDA streams for the async transfers
+         self.load_stream: torch.cuda.Stream | None = None
+@@ -264,6 +321,8 @@ class SimpleCPUOffloadWorker:
+         layer_bytes = [
+             self.num_cpu_blocks * t[0].nbytes for t in unique_gpu_caches.values()
+         ]
++        if _hostalloc_enabled():
++            return self._carve_hostalloc_caches(unique_gpu_caches, layer_bytes)
+         buf = alloc_host_buffer(sum(layer_bytes), self.cpu_hugepage_size)
+ 
+         cpu_kv_caches = {}
+@@ -291,6 +350,48 @@ class SimpleCPUOffloadWorker:
+                 raise
+         return cpu_kv_caches
+ 
++    def _alloc_host_buffer_hostalloc(self, nbytes: int) -> torch.Tensor:
++        """Whole pool in one cudaHostAlloc, wrapped as an int8 CPU tensor."""
++        page = mmap.PAGESIZE
++        nbytes = (max(nbytes, 1) + page - 1) // page * page
++        ptr = _cuda_host_alloc(nbytes)
++        self._hostalloc_ptr = ptr
++        self._hostalloc_nbytes = nbytes
++        atexit.register(self.shutdown)
++        logger.info(
++            "SimpleCPUOffloadWorker [CPU]: host pool bytes=%d method=cudaHostAlloc",
++            nbytes,
++        )
++        arr = (ctypes.c_int8 * nbytes).from_address(ptr)
++        return torch.frombuffer(arr, dtype=torch.int8)
++
++    def _carve_hostalloc_caches(
++        self, unique_gpu_caches: dict[str, torch.Tensor], layer_bytes: list[int]
++    ) -> dict[str, torch.Tensor]:
++        # Driver-allocated pinned memory: no pin_tensor / registration ranges.
++        buf = self._alloc_host_buffer_hostalloc(sum(layer_bytes))
++        cpu_kv_caches = {}
++        offset = 0
++        for size, (name, gpu_tensor) in zip(layer_bytes, unique_gpu_caches.items()):
++            cpu_shape = (self.num_cpu_blocks,) + gpu_tensor.shape[1:]
++            view = buf[offset : offset + size].view(gpu_tensor.dtype)
++            cpu_kv_caches[name] = view.view(cpu_shape)
++            offset += size
++        return cpu_kv_caches
++
++    def shutdown(self) -> None:
++        """Free the cudaHostAlloc pool (no-op on the default path)."""
++        ptr, self._hostalloc_ptr = self._hostalloc_ptr, None
++        if ptr is None:
++            return
++        self.cpu_kv_caches = None
++        try:
++            err = _cuda_free_host(ptr)
++            if err != 0:
++                logger.warning("cudaFreeHost failed (code=%d)", err)
++        except Exception:
++            logger.warning("cudaFreeHost raised", exc_info=False)
++
+     def bind_connector_metadata(self, metadata: SimpleCPUOffloadMetadata) -> None:
+         self._connector_metadata = metadata
+         if metadata.load_event >= 0:

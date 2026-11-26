@@ -1,0 +1,453 @@
+--- a/vllm/v1/core/block_pool.py
++++ b/vllm/v1/core/block_pool.py
+@@ -798,6 +798,19 @@ class BlockPool:
+             if self.metrics_collector:
+                 self.metrics_collector.on_block_accessed(block)
+ 
++    def demote_cached_block(self, block_hash: BlockHashWithGroupId) -> None:
++        """NEAR lab (VLLM_NEAR_MAMBA_AWARE_EVICT, upstream #63808): move the
++        free block cached under ``block_hash`` to the front of the free queue,
++        so it is evicted before every other cached block. It keeps its hash,
++        so a hit before the next allocation still finds it. Blocks in use are
++        left alone.
++        """
++        block = self.cached_block_hash_to_block.get_one_block(block_hash)
++        if block is None or block.ref_cnt > 0:
++            return
++        self.free_block_queue.remove(block)
++        self.free_block_queue.prepend_n([block])
++
+     def is_block_writable(self, block: KVCacheBlock) -> bool:
+         """Return whether a block can be mutated by its sole owner."""
+         return not block.is_null and block.ref_cnt == 1 and block.block_hash is None
+--- a/vllm/v1/core/kv_cache_coordinator.py
++++ b/vllm/v1/core/kv_cache_coordinator.py
+@@ -27,6 +27,7 @@ from vllm.v1.kv_cache_interface import (
+     MambaSpec,
+     SlidingWindowSpec,
+ )
++from vllm.v1.core.near_mamba_evict import mamba_aware_evict_modes
+ from vllm.v1.request import Request
+ 
+ 
+@@ -179,6 +180,30 @@ class KVCacheCoordinator(ABC):
+             for manager in self.single_type_managers:
+                 if isinstance(manager, MambaManager):
+                     manager.drop_eagle_checkpoint_block = True
++        # NEAR lab (VLLM_NEAR_MAMBA_AWARE_EVICT, upstream #61282). Order in
++        # which a finished request's groups return their blocks to the pool:
++        # a Mamba/KDA group's reusable state is a single block, and evicting
++        # it voids the hybrid hit for every attention block of that prefix, so
++        # attention groups go first (evicted first) and Mamba groups last.
++        # With the flag off this is the config order (stock behaviour).
++        self._free_order = self.single_type_managers
++        self._pop_order = self.single_type_managers
++        if enable_caching and mamba_aware_evict_modes()[0]:
++            for manager in self.single_type_managers:
++                if (
++                    isinstance(manager, MambaManager)
++                    and manager.mamba_cache_mode == "align"
++                ):
++                    manager.hold_boundary_state = True
++            self._free_order = tuple(
++                sorted(
++                    self.single_type_managers,
++                    key=lambda manager: isinstance(manager, MambaManager),
++                )
++            )
++            # ``pop_blocks_for_free`` lists groups in reverse ``_free_order``,
++            # so the caller's reversed free matches ``free``.
++            self._pop_order = tuple(reversed(self._free_order))
+         self.group_block_sizes = tuple(
+             manager.block_size for manager in self.single_type_managers
+         )
+@@ -408,7 +433,7 @@ class KVCacheCoordinator(ABC):
+             request_id: The request ID.
+ 
+         """
+-        for manager in self.single_type_managers:
++        for manager in self._free_order:
+             manager.free(request_id)
+ 
+     def pop_blocks_for_free(self, request_id: str) -> list[KVCacheBlock]:
+@@ -426,7 +451,8 @@ class KVCacheCoordinator(ABC):
+ 
+         """
+         blocks: list[KVCacheBlock] = []
+-        for manager in self.single_type_managers:
++        # Config order with the NEAR flag off (stock); see ``_pop_order``.
++        for manager in self._pop_order:
+             blocks.extend(manager.pop_blocks_for_free(request_id))
+         return blocks
+ 
+--- a/vllm/v1/core/kv_cache_manager.py
++++ b/vllm/v1/core/kv_cache_manager.py
+@@ -15,6 +15,7 @@ from vllm.v1.core.kv_cache_coordinator import (
+ )
+ from vllm.v1.core.kv_cache_metrics import KVCacheMetricsCollector
+ from vllm.v1.core.kv_cache_utils import KVCacheBlock, KVCacheBlockCopy, trim_null_head
++from vllm.v1.core.near_mamba_evict import mamba_aware_evict_modes
+ from vllm.v1.core.single_type_kv_cache_manager import MambaManager
+ from vllm.v1.kv_cache_interface import (
+     AttentionSpec,
+@@ -198,6 +199,29 @@ class KVCacheManager:
+                     manager.shared_prefix_checkpoint = True
+         self.num_kv_cache_groups = len(kv_cache_config.kv_cache_groups)
+         self.block_pool = self.coordinator.block_pool
++        # NEAR lab (VLLM_NEAR_MAMBA_AWARE_EVICT, upstream #63808
++        # mamba_aware_lru): demote superseded Mamba states at request finish.
++        self.mamba_aware_eviction_managers: list[MambaManager] = []
++        if enable_caching and mamba_aware_evict_modes()[1]:
++            self.mamba_aware_eviction_managers = [
++                manager
++                for manager in self.coordinator.single_type_managers
++                if isinstance(manager, MambaManager)
++                and manager.mamba_cache_mode == "align"
++            ]
++        # Request ID -> local prefix-cache hit in tokens, kept until it finishes.
++        self._prefix_hit_tokens: dict[str, int] = {}
++        num_held_groups = sum(
++            getattr(manager, "hold_boundary_state", False)
++            for manager in self.coordinator.single_type_managers
++        )
++        if num_held_groups or self.mamba_aware_eviction_managers:
++            logger.info(
++                "NEAR mamba-aware eviction: boundary-state hold on %d group(s), "
++                "superseded-state demotion on %d group(s)",
++                num_held_groups,
++                len(self.mamba_aware_eviction_managers),
++            )
+         self.retained_hit_group_ids = tuple(
+             manager.kv_cache_group_id
+             for manager in self.coordinator.single_type_managers
+@@ -609,6 +633,13 @@ class KVCacheManager:
+             # Cannot allocate new blocks
+             return None
+ 
++        if self.mamba_aware_eviction_managers:
++            # Record the first admission's prefix-cache hit. Later calls pass
++            # the tokens computed so far, or a deeper hit after a preemption.
++            self._prefix_hit_tokens.setdefault(
++                request.request_id, num_local_computed_tokens
++            )
++
+         if (
+             new_computed_block_list is not self.empty_kv_cache_blocks.blocks
+             or num_external_computed_tokens > 0
+@@ -658,6 +689,8 @@ class KVCacheManager:
+ 
+         """
+         self.coordinator.free(request.request_id)
++        # After the free, so states only this request held can be demoted.
++        self._demote_superseded_states(request)
+ 
+     def remove_skipped_blocks(
+         self,
+@@ -691,7 +724,19 @@ class KVCacheManager:
+             The request's blocks in allocation order.
+ 
+         """
+-        return self.coordinator.pop_blocks_for_free(request.request_id)
++        blocks = self.coordinator.pop_blocks_for_free(request.request_id)
++        self._demote_superseded_states(request)
++        return blocks
++
++    def _demote_superseded_states(self, request: Request) -> None:
++        """NEAR lab (upstream #63808): at a request's finish, move the Mamba
++        states it superseded to the front of the free queue."""
++        if not self.mamba_aware_eviction_managers or not request.is_finished():
++            return
++        hit_tokens = self._prefix_hit_tokens.pop(request.request_id, None)
++        if hit_tokens is not None:
++            for manager in self.mamba_aware_eviction_managers:
++                manager.demote_superseded_states(request, hit_tokens)
+ 
+     def evict_blocks(self, block_ids: set[int]) -> None:
+         """Evict blocks from the prefix cache by their block IDs.
+--- /dev/null
++++ b/vllm/v1/core/near_mamba_evict.py
+@@ -0,0 +1,36 @@
++# SPDX-License-Identifier: Apache-2.0
++"""NEAR lab: hybrid Mamba/KDA-aware prefix-cache eviction.
++
++``VLLM_NEAR_MAMBA_AWARE_EVICT`` (read when the KV cache manager is built):
++
++- unset, ``0``, ``false``, ``no``, ``off``: stock behaviour (default).
++- ``1``, ``true``, ``yes``, ``on``, ``all``: both parts below.
++- ``hold``: only the boundary-state hold and free order (upstream #61282).
++- ``lru``: only the superseded-state demotion (upstream #63808).
++
++Any other value stops the engine at startup.
++"""
++
++import os
++
++ENV_NAME = "VLLM_NEAR_MAMBA_AWARE_EVICT"
++
++_OFF = ("", "0", "false", "no", "off")
++_ALL = ("1", "true", "yes", "on", "all")
++
++
++def mamba_aware_evict_modes() -> tuple[bool, bool]:
++    """Return ``(hold_boundary_state, demote_superseded_states)``."""
++    raw = os.environ.get(ENV_NAME, "").strip().lower()
++    if raw in _OFF:
++        return False, False
++    if raw in _ALL:
++        return True, True
++    if raw == "hold":
++        return True, False
++    if raw == "lru":
++        return False, True
++    raise ValueError(
++        f"{ENV_NAME} must be one of 0, 1, hold or lru (got a value of "
++        f"length {len(raw)})"
++    )
+--- a/vllm/v1/core/single_type_kv_cache_manager.py
++++ b/vllm/v1/core/single_type_kv_cache_manager.py
+@@ -41,6 +41,7 @@ from vllm.v1.kv_cache_interface import (
+     get_mamba_prefill_checkpoint_position,
+     is_mamba_prefill_checkpoint_valid,
+ )
++from vllm.v1.core.kv_cache_utils import make_block_hash_with_group_id
+ from vllm.v1.kv_cache_spec_registry import KVCacheSpecRegistry
+ from vllm.v1.request import Request
+ 
+@@ -1519,6 +1520,17 @@ class MambaManager(SingleTypeKVCacheManager):
+         # Mamba checkpoints follow Eagle's global replay boundary.
+         self.drop_eagle_checkpoint_block = False
+         self.cached_blocks_this_step: set[BlockHashWithGroupId] = set()
++        # NEAR lab (VLLM_NEAR_MAMBA_AWARE_EVICT, upstream #61282): hold each
++        # running request's prompt-boundary state until the request is freed.
++        # Set by the coordinator; align mode with prefix caching only.
++        self.hold_boundary_state = False
++        # Request ID -> the block holding its reusable prompt-boundary state,
++        # referenced on its behalf (see ``_retain_boundary_block``).
++        self._boundary_blocks: dict[str, KVCacheBlock] = {}
++        # NEAR lab (upstream #63808 mamba_aware_lru): hashes of states a
++        # finished request left as its deepest one (see
++        # ``demote_superseded_states``).
++        self._tip_hashes: set[BlockHashWithGroupId] = set()
+         if self.mamba_cache_mode == "align":
+             # Mapping from request ID to the index of the block
+             # allocated in the previous step
+@@ -1993,6 +2005,12 @@ class MambaManager(SingleTypeKVCacheManager):
+                         self.block_pool.move_block_hashes(source_block, cow_block)
+                         self._pending_cow_copies.append((source_block, cow_block))
+                         source_block.ref_cnt += 1
++                        if self._boundary_blocks.get(request_id) is source_block:
++                            # NEAR (#61282): the boundary state moves to
++                            # cow_block with its hash; move the hold as well.
++                            source_block.ref_cnt -= 1
++                            cow_block.ref_cnt += 1
++                            self._boundary_blocks[request_id] = cow_block
+                         producer_tail = self._producer_partial_tail_reqs.pop(
+                             request_id, None
+                         )
+@@ -2070,6 +2088,19 @@ class MambaManager(SingleTypeKVCacheManager):
+                 for entry in self._pending_boundary_state_offloads
+                 if entry[0] != request_id
+             ]
++            boundary_block = self._boundary_blocks.pop(request_id, None)
++            if boundary_block is not None:
++                blocks = super().pop_blocks_for_free(request_id)
++                if any(block is boundary_block for block in blocks):
++                    # NEAR (#61282): still in the table, whose own entry frees
++                    # it; drop the hold, it cannot be the last reference.
++                    boundary_block.ref_cnt -= 1
++                    return blocks
++                # Retired from the table, so the hold is the request's only
++                # reference. Callers free in reverse order: list it first so
++                # the single reusable state is the last of the request's
++                # blocks to reach the free queue.
++                return [boundary_block, *blocks]
+         return super().pop_blocks_for_free(request_id)
+ 
+     def get_num_skipped_tokens(self, num_computed_tokens: int) -> int:
+@@ -2137,10 +2168,139 @@ class MambaManager(SingleTypeKVCacheManager):
+                             block.block_hash_num_tokens,
+                         )
+                     )
++                    if (
++                        self.hold_boundary_state
++                        and block.block_hash_num_tokens
++                        == self._prompt_boundary(request)
++                    ):
++                        self._retain_boundary_block(request.request_id, block)
+ 
+     def new_step_starts(self) -> None:
+         self.cached_blocks_this_step.clear()
+ 
++    def add_local_computed_blocks(
++        self,
++        request_id: str,
++        new_computed_blocks: Sequence[KVCacheBlock],
++        num_local_computed_tokens: int,
++        num_external_computed_tokens: int,
++    ) -> None:
++        super().add_local_computed_blocks(
++            request_id,
++            new_computed_blocks,
++            num_local_computed_tokens,
++            num_external_computed_tokens,
++        )
++        if not self.hold_boundary_state or not new_computed_blocks:
++            return
++        # NEAR (#61282): a resumed or sibling request takes over a cached
++        # state it never registers itself (a sub-block hit is even CoW-copied
++        # out of the table). Hold the hit state like an own registration;
++        # registering the request's own boundary later replaces the hold.
++        # External computed tokens can skip the whole local hit, in which case
++        # the hit block was neither adopted nor touched.
++        hit_block = new_computed_blocks[-1]
++        req_blocks = self.req_to_blocks[request_id]
++        if (
++            req_blocks
++            and req_blocks[-1] is hit_block
++            and not hit_block.is_null
++            and hit_block.block_hash is not None
++        ):
++            self._retain_boundary_block(request_id, hit_block)
++
++    def _prompt_boundary(self, request: Request) -> int:
++        """The prompt position a later turn can resume this request from: the
++        boundary ``reachable_block_mask`` retains and a prefill checkpoint is
++        keyed at."""
++        return get_mamba_prefill_checkpoint_position(
++            request.num_prompt_tokens,
++            self.cache_hit_alignment_tokens,
++            self.drop_eagle_checkpoint_block,
++            num_hash_lookahead_tokens=self.block_pool.num_hash_lookahead_tokens,
++        )
++
++    def _retain_boundary_block(self, request_id: str, block: KVCacheBlock) -> None:
++        """NEAR lab (upstream #61282): hold the request's prompt-boundary
++        state until the request is freed.
++
++        Align mode frees every state below the running one as decode advances
++        and releases a CoW copy once the copy has run, so the one block a later
++        turn can resume from reaches the free queue a step into decode, while
++        the request's attention blocks stay referenced until it finishes. Under
++        allocation pressure the state is recycled first and the next turn's
++        hybrid hit, the minimum over groups, collapses to zero. Take a
++        reference on the request's behalf; ``pop_blocks_for_free`` releases it
++        after the request's other blocks.
++        """
++        assert not block.is_null and block.ref_cnt > 0
++        held = self._boundary_blocks.get(request_id)
++        if held is block:
++            return
++        if held is not None:
++            self.block_pool.free_blocks([held])
++        block.ref_cnt += 1
++        self._boundary_blocks[request_id] = block
++
++    def demote_superseded_states(self, request: Request, hit_tokens: int) -> None:
++        """NEAR lab (upstream #63808 mamba_aware_lru): move the states a
++        finished request superseded to the eviction front.
++
++        A tip is the deepest state a finished request left cached on its
++        prompt. A later request that resumes from or passes a tip and caches
++        a deeper state supersedes it: a prompt that continues the conversation
++        now hits the deeper state, so the old tip is evicted before other
++        cached blocks. Cached states that were never a tip keep LRU order, and
++        so does the request's shared-prefix junction even when it is also the
++        request's deepest state. Only the request's own range, down to its
++        prefix-cache hit of ``hit_tokens``, is scanned.
++        """
++        block_pool = self.block_pool
++        get_cached_block = block_pool.cached_block_hash_to_block.get_one_block
++        block_hashes = request.block_hashes
++        # Each hash chains over its whole prefix, so the state cached at a
++        # boundary is keyed by the hash ending there, whatever the block size.
++        hash_block_size = block_pool.hash_block_size
++        hit_idx = hit_tokens // hash_block_size - 1
++        alignment = self.cache_hit_alignment_tokens
++        junction_idx = (
++            request.shared_prefix_boundary // alignment * alignment // hash_block_size
++            - 1
++        )
++        tip: BlockHashWithGroupId | None = None
++        tip_idx = -1
++        superseded: list[BlockHashWithGroupId] = []
++        for idx in range(len(block_hashes) - 1, max(hit_idx, 0) - 1, -1):
++            key = make_block_hash_with_group_id(
++                block_hashes[idx], self.kv_cache_group_id
++            )
++            if get_cached_block(key) is None:
++                continue
++            if tip is None:
++                if idx == hit_idx:
++                    return  # Nothing cached past the hit.
++                tip, tip_idx = key, idx
++            elif idx != junction_idx and key in self._tip_hashes:
++                superseded.append(key)
++        if tip is None:
++            return
++        for key in superseded:
++            self._tip_hashes.discard(key)
++            block_pool.demote_cached_block(key)
++        if 0 <= junction_idx < len(block_hashes):
++            self._tip_hashes.discard(
++                make_block_hash_with_group_id(
++                    block_hashes[junction_idx], self.kv_cache_group_id
++                )
++            )
++        if tip_idx != junction_idx:
++            self._tip_hashes.add(tip)
++        if len(self._tip_hashes) > block_pool.num_gpu_blocks:
++            # Drop tips that LRU already evicted.
++            self._tip_hashes = {
++                key for key in self._tip_hashes if get_cached_block(key) is not None
++            }
++
+     def _cache_stable_prefix_checkpoint(
+         self, request: Request, chunk_range: tuple[int, int]
+     ) -> BlockHashWithGroupId | None:
+@@ -2246,7 +2406,7 @@ class MambaManager(SingleTypeKVCacheManager):
+                 return None
+             if checkpoint_block.block_hash_num_tokens == checkpoint_position:
+                 return None
+-            return self.block_pool.cache_partial_block(
++            checkpoint_hash = self.block_pool.cache_partial_block(
+                 request=request,
+                 block=checkpoint_block,
+                 num_tokens=checkpoint_position,
+@@ -2254,6 +2414,13 @@ class MambaManager(SingleTypeKVCacheManager):
+                 block_size=self.block_size,
+                 replace_existing_hashes=True,
+             )
++            if (
++                self.hold_boundary_state
++                and checkpoint_hash is not None
++                and is_prompt_checkpoint
++            ):
++                self._retain_boundary_block(request.request_id, checkpoint_block)
++            return checkpoint_hash
+         if num_tokens <= 0 or num_tokens % hash_block_size != 0:
+             return None
+         latest_prompt_hash_boundary = get_mamba_prefill_checkpoint_position(
+@@ -2293,6 +2460,12 @@ class MambaManager(SingleTypeKVCacheManager):
+             kv_cache_group_id=self.kv_cache_group_id,
+             block_size=self.block_size,
+         )
++        if (
++            self.hold_boundary_state
++            and partial_hash is not None
++            and num_tokens == self._prompt_boundary(request)
++        ):
++            self._retain_boundary_block(request.request_id, source_block)
+         if partial_hash is not None and num_tokens % self.block_size:
+             self._partial_hit_reqs[request.request_id] = (block_idx, source_block)
+             self.num_cached_block[request.request_id] = block_idx
+@@ -2350,6 +2523,10 @@ class MambaManager(SingleTypeKVCacheManager):
+                 block,
+                 checkpoint_position,
+             )
++            if self.hold_boundary_state:
++                # NEAR (#61282): checkpoint_position is the prompt boundary
++                # (checked above); the next CoW moves this hold to the copy.
++                self._retain_boundary_block(request.request_id, block)
+         return partial_hash
+ 
+     def _record_mid_block_states(

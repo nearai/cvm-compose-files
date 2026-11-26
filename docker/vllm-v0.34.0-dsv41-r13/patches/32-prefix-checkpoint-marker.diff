@@ -1,0 +1,415 @@
+--- /dev/null
++++ b/vllm/v1/core/near_prefix_ckpt.py
+@@ -0,0 +1,231 @@
++# SPDX-License-Identifier: Apache-2.0
++"""NEAR lab: shared-prefix boundary checkpoint for Mamba/KDA "align" mode.
++
++Flag: ``VLLM_NEAR_PREFIX_CKPT=1`` (default off). Read once, in the scheduler
++process, when the scheduler is built. Both users (the scheduler split and the
++Mamba manager's keying) run in that process and read the per-request value
++this module stores on the request, so they cannot disagree.
++
++A request's *stable prefix* is the token count S that later, unrelated
++requests are expected to share with it (the app's system prompt and tools).
++The checkpoint position P is the last hash-unit boundary at or before S at
++which a sibling that shares exactly S tokens can get a prefix-cache hit (see
++``stable_prefix_checkpoint_position``). When a fresh prompt's chunk would run
++past P with no cached state at P, the scheduler ends the chunk at P and the
++Mamba manager keys the running state block at P (the same path the prompt's
++own tail checkpoint takes), so later requests resume at P.
++
++S comes from, in order:
++
++1. ``sampling_params.extra_args["stable_prefix_tokens"]`` (the OpenAI
++   server's ``vllm_xargs``); an int in ``[0, num_prompt_tokens]``, 0 turns the
++   feature off for that request. Anything else is ignored.
++2. The engine's own marker scan: the index of the first occurrence of any
++   token id in ``VLLM_NEAR_PREFIX_CKPT_MARKER_IDS`` (comma-separated ints, the
++   chat template's first user-turn role token, e.g. ``<|user|>``) plus one, so
++   the marker itself is inside the prefix. Scans at most ``SCAN_LIMIT`` tokens.
++
++S below ``VLLM_NEAR_PREFIX_CKPT_MIN_TOKENS`` (default 512) is ignored.
++
++Admission (``VLLM_NEAR_PREFIX_CKPT_ADMIT``, default ``second``): a request
++splits at P only if the prefix hash at P was already seen on an earlier
++request (bounded LRU of ``SEEN_CAPACITY`` hashes, scheduler memory only). A
++prefix that is never shared (per-conversation content before the user turn)
++then never costs an extra pass; a shared one costs one more miss before it is
++cached. ``first`` splits on first sight.
++
++The value is a cache-placement hint only: the state stored at P is the
++model's real state after the request's own first P tokens, keyed by the hash
++of those tokens (and cache salt), exactly like any other prefix-cache entry.
++A wrong or hostile S costs at most one extra prefill pass for that request.
++"""
++
++from __future__ import annotations
++
++import os
++from collections import OrderedDict
++from dataclasses import dataclass, field
++
++ENV_FLAG = "VLLM_NEAR_PREFIX_CKPT"
++ENV_MARKER_IDS = "VLLM_NEAR_PREFIX_CKPT_MARKER_IDS"
++ENV_MIN_TOKENS = "VLLM_NEAR_PREFIX_CKPT_MIN_TOKENS"
++ENV_ADMIT = "VLLM_NEAR_PREFIX_CKPT_ADMIT"
++SEEN_CAPACITY = 4096
++HINT_KEY = "stable_prefix_tokens"
++DEFAULT_MIN_TOKENS = 512
++SCAN_LIMIT = 65536
++# Attribute set on ``Request``: the checkpoint position P, or 0 for none.
++REQUEST_ATTR = "near_prefix_ckpt"
++
++
++class SeenPrefixes:
++    """Bounded LRU set of prefix hashes (opaque keys, never logged)."""
++
++    def __init__(self, capacity: int = SEEN_CAPACITY) -> None:
++        self.capacity = capacity
++        self._keys: OrderedDict[object, None] = OrderedDict()
++
++    def seen_before(self, key: object) -> bool:
++        """Record ``key``; return whether it was already present."""
++        if key in self._keys:
++            self._keys.move_to_end(key)
++            return True
++        self._keys[key] = None
++        if len(self._keys) > self.capacity:
++            self._keys.popitem(last=False)
++        return False
++
++
++@dataclass(frozen=True)
++class PrefixCkptConfig:
++    marker_ids: tuple[int, ...] = ()
++    min_tokens: int = DEFAULT_MIN_TOKENS
++    # None: split on first sight. Otherwise only on a prefix seen before.
++    seen: SeenPrefixes | None = field(default=None, compare=False)
++
++    @classmethod
++    def from_env(cls, environ=None) -> PrefixCkptConfig | None:
++        """The config, or None when the flag is off. Raises on a malformed
++        value so a typo stops the engine instead of silently disabling."""
++        env = os.environ if environ is None else environ
++        if env.get(ENV_FLAG) != "1":
++            return None
++        raw = env.get(ENV_MARKER_IDS, "").strip()
++        marker_ids = tuple(int(x) for x in raw.split(",") if x.strip()) if raw else ()
++        if any(m < 0 for m in marker_ids):
++            raise ValueError(f"{ENV_MARKER_IDS} must hold non-negative token ids")
++        min_tokens = int(env.get(ENV_MIN_TOKENS, DEFAULT_MIN_TOKENS))
++        if min_tokens < 1:
++            raise ValueError(f"{ENV_MIN_TOKENS} must be >= 1")
++        admit = env.get(ENV_ADMIT, "second")
++        if admit not in ("first", "second"):
++            raise ValueError(f"{ENV_ADMIT} must be 'first' or 'second'")
++        seen = SeenPrefixes() if admit == "second" else None
++        return cls(marker_ids=marker_ids, min_tokens=min_tokens, seen=seen)
++
++
++def stable_prefix_checkpoint_position(
++    stable_tokens: int,
++    hash_block_size: int,
++    drop_eagle_block: bool,
++    num_hash_lookahead_tokens: int = 0,
++) -> int:
++    """Last position P <= S at which a sibling sharing exactly S tokens hits.
++
++    A hit at P needs the hash unit ending at P to match. With lookahead block
++    hashes that unit's hash also covers the next ``L`` tokens, so P + L <= S.
++    With the EAGLE/MTP block drop the full-attention finder matches one more
++    unit and drops it, so P + unit <= S. Without either, P <= S.
++
++    Unlike ``get_mamba_prefill_checkpoint_position`` there is no "keep one
++    token for logits" margin: the siblings have more tokens after S.
++    """
++    if stable_tokens <= 0:
++        return 0
++    if drop_eagle_block:
++        position = stable_tokens // hash_block_size * hash_block_size
++        position -= hash_block_size
++    else:
++        proof_limit = stable_tokens - num_hash_lookahead_tokens
++        position = proof_limit // hash_block_size * hash_block_size
++    return max(position, 0)
++
++
++def _hint_from_extra_args(request) -> int | None:
++    params = getattr(request, "sampling_params", None)
++    extra = getattr(params, "extra_args", None) if params is not None else None
++    if not extra or HINT_KEY not in extra:
++        return None
++    value = extra[HINT_KEY]
++    # bool is an int subclass; refuse it and every non-int.
++    if isinstance(value, bool) or not isinstance(value, int):
++        return 0
++    if value < 0 or value > request.num_prompt_tokens:
++        return 0
++    return value
++
++
++def resolve_stable_prefix_tokens(request, config: PrefixCkptConfig) -> int:
++    """S for this request (see module doc), or 0."""
++    hint = _hint_from_extra_args(request)
++    if hint is not None:
++        return hint
++    if not config.marker_ids:
++        return 0
++    tokens = getattr(request, "prompt_token_ids", None)
++    if tokens is None:
++        return 0
++    limit = min(len(tokens), SCAN_LIMIT)
++    first = -1
++    for marker in config.marker_ids:
++        stop = limit if first < 0 else first
++        try:
++            idx = tokens.index(marker, 0, stop)
++        except ValueError:
++            continue
++        first = idx
++    return first + 1 if first >= 0 else 0
++
++
++def request_prefix_checkpoint(
++    request,
++    config: PrefixCkptConfig,
++    hash_block_size: int,
++    drop_eagle_block: bool,
++    num_hash_lookahead_tokens: int,
++) -> int:
++    """P for this request, computed once and stored on the request."""
++    cached = getattr(request, REQUEST_ATTR, None)
++    if cached is not None:
++        return cached
++    stable = resolve_stable_prefix_tokens(request, config)
++    position = 0
++    if stable >= config.min_tokens:
++        position = stable_prefix_checkpoint_position(
++            stable, hash_block_size, drop_eagle_block, num_hash_lookahead_tokens
++        )
++    if position and config.seen is not None:
++        # The chained hash at P identifies the prefix (and cache salt).
++        unit = position // hash_block_size - 1
++        hashes = request.block_hashes
++        if unit >= len(hashes) or not config.seen.seen_before(hashes[unit]):
++            position = 0
++    setattr(request, REQUEST_ATTR, position)
++    return position
++
++
++def prefix_checkpoint_stop(
++    request,
++    config: PrefixCkptConfig | None,
++    start: int,
++    end: int,
++    block_size: int,
++    hash_block_size: int,
++    drop_eagle_block: bool,
++    num_hash_lookahead_tokens: int,
++    prompt_checkpoint: int,
++) -> int:
++    """The chunk end the scheduler should add as a stop, or 0.
++
++    Only a fresh prompt (no replayed outputs) whose chunk [start, end) runs
++    past P with P strictly inside it. A request whose prefix hit already
++    reaches P (the common case once one request has computed it) gets 0, so
++    the split costs one extra pass only on a miss. P on a block boundary is
++    also a stop: a chunk that exports the prompt checkpoint internally does
++    not stop at block boundaries, and a chunk ending on one gets its state
++    cached under the full-block hash by the stock path. P at or past the
++    prompt's own checkpoint adds nothing.
++    """
++    if config is None or request.num_tokens != request.num_prompt_tokens:
++        return 0
++    position = request_prefix_checkpoint(
++        request, config, hash_block_size, drop_eagle_block, num_hash_lookahead_tokens
++    )
++    if (
++        position <= 0
++        or position % hash_block_size != 0
++        or position >= prompt_checkpoint
++        or not start < position < end
++    ):
++        return 0
++    return position
+--- a/vllm/v1/core/sched/scheduler.py
++++ b/vllm/v1/core/sched/scheduler.py
+@@ -40,6 +40,7 @@ from vllm.v1.core.encoder_cache_manager import (
+ from vllm.v1.core.kv_cache_manager import KVCacheBlocks, KVCacheManager
+ from vllm.v1.core.kv_cache_metrics import KVCacheMetricsCollector
+ from vllm.v1.core.kv_cache_utils import KVCacheBlock
++from vllm.v1.core.near_prefix_ckpt import PrefixCkptConfig, prefix_checkpoint_stop
+ from vllm.v1.core.sched.interface import PauseState, SchedulerInterface
+ from vllm.v1.core.sched.output import (
+     CachedRequestData,
+@@ -488,6 +489,18 @@ class Scheduler(SchedulerInterface):
+             self.mamba_partial_cache_hit
+             and self.kv_cache_manager.mamba_shared_prefix_checkpoint
+         )
++        # NEAR lab (VLLM_NEAR_PREFIX_CKPT=1): also end a fresh prompt's chunk at
++        # its stable-prefix checkpoint when no state is cached there yet; the
++        # Mamba manager keys it (see vllm/v1/core/near_prefix_ckpt.py).
++        self.near_prefix_ckpt_config = (
++            PrefixCkptConfig.from_env() if self.mamba_partial_cache_hit else None
++        )
++        if self.near_prefix_ckpt_config is not None:
++            logger.info(
++                "NEAR prefix checkpoint on: %d marker ids, min %d tokens",
++                len(self.near_prefix_ckpt_config.marker_ids),
++                self.near_prefix_ckpt_config.min_tokens,
++            )
+ 
+         # Counts of non-empty steps scheduled / processed. update_from_output
+         # is called once per scheduled step in FIFO order, so these stay in sync.
+@@ -710,6 +723,25 @@ class Scheduler(SchedulerInterface):
+             # Marconi shared-prefix junction: cache its state so sibling
+             # requests sharing the prefix can reuse it.
+             junction_stop if start < junction < end else 0,
++            # NEAR lab: the stable-prefix checkpoint (0 when off or not needed).
++            prefix_checkpoint_stop(
++                request,
++                getattr(self, "near_prefix_ckpt_config", None),
++                start,
++                end,
++                block_size,
++                self.hash_block_size,
++                self.use_eagle_block_drop,
++                self.num_hash_lookahead_tokens,
++                prompt_checkpoint=get_mamba_prefill_checkpoint_position(
++                    request.num_prompt_tokens,
++                    self.hash_block_size,
++                    self.use_eagle_block_drop,
++                    num_hash_lookahead_tokens=self.num_hash_lookahead_tokens,
++                ),
++            )
++            if self.mamba_partial_cache_hit
++            else 0,
+         )
+         # Stop at the earliest mandatory position strictly inside the chunk.
+         end = min((s for s in stops if start < s < end), default=end)
+--- a/vllm/v1/core/single_type_kv_cache_manager.py
++++ b/vllm/v1/core/single_type_kv_cache_manager.py
+@@ -880,6 +880,42 @@ class FullAttentionManager(SingleTypeKVCacheManager):
+         if self.block_size == hash_block_size:
+             return
+         self._cache_partial_tail_block(request, num_tokens)
++        if getattr(request, "near_prefix_ckpt", 0):
++            self._cache_stable_prefix_entry(request, num_tokens)
++
++    def _cache_stable_prefix_entry(self, request: Request, num_tokens: int) -> None:
++        """Keep a partial entry at the request's stable-prefix checkpoint.
++
++        NEAR lab (VLLM_NEAR_PREFIX_CKPT=1). The Mamba manager keys its state
++        at P (``request.near_prefix_ckpt``); a sibling's reconciled hit also
++        needs this group to match there. ``_cache_partial_tail_block`` keys
++        only the prompt's last hash boundary, and a longer key or the
++        full-block promotion drops shorter entries on the same block, so the
++        entry is re-added on every call (idempotent: the pool skips a hash it
++        already holds for the block). With the EAGLE drop the finder matches
++        one unit past the hit and drops it, so the entry goes one unit later.
++        KV is append-only, so the block still holds exactly the first tokens.
++        """
++        hash_block_size = self.block_pool.hash_block_size
++        position = request.near_prefix_ckpt + (hash_block_size if self.use_eagle else 0)
++        if (
++            position > num_tokens
++            or position > request.num_prompt_tokens
++            or position % self.block_size == 0
++            or position > len(request.block_hashes) * hash_block_size
++        ):
++            return
++        blocks = self.req_to_blocks[request.request_id]
++        block_idx = position // self.block_size
++        if block_idx >= len(blocks) or blocks[block_idx].is_null:
++            return
++        self.block_pool.cache_partial_block(
++            request=request,
++            block=blocks[block_idx],
++            num_tokens=position,
++            kv_cache_group_id=self.kv_cache_group_id,
++            block_size=self.block_size,
++        )
+ 
+     def _cache_partial_tail_block(
+         self,
+@@ -2051,6 +2087,7 @@ class MambaManager(SingleTypeKVCacheManager):
+         *,
+         replay_boundaries: Sequence[int],
+     ) -> None:
++        chunk_range = None
+         if self.mamba_cache_mode == "align":
+             chunk_range = self._req_chunk_ranges.pop(request.request_id, None)
+             if chunk_range is not None:
+@@ -2070,6 +2107,12 @@ class MambaManager(SingleTypeKVCacheManager):
+             )
+             if partial_hash is not None:
+                 self.cached_blocks_this_step.add(partial_hash)
++            if chunk_range is not None and getattr(request, "near_prefix_ckpt", 0):
++                partial_hash = self._cache_stable_prefix_checkpoint(
++                    request, chunk_range
++                )
++                if partial_hash is not None:
++                    self.cached_blocks_this_step.add(partial_hash)
+         if num_cached_blocks_after > num_cached_blocks_before:
+             blocks = self.req_to_blocks[request.request_id]
+             for idx in range(num_cached_blocks_before, num_cached_blocks_after):
+@@ -2098,6 +2141,59 @@ class MambaManager(SingleTypeKVCacheManager):
+     def new_step_starts(self) -> None:
+         self.cached_blocks_this_step.clear()
+ 
++    def _cache_stable_prefix_checkpoint(
++        self, request: Request, chunk_range: tuple[int, int]
++    ) -> BlockHashWithGroupId | None:
++        """Key the running state block at the request's stable-prefix checkpoint.
++
++        NEAR lab (VLLM_NEAR_PREFIX_CKPT=1). The scheduler sets
++        ``request.near_prefix_ckpt`` (P) and ends a fresh prompt's chunk there
++        (``near_prefix_ckpt.prefix_checkpoint_stop``). This step's forward
++        leaves the state after exactly P tokens in the running block, the same
++        place the prompt's split tail checkpoint lands, so it is keyed and
++        handed to the next allocation's copy-on-write exactly like that tail.
++
++        Keyed on the scheduled chunk's end, not on ``num_tokens``: with
++        multi-module MTP the coordinator passes ``num_computed`` minus the
++        re-prefillable tokens, but the Mamba state at the chunk end is final
++        (draft modules have no Mamba layers). Full-attention keys still lag
++        by those tokens, so a hit at P is only possible once the owner's next
++        chunk has finalized them; the reconciled hit is the minimum of both.
++        """
++        position = request.near_prefix_ckpt
++        query_start, query_end = chunk_range
++        if (
++            query_end != position
++            or not query_start < position <= request.num_prompt_tokens
++            or position % self.block_size == 0
++            or position % self.block_pool.hash_block_size != 0
++            # A tail CoW is already pending for this request (cannot hold two).
++            or request.request_id in self._partial_hit_reqs
++        ):
++            return None
++        block_idx = cdiv(position, self.block_size) - 1
++        blocks = self.req_to_blocks[request.request_id]
++        if block_idx >= len(blocks):
++            return None
++        source_block = blocks[block_idx]
++        if source_block.is_null or source_block.block_hash_num_tokens == position:
++            return None
++        partial_hash = self.block_pool.cache_partial_block(
++            request=request,
++            block=source_block,
++            num_tokens=position,
++            kv_cache_group_id=self.kv_cache_group_id,
++            block_size=self.block_size,
++        )
++        if partial_hash is not None:
++            self._partial_hit_reqs[request.request_id] = (block_idx, source_block)
++            self.num_cached_block[request.request_id] = block_idx
++            self._producer_partial_tail_reqs[request.request_id] = (
++                source_block,
++                position,
++            )
++        return partial_hash
++
+     def _cache_partial_tail_block(
+         self,
+         request: Request,

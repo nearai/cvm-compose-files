@@ -1,0 +1,23 @@
+diff --git a/vllm/distributed/kv_transfer/kv_connector/v1/nixl/base_worker.py b/vllm/distributed/kv_transfer/kv_connector/v1/nixl/base_worker.py
+--- a/vllm/distributed/kv_transfer/kv_connector/v1/nixl/base_worker.py
++++ b/vllm/distributed/kv_transfer/kv_connector/v1/nixl/base_worker.py
+@@ -800,7 +800,19 @@
+         logger.info(
+             "NIXL agent thread sync mode: %s",
+             "STRICT" if sync_kwargs else "not set (NIXL has no nixl_thread_sync_t)",
++        )
++        # When false, the UCX progress thread is off and the engine drives UCX
++        # progress from its own step calls.
++        enable_prog_thread = vllm_config.kv_transfer_config.get_from_extra_config(
++            "enable_prog_thread", True
+         )
++        if not isinstance(enable_prog_thread, bool):
++            raise ValueError(
++                "kv_connector_extra_config enable_prog_thread must be a boolean, "
++                f"got {enable_prog_thread!r}"
++            )
++        sync_kwargs["enable_prog_thread"] = enable_prog_thread
++        logger.info("NIXL UCX progress thread enabled: %s", enable_prog_thread)
+         if nixl_agent_config is None:
+             config = None
+         else:
