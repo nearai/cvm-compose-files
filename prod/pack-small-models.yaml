@@ -2789,7 +2789,7 @@ services:
         worker_processes 1;
         events { worker_connections 64; }
         http {
-          access_log /dev/stdout;
+          access_log off;
           server {
             listen unix:/sock/dstack.sock;
             location = /Info {
@@ -2815,7 +2815,7 @@ services:
       retries: 30
 
   sage:
-    image: levantolabs/sage2-hopper-pod@sha256:b5268f0a1bddf96895baf7b38f28cf814eaecc79d832d5660f4155584506009e
+    image: levantolabs/sage2-hopper-pod@sha256:96951261c43a0dddec9757656cec98b94d3a122c856b6912970e1e43d05b9736
     container_name: sage
     pull_policy: never
     restart: unless-stopped

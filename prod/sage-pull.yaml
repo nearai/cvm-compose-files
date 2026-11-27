@@ -17,12 +17,30 @@ services:
       DOCKER_CONFIG: /dockercfg
       PULL_USER: ${SAGE_DOCKERHUB_USER}
       PULL_TOKEN: ${SAGE_DOCKERHUB_TOKEN}
-      IMAGE: levantolabs/sage2-hopper-pod@sha256:b5268f0a1bddf96895baf7b38f28cf814eaecc79d832d5660f4155584506009e
+      IMAGE: ${SAGE_IMAGE:?SAGE_IMAGE is required}
+    healthcheck:
+      test: ["CMD", "test", "-f", "/dockercfg/ready"]
+      interval: 5s
+      timeout: 2s
+      retries: 3
+      start_period: 31m
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
         set -eu
+        if ! printf '%s\n' "$$IMAGE" | grep -Eq '^levantolabs/sage2-hopper-pod@sha256:[0-9a-f]{64}$$'; then
+          echo 'A pinned image is required' >&2
+          exit 1
+        fi
         trap 'docker logout docker.io >/dev/null 2>&1 || true' EXIT
-        printf '%s' "$$PULL_TOKEN" | docker login -u "$$PULL_USER" --password-stdin docker.io >/dev/null
-        docker pull --quiet "$$IMAGE" >/dev/null
-        echo "sage-pull: ok $$(docker image inspect --format '{{.Id}}' "$$IMAGE")"
+        if ! printf '%s' "$$PULL_TOKEN" | timeout 30 docker login -u "$$PULL_USER" --password-stdin docker.io >/dev/null 2>&1; then
+          echo 'Registry login failed' >&2
+          exit 1
+        fi
+        if ! timeout 1800 docker pull --quiet -- "$$IMAGE" >/dev/null 2>&1; then
+          echo 'Image pull failed' >&2
+          exit 1
+        fi
+        docker logout docker.io >/dev/null 2>&1
+        touch /dockercfg/ready
+        exec sleep 60
