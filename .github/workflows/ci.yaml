@@ -157,7 +157,10 @@ jobs:
               files+=("$f")
             fi
           done
-          docker run --rm --network none -v "$PWD:/repo:ro" -w /repo "$ACTIONLINT_IMAGE" "${files[@]}"
+          # actionlint knows only GitHub's own labels; ci/config/actionlint.yaml names the rest.
+          # The allowlist that decides which may be used is ci/data/public.json (public.runner).
+          docker run --rm --network none -v "$PWD:/repo:ro" -w /repo \
+            "$ACTIONLINT_IMAGE" -config-file ci/config/actionlint.yaml "${files[@]}"
           docker run --rm --network none -v "$PWD:/repo:ro" -w /repo "$ZIZMOR_IMAGE" --offline "${files[@]}"
 
   secrets:
