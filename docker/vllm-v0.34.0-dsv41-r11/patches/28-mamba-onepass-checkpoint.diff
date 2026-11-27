@@ -1,0 +1,289 @@
+diff -ruN a/vllm/v1/core/sched/scheduler.py b/vllm/v1/core/sched/scheduler.py
+--- a/vllm/v1/core/sched/scheduler.py	2026-11-23 16:59:37
++++ b/vllm/v1/core/sched/scheduler.py	2026-11-23 16:59:37
+@@ -1,6 +1,7 @@
+ # SPDX-License-Identifier: Apache-2.0
+ # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+ import itertools
++import os
+ import time
+ from collections import defaultdict, deque
+ from collections.abc import Iterable
+@@ -60,8 +61,10 @@
+     KVCacheConfig,
+     MambaSpec,
+     get_mamba_prefill_checkpoint_position,
++    mamba_prefill_checkpoint_needs_fresh_row,
+     is_mamba_prefill_checkpoint_valid,
+ )
++import vllm.v1.kv_cache_interface as _kvi
+ from vllm.v1.metrics.perf import ModelMetrics, PerfStats
+ from vllm.v1.metrics.stats import (
+     KV_FETCH_COMPLETED_WAITING,
+@@ -472,6 +475,42 @@
+             self.mamba_partial_cache_hit
+             and self.kv_cache_manager.mamba_shared_prefix_checkpoint
+         )
++        # One-pass tail (opt-in, 0 = off): a chunk that would finish the
++        # prompt skips the partial-tail stop when the tail checkpoint is at
++        # most this many tokens past the chunk start. That state is then not
++        # cached, so a later request sharing the prompt resumes from an older
++        # cached state (at most this many more tokens to recompute). Only
++        # where a chunk ends changes; what is cached is still written there.
++        self.mamba_onepass_tail_skip_tokens = (
++            max(int(os.environ.get("VLLM_MAMBA_ONEPASS_TAIL_SKIP_TOKENS", "0")), 0)
++            if self.mamba_partial_cache_hit
++            else 0
++        )
++        if _kvi.MAMBA_ONEPASS_CKPT and self.need_mamba_block_aligned_split:
++            # The worker exports a checkpoint wherever the shared validity rule
++            # allows, without knowing whether the row is fresh. A running row
++            # that starts mid-block with a checkpoint before its initial state
++            # could then write into a stale block id. Such rows need a
++            # mid-block chunk end that is not the prompt tail: a shared-prefix
++            # junction stop, or sub-block chunks (block > chunk limit).
++            max_chunk = self.max_num_scheduled_tokens
++            threshold = self.scheduler_config.long_prefill_token_threshold
++            if threshold > 0:
++                max_chunk = min(max_chunk, threshold)
++            if self.mamba_shared_prefix_checkpoint or self.block_size > max_chunk:
++                raise ValueError(
++                    "VLLM_MAMBA_ONEPASS_CKPT=1 requires the shared-prefix "
++                    "Mamba checkpoint off and block_size <= the prefill chunk "
++                    "limit (min of max_num_batched_tokens and "
++                    "long_prefill_token_threshold)."
++                )
++            logger.info("Mamba one-pass prefill checkpoints (#66938/#60888) on.")
++        if self.mamba_onepass_tail_skip_tokens:
++            logger.info(
++                "Mamba one-pass tail: skipping the partial-tail stop when it "
++                "is <= %d tokens past the chunk start.",
++                self.mamba_onepass_tail_skip_tokens,
++            )
+ 
+         # Counts of non-empty steps scheduled / processed. update_from_output
+         # is called once per scheduled step in FIFO order, so these stay in sync.
+@@ -601,6 +640,8 @@
+         )
+ 
+         end = start + num_new_tokens
++        # Whether this chunk, before any stop, finishes the prefill.
++        reaches_prefill_end = end >= prefill_end
+         checkpoint_position = get_mamba_prefill_checkpoint_position(
+             prefill_end,
+             ckpt_block_size,
+@@ -618,6 +659,14 @@
+                 mamba_block_size=block_size,
+                 checkpoint_alignment=self.mamba_prefill_checkpoint_alignment,
+             )
++            and (
++                # vllm#60888: a checkpoint before the initial-state column
++                # needs a fresh worker row (first chunk); a running row is
++                # append-only and may hold a stale block id there.
++                not _kvi.MAMBA_ONEPASS_CKPT
++                or request.num_computed_tokens == 0
++                or not mamba_prefill_checkpoint_needs_fresh_row(start, end, block_size)
++            )
+         )
+         if use_internal_checkpoint:
+             last_cache_position = 0
+@@ -646,6 +695,17 @@
+             if self.mamba_partial_cache_hit and not use_internal_checkpoint
+             else 0
+         )
++        # getattr: tests drive this method with stand-in scheduler objects.
++        tail_skip = getattr(self, "mamba_onepass_tail_skip_tokens", 0)
++        if (
++            tail_skip
++            and reaches_prefill_end
++            and start < tail_boundary
++            and tail_boundary - start <= tail_skip
++        ):
++            # Finish the prompt in this pass instead of stopping at the tail
++            # checkpoint. Other stops (block boundary, junction) still apply.
++            tail_boundary = 0
+         junction = request.shared_prefix_boundary
+         # Block-floored: a sub-block junction's state is not separately cacheable.
+         block_floored = start + (junction - start) // block_size * block_size
+diff -ruN a/vllm/v1/core/single_type_kv_cache_manager.py b/vllm/v1/core/single_type_kv_cache_manager.py
+--- a/vllm/v1/core/single_type_kv_cache_manager.py	2026-11-23 16:59:37
++++ b/vllm/v1/core/single_type_kv_cache_manager.py	2026-11-23 16:59:37
+@@ -39,7 +39,9 @@
+     SlidingWindowSpec,
+     get_mamba_prefill_checkpoint_position,
+     is_mamba_prefill_checkpoint_valid,
++    mamba_prefill_checkpoint_needs_fresh_row,
+ )
++import vllm.v1.kv_cache_interface as _kvi
+ from vllm.v1.kv_cache_spec_registry import KVCacheSpecRegistry
+ from vllm.v1.request import Request
+ 
+@@ -1698,7 +1700,7 @@
+         assert isinstance(self.kv_cache_spec, MambaSpec)
+         checkpoint_idx = cdiv(query_end, self.block_size) - 2
+         blocks = self.req_to_blocks[request_id]
+-        return (
++        valid = (
+             self.has_prefill_checkpoint_blocks
+             and query_end >= prefill_end
+             and is_mamba_prefill_checkpoint_valid(
+@@ -1710,13 +1712,33 @@
+                 checkpoint_alignment=(self.kv_cache_spec.prefill_checkpoint_alignment),
+             )
+             and checkpoint_idx >= 0
+-            and (
+-                checkpoint_idx >= len(blocks)
+-                or blocks[checkpoint_idx].is_null
+-                or (
+-                    request_id in self._allocated_block_reqs
+-                    and checkpoint_idx >= len(blocks) - self.num_speculative_blocks
++        )
++        if not valid:
++            return False
++        if _kvi.MAMBA_ONEPASS_CKPT:
++            if mamba_prefill_checkpoint_needs_fresh_row(
++                query_start, query_end, self.block_size
++            ):
++                # vllm#60888: the target is a skipped (null) slot below the
++                # initial state. Only a first chunk's worker row is sent whole;
++                # the scheduler splits running rows (append-only table).
++                return request_id not in self._allocated_block_reqs and (
++                    checkpoint_idx >= len(blocks) or blocks[checkpoint_idx].is_null
+                 )
++            if (
++                query_start % self.block_size != 0
++                and checkpoint_idx == query_start // self.block_size
++            ):
++                # vllm#66938: mid-block resume; the checkpoint goes in the
++                # resumed block, private to the request and read (pre-copied
++                # into the running block) before the forward overwrites it.
++                return True
++        return (
++            checkpoint_idx >= len(blocks)
++            or blocks[checkpoint_idx].is_null
++            or (
++                request_id in self._allocated_block_reqs
++                and checkpoint_idx >= len(blocks) - self.num_speculative_blocks
+             )
+         )
+ 
+@@ -1804,6 +1826,16 @@
+             ):
+                 checkpoint_position = 0
+             checkpoint_block = int(checkpoint_position > 0)
++            if (
++                _kvi.MAMBA_ONEPASS_CKPT
++                and checkpoint_block
++                and mamba_prefill_checkpoint_needs_fresh_row(
++                    total_computed_tokens, num_tokens, self.block_size
++                )
++            ):
++                # vllm#60888: the checkpoint fills a skipped (null) slot below
++                # the block holding the initial state, not an appended one.
++                num_new_blocks = max(num_new_blocks, 0) + 1
+             if not apply_admission_cap:
+                 self._req_chunk_ranges[request_id] = (total_computed_tokens, num_tokens)
+                 if checkpoint_position > 0:
+@@ -1904,12 +1936,32 @@
+                 num_new_blocks = max(num_required_blocks - len(req_blocks), 0)
+                 if has_partial_hit:
+                     num_new_blocks = max(num_new_blocks, 0) + 1
++                # vllm#60888: a checkpoint below the initial-state block fills
++                # a skipped (null) slot of a fresh row.
++                fill_checkpoint_idx = None
++                checkpoint = self._checkpoints.get(request_id)
++                if (
++                    _kvi.MAMBA_ONEPASS_CKPT
++                    and checkpoint is not None
++                    and checkpoint[1] < len(req_blocks)
++                    and req_blocks[checkpoint[1]].is_null
++                ):
++                    assert not blocks_allocated, (
++                        "a running request's append-only worker block table "
++                        "never sees a filled skipped slot"
++                    )
++                    fill_checkpoint_idx = checkpoint[1]
++                    num_new_blocks += 1
+                 max_new_blocks = 1 + int(has_partial_hit) + checkpoint_block
+                 if not blocks_allocated:
+                     max_new_blocks += self.num_speculative_blocks
+                 assert num_new_blocks <= max_new_blocks
+                 new_blocks = self.block_pool.get_new_blocks(num_new_blocks)
+                 returned_blocks = req_blocks[prev_block_len:]
++                if fill_checkpoint_idx is not None:
++                    checkpoint_slot_block = new_blocks.pop()
++                    req_blocks[fill_checkpoint_idx] = checkpoint_slot_block
++                    returned_blocks.append(checkpoint_slot_block)
+                 if partial_hit is not None:
+                     block_idx, source_block = partial_hit
+                     cow_block = new_blocks[0]
+diff -ruN a/vllm/v1/kv_cache_interface.py b/vllm/v1/kv_cache_interface.py
+--- a/vllm/v1/kv_cache_interface.py	2026-11-23 16:59:37
++++ b/vllm/v1/kv_cache_interface.py	2026-11-23 16:59:37
+@@ -5,6 +5,7 @@
+ 
+ import copy
+ import math
++import os
+ from collections import Counter
+ from collections.abc import Collection, Sequence
+ from dataclasses import dataclass, field, fields, replace
+@@ -1200,6 +1201,12 @@
+         )
+ 
+ 
++# Opt-in (default off): one-pass prefill checkpoints for mid-block resumes
++# (backport of vllm#66938 + vllm#60888). Read once at import so the scheduler,
++# MambaManager and the workers (same container env) decide in lockstep.
++MAMBA_ONEPASS_CKPT = os.environ.get("VLLM_MAMBA_ONEPASS_CKPT", "0") == "1"
++
++
+ def get_mamba_prefill_checkpoint_position(
+     num_tokens: int,
+     hash_block_size: int,
+@@ -1235,13 +1242,44 @@
+ 
+     initial_state_col = (query_start - 1) // mamba_block_size
+     checkpoint_col = cdiv(query_end, mamba_block_size) - 2
++    if MAMBA_ONEPASS_CKPT:
++        # Backport of vllm#66938 (merged) + vllm#60888 (open): a query that
++        # starts mid-block may export into its resumed block (col ==
++        # initial, #66938) or into a skipped slot before it (col < initial,
++        # #60888; fresh worker rows only, see
++        # `mamba_prefill_checkpoint_needs_fresh_row`). A block-aligned start
++        # may not: that column is the shared hit block.
++        col_ok = checkpoint_col >= 0 and (
++            checkpoint_col > initial_state_col
++            or query_start % mamba_block_size != 0
++        )
++    else:
++        col_ok = checkpoint_col > initial_state_col
+     return (
+         query_start % hash_block_size == 0
+-        and checkpoint_col > initial_state_col
++        and col_ok
+         and query_start + hash_block_size <= checkpoint_position
+         and query_start < checkpoint_position < query_end
+         and (checkpoint_position - query_start) % checkpoint_alignment == 0
+     )
++
++
++def mamba_prefill_checkpoint_needs_fresh_row(
++    query_start: int,
++    query_end: int,
++    mamba_block_size: int,
++) -> bool:
++    """Whether a valid checkpoint lands strictly before the initial-state
++    column (vllm#60888 shape; the ``==`` case is #66938's resumed block).
++
++    The target is then a skipped (null) slot. A running request's worker
++    block-table row is append-only and may hold a stale block id there, so
++    such a checkpoint is only scheduled for a row the worker receives whole
++    this step (a request's first chunk).
++    """
++    initial_state_col = (query_start - 1) // mamba_block_size
++    checkpoint_col = cdiv(query_end, mamba_block_size) - 2
++    return checkpoint_col < initial_state_col
+ 
+ 
+ @dataclass(frozen=True)
