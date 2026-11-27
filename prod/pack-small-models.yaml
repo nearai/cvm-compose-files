@@ -1010,7 +1010,7 @@ services:
       --revision 017b9c7af6b5689d5dd426a76e0bc077eb5ca20a
       --served-model-name Qwen/Qwen3.8-27B
       --tp 1
-      --mem-fraction-static 0.50
+      --mem-fraction-static 0.65
       --attention-backend fa3
       --mm-attention-backend fa3
       --chunked-prefill-size 4096
@@ -1056,7 +1056,7 @@ services:
               device_ids: ["2"]
               capabilities: [gpu]
     labels:
-      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:Qwen/Qwen3.8-27B-FP8","served_model:Qwen/Qwen3.8-27B","model_revision:017b9c7af6b5689d5dd426a76e0bc077eb5ca20a","deployment:pack-small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:0","gpu_pair:2","config_variant:qwen38-coloc-fa3-m96-prio-v0523-secure-r2","quantization:fp8","lora:abliterated-r1","sglang_revision:0.5.23-near-secure","engine_image:2321e3c217f0"]}]'
+      com.datadoghq.ad.logs: '[{"source":"sglang","service":"sglang","tags":["model:Qwen/Qwen3.8-27B-FP8","served_model:Qwen/Qwen3.8-27B","model_revision:017b9c7af6b5689d5dd426a76e0bc077eb5ca20a","deployment:pack-small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","port:8000","instance:0","gpu_pair:2","config_variant:qwen38-coloc-fa3-m96-prio-mf65-v0523-secure-r2","quantization:fp8","lora:abliterated-r1","sglang_revision:0.5.23-near-secure","engine_image:2321e3c217f0"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "sglang"
       nearai.otel.service: "sglang"
@@ -1076,12 +1076,12 @@ services:
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.instance: "0"
       nearai.otel.gpu_pair: "2"
-      nearai.otel.config_variant: "qwen38-coloc-fa3-m96-prio-v0523-secure-r2"
+      nearai.otel.config_variant: "qwen38-coloc-fa3-m96-prio-mf65-v0523-secure-r2"
       nearai.otel.quantization: "fp8"
       nearai.otel.chunk_size: "4096"
       nearai.otel.max_prefill_tokens: "4096"
       nearai.otel.mixed_chunk: "0"
-      nearai.otel.mem_fraction_static: "0.50"
+      nearai.otel.mem_fraction_static: "0.65"
       nearai.otel.max_mamba_cache_size: "96"
       nearai.otel.max_running_requests: "32"
       nearai.otel.max_queued_requests: "64"
@@ -3522,12 +3522,12 @@ configs:
                       instance: "0"
                       gpu_pair: "2"
                       model_revision: "017b9c7af6b5689d5dd426a76e0bc077eb5ca20a"
-                      config_variant: "qwen38-coloc-fa3-m96-prio-v0523-secure-r2"
+                      config_variant: "qwen38-coloc-fa3-m96-prio-mf65-v0523-secure-r2"
                       quantization: "fp8"
                       chunk_size: "4096"
                       max_prefill_tokens: "4096"
                       mixed_chunk: "0"
-                      mem_fraction_static: "0.50"
+                      mem_fraction_static: "0.65"
                       max_mamba_cache_size: "96"
                       max_running_requests: "32"
                       max_queued_requests: "64"
