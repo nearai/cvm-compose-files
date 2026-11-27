@@ -43,7 +43,7 @@ x-glm53-engine-common: &glm53-engine-common
   init: true
   cap_drop: [ALL]
   security_opt: ["no-new-privileges:true"]
-  image: docker.io/nearaidev/vllm@sha256:1ed179af333e0bb2c5724858c7e68a6e268e0edd02ddb67f6105157287cd5c9a
+  image: docker.io/nearaidev/vllm@sha256:50d68ba008bc45ee43a76f8d066554c875f67e0a4d229d4b77d24da5e13f9d19
   restart: unless-stopped
   stop_grace_period: 10m
   logging: *logging-conf
@@ -1377,12 +1377,21 @@ services:
       - UCX_LOG_LEVEL=info
       - UCX_PROTO_INFO=y
       - VLLM_ADMIT_ROLE=prefill
-      - VLLM_ADMIT_LONG_CUTOFF_TOKENS=65536
-      - VLLM_ADMIT_SHORT_MAX_TOKENS=245760
+      - VLLM_ADMIT_LONG_CUTOFF_TOKENS=32768
+      - VLLM_ADMIT_SHORT_MAX_TOKENS=81920
       - VLLM_ADMIT_LONG_MAX_INFLIGHT=1
       - VLLM_ADMIT_LONG_YIELD_SHORT_TOKENS=20480
       - VLLM_ADMIT_RETRY_AFTER_SHORT_S=1
       - VLLM_ADMIT_RETRY_AFTER_LONG_S=10
+      # Prompt and stable-prefix Mamba/KDA checkpoints and Mamba-aware eviction (image patches 31-33);
+      # 154827 is the chat template's first user-turn role token. Set on all four engines.
+      - VLLM_NEAR_ONEPASS_CKPT=1
+      - VLLM_NEAR_PREFIX_CKPT=1
+      - VLLM_NEAR_PREFIX_CKPT_MARKER_IDS=154827
+      - VLLM_NEAR_MAMBA_AWARE_EVICT=1
+      # Host KV tier: one pinned cudaHostAlloc pool of cpu_bytes_to_use per rank (needs the
+      # unlimited memlock ulimit above).
+      - VLLM_NEAR_CPU_OFFLOAD_HOSTALLOC=1
       - VLLM_DP_MASTER_PORT=29700
       - VLLM_NIXL_SIDE_CHANNEL_PORT=5600
     command: >
@@ -1400,14 +1409,14 @@ services:
       --max-num-seqs 128
       --long-prefill-token-threshold 4864
       --max-num-queued-reqs 96
-      --scheduling-policy priority
+      --scheduling-policy fcfs
       --gpu-memory-utilization 0.90
       --enable-prompt-tokens-details
       --chat-template /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/3f1971b7b5f7a528c9c4ef6212c8785298a8c24a/chat_template.jinja
       --reasoning-parser glm45
       --tool-call-parser glm47
       --enable-auto-tool-choice
-      --speculative-config '{"method":"mtp","num_speculative_tokens":3}'
+      --speculative-config '{"method":"mtp","num_speculative_tokens":4}'
       --compilation-config '{"cudagraph_mode":"FULL_DECODE_ONLY"}'
       --moe-backend humming
       --attention-backend FLASHMLA_SPARSE
@@ -1415,13 +1424,14 @@ services:
       --mamba-ssm-cache-dtype bfloat16
       --no-disable-hybrid-kv-cache-manager
       --enable-prefix-caching
+      --prefix-match-unit 64
       --limit-mm-per-prompt '{"image": 4}'
-      --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_producer","kv_connector_extra_config":{"kv_lease_duration":30,"enable_prog_thread":false}}'
+      --kv-transfer-config '{"kv_connector":"MultiConnector","kv_role":"kv_producer","kv_connector_extra_config":{"connectors":[{"kv_connector":"NixlConnector","kv_role":"kv_producer","kv_connector_extra_config":{"kv_lease_duration":30,"enable_prog_thread":false}},{"kv_connector":"SimpleCPUOffloadConnector","kv_role":"kv_both","kv_connector_extra_config":{"cpu_bytes_to_use":214748364800,"lazy_offload":false}}]}}'
       --no-enable-log-requests
       --host 0.0.0.0
       --port 9100
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","replica:a","pd_role:prefill","dp_rank:0","gpu:4","deployment:pack-small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","replica:a","pd_role:prefill","dp_rank:0","gpu:4","deployment:pack-small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-r13-w4afp8-bf16kv-flashmla-2xpd-dp2ep2-nixl-cpuoff-mtp4-prefix-ckpt-cc-dpiece-dgate-fcfs-router-r8-ddirect-ovf"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
@@ -1439,7 +1449,7 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.ppcie: "true"
-      nearai.otel.config_variant: "vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc"
+      nearai.otel.config_variant: "vllm0340-r13-w4afp8-bf16kv-flashmla-2xpd-dp2ep2-nixl-cpuoff-mtp4-prefix-ckpt-cc-dpiece-dgate-fcfs-router-r8-ddirect-ovf"
 
   model-vllm-glm53-a-prefill1:
     <<: *glm53-engine-common
@@ -1494,12 +1504,21 @@ services:
       - UCX_LOG_LEVEL=info
       - UCX_PROTO_INFO=y
       - VLLM_ADMIT_ROLE=prefill
-      - VLLM_ADMIT_LONG_CUTOFF_TOKENS=65536
-      - VLLM_ADMIT_SHORT_MAX_TOKENS=245760
+      - VLLM_ADMIT_LONG_CUTOFF_TOKENS=32768
+      - VLLM_ADMIT_SHORT_MAX_TOKENS=81920
       - VLLM_ADMIT_LONG_MAX_INFLIGHT=1
       - VLLM_ADMIT_LONG_YIELD_SHORT_TOKENS=20480
       - VLLM_ADMIT_RETRY_AFTER_SHORT_S=1
       - VLLM_ADMIT_RETRY_AFTER_LONG_S=10
+      # Prompt and stable-prefix Mamba/KDA checkpoints and Mamba-aware eviction (image patches 31-33);
+      # 154827 is the chat template's first user-turn role token. Set on all four engines.
+      - VLLM_NEAR_ONEPASS_CKPT=1
+      - VLLM_NEAR_PREFIX_CKPT=1
+      - VLLM_NEAR_PREFIX_CKPT_MARKER_IDS=154827
+      - VLLM_NEAR_MAMBA_AWARE_EVICT=1
+      # Host KV tier: one pinned cudaHostAlloc pool of cpu_bytes_to_use per rank (needs the
+      # unlimited memlock ulimit above).
+      - VLLM_NEAR_CPU_OFFLOAD_HOSTALLOC=1
       - VLLM_DP_MASTER_PORT=29700
       - VLLM_NIXL_SIDE_CHANNEL_PORT=5600
     command: >
@@ -1517,14 +1536,14 @@ services:
       --max-num-seqs 128
       --long-prefill-token-threshold 4864
       --max-num-queued-reqs 96
-      --scheduling-policy priority
+      --scheduling-policy fcfs
       --gpu-memory-utilization 0.90
       --enable-prompt-tokens-details
       --chat-template /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/3f1971b7b5f7a528c9c4ef6212c8785298a8c24a/chat_template.jinja
       --reasoning-parser glm45
       --tool-call-parser glm47
       --enable-auto-tool-choice
-      --speculative-config '{"method":"mtp","num_speculative_tokens":3}'
+      --speculative-config '{"method":"mtp","num_speculative_tokens":4}'
       --compilation-config '{"cudagraph_mode":"FULL_DECODE_ONLY"}'
       --moe-backend humming
       --attention-backend FLASHMLA_SPARSE
@@ -1532,13 +1551,14 @@ services:
       --mamba-ssm-cache-dtype bfloat16
       --no-disable-hybrid-kv-cache-manager
       --enable-prefix-caching
+      --prefix-match-unit 64
       --limit-mm-per-prompt '{"image": 4}'
-      --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_producer","kv_connector_extra_config":{"kv_lease_duration":30,"enable_prog_thread":false}}'
+      --kv-transfer-config '{"kv_connector":"MultiConnector","kv_role":"kv_producer","kv_connector_extra_config":{"connectors":[{"kv_connector":"NixlConnector","kv_role":"kv_producer","kv_connector_extra_config":{"kv_lease_duration":30,"enable_prog_thread":false}},{"kv_connector":"SimpleCPUOffloadConnector","kv_role":"kv_both","kv_connector_extra_config":{"cpu_bytes_to_use":214748364800,"lazy_offload":false}}]}}'
       --no-enable-log-requests
       --host 0.0.0.0
       --port 9101
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","replica:a","pd_role:prefill","dp_rank:1","gpu:5","deployment:pack-small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","replica:a","pd_role:prefill","dp_rank:1","gpu:5","deployment:pack-small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-r13-w4afp8-bf16kv-flashmla-2xpd-dp2ep2-nixl-cpuoff-mtp4-prefix-ckpt-cc-dpiece-dgate-fcfs-router-r8-ddirect-ovf"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
@@ -1556,7 +1576,7 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.ppcie: "true"
-      nearai.otel.config_variant: "vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc"
+      nearai.otel.config_variant: "vllm0340-r13-w4afp8-bf16kv-flashmla-2xpd-dp2ep2-nixl-cpuoff-mtp4-prefix-ckpt-cc-dpiece-dgate-fcfs-router-r8-ddirect-ovf"
 
   model-vllm-glm53-a-decode0:
     <<: *glm53-engine-common
@@ -1600,6 +1620,14 @@ services:
       - HUMMING_CACHE_DIR=/root/.cache/humming/a-decode0
       - HUMMING_MAX_PARALLEL_BUILD_WORKERS=8
       - VLLM_ENGINE_READY_TIMEOUT_S=1800
+      # Decode admission gate for decode-direct follow-ups: refuses any request with more than
+      # 2048 uncached tokens; requests carrying P/D transfer parameters are exempt.
+      - VLLM_ADMIT_ROLE=prefill
+      - VLLM_ADMIT_LONG_CUTOFF_TOKENS=2048
+      - VLLM_ADMIT_LONG_REJECT_ALL=1
+      - VLLM_ADMIT_SHORT_MAX_TOKENS=4096
+      - VLLM_ADMIT_RETRY_AFTER_SHORT_S=1
+      - VLLM_ADMIT_RETRY_AFTER_LONG_S=1
       - VLLM_SSM_CONV_STATE_LAYOUT=DS
       - VLLM_TRUST_REMOTE_PREFILL_CACHED_TOKENS=1
       # KV moves over UCX cuda_ipc (zero-copy); protocol info at boot logs the selected transport.
@@ -1610,6 +1638,12 @@ services:
       - UCX_ZCOPY_THRESH=inf
       - UCX_LOG_LEVEL=info
       - UCX_PROTO_INFO=y
+      # Prompt and stable-prefix Mamba/KDA checkpoints and Mamba-aware eviction (image patches 31-33);
+      # 154827 is the chat template's first user-turn role token. Set on all four engines.
+      - VLLM_NEAR_ONEPASS_CKPT=1
+      - VLLM_NEAR_PREFIX_CKPT=1
+      - VLLM_NEAR_PREFIX_CKPT_MARKER_IDS=154827
+      - VLLM_NEAR_MAMBA_AWARE_EVICT=1
       - VLLM_DP_MASTER_PORT=29710
       - VLLM_NIXL_SIDE_CHANNEL_PORT=5700
     command: >
@@ -1626,28 +1660,29 @@ services:
       --max-num-batched-tokens 8192
       --max-num-seqs 128
       --max-num-queued-reqs 96
-      --scheduling-policy priority
+      --scheduling-policy fcfs
       --gpu-memory-utilization 0.90
       --enable-prompt-tokens-details
       --chat-template /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/3f1971b7b5f7a528c9c4ef6212c8785298a8c24a/chat_template.jinja
       --reasoning-parser glm45
       --tool-call-parser glm47
       --enable-auto-tool-choice
-      --speculative-config '{"method":"mtp","num_speculative_tokens":3}'
-      --compilation-config '{"cudagraph_mode":"FULL_DECODE_ONLY"}'
+      --speculative-config '{"method":"mtp","num_speculative_tokens":4}'
+      --compilation-config '{"cudagraph_mode":"FULL_AND_PIECEWISE","cudagraph_capture_sizes":[1,2,4,8,16,24,32,40,48,56,64,72,80,88,96,104,112,120,128,136,144,152,160,168,176,184,192,200,208,216,224,232,240,248,256,272,288,304,320,336,352,368,384,400,416,432,448,464,480,496,512,576,640,704,768,832,896,960,1024,1152,1280,1408,1536,1664,1792,1920,2048]}'
       --moe-backend humming
       --attention-backend FLASHMLA_SPARSE
       --kv-cache-dtype auto
       --mamba-ssm-cache-dtype bfloat16
       --no-disable-hybrid-kv-cache-manager
       --enable-prefix-caching
+      --prefix-match-unit 64
       --limit-mm-per-prompt '{"image": 4}'
       --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_consumer","kv_connector_extra_config":{"kv_lease_duration":30,"enable_prog_thread":false}}'
       --no-enable-log-requests
       --host 0.0.0.0
       --port 9110
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","replica:a","pd_role:decode","dp_rank:0","gpu:6","deployment:pack-small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","replica:a","pd_role:decode","dp_rank:0","gpu:6","deployment:pack-small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-r13-w4afp8-bf16kv-flashmla-2xpd-dp2ep2-nixl-cpuoff-mtp4-prefix-ckpt-cc-dpiece-dgate-fcfs-router-r8-ddirect-ovf"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
@@ -1665,7 +1700,7 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.ppcie: "true"
-      nearai.otel.config_variant: "vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc"
+      nearai.otel.config_variant: "vllm0340-r13-w4afp8-bf16kv-flashmla-2xpd-dp2ep2-nixl-cpuoff-mtp4-prefix-ckpt-cc-dpiece-dgate-fcfs-router-r8-ddirect-ovf"
 
   model-vllm-glm53-a-decode1:
     <<: *glm53-engine-common
@@ -1709,6 +1744,14 @@ services:
       - HUMMING_CACHE_DIR=/root/.cache/humming/a-decode1
       - HUMMING_MAX_PARALLEL_BUILD_WORKERS=8
       - VLLM_ENGINE_READY_TIMEOUT_S=1800
+      # Decode admission gate for decode-direct follow-ups: refuses any request with more than
+      # 2048 uncached tokens; requests carrying P/D transfer parameters are exempt.
+      - VLLM_ADMIT_ROLE=prefill
+      - VLLM_ADMIT_LONG_CUTOFF_TOKENS=2048
+      - VLLM_ADMIT_LONG_REJECT_ALL=1
+      - VLLM_ADMIT_SHORT_MAX_TOKENS=4096
+      - VLLM_ADMIT_RETRY_AFTER_SHORT_S=1
+      - VLLM_ADMIT_RETRY_AFTER_LONG_S=1
       - VLLM_SSM_CONV_STATE_LAYOUT=DS
       - VLLM_TRUST_REMOTE_PREFILL_CACHED_TOKENS=1
       # KV moves over UCX cuda_ipc (zero-copy); protocol info at boot logs the selected transport.
@@ -1719,6 +1762,12 @@ services:
       - UCX_ZCOPY_THRESH=inf
       - UCX_LOG_LEVEL=info
       - UCX_PROTO_INFO=y
+      # Prompt and stable-prefix Mamba/KDA checkpoints and Mamba-aware eviction (image patches 31-33);
+      # 154827 is the chat template's first user-turn role token. Set on all four engines.
+      - VLLM_NEAR_ONEPASS_CKPT=1
+      - VLLM_NEAR_PREFIX_CKPT=1
+      - VLLM_NEAR_PREFIX_CKPT_MARKER_IDS=154827
+      - VLLM_NEAR_MAMBA_AWARE_EVICT=1
       - VLLM_DP_MASTER_PORT=29710
       - VLLM_NIXL_SIDE_CHANNEL_PORT=5700
     command: >
@@ -1735,28 +1784,29 @@ services:
       --max-num-batched-tokens 8192
       --max-num-seqs 128
       --max-num-queued-reqs 96
-      --scheduling-policy priority
+      --scheduling-policy fcfs
       --gpu-memory-utilization 0.90
       --enable-prompt-tokens-details
       --chat-template /root/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash/snapshots/3f1971b7b5f7a528c9c4ef6212c8785298a8c24a/chat_template.jinja
       --reasoning-parser glm45
       --tool-call-parser glm47
       --enable-auto-tool-choice
-      --speculative-config '{"method":"mtp","num_speculative_tokens":3}'
-      --compilation-config '{"cudagraph_mode":"FULL_DECODE_ONLY"}'
+      --speculative-config '{"method":"mtp","num_speculative_tokens":4}'
+      --compilation-config '{"cudagraph_mode":"FULL_AND_PIECEWISE","cudagraph_capture_sizes":[1,2,4,8,16,24,32,40,48,56,64,72,80,88,96,104,112,120,128,136,144,152,160,168,176,184,192,200,208,216,224,232,240,248,256,272,288,304,320,336,352,368,384,400,416,432,448,464,480,496,512,576,640,704,768,832,896,960,1024,1152,1280,1408,1536,1664,1792,1920,2048]}'
       --moe-backend humming
       --attention-backend FLASHMLA_SPARSE
       --kv-cache-dtype auto
       --mamba-ssm-cache-dtype bfloat16
       --no-disable-hybrid-kv-cache-manager
       --enable-prefix-caching
+      --prefix-match-unit 64
       --limit-mm-per-prompt '{"image": 4}'
       --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_consumer","kv_connector_extra_config":{"kv_lease_duration":30,"enable_prog_thread":false}}'
       --no-enable-log-requests
       --host 0.0.0.0
       --port 9111
     labels:
-      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","replica:a","pd_role:decode","dp_rank:1","gpu:7","deployment:pack-small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc"]}]'
+      com.datadoghq.ad.logs: '[{"source":"vllm","service":"vllm","tags":["model:z-ai/glm-5.3-flash","model_path:graphistry/GLM-5.3-Flash-W4AFP8","served_model:z-ai/glm-5.3-flash","replica:a","pd_role:decode","dp_rank:1","gpu:7","deployment:pack-small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-r13-w4afp8-bf16kv-flashmla-2xpd-dp2ep2-nixl-cpuoff-mtp4-prefix-ckpt-cc-dpiece-dgate-fcfs-router-r8-ddirect-ovf"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "vllm"
       nearai.otel.service: "vllm"
@@ -1774,11 +1824,11 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.ppcie: "true"
-      nearai.otel.config_variant: "vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc"
+      nearai.otel.config_variant: "vllm0340-r13-w4afp8-bf16kv-flashmla-2xpd-dp2ep2-nixl-cpuoff-mtp4-prefix-ckpt-cc-dpiece-dgate-fcfs-router-r8-ddirect-ovf"
 
   pd-router-glm53-a:
     # One router per prefill/decode pair.
-    image: docker.io/nearaidev/vllm@sha256:cc0066b599ab2d2c75a4b06ed7df4711cb181d110d5448dde894e17661e4c405
+    image: docker.io/nearaidev/vllm@sha256:f8e5480cd41f1ef4806ef232dbf49c777e422d12eb1eacd57b27ee20c3e7e9e8
     container_name: pd-router-glm53-a
     command:
       - --prefill
@@ -1807,6 +1857,24 @@ services:
       - PD_HEALTH_TIMEOUT_S=2
       - PD_MAX_IMBALANCE=64
       - PD_STATS_LOG_S=60
+      # Decode-direct: a chat follow-up with a short new tail goes straight to the decode rank that served the
+      # conversation; the decoders' admission gate refuses one that is too long and the router falls back to P/D.
+      - ROUTER_DDIRECT=1
+      - ROUTER_DDIRECT_BLOCK_TOKENS=64
+      - ROUTER_DDIRECT_MAX_TAIL_TOKENS=2048
+      - ROUTER_DDIRECT_MAX_CHUNK_TOKENS=2048
+      - ROUTER_DDIRECT_MAX_D_INFLIGHT=48
+      - ROUTER_DDIRECT_MAX_AGE_S=120
+      - ROUTER_DDIRECT_COUNT_PREV_REPLY=1
+      # Prefix-cache block of the engines' hybrid cache, used for the uncached estimate.
+      - ROUTER_DDIRECT_CACHE_BLOCK_TOKENS=2432
+      # First turns whose stable prefix a decode rank served recently go direct too.
+      - ROUTER_DDIRECT_FIRST_TURN=1
+      - ROUTER_DDIRECT_FIRST_TURN_MAX_TOKENS=2048
+      # While the prefill ranks hold 8 or more requests, short uncached requests go to a decode rank.
+      - ROUTER_DDIRECT_OVERFLOW=1
+      - ROUTER_DDIRECT_OVERFLOW_P_INFLIGHT=8
+      - ROUTER_DDIRECT_OVERFLOW_MAX_TOKENS=2048
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9200/health', timeout=5)"]
       interval: 30s
@@ -1816,7 +1884,7 @@ services:
     restart: unless-stopped
     logging: *logging-conf
     labels:
-      com.datadoghq.ad.logs: '[{"source":"pd-router","service":"pd-router","tags":["model:z-ai/glm-5.3-flash","deployment:pack-small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc"]}]'
+      com.datadoghq.ad.logs: '[{"source":"pd-router","service":"pd-router","tags":["model:z-ai/glm-5.3-flash","deployment:pack-small-models","env:${ENV}","host:${CVM_HOST}","ip:${HOST_IP}","ppcie:true","config_variant:vllm0340-r13-w4afp8-bf16kv-flashmla-2xpd-dp2ep2-nixl-cpuoff-mtp4-prefix-ckpt-cc-dpiece-dgate-fcfs-router-r8-ddirect-ovf"]}]'
       nearai.otel.scrape: "true"
       nearai.otel.job: "pd-router"
       nearai.otel.service: "pd-router"
@@ -1832,7 +1900,7 @@ services:
       nearai.otel.cvm_name: "${CVM_NAME}"
       nearai.otel.ip: "${HOST_IP}"
       nearai.otel.ppcie: "true"
-      nearai.otel.config_variant: "vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc"
+      nearai.otel.config_variant: "vllm0340-r13-w4afp8-bf16kv-flashmla-2xpd-dp2ep2-nixl-cpuoff-mtp4-prefix-ckpt-cc-dpiece-dgate-fcfs-router-r8-ddirect-ovf"
 
 
   # Kept only for the switch to the P/D set; removed in a follow-up.
@@ -3116,7 +3184,7 @@ configs:
                       ip: "${HOST_IP}"
                       ppcie: "true"
                       deployment: "pack-small-models"
-                      config_variant: "vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc"
+                      config_variant: "vllm0340-r13-w4afp8-bf16kv-flashmla-2xpd-dp2ep2-nixl-cpuoff-mtp4-prefix-ckpt-cc-dpiece-dgate-fcfs-router-r8-ddirect-ovf"
               - job_name: vllm-model-vllm-glm53-a-prefill1
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -3142,7 +3210,7 @@ configs:
                       ip: "${HOST_IP}"
                       ppcie: "true"
                       deployment: "pack-small-models"
-                      config_variant: "vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc"
+                      config_variant: "vllm0340-r13-w4afp8-bf16kv-flashmla-2xpd-dp2ep2-nixl-cpuoff-mtp4-prefix-ckpt-cc-dpiece-dgate-fcfs-router-r8-ddirect-ovf"
               - job_name: vllm-model-vllm-glm53-a-decode0
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -3168,7 +3236,7 @@ configs:
                       ip: "${HOST_IP}"
                       ppcie: "true"
                       deployment: "pack-small-models"
-                      config_variant: "vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc"
+                      config_variant: "vllm0340-r13-w4afp8-bf16kv-flashmla-2xpd-dp2ep2-nixl-cpuoff-mtp4-prefix-ckpt-cc-dpiece-dgate-fcfs-router-r8-ddirect-ovf"
               - job_name: vllm-model-vllm-glm53-a-decode1
                 scrape_interval: 15s
                 metrics_path: /metrics
@@ -3194,7 +3262,7 @@ configs:
                       ip: "${HOST_IP}"
                       ppcie: "true"
                       deployment: "pack-small-models"
-                      config_variant: "vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc"
+                      config_variant: "vllm0340-r13-w4afp8-bf16kv-flashmla-2xpd-dp2ep2-nixl-cpuoff-mtp4-prefix-ckpt-cc-dpiece-dgate-fcfs-router-r8-ddirect-ovf"
               # A router answers 503 while any engine rank is down, so a missed scrape is expected then.
               # Only the router's own series are kept; its aggregated engine series are scraped directly.
               - job_name: pd-router-pd-router-glm53-a
@@ -3221,7 +3289,7 @@ configs:
                       ip: "${HOST_IP}"
                       ppcie: "true"
                       deployment: "pack-small-models"
-                      config_variant: "vllm0340-w4afp8-2xpd-dp2ep2-nixl-mtp3-prefix-cc"
+                      config_variant: "vllm0340-r13-w4afp8-bf16kv-flashmla-2xpd-dp2ep2-nixl-cpuoff-mtp4-prefix-ckpt-cc-dpiece-dgate-fcfs-router-r8-ddirect-ovf"
               - job_name: ghost-aggregator-glm53-ghost-aggregator
                 scrape_interval: 15s
                 metrics_path: /metrics
