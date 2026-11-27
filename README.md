@@ -86,7 +86,6 @@ file-name grammar in `.claude/rules/prod.md`. `privacy`: `flag set` (explicit no
 | `prod/pack-small-models.yaml` | z-ai/glm-5.3-flash | graphistry/GLM-5.3-Flash-W4AFP8@99f1fa70408c | [docker/vllm-v0.34.0-dsv41-r13@8360a07](https://github.com/nearai/cvm-compose-files/tree/8360a07d1d03a12e851d12301e74747ee7464639/docker/vllm-v0.34.0-dsv41-r13) | pd2 | flag set | candidate |
 | `prod/rotate-compose-manager-token.yaml` (legacy name) | - | - | - | - | n.a. | live |
 | `prod/sage-pull.yaml` (legacy name) | - | - | - | - | n.a. | live |
-| `prod/util-empty-volume.yaml` | - | - | - | - | n.a. | standby |
 <!-- status:end -->
 
 `live` runs in production. `candidate` is being rolled out, at most one per serving group. `standby` is kept
